@@ -170,10 +170,12 @@ function fourier_eph(model::ModelEPW, kvecs::Vector{Vec3{Float64}},
 
     nk = length(kvecs)
     nq = length(qvecs)
+    wtk = ones(Float64, nk) / nk
     wtq = ones(Float64, nq) / nq
-    imsigma_save = zeros(Float64, nw, nk)
 
-    epdatas = [initialize_elphdata(Float64, nw, nmodes) for i=1:nthreads()]
+    elself = ElectronSelfEnergy(Float64, nw, nmodes, nk)
+
+    epdatas = [ElPhData(Float64, nw, nmodes) for i=1:nthreads()]
 
     # Compute electron eigenvectors at k
     ek_save = zeros(Float64, nw, nk)
@@ -233,6 +235,8 @@ function fourier_eph(model::ModelEPW, kvecs::Vector{Vec3{Float64}},
             xk = kvecs[ik]
             xkq = xk + xq
 
+            epdata.wtq = wtq[iq]
+            epdata.wtk = wtk[ik]
             epdata.omega .= omegas
 
             # Electron eigenstate at k. Use saved data.
@@ -250,57 +254,27 @@ function fourier_eph(model::ModelEPW, kvecs::Vector{Vec3{Float64}},
             # Rotate e-ph matrix from electron Wannier to BLoch
             apply_gauge_matrix!(epdata.ep, epmatf_wan, epdata, "k+q", "k", nmodes)
 
-            # Completed calculating matrix elements and saved in epdata.
+            # Compute g2 = |ep|^2 / omega
+            set_g2!(epdata)
+
+            # Now, we are done with matrix elements. All data saved in epdata.
 
             # Now calculate physical quantities.
             efermi = 6.10 * unit_to_aru(:eV)
             temperature = 300.0 * unit_to_aru(:K)
             degaussw = 0.50 * unit_to_aru(:eV)
-            omega_acoustic = 6.1992E-04 * unit_to_aru(:eV)
-            inv_degaussw = 1 / degaussw
 
-            nocc_q = nocc_qs[tid]
-            focc_kq = focc_kqs[tid]
-            nocc_q .= occ_boson.(epdata.omega ./ temperature)
-            focc_kq .= occ_fermion.((epdata.ekq_full .- efermi) ./ temperature)
-
-            # Calculate imaginary part of electron self-energy
-            for imode in 1:nmodes
-                omega = epdata.omega[imode]
-                if (omega < omega_acoustic)
-                    continue
-                end
-                @views epdata.g2[:, :, imode] .= abs.(epdata.ep[:, :, imode]).^2 ./ (2 * omega)
-                # TODO: Move 1/(2*omega) to where epmat_re_q is defined.
-
-                @inbounds for ib in 1:nw, jb in 1:nw
-                    delta_e1 = epdata.ek_full[ib] - (epdata.ekq_full[jb] - omega)
-                    delta_e2 = epdata.ek_full[ib] - (epdata.ekq_full[jb] + omega)
-                    delta1 = gaussian(delta_e1 * inv_degaussw) * inv_degaussw
-                    delta2 = gaussian(delta_e2 * inv_degaussw) * inv_degaussw
-                    fcoeff1 = nocc_q[imode] + focc_kq[jb]
-                    fcoeff2 = nocc_q[imode] + 1.0 - focc_kq[jb]
-                    imsigma_save[ib, ik] += (epdata.g2[jb, ib, imode] * wtq[iq]
-                        * pi * (fcoeff1 * delta1 + fcoeff2 * delta2))
-                end
-            end
+            compute_selfen!(elself, epdata, ik;
+                efermi=efermi, temperature=temperature, smear=degaussw)
         end # ik
     end # iq
 
     # Average over degenerate states
-    degeneracy_cutoff = 1.e-6
-    imsigma_save_copy = copy(imsigma_save)
-    Threads.@threads :static for ik in 1:nk
-    # for ik in 1:nk
-        for ib in 1:nw
-            iblist_degen = abs.(ek_save[:, ik] .- ek_save[ib, ik]) .< degeneracy_cutoff
-            imsigma_save[ib, ik] = mean(imsigma_save_copy[iblist_degen, ik])
-        end # ib
-    end # ik
+    imsigma_avg = average_degeneracy(elself.imsigma, ek_save)
 
     npzwrite(joinpath(folder, "eig_kk.npy"), ek_save)
     npzwrite(joinpath(folder, "eig_phonon.npy"), omega_save)
-    npzwrite(joinpath(folder, "imsigma_el.npy"), imsigma_save)
+    npzwrite(joinpath(folder, "imsigma_el.npy"), imsigma_avg)
 end
 
 fourier_eph(model, kvecs_mini, qvecs_mini, "gridopt")

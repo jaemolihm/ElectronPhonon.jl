@@ -6,11 +6,13 @@ export Mat3
 export Vec3
 export Vec2
 
-include("types.jl")
-include("units.jl")
-include("utils.jl")
+include("common/types.jl")
+include("common/units.jl")
+include("common/constants.jl")
+include("common/utils.jl")
 include("fourier.jl")
 include("diagonalize.jl")
 include("elphdata.jl")
+include("electron_selfenergy.jl")
 
 end
