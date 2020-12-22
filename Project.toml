@@ -1,0 +1,20 @@
+name = "EPW"
+uuid = "79b50138-a645-4962-95e0-037ab248ffc9"
+authors = ["Jae-Mo Lihm <jaemolim96@gmail.com> and contributors"]
+version = "0.1.0"
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Parameters = "d96e819e-fc66-5662-9728-84c9c7592b0a"
+SharedArrays = "1a1011a3-84de-559e-8e89-a11a2f7dc383"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[compat]
+julia = "1"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
