@@ -89,6 +89,7 @@ function set_g2!(epdata)
             epdata.g2[:, :, imode] .= 0
             continue
         end
-        @views epdata.g2[:, :, imode] .= abs.(epdata.ep[:, :, imode]).^2 ./ (2 * omega)
+        inv_2omega = 1 / (2 * omega)
+        @views epdata.g2[:, :, imode] .= abs2.(epdata.ep[:, :, imode]) .* inv_2omega
     end
 end
