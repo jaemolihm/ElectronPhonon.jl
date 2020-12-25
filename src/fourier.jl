@@ -41,10 +41,11 @@ function check_wannierobject(nr, irvec::Vector{Vec3{Int}}, op_r)
 end
 
 "Data in coarse real-space grid for a single operator"
-struct WannierObject{T} <: AbstractWannierObject{T}
+Base.@kwdef struct WannierObject{T} <: AbstractWannierObject{T}
     nr::Int
     irvec::Vector{Vec3{Int}}
     op_r::Array{Complex{T},2}
+    ndata::Int # First dimension of op_r
 
     # For gridopt Fourier transform
     gridopts::Vector{GridOpt{T}}
@@ -55,15 +56,14 @@ struct WannierObject{T} <: AbstractWannierObject{T}
 end
 
 function WannierObject(nr, irvec::Vector{Vec3{Int}}, op_r)
-    check = check_wannierobject(nr, irvec, op_r)
-    if ! check
+    if ! check_wannierobject(nr, irvec, op_r)
         error("WannierObject constructor check failed")
     end
     T = eltype(op_r).parameters[1]
-    WannierObject{T}(nr, reinterpret(Vec3{Int}, vec(irvec)), op_r,
-        [GridOpt{T}() for i=1:Threads.nthreads()],
-        [zeros(Float64, nr) for i=1:Threads.nthreads()],
-        [zeros(Complex{Float64}, nr) for i=1:Threads.nthreads()]
+    WannierObject{T}(nr=nr, irvec=irvec, op_r=op_r, ndata=size(op_r, 1),
+        gridopts=[GridOpt{T}() for i=1:Threads.nthreads()],
+        rdotks=[zeros(Float64, nr) for i=1:Threads.nthreads()],
+        phases=[zeros(Complex{Float64}, nr) for i=1:Threads.nthreads()]
         )
 end
 
@@ -89,48 +89,68 @@ function update_op_r!(obj, op_r_new)
 end
 
 "Fourier transform real-space operator to momentum-space operator"
-function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk, phase_input=nothing; mode="normal") where {T}
+function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk; mode="normal") where {T}
     # Regarding the use of ReshapedArray, see
     # https://discourse.julialang.org/t/passing-views-to-function-without-allocation/51992/12
     # https://github.com/ITensor/NDTensors.jl/issues/32
 
     @assert eltype(op_k) == Complex{Float64}
-    @assert length(op_k) == size(obj.op_r, 1)
+    @assert length(op_k) == obj.ndata
 
     op_k_1d = Base.ReshapedArray(op_k, (length(op_k),), ())
 
     if mode == "normal"
-        if phase_input === nothing
-            phase = get_phase_expikr!(obj, xk, threadid())
-        else
-            # If phase is given, we assume that the given phase is equal to the above.
-            # TODO: Add debugging check of above condition
-            phase = phase_input
-        end
-
-        mul!(op_k_1d, obj.op_r, phase)
-        return
+        phase = get_phase_expikr!(obj, xk, threadid())
+        _get_fourier_normal!(op_k_1d, obj, xk, phase)
     elseif mode == "gridopt"
-        tid = Threads.threadid()
-        gridopt = obj.gridopts[tid]
-
-        if ! gridopt.is_initialized
-            # println("Initializing obj.gridopts[$tid]")
-            gridopt_initialize!(gridopt, obj.irvec, obj.op_r)
-        end
-
-        if isnan(gridopt.k1) || abs(gridopt.k1 - xk[1]) > 1.e-9
-            gridopt_set23!(gridopt, obj.irvec, obj.op_r, xk[1])
-        end
-        if isnan(gridopt.k2) || abs(gridopt.k2 - xk[2]) > 1.e-9
-            gridopt_set3!(gridopt, xk[2])
-        end
-
-        gridopt_get3!(op_k_1d, gridopt, xk[3])
+        _get_fourier_gridopt!(op_k_1d, obj, xk)
     else
         error("mode must be normal or gridopt")
     end
 end
 
+"Fourier transform real-space operator to momentum-space operator using a
+pre-computed phase factor"
+function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk, phase; mode="normal") where {T}
+    # Regarding the use of ReshapedArray, see
+    # https://discourse.julialang.org/t/passing-views-to-function-without-allocation/51992/12
+    # https://github.com/ITensor/NDTensors.jl/issues/32
+
+    @assert eltype(op_k) == Complex{Float64}
+    @assert length(op_k) == obj.ndata
+    @assert eltype(phase) == Complex{T}
+    @assert length(phase) == obj.nr
+
+    op_k_1d = Base.ReshapedArray(op_k, (length(op_k),), ())
+
+    _get_fourier_normal!(op_k_1d, obj, xk, phase)
+end
+
+"Fourier transform real-space operator to momentum-space operator with a
+pre-computed phase factor"
+function _get_fourier_normal!(op_k_1d, obj::AbstractWannierObject{T}, xk, phase) where {T}
+    mul!(op_k_1d, obj.op_r, phase)
+    return
+end
+
+"Fourier transform real-space operator to momentum-space operator with grid optimization"
+function _get_fourier_gridopt!(op_k_1d, obj::AbstractWannierObject{T}, xk) where {T}
+    tid = Threads.threadid()
+    gridopt = obj.gridopts[tid]
+
+    if ! gridopt.is_initialized
+        # println("Initializing obj.gridopts[$tid]")
+        gridopt_initialize!(gridopt, obj.irvec, obj.op_r)
+    end
+
+    if isnan(gridopt.k1) || abs(gridopt.k1 - xk[1]) > 1.e-9
+        gridopt_set23!(gridopt, obj.irvec, obj.op_r, xk[1])
+    end
+    if isnan(gridopt.k2) || abs(gridopt.k2 - xk[2]) > 1.e-9
+        gridopt_set3!(gridopt, xk[2])
+    end
+
+    gridopt_get3!(op_k_1d, gridopt, xk[3])
+end
 
 # end # FourierModule

@@ -26,14 +26,13 @@ using Base.Threads
     phase::Vector{Complex{T}} = zeros(Complex{T}, 1)
 end
 
-function gridopt_initialize!(gridopt, irvec, op_r)
+function gridopt_initialize_irvec!(gridopt, irvec)
     # Here, we assume that irvec is sorted according to (r[3], r[2], r[1]).
 
     # Initialize 23
     gridopt.k1 = NaN
     gridopt.irvec_23 = unique([Vec2(r[2:3]) for r in irvec])
     gridopt.nr_23 = length(gridopt.irvec_23)
-    gridopt.op_r_23 = zeros(ComplexF64, size(op_r, 1), gridopt.nr_23)
     gridopt.irmap_rng_23 = Array{UnitRange{Int64},1}()
     for r_23 in gridopt.irvec_23
         ir_first = findfirst(map(x -> x[2:3] == r_23, irvec))
@@ -45,7 +44,6 @@ function gridopt_initialize!(gridopt, irvec, op_r)
     gridopt.k2 = NaN
     gridopt.irvec_3 = unique([r[2] for r in gridopt.irvec_23])
     gridopt.nr_3 = length(gridopt.irvec_3)
-    gridopt.op_r_3 = zeros(ComplexF64, size(op_r, 1), gridopt.nr_3)
     gridopt.irmap_rng_3 = Array{UnitRange{Int64},1}()
     for r_3 in gridopt.irvec_3
         ir_first = findfirst(map(x -> x[2] == r_3, gridopt.irvec_23))
@@ -53,9 +51,22 @@ function gridopt_initialize!(gridopt, irvec, op_r)
         push!(gridopt.irmap_rng_3, ir_first:ir_last)
     end
 
+end
+
+function gridopt_initialize!(gridopt::GridOpt{T}, irvec, op_r) where {T}
+    # Here, we assume that irvec is sorted according to (r[3], r[2], r[1]).
+
+    gridopt_initialize_irvec!(gridopt, irvec)
+
+    # Initialize 23
+    gridopt.op_r_23 = zeros(Complex{T}, size(op_r, 1), gridopt.nr_23)
+
+    # Initialize 3
+    gridopt.op_r_3 = zeros(Complex{T}, size(op_r, 1), gridopt.nr_3)
+
     # Initialize cache data
-    gridopt.rdotk = zeros(Float64, gridopt.nr_3)
-    gridopt.phase = zeros(Complex{Float64}, gridopt.nr_3)
+    gridopt.rdotk = zeros(T, gridopt.nr_3)
+    gridopt.phase = zeros(Complex{T}, gridopt.nr_3)
 
     @info "Initializing gridopt"
     @info "nr=$(length(irvec)), nr_23=$(gridopt.nr_23), nr_3=$(gridopt.nr_3)"
