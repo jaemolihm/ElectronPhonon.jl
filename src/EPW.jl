@@ -12,6 +12,7 @@ include("common/constants.jl")
 include("common/utils.jl")
 include("common/split_evenly.jl")
 
+include("gridopt.jl")
 include("fourier.jl")
 include("fourier_disk.jl")
 include("diagonalize.jl")

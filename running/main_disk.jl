@@ -18,7 +18,7 @@ using EPW
 using EPW.Diagonalize
 
 "Data in coarse real-space grid, read from EPW"
-Base.@kwdef struct ModelEPW4{WannType <: AbstractWannierObject{Float64}}
+Base.@kwdef struct ModelEPW1{WannType <: AbstractWannierObject{Float64}}
     nw::Int
     nmodes::Int
     mass::Array{Float64,1}
@@ -35,7 +35,7 @@ Base.@kwdef struct ModelEPW4{WannType <: AbstractWannierObject{Float64}}
     "electron-phonon coupling matrix in electron and phonon Wannier representation"
     epmat::WannType
 end
-ModelEPW = ModelEPW4 # WARNING, only while developing.
+ModelEPW = ModelEPW1 # WARNING, only while developing.
 
 """
 epmat_on_disk
@@ -423,6 +423,7 @@ end
 
 
 obj = model.el_ham
+obj = model.epmat
 op_r_T = Array(transpose(obj.op_r))
 function test(op_k, obj)
     phase = rand(obj.nr)
@@ -463,9 +464,9 @@ function longtest(obj, op_r_T)
     op_k = zeros(ComplexF64, size(obj.op_r, 1))
     rngs = EPW.split_evenly(1:size(obj.op_r, 1), nthreads())
     for i in 1:12
-        # test(op_k, obj)              # 430.945 ms (16 allocations: 1.66 MiB)
+        test(op_k, obj)              # 430.945 ms (16 allocations: 1.66 MiB)
         # testT(op_k, obj, op_r_T)     # 430.087 ms (16 allocations: 1.66 MiB)
-        testTpara(op_k, obj, op_r_T) # 153.704 ms (285 allocations: 1.70 MiB)
+        # testTpara(op_k, obj, op_r_T) # 153.704 ms (285 allocations: 1.70 MiB)
         # testpara(op_k, obj, rngs)
         x[i] = sum(op_k)
     end

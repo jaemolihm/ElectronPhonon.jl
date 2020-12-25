@@ -10,7 +10,7 @@ Base.@kwdef struct DiskWannierObject1{T} <: AbstractWannierObject{T}
     ndata::Int # First dimension of op_r
 
     # # For gridopt Fourier transform
-    # gridopts::Vector{GridOpt}
+    # gridopts::Vector{DiskGridOpt{T}}
 
     # Allocated buffer for normal Fourier transform
     rdotks::Vector{Vector{T}}
@@ -50,21 +50,7 @@ function get_fourier!(op_k, obj::DiskWannierObject1{T}, xk; mode="normal") where
 
     if mode == "normal"
         phase = get_phase_expikr!(obj, xk, threadid())
-
-        # Read op_r from file and sum over R
-        op_k_1d .= 0
-        @threads for (rng, buffer) in collect(zip(obj.ranges, obj.op_r_buffers))
-            f = open(joinpath(obj.dir, obj.filename), "r")
-            @views @inbounds for i in 1:obj.nr
-                # Read op_r[rng, i] from file
-                seek(f, sizeof(Complex{T}) * (obj.ndata*(i-1) + rng[1]-1))
-                read!(f, buffer)
-                # Fourier transformation
-                op_k_1d[rng] .+= buffer .* phase[i]
-            end
-            close(f)
-        end
-        return
+        get_fourier!(op_k, obj, xk, phase, mode="normal")
     elseif mode == "gridopt"
         error("gridopt not implemented for DiskWannierObject")
     else
