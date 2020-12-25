@@ -5,10 +5,16 @@
 using Parameters
 using SharedArrays
 using LinearAlgebra
+using Base.Threads
 
+export AbstractWannierObject
 export WannierObject
 export get_fourier!
 export update_op_r!
+
+abstract type AbstractWannierObject{T<:Real} end
+
+# TODO: Make GridOpt{T}, make AbstractGridOpt (?)
 
 "Real-space data with reduced dimensions for mode=gridopt in get_fourier"
 @with_kw mutable struct GridOpt
@@ -55,41 +61,36 @@ function check_wannierobject(nr, irvec::Vector{Vec3{Int}}, op_r)
 end
 
 "Data in coarse real-space grid for a single operator"
-struct WannierObject
+struct WannierObject{T} <: AbstractWannierObject{T}
     nr::Int
     irvec::Vector{Vec3{Int}}
-    op_r::Array{Complex{Float64},2}
-    # dims::NTuple{N, Int} # Dimension of the momentum space operator
+    op_r::Array{Complex{T},2}
 
-    # Cache data for gridopt Fourier transform
+    # For gridopt Fourier transform
     gridopts::Vector{GridOpt}
 
-    # Cache data for normal Fourier transform
-    rdotks::Vector{Vector{Float64}}
-    phases::Vector{Vector{Complex{Float64}}}
-
-    WannierObject(nr, irvec::Array{Int,2}, op_r) = (
-        check_wannierobject(nr, irvec, op_r)
-        ? new(nr, reinterpret(Vec3{Int}, vec(irvec)), op_r,
-            [GridOpt() for i=1:Threads.nthreads()],
-            [zeros(Float64, nr) for i=1:Threads.nthreads()],
-            [zeros(Complex{Float64}, nr) for i=1:Threads.nthreads()])
-        : error("WannierObject constructor check failed"))
-
-    WannierObject(nr, irvec::Vector{Vec3{Int}}, op_r) = (
-        check_wannierobject(nr, irvec, op_r)
-        ? new(nr, irvec, op_r,
-            [GridOpt() for i=1:Threads.nthreads()],
-            [zeros(Float64, nr) for i=1:Threads.nthreads()],
-            [zeros(Complex{Float64}, nr) for i=1:Threads.nthreads()])
-        : error("WannierObject constructor check failed"))
+    # Allocated buffer for normal Fourier transform
+    rdotks::Vector{Vector{T}}
+    phases::Vector{Vector{Complex{T}}}
 end
+
+function WannierObject(nr, irvec::Vector{Vec3{Int}}, op_r)
+    check = check_wannierobject(nr, irvec, op_r)
+    if ! check
+        error("WannierObject constructor check failed")
+    end
+    T = eltype(op_r).parameters[1]
+    WannierObject{T}(nr, reinterpret(Vec3{Int}, vec(irvec)), op_r,
+        [GridOpt() for i=1:Threads.nthreads()],
+        [zeros(Float64, nr) for i=1:Threads.nthreads()],
+        [zeros(Complex{Float64}, nr) for i=1:Threads.nthreads()]
+        )
+end
+
+WannierObject(T, nr, irvec::Array{Int,2}, op_r) = WannierObject(nr, reinterpret(Vec3{Int}, vec(irvec)), op_r)
 
 "Fourier transform real-space operator to momentum-space operator"
 function get_fourier!(op_k, obj, xk, phase_input=nothing; mode="normal")
-    # , do_reshape=true)
-    # NOTE: do_reshape seems to induce type instability
-
     # Regarding the use of ReshapedArray, see
     # https://discourse.julialang.org/t/passing-views-to-function-without-allocation/51992/12
     # https://github.com/ITensor/NDTensors.jl/issues/32
@@ -97,24 +98,18 @@ function get_fourier!(op_k, obj, xk, phase_input=nothing; mode="normal")
     @assert eltype(op_k) == Complex{Float64}
     @assert length(op_k) == size(obj.op_r, 1)
 
+    op_k_1d = Base.ReshapedArray(op_k, (length(op_k),), ())
+
     if mode == "normal"
         if phase_input === nothing
-            tid = Threads.threadid()
-            rdotk = obj.rdotks[tid]
-            phase = obj.phases[tid]
-            for (ir, r) in enumerate(obj.irvec)
-                rdotk[ir] = dot(r, 2pi*xk)
-            end
-            phase .= cis.(rdotk)
+            phase = get_phase_expikr!(obj, xk, threadid())
         else
+            # If phase is given, we assume that the given phase is equal to the above.
+            # TODO: Add debugging check of above condition
             phase = phase_input
         end
-        # If phase is given, we assume that the given phase is equal to the above.
-        # TODO: Add debugging check of above condition
-        # TODO: Allocate cache for phase?
 
-        # mul!(vec(op_k), obj.op_r, phase)
-        mul!(Base.ReshapedArray(op_k, (length(op_k),), ()), obj.op_r, phase)
+        mul!(op_k_1d, obj.op_r, phase)
         return
     elseif mode == "gridopt"
         tid = Threads.threadid()
@@ -136,12 +131,22 @@ function get_fourier!(op_k, obj, xk, phase_input=nothing; mode="normal")
         phase = gridopt.phase
         rdotk .= 2pi .* xk[3] .* gridopt.irvec_3
         phase .= cis.(rdotk)
-        # mul!(vec(op_k), gridopt.op_r_3, phase)
-        mul!(Base.ReshapedArray(op_k, (length(op_k),), ()), gridopt.op_r_3, phase)
+
+        mul!(op_k_1d, gridopt.op_r_3, phase)
         return
     else
         error("mode must be normal or gridopt")
     end
+end
+
+function get_phase_expikr!(obj, xk, tid)
+    rdotk = obj.rdotks[tid]
+    phase = obj.phases[tid]
+    for (ir, r) in enumerate(obj.irvec)
+        rdotk[ir] = dot(r, 2pi*xk)
+    end
+    phase .= cis.(rdotk)
+    phase
 end
 
 function update_op_r!(obj, op_r_new)
