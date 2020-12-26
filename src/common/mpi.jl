@@ -26,8 +26,8 @@ end
 Number of processors used in MPI. Can be called without ensuring initialization.
 """
 mpi_nprocs(comm=MPI.COMM_WORLD) = (mpi_ensure_initialized(); MPI.Comm_size(comm))
-mpi_isroot(comm=MPI.COMM_WORLD) = MPI.Comm_rank(comm) == 0
-mpi_myrank(comm=MPI.COMM_WORLD) = MPI.Comm_rank(comm)
+mpi_isroot(comm=MPI.COMM_WORLD) = (mpi_ensure_initialized(); MPI.Comm_rank(comm) == 0)
+mpi_myrank(comm=MPI.COMM_WORLD) = (mpi_ensure_initialized(); MPI.Comm_rank(comm))
 const mpi_root = 0
 
 mpi_sum( arr, comm::MPI.Comm)  = MPI.Allreduce( arr, +, comm)

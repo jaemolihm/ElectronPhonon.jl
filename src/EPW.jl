@@ -10,6 +10,7 @@ include("common/types.jl")
 include("common/units.jl")
 include("common/constants.jl")
 include("common/utils.jl")
+include("common/kpoints.jl")
 include("common/split_evenly.jl")
 include("common/mpi.jl")
 

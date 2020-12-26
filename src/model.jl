@@ -5,7 +5,7 @@ export load_model_from_epw
 
 "Tight-binding model for electron, phonon, and electron-phonon coupling.
 All data is in coarse real-space grid."
-Base.@kwdef struct ModelEPW1{WannType <: AbstractWannierObject{Float64}}
+Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
     nw::Int
     nmodes::Int
     mass::Array{Float64,1}
@@ -22,7 +22,6 @@ Base.@kwdef struct ModelEPW1{WannType <: AbstractWannierObject{Float64}}
     "electron-phonon coupling matrix in electron and phonon Wannier representation"
     epmat::WannType
 end
-ModelEPW = ModelEPW1 # WARNING, only while developing.
 
 """
 Arguments:

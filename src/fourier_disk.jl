@@ -117,8 +117,8 @@ function gridopt_initialize!(gridopt::DiskGridOpt{T}, irvec, tag) where {T}
     gridopt_initialize_irvec!(gridopt, irvec)
 
     # TODO: use MPI id
-    gridopt.filename_23 = "tmp_$(tag)_23.bin"
-    gridopt.filename_3 = "tmp_$(tag)_3.bin"
+    gridopt.filename_23 = "tmp_$(tag)_mpi$(mpi_myrank())_23.bin"
+    gridopt.filename_3 = "tmp_$(tag)_mpi$(mpi_myrank())_3.bin"
 
     # Initialize cache data
     gridopt.rdotk = zeros(T, gridopt.nr_3)
