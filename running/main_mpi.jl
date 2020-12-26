@@ -1,27 +1,34 @@
 using PrettyPrint
 # using PyPlot
-using FortranFiles
 using StaticArrays
 using BenchmarkTools
 using NPZ
 using PyCall
 using Profile
-using Parameters
 using LinearAlgebra
 using SharedArrays
 using Base.Threads
+using MPIClusterManagers
+using Distributed
 using Revise
 BLAS.set_num_threads(1)
 
-push!(LOAD_PATH, "/home/jmlim/julia_epw/EPW.jl")
-using EPW
-using EPW.Diagonalize
+# Execute MPI
+manager=MPIManager(np=4)
+addprocs(manager)
 
+@everywhere begin
+    using Revise
+    push!(LOAD_PATH, "/home/jmlim/julia_epw/EPW.jl")
+    using EPW
+    using EPW.Diagonalize
+end
 
 folder = "/home/jmlim/julia_epw/silicon_nk2"
 folder = "/home/jmlim/julia_epw/silicon_nk6"
+# epmat(Re, Rp) in memory
 model = load_model_from_epw(folder)
-
+# epmat(Re, Rp) in disk
 model = load_model_from_epw(folder, true, "/home/jmlim/julia_epw/tmp")
 
 # pprintln(model)
@@ -224,3 +231,93 @@ Profile.clear()
 @profile fourier_eph(model, kvecs, qvecs, "normal")
 @profile fourier_eph(model, kk, qq, "gridopt")
 Juno.profiler()
+
+
+
+
+
+
+
+@mpi_do manager begin
+    using MPI
+    using NPZ
+    using LinearAlgebra
+    using Base.Threads
+    using EPW
+    import EPW: mpi_split_iterator, mpi_bcast, mpi_gather
+    world_comm = MPI.COMM_WORLD
+
+    # Read model from file
+    folder = "/home/jmlim/julia_epw/silicon_nk2"
+    if mpi_isroot(world_comm)
+        model = load_model_from_epw(folder)
+    else
+        model = nothing
+    end
+    model = mpi_bcast(model, world_comm)
+
+    function get_eigenvalues_el(model, kvecs, fourier_mode::String="normal")
+        nw = model.nw
+        nk = length(kvecs)
+        eigenvalues = zeros(nw, nk)
+        hks = [zeros(ComplexF64, nw, nw) for i=1:nthreads()]
+        phases = [zeros(ComplexF64, model.el_ham.nr) for i=1:nthreads()]
+
+        Threads.@threads :static for ik in 1:nk
+            xk = kvecs[ik]
+            phase = phases[threadid()]
+            hk = hks[threadid()]
+
+            # v1: Using phase argument: good if phase is reused for many operators
+            @inbounds for (ir, r) in enumerate(model.el_ham.irvec)
+                phase[ir] = cis(dot(r, 2pi*xk))
+            end
+            get_fourier!(hk, model.el_ham, xk, phase, mode=fourier_mode)
+
+            # # v2: Not using phase argument
+            # get_fourier!(hk, model.el_ham, xk, mode=fourier_mode)
+
+            eigenvalues[:, ik] = solve_eigen_el_valueonly!(hk)
+        end
+        return eigenvalues
+    end
+
+    function get_eigenvalues_ph(model, kvecs, fourier_mode::String="normal")
+        nmodes = model.nmodes
+        nk = length(kvecs)
+        eigenvalues = zeros(nmodes, nk)
+        dynq = zeros(ComplexF64, (nmodes, nmodes))
+
+        for ik in 1:nk
+            xk = kvecs[ik]
+            get_fourier!(dynq, model.ph_dyn, xk, mode=fourier_mode)
+            eigenvalues[:, ik] = solve_eigen_ph_valueonly!(dynq)
+        end
+        return eigenvalues
+    end
+
+    # Distribute k vectors
+    nkf = [10, 10, 10]
+    range = mpi_split_iterator(1:prod(nkf), world_comm)
+    kvecs = generate_kvec_grid(nkf..., range)
+
+    nqf = [5, 5, 5]
+    range = mpi_split_iterator(1:prod(nqf), world_comm)
+    qvecs = generate_kvec_grid(nqf..., range)
+
+    eig_kk = get_eigenvalues_el(model, kvecs, "gridopt")
+    eig_kk_all = mpi_gather(eig_kk, world_comm)
+    if mpi_isroot()
+        npzwrite(joinpath(folder, "eig_kk.npy"), eig_kk_all)
+    end
+
+    eig_phonon = get_eigenvalues_ph(model, qvecs, "gridopt")
+    eig_phonon_all = mpi_gather(eig_phonon, world_comm)
+    if mpi_isroot()
+        npzwrite(joinpath(folder, "eig_phonon.npy"), eig_phonon_all)
+    end
+end
+
+folder = "/home/jmlim/julia_epw/silicon_nk2"
+testscript = joinpath(folder, "test.py")
+py"exec(open($testscript).read())"

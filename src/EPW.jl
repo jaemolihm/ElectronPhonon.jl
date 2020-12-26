@@ -11,6 +11,7 @@ include("common/units.jl")
 include("common/constants.jl")
 include("common/utils.jl")
 include("common/split_evenly.jl")
+include("common/mpi.jl")
 
 include("gridopt.jl")
 include("fourier.jl")
@@ -19,5 +20,6 @@ include("diagonalize.jl")
 include("elphdata.jl")
 include("selfenergy_electron.jl")
 include("selfenergy_phonon.jl")
+include("model.jl")
 
 end
