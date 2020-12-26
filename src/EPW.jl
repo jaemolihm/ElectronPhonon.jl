@@ -17,6 +17,7 @@ include("fourier.jl")
 include("fourier_disk.jl")
 include("diagonalize.jl")
 include("elphdata.jl")
-include("electron_selfenergy.jl")
+include("selfenergy_electron.jl")
+include("selfenergy_phonon.jl")
 
 end

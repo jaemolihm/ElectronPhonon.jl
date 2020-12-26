@@ -3,7 +3,7 @@ import Base.@kwdef
 using Base.Threads
 
 export ElectronSelfEnergy
-export compute_selfen!
+export compute_electron_selfen!
 
 # Data and buffers for self-energy of electron
 @kwdef struct ElectronSelfEnergy{T <: Real}
@@ -26,7 +26,7 @@ end
 # Compute electron self-energy for given k and q point data in epdata
 # TODO: Real part
 """
-function compute_selfen!(elself, epdata, ik; efermi, temperature, smear)
+function compute_electron_selfen!(elself, epdata, ik; efermi, temperature, smear)
     inv_smear = 1 / smear
 
     nocc_q = elself.nocc_q[threadid()]

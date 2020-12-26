@@ -229,6 +229,7 @@ function fourier_eph(model::ModelEPW, kvecs::Vector{Vec3{Float64}},
     wtq = ones(Float64, nq) / nq
 
     elself = ElectronSelfEnergy(Float64, nw, nmodes, nk)
+    phself = PhononSelfEnergy(Float64, nw, nmodes, nq)
 
     epdatas = [ElPhData(Float64, nw, nmodes) for i=1:nthreads()]
 
@@ -319,17 +320,21 @@ function fourier_eph(model::ModelEPW, kvecs::Vector{Vec3{Float64}},
             temperature = 300.0 * unit_to_aru(:K)
             degaussw = 0.50 * unit_to_aru(:eV)
 
-            compute_selfen!(elself, epdata, ik;
+            compute_electron_selfen!(elself, epdata, ik;
+                efermi=efermi, temperature=temperature, smear=degaussw)
+            compute_phonon_selfen!(phself, epdata, iq;
                 efermi=efermi, temperature=temperature, smear=degaussw)
         end # ik
     end # iq
 
     # Average over degenerate states
-    imsigma_avg = average_degeneracy(elself.imsigma, ek_save)
+    el_imsigma_avg = average_degeneracy(elself.imsigma, ek_save)
+    ph_imsigma_avg = average_degeneracy(phself.imsigma, omega_save)
 
     npzwrite(joinpath(folder, "eig_kk.npy"), ek_save)
     npzwrite(joinpath(folder, "eig_phonon.npy"), omega_save)
-    npzwrite(joinpath(folder, "imsigma_el.npy"), imsigma_avg)
+    npzwrite(joinpath(folder, "imsigma_el.npy"), el_imsigma_avg)
+    npzwrite(joinpath(folder, "imsigma_ph.npy"), ph_imsigma_avg)
 end
 
 fourier_eph(model, kvecs_mini, qvecs_mini, "gridopt")
