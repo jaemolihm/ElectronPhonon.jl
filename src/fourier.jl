@@ -89,7 +89,7 @@ function update_op_r!(obj, op_r_new)
 end
 
 "Fourier transform real-space operator to momentum-space operator"
-function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk; mode="normal") where {T}
+@timing "get_fourier" function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk; mode="normal") where {T}
     # Regarding the use of ReshapedArray, see
     # https://discourse.julialang.org/t/passing-views-to-function-without-allocation/51992/12
     # https://github.com/ITensor/NDTensors.jl/issues/32
@@ -112,7 +112,7 @@ end
 
 "Fourier transform real-space operator to momentum-space operator using a
 pre-computed phase factor"
-function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk, phase; mode="normal") where {T}
+@timing "get_fourier" function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk, phase; mode="normal") where {T}
     # Regarding the use of ReshapedArray, see
     # https://discourse.julialang.org/t/passing-views-to-function-without-allocation/51992/12
     # https://github.com/ITensor/NDTensors.jl/issues/32
@@ -129,7 +129,7 @@ end
 
 "Fourier transform real-space operator to momentum-space operator with a
 pre-computed phase factor"
-function _get_fourier_normal!(op_k_1d, obj::AbstractWannierObject{T}, xk, phase) where {T}
+@timing "normal" function _get_fourier_normal!(op_k_1d, obj::AbstractWannierObject{T}, xk, phase) where {T}
     mul!(op_k_1d, obj.op_r, phase)
     return
 end

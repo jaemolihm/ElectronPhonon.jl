@@ -72,7 +72,7 @@ end
 
 "Fourier transform real-space operator to momentum-space operator with a
 pre-computed phase factor"
-function _get_fourier_normal!(op_k_1d, obj::DiskWannierObject1{T}, xk, phase) where {T}
+@timing "disk_normal" function _get_fourier_normal!(op_k_1d, obj::DiskWannierObject1{T}, xk, phase) where {T}
     # Read op_r from file and sum over R
     op_k_1d .= 0
     @threads for irng in axes(obj.ranges, 1)
@@ -131,7 +131,7 @@ function gridopt_initialize!(gridopt::DiskGridOpt{T}, irvec, tag) where {T}
 end
 
 # TODO: Rename to gridopt_compute_krr?
-function gridopt_set23!(gridopt::DiskGridOpt{T}, k, obj) where {T}
+@timing "disk_s23" function gridopt_set23!(gridopt::DiskGridOpt{T}, k, obj) where {T}
     gridopt.k1 = k
     gridopt.k2 = NaN
     phase = [cis(2pi * k * r[1]) for r in obj.irvec]
@@ -169,7 +169,7 @@ end
 
 
 # TODO: Rename to gridopt_compute_kkr?
-function gridopt_set3!(gridopt::DiskGridOpt{T}, k, obj) where {T}
+@timing "disk_s3" function gridopt_set3!(gridopt::DiskGridOpt{T}, k, obj) where {T}
     gridopt.k2 = k
     phase = [cis(2pi * k * r[1]) for r in gridopt.irvec_23]
 
@@ -205,7 +205,7 @@ function gridopt_set3!(gridopt::DiskGridOpt{T}, k, obj) where {T}
 end
 
 
-function gridopt_get3!(op_k_1d, gridopt::DiskGridOpt{T}, k, obj) where {T}
+@timing "disk_g3" function gridopt_get3!(op_k_1d, gridopt::DiskGridOpt{T}, k, obj) where {T}
     rdotk = gridopt.rdotk
     phase = gridopt.phase
     rdotk .= 2pi .* k .* gridopt.irvec_3

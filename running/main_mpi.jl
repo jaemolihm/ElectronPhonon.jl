@@ -103,7 +103,7 @@ addprocs(manager)
                     zeros(ComplexF64, (nw*nw*nmodes, model.el_ham.nr)))
 
         for iq in 1:nq
-            if mod(iq, 10) == 0
+            if mod(iq, 10) == 0 && mpi_isroot()
                 @info "iq = $iq"
             end
             xq = qpoints.vectors[iq]
@@ -273,11 +273,15 @@ py"exec(open($testscript).read())"
     end
 end
 
-# model = load_model_from_epw(folder)
+model = load_model_from_epw(folder)
 model = load_model_from_epw(folder, true, "/home/jmlim/julia_epw/tmp")
 kpoints = generate_kvec_grid(10, 10, 10)
 qpoints = generate_kvec_grid(5, 5, 5)
+@everywhere EPW.reset_timer!(EPW.timer)
 @time output = fourier_eph(model, kpoints, qpoints, "gridopt")
+EPW.print_timer(EPW.timer)
+@spawnat 2 EPW.print_timer(EPW.timer)
+
 
 npzwrite(joinpath(folder, "eig_kk.npy"), output.ek)
 npzwrite(joinpath(folder, "eig_phonon.npy"), output.omega)

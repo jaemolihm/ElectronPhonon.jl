@@ -26,7 +26,7 @@ end
 # Compute electron self-energy for given k and q point data in epdata
 # TODO: Real part
 """
-function compute_electron_selfen!(elself, epdata, ik; efermi, temperature, smear)
+@timing "selfen_el" function compute_electron_selfen!(elself, epdata, ik; efermi, temperature, smear)
     inv_smear = 1 / smear
 
     nocc_q = elself.nocc_q[threadid()]

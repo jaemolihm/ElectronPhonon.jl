@@ -28,7 +28,7 @@ end
 # Compute phonon self-energy for given k and q point data in epdata
 # TODO: Real part
 """
-function compute_phonon_selfen!(phself, epdata, iq; efermi, temperature, smear)
+@timing "selfen_ph" function compute_phonon_selfen!(phself, epdata, iq; efermi, temperature, smear)
     inv_smear = 1 / smear
 
     nocc_q = phself.nocc_q[threadid()]

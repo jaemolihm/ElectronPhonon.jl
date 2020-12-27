@@ -75,7 +75,7 @@ function gridopt_initialize!(gridopt::GridOpt{T}, irvec, op_r) where {T}
 end
 
 # TODO: Rename to gridopt_compute_krr?
-function gridopt_set23!(gridopt::GridOpt{T}, irvec, op_r, k) where {T}
+@timing "s23" function gridopt_set23!(gridopt::GridOpt{T}, irvec, op_r, k) where {T}
     gridopt.k1 = k
     gridopt.k2 = NaN
     gridopt.op_r_23 .= 0.0
@@ -86,7 +86,7 @@ function gridopt_set23!(gridopt::GridOpt{T}, irvec, op_r, k) where {T}
 end
 
 # TODO: Rename to gridopt_compute_kkr?
-function gridopt_set3!(gridopt::GridOpt{T}, k) where {T}
+@timing "s3" function gridopt_set3!(gridopt::GridOpt{T}, k) where {T}
     gridopt.k2 = k
     gridopt.op_r_3 .= 0.0
     phase = [cis(2pi * k * r[1]) for r in gridopt.irvec_23]
@@ -95,7 +95,7 @@ function gridopt_set3!(gridopt::GridOpt{T}, k) where {T}
     end
 end
 
-function gridopt_get3!(op_k_1d, gridopt::GridOpt{T}, k) where {T}
+@timing "g3" function gridopt_get3!(op_k_1d, gridopt::GridOpt{T}, k) where {T}
     rdotk = gridopt.rdotk
     phase = gridopt.phase
     rdotk .= 2pi .* k .* gridopt.irvec_3

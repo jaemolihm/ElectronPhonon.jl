@@ -47,7 +47,7 @@ function ElPhData(T, nw, nmodes, nband=nothing)
     )
 end
 
-function apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
+@timing "gauge" function apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
     """
     Compute op_h = Adjoint(uleft) * op_w * uright
     left, right are k or k+q.
@@ -82,7 +82,7 @@ end
 
 " Set epdata.g2[:, :, imode] = |epdata.ep[:, :, imode]|^2 / (2 omega)
 g2 is set to 0.0 if omega < omega_acoustic."
-function set_g2!(epdata)
+@timing "setg2" function set_g2!(epdata)
     for imode in 1:epdata.nmodes
         omega = epdata.omega[imode]
         if (omega < omega_acoustic)
