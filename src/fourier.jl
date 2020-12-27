@@ -94,7 +94,7 @@ function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk; mode="normal") wh
     # https://discourse.julialang.org/t/passing-views-to-function-without-allocation/51992/12
     # https://github.com/ITensor/NDTensors.jl/issues/32
 
-    @assert eltype(op_k) == Complex{Float64}
+    @assert eltype(op_k) == Complex{T}
     @assert length(op_k) == obj.ndata
 
     op_k_1d = Base.ReshapedArray(op_k, (length(op_k),), ())
@@ -107,6 +107,7 @@ function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk; mode="normal") wh
     else
         error("mode must be normal or gridopt")
     end
+    return
 end
 
 "Fourier transform real-space operator to momentum-space operator using a
@@ -139,7 +140,6 @@ function _get_fourier_gridopt!(op_k_1d, obj::AbstractWannierObject{T}, xk) where
     gridopt = obj.gridopts[tid]
 
     if ! gridopt.is_initialized
-        # println("Initializing obj.gridopts[$tid]")
         gridopt_initialize!(gridopt, obj.irvec, obj.op_r)
     end
 

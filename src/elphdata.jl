@@ -80,8 +80,8 @@ function apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
     end
 end
 
-# Set epdata.g2[:, :, imode] = |epdata.ep[:, :, imode]|^2 / (2 omega)
-# g2 is set to 0.0 if omega < omega_acoustic.
+" Set epdata.g2[:, :, imode] = |epdata.ep[:, :, imode]|^2 / (2 omega)
+g2 is set to 0.0 if omega < omega_acoustic."
 function set_g2!(epdata)
     for imode in 1:epdata.nmodes
         omega = epdata.omega[imode]

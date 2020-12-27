@@ -10,11 +10,11 @@ using SharedArrays
 using Base.Threads
 using Distributed
 using Revise
-using MPIClusterManagers
 BLAS.set_num_threads(1)
 
 # Execute MPI
-manager=MPIManager(np=4)
+using MPIClusterManagers
+manager = MPIManager(np=3)
 addprocs(manager)
 
 @everywhere begin
@@ -124,8 +124,6 @@ addprocs(manager)
             update_op_r!(epobj_q, epmat_re_q)
 
             epmatf_wans = [zeros(ComplexF64, (nw, nw, nmodes)) for i=1:nthreads()]
-            nocc_qs = [zeros(Float64, nmodes,) for i=1:nthreads()]
-            focc_kqs = [zeros(Float64, nw,) for i=1:nthreads()]
 
             Threads.@threads :static for ik in 1:nk
             # for ik in 1:nk
@@ -249,8 +247,6 @@ py"exec(open($testscript).read())"
     end
     model = mpi_bcast(model, world_comm)
 
-    # Electron-phonon coupling
-
     # Do not distribute k points
     nkf = [10, 10, 10]
     kvecs = generate_kvec_grid(nkf...)
@@ -260,6 +256,7 @@ py"exec(open($testscript).read())"
     range = mpi_split_iterator(1:prod(nqf), world_comm)
     qvecs = generate_kvec_grid(nqf..., range)
 
+    # Electron-phonon coupling
     @time output = fourier_eph(model, kvecs, qvecs, "gridopt")
 
     ek_all = output.ek
@@ -274,7 +271,6 @@ py"exec(open($testscript).read())"
         npzwrite(joinpath(folder, "imsigma_el.npy"), el_imsigma_all)
         npzwrite(joinpath(folder, "imsigma_ph.npy"), ph_imsigma_all)
     end
-    GC.gc()
 end
 
 # model = load_model_from_epw(folder)

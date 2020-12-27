@@ -19,7 +19,7 @@ function mpi_ensure_initialized()
     # one thread will call MPI at once
     # see https://www.open-mpi.org/doc/current/man3/MPI_Init_thread.3.php#toc7
     # TODO look more closely at interaction between MPI and threads
-    MPI.Initialized() || MPI.Init_thread(MPI.ThreadLevel(3))
+    MPI.Initialized() || MPI.Init_thread(MPI.THREAD_MULTIPLE)
 end
 
 """
