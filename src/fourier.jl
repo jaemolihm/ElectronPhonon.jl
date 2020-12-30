@@ -67,7 +67,7 @@ function WannierObject(nr, irvec::Vector{Vec3{Int}}, op_r)
         )
 end
 
-WannierObject(T, nr, irvec::Array{Int,2}, op_r) = WannierObject(nr, reinterpret(Vec3{Int}, vec(irvec)), op_r)
+# WannierObject(nr, irvec::Array{Int,2}, op_r) = WannierObject(nr, reinterpret(Vec3{Int}, vec(irvec))[:], op_r)
 
 function get_phase_expikr!(obj, xk, tid)
     rdotk = obj.rdotks[tid]
