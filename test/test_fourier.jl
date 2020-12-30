@@ -18,12 +18,15 @@ using Test
 
     xk1 = Vec3([0.3, -0.4, 0.7])
     xk2 = Vec3([0.3, -0.4, -0.5])
+    op_k_1d = Array{ComplexF64,1}(undef, 6)
     op_k_normal = Array{ComplexF64,2}(undef, 2, 3)
     op_k_gridopt = Array{ComplexF64,2}(undef, 2, 3)
 
     get_fourier!(op_k_normal, obj, xk1; mode="normal")
     get_fourier!(op_k_gridopt, obj, xk1; mode="gridopt")
+    get_fourier!(op_k_1d, obj, xk1; mode="gridopt")
     @test isapprox(op_k_normal, op_k_gridopt)
+    @test isapprox(vec(op_k_normal), op_k_1d)
 
     get_fourier!(op_k_normal, obj, xk2; mode="normal")
     get_fourier!(op_k_gridopt, obj, xk2; mode="gridopt")
