@@ -4,6 +4,7 @@
 # Convenience functions for working with MPI
 using MPI
 
+export mpi_initialized
 export mpi_root
 export mpi_nprocs
 export mpi_isroot
@@ -21,6 +22,9 @@ function mpi_ensure_initialized()
     # TODO look more closely at interaction between MPI and threads
     MPI.Initialized() || MPI.Init_thread(MPI.THREAD_MULTIPLE)
 end
+
+mpi_world_comm() = MPI.COMM_WORLD
+mpi_initialized() = MPI.Initialized()
 
 """
 Number of processors used in MPI. Can be called without ensuring initialization.

@@ -1,7 +1,7 @@
 
 using FortranFiles
 
-export load_model_from_epw
+export load_model
 
 "Tight-binding model for electron, phonon, and electron-phonon coupling.
 All data is in coarse real-space grid."
@@ -21,6 +21,24 @@ Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
 
     "electron-phonon coupling matrix in electron and phonon Wannier representation"
     epmat::WannType
+end
+
+"Read file and create ModelEPW object in the MPI root.
+Broadcast to all other processors."
+function load_model(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing)
+    # Read model from file
+    if mpi_initialized()
+        if mpi_isroot(EPW.mpi_world_comm())
+            model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
+        else
+            model = nothing
+        end
+        # Broadcast to all processors
+        model = mpi_bcast(model, EPW.mpi_world_comm())
+    else
+        model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
+    end
+    model
 end
 
 """

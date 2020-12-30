@@ -1,15 +1,14 @@
 
 # Adapted from DFTK.jl/src/common/timer.jl
 
-# # Control whether timings are enabled or not, by default yes
-# if get(ENV, "EPW_TIMING", "1") == "1"
-#     timer_enabled() = :parallel
-# elseif ENV["EPW_TIMING"] == "all"
-#     timer_enabled() = :all
-# else
-#     timer_enabled() = :none
-# end
-timer_enabled() = :all
+# Control whether timings are enabled or not, by default yes
+if get(ENV, "EPW_TIMING", "1") == "1"
+    timer_enabled() = :parallel
+elseif ENV["EPW_TIMING"] == "all"
+    timer_enabled() = :all
+else
+    timer_enabled() = :none
+end
 
 """TimerOutput object used to store EPW timings."""
 const timer = TimerOutput()

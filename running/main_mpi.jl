@@ -6,7 +6,6 @@ using NPZ
 using PyCall
 using Profile
 using LinearAlgebra
-using SharedArrays
 using Base.Threads
 using Distributed
 using Revise
@@ -180,24 +179,17 @@ addprocs(manager)
     end
 end # everywhere
 
-@everywhere folder = "/home/jmlim/julia_epw/silicon_nk6"
+@everywhere folder = "/home/jmlim/julia_epw/silicon_nk2"
 
 @mpi_do manager begin
     using MPI
     using NPZ
     import EPW: mpi_split_iterator, mpi_bcast, mpi_gather
-    world_comm = MPI.COMM_WORLD
+    world_comm = EPW.mpi_world_comm()
 
     # Read model from file
-    if mpi_isroot(world_comm)
-        # epmat(Re, Rp) in memory
-        model = load_model_from_epw(folder)
-        # epmat(Re, Rp) in disk
-        # model = load_model_from_epw(folder, true, "/home/jmlim/julia_epw/tmp")
-    else
-        model = nothing
-    end
-    model = mpi_bcast(model, world_comm)
+    # model = load_model(folder)
+    model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 
     # Electron eigenvalues
     # Distribute k points
@@ -234,18 +226,10 @@ py"exec(open($testscript).read())"
     using NPZ
     using EPW
     import EPW: mpi_split_iterator, mpi_bcast, mpi_gather, mpi_sum!
-    world_comm = MPI.COMM_WORLD
+    world_comm = EPW.mpi_world_comm()
 
-    # Read model from file
-    if mpi_isroot(world_comm)
-        # epmat(Re, Rp) in memory
-        # model = load_model_from_epw(folder)
-        # epmat(Re, Rp) in disk
-        model = load_model_from_epw(folder, true, "/home/jmlim/julia_epw/tmp")
-    else
-        model = nothing
-    end
-    model = mpi_bcast(model, world_comm)
+    # model = load_model(folder)
+    model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 
     # Do not distribute k points
     nkf = [10, 10, 10]
@@ -273,8 +257,8 @@ py"exec(open($testscript).read())"
     end
 end
 
-model = load_model_from_epw(folder)
-model = load_model_from_epw(folder, true, "/home/jmlim/julia_epw/tmp")
+model = load_model(folder)
+model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 kpoints = generate_kvec_grid(10, 10, 10)
 qpoints = generate_kvec_grid(5, 5, 5)
 @everywhere EPW.reset_timer!(EPW.timer)
