@@ -1,11 +1,12 @@
 using EPW
 using Test
+using Random
 
-@testset "Fourier" begin
+@testset "fourier" begin
     nr = 3
     irvec = [Vec3{Int}([0, 0, 0]), Vec3{Int}([1, -2, 1]), Vec3{Int}([1, 3, -2])]
-    op_r = zeros(ComplexF64, 6, 3)
-    op_r .+= reshape(1:18, 6, 3) .+ 0.5im
+    Random.seed!(123)
+    op_r = randn(ComplexF64, 6, 3)
 
     # Constructor should throw error if irvec is not sorted
     @test_throws ErrorException obj = WannierObject(nr, irvec, op_r)
@@ -24,12 +25,13 @@ using Test
 
     get_fourier!(op_k_normal, obj, xk1; mode="normal")
     get_fourier!(op_k_gridopt, obj, xk1; mode="gridopt")
+    @test op_k_normal ≈ op_k_gridopt
+
     get_fourier!(op_k_1d, obj, xk1; mode="gridopt")
-    @test isapprox(op_k_normal, op_k_gridopt)
-    @test isapprox(vec(op_k_normal), op_k_1d)
+    @test vec(op_k_normal) ≈ op_k_1d
 
     get_fourier!(op_k_normal, obj, xk2; mode="normal")
     get_fourier!(op_k_gridopt, obj, xk2; mode="gridopt")
-    @test isapprox(op_k_normal, op_k_gridopt)
+    @test op_k_normal ≈ op_k_gridopt
 
 end
