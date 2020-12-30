@@ -49,8 +49,8 @@ function WannierObject(nr, irvec::Vector{Vec3{Int}}, op_r)
     T = eltype(op_r).parameters[1]
     WannierObject{T}(nr=nr, irvec=irvec, op_r=op_r, ndata=size(op_r, 1),
         gridopts=[GridOpt{T}() for i=1:Threads.nthreads()],
-        rdotks=[zeros(Float64, nr) for i=1:Threads.nthreads()],
-        phases=[zeros(Complex{Float64}, nr) for i=1:Threads.nthreads()]
+        rdotks=[zeros(T, nr) for i=1:Threads.nthreads()],
+        phases=[zeros(Complex{T}, nr) for i=1:Threads.nthreads()]
         )
 end
 
@@ -104,7 +104,7 @@ pre-computed phase factor"
     # https://discourse.julialang.org/t/passing-views-to-function-without-allocation/51992/12
     # https://github.com/ITensor/NDTensors.jl/issues/32
 
-    @assert eltype(op_k) == Complex{Float64}
+    @assert eltype(op_k) == Complex{T}
     @assert length(op_k) == obj.ndata
     @assert eltype(phase) == Complex{T}
     @assert length(phase) == obj.nr
