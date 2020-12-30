@@ -14,19 +14,6 @@ export update_op_r!
 
 abstract type AbstractWannierObject{T<:Real} end
 
-"Check validity of input"
-function check_wannierobject(nr, irvec::Array{Int,2}, op_r)
-    if size(irvec) != (3, nr)
-        @error ("size(irvec) must be (3, nr=$nr), not $(size(irvec))")
-        return false
-    end
-    if ! issorted(irvec, by=x->reverse(x))
-        @error "irvec is not sorted. irvec must be sorted by reverse(r)"
-        return false
-    end
-    return true
-end
-
 "Check validity of input for WannierObject constructor"
 function check_wannierobject(nr, irvec::Vector{Vec3{Int}}, op_r)
     if length(irvec) != nr
