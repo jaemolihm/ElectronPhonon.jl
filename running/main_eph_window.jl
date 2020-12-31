@@ -25,46 +25,6 @@ addprocs(manager)
     using EPW
     using EPW.Diagonalize
 
-    function get_eigenvalues_el(model::EPW.ModelEPW, kpoints::EPW.Kpoints, fourier_mode="normal")
-        nw = model.nw
-        nk = kpoints.n
-        eigenvalues = zeros(nw, nk)
-        hks = [zeros(ComplexF64, nw, nw) for i=1:nthreads()]
-        phases = [zeros(ComplexF64, model.el_ham.nr) for i=1:nthreads()]
-
-        Threads.@threads :static for ik in 1:nk
-            xk = kpoints.vectors[ik]
-            phase = phases[threadid()]
-            hk = hks[threadid()]
-
-            # v1: Using phase argument: good if phase is reused for many operators
-            @inbounds for (ir, r) in enumerate(model.el_ham.irvec)
-                phase[ir] = cis(dot(r, 2pi*xk))
-            end
-            get_fourier!(hk, model.el_ham, xk, phase, mode=fourier_mode)
-
-            # # v2: Not using phase argument
-            # get_fourier!(hk, model.el_ham, xk, mode=fourier_mode)
-
-            eigenvalues[:, ik] = solve_eigen_el_valueonly!(hk)
-        end
-        return eigenvalues
-    end
-
-    function get_eigenvalues_ph(model::EPW.ModelEPW, kpoints::EPW.Kpoints, fourier_mode="normal")
-        nmodes = model.nmodes
-        nk = kpoints.n
-        eigenvalues = zeros(nmodes, nk)
-        dynq = zeros(ComplexF64, (nmodes, nmodes))
-
-        for ik in 1:nk
-            xk = kpoints.vectors[ik]
-            get_fourier!(dynq, model.ph_dyn, xk, mode=fourier_mode)
-            eigenvalues[:, ik] = solve_eigen_ph_valueonly!(dynq)
-        end
-        return eigenvalues
-    end
-
     # Fourier transform electron-phonon matrix from (Re, Rp) -> (Re, q)
     function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
             qpoints::EPW.Kpoints, fourier_mode="normal")
@@ -158,7 +118,7 @@ addprocs(manager)
 
                 # Now, we are done with matrix elements. All data saved in epdata.
 
-                # Now calculate physical quantities.
+                # Calculate physical quantities.
                 efermi = 6.10 * unit_to_aru(:eV)
                 temperature = 300.0 * unit_to_aru(:K)
                 degaussw = 0.50 * unit_to_aru(:eV)
@@ -181,59 +141,21 @@ end # everywhere
 
 @everywhere folder = "/home/jmlim/julia_epw/silicon_nk6"
 
-@mpi_do manager begin
-    using MPI
-    using NPZ
-    import EPW: mpi_split_iterator, mpi_bcast, mpi_gather
-    world_comm = EPW.mpi_world_comm()
-
-    # Read model from file
-    # model = load_model(folder)
-    model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
-
-    # Electron eigenvalues
-    # Distribute k points
-    nkf = [10, 10, 10]
-    range = mpi_split_iterator(1:prod(nkf), world_comm)
-    kpoints = generate_kvec_grid(nkf..., range)
-    # Compute eigenvalues
-    @time eig_kk = get_eigenvalues_el(model, kpoints, "gridopt")
-    # Gather and write eigenvalues to file
-    eig_kk_all = mpi_gather(eig_kk, world_comm)
-    if mpi_isroot()
-        npzwrite(joinpath(folder, "eig_kk.npy"), eig_kk_all)
-    end
-
-    # Phonon eigenvalues
-    # Distribute q points
-    nqf = [5, 5, 5]
-    range = mpi_split_iterator(1:prod(nqf), world_comm)
-    qpoints = generate_kvec_grid(nqf..., range)
-    # Compute eigenvalues
-    @time eig_phonon = get_eigenvalues_ph(model, qpoints, "gridopt")
-    # Gather and write eigenvalues to file
-    eig_phonon_all = mpi_gather(eig_phonon, world_comm)
-    if mpi_isroot()
-        npzwrite(joinpath(folder, "eig_phonon.npy"), eig_phonon_all)
-    end
-end
-
-testscript = joinpath(folder, "test.py")
-py"exec(open($testscript).read())"
-
-@mpi_do manager begin
+# @mpi_do manager
+begin
     using MPI
     using NPZ
     using EPW
     import EPW: mpi_split_iterator, mpi_bcast, mpi_gather, mpi_sum!
     world_comm = EPW.mpi_world_comm()
 
-    # model = load_model(folder)
-    model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
+    model = load_model(folder)
+    # model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 
     # Do not distribute k points
     nkf = [10, 10, 10]
     kvecs = generate_kvec_grid(nkf...)
+    # filter_kpoints_grid
 
     # Distribute q points
     nqf = [5, 5, 5]
@@ -242,6 +164,7 @@ py"exec(open($testscript).read())"
 
     # Electron-phonon coupling
     @time output = fourier_eph(model, kvecs, qvecs, "gridopt")
+    println(output)
 
     ek_all = output.ek
     omega_all = mpi_gather(output.omega, world_comm)

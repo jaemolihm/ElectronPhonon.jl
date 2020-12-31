@@ -1,14 +1,13 @@
 using PrettyPrint
 # using PyPlot
-using FortranFiles
+# using FortranFiles
 using StaticArrays
 using BenchmarkTools
 using NPZ
 using PyCall
 using Profile
-using Parameters
+# using Parameters
 using LinearAlgebra
-using SharedArrays
 using Base.Threads
 using Revise
 BLAS.set_num_threads(1)
@@ -17,111 +16,16 @@ push!(LOAD_PATH, "/home/jmlim/julia_epw/EPW.jl")
 using EPW
 using EPW.Diagonalize
 
-"Data in coarse real-space grid, read from EPW"
-Base.@kwdef struct ModelEPW1
-    nw::Int
-    nmodes::Int
-    mass::Array{Float64,1}
-
-    el_ham::WannierObject
-    # TODO: Use Hermiticity of hk
-
-    ph_dyn::WannierObject
-    # TODO: Use real-valuedness of dyn_r
-    # TODO: Use Hermiticity of dyn_q
-
-    "electron-phonon coupling matrix in electron and phonon Wannier representation"
-    epmat::WannierObject
-end
-ModelEPW = ModelEPW1 # WARNING, only while developing.
-
-function load_epwdata(folder::String)
-    # Read binary data written by EPW and create ModelEPW object
-    f = FortranFile(joinpath(folder, "epw_data_julia.bin"), "r")
-    nw = convert(Int, read(f, Int32))
-    nmodes = convert(Int, read(f, Int32))
-    mass = read(f, (Float64, nmodes))
-
-    # Electron Hamiltonian
-    nrr_k = convert(Int, read(f, Int32))
-    irvec_k = convert.(Int, read(f, (Int32, 3, nrr_k)))
-    ham_r = read(f, (ComplexF64, nw, nw, nrr_k))
-
-    # Phonon dynamical matrix
-    nr_ph = convert(Int, read(f, Int32))
-    irvec_ph = convert.(Int, read(f, (Int32, 3, nr_ph)))
-    dyn_r_real = read(f, (Float64, nmodes, nmodes, nr_ph))
-    dyn_r = complex(dyn_r_real)
-
-    # Electron-phonon matrix
-    nr_ep = convert(Int, read(f, Int32))
-    irvec_ep = convert.(Int, read(f, (Int32, 3, nr_ep)))
-    epmat_re_rp_read = read(f, (ComplexF64, nw, nw, nrr_k, nmodes, nr_ep))
-    epmat_re_rp = permutedims(epmat_re_rp_read, [1, 2, 4, 3, 5])
-    close(f)
-
-    nr_el = nrr_k
-    irvec_el = irvec_k
-
-    # Transform R vectors from matrix to vector of StaticVectors
-    irvec_el = reinterpret(Vec3{Int}, irvec_el)[:]
-    irvec_ph = reinterpret(Vec3{Int}, irvec_ph)[:]
-    irvec_ep = reinterpret(Vec3{Int}, irvec_ep)[:]
-
-    # Sort R vectors using R[3], and then R[2], and then R[1].
-    # This is useful for gridopt.
-    ind_el = sortperm(irvec_el, by=x->reverse(x))
-    ind_ph = sortperm(irvec_ph, by=x->reverse(x))
-    ind_ep = sortperm(irvec_ep, by=x->reverse(x))
-
-    irvec_el = irvec_el[ind_el]
-    irvec_ph = irvec_ph[ind_ph]
-    irvec_ep = irvec_ep[ind_ep]
-
-    ham_r = ham_r[:, :, ind_el]
-    dyn_r = dyn_r[:, :, ind_ph]
-    epmat_re_rp = epmat_re_rp[:, :, :, ind_el, ind_ep]
-
-    # Reshape real-space matrix elements into 2-dimensional matrices
-    # First index: all other indices
-    # Second index: R vectors
-    ham_r = reshape(ham_r, (nw*nw, nrr_k))
-    dyn_r = reshape(dyn_r, (nmodes*nmodes, nr_ph))
-    epmat_re_rp = reshape(epmat_re_rp, (nw*nw*nmodes*nrr_k, nr_ep))
-
-    el_ham = WannierObject(nr_el, irvec_el, ham_r)
-    ph_dyn = WannierObject(nr_ph, irvec_ph, dyn_r)
-    epmat = WannierObject(nr_ep, irvec_ep, epmat_re_rp)
-
-    model = ModelEPW(nw, nmodes, mass, el_ham, ph_dyn, epmat)
-
-    model
-end
-
-folder = "/home/jmlim/julia_epw/silicon_nk2"
-folder = "/home/jmlim/julia_epw/silicon_nk6"
-model = load_epwdata(folder)
-
-# pprintln(model)
-
-nkf = [10, 10, 10]
-kvecs = generate_kvec_grid(nkf)
-
-nqf = [5, 5, 5]
-qvecs = generate_kvec_grid(nqf)
-
-qvecs_mini = generate_kvec_grid([1, 1, 1])
-kvecs_mini = generate_kvec_grid([1, 1, 4])
-
-function get_eigenvalues_el(model, kvecs, fourier_mode::String="normal")
+function get_eigenvalues_el(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
+        fourier_mode="normal")
     nw = model.nw
-    nk = length(kvecs)
+    nk = kpoints.n
     eigenvalues = zeros(nw, nk)
     hks = [zeros(ComplexF64, nw, nw) for i=1:nthreads()]
     phases = [zeros(ComplexF64, model.el_ham.nr) for i=1:nthreads()]
 
     @threads :static for ik in 1:nk
-        xk = kvecs[ik]
+        xk = kpoints.vectors[ik]
         phase = phases[threadid()]
         hk = hks[threadid()]
 
@@ -139,41 +43,34 @@ function get_eigenvalues_el(model, kvecs, fourier_mode::String="normal")
     return eigenvalues
 end
 
-function get_eigenvalues_ph(model, kvecs, fourier_mode::String="normal")
+function get_eigenvalues_ph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
+        fourier_mode::String="normal")
     nmodes = model.nmodes
-    nk = length(kvecs)
+    nk = kpoints.n
     eigenvalues = zeros(nmodes, nk)
     dynq = zeros(ComplexF64, (nmodes, nmodes))
 
     for ik in 1:nk
-        xk = kvecs[ik]
+        xk = kpoints.vectors[ik]
         get_fourier!(dynq, model.ph_dyn, xk, mode=fourier_mode)
         eigenvalues[:, ik] = solve_eigen_ph_valueonly!(dynq)
     end
     return eigenvalues
 end
 
-eig_kk = get_eigenvalues_el(model, kvecs, "gridopt")
-npzwrite(joinpath(folder, "eig_kk.npy"), eig_kk)
-
-eig_phonon = get_eigenvalues_ph(model, qvecs, "gridopt")
-npzwrite(joinpath(folder, "eig_phonon.npy"), eig_phonon)
-
-testscript = joinpath(folder, "test.py")
-py"exec(open($testscript).read())"
-
 # Fourier transform electron-phonon matrix from (Re, Rp) -> (Re, q)
-function fourier_eph(model::ModelEPW, kvecs::Vector{Vec3{Float64}},
-        qvecs::Vector{Vec3{Float64}}, fourier_mode::String="normal")
+function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
+        qpoints::EPW.Kpoints, fourier_mode::String="normal")
     nw = model.nw
     nmodes = model.nmodes
 
-    nk = length(kvecs)
-    nq = length(qvecs)
+    nk = kpoints.n
+    nq = qpoints.n
     wtk = ones(Float64, nk) / nk
     wtq = ones(Float64, nq) / nq
 
     elself = ElectronSelfEnergy(Float64, nw, nmodes, nk)
+    phself = PhononSelfEnergy(Float64, nw, nmodes, nq)
 
     epdatas = [ElPhData(Float64, nw, nmodes) for i=1:nthreads()]
 
@@ -185,7 +82,7 @@ function fourier_eph(model::ModelEPW, kvecs::Vector{Vec3{Float64}},
     @threads :static for ik in 1:nk
     # for ik in 1:nk
         hk = hks[Threads.threadid()]
-        xk = kvecs[ik]
+        xk = kpoints.vectors[ik]
         get_fourier!(hk, model.el_ham, xk, mode=fourier_mode)
         @views ek_save[:, ik] = solve_eigen_el!(uk_save[:, :, ik], hk)
     end # ik
@@ -204,7 +101,7 @@ function fourier_eph(model::ModelEPW, kvecs::Vector{Vec3{Float64}},
         if mod(iq, 10) == 0
             @info "iq = $iq"
         end
-        xq = qvecs[iq]
+        xq = qpoints.vectors[iq]
 
         # Phonon eigenvalues
         get_fourier!(dynq, model.ph_dyn, xq, mode=fourier_mode)
@@ -232,7 +129,7 @@ function fourier_eph(model::ModelEPW, kvecs::Vector{Vec3{Float64}},
             epmatf_wan = epmatf_wans[tid]
 
             # println("$tid $ik")
-            xk = kvecs[ik]
+            xk = kpoints.vectors[ik]
             xkq = xk + xq
 
             epdata.wtq = wtq[iq]
@@ -264,7 +161,9 @@ function fourier_eph(model::ModelEPW, kvecs::Vector{Vec3{Float64}},
             temperature = 300.0 * unit_to_aru(:K)
             degaussw = 0.50 * unit_to_aru(:eV)
 
-            compute_selfen!(elself, epdata, ik;
+            compute_electron_selfen!(elself, epdata, ik;
+                efermi=efermi, temperature=temperature, smear=degaussw)
+            compute_phonon_selfen!(phself, epdata, iq;
                 efermi=efermi, temperature=temperature, smear=degaussw)
         end # ik
     end # iq
@@ -277,22 +176,46 @@ function fourier_eph(model::ModelEPW, kvecs::Vector{Vec3{Float64}},
     npzwrite(joinpath(folder, "imsigma_el.npy"), imsigma_avg)
 end
 
-fourier_eph(model, kvecs_mini, qvecs_mini, "gridopt")
-@time fourier_eph(model, kvecs, qvecs, "gridopt")
-@time fourier_eph(model, kvecs, qvecs, "normal")
+folder = "/home/jmlim/julia_epw/silicon_nk2"
+folder = "/home/jmlim/julia_epw/silicon_nk6"
+folder = "/home/jmlim/julia_epw/silicon_nk6_window"
+model = load_model(folder)
 
-@code_warntype fourier_eph(model, kvecs, qvecs, "gridopt")
+kpoints = generate_kvec_grid(10, 10, 10)
+qpoints = generate_kvec_grid(5, 5, 5)
 
-kk = generate_kvec_grid([100, 100, 100])
-qq = generate_kvec_grid([1, 1, 1])
-@time fourier_eph(model, kk, qq, "gridopt")
-@btime fourier_eph($model, $kk, $qq, "gridopt")
+qpoints_mini = generate_kvec_grid(1, 1, 1)
+kpoints_mini = generate_kvec_grid(1, 1, 10)
+
+window_max = 6.7 * unit_to_aru(:eV)
+window_min = 5.5 * unit_to_aru(:eV)
+window = (window_min, window_max)
+window = (-Inf, Inf)
+
+kpoints = filter_kpoints_grid(10, 10, 10, model.nw, model.el_ham, window)
+
+# Test electron and phonon eigenvalues
+eig_kk = get_eigenvalues_el(model, kpoints, "gridopt")
+eig_phonon = get_eigenvalues_ph(model, qpoints, "gridopt")
+
+npzwrite(joinpath(folder, "eig_kk.npy"), eig_kk)
+npzwrite(joinpath(folder, "eig_phonon.npy"), eig_phonon)
+
+testscript = joinpath(folder, "test.py")
+py"exec(open($testscript).read())"
+
+# Test electron-phonon coupling
+fourier_eph(model, kpoints_mini, qpoints_mini, "gridopt")
+@time fourier_eph(model, kpoints, qpoints, "gridopt")
+@time fourier_eph(model, kpoints, qpoints, "normal")
+
+@code_warntype fourier_eph(model, kpoints, qpoints, "gridopt")
 
 testscript = joinpath(folder, "test.py")
 py"exec(open($testscript).read())"
 
 Profile.clear()
-@profile fourier_eph(model, kvecs, qvecs, "gridopt")
-@profile fourier_eph(model, kvecs, qvecs, "normal")
+@profile fourier_eph(model, kpoints, qpoints, "gridopt")
+@profile fourier_eph(model, kpoints, qpoints, "normal")
 @profile fourier_eph(model, kk, qq, "gridopt")
 Juno.profiler()

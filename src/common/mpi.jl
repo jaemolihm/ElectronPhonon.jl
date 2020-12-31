@@ -72,6 +72,24 @@ end
 
 mpi_gather(arr, comm::MPI.Comm) = mpi_gather(arr, 0, comm)
 
+"Gathers array along the last dimension to all processes"
+function mpi_allgather(arr, comm::MPI.Comm)
+    # Check whether size is equal except for the last dimension
+    # check_dims = 0 if size is okay, 1 otherwise.
+    # Do Allreduce to raise error on all processors
+    size_root = mpi_bcast(size(arr), 0, comm)
+    check_dims = size(arr)[1:end-1] == size_root[1:end-1] ? 0 : 1
+    check_dims = MPI.Allreduce(check_dims, +, comm)
+    @assert check_dims == 0
+
+    # Size of array in each processors
+    counts = MPI.Allgather([Cint(length(arr))], 1, comm)
+
+    # Gather array
+    arr_gathered = MPI.Allgatherv(arr, counts, comm)
+    reshape(arr_gathered, (size(arr)[1:end-1]..., :))
+end
+
 """
 Splits an iterator evenly between the processes of `comm` and returns the part handled
 by the current process.

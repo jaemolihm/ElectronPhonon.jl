@@ -20,7 +20,7 @@ module Diagonalize
         # eigvalues, eigvectors[:, :] = eigen(Hermitian(hk))
         eigvectors .= hk
         eigvalues, = LAPACK.syev!('V', 'U', eigvectors)
-        return eigvalues
+        return eigvalues::Vector{eltype(hk).parameters[1]}
     end
 
     "Get eigenenergy of electrons at a single k point.
@@ -28,7 +28,7 @@ module Diagonalize
     @timing "eig_el_val" function solve_eigen_el_valueonly!(hk)
         # eigvalues = eigvals(Hermitian(hk))
         eigvalues = LAPACK.syev!('N', 'U', hk)
-        return eigvalues
+        return eigvalues::Vector{eltype(hk).parameters[1]}
     end
 
     "Get frequency and eigenmode of phonons at a single q point.

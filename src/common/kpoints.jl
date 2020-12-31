@@ -35,6 +35,14 @@ function generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer)
     generate_kvec_grid(nk1, nk2, nk3, 1:nk)
 end
 
+"Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
+Return all k points. Distribute among the MPI communicator comm."
+function generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer, comm::MPI.Comm)
+    nk = nk1 * nk2 * nk3
+    range = mpi_split_iterator(1:nk, comm)
+    generate_kvec_grid(nk1, nk2, nk3, range)
+end
+
 # "generate grid of k points"
 # function generate_kvec_grid_array(nkf)
 #     kvecs = zeros(3, nkf[1] * nkf[2] * nkf[3])
@@ -46,3 +54,10 @@ end
 #     nk = size(kvecs)[2]
 #     kvecs, nk
 # end
+
+"Filter kpoints using a Boolean vector ik_keep. Retern Kpoints object where
+only k points with ik_keep = true are kept."
+function get_filtered_kpoints(k, ik_keep)
+    @assert length(ik_keep) == k.n
+    Kpoints(sum(ik_keep), k.vectors[ik_keep], k.weights[ik_keep])
+end
