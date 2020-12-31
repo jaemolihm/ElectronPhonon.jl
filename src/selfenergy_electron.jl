@@ -14,11 +14,11 @@ export compute_electron_selfen!
     focc_kq::Vector{Vector{T}}
 end
 
-function ElectronSelfEnergy(T, nw::Int, nmodes::Int, nk::Int)
+function ElectronSelfEnergy(T, nband::Int, nmodes::Int, nk::Int)
     ElectronSelfEnergy{T}(
-        imsigma=zeros(T, nw, nk),
+        imsigma=zeros(T, nband, nk),
         nocc_q=[zeros(T, nmodes) for i=1:nthreads()],
-        focc_kq=[zeros(T, nw) for i=1:nthreads()],
+        focc_kq=[zeros(T, nband) for i=1:nthreads()],
     )
 end
 
@@ -33,7 +33,7 @@ end
     focc_kq = elself.focc_kq[threadid()]
 
     nocc_q .= occ_boson.(epdata.omega ./ temperature)
-    focc_kq .= occ_fermion.((epdata.ekq_full .- efermi) ./ temperature)
+    @views focc_kq[epdata.rngkq] .= occ_fermion.((epdata.ekq[epdata.rngkq] .- efermi) ./ temperature)
 
     # Calculate imaginary part of electron self-energy
     for imode in 1:epdata.nmodes
@@ -42,9 +42,9 @@ end
             continue
         end
 
-        @inbounds for ib in 1:epdata.nw, jb in 1:epdata.nw
-            delta_e1 = epdata.ek_full[ib] - (epdata.ekq_full[jb] - omega)
-            delta_e2 = epdata.ek_full[ib] - (epdata.ekq_full[jb] + omega)
+        @inbounds for ib in epdata.rngk, jb in epdata.rngkq
+            delta_e1 = epdata.ek[ib] - (epdata.ekq[jb] - omega)
+            delta_e2 = epdata.ek[ib] - (epdata.ekq[jb] + omega)
             delta1 = gaussian(delta_e1 * inv_smear) * inv_smear
             delta2 = gaussian(delta_e2 * inv_smear) * inv_smear
             fcoeff1 = nocc_q[imode] + focc_kq[jb]

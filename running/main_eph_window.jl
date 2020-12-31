@@ -26,17 +26,22 @@ addprocs(manager)
     using EPW.Diagonalize
 
     # Fourier transform electron-phonon matrix from (Re, Rp) -> (Re, q)
-    function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
-            qpoints::EPW.Kpoints, fourier_mode="normal")
+    function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints, qpoints::EPW.Kpoints;
+            fourier_mode="normal",
+            window=(-Inf,Inf),
+            iband_min=1,
+            iband_max=model.nw,)
+
         nw = model.nw
         nmodes = model.nmodes
         nk = kpoints.n
         nq = qpoints.n
+        nband = iband_max - iband_min + 1
 
-        elself = ElectronSelfEnergy(Float64, nw, nmodes, nk)
-        phself = PhononSelfEnergy(Float64, nw, nmodes, nq)
+        elself = ElectronSelfEnergy(Float64, nband, nmodes, nk)
+        phself = PhononSelfEnergy(Float64, nband, nmodes, nq)
 
-        epdatas = [ElPhData(Float64, nw, nmodes) for i=1:nthreads()]
+        epdatas = [ElPhData(Float64, nw, nmodes, nband) for i=1:nthreads()]
 
         # Compute electron eigenvectors at k
         ek_save = zeros(Float64, nw, nk)
@@ -60,6 +65,8 @@ addprocs(manager)
         # E-ph matrix in electron Wannier, phonon Bloch representation
         epobj_q = WannierObject(model.el_ham.nr, model.el_ham.irvec,
                     zeros(ComplexF64, (nw*nw*nmodes, model.el_ham.nr)))
+        epmat_re_q_op_r = zeros(ComplexF64, nw*nw, nmodes, model.nr_el)
+
 
         for iq in 1:nq
             if mod(iq, 100) == 0 && mpi_isroot()
@@ -74,12 +81,12 @@ addprocs(manager)
 
             # Transform e-ph matrix (Re, Rp) -> (Re, q)
             get_fourier!(epmat_q_tmp, model.epmat, xq, mode=fourier_mode)
-            epmat_re_q_3 = zero(epmat_q_tmp)
+            epmat_re_q_op_r .= 0
             @views for jmode in 1:nmodes, imode in 1:nmodes
-                epmat_re_q_3[:, jmode, :] .+= (epmat_q_tmp[:, imode, :]
-                                             .* u_ph[imode, jmode])
+                epmat_re_q_op_r[:, jmode, :] .+= (epmat_q_tmp[:, imode, :]
+                                                .* u_ph[imode, jmode])
             end
-            epmat_re_q = reshape(epmat_re_q_3, (nw*nw*nmodes, model.nr_el))
+            epmat_re_q = reshape(epmat_re_q_op_r, (nw*nw*nmodes, model.nr_el))
             update_op_r!(epobj_q, epmat_re_q)
 
             epmatf_wans = [zeros(ComplexF64, (nw, nw, nmodes)) for i=1:nthreads()]
@@ -97,6 +104,7 @@ addprocs(manager)
                 epdata.wtk = kpoints.weights[ik]
                 epdata.wtq = qpoints.weights[iq]
                 epdata.omega .= omegas
+                epdata.iband_offset = iband_min - 1
 
                 # Electron eigenstate at k. Use saved data.
                 epdata.ek_full .= @view ek_save[:, ik]
@@ -107,6 +115,12 @@ addprocs(manager)
                 get_fourier!(hkq, model.el_ham, xkq, mode=fourier_mode)
                 epdata.ekq_full .= solve_eigen_el!(epdata.ukq_full, hkq)
 
+                # Apply energy window
+                skip_kq = epdata_set_window!(epdata, window)
+                if skip_kq
+                    continue
+                end
+
                 # Transform e-ph matrix (Re, q) -> (k, q)
                 get_fourier!(epmatf_wan, epobj_q, xk, mode=fourier_mode)
 
@@ -114,7 +128,7 @@ addprocs(manager)
                 apply_gauge_matrix!(epdata.ep, epmatf_wan, epdata, "k+q", "k", nmodes)
 
                 # Compute g2 = |ep|^2 / omega
-                set_g2!(epdata)
+                epdata_set_g2!(epdata)
 
                 # Now, we are done with matrix elements. All data saved in epdata.
 
@@ -131,7 +145,7 @@ addprocs(manager)
         end # iq
 
         # Average over degenerate states
-        el_imsigma_avg = average_degeneracy(elself.imsigma, ek_save)
+        el_imsigma_avg = average_degeneracy(elself.imsigma, ek_save[iband_min:iband_max, :])
         ph_imsigma_avg = average_degeneracy(phself.imsigma, omega_save)
 
         (ek=ek_save, omega=omega_save,
@@ -149,29 +163,34 @@ end # everywhere
     window = (window_min, window_max)
 end
 
-# @mpi_do manager
-begin
+@mpi_do manager begin
     using MPI
     using NPZ
     using EPW
     import EPW: mpi_split_iterator, mpi_bcast, mpi_gather, mpi_sum!
     world_comm = EPW.mpi_world_comm()
 
-    model = load_model(folder)
-    # model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
+    # model = load_model(folder)
+    model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 
     nkf = [12, 12, 12]
     nqf = [10, 10, 10]
 
     # Do not distribute k points
-    kpoints = filter_kpoints_grid(nkf..., model.nw, model.el_ham, window)
+    kpoints, ib_min, ib_max = filter_kpoints_grid(nkf..., model.nw, model.el_ham, window)
+    nband = ib_max - ib_min + 1
 
     # Distribute q points
     qpoints = generate_kvec_grid(nqf..., world_comm)
-    qpoints = filter_qpoints(qpoints, kpoints, model.nw, model.el_ham)
+    qpoints = filter_qpoints(qpoints, kpoints, model.nw, model.el_ham, window)
 
     # Electron-phonon coupling
-    @time output = fourier_eph(model, kpoints, qpoints, "gridopt")
+    @time output = fourier_eph(model, kpoints, qpoints,
+        fourier_mode="gridopt",
+        window=window,
+        iband_min=ib_min,
+        iband_max=ib_max,
+    )
 
     ek_all = output.ek
     omega_all = mpi_gather(output.omega, world_comm)
@@ -180,7 +199,7 @@ begin
     ph_imsigma_all = mpi_gather(output.ph_imsigma, world_comm)
 
     if mpi_isroot()
-        npzwrite(joinpath(folder, "eig_kk.npy"), ek_all)
+        npzwrite(joinpath(folder, "eig_kk.npy"), ek_all[ib_min:ib_max, :])
         npzwrite(joinpath(folder, "eig_phonon.npy"), omega_all)
         npzwrite(joinpath(folder, "imsigma_el.npy"), el_imsigma_all)
         npzwrite(joinpath(folder, "imsigma_ph.npy"), ph_imsigma_all)
@@ -191,6 +210,8 @@ testscript = joinpath(folder, "test.py")
 py"exec(open($testscript).read())"
 
 Profile.clear()
+@profile output = fourier_eph(model, kpoints, qpoints, fourier_mode="gridopt",
+    window=window, iband_min=ib_min, iband_max=ib_max,)
 @profile fourier_eph(model, kpoints, qpoints, "gridopt")
 @profile fourier_eph(model, kpoints, qpoints, "normal")
 @profile fourier_eph(model, kk, qq, "gridopt")

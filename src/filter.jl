@@ -8,6 +8,7 @@ using MPI
 using EPW: Kpoints
 using EPW.Diagonalize
 
+# export inside_window
 export filter_kpoints
 export filter_kpoints_grid
 export filter_qpoints
@@ -19,15 +20,27 @@ end
 
 "Filter Kpoints object"
 function filter_kpoints(kpoints::Kpoints, nw, el_ham, window)
+    # If the window is trivial, return the original kpoints
+    if window === (-Inf, Inf)
+        return kpoints, 1, nw
+    end
+
     hk = zeros(ComplexF64, nw, nw)
     ik_keep = zeros(Bool, kpoints.n)
+    band_min = nw
+    band_max = 1
     for ik in 1:kpoints.n
         xk = kpoints.vectors[ik]
         get_fourier!(hk, el_ham, xk, mode="normal")
         eigenvalues = solve_eigen_el_valueonly!(hk)
-        ik_keep[ik] = !isempty(inside_window(eigenvalues, window...))
+        bands_in_window = inside_window(eigenvalues, window...)
+        if ! isempty(bands_in_window)
+            ik_keep[ik] = true
+            band_min = min(bands_in_window[1], band_min)
+            band_max = max(bands_in_window[end], band_max)
+        end
     end
-    EPW.get_filtered_kpoints(kpoints, ik_keep)
+    EPW.get_filtered_kpoints(kpoints, ik_keep), band_min, band_max
 end
 
 """
@@ -40,19 +53,26 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window)
 
     # If the window is trivial, return the whole grid
     if window === (-Inf, Inf)
-        return kpoints
+        return kpoints, 1, nw
     end
 
     hk = zeros(ComplexF64, nw, nw)
     ik_keep = zeros(Bool, kpoints.n)
+    band_min = nw
+    band_max = 1
 
     for ik in 1:kpoints.n
         xk = kpoints.vectors[ik]
         get_fourier!(hk, el_ham, xk, mode="gridopt")
         eigenvalues = solve_eigen_el_valueonly!(hk)
-        ik_keep[ik] = !isempty(inside_window(eigenvalues, window...))
+        bands_in_window = inside_window(eigenvalues, window...)
+        if ! isempty(bands_in_window)
+            ik_keep[ik] = true
+            band_min = min(bands_in_window[1], band_min)
+            band_max = max(bands_in_window[end], band_max)
+        end
     end
-    EPW.get_filtered_kpoints(kpoints, ik_keep)
+    EPW.get_filtered_kpoints(kpoints, ik_keep), band_min, band_max
 end
 
 """
@@ -68,17 +88,27 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Co
 
     # If the window is trivial, return the whole grid
     if window === (-Inf, Inf)
-        return kpoints
+        return kpoints, 1, nw
     end
 
     hk = zeros(ComplexF64, nw, nw)
     ik_keep = zeros(Bool, kpoints.n)
+    band_min = nw
+    band_max = 1
+
+    band_min = mpi_min(band_min, mpi_comm)
+    band_max = mpi_max(band_max, mpi_comm)
 
     for ik in 1:kpoints.n
         xk = kpoints.vectors[ik]
         get_fourier!(hk, el_ham, xk, mode="gridopt")
         eigenvalues = solve_eigen_el_valueonly!(hk)
-        ik_keep[ik] = !isempty(inside_window(eigenvalues, window...))
+        bands_in_window = inside_window(eigenvalues, window...)
+        if ! isempty(bands_in_window)
+            ik_keep[ik] = true
+            band_min = min(bands_in_window[1], band_min)
+            band_max = max(bands_in_window[end], band_max)
+        end
     end
     k_filtered = EPW.get_filtered_kpoints(kpoints, ik_keep)
 
@@ -102,8 +132,9 @@ the window.
 """
 function filter_qpoints(qpoints, kpoints, nw, el_ham, window)
     iq_keep = zeros(Bool, qpoints.n)
-    hk = zeros(ComplexF64, nw, nw)
-    Threads.@threads for iq in 1:qpoints.n
+    hks = [zeros(ComplexF64, nw, nw) for i=1:nthreads()]
+    @threads for iq in 1:qpoints.n
+        hk = hks[threadid()]
         xq = qpoints.vectors[iq]
         for ik in 1:kpoints.n
             xkq = xq + kpoints.vectors[ik]

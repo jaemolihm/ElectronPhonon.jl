@@ -15,12 +15,12 @@ export compute_phonon_selfen!
     focc_kq::Vector{Vector{T}}
 end
 
-function PhononSelfEnergy(T, nw::Int, nmodes::Int, nq::Int)
+function PhononSelfEnergy(T, nband::Int, nmodes::Int, nq::Int)
     PhononSelfEnergy{T}(
         imsigma=zeros(T, nmodes, nq),
         nocc_q=[zeros(T, nmodes) for i=1:nthreads()],
-        focc_k=[zeros(T, nw) for i=1:nthreads()],
-        focc_kq=[zeros(T, nw) for i=1:nthreads()],
+        focc_k=[zeros(T, nband) for i=1:nthreads()],
+        focc_kq=[zeros(T, nband) for i=1:nthreads()],
     )
 end
 
@@ -36,8 +36,8 @@ end
     focc_kq = phself.focc_kq[threadid()]
 
     nocc_q .= occ_boson.(epdata.omega ./ temperature)
-    focc_k .= occ_fermion.((epdata.ek_full .- efermi) ./ temperature)
-    focc_kq .= occ_fermion.((epdata.ekq_full .- efermi) ./ temperature)
+    @views focc_k[epdata.rngk] .= occ_fermion.((epdata.ek[epdata.rngk] .- efermi) ./ temperature)
+    @views focc_kq[epdata.rngkq] .= occ_fermion.((epdata.ekq[epdata.rngkq] .- efermi) ./ temperature)
 
     # Calculate imaginary part of phonon self-energy
     for imode in 1:epdata.nmodes
@@ -46,7 +46,7 @@ end
             continue
         end
 
-        @inbounds for ib in 1:epdata.nw, jb in 1:epdata.nw
+        @inbounds for ib in epdata.rngk, jb in epdata.rngkq
             delta_e = epdata.ekq_full[jb] - epdata.ek_full[ib] - omega
             delta = gaussian(delta_e * inv_smear) * inv_smear
             phself.imsigma[imode, iq] += (epdata.g2[jb, ib, imode] * epdata.wtk
