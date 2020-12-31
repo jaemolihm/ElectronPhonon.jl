@@ -3,12 +3,14 @@
 
 # TODO: Threads
 
+using Base.Threads
 using MPI
 using EPW: Kpoints
 using EPW.Diagonalize
 
 export filter_kpoints
 export filter_kpoints_grid
+export filter_qpoints
 
 "Test whether e is inside the window."
 function inside_window(e, window_min, window_max)
@@ -90,4 +92,30 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Co
     # Redistribute k points
     range = EPW.mpi_split_iterator(1:length(kvectors), mpi_comm)
     Kpoints(length(range), kvectors[range], weights[range])
+end
+
+"""
+    filter_qpoints(qpoints, kpoints, nw, el_ham)
+
+Filter only q points which have k point such that the energy at k+q is inside
+the window.
+"""
+function filter_qpoints(qpoints, kpoints, nw, el_ham, window)
+    iq_keep = zeros(Bool, qpoints.n)
+    hk = zeros(ComplexF64, nw, nw)
+    Threads.@threads for iq in 1:qpoints.n
+        xq = qpoints.vectors[iq]
+        for ik in 1:kpoints.n
+            xkq = xq + kpoints.vectors[ik]
+            get_fourier!(hk, el_ham, xkq, mode="gridopt")
+            eigenvalues = solve_eigen_el_valueonly!(hk)
+
+            # If k+q is inside window, use this q point
+            if ! isempty(EPW.inside_window(eigenvalues, window...))
+                iq_keep[iq] = true
+                break
+            end
+        end
+    end
+    EPW.get_filtered_kpoints(qpoints, iq_keep)
 end

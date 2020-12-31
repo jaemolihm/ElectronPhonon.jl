@@ -62,7 +62,7 @@ addprocs(manager)
                     zeros(ComplexF64, (nw*nw*nmodes, model.el_ham.nr)))
 
         for iq in 1:nq
-            if mod(iq, 10) == 0 && mpi_isroot()
+            if mod(iq, 100) == 0 && mpi_isroot()
                 @info "iq = $iq"
             end
             xq = qpoints.vectors[iq]
@@ -119,9 +119,9 @@ addprocs(manager)
                 # Now, we are done with matrix elements. All data saved in epdata.
 
                 # Calculate physical quantities.
-                efermi = 6.10 * unit_to_aru(:eV)
+                efermi = 6.20 * unit_to_aru(:eV)
                 temperature = 300.0 * unit_to_aru(:K)
-                degaussw = 0.50 * unit_to_aru(:eV)
+                degaussw = 0.05 * unit_to_aru(:eV)
 
                 compute_electron_selfen!(elself, epdata, ik;
                     efermi=efermi, temperature=temperature, smear=degaussw)
@@ -139,7 +139,15 @@ addprocs(manager)
     end
 end # everywhere
 
-@everywhere folder = "/home/jmlim/julia_epw/silicon_nk6"
+@everywhere begin
+    folder = "/home/jmlim/julia_epw/silicon_nk6"
+    window = (-Inf, Inf)
+
+    folder = "/home/jmlim/julia_epw/silicon_nk6_window"
+    window_max = 7.0 * unit_to_aru(:eV)
+    window_min = 5.4 * unit_to_aru(:eV)
+    window = (window_min, window_max)
+end
 
 # @mpi_do manager
 begin
@@ -152,19 +160,18 @@ begin
     model = load_model(folder)
     # model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 
+    nkf = [12, 12, 12]
+    nqf = [10, 10, 10]
+
     # Do not distribute k points
-    nkf = [10, 10, 10]
-    kvecs = generate_kvec_grid(nkf...)
-    # filter_kpoints_grid
+    kpoints = filter_kpoints_grid(nkf..., model.nw, model.el_ham, window)
 
     # Distribute q points
-    nqf = [5, 5, 5]
-    range = mpi_split_iterator(1:prod(nqf), world_comm)
-    qvecs = generate_kvec_grid(nqf..., range)
+    qpoints = generate_kvec_grid(nqf..., world_comm)
+    qpoints = filter_qpoints(qpoints, kpoints, model.nw, model.el_ham)
 
     # Electron-phonon coupling
-    @time output = fourier_eph(model, kvecs, qvecs, "gridopt")
-    println(output)
+    @time output = fourier_eph(model, kpoints, qpoints, "gridopt")
 
     ek_all = output.ek
     omega_all = mpi_gather(output.omega, world_comm)
@@ -180,39 +187,11 @@ begin
     end
 end
 
-model = load_model(folder)
-model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
-kpoints = generate_kvec_grid(10, 10, 10)
-qpoints = generate_kvec_grid(5, 5, 5)
-@everywhere EPW.reset_timer!(EPW.timer)
-@time output = fourier_eph(model, kpoints, qpoints, "gridopt")
-EPW.print_timer(EPW.timer)
-@spawnat 2 EPW.print_timer(EPW.timer)
-
-
-npzwrite(joinpath(folder, "eig_kk.npy"), output.ek)
-npzwrite(joinpath(folder, "eig_phonon.npy"), output.omega)
-npzwrite(joinpath(folder, "imsigma_el.npy"), output.el_imsigma)
-npzwrite(joinpath(folder, "imsigma_ph.npy"), output.ph_imsigma)
-
 testscript = joinpath(folder, "test.py")
 py"exec(open($testscript).read())"
 
 Profile.clear()
-@profile fourier_eph(model, kvecs, qvecs, "gridopt")
-@profile fourier_eph(model, kvecs, qvecs, "normal")
+@profile fourier_eph(model, kpoints, qpoints, "gridopt")
+@profile fourier_eph(model, kpoints, qpoints, "normal")
 @profile fourier_eph(model, kk, qq, "gridopt")
 Juno.profiler()
-
-
-
-@mpi_do manager begin
-    # model = load_model(folder)
-
-    window_max = 6.7 * unit_to_aru(:eV)
-    window_min = 5.5 * unit_to_aru(:eV)
-    window = (window_min, window_max)
-
-    k = filter_kpoints_grid(10, 10, 10, model.nw, model.el_ham, window, EPW.mpi_world_comm())
-    @show k.n
-end
