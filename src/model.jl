@@ -6,14 +6,19 @@ export load_model
 "Tight-binding model for electron, phonon, and electron-phonon coupling.
 All data is in coarse real-space grid."
 Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
+    # Lattice vector in Bohr. lattice[:, i] is the i-th lattice vector.
+    lattice::Mat3{Float64}
+    mass::Array{Float64,1}
+
     nw::Int
     nmodes::Int
-    mass::Array{Float64,1}
 
     nr_el::Int
 
     el_ham::WannierObject{Float64}
     # TODO: Use Hermiticity of hk
+
+    el_ham_R::WannierObject{Float64}
 
     ph_dyn::WannierObject{Float64}
     # TODO: Use real-valuedness of dyn_r
@@ -55,6 +60,13 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     end
     # Read binary data written by EPW and create ModelEPW object
     f = FortranFile(joinpath(folder, "epw_data_julia.bin"), "r")
+
+    # Crystal parameters
+    alat = read(f, Float64)
+    at_in_alat = read(f, (Float64, 3, 3))
+    lattice = Mat3{Float64}(at_in_alat .* alat)
+
+    # Wannier parameters
     nw = convert(Int, read(f, Int32))
     nmodes = convert(Int, read(f, Int32))
     mass = read(f, (Float64, nmodes))
@@ -62,7 +74,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     # Electron Hamiltonian
     nrr_k = convert(Int, read(f, Int32))
     irvec_k = convert.(Int, read(f, (Int32, 3, nrr_k)))
-    ham_r = read(f, (ComplexF64, nw, nw, nrr_k))
+    ham = read(f, (ComplexF64, nw, nw, nrr_k))
 
     # Phonon dynamical matrix
     nr_ph = convert(Int, read(f, Int32))
@@ -92,10 +104,11 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     irvec_ph = irvec_ph[ind_ph]
     irvec_ep = irvec_ep[ind_ep]
 
-    ham_r = ham_r[:, :, ind_el]
+    ham = ham[:, :, ind_el]
     dyn_r = dyn_r[:, :, ind_ph]
 
     # Electron-phonon coupling
+    # This part is the bottleneck of this function.
     if epmat_on_disk
         empat_filename = "tmp_epmat.bin"
 
@@ -135,10 +148,19 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     # Reshape real-space matrix elements into 2-dimensional matrices
     # First index: all other indices
     # Second index: R vectors
-    ham_r = reshape(ham_r, (nw*nw, nrr_k))
+    ham = reshape(ham, (nw*nw, nr_el))
     dyn_r = reshape(dyn_r, (nmodes*nmodes, nr_ph))
-    el_ham = WannierObject(nr_el, irvec_el, ham_r)
+    el_ham = WannierObject(nr_el, irvec_el, ham)
     ph_dyn = WannierObject(nr_ph, irvec_ph, dyn_r)
+
+    # R * ham for electron velocity
+    ham_R = zeros(eltype(ham), (nw*nw, 3, nr_el))
+    for ir = 1:nr_el
+        @views for i = 1:3
+            ham_R[:, i, ir] .= im .* ham[:, ir] .* dot(lattice[i, :], irvec_el[ir])
+        end
+    end
+    el_ham_R = WannierObject(nr_el, irvec_el, reshape(ham_R, (nw*nw*3, nr_el)))
 
     if epmat_on_disk
         epmat = DiskWannierObject1(Float64, "epmat", nr_ep, irvec_ep, nw*nw*nmodes*nr_el,
@@ -148,9 +170,9 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         epmat = WannierObject(nr_ep, irvec_ep, epmat_re_rp)
     end
 
-    model = ModelEPW(nw=nw, nmodes=nmodes, mass=mass,
+    model = ModelEPW(lattice=lattice, nw=nw, nmodes=nmodes, mass=mass,
         nr_el=nr_el,
-        el_ham=el_ham, ph_dyn=ph_dyn, epmat=epmat
+        el_ham=el_ham, el_ham_R=el_ham_R, ph_dyn=ph_dyn, epmat=epmat
     )
 
     model

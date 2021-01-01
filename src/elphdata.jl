@@ -21,6 +21,10 @@ export epdata_set_window!
     ekq_full::Vector{T}
     uk_full::Matrix{Complex{T}}
     ukq_full::Matrix{Complex{T}}
+    vdiagk::Matrix{T} # Diagonal component of band velocity at k
+    vdiagkq::Matrix{T} # Diagonal component of band velocity at k+q
+
+    # Electron-phonon coupling
     ep::Array{Complex{T}, 3}
     g2::Array{Complex{T}, 3}
 
@@ -50,6 +54,8 @@ function ElPhData(T, nw, nmodes, nband=nothing)
         ekq_full=Vector{T}(undef, nw),
         uk_full=Matrix{Complex{T}}(undef, nw, nw),
         ukq_full=Matrix{Complex{T}}(undef, nw, nw),
+        vdiagk=Matrix{T}(undef, 3, nband),
+        vdiagkq=Matrix{T}(undef, 3, nband),
         ep=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         g2=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         buffer=Matrix{Complex{T}}(undef, nw, nw),
@@ -84,7 +90,7 @@ ndim: Optional. Third dimension of op_h and op_w. Loop over i=1:ndim.
         error("right must be k or k+q, not $right")
     end
     rngleft = (left == "k") ? epdata.rngk : epdata.rngkq
-    rngright = (right == "k") ? epdata.rngk : epdata.rngq
+    rngright = (right == "k") ? epdata.rngk : epdata.rngkq
     uleft = (left == "k") ? epdata.uk_full : epdata.ukq_full
     uright = (right == "k") ? epdata.uk_full : epdata.ukq_full
     @views uleft_adj = Adjoint(uleft[:, rngleft .+ offset])
@@ -119,18 +125,27 @@ g2 is set to 0.0 if omega < omega_acoustic."
     end
 end
 
-function epdata_set_window!(epdata, window)
+function epdata_set_window!(epdata, window, ktype)
     offset = epdata.iband_offset
-    ibs_k = EPW.inside_window(epdata.ek_full, window...)
-    ibs_kq = EPW.inside_window(epdata.ekq_full, window...)
-    if isempty(ibs_k) || isempty(ibs_kq)
+    if ktype == "k"
+        ibs = EPW.inside_window(epdata.ek_full, window...)
+    elseif ktype == "k+q"
+        ibs = EPW.inside_window(epdata.ekq_full, window...)
+    else
+        error("ktype must be k or k+q, not $ktype")
+    end
+    # If no bands are selected, return true.
+    if isempty(ibs)
         return true
     end
-    epdata.rngk = (ibs_k[1]:ibs_k[end]) .- offset
-    epdata.rngkq = (ibs_kq[1]:ibs_kq[end]) .- offset
-    epdata.nbandk = length(epdata.rngk)
-    epdata.nbandkq = length(epdata.rngkq)
-    @views epdata.ek[epdata.rngk] .= epdata.ek_full[epdata.rngk .+ offset]
-    @views epdata.ekq[epdata.rngkq] .= epdata.ekq_full[epdata.rngkq .+ offset]
+    if ktype == "k"
+        epdata.rngk = (ibs[1]:ibs[end]) .- offset
+        epdata.nbandk = length(epdata.rngk)
+        @views epdata.ek[epdata.rngk] .= epdata.ek_full[epdata.rngk .+ offset]
+    elseif ktype == "k+q"
+        epdata.rngkq = (ibs[1]:ibs[end]) .- offset
+        epdata.nbandkq = length(epdata.rngkq)
+        @views epdata.ekq[epdata.rngkq] .= epdata.ekq_full[epdata.rngkq .+ offset]
+    end
     return false
 end

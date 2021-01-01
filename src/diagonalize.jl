@@ -11,7 +11,7 @@ module Diagonalize
     export solve_eigen_ph_valueonly!
 
     "Get eigenenergy and eigenvector of electrons at a single k point.
-    Input hk is destroyed at output."
+    Input hk is not destroyed at output."
     @timing "eig_el" function solve_eigen_el!(eigvectors, hk)
         @assert size(eigvectors) == size(hk)
         # Directly calling LAPACK.syev! is more efficient than

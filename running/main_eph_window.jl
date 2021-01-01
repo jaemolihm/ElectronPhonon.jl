@@ -18,7 +18,6 @@ addprocs(manager)
 
 @everywhere begin
     using LinearAlgebra
-    using SharedArrays
     using Base.Threads
     using Revise
     push!(LOAD_PATH, "/home/jmlim/julia_epw/EPW.jl")
@@ -39,21 +38,41 @@ addprocs(manager)
         nband = iband_max - iband_min + 1
 
         elself = ElectronSelfEnergy(Float64, nband, nmodes, nk)
-        phself = PhononSelfEnergy(Float64, nband, nmodes, nq)
+        phselfs = [PhononSelfEnergy(Float64, nband, nmodes, nq) for i=1:nthreads()]
 
         epdatas = [ElPhData(Float64, nw, nmodes, nband) for i=1:nthreads()]
+        for epdata in epdatas
+            epdata.iband_offset = iband_min - 1
+        end
 
         # Compute electron eigenvectors at k
-        ek_save = zeros(Float64, nw, nk)
-        uk_save = Array{ComplexF64,3}(undef, nw, nw, nk)
+        ek_full_save = zeros(Float64, nw, nk)
+        uk_full_save = Array{ComplexF64,3}(undef, nw, nw, nk)
+        ek_full_save = zeros(Float64, nw, nk)
+        vdiagk_save = zeros(Float64, 3, nband, nk)
         hks = [zeros(ComplexF64, nw, nw) for i=1:nthreads()]
+        vks = [zeros(ComplexF64, nw, nw, 3) for i=1:nthreads()]
 
         Threads.@threads :static for ik in 1:nk
         # for ik in 1:nk
-            hk = hks[Threads.threadid()]
+            epdata = epdatas[threadid()]
+            hk = hks[threadid()]
+            vk = vks[threadid()]
             xk = kpoints.vectors[ik]
             get_fourier!(hk, model.el_ham, xk, mode=fourier_mode)
-            @views ek_save[:, ik] = solve_eigen_el!(uk_save[:, :, ik], hk)
+            @views ek_full_save[:, ik] = solve_eigen_el!(uk_full_save[:, :, ik], hk)
+
+            # Load electron eigenstate at k on epdata and filter bands.
+            epdata.ek_full .= @view ek_full_save[:, ik]
+            epdata.uk_full .= @view uk_full_save[:, :, ik]
+            skip_k = epdata_set_window!(epdata, window, "k")
+
+            # Compute band velocity
+            get_fourier!(vk, model.el_ham_R, xk, mode=fourier_mode)
+            apply_gauge_matrix!(vk, vk, epdata, "k", "k", 3)
+            @views for idir in 1:3
+                vdiagk_save[idir, epdata.rngk, ik] .= real.(diag(vk[:,:,idir])[epdata.rngk])
+            end
         end # ik
 
         omega_save = zeros(nmodes, nq)
@@ -96,6 +115,8 @@ addprocs(manager)
                 tid = Threads.threadid()
                 epdata = epdatas[tid]
                 epmatf_wan = epmatf_wans[tid]
+                phself = phselfs[tid]
+                vk = vks[tid]
 
                 # println("$tid $ik")
                 xk = kpoints.vectors[ik]
@@ -104,11 +125,11 @@ addprocs(manager)
                 epdata.wtk = kpoints.weights[ik]
                 epdata.wtq = qpoints.weights[iq]
                 epdata.omega .= omegas
-                epdata.iband_offset = iband_min - 1
 
                 # Electron eigenstate at k. Use saved data.
-                epdata.ek_full .= @view ek_save[:, ik]
-                epdata.uk_full .= @view uk_save[:, :, ik]
+                epdata.ek_full .= @view ek_full_save[:, ik]
+                epdata.uk_full .= @view uk_full_save[:, :, ik]
+                epdata.vdiagk .= @view vdiagk_save[:, :, ik]
 
                 # Electron eigenstate at k+q
                 hkq = epdata.buffer
@@ -116,9 +137,17 @@ addprocs(manager)
                 epdata.ekq_full .= solve_eigen_el!(epdata.ukq_full, hkq)
 
                 # Apply energy window
-                skip_kq = epdata_set_window!(epdata, window)
-                if skip_kq
+                skip_k = epdata_set_window!(epdata, window, "k")
+                skip_kq = epdata_set_window!(epdata, window, "k+q")
+                if skip_k || skip_kq
                     continue
+                end
+
+                # Compute band velocity at k+q
+                get_fourier!(vk, model.el_ham_R, xkq, mode=fourier_mode)
+                apply_gauge_matrix!(vk, vk, epdata, "k+q", "k+q", 3)
+                @views for idir in 1:3
+                    epdata.vdiagkq[idir, epdata.rngkq] .= real.(diag(vk[:,:,idir])[epdata.rngkq])
                 end
 
                 # Transform e-ph matrix (Re, q) -> (k, q)
@@ -133,9 +162,9 @@ addprocs(manager)
                 # Now, we are done with matrix elements. All data saved in epdata.
 
                 # Calculate physical quantities.
-                efermi = 6.20 * unit_to_aru(:eV)
+                efermi = 5.40 * unit_to_aru(:eV)
                 temperature = 300.0 * unit_to_aru(:K)
-                degaussw = 0.05 * unit_to_aru(:eV)
+                degaussw = 0.2 * unit_to_aru(:eV)
 
                 compute_electron_selfen!(elself, epdata, ik;
                     efermi=efermi, temperature=temperature, smear=degaussw)
@@ -144,11 +173,13 @@ addprocs(manager)
             end # ik
         end # iq
 
-        # Average over degenerate states
-        el_imsigma_avg = average_degeneracy(elself.imsigma, ek_save[iband_min:iband_max, :])
-        ph_imsigma_avg = average_degeneracy(phself.imsigma, omega_save)
+        ph_imsigma = sum([phself.imsigma for phself in phselfs])
 
-        (ek=ek_save, omega=omega_save,
+        # Average over degenerate states
+        el_imsigma_avg = average_degeneracy(elself.imsigma, ek_full_save[iband_min:iband_max, :])
+        ph_imsigma_avg = average_degeneracy(ph_imsigma, omega_save)
+
+        (ek=ek_full_save, omega=omega_save,
         el_imsigma=el_imsigma_avg, ph_imsigma=ph_imsigma_avg,)
     end
 end # everywhere
@@ -158,20 +189,21 @@ end # everywhere
     window = (-Inf, Inf)
 
     folder = "/home/jmlim/julia_epw/silicon_nk6_window"
-    window_max = 7.0 * unit_to_aru(:eV)
-    window_min = 5.4 * unit_to_aru(:eV)
+    window_max = 6.4 * unit_to_aru(:eV)
+    window_min = 4.4 * unit_to_aru(:eV)
     window = (window_min, window_max)
 end
 
-@mpi_do manager begin
+@mpi_do manager
+begin
     using MPI
     using NPZ
     using EPW
     import EPW: mpi_split_iterator, mpi_bcast, mpi_gather, mpi_sum!
     world_comm = EPW.mpi_world_comm()
 
-    # model = load_model(folder)
-    model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
+    model = load_model(folder)
+    # model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 
     nkf = [12, 12, 12]
     nqf = [10, 10, 10]
