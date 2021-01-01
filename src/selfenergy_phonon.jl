@@ -47,7 +47,7 @@ end
         end
 
         @inbounds for ib in epdata.rngk, jb in epdata.rngkq
-            delta_e = epdata.ekq_full[jb] - epdata.ek_full[ib] - omega
+            delta_e = epdata.ekq[jb] - epdata.ek[ib] - omega
             delta = gaussian(delta_e * inv_smear) * inv_smear
             phself.imsigma[imode, iq] += (epdata.g2[jb, ib, imode] * epdata.wtk
                 * π * (focc_k[ib] - focc_kq[jb]) * delta)

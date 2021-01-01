@@ -199,6 +199,7 @@ end
     ph_imsigma_all = mpi_gather(output.ph_imsigma, world_comm)
 
     if mpi_isroot()
+        ph_imsigma_all .*= 2 # Spin factor
         npzwrite(joinpath(folder, "eig_kk.npy"), ek_all[ib_min:ib_max, :])
         npzwrite(joinpath(folder, "eig_phonon.npy"), omega_all)
         npzwrite(joinpath(folder, "imsigma_el.npy"), el_imsigma_all)
