@@ -6,7 +6,6 @@
 using Base.Threads
 using MPI
 using EPW: Kpoints
-using EPW.Diagonalize
 
 # export inside_window
 export filter_kpoints

@@ -2,12 +2,16 @@
 # For computing electron-phonon coupling at fine a k and q point
 
 import Base.@kwdef
+import EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag!
 
 export ElPhData
 export initialize_elphdata
 export apply_gauge_matrix!
 export epdata_set_g2!
 export epdata_set_window!
+
+export get_el_eigen!
+export get_el_velocity_diag!
 
 # Energy and matrix elements at a single k and q point
 @kwdef mutable struct ElPhData{T <: Real}
@@ -54,8 +58,8 @@ function ElPhData(T, nw, nmodes, nband=nothing)
         ekq_full=Vector{T}(undef, nw),
         uk_full=Matrix{Complex{T}}(undef, nw, nw),
         ukq_full=Matrix{Complex{T}}(undef, nw, nw),
-        vdiagk=Matrix{T}(undef, 3, nband),
-        vdiagkq=Matrix{T}(undef, 3, nband),
+        vdiagk=zeros(T, (3, nband)),
+        vdiagkq=zeros(T, (3, nband)),
         ep=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         g2=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         buffer=Matrix{Complex{T}}(undef, nw, nw),
@@ -125,7 +129,7 @@ g2 is set to 0.0 if omega < omega_acoustic."
     end
 end
 
-function epdata_set_window!(epdata, window, ktype)
+function epdata_set_window!(epdata, ktype, window=(-Inf,Inf))
     offset = epdata.iband_offset
     if ktype == "k"
         ibs = EPW.inside_window(epdata.ek_full, window...)
@@ -148,4 +152,45 @@ function epdata_set_window!(epdata, window, ktype)
         @views epdata.ekq[epdata.rngkq] .= epdata.ekq_full[epdata.rngkq .+ offset]
     end
     return false
+end
+
+# Define wrappers of WanToBloch functions
+
+"""
+    get_el_eigen!(epdata::ElPhData, ktype::String, el_ham, xk, fourier_mode="normal")
+
+Compute electron eigenenergy and eigenvector and save them in epdata.
+ktype: "k" or "k+q"
+"""
+function get_el_eigen!(epdata::ElPhData, ktype::String, el_ham, xk, fourier_mode="normal")
+    if ktype == "k"
+        values = epdata.ek_full
+        vectors = epdata.uk_full
+    elseif ktype == "k+q"
+        values = epdata.ekq_full
+        vectors = epdata.ukq_full
+    else
+        error("ktype must be k or k+q, not $ktype")
+    end
+    get_el_eigen!(values, vectors, epdata.nw, el_ham, xk, fourier_mode)
+end
+
+"""
+    get_el_velocity!(epdata::ElPhData, ktype::String, el_ham_R, xk, fourier_mode="normal")
+Compute electron band velocity, only the band-diagonal part.
+
+Compute electron eigenenergy and eigenvector and save them in epdata.
+ktype: "k" or "k+q"
+"""
+function get_el_velocity_diag!(epdata::ElPhData, ktype::String, el_ham_R, xk, fourier_mode="normal")
+    if ktype == "k"
+        @views uk = epdata.uk_full[:, epdata.rngk]
+        @views velocity_diag = epdata.vdiagk[:, epdata.rngk]
+    elseif ktype == "k+q"
+        @views uk = epdata.ukq_full[:, epdata.rngkq]
+        @views velocity_diag = epdata.vdiagkq[:, epdata.rngkq]
+    else
+        error("ktype must be k or k+q, not $ktype")
+    end
+    get_el_velocity_diag!(velocity_diag, epdata.nw, el_ham_R, xk, uk, fourier_mode)
 end

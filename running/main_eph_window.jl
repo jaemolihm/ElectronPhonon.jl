@@ -22,7 +22,7 @@ addprocs(manager)
     using Revise
     push!(LOAD_PATH, "/home/jmlim/julia_epw/EPW.jl")
     using EPW
-    using EPW.Diagonalize
+    using EPW.WanToBloch
 
     # Fourier transform electron-phonon matrix from (Re, Rp) -> (Re, q)
     function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints, qpoints::EPW.Kpoints;
@@ -45,34 +45,24 @@ addprocs(manager)
             epdata.iband_offset = iband_min - 1
         end
 
-        # Compute electron eigenvectors at k
+        # Compute and save electron matrix elements at k
         ek_full_save = zeros(Float64, nw, nk)
         uk_full_save = Array{ComplexF64,3}(undef, nw, nw, nk)
-        ek_full_save = zeros(Float64, nw, nk)
         vdiagk_save = zeros(Float64, 3, nband, nk)
-        hks = [zeros(ComplexF64, nw, nw) for i=1:nthreads()]
-        vks = [zeros(ComplexF64, nw, nw, 3) for i=1:nthreads()]
 
         Threads.@threads :static for ik in 1:nk
         # for ik in 1:nk
             epdata = epdatas[threadid()]
-            hk = hks[threadid()]
-            vk = vks[threadid()]
             xk = kpoints.vectors[ik]
-            get_fourier!(hk, model.el_ham, xk, mode=fourier_mode)
-            @views ek_full_save[:, ik] = solve_eigen_el!(uk_full_save[:, :, ik], hk)
 
-            # Load electron eigenstate at k on epdata and filter bands.
-            epdata.ek_full .= @view ek_full_save[:, ik]
-            epdata.uk_full .= @view uk_full_save[:, :, ik]
-            skip_k = epdata_set_window!(epdata, window, "k")
+            get_el_eigen!(epdata, "k", model.el_ham, xk, fourier_mode)
+            skip_k = epdata_set_window!(epdata, "k", window)
+            get_el_velocity_diag!(epdata, "k", model.el_ham_R, xk, fourier_mode)
 
-            # Compute band velocity
-            get_fourier!(vk, model.el_ham_R, xk, mode=fourier_mode)
-            apply_gauge_matrix!(vk, vk, epdata, "k", "k", 3)
-            @views for idir in 1:3
-                vdiagk_save[idir, epdata.rngk, ik] .= real.(diag(vk[:,:,idir])[epdata.rngk])
-            end
+            # Save matrix elements at k for reusing
+            ek_full_save[:, ik] .= epdata.ek_full
+            uk_full_save[:, :, ik] .= epdata.uk_full
+            vdiagk_save[:, :, ik] .= epdata.vdiagk
         end # ik
 
         omega_save = zeros(nmodes, nq)
@@ -116,7 +106,6 @@ addprocs(manager)
                 epdata = epdatas[tid]
                 epmatf_wan = epmatf_wans[tid]
                 phself = phselfs[tid]
-                vk = vks[tid]
 
                 # println("$tid $ik")
                 xk = kpoints.vectors[ik]
@@ -132,23 +121,17 @@ addprocs(manager)
                 epdata.vdiagk .= @view vdiagk_save[:, :, ik]
 
                 # Electron eigenstate at k+q
-                hkq = epdata.buffer
-                get_fourier!(hkq, model.el_ham, xkq, mode=fourier_mode)
-                epdata.ekq_full .= solve_eigen_el!(epdata.ukq_full, hkq)
+                get_el_eigen!(epdata, "k+q", model.el_ham, xkq, fourier_mode)
 
-                # Apply energy window
-                skip_k = epdata_set_window!(epdata, window, "k")
-                skip_kq = epdata_set_window!(epdata, window, "k+q")
+                # Set energy window, skip if no state is inside the window
+                skip_k = epdata_set_window!(epdata, "k", window)
+                skip_kq = epdata_set_window!(epdata, "k+q", window)
                 if skip_k || skip_kq
                     continue
                 end
 
                 # Compute band velocity at k+q
-                get_fourier!(vk, model.el_ham_R, xkq, mode=fourier_mode)
-                apply_gauge_matrix!(vk, vk, epdata, "k+q", "k+q", 3)
-                @views for idir in 1:3
-                    epdata.vdiagkq[idir, epdata.rngkq] .= real.(diag(vk[:,:,idir])[epdata.rngkq])
-                end
+                get_el_velocity_diag!(epdata, "k+q", model.el_ham_R, xkq, fourier_mode)
 
                 # Transform e-ph matrix (Re, q) -> (k, q)
                 get_fourier!(epmatf_wan, epobj_q, xk, mode=fourier_mode)
@@ -194,16 +177,15 @@ end # everywhere
     window = (window_min, window_max)
 end
 
-@mpi_do manager
-begin
+@mpi_do manager begin
     using MPI
     using NPZ
     using EPW
     import EPW: mpi_split_iterator, mpi_bcast, mpi_gather, mpi_sum!
     world_comm = EPW.mpi_world_comm()
 
-    model = load_model(folder)
-    # model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
+    # model = load_model(folder)
+    model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 
     nkf = [12, 12, 12]
     nqf = [10, 10, 10]

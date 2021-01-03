@@ -14,7 +14,7 @@ BLAS.set_num_threads(1)
 
 push!(LOAD_PATH, "/home/jmlim/julia_epw/EPW.jl")
 using EPW
-using EPW.Diagonalize
+using EPW.WanToBloch
 
 function get_eigenvalues_el(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
         fourier_mode="normal")
@@ -34,11 +34,14 @@ function get_eigenvalues_el(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
         #     phase[ir] = cis(dot(r, 2pi*xk))
         # end
         # get_fourier!(hk, model.el_ham, xk, phase, mode=fourier_mode)
+        # eigenvalues[:, ik] = solve_eigen_el_valueonly!(hk)
 
-        # v2: Not using phase argument
-        get_fourier!(hk, model.el_ham, xk, mode=fourier_mode)
+        # # v2: Not using phase argument
+        # get_fourier!(hk, model.el_ham, xk, mode=fourier_mode)
+        # eigenvalues[:, ik] = solve_eigen_el_valueonly!(hk)
 
-        eigenvalues[:, ik] = solve_eigen_el_valueonly!(hk)
+        # v3: Wrapper
+        @views get_el_eigen_valueonly!(eigenvalues[:, ik], nw, model.el_ham, xk, fourier_mode)
     end
     return eigenvalues
 end
@@ -70,21 +73,18 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
     wtq = ones(Float64, nq) / nq
 
     elself = ElectronSelfEnergy(Float64, nw, nmodes, nk)
-    phself = PhononSelfEnergy(Float64, nw, nmodes, nq)
+    phselfs = [PhononSelfEnergy(Float64, nw, nmodes, nq) for i=1:nthreads()]
 
     epdatas = [ElPhData(Float64, nw, nmodes) for i=1:nthreads()]
 
     # Compute electron eigenvectors at k
     ek_save = zeros(Float64, nw, nk)
     uk_save = Array{ComplexF64,3}(undef, nw, nw, nk)
-    hks = [zeros(ComplexF64, nw, nw) for i=1:nthreads()]
 
-    @threads :static for ik in 1:nk
+    @views @threads :static for ik in 1:nk
     # for ik in 1:nk
-        hk = hks[Threads.threadid()]
         xk = kpoints.vectors[ik]
-        get_fourier!(hk, model.el_ham, xk, mode=fourier_mode)
-        @views ek_save[:, ik] = solve_eigen_el!(uk_save[:, :, ik], hk)
+        get_el_eigen!(ek_save[:, ik], uk_save[:, :, ik], nw, model.el_ham, xk, fourier_mode)
     end # ik
 
     omega_save = zeros(nmodes, nq)
@@ -127,6 +127,7 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
             tid = Threads.threadid()
             epdata = epdatas[tid]
             epmatf_wan = epmatf_wans[tid]
+            phself = phselfs[tid]
 
             # println("$tid $ik")
             xk = kpoints.vectors[ik]
@@ -141,9 +142,11 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
             epdata.uk_full .= @view uk_save[:, :, ik]
 
             # Electron eigenstate at k+q
-            hkq = epdata.buffer
-            get_fourier!(hkq, model.el_ham, xkq, mode=fourier_mode)
-            epdata.ekq_full .= solve_eigen_el!(epdata.ukq_full, hkq)
+            get_el_eigen!(epdata, "k+q", model.el_ham, xkq, fourier_mode)
+
+            # Set energy window
+            skip_k = epdata_set_window!(epdata, "k")
+            skip_kq = epdata_set_window!(epdata, "k+q")
 
             # Transform e-ph matrix (Re, q) -> (k, q)
             get_fourier!(epmatf_wan, epobj_q, xk, mode=fourier_mode)
@@ -152,7 +155,7 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
             apply_gauge_matrix!(epdata.ep, epmatf_wan, epdata, "k+q", "k", nmodes)
 
             # Compute g2 = |ep|^2 / omega
-            set_g2!(epdata)
+            epdata_set_g2!(epdata)
 
             # Now, we are done with matrix elements. All data saved in epdata.
 
@@ -167,6 +170,8 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
                 efermi=efermi, temperature=temperature, smear=degaussw)
         end # ik
     end # iq
+
+    ph_imsigma = sum([phself.imsigma for phself in phselfs])
 
     # Average over degenerate states
     imsigma_avg = average_degeneracy(elself.imsigma, ek_save)
