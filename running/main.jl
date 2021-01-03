@@ -93,7 +93,7 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
     dynq = zeros(ComplexF64, (nmodes, nmodes))
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epobj_q = WannierObject(model.el_ham.nr, model.el_ham.irvec,
+    epobj_eRpq = WannierObject(model.el_ham.nr, model.el_ham.irvec,
                 zeros(ComplexF64, (nw*nw*nmodes, model.el_ham.nr)))
 
     for iq in 1:nq
@@ -107,8 +107,7 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
         omegas .= solve_eigen_ph!(u_ph, dynq, model.mass)
         omega_save[:, iq] = omegas
 
-        # Transform e-ph matrix (Re, Rp) -> (Re, q)
-        get_eph_RR_to_Rq!(epobj_q, model.epmat, xq, u_ph, nmodes, model.nr_el, fourier_mode)
+        get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, u_ph, nmodes, model.nr_el, fourier_mode)
 
         epmatf_wans = [zeros(ComplexF64, (nw, nw, nmodes)) for i=1:nthreads()]
         nocc_qs = [zeros(Float64, nmodes,) for i=1:nthreads()]
@@ -129,25 +128,20 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
             epdata.wtk = wtk[ik]
             epdata.omega .= omegas
 
-            # Electron eigenstate at k. Use saved data.
+            # Use saved data for electron eigenstate at k.
             epdata.ek_full .= @view ek_save[:, ik]
             epdata.uk_full .= @view uk_save[:, :, ik]
 
-            # Electron eigenstate at k+q
             get_el_eigen!(epdata, "k+q", model.el_ham, xkq, fourier_mode)
 
             # Set energy window
             skip_k = epdata_set_window!(epdata, "k")
             skip_kq = epdata_set_window!(epdata, "k+q")
+            if skip_k || skip_kq
+                continue
+            end
 
-            # Transform e-ph matrix (Re, q) -> (k, q)
-            get_fourier!(epmatf_wan, epobj_q, xk, mode=fourier_mode)
-
-            # Rotate e-ph matrix from electron Wannier to BLoch
-            apply_gauge_matrix!(epdata.ep, epmatf_wan, epdata, "k+q", "k", nmodes)
-
-            # Compute g2 = |ep|^2 / omega
-            epdata_set_g2!(epdata)
+            get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
 
             # Now, we are done with matrix elements. All data saved in epdata.
 
@@ -177,6 +171,7 @@ folder = "/home/jmlim/julia_epw/silicon_nk2"
 folder = "/home/jmlim/julia_epw/silicon_nk6"
 folder = "/home/jmlim/julia_epw/silicon_nk6_window"
 model = load_model(folder)
+model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 
 kpoints = generate_kvec_grid(10, 10, 10)
 qpoints = generate_kvec_grid(5, 5, 5)

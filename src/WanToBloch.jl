@@ -14,6 +14,7 @@ export get_el_eigen!
 export get_el_eigen_valueonly!
 export get_el_velocity_diag!
 export get_eph_RR_to_Rq!
+export get_eph_Rq_to_kq!
 
 # Type for preallocated array. Did this because resize! only works for vectors.
 # TODO: Is there a better way?
@@ -29,11 +30,15 @@ const _buffer_el_velocity = [BufferArray(ComplexF64, 3)]
 const _buffer_el_velocity_tmp = [BufferArray(ComplexF64, 2)]
 const _buffer_nothreads_eph_RR_to_Rq = [BufferArray(ComplexF64, 3)]
 const _buffer_nothreads_eph_RR_to_Rq_tmp = [BufferArray(ComplexF64, 2)]
+const _buffer_eph_Rq_to_kq = [BufferArray(ComplexF64, 3)]
+const _buffer_eph_Rq_to_kq_tmp = [BufferArray(ComplexF64, 2)]
 
 function __init__()
     Threads.resize_nthreads!(_buffer_el_eigen)
     Threads.resize_nthreads!(_buffer_el_velocity)
     Threads.resize_nthreads!(_buffer_el_velocity_tmp)
+    Threads.resize_nthreads!(_buffer_eph_Rq_to_kq)
+    Threads.resize_nthreads!(_buffer_eph_Rq_to_kq_tmp)
 end
 
 function _get_buffer(buffer::Vector{BufferArray{T, N}}, size_needed::NTuple{N, Int}) where {T, N}
@@ -137,6 +142,39 @@ function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject{T},
         ep_Rq[:, :, ir] .= ep_Rq_tmp
     end
     update_op_r!(epobj_eRpq, ep_Rq)
+    nothing
+end
+
+"""
+    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq, fourier_mode="normal")
+Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
+
+# Arguments
+- `ep_kq`: Output. E-ph matrix in electron and phonon Bloch basis.
+- `epobj_eRpq`: Input. AbstractWannierObject. E-ph matrix in electron Wannier,
+    phonon Bloch basis.
+- `xk`: Input. k point vector.
+- `uk`, `ukq`: Input. Electron eigenstate at k and k+q, respectively.
+"""
+function get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq, fourier_mode="normal")
+    nbandkq, nbandk, nmodes = size(ep_kq)
+    @assert size(uk, 2) == nbandk
+    @assert size(ukq, 2) == nbandkq
+    @assert epobj_eRpq.ndata == size(ukq, 1) * size(uk, 1) * nmodes
+
+    ep_kq_wan = _get_buffer(_buffer_eph_Rq_to_kq, (size(ukq, 1), size(uk, 1), nmodes))
+    tmp_full = _get_buffer(_buffer_eph_Rq_to_kq_tmp, (size(ukq, 1), size(uk, 1)))
+    tmp = view(tmp_full, :, 1:nbandk)
+
+    get_fourier!(ep_kq_wan, epobj_eRpq, xk, mode=fourier_mode)
+
+    # Rotate e-ph matrix from electron Wannier to eigenstate basis
+    # ep_kq[ibkq, ibk, imode] = ukq'[ibkq, :] * ep_kq_wan[:, :, imode] * uk[:, ibk]
+    ukq_adj = Adjoint(ukq)
+    @views @inbounds for imode = 1:nmodes
+        mul!(tmp, ep_kq_wan[:, :, imode], uk)
+        mul!(ep_kq[:, :, imode], ukq_adj, tmp)
+    end
     nothing
 end
 

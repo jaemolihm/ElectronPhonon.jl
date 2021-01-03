@@ -2,7 +2,7 @@
 # For computing electron-phonon coupling at fine a k and q point
 
 import Base.@kwdef
-import EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag!
+import EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag!, get_eph_Rq_to_kq!
 
 export ElPhData
 export initialize_elphdata
@@ -82,6 +82,7 @@ left, right are "k" or "k+q".
 ndim: Optional. Third dimension of op_h and op_w. Loop over i=1:ndim.
 """
 @timing "gauge" function apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
+    @warn "apply_gauge_matrix! is deprecated"
     @assert size(op_h, 3) == ndim
     @assert size(op_w, 3) == ndim
     offset = epdata.iband_offset
@@ -183,14 +184,29 @@ Compute electron eigenenergy and eigenvector and save them in epdata.
 ktype: "k" or "k+q"
 """
 function get_el_velocity_diag!(epdata::ElPhData, ktype::String, el_ham_R, xk, fourier_mode="normal")
+    offset = epdata.iband_offset
     if ktype == "k"
-        @views uk = epdata.uk_full[:, epdata.rngk]
+        @views uk = epdata.uk_full[:, epdata.rngk .+ offset]
         @views velocity_diag = epdata.vdiagk[:, epdata.rngk]
     elseif ktype == "k+q"
-        @views uk = epdata.ukq_full[:, epdata.rngkq]
+        @views uk = epdata.ukq_full[:, epdata.rngkq .+ offset]
         @views velocity_diag = epdata.vdiagkq[:, epdata.rngkq]
     else
         error("ktype must be k or k+q, not $ktype")
     end
     get_el_velocity_diag!(velocity_diag, epdata.nw, el_ham_R, xk, uk, fourier_mode)
+end
+
+
+"""
+    get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk, fourier_mode="normal")
+Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
+"""
+function get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk, fourier_mode="normal")
+    offset = epdata.iband_offset
+    @views uk = epdata.uk_full[:, epdata.rngk .+ offset]
+    @views ukq = epdata.ukq_full[:, epdata.rngkq .+ offset]
+    @views ep_kq = epdata.ep[epdata.rngkq, epdata.rngk, :]
+    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq, fourier_mode)
+    epdata_set_g2!(epdata)
 end

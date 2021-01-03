@@ -71,7 +71,7 @@ addprocs(manager)
         dynq = zeros(ComplexF64, (nmodes, nmodes))
 
         # E-ph matrix in electron Wannier, phonon Bloch representation
-        epobj_q = WannierObject(model.el_ham.nr, model.el_ham.irvec,
+        epobj_eRpq = WannierObject(model.el_ham.nr, model.el_ham.irvec,
                     zeros(ComplexF64, (nw*nw*nmodes, model.el_ham.nr)))
 
         for iq in 1:nq
@@ -85,8 +85,7 @@ addprocs(manager)
             omegas .= solve_eigen_ph!(u_ph, dynq, model.mass)
             omega_save[:, iq] = omegas
 
-            # Transform e-ph matrix (Re, Rp) -> (Re, q)
-            get_eph_RR_to_Rq!(epobj_q, model.epmat, xq, u_ph, nmodes, model.nr_el, fourier_mode)
+            get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, u_ph, nmodes, model.nr_el, fourier_mode)
 
             epmatf_wans = [zeros(ComplexF64, (nw, nw, nmodes)) for i=1:nthreads()]
 
@@ -105,12 +104,11 @@ addprocs(manager)
                 epdata.wtq = qpoints.weights[iq]
                 epdata.omega .= omegas
 
-                # Electron eigenstate at k. Use saved data.
+                # Use saved data for electron eigenstate at k.
                 epdata.ek_full .= @view ek_full_save[:, ik]
                 epdata.uk_full .= @view uk_full_save[:, :, ik]
                 epdata.vdiagk .= @view vdiagk_save[:, :, ik]
 
-                # Electron eigenstate at k+q
                 get_el_eigen!(epdata, "k+q", model.el_ham, xkq, fourier_mode)
 
                 # Set energy window, skip if no state is inside the window
@@ -120,17 +118,8 @@ addprocs(manager)
                     continue
                 end
 
-                # Compute band velocity at k+q
                 get_el_velocity_diag!(epdata, "k+q", model.el_ham_R, xkq, fourier_mode)
-
-                # Transform e-ph matrix (Re, q) -> (k, q)
-                get_fourier!(epmatf_wan, epobj_q, xk, mode=fourier_mode)
-
-                # Rotate e-ph matrix from electron Wannier to BLoch
-                apply_gauge_matrix!(epdata.ep, epmatf_wan, epdata, "k+q", "k", nmodes)
-
-                # Compute g2 = |ep|^2 / omega
-                epdata_set_g2!(epdata)
+                get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
 
                 # Now, we are done with matrix elements. All data saved in epdata.
 
