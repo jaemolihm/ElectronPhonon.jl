@@ -69,13 +69,10 @@ addprocs(manager)
         omegas = zeros(nmodes)
         u_ph = zeros(ComplexF64, (nmodes, nmodes))
         dynq = zeros(ComplexF64, (nmodes, nmodes))
-        epmat_q_tmp = Array{ComplexF64,3}(undef, nw*nw, nmodes, model.nr_el)
 
         # E-ph matrix in electron Wannier, phonon Bloch representation
         epobj_q = WannierObject(model.el_ham.nr, model.el_ham.irvec,
                     zeros(ComplexF64, (nw*nw*nmodes, model.el_ham.nr)))
-        epmat_re_q_op_r = zeros(ComplexF64, nw*nw, nmodes, model.nr_el)
-
 
         for iq in 1:nq
             if mod(iq, 100) == 0 && mpi_isroot()
@@ -89,14 +86,7 @@ addprocs(manager)
             omega_save[:, iq] = omegas
 
             # Transform e-ph matrix (Re, Rp) -> (Re, q)
-            get_fourier!(epmat_q_tmp, model.epmat, xq, mode=fourier_mode)
-            epmat_re_q_op_r .= 0
-            @views for jmode in 1:nmodes, imode in 1:nmodes
-                epmat_re_q_op_r[:, jmode, :] .+= (epmat_q_tmp[:, imode, :]
-                                                .* u_ph[imode, jmode])
-            end
-            epmat_re_q = reshape(epmat_re_q_op_r, (nw*nw*nmodes, model.nr_el))
-            update_op_r!(epobj_q, epmat_re_q)
+            get_eph_RR_to_Rq!(epobj_q, model.epmat, xq, u_ph, nmodes, model.nr_el, fourier_mode)
 
             epmatf_wans = [zeros(ComplexF64, (nw, nw, nmodes)) for i=1:nthreads()]
 

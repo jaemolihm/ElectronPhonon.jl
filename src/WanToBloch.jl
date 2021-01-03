@@ -6,24 +6,29 @@ module WanToBloch
 
 
 using LinearAlgebra
-using EPW: get_fourier!
+using EPW: AbstractWannierObject, WannierObject
+using EPW: get_fourier!, update_op_r!
 using EPW: solve_eigen_el!, solve_eigen_el_valueonly!
 
 export get_el_eigen!
 export get_el_eigen_valueonly!
 export get_el_velocity_diag!
+export get_eph_RR_to_Rq!
 
 # Type for preallocated array. Did this because resize! only works for vectors.
 # TODO: Is there a better way?
 struct BufferArray{T, N}
     arr::Array{T, N}
 end
+BufferArray(T, N) = BufferArray(Array{T, N}(undef, (0 for _ in 1:N)...))
 
 # TODO: Allow the type to change.
 # Preallocated buffers
-const _buffer_el_eigen = [BufferArray(zeros(ComplexF64, 0, 0))]
-const _buffer_el_velocity = [BufferArray(zeros(ComplexF64, 0, 0, 0))]
-const _buffer_el_velocity_tmp = [BufferArray(zeros(ComplexF64, 0, 0))]
+const _buffer_el_eigen = [BufferArray(ComplexF64, 2)]
+const _buffer_el_velocity = [BufferArray(ComplexF64, 3)]
+const _buffer_el_velocity_tmp = [BufferArray(ComplexF64, 2)]
+const _buffer_nothreads_eph_RR_to_Rq = [BufferArray(ComplexF64, 3)]
+const _buffer_nothreads_eph_RR_to_Rq_tmp = [BufferArray(ComplexF64, 2)]
 
 function __init__()
     Threads.resize_nthreads!(_buffer_el_eigen)
@@ -93,6 +98,45 @@ function get_el_velocity_diag!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode
             velocity_diag[idir, iband] = real(dot(uk[:, iband], tmp[:, iband]))
         end
     end
+    nothing
+end
+
+
+"""
+`get_eph_RR_to_Rq!(epobj_eRpq::WannierObject{T}, epmat::AbstractWannierObject{T},
+xq, u_ph, nmodes, nr_el, fourier_mode="normal") where {T}`
+
+Compute electron-phonon coupling matrix in electron Wannier, phonon Bloch basis.
+Multithreading is not supported because of large buffer array size.
+
+# Arguments
+- `epobj_eRpq`: Output. E-ph matrix in electron Wannier, phonon Bloch basis.
+    Must be initialized before calling. Only the op_r field is modified.
+- `epmat`: Input. E-ph matrix in electron Wannier, phonon Wannier basis.
+- `xq`: Input. q point vector.
+- `nmodes`: Input. Number of phonon modes.
+- `nr_el`: Input. Number of R points for electron Wannier basis.
+- `u_ph`: Input. nmodes * nmodes matrix containing phonon eigenvectors.
+"""
+function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject{T},
+        epmat::AbstractWannierObject{T}, xq, u_ph, nmodes, nr_el, fourier_mode="normal") where {T}
+    @assert size(u_ph) == (nmodes, nmodes)
+    @assert mod(epmat.ndata, nmodes * nr_el) == 0
+    @assert Threads.threadid() == 1
+    nbasis = div(epmat.ndata, nmodes * nr_el) # Number of electron basis squared.
+
+    ep_Rq = _get_buffer(_buffer_nothreads_eph_RR_to_Rq, (nbasis, nmodes, nr_el))
+    ep_Rq_tmp = _get_buffer(_buffer_nothreads_eph_RR_to_Rq_tmp, (nbasis, nmodes))
+
+    get_fourier!(ep_Rq, epmat, xq, mode=fourier_mode)
+
+    # Transform from phonon Cartesian to eigenmode basis, one ir_el at a time.
+    for ir in 1:nr_el
+        ep_Rq_tmp .= 0
+        @views mul!(ep_Rq_tmp, ep_Rq[:, :, ir], u_ph)
+        ep_Rq[:, :, ir] .= ep_Rq_tmp
+    end
+    update_op_r!(epobj_eRpq, ep_Rq)
     nothing
 end
 

@@ -67,8 +67,13 @@ function get_phase_expikr!(obj, xk, tid)
 end
 
 function update_op_r!(obj, op_r_new)
-    @assert size(obj.op_r) == size(op_r_new)
-    obj.op_r .= op_r_new
+    # Regarding the use of ReshapedArray, see
+    # https://discourse.julialang.org/t/passing-views-to-function-without-allocation/51992/12
+    # https://github.com/ITensor/NDTensors.jl/issues/32
+    @assert length(obj.op_r) == length(op_r_new)
+    @assert eltype(obj.op_r) == eltype(op_r_new)
+    # Reshape and set obj.op_r .= op_r_new without allocation
+    obj.op_r .= Base.ReshapedArray(op_r_new, size(obj.op_r), ())
     for gridopt in obj.gridopts
         gridopt.k1 = NaN
         gridopt.k2 = NaN
