@@ -8,11 +8,12 @@ module WanToBloch
 using LinearAlgebra
 using EPW: AbstractWannierObject, WannierObject
 using EPW: get_fourier!, update_op_r!
-using EPW: solve_eigen_el!, solve_eigen_el_valueonly!
+using EPW: solve_eigen_el!, solve_eigen_el_valueonly!, solve_eigen_ph!
 
 export get_el_eigen!
 export get_el_eigen_valueonly!
 export get_el_velocity_diag!
+export get_ph_eigen!
 export get_eph_RR_to_Rq!
 export get_eph_Rq_to_kq!
 
@@ -28,6 +29,7 @@ BufferArray(T, N) = BufferArray(Array{T, N}(undef, (0 for _ in 1:N)...))
 const _buffer_el_eigen = [BufferArray(ComplexF64, 2)]
 const _buffer_el_velocity = [BufferArray(ComplexF64, 3)]
 const _buffer_el_velocity_tmp = [BufferArray(ComplexF64, 2)]
+const _buffer_ph_eigen = [BufferArray(ComplexF64, 2)]
 const _buffer_nothreads_eph_RR_to_Rq = [BufferArray(ComplexF64, 3)]
 const _buffer_nothreads_eph_RR_to_Rq_tmp = [BufferArray(ComplexF64, 2)]
 const _buffer_eph_Rq_to_kq = [BufferArray(ComplexF64, 3)]
@@ -37,6 +39,7 @@ function __init__()
     Threads.resize_nthreads!(_buffer_el_eigen)
     Threads.resize_nthreads!(_buffer_el_velocity)
     Threads.resize_nthreads!(_buffer_el_velocity_tmp)
+    Threads.resize_nthreads!(_buffer_ph_eigen)
     Threads.resize_nthreads!(_buffer_eph_Rq_to_kq)
     Threads.resize_nthreads!(_buffer_eph_Rq_to_kq_tmp)
 end
@@ -49,9 +52,11 @@ function _get_buffer(buffer::Vector{BufferArray{T, N}}, size_needed::NTuple{N, I
     buffer[tid].arr
 end
 
+# =============================================================================
+#  Electrons
+
 """
     get_el_eigen!(values, vectors, nw, el_ham, xk, fourier_mode="normal")
-
 Compute electron eigenenergy and eigenvector.
 """
 function get_el_eigen!(values, vectors, nw, el_ham, xk, fourier_mode="normal")
@@ -106,10 +111,32 @@ function get_el_velocity_diag!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode
     nothing
 end
 
+# =============================================================================
+#  Phonons
+
+"""
+    get_ph_eigen!(values, vectors, ph_dyn, mass, xq, fourier_mode="normal")
+Compute electron eigenenergy and eigenvector.
+"""
+function get_ph_eigen!(values, vectors, ph_dyn, mass, xq, fourier_mode="normal")
+    nmodes = length(values)
+    @assert size(vectors) == (nmodes, nmodes)
+    @assert size(mass) == (nmodes,)
+    @assert ph_dyn.ndata == nmodes^2
+
+    dynq = _get_buffer(_buffer_ph_eigen, (nmodes, nmodes))
+
+    get_fourier!(dynq, ph_dyn, xq, mode=fourier_mode)
+    values .= solve_eigen_ph!(vectors, dynq, mass)
+    nothing
+end
+
+# =============================================================================
+#  Electron-phonon coupling
 
 """
 `get_eph_RR_to_Rq!(epobj_eRpq::WannierObject{T}, epmat::AbstractWannierObject{T},
-xq, u_ph, nmodes, nr_el, fourier_mode="normal") where {T}`
+xq, u_ph, fourier_mode="normal") where {T}`
 
 Compute electron-phonon coupling matrix in electron Wannier, phonon Bloch basis.
 Multithreading is not supported because of large buffer array size.
@@ -119,16 +146,17 @@ Multithreading is not supported because of large buffer array size.
     Must be initialized before calling. Only the op_r field is modified.
 - `epmat`: Input. E-ph matrix in electron Wannier, phonon Wannier basis.
 - `xq`: Input. q point vector.
-- `nmodes`: Input. Number of phonon modes.
-- `nr_el`: Input. Number of R points for electron Wannier basis.
 - `u_ph`: Input. nmodes * nmodes matrix containing phonon eigenvectors.
 """
 function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject{T},
-        epmat::AbstractWannierObject{T}, xq, u_ph, nmodes, nr_el, fourier_mode="normal") where {T}
+        epmat::AbstractWannierObject{T}, xq, u_ph, fourier_mode="normal") where {T}
+    nr_el = epobj_eRpq.nr
+    nmodes = size(u_ph, 1)
+    nbasis = div(epobj_eRpq.ndata, nmodes) # Number of electron basis squared.
     @assert size(u_ph) == (nmodes, nmodes)
-    @assert mod(epmat.ndata, nmodes * nr_el) == 0
     @assert Threads.threadid() == 1
-    nbasis = div(epmat.ndata, nmodes * nr_el) # Number of electron basis squared.
+    @assert epobj_eRpq.ndata == nbasis * nmodes
+    @assert epmat.ndata == nbasis * nmodes * nr_el
 
     ep_Rq = _get_buffer(_buffer_nothreads_eph_RR_to_Rq, (nbasis, nmodes, nr_el))
     ep_Rq_tmp = _get_buffer(_buffer_nothreads_eph_RR_to_Rq_tmp, (nbasis, nmodes))

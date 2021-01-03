@@ -68,7 +68,6 @@ addprocs(manager)
         omega_save = zeros(nmodes, nq)
         omegas = zeros(nmodes)
         u_ph = zeros(ComplexF64, (nmodes, nmodes))
-        dynq = zeros(ComplexF64, (nmodes, nmodes))
 
         # E-ph matrix in electron Wannier, phonon Bloch representation
         epobj_eRpq = WannierObject(model.el_ham.nr, model.el_ham.irvec,
@@ -81,19 +80,15 @@ addprocs(manager)
             xq = qpoints.vectors[iq]
 
             # Phonon eigenvalues
-            get_fourier!(dynq, model.ph_dyn, xq, mode=fourier_mode)
-            omegas .= solve_eigen_ph!(u_ph, dynq, model.mass)
-            omega_save[:, iq] = omegas
+            get_ph_eigen!(omegas, u_ph, model.ph_dyn, model.mass, xq, fourier_mode)
+            omega_save[:, iq] .= omegas
 
-            get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, u_ph, nmodes, model.nr_el, fourier_mode)
-
-            epmatf_wans = [zeros(ComplexF64, (nw, nw, nmodes)) for i=1:nthreads()]
+            get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, u_ph, fourier_mode)
 
             Threads.@threads :static for ik in 1:nk
             # for ik in 1:nk
                 tid = Threads.threadid()
                 epdata = epdatas[tid]
-                epmatf_wan = epmatf_wans[tid]
                 phself = phselfs[tid]
 
                 # println("$tid $ik")
