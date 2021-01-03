@@ -2,7 +2,6 @@ using EPW
 using Test
 using Random
 using LinearAlgebra
-using EPW.Diagonalize
 
 @testset "diagonalize" begin
     Random.seed!(123)
