@@ -4,7 +4,6 @@ Use thread-save preallocated buffers.
 """
 module WanToBloch
 
-
 using LinearAlgebra
 using EPW: AbstractWannierObject, WannierObject
 using EPW: get_fourier!, update_op_r!
@@ -17,23 +16,16 @@ export get_ph_eigen!
 export get_eph_RR_to_Rq!
 export get_eph_Rq_to_kq!
 
-# Type for preallocated array. Did this because resize! only works for vectors.
-# TODO: Is there a better way?
-struct BufferArray{T, N}
-    arr::Array{T, N}
-end
-BufferArray(T, N) = BufferArray(Array{T, N}(undef, (0 for _ in 1:N)...))
-
 # TODO: Allow the type to change.
 # Preallocated buffers
-const _buffer_el_eigen = [BufferArray(ComplexF64, 2)]
-const _buffer_el_velocity = [BufferArray(ComplexF64, 3)]
-const _buffer_el_velocity_tmp = [BufferArray(ComplexF64, 2)]
-const _buffer_ph_eigen = [BufferArray(ComplexF64, 2)]
-const _buffer_nothreads_eph_RR_to_Rq = [BufferArray(ComplexF64, 3)]
-const _buffer_nothreads_eph_RR_to_Rq_tmp = [BufferArray(ComplexF64, 2)]
-const _buffer_eph_Rq_to_kq = [BufferArray(ComplexF64, 3)]
-const _buffer_eph_Rq_to_kq_tmp = [BufferArray(ComplexF64, 2)]
+const _buffer_el_eigen = [Array{ComplexF64, 2}(undef, 0, 0)]
+const _buffer_el_velocity = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
+const _buffer_el_velocity_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
+const _buffer_ph_eigen = [Array{ComplexF64, 2}(undef, 0, 0)]
+const _buffer_nothreads_eph_RR_to_Rq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
+const _buffer_nothreads_eph_RR_to_Rq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
+const _buffer_eph_Rq_to_kq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
+const _buffer_eph_Rq_to_kq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
 
 function __init__()
     Threads.resize_nthreads!(_buffer_el_eigen)
@@ -44,12 +36,16 @@ function __init__()
     Threads.resize_nthreads!(_buffer_eph_Rq_to_kq_tmp)
 end
 
-function _get_buffer(buffer::Vector{BufferArray{T, N}}, size_needed::NTuple{N, Int}) where {T, N}
+"""
+    _get_buffer(buffer::Vector{Array{T, N}}, size_needed::NTuple{N, Int}) where {T, N}
+Get preallocated buffer in a thread-safe way.
+Resize buffer if the size is differet from the needed size"""
+function _get_buffer(buffer::Vector{Array{T, N}}, size_needed::NTuple{N, Int}) where {T, N}
     tid = Threads.threadid()
-    if size(buffer[tid].arr) != size_needed
-        buffer[tid] = BufferArray(zeros(T, size_needed))
+    if size(buffer[tid]) != size_needed
+        buffer[tid] = zeros(T, size_needed)
     end
-    buffer[tid].arr
+    buffer[tid]
 end
 
 # =============================================================================
