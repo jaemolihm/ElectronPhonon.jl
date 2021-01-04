@@ -9,9 +9,22 @@ struct Kpoints{T <: Real}
     weights::Vector{T}       # Weight of each k points
 end
 
-"Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
-Return k points for global index in the given range."
-function generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer, rng)
+"""
+    generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer)
+Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
+Return all k points.
+"""
+function generate_kvec_grid(nk1, nk2, nk3)
+    nk = nk1 * nk2 * nk3
+    generate_kvec_grid(nk1, nk2, nk3, 1:nk)
+end
+
+"""
+    generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer, rng)
+Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
+Return k points for global index in the given range.
+"""
+function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int})
     # TODO: Type
     nk_grid = nk1 * nk2 * nk3
     @assert rng[1] >= 1
@@ -28,18 +41,14 @@ function generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer, rng)
     Kpoints(nk, kvecs, fill(1/nk_grid, (nk,)))
 end
 
-"Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
-Return all k points."
-function generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer)
+"""
+    generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer, mpi_comm::MPI.Comm)
+Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
+Return all k points. k points are distributed over the MPI communicator mpi_comm.
+"""
+function generate_kvec_grid(nk1, nk2, nk3, mpi_comm::MPI.Comm)
     nk = nk1 * nk2 * nk3
-    generate_kvec_grid(nk1, nk2, nk3, 1:nk)
-end
-
-"Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
-Return all k points. Distribute among the MPI communicator comm."
-function generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer, comm::MPI.Comm)
-    nk = nk1 * nk2 * nk3
-    range = mpi_split_iterator(1:nk, comm)
+    range = mpi_split_iterator(1:nk, mpi_comm)
     generate_kvec_grid(nk1, nk2, nk3, range)
 end
 

@@ -29,6 +29,7 @@ include("selfenergy_electron.jl")
 include("selfenergy_phonon.jl")
 include("transport_electron.jl")
 include("model.jl")
+include("run_electron_phonon.jl")
 
 
 end

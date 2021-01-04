@@ -43,7 +43,7 @@ function filter_kpoints(kpoints::Kpoints, nw, el_ham, window)
 end
 
 """
-    filter_kpoints_grid(nk1, nk2, nk3, nw, window, el_ham) -> Kpoints
+    filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window) -> Kpoints
 
 Generate k grid of size nk1 * nk2 * nk3 and filter the k points
 """
@@ -78,12 +78,11 @@ end
     filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Comm) -> Kpoints
 
 Generate k grid of size nk1 * nk2 * nk3 and filter the k points.
-Parallelized over the MPI communicator mpi_comm
+Obtained k points are distributed over the MPI communicator mpi_comm.
 """
 function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Comm)
     # Distribute k points
-    range = EPW.mpi_split_iterator(1:nk1*nk2*nk3, mpi_comm)
-    kpoints = generate_kvec_grid(nk1, nk2, nk3, range)
+    kpoints = generate_kvec_grid(nk1, nk2, nk3, mpi_comm)
 
     # If the window is trivial, return the whole grid
     if window === (-Inf, Inf)
@@ -94,9 +93,6 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Co
     ik_keep = zeros(Bool, kpoints.n)
     band_min = nw
     band_max = 1
-
-    band_min = mpi_min(band_min, mpi_comm)
-    band_max = mpi_max(band_max, mpi_comm)
 
     for ik in 1:kpoints.n
         xk = kpoints.vectors[ik]
@@ -111,6 +107,9 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Co
     end
     k_filtered = EPW.get_filtered_kpoints(kpoints, ik_keep)
 
+    band_min = mpi_min(band_min, mpi_comm)
+    band_max = mpi_max(band_max, mpi_comm)
+
     # TODO: Make function kpoints_gather
     # TODO: Make gather + redistribute as a single function for Kpoints
 
@@ -120,7 +119,8 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Co
 
     # Redistribute k points
     range = EPW.mpi_split_iterator(1:length(kvectors), mpi_comm)
-    Kpoints(length(range), kvectors[range], weights[range])
+    new_kpoints = Kpoints(length(range), kvectors[range], weights[range])
+    new_kpoints, band_min, band_max
 end
 
 """

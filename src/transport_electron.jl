@@ -1,5 +1,6 @@
 
 # Functions related to calculation of electron conductivity
+using Base.Threads
 using Parameters
 using Printf
 
@@ -19,7 +20,7 @@ export compute_lifetime_serta!
 end
 
 # Data and buffers for SERTA (self-energy relaxation-time approximation) conductivity
-Base.@kwdef struct TransportSERTA{T <: Real}
+struct TransportSERTA{T <: Real}
     inv_τ::Array{T, 3}
 
     # thread-safe buffers
@@ -28,11 +29,14 @@ Base.@kwdef struct TransportSERTA{T <: Real}
 end
 
 function TransportSERTA(T, nband::Int, nmodes::Int, nk::Int, ntemperatures::Int)
-    TransportSERTA{T}(
-        inv_τ=zeros(T, nband, nk, ntemperatures),
-        nocc_q=[zeros(T, nmodes) for i=1:nthreads()],
-        focc_kq=[zeros(T, nband) for i=1:nthreads()],
+    data = TransportSERTA{T}(
+        zeros(T, nband, nk, ntemperatures),
+        [zeros(T, nmodes)],
+        [zeros(T, nband)],
     )
+    Threads.resize_nthreads!(data.nocc_q)
+    Threads.resize_nthreads!(data.focc_kq)
+    data
 end
 
 function transport_set_μ!(parameters::TransportParams, energy, weights, volume)
