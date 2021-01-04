@@ -20,6 +20,10 @@ function occ_fermion(value, occ_type="fd")
     end
 end
 
+function occ_fermion_derivative(value)
+    1 / (2 + exp(-value) + exp(value))
+end
+
 function occ_boson(value, occ_type="be")
     if occ_type == "be"
         1.0 / (exp(value) - 1.0)

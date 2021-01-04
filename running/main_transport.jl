@@ -31,7 +31,7 @@ window_min = 6.2 * unit_to_aru(:eV)
 window = (window_min, window_max)
 
 model = load_model(folder)
-# model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
+model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 
 nkf = [15, 15, 15]
 nqf = [15, 15, 15]
@@ -64,6 +64,9 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints, qpoints::EPW.Kpo
         epdata.iband_offset = iband_min - 1
     end
 
+    transport_serta = TransportSERTA(Float64, nband, nmodes, nk,
+        length(transport_params.Tlist))
+
     # Compute and save electron matrix elements at k
     ek_full_save = zeros(Float64, nw, nk)
     uk_full_save = Array{ComplexF64,3}(undef, nw, nw, nk)
@@ -84,10 +87,7 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints, qpoints::EPW.Kpo
     end # ik
 
     # Compute chemical potential
-    μ = transport_get_μ(ek_full_save, kpoints.weights, transport_params)
-    @info @sprintf "T = %.1f" transport_params.T / unit_to_aru(:K)
-    @info @sprintf "n = %.1e cm^-3" transport_params.n / (model.volume/unit_to_aru(:cm)^3)
-    @info @sprintf "μ = %.4f eV" μ / unit_to_aru(:eV)
+    μ = transport_set_μ!(transport_params, ek_full_save, kpoints.weights, model.volume)
 
     omega_save = zeros(nmodes, nq)
     omegas = zeros(nmodes)
@@ -143,32 +143,21 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints, qpoints::EPW.Kpo
             # Now, we are done with matrix elements. All data saved in epdata.
 
             # Calculate physical quantities.
-
-            # compute_electron_selfen!(elself, epdata, ik;
-            #     efermi=efermi, temperature=temperature, smear=degaussw)
-            # compute_phonon_selfen!(phself, epdata, iq;
-            #     efermi=efermi, temperature=temperature, smear=degaussw)
+            compute_lifetime_serta!(transport_serta, epdata, transport_params, ik)
         end # ik
     end # iq
-
-    # ph_imsigma = sum([phself.imsigma for phself in phselfs])
-    #
-    # # Average over degenerate states
-    # el_imsigma_avg = average_degeneracy(elself.imsigma, ek_full_save[iband_min:iband_max, :])
-    # ph_imsigma_avg = average_degeneracy(ph_imsigma, omega_save)
-    #
-    # (ek=ek_full_save, omega=omega_save,
-    # el_imsigma=el_imsigma_avg, ph_imsigma=ph_imsigma_avg,)
+    (energy=ek_full_save, vel_diag=vdiagk_save,
+    transport_serta=transport_serta, )
 end
 
-transport_params = TransportParams(T = 300.0 * unit_to_aru(:K),
-                n = 1.0e15 * (model.volume / unit_to_aru(:cm)^3),
-                degaussw = 50.0 * unit_to_aru(:meV),
-                carrier_type = "e",
-                nband_valence = 4,
-                spin_degeneracy = 2)
+transport_params = TransportParams{Float64}(
+    Tlist = [100.0, 200.0, 300.0] .* unit_to_aru(:K),
+    n = 1.0e15 * model.volume / unit_to_aru(:cm)^3,
+    smearing = 50.0 * unit_to_aru(:meV),
+    carrier_type = "e",
+    nband_valence = 4,
+    spin_degeneracy = 2)
 
-# Electron-phonon coupling
 @time output = fourier_eph(model, kpoints, qpoints,
     fourier_mode="gridopt",
     window=window,
@@ -176,3 +165,21 @@ transport_params = TransportParams(T = 300.0 * unit_to_aru(:K),
     iband_max=ib_max,
     transport_params=transport_params,
 )
+
+
+σlist = EPW.compute_mobility_serta!(output.transport_serta.inv_τ,
+    output.energy[ib_min:ib_max, :], output.vel_diag, kpoints.weights, transport_params, window)
+
+EPW.transport_print_mobility(σlist, transport_params, model.volume)
+
+
+# Electron-phonon coupling
+Profile.clear()
+@profile output = fourier_eph(model, kpoints, qpoints,
+    fourier_mode="gridopt",
+    window=window,
+    iband_min=ib_min,
+    iband_max=ib_max,
+    transport_params=transport_params,
+)
+Juno.profiler()
