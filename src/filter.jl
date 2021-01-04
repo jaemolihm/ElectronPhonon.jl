@@ -12,9 +12,9 @@ export filter_kpoints
 export filter_kpoints_grid
 export filter_qpoints
 
-"Test whether e is inside the window."
+"Test whether e is inside the window. Assume e is sorted"
 function inside_window(e, window_min, window_max)
-    findall((e .< window_max) .& (e .> window_min))
+    searchsortedfirst(e, window_min):searchsortedlast(e, window_max)
 end
 
 "Filter Kpoints object"
@@ -135,13 +135,13 @@ function filter_qpoints(qpoints, kpoints, nw, el_ham, window)
     @threads for iq in 1:qpoints.n
         hk = hks[threadid()]
         xq = qpoints.vectors[iq]
-        for ik in 1:kpoints.n
-            xkq = xq + kpoints.vectors[ik]
+        for xk in kpoints.vectors
+            xkq = xq + xk
             get_fourier!(hk, el_ham, xkq, mode="gridopt")
             eigenvalues = solve_eigen_el_valueonly!(hk)
 
             # If k+q is inside window, use this q point
-            if ! isempty(EPW.inside_window(eigenvalues, window...))
+            if ! isempty(inside_window(eigenvalues, window...))
                 iq_keep[iq] = true
                 break
             end
