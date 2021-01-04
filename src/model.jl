@@ -8,12 +8,11 @@ All data is in coarse real-space grid."
 Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
     # Lattice vector in Bohr. lattice[:, i] is the i-th lattice vector.
     lattice::Mat3{Float64}
+    volume::Float64
     mass::Array{Float64,1}
 
     nw::Int
     nmodes::Int
-
-    nr_el::Int
 
     el_ham::WannierObject{Float64}
     # TODO: Use Hermiticity of hk
@@ -170,8 +169,8 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         epmat = WannierObject(nr_ep, irvec_ep, epmat_re_rp)
     end
 
-    model = ModelEPW(lattice=lattice, nw=nw, nmodes=nmodes, mass=mass,
-        nr_el=nr_el,
+    model = ModelEPW(lattice=lattice, volume=det(lattice),
+        nw=nw, nmodes=nmodes, mass=mass,
         el_ham=el_ham, el_ham_R=el_ham_R, ph_dyn=ph_dyn, epmat=epmat
     )
 

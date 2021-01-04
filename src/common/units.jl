@@ -13,6 +13,8 @@ module units
     const eV = 0.03674932248 * 2   # electron volt -> Rydberg
     const meV = 0.03674932248 * 2 * 1E-3  # mili electron volt -> Rydberg
     const Å  = 1.8897261254578281  # Ångström -> Bohr
+    const cm = 1.8897261254578281 * 1E8  # cm -> Bohr
+    const m  = 1.8897261254578281 * 1E10  # m -> Bohr
     const K  = 3.166810508e-6 * 2  # Kelvin -> Rydberg
 end
 

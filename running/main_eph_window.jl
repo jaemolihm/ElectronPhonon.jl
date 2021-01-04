@@ -29,7 +29,9 @@ addprocs(manager)
             fourier_mode="normal",
             window=(-Inf,Inf),
             iband_min=1,
-            iband_max=model.nw,)
+            iband_max=model.nw,
+            temperature
+        )
 
         nw = model.nw
         nmodes = model.nmodes
@@ -120,7 +122,6 @@ addprocs(manager)
 
                 # Calculate physical quantities.
                 efermi = 5.40 * unit_to_aru(:eV)
-                temperature = 300.0 * unit_to_aru(:K)
                 degaussw = 0.2 * unit_to_aru(:eV)
 
                 compute_electron_selfen!(elself, epdata, ik;
@@ -158,15 +159,14 @@ end
     import EPW: mpi_split_iterator, mpi_bcast, mpi_gather, mpi_sum!
     world_comm = EPW.mpi_world_comm()
 
-    # model = load_model(folder)
-    model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
+    model = load_model(folder)
+    # model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 
     nkf = [12, 12, 12]
     nqf = [10, 10, 10]
 
     # Do not distribute k points
     kpoints, ib_min, ib_max = filter_kpoints_grid(nkf..., model.nw, model.el_ham, window)
-    nband = ib_max - ib_min + 1
 
     # Distribute q points
     qpoints = generate_kvec_grid(nqf..., world_comm)
@@ -178,6 +178,7 @@ end
         window=window,
         iband_min=ib_min,
         iband_max=ib_max,
+        temperature=300 * unit_to_aru(:K)
     )
 
     ek_all = output.ek
