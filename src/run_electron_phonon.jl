@@ -47,6 +47,8 @@ function run_eph_outer_loop_q(
     # TODO: Allow q_input to be a Kpoints object
     # TODO: Implement mpi_comm_k
 
+    compute_transport = transport_params !== nothing
+
     nw = model.nw
     nmodes = model.nmodes
 
@@ -75,8 +77,10 @@ function run_eph_outer_loop_q(
         epdata.iband_offset = iband_min - 1
     end
 
-    transport_serta = TransportSERTA(Float64, nband, nmodes, nk,
-        length(transport_params.Tlist))
+    if compute_transport
+        transport_serta = TransportSERTA(Float64, nband, nmodes, nk,
+            length(transport_params.Tlist))
+    end
 
     # Compute and save electron matrix elements at k
     ek_full_save = zeros(Float64, nw, nk)
@@ -154,10 +158,18 @@ function run_eph_outer_loop_q(
             # Now, we are done with matrix elements. All data saved in epdata.
 
             # Calculate physical quantities.
-            compute_lifetime_serta!(transport_serta, epdata, transport_params, ik)
+            if compute_transport
+                compute_lifetime_serta!(transport_serta, epdata, transport_params, ik)
+            end
         end # ik
     end # iq
-    (iband_rng=iband_min:iband_max,
-    energy=ek_full_save, vel_diag=vdiagk_save,
-    transport_serta=transport_serta, )
+
+    if mpi_comm_q !== nothing
+        EPW.mpi_sum!(transport_serta.inv_τ, mpi_comm_q)
+    end
+
+    if compute_transport
+        compute_mobility_serta!(transport_params, transport_serta.inv_τ,
+            ek_full_save[iband_min:iband_max, :], vdiagk_save, kpoints.weights, window)
+    end
 end

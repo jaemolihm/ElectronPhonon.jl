@@ -5,9 +5,6 @@ using Parameters
 using Printf
 
 export TransportParams
-export TransportSERTA
-export transport_set_μ!
-export compute_lifetime_serta!
 
 @with_kw struct TransportParams{T <: Real}
     Tlist::Vector{T} # Temperature
@@ -16,7 +13,8 @@ export compute_lifetime_serta!
     nband_valence::Int # Number of valence bands (used only for semiconductors)
     smearing::T # Smearing parameter for delta function
     spin_degeneracy::Int # Spin degeneracy
-    μlist::Vector{T} = zeros(T, length(Tlist)) # Chemical poetntial
+    μlist::Vector{T} = zeros(T, length(Tlist)) # Output. Chemical poetntial
+    σlist::Array{T, 3} = zeros(T, 3, 3, length(Tlist)) # Output. Conductivity
 end
 
 # Data and buffers for SERTA (self-energy relaxation-time approximation) conductivity
@@ -105,18 +103,20 @@ function compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::Tran
 end
 
 """
-    compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::TransportParams, ik)
+    compute_mobility_serta!(params::TransportParams, inv_τ, energy, vel_diag,
+        weights, window=(-Inf, Inf))
 Compute electron inverse lifetime for given k and q point data in epdata
 """
-function compute_mobility_serta!(inv_τ, energy, vel_diag, weights,
-        params::TransportParams, window=(-Inf, Inf))
+function compute_mobility_serta!(params::TransportParams, inv_τ, energy,
+        vel_diag, weights, window=(-Inf, Inf))
 
     nband, nk = size(inv_τ)
     @assert size(energy) == (nband, nk)
     @assert size(vel_diag) == (3, nband, nk)
 
-    σlist = zeros(eltype(inv_τ), 3, 3, length(params.Tlist))
+    σlist = params.σlist
 
+    σlist .= 0
     for iT in 1:length(params.Tlist)
         T = params.Tlist[iT]
         μ = params.μlist[iT]
@@ -141,8 +141,8 @@ function compute_mobility_serta!(inv_τ, energy, vel_diag, weights,
             end # ib
         end # ik
     end # temperatures
-    σlist *= params.spin_degeneracy
-    σlist
+    σlist .*= params.spin_degeneracy
+    return
 end
 
 function transport_print_mobility(σlist, transport_params, volume)
@@ -154,7 +154,8 @@ function transport_print_mobility(σlist, transport_params, volume)
     println("======= Electron mobility =======")
     println("Carrier density (cm^-3) =  $carrier_density_SI")
     for iT in 1:length(transport_params.Tlist)
-        println("T (K) = $(transport_params.Tlist[iT] / unit_to_aru(:K))")
+        println("T (K)  = $(transport_params.Tlist[iT] / unit_to_aru(:K))")
+        @printf "μ (eV) = %.4f\n" transport_params.μlist[iT] / unit_to_aru(:eV)
         println("mobility (cm^2/Vs) = ")
         for i in 1:3
             @printf "%10.3f %10.3f %10.3f\n" (σ_Si[:, i, iT] ./ charge_density_SI)...
