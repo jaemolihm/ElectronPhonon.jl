@@ -10,20 +10,22 @@ with reading writing op_r to disk."
     # Data for (k1, R2, R3)
     k1::Float64 = NaN
     nr_23::Int = 0
-    irvec_23::Vector{Vec2{Int}} = Vector{Vec2{Int}}()
-    irmap_rng_23::Array{UnitRange{Int64},1} = Array{UnitRange{Int64},1}()
+    irvec_23::Vector{Vec2{Int}} = Vector{Vec2{Int}}(undef, 0)
+    irmap_rng_23::Array{UnitRange{Int},1} = Vector{UnitRange{Int}}(undef, 0)
     filename_23::String = ""
 
     # Data for (k1, k2, R3)
     k2::Float64 = NaN
     nr_3::Int = 0
-    irvec_3::Vector{Int} = zeros(Int, 1)
-    irmap_rng_3::Array{UnitRange{Int64},1} = Array{UnitRange{Int64},1}()
+    irvec_3::Vector{Int} = Vector{Int}(undef, 0)
+    irmap_rng_3::Array{UnitRange{Int},1} = Vector{UnitRange{Int}}(undef, 0)
     filename_3::String = ""
 
-    # Buffer for Fourier transformation
-    rdotk::Vector{T} = zeros(T, 1)
-    phase::Vector{Complex{T}} = zeros(Complex{T}, 1)
+    # Cache for Fourier transformation
+    phase::Vector{Complex{T}} = Vector{Complex{T}}(undef, 0)
+    phase_23::Vector{Complex{T}} = Vector{Complex{T}}(undef, 0)
+    phase_3::Vector{Complex{T}} = Vector{Complex{T}}(undef, 0)
+    rdotk_3::Vector{T} = Vector{T}(undef, 0)
 end
 
 "Data in coarse real-space grid for a single operator"
@@ -121,8 +123,10 @@ function gridopt_initialize!(gridopt::DiskGridOpt{T}, irvec, tag) where {T}
     gridopt.filename_3 = "tmp_$(tag)_mpi$(mpi_myrank())_3.bin"
 
     # Initialize cache data
-    gridopt.rdotk = zeros(T, gridopt.nr_3)
-    gridopt.phase = zeros(Complex{T}, gridopt.nr_3)
+    gridopt.phase = zeros(Complex{T}, length(irvec))
+    gridopt.phase_23 = zeros(Complex{T}, gridopt.nr_23)
+    gridopt.phase_3 = zeros(Complex{T}, gridopt.nr_3)
+    gridopt.rdotk_3 = zeros(T, gridopt.nr_3)
 
     @info "Initializing gridopt"
     @info "nr=$(length(irvec)), nr_23=$(gridopt.nr_23), nr_3=$(gridopt.nr_3)"
@@ -134,7 +138,10 @@ end
 @timing "disk_s23" function gridopt_set23!(gridopt::DiskGridOpt{T}, k, obj) where {T}
     gridopt.k1 = k
     gridopt.k2 = NaN
-    phase = [cis(2pi * k * r[1]) for r in obj.irvec]
+    phase = gridopt.phase
+    for (ir, r) in enumerate(obj.irvec)
+        phase[ir] = cis(2pi * k * r[1])
+    end
 
     # Remove filename_23 if exists
     rm(joinpath(obj.dir, gridopt.filename_23), force=true)
@@ -171,7 +178,10 @@ end
 # TODO: Rename to gridopt_compute_kkr?
 @timing "disk_s3" function gridopt_set3!(gridopt::DiskGridOpt{T}, k, obj) where {T}
     gridopt.k2 = k
-    phase = [cis(2pi * k * r[1]) for r in gridopt.irvec_23]
+    phase = gridopt.phase_23
+    for (ir, r) in enumerate(gridopt.irvec_23)
+        phase[ir] = cis(2pi * k * r[1])
+    end
 
     # Remove filename_3 if exists
     rm(joinpath(obj.dir, gridopt.filename_3), force=true)
@@ -206,8 +216,8 @@ end
 
 
 @timing "disk_g3" function gridopt_get3!(op_k_1d, gridopt::DiskGridOpt{T}, k, obj) where {T}
-    rdotk = gridopt.rdotk
-    phase = gridopt.phase
+    rdotk = gridopt.rdotk_3
+    phase = gridopt.phase_3
     rdotk .= 2pi .* k .* gridopt.irvec_3
     phase .= cis.(rdotk)
 

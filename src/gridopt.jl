@@ -10,20 +10,22 @@ using Base.Threads
     # Data for (k1, R2, R3)
     k1::Float64 = NaN
     nr_23::Int = 0
-    irvec_23::Vector{Vec2{Int}} = Vector{Vec2{Int}}()
-    irmap_rng_23::Array{UnitRange{Int64},1} = Array{UnitRange{Int64},1}()
-    op_r_23::Array{Complex{T},2} = zeros(Complex{T}, 1, 1)
+    irvec_23::Vector{Vec2{Int}} = Vector{Vec2{Int}}(undef, 0)
+    irmap_rng_23::Array{UnitRange{Int64},1} = Array{UnitRange{Int64},1}(undef, 0)
+    op_r_23::Array{Complex{T},2} = Matrix{Complex{T}}(undef, 0, 0)
 
     # Data for (k1, k2, R3)
     k2::Float64 = NaN
     nr_3::Int = 0
-    irvec_3::Vector{Int} = zeros(Int, 1)
-    irmap_rng_3::Array{UnitRange{Int64},1} = Array{UnitRange{Int64},1}()
-    op_r_3::Array{Complex{T},2} = zeros(Complex{T}, 1, 1)
+    irvec_3::Vector{Int} = Vector{Int}(undef, 0)
+    irmap_rng_3::Array{UnitRange{Int64},1} = Array{UnitRange{Int64},1}(undef, 0)
+    op_r_3::Array{Complex{T},2} = Matrix{Complex{T}}(undef, 0, 0)
 
     # Cache for Fourier transformation
-    rdotk::Vector{T} = zeros(T, 1)
-    phase::Vector{Complex{T}} = zeros(Complex{T}, 1)
+    phase::Vector{Complex{T}} = Vector{Complex{T}}(undef, 0)
+    phase_23::Vector{Complex{T}} = Vector{Complex{T}}(undef, 0)
+    phase_3::Vector{Complex{T}} = Vector{Complex{T}}(undef, 0)
+    rdotk_3::Vector{T} = Vector{T}(undef, 0)
 end
 
 function gridopt_initialize_irvec!(gridopt, irvec)
@@ -65,8 +67,10 @@ function gridopt_initialize!(gridopt::GridOpt{T}, irvec, op_r) where {T}
     gridopt.op_r_3 = zeros(Complex{T}, size(op_r, 1), gridopt.nr_3)
 
     # Initialize cache data
-    gridopt.rdotk = zeros(T, gridopt.nr_3)
-    gridopt.phase = zeros(Complex{T}, gridopt.nr_3)
+    gridopt.phase = zeros(Complex{T}, length(irvec))
+    gridopt.phase_23 = zeros(Complex{T}, gridopt.nr_23)
+    gridopt.phase_3 = zeros(Complex{T}, gridopt.nr_3)
+    gridopt.rdotk_3 = zeros(T, gridopt.nr_3)
 
     @info "Initializing gridopt"
     @info "nr=$(length(irvec)), nr_23=$(gridopt.nr_23), nr_3=$(gridopt.nr_3)"
@@ -78,8 +82,11 @@ end
 @timing "s23" function gridopt_set23!(gridopt::GridOpt{T}, irvec, op_r, k) where {T}
     gridopt.k1 = k
     gridopt.k2 = NaN
-    gridopt.op_r_23 .= 0.0
-    phase = [cis(2pi * k * r[1]) for r in irvec]
+    gridopt.op_r_23 .= 0
+    phase = gridopt.phase
+    for (ir, r) in enumerate(irvec)
+        phase[ir] = cis(2pi * k * r[1])
+    end
     @views @inbounds for (ir_23, ir_rng) in enumerate(gridopt.irmap_rng_23)
         mul!(gridopt.op_r_23[:, ir_23], op_r[:, ir_rng], phase[ir_rng])
     end
@@ -88,16 +95,19 @@ end
 # TODO: Rename to gridopt_compute_kkr?
 @timing "s3" function gridopt_set3!(gridopt::GridOpt{T}, k) where {T}
     gridopt.k2 = k
-    gridopt.op_r_3 .= 0.0
-    phase = [cis(2pi * k * r[1]) for r in gridopt.irvec_23]
+    gridopt.op_r_3 .= 0
+    phase = gridopt.phase_23
+    for (ir, r) in enumerate(gridopt.irvec_23)
+        phase[ir] = cis(2pi * k * r[1])
+    end
     @views @inbounds for (ir_3, ir_rng) in enumerate(gridopt.irmap_rng_3)
         mul!(gridopt.op_r_3[:, ir_3], gridopt.op_r_23[:, ir_rng], phase[ir_rng])
     end
 end
 
 @timing "g3" function gridopt_get3!(op_k_1d, gridopt::GridOpt{T}, k) where {T}
-    rdotk = gridopt.rdotk
-    phase = gridopt.phase
+    rdotk = gridopt.rdotk_3
+    phase = gridopt.phase_3
     rdotk .= 2pi .* k .* gridopt.irvec_3
     phase .= cis.(rdotk)
 
