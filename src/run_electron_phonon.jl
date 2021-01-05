@@ -25,7 +25,9 @@ end
         mpi_comm_q=nothing,
         fourier_mode="normal",
         window=(-Inf,Inf),
-        transport_params::TransportParams,
+        elself_params=nothing::Union{Nothing,ElectronSelfEnergyParams},
+        phself_params=nothing::Union{Nothing,PhononSelfEnergyParams},
+        transport_params=nothing::Union{Nothing,TransportParams},
     )
 Loop over k and q points to compute e-ph related quantities.
 
