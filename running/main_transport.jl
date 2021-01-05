@@ -44,7 +44,7 @@ transport_params = TransportParams{Float64}(
     spin_degeneracy = 2
 )
 
-@time EPW.run_eph_outer_loop_q(
+@time output = EPW.run_eph_outer_loop_q(
     model, nklist, nqlist,
     mpi_comm_q=EPW.mpi_world_comm(),
     fourier_mode="gridopt",
@@ -52,18 +52,18 @@ transport_params = TransportParams{Float64}(
     transport_params=transport_params,
 )
 
-EPW.transport_print_mobility(transport_params.σlist, transport_params, model.volume)
+EPW.transport_print_mobility(output["transport_σlist"], transport_params, model.volume)
 
-@assert transport_params.σlist[1, 1, 1] ≈ 0.001409019384286128
-@assert transport_params.σlist[2, 2, 2] ≈ 0.0005270865433373303
-@assert transport_params.σlist[1, 3, 3] ≈ 2.814288672537561e-5
+@assert output["transport_σlist"][1, 1, 1] ≈ 0.001409019384286128
+@assert output["transport_σlist"][2, 2, 2] ≈ 0.0005270865433373303
+@assert output["transport_σlist"][1, 3, 3] ≈ 2.814288672537561e-5
 
-Profile.clear()
-@profile EPW.run_eph_outer_loop_q(
-    model, nklist, nqlist,
-    mpi_comm_q=EPW.mpi_world_comm(),
-    fourier_mode="gridopt",
-    window=window,
-    transport_params=transport_params,
-)
-Juno.profiler()
+# Profile.clear()
+# @profile EPW.run_eph_outer_loop_q(
+#     model, nklist, nqlist,
+#     mpi_comm_q=EPW.mpi_world_comm(),
+#     fourier_mode="gridopt",
+#     window=window,
+#     transport_params=transport_params,
+# )
+# Juno.profiler()

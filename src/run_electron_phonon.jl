@@ -40,13 +40,15 @@ function run_eph_outer_loop_q(
         mpi_comm_q=nothing,
         fourier_mode="normal",
         window=(-Inf,Inf),
-        transport_params::TransportParams,
+        elself_params=nothing::Union{Nothing,ElectronSelfEnergyParams},
+        transport_params=nothing::Union{Nothing,TransportParams},
     )
 
     # TODO: Allow k_input to be a Kpoints object
     # TODO: Allow q_input to be a Kpoints object
     # TODO: Implement mpi_comm_k
 
+    compute_elself = elself_params !== nothing
     compute_transport = transport_params !== nothing
 
     nw = model.nw
@@ -63,9 +65,12 @@ function run_eph_outer_loop_q(
     if typeof(q_input) == EPW.Kpoints
         error("q_input as EPW.Kpoints not implemented")
     else
-        qpoints_all = generate_kvec_grid(q_input..., mpi_comm_q)
+        if mpi_comm_q === nothing
+            qpoints_all = generate_kvec_grid(q_input...)
+        else
+            qpoints_all = generate_kvec_grid(q_input..., mpi_comm_q)
+        end
     end
-
     qpoints = filter_qpoints(qpoints_all, kpoints, nw, model.el_ham, window)
 
     nk = kpoints.n
@@ -77,6 +82,9 @@ function run_eph_outer_loop_q(
         epdata.iband_offset = iband_min - 1
     end
 
+    if compute_elself
+        elself = ElectronSelfEnergy(Float64, nw, nmodes, nk, length(elself_params.Tlist))
+    end
     if compute_transport
         transport_serta = TransportSERTA(Float64, nband, nmodes, nk,
             length(transport_params.Tlist))
@@ -102,7 +110,9 @@ function run_eph_outer_loop_q(
     end # ik
 
     # Compute chemical potential
-    μ = transport_set_μ!(transport_params, ek_full_save, kpoints.weights, model.volume)
+    if compute_transport
+        μ = transport_set_μ!(transport_params, ek_full_save, kpoints.weights, model.volume)
+    end
 
     omega_save = zeros(nmodes, nq)
     omegas = zeros(nmodes)
@@ -158,18 +168,42 @@ function run_eph_outer_loop_q(
             # Now, we are done with matrix elements. All data saved in epdata.
 
             # Calculate physical quantities.
+            if compute_elself
+                compute_electron_selfen!(elself, epdata, elself_params, ik)
+            end
             if compute_transport
                 compute_lifetime_serta!(transport_serta, epdata, transport_params, ik)
             end
         end # ik
     end # iq
 
-    if mpi_comm_q !== nothing
-        EPW.mpi_sum!(transport_serta.inv_τ, mpi_comm_q)
+    output = Dict()
+
+    output["ek"] = ek_full_save
+    output["omega"] = omega_save
+
+    # Post-process computed data, write to file if asked to.
+    if compute_elself
+        if mpi_comm_q !== nothing
+            mpi_sum!(elself.imsigma, mpi_comm_q)
+        end
+        # Average over degenerate states
+        el_imsigma_avg = similar(elself.imsigma)
+        @views for iT in 1:size(elself.imsigma, 3)
+            average_degeneracy!(el_imsigma_avg[:, :, iT], elself.imsigma[:, :, iT], ek_full_save)
+        end
+
+        output["elself_imsigma"] = el_imsigma_avg
     end
 
     if compute_transport
-        compute_mobility_serta!(transport_params, transport_serta.inv_τ,
+        if mpi_comm_q !== nothing
+            EPW.mpi_sum!(transport_serta.inv_τ, mpi_comm_q)
+        end
+        σlist = compute_mobility_serta!(transport_params, transport_serta.inv_τ,
             ek_full_save[iband_min:iband_max, :], vdiagk_save, kpoints.weights, window)
+        output["transport_σlist"] = σlist
     end
+
+    output
 end

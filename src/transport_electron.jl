@@ -14,7 +14,6 @@ export TransportParams
     smearing::T # Smearing parameter for delta function
     spin_degeneracy::Int # Spin degeneracy
     μlist::Vector{T} = zeros(T, length(Tlist)) # Output. Chemical poetntial
-    σlist::Array{T, 3} = zeros(T, 3, 3, length(Tlist)) # Output. Conductivity
 end
 
 # Data and buffers for SERTA (self-energy relaxation-time approximation) conductivity
@@ -114,9 +113,8 @@ function compute_mobility_serta!(params::TransportParams, inv_τ, energy,
     @assert size(energy) == (nband, nk)
     @assert size(vel_diag) == (3, nband, nk)
 
-    σlist = params.σlist
+    σlist = zeros(eltype(inv_τ), 3, 3, length(params.Tlist))
 
-    σlist .= 0
     for iT in 1:length(params.Tlist)
         T = params.Tlist[iT]
         μ = params.μlist[iT]
@@ -142,7 +140,7 @@ function compute_mobility_serta!(params::TransportParams, inv_τ, energy,
         end # ik
     end # temperatures
     σlist .*= params.spin_degeneracy
-    return
+    return σlist
 end
 
 function transport_print_mobility(σlist, transport_params, volume)
