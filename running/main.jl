@@ -97,6 +97,11 @@ elself_params = ElectronSelfEnergyParams(
     smearing = 500.0 * unit_to_aru(:meV)
 )
 
+phself_params = PhononSelfEnergyParams(
+    μ = 6.10 * unit_to_aru(:eV),
+    Tlist = [300.0 * unit_to_aru(:K)],
+    smearing = 500.0 * unit_to_aru(:meV)
+)
 
 # Run electron-phonon coupling
 @time output = EPW.run_eph_outer_loop_q(
@@ -104,12 +109,13 @@ elself_params = ElectronSelfEnergyParams(
     fourier_mode="gridopt",
     window=window,
     elself_params=elself_params,
+    phself_params=phself_params,
 )
 
 npzwrite(joinpath(folder, "eig_kk.npy"), output["ek"])
 npzwrite(joinpath(folder, "eig_phonon.npy"), output["omega"])
 npzwrite(joinpath(folder, "imsigma_el.npy"), output["elself_imsigma"])
-# npzwrite(joinpath(folder, "imsigma_ph.npy"), output["ph_imsigma"])
+npzwrite(joinpath(folder, "imsigma_ph.npy"), output["phself_imsigma"])
 
 testscript = joinpath(folder, "test.py")
 py"exec(open($testscript).read())"

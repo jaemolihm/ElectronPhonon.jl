@@ -48,6 +48,14 @@ mpi_bcast( obj, root::Integer, comm::MPI.Comm) = MPI.bcast( obj, root, comm)
 mpi_bcast!(buf, comm::MPI.Comm) = MPI.Bcast!(buf, 0, comm)
 mpi_bcast( obj, comm::MPI.Comm) = MPI.bcast( obj, 0, comm)
 
+# Do nothing if comm is nothing
+mpi_min( arr, comm::Nothing) = arr
+mpi_max( arr, comm::Nothing) = arr
+mpi_sum( arr, comm::Nothing) = arr
+mpi_min!(arr, comm::Nothing) = nothing
+mpi_max!(arr, comm::Nothing) = nothing
+mpi_sum!(arr, comm::Nothing) = nothing
+
 "Gathers array along the last dimension"
 function mpi_gather(arr, root::Integer, comm::MPI.Comm)
     # Check whether size is equal except for the last dimension
@@ -71,6 +79,7 @@ function mpi_gather(arr, root::Integer, comm::MPI.Comm)
 end
 
 mpi_gather(arr, comm::MPI.Comm) = mpi_gather(arr, 0, comm)
+mpi_gather(arr, comm::Nothing) = arr
 
 "Gathers array along the last dimension to all processes"
 function mpi_allgather(arr, comm::MPI.Comm)

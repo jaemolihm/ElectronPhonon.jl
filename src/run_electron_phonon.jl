@@ -41,6 +41,7 @@ function run_eph_outer_loop_q(
         fourier_mode="normal",
         window=(-Inf,Inf),
         elself_params=nothing::Union{Nothing,ElectronSelfEnergyParams},
+        phself_params=nothing::Union{Nothing,PhononSelfEnergyParams},
         transport_params=nothing::Union{Nothing,TransportParams},
     )
 
@@ -49,6 +50,7 @@ function run_eph_outer_loop_q(
     # TODO: Implement mpi_comm_k
 
     compute_elself = elself_params !== nothing
+    compute_phself = phself_params !== nothing
     compute_transport = transport_params !== nothing
 
     nw = model.nw
@@ -77,13 +79,18 @@ function run_eph_outer_loop_q(
     nq = qpoints.n
     nband = iband_max - iband_min + 1
 
-    epdatas = [ElPhData(Float64, nw, nmodes, nband) for i=1:nthreads()]
+    epdatas = [ElPhData(Float64, nw, nmodes, nband) for i=1:Threads.nthreads()]
     for epdata in epdatas
         epdata.iband_offset = iband_min - 1
     end
 
+    # Initialize data structs
     if compute_elself
         elself = ElectronSelfEnergy(Float64, nw, nmodes, nk, length(elself_params.Tlist))
+    end
+    if compute_phself
+        phselfs = [PhononSelfEnergy(Float64, nw, nmodes, nq,
+            length(elself_params.Tlist)) for i=1:Threads.nthreads()]
     end
     if compute_transport
         transport_serta = TransportSERTA(Float64, nband, nmodes, nk,
@@ -96,7 +103,7 @@ function run_eph_outer_loop_q(
     vdiagk_save = zeros(Float64, 3, nband, nk)
 
     Threads.@threads :static for ik in 1:nk
-        epdata = epdatas[threadid()]
+        epdata = epdatas[Threads.threadid()]
         xk = kpoints.vectors[ik]
 
         get_el_eigen!(epdata, "k", model.el_ham, xk, fourier_mode)
@@ -171,6 +178,9 @@ function run_eph_outer_loop_q(
             if compute_elself
                 compute_electron_selfen!(elself, epdata, elself_params, ik)
             end
+            if compute_phself
+                compute_phonon_selfen!(phselfs[tid], epdata, phself_params, iq)
+            end
             if compute_transport
                 compute_lifetime_serta!(transport_serta, epdata, transport_params, ik)
             end
@@ -180,26 +190,31 @@ function run_eph_outer_loop_q(
     output = Dict()
 
     output["ek"] = ek_full_save
-    output["omega"] = omega_save
+    output["omega"] = EPW.mpi_gather(omega_save, mpi_comm_q)
 
     # Post-process computed data, write to file if asked to.
     if compute_elself
-        if mpi_comm_q !== nothing
-            mpi_sum!(elself.imsigma, mpi_comm_q)
-        end
+        EPW.mpi_sum!(elself.imsigma, mpi_comm_q)
         # Average over degenerate states
         el_imsigma_avg = similar(elself.imsigma)
         @views for iT in 1:size(elself.imsigma, 3)
-            average_degeneracy!(el_imsigma_avg[:, :, iT], elself.imsigma[:, :, iT], ek_full_save)
+            average_degeneracy!(el_imsigma_avg[:,:,iT], elself.imsigma[:,:,iT], ek_full_save)
         end
 
         output["elself_imsigma"] = el_imsigma_avg
     end
 
-    if compute_transport
-        if mpi_comm_q !== nothing
-            EPW.mpi_sum!(transport_serta.inv_τ, mpi_comm_q)
+    if compute_phself
+        ph_imsigma = sum([phself.imsigma for phself in phselfs])
+        ph_imsigma_avg = similar(ph_imsigma)
+        @views for iT in 1:size(ph_imsigma, 3)
+            average_degeneracy!(ph_imsigma_avg[:,:,iT], ph_imsigma[:,:,iT], omega_save)
         end
+        output["phself_imsigma"] = EPW.mpi_gather(ph_imsigma_avg, mpi_comm_q)
+    end
+
+    if compute_transport
+        EPW.mpi_sum!(transport_serta.inv_τ, mpi_comm_q)
         σlist = compute_mobility_serta!(transport_params, transport_serta.inv_τ,
             ek_full_save[iband_min:iband_max, :], vdiagk_save, kpoints.weights, window)
         output["transport_σlist"] = σlist
