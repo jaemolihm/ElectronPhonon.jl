@@ -5,6 +5,7 @@
 
 export unit_to_aru
 
+const e2 = 2 # e^2 in Rydberg atomic units
 
 # Commonly used constants. The factors convert from the respective unit
 # to atomic units

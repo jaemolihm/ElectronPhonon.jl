@@ -6,13 +6,24 @@ export load_model
 "Tight-binding model for electron, phonon, and electron-phonon coupling.
 All data is in coarse real-space grid."
 Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
+    # Lattice information
+    alat::Float64 # Lattice parameter
     # Lattice vector in Bohr. lattice[:, i] is the i-th lattice vector.
     lattice::Mat3{Float64}
+    recip_lattice::Mat3{Float64}
     volume::Float64
+
+    # Atom information
     mass::Array{Float64,1}
+    atom_pos::Vector{Vec3{Float64}}
 
     nw::Int
     nmodes::Int
+
+    # Long-range term in polar systems
+    use_polar_dipole::Bool
+    polar_phonon::Polar{Float64}
+    # polar_eph::Polar{Float64}
 
     el_ham::WannierObject{Float64}
     # TODO: Use Hermiticity of hk
@@ -54,21 +65,64 @@ tmpdir
     Directory to write temporary binary files for epmat_on_disk=false calse.
 """
 function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing)
+    T = Float64
+
     if epmat_on_disk && tmpdir == nothing
         error("If epmat_on_disk is true, tmpdir must be provided.")
     end
     # Read binary data written by EPW and create ModelEPW object
     f = FortranFile(joinpath(folder, "epw_data_julia.bin"), "r")
 
-    # Crystal parameters
+    # Structure parameters
     alat = read(f, Float64)
     at_in_alat = read(f, (Float64, 3, 3))
-    lattice = Mat3{Float64}(at_in_alat .* alat)
+    natoms = convert(Int, read(f, Int32))
+    atom_pos_arr = read(f, (Float64, 3, natoms))
+    atom_pos = reinterpret(Vec3{T}, atom_pos_arr)[:]
+
+    lattice = Mat3{T}(at_in_alat .* alat)
+    recip_lattice = 2T(π) * inv(lattice')
+    volume = abs(det(lattice))
 
     # Wannier parameters
     nw = convert(Int, read(f, Int32))
     nmodes = convert(Int, read(f, Int32))
     mass = read(f, (Float64, nmodes))
+
+    nkc = tuple(convert.(Int, read(f, (Int32, 3)))...)
+    nqc = tuple(convert.(Int, read(f, (Int32, 3)))...)
+
+    # Polar parameters
+    use_polar_dipole_fortran = read(f, Int32) # 0 is false, +1 or -1 is true
+    use_polar_dipole = convert(Bool, abs(use_polar_dipole_fortran))
+
+    if use_polar_dipole
+        ϵ_arr = read(f, (Float64, 3, 3))
+        ϵ = Mat3{T}(ϵ_arr)
+        Z_arr = read(f, (Float64, 3, 3, natoms))
+        Z = [Mat3{Float64}(arr) for arr in eachslice(Z_arr, dims=3)]
+
+        # EPW hard-coded parameters (see EPW/src/rigid_epw.f90)
+        cutoff = T(14.0) # gmax
+        η = T(1.0) # alph
+
+        # Compute nxs for phonon dynamical matrix. See SUBROUTINE rgd_blk of EPW
+        nxs_array = [0, 0, 0]
+        for (i, n) in enumerate(nqc)
+            if n > 1
+                nxs_array[i] = floor(Int, sqrt(4*η*cutoff) / norm(recip_lattice[:, 2])) + 1
+            end
+        end
+        nxs = tuple(nxs_array...)
+        polar_phonon = Polar(ϵ=ϵ, Z=Z, nxs=nxs, cutoff=cutoff, η=η)
+
+        # For e-ph coupling, nxs is nqc. See SUBROUTINE rgd_blk_epw_fine of EPW
+        # polar_eph = Polar(ϵ=ϵ, Z=Z, nxs=nqc, cutoff=cutoff, η=η)
+    else
+        # Set null objects
+        polar_phonon = Polar(T)
+        # polar_eph = Polar(T)
+    end
 
     # Electron Hamiltonian
     nrr_k = convert(Int, read(f, Int32))
@@ -169,8 +223,10 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         epmat = WannierObject(nr_ep, irvec_ep, epmat_re_rp)
     end
 
-    model = ModelEPW(lattice=lattice, volume=det(lattice),
-        nw=nw, nmodes=nmodes, mass=mass,
+    model = ModelEPW(alat=alat, lattice=lattice, recip_lattice=recip_lattice,
+        volume=volume, nw=nw, nmodes=nmodes, mass=mass, atom_pos=atom_pos,
+        use_polar_dipole=use_polar_dipole, polar_phonon=polar_phonon,
+        # polar_eph=polar_eph,
         el_ham=el_ham, el_ham_R=el_ham_R, ph_dyn=ph_dyn, epmat=epmat
     )
 

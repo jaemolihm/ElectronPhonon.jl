@@ -56,6 +56,13 @@ function get_eigenvalues_ph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
     for ik in 1:nk
         xk = kpoints.vectors[ik]
         get_fourier!(dynq, model.ph_dyn, xk, mode=fourier_mode)
+        dynq[:, :] .*= sqrt.(model.mass)
+        dynq[:, :] .*= sqrt.(model.mass)'
+        if model.use_polar_dipole
+            dynmat_dipole!(dynq, xk, model.recip_lattice, model.volume, model.atom_pos, model.alat, model.polar_phonon, 1)
+        end
+        dynq[:, :] ./= sqrt.(model.mass)
+        dynq[:, :] ./= sqrt.(model.mass)'
         eigenvalues[:, ik] = solve_eigen_ph_valueonly!(dynq)
     end
     return eigenvalues
@@ -64,6 +71,7 @@ end
 folder = "/home/jmlim/julia_epw/silicon_nk2"
 folder = "/home/jmlim/julia_epw/silicon_nk6"
 folder = "/home/jmlim/julia_epw/silicon_nk6_window"
+folder = "/home/jmlim/julia_epw/cubicBN_nk6"
 model = load_model(folder)
 model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 
