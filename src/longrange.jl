@@ -43,14 +43,18 @@ function dynmat_dipole!(dynmat, xq, recip_lattice, volume, atom_pos, alat, polar
             f = zero(G')
             for jatom = 1:natom
                 GZj = G' * polar.Z[jatom]
-                costau = cospi(2 * G' * (atom_pos[iatom] - atom_pos[jatom]))
-                f .+= GZj * costau
+                phasefac = cospi(2 * G' * (atom_pos[iatom] - atom_pos[jatom]))
+                f .+= GZj * phasefac
             end
-            rng = 3*(iatom-1)+1 : 3*(iatom-1)+3
-            dynmat[rng, rng] .+= -coeff .* (GZi' * f)
+
+            dyn_tmp = -coeff .* (GZi' * f)
+            for j in 1:3
+                for i in 1:3
+                    dynmat[3*(iatom-1)+i, 3*(iatom-1)+j] += dyn_tmp[i, j]
+                end
+            end
         end
     end
-    # return
 
     # Second term: q-dependent part.
     # Note that the definition of G is different: xq is added.
@@ -64,15 +68,18 @@ function dynmat_dipole!(dynmat, xq, recip_lattice, volume, atom_pos, alat, polar
         end
 
         coeff = fac * exp(-GϵG / (4 * polar.η)) / GϵG
-        for iatom = 1:natom
-            GZi = G' * polar.Z[iatom]
-            for jatom = 1:natom
-                GZj = G' * polar.Z[jatom]
-                expitau = cis(2T(π) * G' * (atom_pos[iatom] - atom_pos[jatom]))
+        for jatom = 1:natom
+            GZj = G' * polar.Z[jatom]
+            for iatom = 1:natom
+                GZi = G' * polar.Z[iatom]
+                phasefac = cis(2T(π) * G' * (atom_pos[iatom] - atom_pos[jatom]))
 
-                rng_i = 3*(iatom-1)+1 : 3*(iatom-1)+3
-                rng_j = 3*(jatom-1)+1 : 3*(jatom-1)+3
-                dynmat[rng_i, rng_j] .+= (coeff * expitau) .* (GZi' * GZj)
+                dyn_tmp = (coeff * phasefac) .* (GZi' * GZj)
+                for j in 1:3
+                    for i in 1:3
+                        dynmat[3*(iatom-1)+i, 3*(jatom-1)+j] += dyn_tmp[i, j]
+                    end
+                end
             end
         end
     end
