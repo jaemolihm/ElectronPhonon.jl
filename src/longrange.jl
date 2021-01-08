@@ -5,6 +5,12 @@ export Polar
 export dynmat_dipole!
 
 Base.@kwdef struct Polar{T<:Real}
+    # Structure information
+    alat::T
+    volume::T
+    recip_lattice::Mat3{T}
+    atom_pos::Vector{Vec3{T}}
+    # Dipole term information
     ϵ::Mat3{T} # Dielectric tensor
     Z::Vector{Mat3{T}} # Born effective charge tensor
     nxs::NTuple{3, Int} # Bounds of reciprocal space grid points to do Ewald sum
@@ -13,23 +19,21 @@ Base.@kwdef struct Polar{T<:Real}
 end
 
 # Null initialization for non-polar case
-Polar(T) = Polar{T}(ϵ=zeros(Mat3{T}), Z=[], nxs=(0,0,0), cutoff=0, η=0)
+Polar(T) = Polar{T}(alat=0, volume=0, recip_lattice=zeros(Mat3{T}), atom_pos=[],
+                    ϵ=zeros(Mat3{T}), Z=[], nxs=(0,0,0), cutoff=0, η=0)
 
 # Compute dynmat += sign * (dynmat from dipole-dipole interaction)
-function dynmat_dipole!(dynmat, xq, recip_lattice, volume, atom_pos, alat, polar::Polar, sign=1)
-    T = eltype(recip_lattice)
-    @assert typeof(volume) == T
-    @assert eltype(atom_pos[1]) == T
-    @assert typeof(alat) == T
+function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}
     @assert eltype(dynmat) == Complex{T}
 
+    atom_pos = polar.atom_pos
     natom = length(atom_pos)
     nxs = polar.nxs
-    fac = sign * EPW.e2 * 4T(π) / volume
+    fac = sign * EPW.e2 * 4T(π) / polar.volume
 
     # First term: q-independent part.
     for n1 in -nxs[1]:nxs[1], n2 in -nxs[2]:nxs[2], n3 in -nxs[3]:nxs[3]
-        G = recip_lattice * Vec3{Int}(n1, n2, n3) ./ (2π / alat)
+        G = polar.recip_lattice * Vec3{Int}(n1, n2, n3) ./ (2π / polar.alat)
         GϵG = G' * polar.ϵ * G
 
         # Skip if G=0 or if exponenent GϵG is large
@@ -59,7 +63,7 @@ function dynmat_dipole!(dynmat, xq, recip_lattice, volume, atom_pos, alat, polar
     # Second term: q-dependent part.
     # Note that the definition of G is different: xq is added.
     for n1 in -nxs[1]:nxs[1], n2 in -nxs[2]:nxs[2], n3 in -nxs[3]:nxs[3]
-        G = recip_lattice * (xq .+ Vec3{Int}(n1, n2, n3)) ./ (2π / alat)
+        G = polar.recip_lattice * (xq .+ Vec3{Int}(n1, n2, n3)) ./ (2π / polar.alat)
         GϵG = G' * polar.ϵ * G
 
         # Skip if G=0 or if exponenent GϵG is large

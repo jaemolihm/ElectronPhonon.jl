@@ -8,6 +8,7 @@ using LinearAlgebra
 using EPW: AbstractWannierObject, WannierObject
 using EPW: get_fourier!, update_op_r!
 using EPW: solve_eigen_el!, solve_eigen_el_valueonly!, solve_eigen_ph!
+using EPW: dynmat_dipole!
 
 export get_el_eigen!
 export get_el_eigen_valueonly!
@@ -111,10 +112,10 @@ end
 #  Phonons
 
 """
-    get_ph_eigen!(values, vectors, ph_dyn, mass, xq, fourier_mode="normal")
+    get_ph_eigen!(values, vectors, ph_dyn, mass, xq, polar=nothing; fourier_mode="normal")
 Compute electron eigenenergy and eigenvector.
 """
-function get_ph_eigen!(values, vectors, ph_dyn, mass, xq, fourier_mode="normal")
+function get_ph_eigen!(values, vectors, ph_dyn, mass, xq, polar=nothing; fourier_mode="normal")
     nmodes = length(values)
     @assert size(vectors) == (nmodes, nmodes)
     @assert size(mass) == (nmodes,)
@@ -123,6 +124,11 @@ function get_ph_eigen!(values, vectors, ph_dyn, mass, xq, fourier_mode="normal")
     dynq = _get_buffer(_buffer_ph_eigen, (nmodes, nmodes))
 
     get_fourier!(dynq, ph_dyn, xq, mode=fourier_mode)
+    if polar !== nothing
+        dynmat_dipole!(dynq, xq, polar, 1)
+    end
+    dynq[:, :] ./= sqrt.(mass)
+    dynq[:, :] ./= sqrt.(mass)'
     values .= solve_eigen_ph!(vectors, dynq, mass)
     nothing
 end

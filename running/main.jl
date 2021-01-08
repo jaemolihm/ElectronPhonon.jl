@@ -56,10 +56,8 @@ function get_eigenvalues_ph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
     for ik in 1:nk
         xk = kpoints.vectors[ik]
         get_fourier!(dynq, model.ph_dyn, xk, mode=fourier_mode)
-        dynq[:, :] .*= sqrt.(model.mass)
-        dynq[:, :] .*= sqrt.(model.mass)'
         if model.use_polar_dipole
-            dynmat_dipole!(dynq, xk, model.recip_lattice, model.volume, model.atom_pos, model.alat, model.polar_phonon, 1)
+            dynmat_dipole!(dynq, xk, model.polar_phonon, 1)
         end
         dynq[:, :] ./= sqrt.(model.mass)
         dynq[:, :] ./= sqrt.(model.mass)'
@@ -74,6 +72,9 @@ folder = "/home/jmlim/julia_epw/silicon_nk6_window"
 folder = "/home/jmlim/julia_epw/cubicBN_nk6"
 model = load_model(folder)
 model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
+
+μ_eV = 6.1 # silicon
+μ_eV = 10.5 # cubic BN
 
 kpoints = generate_kvec_grid(10, 10, 10)
 qpoints = generate_kvec_grid(5, 5, 5)
@@ -100,13 +101,13 @@ nklist = (10, 10, 10)
 nqlist = (5, 5, 5)
 
 elself_params = ElectronSelfEnergyParams(
-    μ = 6.10 * unit_to_aru(:eV),
+    μ = μ_eV * unit_to_aru(:eV),
     Tlist = [300.0 * unit_to_aru(:K)],
     smearing = 500.0 * unit_to_aru(:meV)
 )
 
 phself_params = PhononSelfEnergyParams(
-    μ = 6.10 * unit_to_aru(:eV),
+    μ = μ_eV * unit_to_aru(:eV),
     Tlist = [300.0 * unit_to_aru(:K)],
     smearing = 500.0 * unit_to_aru(:meV)
 )

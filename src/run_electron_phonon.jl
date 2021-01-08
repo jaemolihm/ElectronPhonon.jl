@@ -138,7 +138,7 @@ function run_eph_outer_loop_q(
         xq = qpoints.vectors[iq]
 
         # Phonon eigenvalues
-        get_ph_eigen!(omegas, u_ph, model.ph_dyn, model.mass, xq, fourier_mode)
+        get_ph_eigen!(omegas, u_ph, model, xq, fourier_mode=fourier_mode)
         omega_save[:, iq] .= omegas
 
         get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, u_ph, fourier_mode)

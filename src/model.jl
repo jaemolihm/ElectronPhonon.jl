@@ -1,7 +1,10 @@
 
 using FortranFiles
 
+import EPW.WanToBloch: get_ph_eigen!
+
 export load_model
+export get_ph_eigen!
 
 "Tight-binding model for electron, phonon, and electron-phonon coupling.
 All data is in coarse real-space grid."
@@ -114,7 +117,8 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
             end
         end
         nxs = tuple(nxs_array...)
-        polar_phonon = Polar(ϵ=ϵ, Z=Z, nxs=nxs, cutoff=cutoff, η=η)
+        polar_phonon = Polar(alat=alat, volume=volume, recip_lattice=recip_lattice,
+            atom_pos=atom_pos, ϵ=ϵ, Z=Z, nxs=nxs, cutoff=cutoff, η=η)
 
         # For e-ph coupling, nxs is nqc. See SUBROUTINE rgd_blk_epw_fine of EPW
         # polar_eph = Polar(ϵ=ϵ, Z=Z, nxs=nqc, cutoff=cutoff, η=η)
@@ -231,4 +235,18 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     )
 
     model
+end
+
+# Redefine WanToBloch functions
+"""
+    get_ph_eigen!(values, vectors, model::ModelEPW, fourier_mode="normal")
+"""
+function get_ph_eigen!(values, vectors, model::ModelEPW, xq; fourier_mode="normal")
+    if model.use_polar_dipole
+        get_ph_eigen!(values, vectors, model.ph_dyn, model.mass, xq,
+            model.polar_phonon, fourier_mode=fourier_mode)
+    else
+        get_ph_eigen!(values, vectors, model.ph_dyn, model.mass, xq,
+            fourier_mode=fourier_mode)
+    end
 end
