@@ -173,6 +173,11 @@ function run_eph_outer_loop_q(
 
             get_el_velocity_diag!(epdata, "k+q", model.el_ham_R, xkq, fourier_mode)
             get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
+            if any(xq .> 1.0e-8) && model.use_polar_dipole
+                epdata_set_bmat!(epdata)
+                eph_dipole!(epdata.ep, xq, model.polar_eph, u_ph, epdata.bmat, 1)
+            end
+            epdata_set_g2!(epdata)
 
             # Now, we are done with matrix elements. All data saved in epdata.
 
@@ -207,7 +212,7 @@ function run_eph_outer_loop_q(
     end
 
     if compute_phself
-        ph_imsigma = sum([phself.imsigma for phself in phselfs])
+        ph_imsigma = sum([phself.imsigma for phself in phselfs]) .* phself_params.spin_degeneracy
         ph_imsigma_avg = similar(ph_imsigma)
         @views for iT in 1:size(ph_imsigma, 3)
             average_degeneracy!(ph_imsigma_avg[:,:,iT], ph_imsigma[:,:,iT], omega_save)

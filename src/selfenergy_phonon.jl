@@ -9,6 +9,7 @@ Base.@kwdef struct PhononSelfEnergyParams{T <: Real}
     Tlist::Vector{T} # Temperature
     μ::T # Fermi level
     smearing::T # Smearing parameter for delta function
+    spin_degeneracy::T # Spin degeneracy
 end
 
 # Data and buffers for self-energy of electron
@@ -36,8 +37,6 @@ end
 """
 @timing "selfen_ph" function compute_phonon_selfen!(phself, epdata,
         params::PhononSelfEnergyParams, iq)
-    return
-
     nocc_q = phself.nocc_q[Threads.threadid()]
     focc_k = phself.focc_k[Threads.threadid()]
     focc_kq = phself.focc_kq[Threads.threadid()]

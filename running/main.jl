@@ -109,7 +109,8 @@ elself_params = ElectronSelfEnergyParams(
 phself_params = PhononSelfEnergyParams(
     μ = μ_eV * unit_to_aru(:eV),
     Tlist = [300.0 * unit_to_aru(:K)],
-    smearing = 500.0 * unit_to_aru(:meV)
+    smearing = 500.0 * unit_to_aru(:meV),
+    spin_degeneracy = 2.0
 )
 
 # Run electron-phonon coupling
@@ -137,3 +138,12 @@ Profile.clear()
     elself_params=elself_params,
 )
 Juno.profiler()
+
+eph = zeros(ComplexF64, 8, 8, 6)
+xq = Vec3([0.5, 0.3, 0.2])
+u_ph = rand(ComplexF64, 6, 6)
+bmat = rand(ComplexF64, 8, 8)
+
+@btime eph_dipole!($eph, $xq, $(model.polar_eph), $u_ph, $bmat, 1)
+
+@code_warntype eph_dipole!(eph, xq, (model.polar_eph), u_ph, bmat, 1)

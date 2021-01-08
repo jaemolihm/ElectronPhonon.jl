@@ -3,6 +3,7 @@
 
 export Polar
 export dynmat_dipole!
+export eph_dipole!
 
 Base.@kwdef struct Polar{T<:Real}
     # Structure information
@@ -41,7 +42,7 @@ function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}
             continue
         end
 
-        coeff = fac * exp(-GϵG / (4 * polar.η)) / GϵG
+        fac2 = fac * exp(-GϵG / (4 * polar.η)) / GϵG
         for iatom = 1:natom
             GZi = G' * polar.Z[iatom]
             f = zero(G')
@@ -51,7 +52,7 @@ function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}
                 f .+= GZj * phasefac
             end
 
-            dyn_tmp = -coeff .* (GZi' * f)
+            dyn_tmp = -fac2 .* (GZi' * f)
             for j in 1:3
                 for i in 1:3
                     dynmat[3*(iatom-1)+i, 3*(iatom-1)+j] += dyn_tmp[i, j]
@@ -71,14 +72,14 @@ function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}
             continue
         end
 
-        coeff = fac * exp(-GϵG / (4 * polar.η)) / GϵG
+        fac2 = fac * exp(-GϵG / (4 * polar.η)) / GϵG
         for jatom = 1:natom
             GZj = G' * polar.Z[jatom]
             for iatom = 1:natom
                 GZi = G' * polar.Z[iatom]
                 phasefac = cis(2T(π) * G' * (atom_pos[iatom] - atom_pos[jatom]))
 
-                dyn_tmp = (coeff * phasefac) .* (GZi' * GZj)
+                dyn_tmp = (fac2 * phasefac) .* (GZi' * GZj)
                 for j in 1:3
                     for i in 1:3
                         dynmat[3*(iatom-1)+i, 3*(jatom-1)+j] += dyn_tmp[i, j]
@@ -86,5 +87,43 @@ function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}
                 end
             end
         end
+    end
+end
+
+# Compute eph_kq += sign * (eph_kq from dipole potential)
+function eph_dipole!(eph, xq, polar::Polar{T}, u_ph, bmat, sign=1) where {T}
+    @assert eltype(eph) == Complex{T}
+
+    atom_pos = polar.atom_pos
+    natom = length(atom_pos)
+    nmodes = 3 * natom
+    nxs = polar.nxs
+    fac = 1im * sign * EPW.e2 * 4T(π) / polar.volume
+
+    # TODO: Get rid of this allocation
+    coeffs = zeros(Complex{T}, nmodes)
+
+    for n1 in -nxs[1]:nxs[1], n2 in -nxs[2]:nxs[2], n3 in -nxs[3]:nxs[3]
+        G = polar.recip_lattice * (xq + Vec3{Int}(n1, n2, n3)) / (2T(π) / polar.alat)
+        GϵG = G' * polar.ϵ * G
+
+        # Skip if G=0 or if exponenent GϵG is large
+        if (GϵG <= 0) || (GϵG / (4 * polar.η) >= polar.cutoff)
+            continue
+        end
+
+        GϵG *= 2T(π) / polar.alat
+        fac2 = fac * exp(-GϵG / (4 * polar.η)) / GϵG
+        for iatom in 1:natom
+            phasefac = cis(-2T(π) * dot(G, atom_pos[iatom]))
+            @views for ipol in 1:3
+                GZ = dot(G, polar.Z[iatom][:, ipol])
+                coeffs .+= (fac2 * phasefac * GZ) .* u_ph[3*(iatom-1)+ipol, :]
+            end
+        end
+    end
+
+    @views @inbounds for imode = 1:nmodes
+        eph[:, :, imode] .+= coeffs[imode] .* bmat
     end
 end
