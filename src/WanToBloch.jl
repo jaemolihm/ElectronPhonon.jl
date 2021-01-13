@@ -5,6 +5,7 @@ Use thread-save preallocated buffers.
 module WanToBloch
 
 using LinearAlgebra
+using EPW: @timing
 using EPW: AbstractWannierObject, WannierObject
 using EPW: get_fourier!, update_op_r!
 using EPW: solve_eigen_el!, solve_eigen_el_valueonly!, solve_eigen_ph!
@@ -56,7 +57,7 @@ end
     get_el_eigen!(values, vectors, nw, el_ham, xk, fourier_mode="normal")
 Compute electron eigenenergy and eigenvector.
 """
-function get_el_eigen!(values, vectors, nw, el_ham, xk, fourier_mode="normal")
+@timing "w2b_el_eig" function get_el_eigen!(values, vectors, nw, el_ham, xk, fourier_mode="normal")
     @assert size(values) == (nw,)
     @assert size(vectors) == (nw, nw)
 
@@ -70,7 +71,7 @@ end
 """
     get_el_eigen_valueonly!(values, nw, el_ham, xk, fourier_mode="normal")
 """
-function get_el_eigen_valueonly!(values, nw, el_ham, xk, fourier_mode="normal")
+@timing "w2b_el_eigval" function get_el_eigen_valueonly!(values, nw, el_ham, xk, fourier_mode="normal")
     @assert size(values) == (nw,)
 
     hk = _get_buffer(_buffer_el_eigen, (nw, nw))
@@ -87,7 +88,7 @@ Compute electron band velocity, only the band-diagonal part.
 velocity_diag: nband-dimensional vector.
 uk: nw * nband matrix containing nband eigenvectors of H(k).
 """
-function get_el_velocity_diag!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
+@timing "w2b_el_vel" function get_el_velocity_diag!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity_diag) == (3, nband)
@@ -115,7 +116,7 @@ end
     get_ph_eigen!(values, vectors, ph_dyn, mass, xq, polar=nothing; fourier_mode="normal")
 Compute electron eigenenergy and eigenvector.
 """
-function get_ph_eigen!(values, vectors, ph_dyn, mass, xq, polar=nothing; fourier_mode="normal")
+@timing "w2b_ph_eig" function get_ph_eigen!(values, vectors, ph_dyn, mass, xq, polar=nothing; fourier_mode="normal")
     nmodes = length(values)
     @assert size(vectors) == (nmodes, nmodes)
     @assert size(mass) == (nmodes,)
@@ -150,7 +151,7 @@ Multithreading is not supported because of large buffer array size.
 - `xq`: Input. q point vector.
 - `u_ph`: Input. nmodes * nmodes matrix containing phonon eigenvectors.
 """
-function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject{T},
+@timing "w2b_eph_RRtoRq" function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject{T},
         epmat::AbstractWannierObject{T}, xq, u_ph, fourier_mode="normal") where {T}
     nr_el = epobj_eRpq.nr
     nmodes = size(u_ph, 1)
@@ -186,7 +187,7 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 - `xk`: Input. k point vector.
 - `uk`, `ukq`: Input. Electron eigenstate at k and k+q, respectively.
 """
-function get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq, fourier_mode="normal")
+@timing "w2b_eph_Rqtokq" function get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq, fourier_mode="normal")
     nbandkq, nbandk, nmodes = size(ep_kq)
     @assert size(uk, 2) == nbandk
     @assert size(ukq, 2) == nbandkq

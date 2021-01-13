@@ -24,7 +24,7 @@ Polar(T) = Polar{T}(alat=0, volume=0, recip_lattice=zeros(Mat3{T}), atom_pos=[],
                     ϵ=zeros(Mat3{T}), Z=[], nxs=(0,0,0), cutoff=0, η=0)
 
 # Compute dynmat += sign * (dynmat from dipole-dipole interaction)
-function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}
+@timing "lr_dyn_dip" function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}
     @assert eltype(dynmat) == Complex{T}
 
     atom_pos = polar.atom_pos
@@ -91,7 +91,7 @@ function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}
 end
 
 # Compute eph_kq += sign * (eph_kq from dipole potential)
-function eph_dipole!(eph, xq, polar::Polar{T}, u_ph, bmat, sign=1) where {T}
+@timing "lr_eph_dip" function eph_dipole!(eph, xq, polar::Polar{T}, u_ph, bmat, sign=1) where {T}
     @assert eltype(eph) == Complex{T}
 
     atom_pos = polar.atom_pos
@@ -101,7 +101,8 @@ function eph_dipole!(eph, xq, polar::Polar{T}, u_ph, bmat, sign=1) where {T}
     fac = 1im * sign * EPW.e2 * 4T(π) / polar.volume
 
     # TODO: Get rid of this allocation
-    coeffs = zeros(Complex{T}, nmodes)
+    coeffs1 = zeros(Complex{T}, nmodes)
+    coeffs2 = zeros(Complex{T}, nmodes)
 
     for n1 in -nxs[1]:nxs[1], n2 in -nxs[2]:nxs[2], n3 in -nxs[3]:nxs[3]
         G = polar.recip_lattice * (xq + Vec3{Int}(n1, n2, n3)) / (2T(π) / polar.alat)
@@ -118,12 +119,14 @@ function eph_dipole!(eph, xq, polar::Polar{T}, u_ph, bmat, sign=1) where {T}
             phasefac = cis(-2T(π) * dot(G, atom_pos[iatom]))
             @views for ipol in 1:3
                 GZ = dot(G, polar.Z[iatom][:, ipol])
-                coeffs .+= (fac2 * phasefac * GZ) .* u_ph[3*(iatom-1)+ipol, :]
+                coeffs1[3*(iatom-1)+ipol] += fac2 * phasefac * GZ
             end
         end
     end
 
+    mul!(coeffs2, Transpose(u_ph), coeffs1)
+
     @views @inbounds for imode = 1:nmodes
-        eph[:, :, imode] .+= coeffs[imode] .* bmat
+        eph[:, :, imode] .+= coeffs2[imode] .* bmat
     end
 end

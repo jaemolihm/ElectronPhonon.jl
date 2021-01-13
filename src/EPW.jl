@@ -8,10 +8,10 @@ export Mat3
 export Vec3
 export Vec2
 
+include("common/timer.jl")
 include("common/types.jl")
 include("common/units.jl")
 include("common/constants.jl")
-include("common/timer.jl")
 include("common/utils.jl")
 include("common/mpi.jl")
 include("common/split_evenly.jl")
