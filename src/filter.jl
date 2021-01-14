@@ -55,15 +55,14 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window)
         return kpoints, 1, nw
     end
 
-    hk = zeros(ComplexF64, nw, nw)
+    eigenvalues = zeros(Float64, nw)
     ik_keep = zeros(Bool, kpoints.n)
     band_min = nw
     band_max = 1
 
     for ik in 1:kpoints.n
         xk = kpoints.vectors[ik]
-        get_fourier!(hk, el_ham, xk, mode="gridopt")
-        eigenvalues = solve_eigen_el_valueonly!(hk)
+        get_el_eigen_valueonly!(eigenvalues, nw, el_ham, xk, "gridopt")
         bands_in_window = inside_window(eigenvalues, window...)
         if ! isempty(bands_in_window)
             ik_keep[ik] = true
@@ -89,15 +88,14 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Co
         return kpoints, 1, nw
     end
 
-    hk = zeros(ComplexF64, nw, nw)
+    eigenvalues = zeros(Float64, nw)
     ik_keep = zeros(Bool, kpoints.n)
     band_min = nw
     band_max = 1
 
     for ik in 1:kpoints.n
         xk = kpoints.vectors[ik]
-        get_fourier!(hk, el_ham, xk, mode="gridopt")
-        eigenvalues = solve_eigen_el_valueonly!(hk)
+        get_el_eigen_valueonly!(eigenvalues, nw, el_ham, xk, "gridopt")
         bands_in_window = inside_window(eigenvalues, window...)
         if ! isempty(bands_in_window)
             ik_keep[ik] = true
@@ -131,14 +129,13 @@ the window.
 """
 function filter_qpoints(qpoints, kpoints, nw, el_ham, window)
     iq_keep = zeros(Bool, qpoints.n)
-    hks = [zeros(ComplexF64, nw, nw) for i=1:nthreads()]
+    eigenvalues_threads = [zeros(Float64, nw) for i=1:nthreads()]
     @threads for iq in 1:qpoints.n
-        hk = hks[threadid()]
+        eigenvalues = eigenvalues_threads[threadid()]
         xq = qpoints.vectors[iq]
         for xk in kpoints.vectors
             xkq = xq + xk
-            get_fourier!(hk, el_ham, xkq, mode="gridopt")
-            eigenvalues = solve_eigen_el_valueonly!(hk)
+            get_el_eigen_valueonly!(eigenvalues, nw, el_ham, xkq, "gridopt")
 
             # If k+q is inside window, use this q point
             if ! isempty(inside_window(eigenvalues, window...))
