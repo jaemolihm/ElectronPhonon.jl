@@ -81,7 +81,7 @@ function bisect(fun, xl, xu; tolf=1E-15, max_iter=500)
     if fu == 0.0
         return xu
     end
-    @assert fl * fu < 0 "wrong initial condition"
+    @assert fl * fu < 0 "wrong initial condition for bisection"
     iter = 0
     while true
         iter += 1

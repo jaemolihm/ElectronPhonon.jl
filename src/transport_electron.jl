@@ -36,21 +36,27 @@ function TransportSERTA(T, nband::Int, nmodes::Int, nk::Int, ntemperatures::Int)
     data
 end
 
-function transport_set_μ!(parameters::TransportParams, energy, weights, volume)
-    if parameters.carrier_type == "e"
-        @views e_carrier = energy[parameters.nband_valence+1:end, :]
-    elseif parameters.carrier_type == "h"
-        @views e_carrier = energy[1:parameters.nband_valence, :]
+# TODO: Add test for electron and hole case
+function transport_set_μ!(params::TransportParams, energy, weights, volume)
+    if params.carrier_type == "e"
+        @views e_carrier = energy[params.nband_valence+1:end, :]
+        ncarrier_target = params.n / params.spin_degeneracy
+    elseif params.carrier_type == "h"
+        @views e_carrier = energy[1:params.nband_valence, :]
+        # We need the hole carrier density, not total charge density.
+        # n(μ) = sum_k (params.nband_valence + n_carrier)
+        # Hence, we add the contribution of the valence bands to ncarrier_target.
+        ncarrier_target = params.n / params.spin_degeneracy
+        ncarrier_target += params.nband_valence * sum(weights)
     else
         error("carrier_type must be e or h, not $carrier_type")
     end
 
-    @info @sprintf "n = %.1e cm^-3" parameters.n / (volume/unit_to_aru(:cm)^3)
+    @info @sprintf "n = %.1e cm^-3" params.n / (volume/unit_to_aru(:cm)^3)
 
-    for (iT, T) in enumerate(parameters.Tlist)
-        ncarrier_target = parameters.n / parameters.spin_degeneracy
+    for (iT, T) in enumerate(params.Tlist)
         μ = find_fermi_energy(ncarrier_target, T, e_carrier, weights)
-        parameters.μlist[iT] = μ
+        params.μlist[iT] = μ
         @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
     end
     nothing
