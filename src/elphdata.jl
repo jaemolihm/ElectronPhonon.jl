@@ -49,6 +49,8 @@ export get_el_velocity_diag!
 end
 
 function ElPhData(T, nw, nmodes, nband=nothing)
+    @assert nband > 0
+    @assert nband <= nw
     if nband === nothing
         nband = nw
     end
