@@ -131,6 +131,8 @@ function run_eph_outer_loop_q(
     epobj_eRpq = WannierObject(model.el_ham.nr, model.el_ham.irvec,
                 zeros(ComplexF64, (nw*nw*nmodes, model.el_ham.nr)))
 
+    mpi_isroot() && @info "Number of q points = $nq"
+
     for iq in 1:nq
         if mod(iq, 100) == 0 && mpi_isroot()
             @info "iq = $iq"
