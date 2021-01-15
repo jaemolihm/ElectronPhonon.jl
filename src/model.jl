@@ -221,7 +221,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     el_ham_R = WannierObject(nr_el, irvec_el, reshape(ham_R, (nw*nw*3, nr_el)))
 
     if epmat_on_disk
-        epmat = DiskWannierObject1(Float64, "epmat", nr_ep, irvec_ep, nw*nw*nmodes*nr_el,
+        epmat = DiskWannierObject(Float64, "epmat", nr_ep, irvec_ep, nw*nw*nmodes*nr_el,
             tmpdir, empat_filename)
     else
         epmat_re_rp = reshape(epmat_re_rp, (nw*nw*nmodes*nrr_k, nr_ep))

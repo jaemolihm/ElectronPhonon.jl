@@ -121,7 +121,7 @@ end
 
 "Fourier transform real-space operator to momentum-space operator with a
 pre-computed phase factor"
-@timing "normal" function _get_fourier_normal!(op_k_1d, obj::AbstractWannierObject{T}, xk, phase) where {T}
+function _get_fourier_normal!(op_k_1d, obj::AbstractWannierObject{T}, xk, phase) where {T}
     mul!(op_k_1d, obj.op_r, phase)
     return
 end

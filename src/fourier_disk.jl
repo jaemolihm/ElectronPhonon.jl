@@ -1,7 +1,9 @@
 
 # Struct and functions for disk-buffered Wannier objects
 
-export DiskWannierObject1
+using Base.Threads
+
+export DiskWannierObject
 
 "Real-space data with reduced dimensions for mode=gridopt in get_fourier
 with reading writing op_r to disk."
@@ -29,7 +31,7 @@ with reading writing op_r to disk."
 end
 
 "Data in coarse real-space grid for a single operator"
-Base.@kwdef struct DiskWannierObject1{T} <: AbstractWannierObject{T}
+Base.@kwdef struct DiskWannierObject{T} <: AbstractWannierObject{T}
     nr::Int
     irvec::Vector{Vec3{Int}}
     ndata::Int # First dimension of op_r
@@ -54,9 +56,9 @@ Base.@kwdef struct DiskWannierObject1{T} <: AbstractWannierObject{T}
     ranges::Vector{UnitRange{Int}}
 end
 
-function DiskWannierObject1(T, tag, nr, irvec::Vector{Vec3{Int}}, ndata, dir, filename)
+function DiskWannierObject(T, tag, nr, irvec::Vector{Vec3{Int}}, ndata, dir, filename)
     ranges = split_evenly(1:ndata, nthreads())
-    DiskWannierObject1{T}(tag=tag, nr=nr, irvec=irvec, ndata=ndata,
+    DiskWannierObject{T}(tag=tag, nr=nr, irvec=irvec, ndata=ndata,
         dir=dir, filename=filename,
         rdotks=[zeros(T, nr) for i=1:nthreads()],
         phases=[zeros(Complex{T}, nr) for i=1:nthreads()],
@@ -67,14 +69,14 @@ function DiskWannierObject1(T, tag, nr, irvec::Vector{Vec3{Int}}, ndata, dir, fi
     )
 end
 
-function DiskWannierObject1(T, tag, nr, irvec::Array{Int,2}, ndata, dir, filename)
+function DiskWannierObject(T, tag, nr, irvec::Array{Int,2}, ndata, dir, filename)
     irvec_svector = reinterpret(Vec3{Int}, vec(irvec))
-    DiskWannierObject1(T, tag, nr, irvec_svector, ndata, dir, filename)
+    DiskWannierObject(T, tag, nr, irvec_svector, ndata, dir, filename)
 end
 
 "Fourier transform real-space operator to momentum-space operator with a
 pre-computed phase factor"
-@timing "disk_normal" function _get_fourier_normal!(op_k_1d, obj::DiskWannierObject1{T}, xk, phase) where {T}
+@timing "disk_normal" function _get_fourier_normal!(op_k_1d, obj::DiskWannierObject{T}, xk, phase) where {T}
     # Read op_r from file and sum over R
     op_k_1d .= 0
     @threads for irng in axes(obj.ranges, 1)
@@ -94,7 +96,7 @@ pre-computed phase factor"
 end
 
 "Fourier transform real-space operator to momentum-space operator with grid optimization"
-function _get_fourier_gridopt!(op_k_1d, obj::DiskWannierObject1{T}, xk) where {T}
+function _get_fourier_gridopt!(op_k_1d, obj::DiskWannierObject{T}, xk) where {T}
     tid = Threads.threadid()
     gridopt = obj.gridopts[tid]
 

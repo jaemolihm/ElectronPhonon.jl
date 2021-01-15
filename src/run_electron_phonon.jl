@@ -132,6 +132,7 @@ function run_eph_outer_loop_q(
                 zeros(ComplexF64, (nw*nw*nmodes, model.el_ham.nr)))
 
     mpi_isroot() && @info "Number of q points = $nq"
+    mpi_isroot() && @info "Number of k points = $nk"
 
     for iq in 1:nq
         if mod(iq, 100) == 0 && mpi_isroot()
