@@ -81,7 +81,8 @@ def read_epw_out_el(filename, nkftot, nband, ntemperatures):
 import matplotlib.pyplot as plt
 
 if __name__ == "__main__":
-    filename = "epw.out"
+    # Parse self-energy calculation
+    filename = "epw.selfen.out"
     nk = 125
     nq = 125
     nband = 7

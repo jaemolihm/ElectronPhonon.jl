@@ -11,15 +11,19 @@ NPROC=`wc -l < $PBS_NODEFILE`
 # quantum espresso executable
 QE=/home/jmlim/program/qe-dev/bin
 
-# # SCF, phonon
-# mkdir -p dyn_dir
-# mpirun -np 40 -hostfile nodefile $QE/pw.x -nk 20 -ndiag 1 -in scf.in > scf.out
-# mpirun -np 40 -hostfile nodefile $QE/ph.x -nk 8 -ndiag 1 -in ph.in > ph.out
-# mpirun -np 1 -hostfile nodefile $QE/q2r.x -in q2r.in > q2r.out
-# ~/bin/epw_pp.py bn
-# rm temp/_ph0/bn.q_*/bn.wfc*
+# SCF, phonon
+mkdir -p dyn_dir
+mpirun -np 40 -hostfile nodefile $QE/pw.x -nk 20 -ndiag 1 -in scf.in > scf.out
+mpirun -np 40 -hostfile nodefile $QE/ph.x -nk 8 -ndiag 1 -in ph.in > ph.out
+mpirun -np 1 -hostfile nodefile $QE/q2r.x -in q2r.in > q2r.out
+~/bin/epw_pp.py bn
+rm temp/_ph0/bn.q_*/bn.wfc*
 
+# EPW setup
 mpirun -np 40 -hostfile nodefile $QE/pw.x -nk 20 -ndiag 1 -in scf.in > scf.out
 mpirun -np 40 -hostfile nodefile $QE/pw.x -nk 8 -ndiag 1 -in nscf.in > nscf.out
-
 mpirun -np 8 -hostfile nodefile $QE/epw.x -nk 8 -in epw_setup.in > epw_setup.out
+
+# EPW
+mpirun -np 1 -hostfile nodefile $QE/epw.x -nk 1 -in epw.selfen.in > epw.selfen.out
+mpirun -np 1 -hostfile nodefile $QE/epw.x -nk 1 -in epw.transport.in > epw.transport.out

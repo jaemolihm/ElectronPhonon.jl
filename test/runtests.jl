@@ -7,4 +7,5 @@ using Test
 
     # Integration tests
     include("test_cubicBN_selfen.jl")
+    include("test_cubicBN_transport.jl")
 end

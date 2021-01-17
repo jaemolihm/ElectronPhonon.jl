@@ -16,11 +16,37 @@
   use_ws      = .true.
   vme         = .true.
 
-  use_opt_w2b = .false.
-  export_julia = .true.
+  export_julia = .false.
 
-  elecselfen = .true.
-  phonselfen = .true.
+  scattering  = .true.
+  iterative_bte = .true.
+  mob_maxiter = 20
+  broyden_beta= 1.0
+  int_mob     = .false.
+  carrier     = .true.
+  ncarrier    = -1E15
+  mp_mesh_k   = .false.
+
+  efermi_read = .true.
+  fermi_energy= 11.4 ! eV
+  fsthick     =  0.5 ! eV
+
+  ! Valence band maximum    =  11.477147 eV
+  ! Conduction band minimum =  19.670311 eV
+
+  degaussw    = 0.08 ! eV
+  nstemp      = 2
+  temps       = 200.0 300.0 400.0 ! K
+
+  nkf1        = 15
+  nkf2        = 15
+  nkf3        = 15
+
+  nqf1        = 15
+  nqf2        = 15
+  nqf3        = 15
+
+  use_opt_w2b = .true.
 
   nbndsub     =  8
 
@@ -36,14 +62,6 @@
   wdata(3)    = 'conv_tol = 1E-10'
   wdata(4)    = 'conv_window = 5'
 
-  efermi_read = .true.
-  fermi_energy= 25.0 ! eV
-  fsthick     = 20.0 ! eV
-
-  degaussw    = 0.50 ! eV
-  nstemp      = 2
-  temps       = 200.0 300.0 ! K
-
   nk1         = 2
   nk2         = 2
   nk3         = 2
@@ -51,12 +69,4 @@
   nq1         = 2
   nq2         = 2
   nq3         = 2
-
-  nkf1        = 5
-  nkf2        = 5
-  nkf3        = 5
-
-  nqf1        = 5
-  nqf2        = 5
-  nqf3        = 5
  /
