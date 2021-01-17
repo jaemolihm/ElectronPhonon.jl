@@ -6,5 +6,5 @@ using Test
     include("test_diagonalize.jl")
 
     # Integration tests
-    include("test_cubicBN.jl")
+    include("test_cubicBN_selfen.jl")
 end
