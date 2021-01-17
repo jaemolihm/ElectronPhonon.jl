@@ -52,12 +52,12 @@ function transport_set_μ!(params::TransportParams, energy, weights, volume)
         error("carrier_type must be e or h, not $carrier_type")
     end
 
-    @info @sprintf "n = %.1e cm^-3" params.n / (volume/unit_to_aru(:cm)^3)
+    mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (volume/unit_to_aru(:cm)^3)
 
     for (iT, T) in enumerate(params.Tlist)
         μ = find_fermi_energy(ncarrier_target, T, e_carrier, weights)
         params.μlist[iT] = μ
-        @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
+        mpi_isroot() && @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
     end
     nothing
 end

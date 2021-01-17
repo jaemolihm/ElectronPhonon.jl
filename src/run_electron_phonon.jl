@@ -75,7 +75,8 @@ function run_eph_outer_loop_q(
             qpoints_all = generate_kvec_grid(q_input..., mpi_comm_q)
         end
     end
-    qpoints = filter_qpoints(qpoints_all, kpoints, nw, model.el_ham, window)
+    qpoints_filtered = filter_qpoints(qpoints_all, kpoints, nw, model.el_ham, window)
+    qpoints = redistribute_kpoints(qpoints_filtered, mpi_comm_q)
 
     nk = kpoints.n
     nq = qpoints.n
@@ -136,7 +137,7 @@ function run_eph_outer_loop_q(
 
     for iq in 1:nq
         if mod(iq, 100) == 0 && mpi_isroot()
-            @info "iq = $iq"
+            mpi_isroot() && @info "iq = $iq"
         end
         xq = qpoints.vectors[iq]
 

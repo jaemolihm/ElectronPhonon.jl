@@ -25,6 +25,7 @@ end
 
 mpi_world_comm() = MPI.COMM_WORLD
 mpi_initialized() = MPI.Initialized()
+mpi_finalize() = MPI.Finalize()
 
 """
 Number of processors used in MPI. Can be called without ensuring initialization.

@@ -1,5 +1,6 @@
 
 # Data and functions for k points
+using MPI
 
 export generate_kvec_grid
 
@@ -69,4 +70,16 @@ only k points with ik_keep = true are kept."
 function get_filtered_kpoints(k, ik_keep)
     @assert length(ik_keep) == k.n
     Kpoints(sum(ik_keep), k.vectors[ik_keep], k.weights[ik_keep])
+end
+
+"Collect and uniformly redistribute Kpoints among processers"
+function redistribute_kpoints(k::Kpoints, comm::MPI.Comm)
+    # TODO: Do this without allgather, by using point-to-point communication.
+    # Gather filtered k points
+    kvectors = EPW.mpi_allgather(k.vectors, comm)
+    weights = EPW.mpi_allgather(k.weights, comm)
+
+    # Redistribute k points
+    range = EPW.mpi_split_iterator(1:length(kvectors), comm)
+    Kpoints(length(range), kvectors[range], weights[range])
 end

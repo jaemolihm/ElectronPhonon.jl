@@ -108,16 +108,7 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Co
     band_min = mpi_min(band_min, mpi_comm)
     band_max = mpi_max(band_max, mpi_comm)
 
-    # TODO: Make function kpoints_gather
-    # TODO: Make gather + redistribute as a single function for Kpoints
-
-    # Gather filtered k points
-    kvectors = EPW.mpi_allgather(k_filtered.vectors, mpi_comm)
-    weights = EPW.mpi_allgather(k_filtered.weights, mpi_comm)
-
-    # Redistribute k points
-    range = EPW.mpi_split_iterator(1:length(kvectors), mpi_comm)
-    new_kpoints = Kpoints(length(range), kvectors[range], weights[range])
+    new_kpoints = redistribute_kpoints(k_filtered, mpi_comm)
     new_kpoints, band_min, band_max
 end
 
