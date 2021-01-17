@@ -1,0 +1,9 @@
+temp/*
+dyn_dir/*
+save/*
+bn.*
+decay.*
+EPW.bib
+*.bin
+*.fmt
+*.out

@@ -89,10 +89,10 @@ function run_eph_outer_loop_q(
 
     # Initialize data structs
     if compute_elself
-        elself = ElectronSelfEnergy(Float64, nw, nmodes, nk, length(elself_params.Tlist))
+        elself = ElectronSelfEnergy(Float64, nband, nmodes, nk, length(elself_params.Tlist))
     end
     if compute_phself
-        phselfs = [PhononSelfEnergy(Float64, nw, nmodes, nq,
+        phselfs = [PhononSelfEnergy(Float64, nband, nmodes, nq,
             length(elself_params.Tlist)) for i=1:Threads.nthreads()]
     end
     if compute_transport
@@ -201,6 +201,8 @@ function run_eph_outer_loop_q(
     output = Dict()
 
     output["ek"] = ek_full_save
+    output["iband_min"] = iband_min
+    output["iband_max"] = iband_max
     output["omega"] = EPW.mpi_gather(omega_save, mpi_comm_q)
 
     # Post-process computed data, write to file if asked to.
@@ -208,8 +210,9 @@ function run_eph_outer_loop_q(
         EPW.mpi_sum!(elself.imsigma, mpi_comm_q)
         # Average over degenerate states
         el_imsigma_avg = similar(elself.imsigma)
+        ek_partial = view(ek_full_save, iband_min:iband_max, :)
         @views for iT in 1:size(elself.imsigma, 3)
-            average_degeneracy!(el_imsigma_avg[:,:,iT], elself.imsigma[:,:,iT], ek_full_save)
+            average_degeneracy!(el_imsigma_avg[:,:,iT], elself.imsigma[:,:,iT], ek_partial)
         end
 
         output["elself_imsigma"] = el_imsigma_avg

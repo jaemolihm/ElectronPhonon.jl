@@ -1,0 +1,39 @@
+ &control
+    calculation     = 'bands'
+    prefix          = 'bn'
+    restart_mode    = 'from_scratch'
+    pseudo_dir      = '.'
+    outdir          = 'temp/'
+    verbosity       = 'high'
+ /
+ &system
+    ibrav     = 2
+    celldm(1) = 6.83
+    nat       = 2
+    ntyp      = 2
+    ecutwfc   = 70.0
+    nbnd = 12
+ /
+ &electrons
+    diago_full_acc  = .true.
+    diagonalization = 'david'
+    mixing_beta     = 0.7
+    diago_david_ndim = 2
+    conv_thr        = 1.0d-10
+ /
+ATOMIC_SPECIES
+ B  10.811   B.dojo.sr.ONCVv0.4.lda.standard.upf
+ N  14.0067  N.dojo.sr.ONCVv0.4.lda.standard.upf
+ATOMIC_POSITIONS crystal
+ B  0.125   0.125   0.125
+ N -0.125  -0.125  -0.125
+K_POINTS crystal
+8
+  0.00000000  0.00000000  0.00000000  1.250000e-01
+  0.00000000  0.00000000  0.50000000  1.250000e-01
+  0.00000000  0.50000000  0.00000000  1.250000e-01
+  0.00000000  0.50000000  0.50000000  1.250000e-01
+  0.50000000  0.00000000  0.00000000  1.250000e-01
+  0.50000000  0.00000000  0.50000000  1.250000e-01
+  0.50000000  0.50000000  0.00000000  1.250000e-01
+  0.50000000  0.50000000  0.50000000  1.250000e-01

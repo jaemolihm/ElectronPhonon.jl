@@ -83,3 +83,5 @@ function redistribute_kpoints(k::Kpoints, comm::MPI.Comm)
     range = EPW.mpi_split_iterator(1:length(kvectors), comm)
     Kpoints(length(range), kvectors[range], weights[range])
 end
+
+redistribute_kpoints(k::Kpoints, comm::Nothing) = k
