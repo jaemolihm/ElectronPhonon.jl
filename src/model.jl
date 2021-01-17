@@ -46,13 +46,17 @@ Broadcast to all other processors."
 function load_model(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing)
     # Read model from file
     if mpi_initialized()
-        if mpi_isroot(EPW.mpi_world_comm())
-            model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
-        else
-            model = nothing
-        end
-        # Broadcast to all processors
-        model = mpi_bcast(model, EPW.mpi_world_comm())
+        # FIXME: Read only in the root core, and then bcast.
+        # The implementation below breaks if epmat size is large. MPI bcast of large array
+        # with sizeof(array) is greater than typemax(Cint) was not possible.
+        model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
+        # if mpi_isroot(EPW.mpi_world_comm())
+        #     model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
+        # else
+        #     model = nothing
+        # end
+        # # Broadcast to all processors
+        # model = mpi_bcast(model, EPW.mpi_world_comm())
     else
         model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
     end
