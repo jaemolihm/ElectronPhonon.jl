@@ -9,6 +9,7 @@ Base.@kwdef struct PhononSelfEnergyParams{T <: Real}
     Tlist::Vector{T} # Temperature
     μ::T # Fermi level
     smearing::T # Smearing parameter for delta function
+    # TODO: Should spin_degeneracy be Int or Float?
     spin_degeneracy::T # Spin degeneracy
 end
 

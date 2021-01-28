@@ -93,6 +93,7 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Co
     band_min = nw
     band_max = 1
 
+    # TODO: Use filter_kpoints_grid (without MPI) for this part.
     for ik in 1:kpoints.n
         xk = kpoints.vectors[ik]
         get_el_eigen_valueonly!(eigenvalues, nw, el_ham, xk, "gridopt")
