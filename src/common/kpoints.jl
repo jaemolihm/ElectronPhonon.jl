@@ -34,8 +34,8 @@ function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int})
     for ik in rng
         # For (i, j, k), make k the fastest axis
         k = mod(ik-1, nk3)
-        j = mod(div(ik-1 - (k-1), nk3), nk2)
-        i = mod(div(ik-1 - (k-1) - (j-1)*nk3, nk2*nk3), nk1)
+        j = mod(div(ik-1 - k, nk3), nk2)
+        i = mod(div(ik-1 - k - j*nk3, nk2*nk3), nk1)
         push!(kvecs, Vec3{Float64}(i/nk1, j/nk2, k/nk3))
     end
     nk = length(kvecs)
