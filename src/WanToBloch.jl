@@ -109,6 +109,8 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
     nothing
 end
 
+# TODO: Implement get_el_velocity (off-digonal velocity matrix)
+
 # =============================================================================
 #  Phonons
 
