@@ -33,6 +33,7 @@ Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
 
     el_ham_R::WannierObject{Float64} # Electron Hamiltonian times R
     el_pos::WannierObject{Float64} # Electron position (dipole)
+    el_vel::Union{WannierObject{Float64},Nothing} # ELectron velocity matrix
 
     ph_dyn::WannierObject{Float64} # Phonon dynamical matrix
     # TODO: Use real-valuedness of dyn_r
@@ -139,6 +140,13 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     ham = read(f, (ComplexF64, nw, nw, nrr_k))
     pos = read(f, (ComplexF64, 3, nw, nw, nrr_k))
 
+    # Electron velocity matrix. Optional
+    has_velocity_fortran = read(f, Int32) # 0 is false, +1 or -1 is true
+    has_velocity = convert(Bool, abs(has_velocity_fortran))
+    if has_velocity
+        vel = read(f, (ComplexF64, 3, nw, nw, nrr_k))
+    end
+
     # Phonon dynamical matrix
     nr_ph = convert(Int, read(f, Int32))
     irvec_ph = convert.(Int, read(f, (Int32, 3, nr_ph)))
@@ -167,7 +175,9 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     irvec_ph = irvec_ph[ind_ph]
     irvec_ep = irvec_ep[ind_ep]
 
+    # Shuffle matrix elements accordingly
     ham = ham[:, :, ind_el]
+    pos = pos[:, :, :, ind_el]
     dyn_r = dyn_r[:, :, ind_ph]
 
     # Electron-phonon coupling
@@ -229,6 +239,15 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     pos2 = permutedims(pos, [2, 3, 1, 4])
     el_pos = WannierObject(nr_el, irvec_el, reshape(pos2, (nw*nw*3, nr_el)))
 
+    # Electron velocity matrix elements
+    if has_velocity
+        vel = vel[:, :, :, ind_el]
+        vel2 = permutedims(vel, [2, 3, 1, 4])
+        el_vel = WannierObject(nr_el, irvec_el, reshape(vel2, (nw*nw*3, nr_el)))
+    else
+        el_vel = nothing
+    end
+
     if epmat_on_disk
         epmat = DiskWannierObject(Float64, "epmat", nr_ep, irvec_ep, nw*nw*nmodes*nr_el,
             tmpdir, empat_filename)
@@ -240,7 +259,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     model = ModelEPW(alat=alat, lattice=lattice, recip_lattice=recip_lattice,
         volume=volume, nw=nw, nmodes=nmodes, mass=mass, atom_pos=atom_pos,
         use_polar_dipole=use_polar_dipole, polar_phonon=polar_phonon, polar_eph=polar_eph,
-        el_ham=el_ham, el_ham_R=el_ham_R, el_pos=el_pos,
+        el_ham=el_ham, el_ham_R=el_ham_R, el_pos=el_pos, el_vel=el_vel,
         ph_dyn=ph_dyn, epmat=epmat
     )
 

@@ -16,6 +16,8 @@
   use_ws      = .true.
   vme         = .true.
 
+  export_julia = .true.
+
   nbndsub     =  8
 
   wannierize  = .true.

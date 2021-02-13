@@ -16,7 +16,7 @@
   use_ws      = .true.
   vme         = .true.
 
-  export_julia = .true.
+  export_julia = .false.
 
   elecselfen = .true.
   phonselfen = .true.
