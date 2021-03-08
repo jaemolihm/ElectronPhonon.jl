@@ -27,7 +27,7 @@ export get_el_velocity_diag!
     ukq_full::Matrix{Complex{T}}
     vdiagk::Matrix{T} # Diagonal component of band velocity at k
     vdiagkq::Matrix{T} # Diagonal component of band velocity at k+q
-    bmat::Matrix{Complex{T}} # U(k+q)' * U(k)
+    mmat::Matrix{Complex{T}} # U(k+q)' * U(k)
 
     # Electron-phonon coupling
     ep::Array{Complex{T}, 3}
@@ -63,7 +63,7 @@ function ElPhData(T, nw, nmodes, nband=nothing)
         ukq_full=Matrix{Complex{T}}(undef, nw, nw),
         vdiagk=zeros(T, (3, nband)),
         vdiagkq=zeros(T, (3, nband)),
-        bmat=Matrix{Complex{T}}(undef, nband, nband),
+        mmat=Matrix{Complex{T}}(undef, nband, nband),
         ep=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         g2=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         buffer=Matrix{Complex{T}}(undef, nw, nw),
@@ -134,13 +134,13 @@ g2 is set to 0.0 if omega < omega_acoustic."
     end
 end
 
-"Set bmat = ukq' * uk"
-@timing "setg2" function epdata_set_bmat!(epdata)
+"Set mmat = ukq' * uk"
+@timing "setmmat" function epdata_set_mmat!(epdata)
     offset = epdata.iband_offset
-    epdata.bmat .= 0
+    epdata.mmat .= 0
     for ibkq in epdata.rngkq
         @views for ibk in epdata.rngk
-            epdata.bmat[ibkq, ibk] = dot(epdata.ukq_full[:, ibkq + offset],
+            epdata.mmat[ibkq, ibk] = dot(epdata.ukq_full[:, ibkq + offset],
                 epdata.uk_full[:, ibk + offset])
         end
     end

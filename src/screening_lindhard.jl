@@ -3,13 +3,13 @@ Lindhard screening.
 Reference: L. Hedin, Phys. Rev. 139, A796 (1965)
 """
 
-export LindhardParams
+export LindhardScreeningParams
 
 using Parameters
 using StaticArrays
 using LinearAlgebra
 
-@with_kw struct LindhardParams{T<:Real}
+@with_kw struct LindhardScreeningParams{T<:Real}
     degeneracy::Int64 # degeneracy of bands. spin and/or valley degeneracy.
     m_eff::T # Ratio of effective mass and electron mass. Unitless.
     n::T # Absolute carrier density per unit cell in Bohr^-3.
@@ -23,14 +23,14 @@ H_lindhard(z) = 2*z + (1-z^2) * log((z+1)/(z-1))
 
 
 """
-    epsilon_lindhard(xq, ω, params::LindhardParams; verbose=false)
+    epsilon_lindhard(xq, ω, params::LindhardScreeningParams; verbose=false)
 Compute dielectric function using Lindhard theory. Use Eq. (56) of Hedin (1965).
 Assume an isotropic, 3d parabolic band with effective mass m_eff, assume zero temperature.
 - xq: the crystal momentum in Cartesian basis, 1/Bohr.
 - ω: frequency in Ry.
 - verbose: if true, print Lindhard screening parameters.
 """
-function epsilon_lindhard(xq, ω, params::LindhardParams; verbose=false)
+function epsilon_lindhard(xq, ω, params::LindhardScreeningParams; verbose=false)
     degeneracy = params.degeneracy
     m_eff = params.m_eff
     n = params.n
@@ -47,7 +47,7 @@ function epsilon_lindhard(xq, ω, params::LindhardParams; verbose=false)
     rs = m_eff / ϵM * (3/(4π*n))^(1/3)
     coeff = (4/9π)^(1/3) * rs / 8π
     if verbose
-        # TODO: Here, degeneracy==2 is assumed.
+        # TODO: Remove assumption of degeneracy==2
         println("Lindhard screening parameters")
         @show rs
         @show kFermi

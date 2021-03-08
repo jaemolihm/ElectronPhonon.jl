@@ -91,7 +91,7 @@ Polar(T) = Polar{T}(alat=0, volume=0, recip_lattice=zeros(Mat3{T}), atom_pos=[],
 end
 
 # Compute eph_kq += sign * (eph_kq from dipole potential)
-@timing "lr_eph_dip" function eph_dipole!(eph, xq, polar::Polar{T}, u_ph, bmat, sign=1) where {T}
+@timing "lr_eph_dip" function eph_dipole!(eph, xq, polar::Polar{T}, u_ph, mmat, sign=1) where {T}
     @assert eltype(eph) == Complex{T}
 
     atom_pos = polar.atom_pos
@@ -127,6 +127,6 @@ end
     mul!(coeffs2, Transpose(u_ph), coeffs1)
 
     @views @inbounds for imode = 1:nmodes
-        eph[:, :, imode] .+= coeffs2[imode] .* bmat
+        eph[:, :, imode] .+= coeffs2[imode] .* mmat
     end
 end
