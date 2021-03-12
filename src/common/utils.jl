@@ -12,9 +12,21 @@ export generate_kvec_grid
 export average_degeneracy
 export bisect
 
-function occ_fermion(value, occ_type="fd")
+function occ_fermion(value; occ_type="fd")
     if occ_type == "fd"
         1.0 / (exp(value) + 1.0)
+    else
+        error("unknown occ_type")
+    end
+end
+
+function occ_fermion(e, T; occ_type="fd")
+    if occ_type == "fd"
+        if T < 1.0E-5
+            0.5 * (sign(e) + 1)
+        else
+            1.0 / (exp(e/T) + 1.0)
+        end
     else
         error("unknown occ_type")
     end

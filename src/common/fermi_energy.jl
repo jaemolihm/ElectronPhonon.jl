@@ -17,7 +17,7 @@ function compute_ncarrier(μ, T, energy, weights)
     ncarrier = eltype(energy)(0)
     for ik in 1:nk
         for e in view(energy, :, ik)
-            ncarrier += weights[ik] * occ_fermion((e - μ) / T)
+            ncarrier += weights[ik] * occ_fermion(e - μ, T)
         end
     end
     ncarrier

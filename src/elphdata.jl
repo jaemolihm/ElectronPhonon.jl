@@ -48,7 +48,7 @@ export get_el_velocity_diag!
     ekq::Vector{T}
 end
 
-function ElPhData(T, nw, nmodes, nband=nothing)
+function ElPhData(T, nw, nmodes, nband=nothing, iband_offset=0)
     @assert nband > 0
     @assert nband <= nw
     if nband === nothing
@@ -67,7 +67,7 @@ function ElPhData(T, nw, nmodes, nband=nothing)
         ep=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         g2=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         buffer=Matrix{Complex{T}}(undef, nw, nw),
-        iband_offset=0,
+        iband_offset=iband_offset,
         nbandk=nband,
         nbandkq=nband,
         rngk=1:nband,
