@@ -38,30 +38,18 @@ end
 
 # TODO: Add test for electron and hole case
 function transport_set_μ!(params::TransportParams, energy, weights, volume)
-    if params.carrier_type == "e"
-        @views e_carrier = energy[params.nband_valence+1:end, :]
-        ncarrier_target = params.n / params.spin_degeneracy
-    elseif params.carrier_type == "h"
-        @views e_carrier = energy[1:params.nband_valence, :]
-        # We need the hole carrier density, not total charge density.
-        # n(μ) = sum_k (params.nband_valence + n_carrier)
-        # Hence, we add the contribution of the valence bands to ncarrier_target.
-        ncarrier_target = params.n / params.spin_degeneracy
-        ncarrier_target += params.nband_valence * sum(weights)
-    else
-        error("carrier_type must be e or h, not $carrier_type")
-    end
+    ncarrier_target = params.n / params.spin_degeneracy
 
     mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (volume/unit_to_aru(:cm)^3)
 
     for (iT, T) in enumerate(params.Tlist)
-        μ = find_fermi_energy(ncarrier_target, T, e_carrier, weights)
+        μ = find_chemical_potential(ncarrier_target, T, energy, weights,
+            params.carrier_type, params.nband_valence)
         params.μlist[iT] = μ
         mpi_isroot() && @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
     end
     nothing
 end
-
 
 """
     compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::TransportParams, ik)

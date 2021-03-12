@@ -41,7 +41,7 @@ end
 """
     _get_buffer(buffer::Vector{Array{T, N}}, size_needed::NTuple{N, Int}) where {T, N}
 Get preallocated buffer in a thread-safe way.
-Resize buffer if the size is differet from the needed size"""
+Resize buffer if the size is different from the needed size"""
 function _get_buffer(buffer::Vector{Array{T, N}}, size_needed::NTuple{N, Int}) where {T, N}
     tid = Threads.threadid()
     if size(buffer[tid]) != size_needed
