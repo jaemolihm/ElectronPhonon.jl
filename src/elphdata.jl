@@ -48,12 +48,12 @@ export get_el_velocity_diag!
     ekq::Vector{T}
 end
 
-function ElPhData(T, nw, nmodes, nband=nothing, iband_offset=0)
-    @assert nband > 0
-    @assert nband <= nw
+function ElPhData(T, nw, nmodes, nband=nothing; iband_offset=0)
     if nband === nothing
         nband = nw
     end
+    @assert nband > 0
+    @assert nband <= nw
 
     ElPhData(nw=nw, nmodes=nmodes, nband=nband, wtk=T(0), wtq=T(0),
         omega=Vector{T}(undef, nmodes),

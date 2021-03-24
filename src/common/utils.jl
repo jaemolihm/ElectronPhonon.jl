@@ -23,9 +23,9 @@ end
 function occ_fermion(e, T; occ_type="fd")
     if occ_type == "fd"
         if T < 1.0E-5
-            0.5 * (sign(e) + 1)
+            (sign(e) + 1) / 2
         else
-            1.0 / (exp(e/T) + 1.0)
+            1 / (exp(e/T) + 1)
         end
     else
         error("unknown occ_type")

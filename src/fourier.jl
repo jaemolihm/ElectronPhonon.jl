@@ -135,10 +135,10 @@ function _get_fourier_gridopt!(op_k_1d, obj::AbstractWannierObject{T}, xk) where
         gridopt_initialize!(gridopt, obj.irvec, obj.op_r)
     end
 
-    if isnan(gridopt.k1) || abs(gridopt.k1 - xk[1]) > 1.e-9
+    if ! isapprox(xk[1], gridopt.k1, atol=1.e-9)
         gridopt_set23!(gridopt, obj.irvec, obj.op_r, xk[1])
     end
-    if isnan(gridopt.k2) || abs(gridopt.k2 - xk[2]) > 1.e-9
+    if ! isapprox(xk[2], gridopt.k2, atol=1.e-9)
         gridopt_set3!(gridopt, xk[2])
     end
 
