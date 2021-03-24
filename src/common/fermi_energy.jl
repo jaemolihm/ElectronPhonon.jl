@@ -12,12 +12,16 @@ Compute carrier density.
 - weights: k-point weights.
 """
 function compute_ncarrier(μ, T, energy, weights)
-    @assert length(weights) == size(energy, 2)
+    compute_ncarrier(μ, T, energy, weights, 1, size(energy, 1))
+end
+
+function compute_ncarrier(μ, T, energy, weights, iband_from, iband_to)
     nk = size(energy, 2)
+    @assert length(weights) == nk
     ncarrier = eltype(energy)(0)
     for ik in 1:nk
-        for e in view(energy, :, ik)
-            ncarrier += weights[ik] * occ_fermion(e - μ, T)
+        for iband in iband_from:iband_to
+            ncarrier += weights[ik] * occ_fermion(energy[iband, ik] - μ, T)
         end
     end
     ncarrier
@@ -36,9 +40,11 @@ Find chemical potential for target carrier density using bisection.
 function find_chemical_potential(ncarrier_target, T, energy, weights, carrier_type,
                                  nband_valence)
     if carrier_type == "e"
-        energy_carrier = @view energy[nband_valence+1:end, :]
+        iband_from = nband_valence + 1
+        iband_to = size(energy, 1)
     elseif carrier_type == "h"
-        energy_carrier = @view energy[1:nband_valence, :]
+        iband_from = 1
+        iband_to = nband_valence
         # We need the hole carrier density, not total electron density.
         # n(μ) = sum_k (params.nband_valence + n_carrier)
         # Hence, we add the contribution of the valence bands to ncarrier_target.
@@ -48,6 +54,6 @@ function find_chemical_potential(ncarrier_target, T, energy, weights, carrier_ty
     end
 
     # Solve func(μ) = ncarrier(μ) - ncarrier_target = 0
-    func = μ -> compute_ncarrier(μ, T, energy_carrier, weights) - ncarrier_target
+    func(μ) = compute_ncarrier(μ, T, energy, weights, iband_from, iband_to) - ncarrier_target
     bisect(func, -1.0e4, 1.0e4, tolf=ncarrier_target*1E-10)
 end
