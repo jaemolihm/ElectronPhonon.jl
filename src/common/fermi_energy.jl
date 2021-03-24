@@ -40,11 +40,11 @@ Find chemical potential for target carrier density using bisection.
 function find_chemical_potential(ncarrier_target, T, energy, weights, carrier_type,
                                  nband_valence)
     if carrier_type == "e"
-        iband_from = nband_valence + 1
-        iband_to = size(energy, 1)
+        ib_from = nband_valence + 1
+        ib_to = size(energy, 1)
     elseif carrier_type == "h"
-        iband_from = 1
-        iband_to = nband_valence
+        ib_from = 1
+        ib_to = nband_valence
         # We need the hole carrier density, not total electron density.
         # n(μ) = sum_k (params.nband_valence + n_carrier)
         # Hence, we add the contribution of the valence bands to ncarrier_target.
@@ -54,6 +54,11 @@ function find_chemical_potential(ncarrier_target, T, energy, weights, carrier_ty
     end
 
     # Solve func(μ) = ncarrier(μ) - ncarrier_target = 0
-    func(μ) = compute_ncarrier(μ, T, energy, weights, iband_from, iband_to) - ncarrier_target
-    bisect(func, -1.0e4, 1.0e4, tolf=ncarrier_target*1E-10)
+    # I use let block to avoid type instability.
+    # See https://github.com/JuliaLang/julia/issues/15276
+    # and https://discourse.julialang.org/t/type-instability-of-nested-function/57007
+    let ncarrier_target=ncarrier_target, ib_from=ib_from, ib_to=ib_to
+        func(μ) = compute_ncarrier(μ, T, energy, weights, ib_from, ib_to) - ncarrier_target
+        return bisect(func, -1.0e4, 1.0e4, tolf=ncarrier_target*1E-10)
+    end
 end
