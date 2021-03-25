@@ -2,16 +2,13 @@
 # For computing electron-phonon coupling at fine a k and q point
 
 import Base.@kwdef
-import EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag!, get_eph_Rq_to_kq!
+import EPW.WanToBloch: get_eph_Rq_to_kq!
 
 export ElPhData
-export initialize_elphdata
-export apply_gauge_matrix!
+# export apply_gauge_matrix!
+export put_el_to_epdata!
 export epdata_set_g2!
-export epdata_set_window!
-
-export get_el_eigen!
-export get_el_velocity_diag!
+export epdata_set_mmat!
 
 # Energy and matrix elements at a single k and q point
 @kwdef mutable struct ElPhData{T <: Real}
@@ -21,13 +18,11 @@ export get_el_velocity_diag!
     wtk::T # Weight of the k point
     wtq::T # Weight of the q point
     omega::Vector{T}
-    ek_full::Vector{T}
-    ekq_full::Vector{T}
-    uk_full::Matrix{Complex{T}}
-    ukq_full::Matrix{Complex{T}}
-    vdiagk::Matrix{T} # Diagonal component of band velocity at k
-    vdiagkq::Matrix{T} # Diagonal component of band velocity at k+q
     mmat::Matrix{Complex{T}} # U(k+q)' * U(k)
+
+    # Electron states
+    el_k::ElectronState{T} # electron state at k
+    el_kq::ElectronState{T} # electron state at k+q
 
     # Electron-phonon coupling
     ep::Array{Complex{T}, 3}
@@ -37,91 +32,71 @@ export get_el_velocity_diag!
     buffer::Matrix{Complex{T}}
 
     # Electron energy window.
-    # Applying to full array: arr_full[rng .+ iband_offset]
-    # Applying to filtered array: arr[rng]
-    iband_offset::Int
-    nbandk::Int # Number of bands inside the energy window
-    nbandkq::Int # Number of bands inside the energy window
-    rngk::UnitRange{Int} # Index of bands inside the energy window
-    rngkq::UnitRange{Int} # Index of bands inside the energy window
-    ek::Vector{T}
-    ekq::Vector{T}
+    nband_ignore::Int
 end
 
-function ElPhData(T, nw, nmodes, nband=nothing; iband_offset=0)
-    if nband === nothing
-        nband = nw
-    end
+function ElPhData(T, nw, nmodes, nband=nw, nband_ignore=0)
     @assert nband > 0
-    @assert nband <= nw
+    @assert nband_ignore >= 0
+    @assert nband + nband_ignore <= nw
 
     ElPhData(nw=nw, nmodes=nmodes, nband=nband, wtk=T(0), wtq=T(0),
         omega=Vector{T}(undef, nmodes),
-        ek_full=Vector{T}(undef, nw),
-        ekq_full=Vector{T}(undef, nw),
-        uk_full=Matrix{Complex{T}}(undef, nw, nw),
-        ukq_full=Matrix{Complex{T}}(undef, nw, nw),
-        vdiagk=zeros(T, (3, nband)),
-        vdiagkq=zeros(T, (3, nband)),
         mmat=Matrix{Complex{T}}(undef, nband, nband),
+        el_k=ElectronState(T, nw, nband, nband_ignore),
+        el_kq=ElectronState(T, nw, nband, nband_ignore),
         ep=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         g2=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         buffer=Matrix{Complex{T}}(undef, nw, nw),
-        iband_offset=iband_offset,
-        nbandk=nband,
-        nbandkq=nband,
-        rngk=1:nband,
-        rngkq=1:nband,
-        ek=Vector{T}(undef, nband),
-        ekq=Vector{T}(undef, nband),
+        nband_ignore=nband_ignore,
     )
 end
 
-"""
-    apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
+# """
+#     apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
 
-Compute op_h = Adjoint(uleft) * op_w * uright
-left, right are "k" or "k+q".
+# Compute op_h = Adjoint(uleft) * op_w * uright
+# left, right are "k" or "k+q".
 
-ndim: Optional. Third dimension of op_h and op_w. Loop over i=1:ndim.
-"""
-@timing "gauge" function apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
-    @warn "apply_gauge_matrix! is deprecated"
-    @assert size(op_h, 3) == ndim
-    @assert size(op_w, 3) == ndim
-    offset = epdata.iband_offset
+# ndim: Optional. Third dimension of op_h and op_w. Loop over i=1:ndim.
+# """
+# @timing "gauge" function apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
+#     @warn "apply_gauge_matrix! is deprecated"
+#     @assert size(op_h, 3) == ndim
+#     @assert size(op_w, 3) == ndim
+#     offset = epdata.nband_ignore
 
-    # TODO: Implement range
-    if left != "k" && left != "k+q"
-        error("left must be k or k+q, not $left")
-    end
-    if right != "k" && right != "k+q"
-        error("right must be k or k+q, not $right")
-    end
-    rngleft = (left == "k") ? epdata.rngk : epdata.rngkq
-    rngright = (right == "k") ? epdata.rngk : epdata.rngkq
-    uleft = (left == "k") ? epdata.uk_full : epdata.ukq_full
-    uright = (right == "k") ? epdata.uk_full : epdata.ukq_full
-    @views uleft_adj = Adjoint(uleft[:, rngleft .+ offset])
-    @views uright = uright[:, rngright .+ offset]
-    @views tmp = epdata.buffer[:, rngright]
+#     # TODO: Implement range
+#     if left != "k" && left != "k+q"
+#         error("left must be k or k+q, not $left")
+#     end
+#     if right != "k" && right != "k+q"
+#         error("right must be k or k+q, not $right")
+#     end
+#     rngleft = (left == "k") ? epdata.el_k.rng : epdata.el_kq.rng
+#     rngright = (right == "k") ? epdata.el_k.rng : epdata.el_kq.rng
+#     uleft = (left == "k") ? epdata.uk_full : epdata.ukq_full
+#     uright = (right == "k") ? epdata.uk_full : epdata.ukq_full
+#     @views uleft_adj = Adjoint(uleft[:, rngleft .+ offset])
+#     @views uright = uright[:, rngright .+ offset]
+#     @views tmp = epdata.buffer[:, rngright]
 
-    if length(size(op_w)) == 2
-        @views mul!(tmp, op_w, uright)
-        @views mul!(op_h[rngleft, rngright], uleft_adj, tmp)
-    elseif length(size(op_w)) == 3
-        @views @inbounds for i = 1:ndim
-            mul!(tmp, op_w[:,:,i], uright)
-            mul!(op_h[rngleft, rngright, i], uleft_adj, tmp)
-        end
-    end
-end
+#     if length(size(op_w)) == 2
+#         @views mul!(tmp, op_w, uright)
+#         @views mul!(op_h[rngleft, rngright], uleft_adj, tmp)
+#     elseif length(size(op_w)) == 3
+#         @views @inbounds for i = 1:ndim
+#             mul!(tmp, op_w[:,:,i], uright)
+#             mul!(op_h[rngleft, rngright, i], uleft_adj, tmp)
+#         end
+#     end
+# end
 
 " Set epdata.g2[:, :, imode] = |epdata.ep[:, :, imode]|^2 / (2 omega)
 g2 is set to 0.0 if omega < omega_acoustic."
 @timing "setg2" function epdata_set_g2!(epdata)
-    rngk = epdata.rngk
-    rngkq = epdata.rngkq
+    rngk = epdata.el_k.rng
+    rngkq = epdata.el_kq.rng
     for imode in 1:epdata.nmodes
         omega = epdata.omega[imode]
         if (omega < omega_acoustic)
@@ -136,92 +111,46 @@ end
 
 "Set mmat = ukq' * uk"
 @timing "setmmat" function epdata_set_mmat!(epdata)
-    offset = epdata.iband_offset
+    rngk = epdata.el_k.rng
+    rngkq = epdata.el_kq.rng
+    uk = get_u(epdata.el_k)
+    ukq = get_u(epdata.el_kq)
     epdata.mmat .= 0
-    for ibkq in epdata.rngkq
-        @views for ibk in epdata.rngk
-            epdata.mmat[ibkq, ibk] = dot(epdata.ukq_full[:, ibkq + offset],
-                epdata.uk_full[:, ibk + offset])
-        end
-    end
+    @views mul!(epdata.mmat[rngkq, rngk], Adjoint(ukq), uk)
 end
 
-function epdata_set_window!(epdata, ktype, window=(-Inf,Inf))
-    offset = epdata.iband_offset
+"""
+    put_el_to_epdata!(epdata::ElPhData, el::ElectronState, ktype::String)
+Put el to the electron state of set_el_of_epdata. ktype is k or k+q.
+"""
+function put_el_to_epdata!(epdata::ElPhData, el::ElectronState, ktype::String)
+    if ktype ∉ ["k", "k+q"]
+        throw(ArgumentError("ktype ($ktype) must be k or k+q"))
+    end
+    if epdata.nband < el.nband_bound
+        throw(BoundsError("el.nband_bound ($(el.nband_bound)) cannot be greater than " *
+            "epdata.nband ($(epdata.nband))"))
+    end
+    if epdata.nband_ignore != el.nband_ignore
+        throw(BoundsError("el.nband_ignore ($(el.nband_ignore)) must be identical to " *
+            "epdata.nband_ignore ($(epdata.nband_ignore))"))
+    end
     if ktype == "k"
-        ibs = EPW.inside_window(epdata.ek_full, window...)
-    elseif ktype == "k+q"
-        ibs = EPW.inside_window(epdata.ekq_full, window...)
+        epdata.el_k = el
     else
-        error("ktype must be k or k+q, not $ktype")
+        epdata.el_kq = el
     end
-    # If no bands are selected, return true.
-    if isempty(ibs)
-        return true
-    end
-    if ktype == "k"
-        epdata.rngk = (ibs[1]:ibs[end]) .- offset
-        epdata.nbandk = length(epdata.rngk)
-        @views epdata.ek[epdata.rngk] .= epdata.ek_full[epdata.rngk .+ offset]
-    elseif ktype == "k+q"
-        epdata.rngkq = (ibs[1]:ibs[end]) .- offset
-        epdata.nbandkq = length(epdata.rngkq)
-        @views epdata.ekq[epdata.rngkq] .= epdata.ekq_full[epdata.rngkq .+ offset]
-    end
-    return false
 end
 
 # Define wrappers of WanToBloch functions
-
-"""
-    get_el_eigen!(epdata::ElPhData, ktype::String, el_ham, xk, fourier_mode="normal")
-
-Compute electron eigenenergy and eigenvector and save them in epdata.
-ktype: "k" or "k+q"
-"""
-function get_el_eigen!(epdata::ElPhData, ktype::String, el_ham, xk, fourier_mode="normal")
-    if ktype == "k"
-        values = epdata.ek_full
-        vectors = epdata.uk_full
-    elseif ktype == "k+q"
-        values = epdata.ekq_full
-        vectors = epdata.ukq_full
-    else
-        error("ktype must be k or k+q, not $ktype")
-    end
-    get_el_eigen!(values, vectors, epdata.nw, el_ham, xk, fourier_mode)
-end
-
-"""
-    get_el_velocity!(epdata::ElPhData, ktype::String, el_ham_R, xk, fourier_mode="normal")
-Compute electron band velocity, only the band-diagonal part.
-
-Compute electron eigenenergy and eigenvector and save them in epdata.
-ktype: "k" or "k+q"
-"""
-function get_el_velocity_diag!(epdata::ElPhData, ktype::String, el_ham_R, xk, fourier_mode="normal")
-    offset = epdata.iband_offset
-    if ktype == "k"
-        @views uk = epdata.uk_full[:, epdata.rngk .+ offset]
-        @views velocity_diag = epdata.vdiagk[:, epdata.rngk]
-    elseif ktype == "k+q"
-        @views uk = epdata.ukq_full[:, epdata.rngkq .+ offset]
-        @views velocity_diag = epdata.vdiagkq[:, epdata.rngkq]
-    else
-        error("ktype must be k or k+q, not $ktype")
-    end
-    get_el_velocity_diag!(velocity_diag, epdata.nw, el_ham_R, xk, uk, fourier_mode)
-end
-
 
 """
     get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk, fourier_mode="normal")
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
 function get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk, fourier_mode="normal")
-    offset = epdata.iband_offset
-    @views uk = epdata.uk_full[:, epdata.rngk .+ offset]
-    @views ukq = epdata.ukq_full[:, epdata.rngkq .+ offset]
-    @views ep_kq = epdata.ep[epdata.rngkq, epdata.rngk, :]
+    uk = get_u(epdata.el_k)
+    ukq = get_u(epdata.el_kq)
+    @views ep_kq = epdata.ep[epdata.el_kq.rng, epdata.el_k.rng, :]
     get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq, fourier_mode)
 end

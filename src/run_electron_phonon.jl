@@ -83,10 +83,7 @@ function run_eph_outer_loop_q(
     nband = iband_max - iband_min + 1
     nband_ignore = iband_min - 1
 
-    epdatas = [ElPhData(Float64, nw, nmodes, nband) for i=1:Threads.nthreads()]
-    for epdata in epdatas
-        epdata.iband_offset = nband_ignore
-    end
+    epdatas = [ElPhData(Float64, nw, nmodes, nband, nband_ignore) for i=1:Threads.nthreads()]
 
     # Initialize data structs
     if compute_elself
@@ -155,21 +152,20 @@ function run_eph_outer_loop_q(
             epdata.wtq = qpoints.weights[iq]
             epdata.omega .= omegas
 
-            # Use saved data for electron eigenstate at k.
-            epdata.ek_full .= el_k_save[ik].e_full
-            epdata.uk_full .= el_k_save[ik].u_full
-            epdata.vdiagk .= el_k_save[ik].vdiag
+            # Use saved data for electron state at k.
+            put_el_to_epdata!(epdata, el_k_save[ik], "k")
 
-            get_el_eigen!(epdata, "k+q", model.el_ham, xkq, fourier_mode)
+            # Compute electron state at k+q.
+            set_eigen!(epdata.el_kq, model.el_ham, xkq, fourier_mode)
 
             # Set energy window, skip if no state is inside the window
-            skip_k = epdata_set_window!(epdata, "k", window)
-            skip_kq = epdata_set_window!(epdata, "k+q", window)
+            skip_k = set_window!(epdata.el_k, window)
+            skip_kq = set_window!(epdata.el_kq, window)
             if skip_k || skip_kq
                 continue
             end
 
-            get_el_velocity_diag!(epdata, "k+q", model.el_ham_R, xkq, fourier_mode)
+            set_velocity_diag!(epdata.el_kq, model.el_ham_R, xkq, fourier_mode)
             get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
             if any(xq .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)

@@ -2,6 +2,8 @@ using Test
 using EPW
 using NPZ
 
+# TODO: Add test without polar_eph
+
 @testset "cubicBN transport" begin
     # Reference data created from EPW
     μlist_ref = [11.6637, 11.7570, 11.8509] .* unit_to_aru(:eV)

@@ -47,11 +47,11 @@ end
 
     for (iT, T) in enumerate(params.Tlist)
         nocc_q .= occ_boson.(epdata.omega ./ T)
-        for ib in epdata.rngk
-            focc_k[ib] = occ_fermion((epdata.ek[ib] - μ) / T)
+        for ib in epdata.el_k.rng
+            focc_k[ib] = occ_fermion((epdata.el_k.e[ib] - μ) / T)
         end
-        for ib in epdata.rngkq
-            focc_kq[ib] = occ_fermion((epdata.ekq[ib] - μ) / T)
+        for ib in epdata.el_kq.rng
+            focc_kq[ib] = occ_fermion((epdata.el_kq.e[ib] - μ) / T)
         end
 
         # Calculate imaginary part of phonon self-energy
@@ -61,8 +61,8 @@ end
                 continue
             end
 
-            @inbounds for ib in epdata.rngk, jb in epdata.rngkq
-                delta_e = epdata.ekq[jb] - epdata.ek[ib] - omega
+            @inbounds for ib in epdata.el_k.rng, jb in epdata.el_kq.rng
+                delta_e = epdata.el_kq.e[jb] - epdata.el_k.e[ib] - omega
                 delta = gaussian(delta_e * inv_smear) * inv_smear
                 phself.imsigma[imode, iq, iT] += (epdata.g2[jb, ib, imode]
                     * epdata.wtk * π * (focc_k[ib] - focc_kq[jb]) * delta)

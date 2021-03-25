@@ -66,8 +66,8 @@ function compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::Tran
         μ = params.μlist[iT]
 
         nocc_q .= occ_boson.(epdata.omega ./ T)
-        for ib in epdata.rngkq
-            focc_kq[ib] = occ_fermion((epdata.ekq[ib] - μ) / T)
+        for ib in epdata.el_kq.rng
+            focc_kq[ib] = occ_fermion((epdata.el_kq.e[ib] - μ) / T)
         end
 
         # Calculate inverse electron lifetime
@@ -77,11 +77,11 @@ function compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::Tran
                 continue
             end
 
-            @inbounds for ib in epdata.rngk, jb in epdata.rngkq
+            @inbounds for ib in epdata.el_k.rng, jb in epdata.el_kq.rng
                 # 1: phonon absorption. e_k + phonon -> e_kq
                 # 2: phonon emission.   e_k -> e_kq + phonon
-                delta_e1 = epdata.ek[ib] - (epdata.ekq[jb] - omega)
-                delta_e2 = epdata.ek[ib] - (epdata.ekq[jb] + omega)
+                delta_e1 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] - omega)
+                delta_e2 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] + omega)
                 delta1 = gaussian(delta_e1 * inv_smear) * inv_smear
                 delta2 = gaussian(delta_e2 * inv_smear) * inv_smear
                 fcoeff1 = nocc_q[imode] + focc_kq[jb]

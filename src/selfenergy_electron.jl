@@ -46,8 +46,8 @@ end
     for (iT, T) in enumerate(params.Tlist)
 
         nocc_q .= occ_boson.(epdata.omega ./ T)
-        for ib in epdata.rngkq
-            focc_kq[ib] = occ_fermion((epdata.ekq[ib] - μ) / T)
+        for ib in epdata.el_kq.rng
+            focc_kq[ib] = occ_fermion((epdata.el_kq.e[ib] - μ) / T)
         end
 
         # Calculate imaginary part of electron self-energy
@@ -57,9 +57,9 @@ end
                 continue
             end
 
-            @inbounds for ib in epdata.rngk, jb in epdata.rngkq
-                delta_e1 = epdata.ek[ib] - (epdata.ekq[jb] - omega)
-                delta_e2 = epdata.ek[ib] - (epdata.ekq[jb] + omega)
+            @inbounds for ib in epdata.el_k.rng, jb in epdata.el_kq.rng
+                delta_e1 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] - omega)
+                delta_e2 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] + omega)
                 delta1 = gaussian(delta_e1 * inv_smear) * inv_smear
                 delta2 = gaussian(delta_e2 * inv_smear) * inv_smear
                 fcoeff1 = nocc_q[imode] + focc_kq[jb]
