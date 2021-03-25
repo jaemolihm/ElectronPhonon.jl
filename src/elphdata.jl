@@ -15,8 +15,8 @@ export get_el_velocity_diag!
 
 # Energy and matrix elements at a single k and q point
 @kwdef mutable struct ElPhData{T <: Real}
-    nw::Int
-    nmodes::Int
+    nw::Int # Number of Wannier functions
+    nmodes::Int # Number of modes
     nband::Int # Maximum number of bands inside the window
     wtk::T # Weight of the k point
     wtq::T # Weight of the q point

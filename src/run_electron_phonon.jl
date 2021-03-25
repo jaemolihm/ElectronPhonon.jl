@@ -81,10 +81,11 @@ function run_eph_outer_loop_q(
     nk = kpoints.n
     nq = qpoints.n
     nband = iband_max - iband_min + 1
+    iband_offset = iband_min - 1
 
     epdatas = [ElPhData(Float64, nw, nmodes, nband) for i=1:Threads.nthreads()]
     for epdata in epdatas
-        epdata.iband_offset = iband_min - 1
+        epdata.iband_offset = iband_offset
     end
 
     # Initialize data structs
@@ -100,23 +101,16 @@ function run_eph_outer_loop_q(
             length(transport_params.Tlist))
     end
 
-    # Compute and save electron matrix elements at k
+    # Compute and save electron state at k
+    el_k_save = [ElectronState(Float64, nw, nband_bound=nband) for ik=1:nk]
     ek_full_save = zeros(Float64, nw, nk)
-    uk_full_save = Array{ComplexF64,3}(undef, nw, nw, nk)
-    vdiagk_save = zeros(Float64, 3, nband, nk)
 
     Threads.@threads :static for ik in 1:nk
-        epdata = epdatas[Threads.threadid()]
         xk = kpoints.vectors[ik]
-
-        get_el_eigen!(epdata, "k", model.el_ham, xk, fourier_mode)
-        skip_k = epdata_set_window!(epdata, "k", window)
-        get_el_velocity_diag!(epdata, "k", model.el_ham_R, xk, fourier_mode)
-
-        # Save matrix elements at k for reusing
-        ek_full_save[:, ik] .= epdata.ek_full
-        uk_full_save[:, :, ik] .= epdata.uk_full
-        vdiagk_save[:, :, ik] .= epdata.vdiagk
+        set_eigen!(el_k_save[ik], model.el_ham, xk, "gridopt")
+        set_window!(el_k_save[ik], window)
+        set_velocity_diag!(el_k_save[ik], model.el_ham_R, xk, "gridopt")
+        ek_full_save[:, ik] .= el_k_save[ik].e_full
     end # ik
 
     # Compute chemical potential
@@ -162,9 +156,9 @@ function run_eph_outer_loop_q(
             epdata.omega .= omegas
 
             # Use saved data for electron eigenstate at k.
-            epdata.ek_full .= @view ek_full_save[:, ik]
-            epdata.uk_full .= @view uk_full_save[:, :, ik]
-            epdata.vdiagk .= @view vdiagk_save[:, :, ik]
+            epdata.ek_full .= el_k_save[ik].e_full
+            epdata.uk_full .= el_k_save[ik].u_full
+            epdata.vdiagk .= el_k_save[ik].vdiag
 
             get_el_eigen!(epdata, "k+q", model.el_ham, xkq, fourier_mode)
 
@@ -230,7 +224,7 @@ function run_eph_outer_loop_q(
     if compute_transport
         EPW.mpi_sum!(transport_serta.inv_τ, mpi_comm_q)
         σlist = compute_mobility_serta!(transport_params, transport_serta.inv_τ,
-            ek_full_save[iband_min:iband_max, :], vdiagk_save, kpoints.weights, window)
+            el_k_save, iband_offset, kpoints.weights, window)
         output["transport_σlist"] = σlist
     end
 
