@@ -153,7 +153,7 @@ function run_eph_outer_loop_q(
             epdata.omega .= omegas
 
             # Use saved data for electron state at k.
-            put_el_to_epdata!(epdata, el_k_save[ik], "k")
+            copy_el_to_epdata!(epdata, el_k_save[ik], "k")
 
             # Compute electron state at k+q.
             set_eigen!(epdata.el_kq, model.el_ham, xkq, fourier_mode)

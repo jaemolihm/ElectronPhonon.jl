@@ -6,7 +6,7 @@ import EPW.WanToBloch: get_eph_Rq_to_kq!
 
 export ElPhData
 # export apply_gauge_matrix!
-export put_el_to_epdata!
+export copy_el_to_epdata!
 export epdata_set_g2!
 export epdata_set_mmat!
 
@@ -120,26 +120,15 @@ end
 end
 
 """
-    put_el_to_epdata!(epdata::ElPhData, el::ElectronState, ktype::String)
+    copy_el_to_epdata!(epdata::ElPhData, el::ElectronState, ktype::String)
 Put el to the electron state of set_el_of_epdata. ktype is k or k+q.
 """
-function put_el_to_epdata!(epdata::ElPhData, el::ElectronState, ktype::String)
+function copy_el_to_epdata!(epdata::ElPhData, el::ElectronState, ktype::String)
     if ktype ∉ ["k", "k+q"]
         throw(ArgumentError("ktype ($ktype) must be k or k+q"))
     end
-    if epdata.nband < el.nband_bound
-        throw(BoundsError("el.nband_bound ($(el.nband_bound)) cannot be greater than " *
-            "epdata.nband ($(epdata.nband))"))
-    end
-    if epdata.nband_ignore != el.nband_ignore
-        throw(BoundsError("el.nband_ignore ($(el.nband_ignore)) must be identical to " *
-            "epdata.nband_ignore ($(epdata.nband_ignore))"))
-    end
-    if ktype == "k"
-        epdata.el_k = el
-    else
-        epdata.el_kq = el
-    end
+    el_dest = (ktype == "k") ? epdata.el_k : epdata.el_kq
+    copyto!(el_dest, el)
 end
 
 # Define wrappers of WanToBloch functions

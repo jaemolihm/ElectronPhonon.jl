@@ -4,6 +4,7 @@
 import Base.@kwdef
 
 export ElectronState
+export copyto!
 export set_window!
 export set_eigen!
 export set_velocity_diag!
@@ -51,6 +52,31 @@ end
 """ get_u(el)
 Return eigenvector for bands inside the window."""
 get_u(el) = view(el.u_full, :, el.rng_full)
+
+
+function copyto!(dest::ElectronState, src::ElectronState)
+    if dest.nband_bound < src.nband_bound
+        throw(ArgumentError("src.nband_bound ($(src.nband_bound)) cannot be greater " *
+            "than dest.nband_bound ($(dest.nband_bound))"))
+    end
+    if dest.nband_ignore != src.nband_ignore
+        throw(ArgumentError("src.nband_ignore ($(src.nband_ignore)) must be " *
+            "equal to dest.nband_ignore ($(dest.nband_ignore))"))
+    end
+    if dest.nw != src.nw
+        throw(ArgumentError("src.nw ($(src.nw)) must be " *
+            "equal to dest.nw ($(dest.nw))"))
+    end
+    dest.nband_ignore = src.nband_ignore
+    dest.nband = src.nband
+    dest.e_full .= src.e_full
+    dest.u_full .= src.u_full
+    dest.rng_full = src.rng_full
+    dest.rng = src.rng
+    @views dest.e[src.rng] .= src.e[src.rng]
+    @views dest.vdiag[:, src.rng] .= src.vdiag[:, src.rng]
+    dest
+end
 
 """
     set_window!(el::ElectronState, window=(-Inf,Inf))
