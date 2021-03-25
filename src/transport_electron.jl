@@ -100,7 +100,7 @@ end
         weights, window=(-Inf, Inf))
 Compute electron inverse lifetime for given k and q point data in epdata
 """
-function compute_mobility_serta!(params::TransportParams, inv_τ, el_states, iband_offset,
+function compute_mobility_serta!(params::TransportParams, inv_τ, el_states,
     weights, window=(-Inf, Inf))
 
     nband, nk = size(inv_τ)
@@ -114,14 +114,7 @@ function compute_mobility_serta!(params::TransportParams, inv_τ, el_states, iba
 
         for ik in 1:nk
             el = el_states[ik]
-            for iband in 1:el.nband
-                # iband = 1 is the first band inside the window for the state el.
-                # This is el.rng[1]-th band for the whole nw bands.
-                # inv_τ is defined for states inside the fsthick window, which ignores
-                # first iband_offset bands.
-                # So, iband = 1 corresponds to iband_epdata as follows.
-                iband_epdata = iband + el.rng[1] - iband_offset - 1
-
+            for iband in el.rng
                 enk = el.e[iband]
                 @views vnk = el.vdiag[:, iband]
 
@@ -132,7 +125,7 @@ function compute_mobility_serta!(params::TransportParams, inv_τ, el_states, iba
 
                 focc = occ_fermion((enk - μ) / T)
                 dfocc = occ_fermion_derivative((enk - μ) / T) / T
-                τ = 1 / inv_τ[iband_epdata, ik, iT]
+                τ = 1 / inv_τ[iband, ik, iT]
 
                 for j=1:3, i=1:3
                     σlist[i, j, iT] += weights[ik] * dfocc * τ * vnk[i] * vnk[j]

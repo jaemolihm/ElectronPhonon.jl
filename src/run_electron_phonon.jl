@@ -81,11 +81,11 @@ function run_eph_outer_loop_q(
     nk = kpoints.n
     nq = qpoints.n
     nband = iband_max - iband_min + 1
-    iband_offset = iband_min - 1
+    nband_ignore = iband_min - 1
 
     epdatas = [ElPhData(Float64, nw, nmodes, nband) for i=1:Threads.nthreads()]
     for epdata in epdatas
-        epdata.iband_offset = iband_offset
+        epdata.iband_offset = nband_ignore
     end
 
     # Initialize data structs
@@ -102,7 +102,7 @@ function run_eph_outer_loop_q(
     end
 
     # Compute and save electron state at k
-    el_k_save = [ElectronState(Float64, nw, nband_bound=nband) for ik=1:nk]
+    el_k_save = [ElectronState(Float64, nw, nband, nband_ignore) for ik=1:nk]
     ek_full_save = zeros(Float64, nw, nk)
 
     Threads.@threads :static for ik in 1:nk
@@ -224,7 +224,7 @@ function run_eph_outer_loop_q(
     if compute_transport
         EPW.mpi_sum!(transport_serta.inv_τ, mpi_comm_q)
         σlist = compute_mobility_serta!(transport_params, transport_serta.inv_τ,
-            el_k_save, iband_offset, kpoints.weights, window)
+            el_k_save, kpoints.weights, window)
         output["transport_σlist"] = σlist
     end
 

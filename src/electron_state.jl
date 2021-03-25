@@ -14,28 +14,34 @@ export set_velocity_diag!
     u_full::Matrix{Complex{T}} # Electron eigenvectors
 
     # Variables related to the energy window.
-    # Applying to full array: arr_full[rng]
-    # Applying to filtered array: arr[1:nband]
+    # The bands inside the window must be included in the range
+    # nband_ignore+1:nband_ignore+nband_bound.
+    # Indexing a full array: arr_full[rng_full]
+    # Indexing a filtered array: arr[rng]
+    # rng_full = rng .+ nband_ignore
+    # nband = length(rng)
     nband_bound::Int # Upper bound of possible nband
+    nband_ignore::Int # Number of low-lying ignored bands
     nband::Int # Number of bands inside the energy window
-    rng::UnitRange{Int} # Index of bands inside the energy window
+    rng_full::UnitRange{Int} # Index of bands inside the energy window for the full index
+    rng::UnitRange{Int} # Index of bands inside the energy window for the offset index
     e::Vector{T} # Eigenvalues at bands inside the energy window
     vdiag::Matrix{T} # Diagonal components of band velocity inside the energy window
 end
 
-function ElectronState(T, nw; nband_bound=nothing)
-    if nband_bound === nothing
-        nband_bound = nw
-    end
+function ElectronState(T, nw, nband_bound=nw, nband_ignore=0)
     @assert nband_bound > 0
-    @assert nband_bound <= nw
+    @assert nband_ignore >= 0
+    @assert nband_bound + nband_ignore <= nw
 
     ElectronState{T}(
         nw=nw,
         e_full=zeros(T, nw),
         u_full=zeros(Complex{T}, nw, nw),
         nband_bound=nband_bound,
+        nband_ignore=nband_ignore,
         nband=0,
+        rng_full=1:0,
         rng=1:0,
         e=zeros(T, nband_bound),
         vdiag=zeros(T, 3, nband_bound),
@@ -44,11 +50,11 @@ end
 
 """ get_u(el)
 Return eigenvector for bands inside the window."""
-get_u(el) = view(el.u_full, :, el.rng)
+get_u(el) = view(el.u_full, :, el.rng_full)
 
 """
     set_window!(el::ElectronState, window=(-Inf,Inf))
-Find out the bands inside the window and set el.nband and el.rng.
+Find out the bands inside the window and set el.nband, el.rng and el.rng_full.
 Return true if no bands are selected.
 FIXME: return false if no bands are selected..
 """
@@ -58,15 +64,20 @@ function set_window!(el::ElectronState, window=(-Inf,Inf))
     if isempty(ibands)
         return true
     end
-
-    el.rng = ibands[1]:ibands[end]
-    el.nband = length(el.rng)
-    if el.nband > el.nband_bound
-        throw(ArgumentError("Number of selected bands ($(el.nband)) cannot exceed " *
-        "nband_bound ($(el.nband_bound))."))
+    if ibands[1] <= el.nband_ignore
+        throw(BoundsError("Selected bands ($(ibands[1]):$(ibands[end])) must not include " *
+            "bands 1 to nband_ignore ($(el.nband_ignore))."))
+    end
+    if ibands[end] - ibands[1] + 1 > el.nband_bound
+        throw(ArgumentError("Number of selected bands ($(ibands[end] - ibands[1] + 1)) " *
+            "cannot exceed nband_bound ($(el.nband_bound))."))
     end
 
-    @views el.e[1:el.nband] .= el.e_full[el.rng]
+    el.rng_full = ibands[1]:ibands[end]
+    el.rng = el.rng_full .- el.nband_ignore
+    el.nband = length(el.rng)
+
+    @views el.e[el.rng] .= el.e_full[el.rng_full]
     false
 end
 
@@ -86,6 +97,6 @@ Compute electron band velocity, only the band-diagonal part.
 """
 function set_velocity_diag!(el::ElectronState, el_ham_R, xk, fourier_mode="normal")
     uk = get_u(el)
-    velocity_diag = view(el.vdiag, :, 1:el.nband)
+    velocity_diag = view(el.vdiag, :, el.rng)
     get_el_velocity_diag!(velocity_diag, el.nw, el_ham_R, xk, uk, fourier_mode)
 end
