@@ -46,7 +46,7 @@ end
     inv_smear = 1 / params.smearing
 
     for (iT, T) in enumerate(params.Tlist)
-        nocc_q .= occ_boson.(epdata.omega ./ T)
+        nocc_q .= occ_boson.(epdata.ph.e ./ T)
         for ib in epdata.el_k.rng
             focc_k[ib] = occ_fermion((epdata.el_k.e[ib] - μ) / T)
         end
@@ -56,7 +56,7 @@ end
 
         # Calculate imaginary part of phonon self-energy
         for imode in 1:epdata.nmodes
-            omega = epdata.omega[imode]
+            omega = epdata.ph.e[imode]
             if (omega < omega_acoustic)
                 continue
             end

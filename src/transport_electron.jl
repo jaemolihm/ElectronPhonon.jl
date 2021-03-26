@@ -65,14 +65,14 @@ function compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::Tran
         T = params.Tlist[iT]
         μ = params.μlist[iT]
 
-        nocc_q .= occ_boson.(epdata.omega ./ T)
+        nocc_q .= occ_boson.(epdata.ph.e ./ T)
         for ib in epdata.el_kq.rng
             focc_kq[ib] = occ_fermion((epdata.el_kq.e[ib] - μ) / T)
         end
 
         # Calculate inverse electron lifetime
         for imode in 1:epdata.nmodes
-            omega = epdata.omega[imode]
+            omega = epdata.ph.e[imode]
             if (omega < omega_acoustic)
                 continue
             end

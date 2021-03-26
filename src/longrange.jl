@@ -6,6 +6,7 @@ export dynmat_dipole!
 export eph_dipole!
 
 Base.@kwdef struct Polar{T<:Real}
+    use::Bool # If true, use polar correction
     # Structure information
     alat::T
     volume::T
@@ -20,11 +21,15 @@ Base.@kwdef struct Polar{T<:Real}
 end
 
 # Null initialization for non-polar case
-Polar(T) = Polar{T}(alat=0, volume=0, recip_lattice=zeros(Mat3{T}), atom_pos=[],
+Polar(T) = Polar{T}(use=false, alat=0, volume=0, recip_lattice=zeros(Mat3{T}), atom_pos=[],
                     ϵ=zeros(Mat3{T}), Z=[], nxs=(0,0,0), cutoff=0, η=0)
 
 # Compute dynmat += sign * (dynmat from dipole-dipole interaction)
 @timing "lr_dyn_dip" function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}
+    if ! polar.use
+        return
+    end
+
     @assert eltype(dynmat) == Complex{T}
 
     atom_pos = polar.atom_pos
@@ -92,6 +97,10 @@ end
 
 # Compute eph_kq += sign * (eph_kq from dipole potential)
 @timing "lr_eph_dip" function eph_dipole!(eph, xq, polar::Polar{T}, u_ph, mmat, sign=1) where {T}
+    if ! polar.use
+        return
+    end
+
     @assert eltype(eph) == Complex{T}
 
     atom_pos = polar.atom_pos

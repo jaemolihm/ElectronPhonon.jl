@@ -116,8 +116,7 @@ function run_eph_outer_loop_q(
     end
 
     omega_save = zeros(nmodes, nq)
-    omegas = zeros(nmodes)
-    u_ph = zeros(ComplexF64, (nmodes, nmodes))
+    ph = PhononState(Float64, nmodes)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epobj_eRpq = WannierObject(model.el_ham.nr, model.el_ham.irvec,
@@ -133,10 +132,10 @@ function run_eph_outer_loop_q(
         xq = qpoints.vectors[iq]
 
         # Phonon eigenvalues
-        get_ph_eigen!(omegas, u_ph, model, xq, fourier_mode=fourier_mode)
-        omega_save[:, iq] .= omegas
+        set_eigen!(ph, model, xq, fourier_mode)
+        omega_save[:, iq] .= ph.e
 
-        get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, u_ph, fourier_mode)
+        get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u, fourier_mode)
 
         Threads.@threads :static for ik in 1:nk
         # for ik in 1:nk
@@ -150,10 +149,10 @@ function run_eph_outer_loop_q(
 
             epdata.wtk = kpoints.weights[ik]
             epdata.wtq = qpoints.weights[iq]
-            epdata.omega .= omegas
+            copyto!(epdata.ph, ph)
 
             # Use saved data for electron state at k.
-            copy_el_to_epdata!(epdata, el_k_save[ik], "k")
+            copyto!(epdata.el_k, el_k_save[ik])
 
             # Compute electron state at k+q.
             set_eigen!(epdata.el_kq, model.el_ham, xkq, fourier_mode)
@@ -169,7 +168,7 @@ function run_eph_outer_loop_q(
             get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
             if any(xq .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
-                eph_dipole!(epdata.ep, xq, model.polar_eph, u_ph, epdata.mmat, 1)
+                eph_dipole!(epdata.ep, xq, model.polar_eph, ph.u, epdata.mmat, 1)
             end
             epdata_set_g2!(epdata)
 

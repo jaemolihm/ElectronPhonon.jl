@@ -6,9 +6,10 @@ import EPW.WanToBloch: get_eph_Rq_to_kq!
 
 export ElPhData
 # export apply_gauge_matrix!
-export copy_el_to_epdata!
 export epdata_set_g2!
 export epdata_set_mmat!
+
+# TODO: Rename to ElPhState?
 
 # Energy and matrix elements at a single k and q point
 @kwdef mutable struct ElPhData{T <: Real}
@@ -17,12 +18,14 @@ export epdata_set_mmat!
     nband::Int # Maximum number of bands inside the window
     wtk::T # Weight of the k point
     wtq::T # Weight of the q point
-    omega::Vector{T}
     mmat::Matrix{Complex{T}} # U(k+q)' * U(k)
 
     # Electron states
     el_k::ElectronState{T} # electron state at k
     el_kq::ElectronState{T} # electron state at k+q
+
+    # Phonon state
+    ph::PhononState{T} # phonon state at q
 
     # Electron-phonon coupling
     ep::Array{Complex{T}, 3}
@@ -41,10 +44,10 @@ function ElPhData(T, nw, nmodes, nband=nw, nband_ignore=0)
     @assert nband + nband_ignore <= nw
 
     ElPhData(nw=nw, nmodes=nmodes, nband=nband, wtk=T(0), wtq=T(0),
-        omega=Vector{T}(undef, nmodes),
-        mmat=Matrix{Complex{T}}(undef, nband, nband),
         el_k=ElectronState(T, nw, nband, nband_ignore),
         el_kq=ElectronState(T, nw, nband, nband_ignore),
+        ph=PhononState(T, nmodes),
+        mmat=Matrix{Complex{T}}(undef, nband, nband),
         ep=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         g2=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
         buffer=Matrix{Complex{T}}(undef, nw, nw),
@@ -98,7 +101,7 @@ g2 is set to 0.0 if omega < omega_acoustic."
     rngk = epdata.el_k.rng
     rngkq = epdata.el_kq.rng
     for imode in 1:epdata.nmodes
-        omega = epdata.omega[imode]
+        omega = epdata.ph.e[imode]
         if (omega < omega_acoustic)
             epdata.g2[:, :, imode] .= 0
             continue
@@ -117,18 +120,6 @@ end
     ukq = get_u(epdata.el_kq)
     epdata.mmat .= 0
     @views mul!(epdata.mmat[rngkq, rngk], Adjoint(ukq), uk)
-end
-
-"""
-    copy_el_to_epdata!(epdata::ElPhData, el::ElectronState, ktype::String)
-Put el to the electron state of set_el_of_epdata. ktype is k or k+q.
-"""
-function copy_el_to_epdata!(epdata::ElPhData, el::ElectronState, ktype::String)
-    if ktype ∉ ["k", "k+q"]
-        throw(ArgumentError("ktype ($ktype) must be k or k+q"))
-    end
-    el_dest = (ktype == "k") ? epdata.el_k : epdata.el_kq
-    copyto!(el_dest, el)
 end
 
 # Define wrappers of WanToBloch functions

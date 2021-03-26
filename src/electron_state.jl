@@ -3,6 +3,8 @@
 
 import Base.@kwdef
 
+using EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag!
+
 export ElectronState
 export copyto!
 export set_window!
@@ -110,7 +112,7 @@ end
 # Define wrappers of WanToBloch functions
 
 """
-    get_eigen!(el::ElectronState, el_ham, xk, fourier_mode="normal")
+    set_eigen!(el::ElectronState, el_ham, xk, fourier_mode="normal")
 Compute electron eigenenergy and eigenvector and save them in el.
 """
 function set_eigen!(el::ElectronState, el_ham, xk, fourier_mode="normal")

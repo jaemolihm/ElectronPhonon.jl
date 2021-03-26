@@ -45,14 +45,14 @@ end
 
     for (iT, T) in enumerate(params.Tlist)
 
-        nocc_q .= occ_boson.(epdata.omega ./ T)
+        nocc_q .= occ_boson.(epdata.ph.e ./ T)
         for ib in epdata.el_kq.rng
             focc_kq[ib] = occ_fermion((epdata.el_kq.e[ib] - μ) / T)
         end
 
         # Calculate imaginary part of electron self-energy
         for imode in 1:epdata.nmodes
-            omega = epdata.omega[imode]
+            omega = epdata.ph.e[imode]
             if (omega < EPW.omega_acoustic)
                 continue
             end
