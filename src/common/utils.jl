@@ -94,38 +94,3 @@ function average_degeneracy(data, energy, degeneracy_cutoff=1.e-6)
     data_averaged
 end
 # end
-
-"""
-    bisect(fun, xl, xu; tolf=1E-15, max_iter=500)
-Solve fun(x) = 0 using bisection. Converge if |fun(x)| < tolf.
-"""
-function bisect(fun, xl, xu; tolf=1E-15, max_iter=500)
-    if (xl > xu)
-        xl, xu = xu, xl
-    end
-    fl, fu = fun(xl), fun(xu)
-    if fl == 0.0
-        return xl
-    end
-    if fu == 0.0
-        return xu
-    end
-    @assert fl * fu < 0 "wrong initial condition for bisection"
-    iter = 0
-    while true
-        iter += 1
-        xr = (xu + xl) * 0.5 # bisect interval
-        fr = fun(xr) # value at the midpoint
-        if fr * fl < 0.0 # (fr < 0.0 && fl > 0.0) || (fr > 0.0 && fl < 0.0)
-            xu, fu = xr, fr # upper --> midpoint
-        else
-            xl, fl = xr, fr # lower --> midpoint
-        end
-        if abs(fr) <= tolf # Bisect converged.
-            return xr
-        end
-        if iter > max_iter
-            error("bisect not converged")
-        end
-    end
-end
