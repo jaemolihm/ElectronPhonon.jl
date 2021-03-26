@@ -1,17 +1,16 @@
 
 # Electron eigenvalue and eigenvector at a single k point
 
-import Base.@kwdef
-
 using EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag!
 
 export ElectronState
 export copyto!
 export set_window!
+export set_occupation!
 export set_eigen!
 export set_velocity_diag!
 
-@kwdef mutable struct ElectronState{T <: Real}
+Base.@kwdef mutable struct ElectronState{T <: Real}
     nw::Int # Number of Wannier functions
     e_full::Vector{T} # Eigenvalues at all bands
     u_full::Matrix{Complex{T}} # Electron eigenvectors
@@ -28,8 +27,11 @@ export set_velocity_diag!
     nband::Int # Number of bands inside the energy window
     rng_full::UnitRange{Int} # Index of bands inside the energy window for the full index
     rng::UnitRange{Int} # Index of bands inside the energy window for the offset index
+
+    # These arrays are defined only for bands inside the window
     e::Vector{T} # Eigenvalues at bands inside the energy window
     vdiag::Matrix{T} # Diagonal components of band velocity inside the energy window
+    occupation::Vector{T} # Electron occupation number
 end
 
 function ElectronState(T, nw, nband_bound=nw, nband_ignore=0)
@@ -48,6 +50,7 @@ function ElectronState(T, nw, nband_bound=nw, nband_ignore=0)
         rng=1:0,
         e=zeros(T, nband_bound),
         vdiag=zeros(T, 3, nband_bound),
+        occupation=zeros(T, nband_bound),
     )
 end
 
@@ -107,6 +110,12 @@ function set_window!(el::ElectronState, window=(-Inf,Inf))
 
     @views el.e[el.rng] .= el.e_full[el.rng_full]
     false
+end
+
+function set_occupation!(el::ElectronState, μ, T)
+    for i in el.rng
+        el.occupation[i] = occ_fermion((el.e[i] - μ) / T)
+    end
 end
 
 # Define wrappers of WanToBloch functions

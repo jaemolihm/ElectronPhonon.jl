@@ -16,16 +16,10 @@ end
 # Data and buffers for self-energy of electron
 Base.@kwdef struct PhononSelfEnergy{T <: Real}
     imsigma::Array{T, 3}
-
-    # buffers
-    focc_k::Vector{Vector{T}}
-    focc_kq::Vector{Vector{T}}
 end
 
 function PhononSelfEnergy(T, nband::Int, nmodes::Int, nq::Int, ntemperatures::Int)
     PhononSelfEnergy{T}(
-        focc_k=[Vector{T}(undef, nband) for i=1:Threads.nthreads()],
-        focc_kq=[Vector{T}(undef, nband) for i=1:Threads.nthreads()],
         imsigma=zeros(T, nmodes, nq, ntemperatures),
     )
 end
@@ -36,19 +30,15 @@ end
 """
 @timing "selfen_ph" function compute_phonon_selfen!(phself, epdata,
         params::PhononSelfEnergyParams, iq)
-    focc_k = phself.focc_k[Threads.threadid()]
-    focc_kq = phself.focc_kq[Threads.threadid()]
+    el_k_occ = epdata.el_k.occupation
+    el_kq_occ = epdata.el_kq.occupation
 
     μ = params.μ
     inv_smear = 1 / params.smearing
 
     for (iT, T) in enumerate(params.Tlist)
-        for ib in epdata.el_k.rng
-            focc_k[ib] = occ_fermion((epdata.el_k.e[ib] - μ) / T)
-        end
-        for ib in epdata.el_kq.rng
-            focc_kq[ib] = occ_fermion((epdata.el_kq.e[ib] - μ) / T)
-        end
+        set_occupation!(epdata.el_k, μ, T)
+        set_occupation!(epdata.el_kq, μ, T)
 
         # Calculate imaginary part of phonon self-energy
         for imode in 1:epdata.nmodes
@@ -61,7 +51,7 @@ end
                 delta_e = epdata.el_kq.e[jb] - epdata.el_k.e[ib] - omega
                 delta = gaussian(delta_e * inv_smear) * inv_smear
                 phself.imsigma[imode, iq, iT] += (epdata.g2[jb, ib, imode]
-                    * epdata.wtk * π * (focc_k[ib] - focc_kq[jb]) * delta)
+                    * epdata.wtk * π * (el_k_occ[ib] - el_kq_occ[jb]) * delta)
             end
         end # mode
     end # temperature

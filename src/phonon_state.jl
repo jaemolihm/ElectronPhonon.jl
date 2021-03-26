@@ -1,20 +1,18 @@
 
 # Phonon eigenvalue and eigenvector at a single q point
 
-import Base.@kwdef
-
 using EPW.WanToBloch: get_ph_eigen!
 
 export PhononState
 export copyto!
+export set_occupation!
 # export set_eigen!
 # export set_velocity_diag!
 
-@kwdef mutable struct PhononState{T <: Real}
+Base.@kwdef mutable struct PhononState{T <: Real}
     nmodes::Int # Number of modes
     e::Vector{T} # Phonon eigenavlues
     u::Matrix{Complex{T}} # Phonon eigenmodes
-    # buffers
     occupation::Vector{T} # Phonon occupation number
 end
 

@@ -19,17 +19,12 @@ end
 # Data and buffers for SERTA (self-energy relaxation-time approximation) conductivity
 Base.@kwdef struct TransportSERTA{T <: Real}
     inv_τ::Array{T, 3}
-
-    # thread-safe buffers
-    focc_kq::Vector{Vector{T}}
 end
 
 function TransportSERTA(T, nband::Int, nmodes::Int, nk::Int, ntemperatures::Int)
     data = TransportSERTA{T}(
         inv_τ=zeros(T, nband, nk, ntemperatures),
-        focc_kq=[zeros(T, nband)],
     )
-    Threads.resize_nthreads!(data.focc_kq)
     data
 end
 
@@ -56,16 +51,14 @@ function compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::Tran
     inv_smear = 1 / params.smearing
 
     ph_occ = epdata.ph.occupation
-    focc_kq = transdata.focc_kq[threadid()]
+    el_kq_occ = epdata.el_kq.occupation
 
     for iT in 1:length(params.Tlist)
         T = params.Tlist[iT]
         μ = params.μlist[iT]
 
         set_occupation!(epdata.ph, T)
-        for ib in epdata.el_kq.rng
-            focc_kq[ib] = occ_fermion((epdata.el_kq.e[ib] - μ) / T)
-        end
+        set_occupation!(epdata.el_kq, μ, T)
 
         # Calculate inverse electron lifetime
         for imode in 1:epdata.nmodes
@@ -81,8 +74,8 @@ function compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::Tran
                 delta_e2 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] + omega)
                 delta1 = gaussian(delta_e1 * inv_smear) * inv_smear
                 delta2 = gaussian(delta_e2 * inv_smear) * inv_smear
-                fcoeff1 = ph_occ[imode] + focc_kq[jb]
-                fcoeff2 = ph_occ[imode] + 1.0 - focc_kq[jb]
+                fcoeff1 = ph_occ[imode] + el_kq_occ[jb]
+                fcoeff2 = ph_occ[imode] + 1.0 - el_kq_occ[jb]
 
                 transdata.inv_τ[ib, ik, iT] += (2π * epdata.wtq
                     * epdata.g2[jb, ib, imode]
@@ -111,23 +104,24 @@ function compute_mobility_serta!(params::TransportParams, inv_τ, el_states,
 
         for ik in 1:nk
             el = el_states[ik]
+
             for iband in el.rng
                 enk = el.e[iband]
                 @views vnk = el.vdiag[:, iband]
 
                 # Skip if enk is outside the window
                 if enk < window[1] || enk > window[2]
+                    @assert false, "this should not happen. enk must be inside the window"
                     continue
                 end
 
-                focc = occ_fermion((enk - μ) / T)
                 dfocc = occ_fermion_derivative((enk - μ) / T) / T
                 τ = 1 / inv_τ[iband, ik, iT]
 
                 for j=1:3, i=1:3
                     σlist[i, j, iT] += weights[ik] * dfocc * τ * vnk[i] * vnk[j]
                 end
-            end # ib
+            end # iband
         end # ik
     end # temperatures
     σlist .*= params.spin_degeneracy
