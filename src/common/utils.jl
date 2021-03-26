@@ -12,35 +12,52 @@ export generate_kvec_grid
 export average_degeneracy
 export bisect
 
-function occ_fermion(value; occ_type="fd")
-    if occ_type == "fd"
-        1.0 / (exp(value) + 1.0)
-    else
-        error("unknown occ_type")
-    end
-end
-
+"""
+Occupation of a fermion at energy `e` and temperature `T`.
+"""
 function occ_fermion(e, T; occ_type="fd")
     if occ_type == "fd"
-        if T < 1.0E-5
-            (sign(e) + 1) / 2
+        if T > 1.0E-8
+            return 1 / (exp(e/T) + 1)
         else
-            1 / (exp(e/T) + 1)
+            return (sign(e) + 1) / 2
         end
     else
-        error("unknown occ_type")
+        throw(ArgumentError("unknown occ_type $occ_type"))
     end
 end
 
-function occ_fermion_derivative(value)
-    1 / (2 + exp(-value) + exp(value))
+"""
+Derivative of the fermion occupation function with respect to `e`. Approximation to minus
+the delta function divided by temperature.
+"""
+function occ_fermion_derivative(e, T; occ_type="fd")
+    if occ_type == "fd"
+        if T > 1.0E-8
+            # occ = occ_fermion(e, T, occ_type="fd")
+            # return occ * (1 - occ) / T
+            x = e / T
+            return -1 / (2 + exp(x) + exp(-x)) / T
+        else
+            return zero(e)
+        end
+    else
+        throw(ArgumentError("unknown occ_type $occ_type"))
+    end
 end
 
-function occ_boson(value, occ_type="be")
+"""
+Occupation of a boson at energy `e` and temperature `T`.
+"""
+function occ_boson(e, T, occ_type="be")
     if occ_type == "be"
-        1.0 / (exp(value) - 1.0)
+        if T > 1.0E-8
+            return 1 / (exp(e/T) - 1)
+        else
+            throw(ArgumentError("Temperature for occ_boson cannot be zero or negative"))
+        end
     else
-        error("unknown occ_type")
+        throw(ArgumentError("unknown occ_type $occ_type"))
     end
 end
 

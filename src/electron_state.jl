@@ -114,7 +114,7 @@ end
 
 function set_occupation!(el::ElectronState, μ, T)
     for i in el.rng
-        el.occupation[i] = occ_fermion((el.e[i] - μ) / T)
+        el.occupation[i] = occ_fermion(el.e[i] - μ, T)
     end
 end
 

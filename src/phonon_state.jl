@@ -38,7 +38,7 @@ end
 
 function set_occupation!(ph::PhononState, T)
     for i = 1:ph.nmodes
-        ph.occupation[i] = occ_boson(ph.e[i] / T)
+        ph.occupation[i] = occ_boson(ph.e[i], T)
     end
 end
 

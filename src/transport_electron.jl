@@ -115,7 +115,7 @@ function compute_mobility_serta!(params::TransportParams, inv_τ, el_states,
                     continue
                 end
 
-                dfocc = occ_fermion_derivative((enk - μ) / T) / T
+                dfocc = -occ_fermion_derivative(enk - μ, T)
                 τ = 1 / inv_τ[iband, ik, iT]
 
                 for j=1:3, i=1:3
