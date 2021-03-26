@@ -18,14 +18,12 @@ Base.@kwdef struct PhononSelfEnergy{T <: Real}
     imsigma::Array{T, 3}
 
     # buffers
-    nocc_q::Vector{Vector{T}}
     focc_k::Vector{Vector{T}}
     focc_kq::Vector{Vector{T}}
 end
 
 function PhononSelfEnergy(T, nband::Int, nmodes::Int, nq::Int, ntemperatures::Int)
     PhononSelfEnergy{T}(
-        nocc_q=[Vector{T}(undef, nmodes) for i=1:Threads.nthreads()],
         focc_k=[Vector{T}(undef, nband) for i=1:Threads.nthreads()],
         focc_kq=[Vector{T}(undef, nband) for i=1:Threads.nthreads()],
         imsigma=zeros(T, nmodes, nq, ntemperatures),
@@ -38,7 +36,6 @@ end
 """
 @timing "selfen_ph" function compute_phonon_selfen!(phself, epdata,
         params::PhononSelfEnergyParams, iq)
-    nocc_q = phself.nocc_q[Threads.threadid()]
     focc_k = phself.focc_k[Threads.threadid()]
     focc_kq = phself.focc_kq[Threads.threadid()]
 
@@ -46,7 +43,6 @@ end
     inv_smear = 1 / params.smearing
 
     for (iT, T) in enumerate(params.Tlist)
-        nocc_q .= occ_boson.(epdata.ph.e ./ T)
         for ib in epdata.el_k.rng
             focc_k[ib] = occ_fermion((epdata.el_k.e[ib] - μ) / T)
         end

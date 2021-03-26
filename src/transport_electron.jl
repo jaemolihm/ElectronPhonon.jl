@@ -17,21 +17,18 @@ export TransportParams
 end
 
 # Data and buffers for SERTA (self-energy relaxation-time approximation) conductivity
-struct TransportSERTA{T <: Real}
+Base.@kwdef struct TransportSERTA{T <: Real}
     inv_τ::Array{T, 3}
 
     # thread-safe buffers
-    nocc_q::Vector{Vector{T}}
     focc_kq::Vector{Vector{T}}
 end
 
 function TransportSERTA(T, nband::Int, nmodes::Int, nk::Int, ntemperatures::Int)
     data = TransportSERTA{T}(
-        zeros(T, nband, nk, ntemperatures),
-        [zeros(T, nmodes)],
-        [zeros(T, nband)],
+        inv_τ=zeros(T, nband, nk, ntemperatures),
+        focc_kq=[zeros(T, nband)],
     )
-    Threads.resize_nthreads!(data.nocc_q)
     Threads.resize_nthreads!(data.focc_kq)
     data
 end
@@ -58,14 +55,14 @@ Compute electron inverse lifetime for given k and q point data in epdata
 function compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::TransportParams, ik)
     inv_smear = 1 / params.smearing
 
-    nocc_q = transdata.nocc_q[threadid()]
+    ph_occ = epdata.ph.occupation
     focc_kq = transdata.focc_kq[threadid()]
 
     for iT in 1:length(params.Tlist)
         T = params.Tlist[iT]
         μ = params.μlist[iT]
 
-        nocc_q .= occ_boson.(epdata.ph.e ./ T)
+        set_occupation!(epdata.ph, T)
         for ib in epdata.el_kq.rng
             focc_kq[ib] = occ_fermion((epdata.el_kq.e[ib] - μ) / T)
         end
@@ -84,8 +81,8 @@ function compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::Tran
                 delta_e2 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] + omega)
                 delta1 = gaussian(delta_e1 * inv_smear) * inv_smear
                 delta2 = gaussian(delta_e2 * inv_smear) * inv_smear
-                fcoeff1 = nocc_q[imode] + focc_kq[jb]
-                fcoeff2 = nocc_q[imode] + 1.0 - focc_kq[jb]
+                fcoeff1 = ph_occ[imode] + focc_kq[jb]
+                fcoeff2 = ph_occ[imode] + 1.0 - focc_kq[jb]
 
                 transdata.inv_τ[ib, ik, iT] += (2π * epdata.wtq
                     * epdata.g2[jb, ib, imode]

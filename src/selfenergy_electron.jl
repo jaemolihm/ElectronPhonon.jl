@@ -18,13 +18,11 @@ Base.@kwdef struct ElectronSelfEnergy{T <: Real}
     imsigma::Array{T, 3}
 
     # buffers
-    nocc_q::Vector{Vector{T}}
     focc_kq::Vector{Vector{T}}
 end
 
 function ElectronSelfEnergy(T, nband::Int, nmodes::Int, nk::Int, ntemperatures::Int)
     data = ElectronSelfEnergy{T}(
-        nocc_q=[Vector{T}(undef, nmodes) for _ in 1:nthreads()],
         focc_kq=[Vector{T}(undef, nband) for _ in 1:nthreads()],
         imsigma=zeros(T, nband, nk, ntemperatures),
     )
@@ -37,7 +35,7 @@ end
 """
 @timing "selfen_el" function compute_electron_selfen!(elself, epdata,
         params::ElectronSelfEnergyParams, ik)
-    nocc_q = elself.nocc_q[Threads.threadid()]
+    ph_occ = epdata.ph.occupation
     focc_kq = elself.focc_kq[Threads.threadid()]
 
     μ = params.μ
@@ -45,7 +43,8 @@ end
 
     for (iT, T) in enumerate(params.Tlist)
 
-        nocc_q .= occ_boson.(epdata.ph.e ./ T)
+        set_occupation!(epdata.ph, T)
+
         for ib in epdata.el_kq.rng
             focc_kq[ib] = occ_fermion((epdata.el_kq.e[ib] - μ) / T)
         end
@@ -62,8 +61,8 @@ end
                 delta_e2 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] + omega)
                 delta1 = gaussian(delta_e1 * inv_smear) * inv_smear
                 delta2 = gaussian(delta_e2 * inv_smear) * inv_smear
-                fcoeff1 = nocc_q[imode] + focc_kq[jb]
-                fcoeff2 = nocc_q[imode] + 1.0 - focc_kq[jb]
+                fcoeff1 = ph_occ[imode] + focc_kq[jb]
+                fcoeff2 = ph_occ[imode] + 1.0 - focc_kq[jb]
                 elself.imsigma[ib, ik, iT] += (epdata.g2[jb, ib, imode] * epdata.wtq
                     * π * (fcoeff1 * delta1 + fcoeff2 * delta2))
             end
