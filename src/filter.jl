@@ -18,7 +18,7 @@ function inside_window(e, window_min, window_max)
 end
 
 "Filter Kpoints object"
-function filter_kpoints(kpoints::Kpoints, nw, el_ham, window)
+function filter_kpoints(kpoints::Kpoints, nw, el_ham, window, fourier_mode="normal")
     # If the window is trivial, return the original kpoints
     if window === (-Inf, Inf)
         return kpoints, 1, nw
@@ -30,7 +30,7 @@ function filter_kpoints(kpoints::Kpoints, nw, el_ham, window)
     band_max = 1
     for ik in 1:kpoints.n
         xk = kpoints.vectors[ik]
-        get_fourier!(hk, el_ham, xk, mode="normal")
+        get_fourier!(hk, el_ham, xk, mode=fourier_mode)
         eigenvalues = solve_eigen_el_valueonly!(hk)
         bands_in_window = inside_window(eigenvalues, window...)
         if ! isempty(bands_in_window)

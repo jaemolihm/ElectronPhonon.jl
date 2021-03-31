@@ -44,6 +44,9 @@ mpi_max!(arr, comm::MPI.Comm)  = MPI.Allreduce!(arr, max, comm)
 mpi_mean(arr, comm::MPI.Comm)  = mpi_sum(arr, comm) ./ mpi_nprocs(comm)
 mpi_mean!(arr, comm::MPI.Comm) = (mpi_sum!(arr, comm); arr ./= mpi_nprocs(comm))
 
+mpi_reduce_and(arr, comm::MPI.Comm) = MPI.Allreduce(arr, &, comm)
+mpi_reduce_or(arr, comm::MPI.Comm) = MPI.Allreduce(arr, |, comm)
+
 mpi_bcast!(buf, root::Integer, comm::MPI.Comm) = MPI.Bcast!(buf, root, comm)
 mpi_bcast( obj, root::Integer, comm::MPI.Comm) = MPI.bcast( obj, root, comm)
 mpi_bcast!(buf, comm::MPI.Comm) = MPI.Bcast!(buf, 0, comm)

@@ -5,9 +5,11 @@ using MPI
 export generate_kvec_grid
 
 struct Kpoints{T <: Real}
-    n::Int                  # Number of k points
+    n::Int                   # Number of k points
     vectors::Vector{Vec3{T}} # Fractional coordinate of k points
     weights::Vector{T}       # Weight of each k points
+    # size of the grid if kpoints is a subset of grid points. (0,0,0) otherwise.
+    ngrid::NTuple{3,Int64}
 end
 
 """
@@ -39,7 +41,7 @@ function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int})
         push!(kvecs, Vec3{Float64}(i/nk1, j/nk2, k/nk3))
     end
     nk = length(kvecs)
-    Kpoints(nk, kvecs, fill(1/nk_grid, (nk,)))
+    Kpoints(nk, kvecs, fill(1/nk_grid, (nk,)), (nk1, nk2, nk3))
 end
 
 """
@@ -69,7 +71,7 @@ end
 only k points with ik_keep = true are kept."
 function get_filtered_kpoints(k, ik_keep)
     @assert length(ik_keep) == k.n
-    Kpoints(sum(ik_keep), k.vectors[ik_keep], k.weights[ik_keep])
+    Kpoints(sum(ik_keep), k.vectors[ik_keep], k.weights[ik_keep], k.ngrid)
 end
 
 "Collect and uniformly redistribute Kpoints among processers"
@@ -79,9 +81,16 @@ function redistribute_kpoints(k::Kpoints, comm::MPI.Comm)
     kvectors = EPW.mpi_allgather(k.vectors, comm)
     weights = EPW.mpi_allgather(k.weights, comm)
 
+    # If k.ngrid is not same among processers, set k.ngrid to (0,0,0).
+    ngrid_root = EPW.mpi_bcast(k.ngrid, comm)
+    is_ngrid_equal = EPW.mpi_reduce_and(k.ngrid == ngrid_root, comm)
+    if ! is_ngrid_equal
+        k.ngrid = (0, 0, 0)
+    end
+
     # Redistribute k points
     range = EPW.mpi_split_iterator(1:length(kvectors), comm)
-    Kpoints(length(range), kvectors[range], weights[range])
+    Kpoints(length(range), kvectors[range], weights[range], k.ngrid)
 end
 
 redistribute_kpoints(k::Kpoints, comm::Nothing) = k
