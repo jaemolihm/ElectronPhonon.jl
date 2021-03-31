@@ -12,7 +12,7 @@ using LinearAlgebra
 @with_kw struct LindhardScreeningParams{T<:Real}
     degeneracy::Int64 # degeneracy of bands. spin and/or valley degeneracy.
     m_eff::T # Ratio of effective mass and electron mass. Unitless.
-    n::T # Absolute carrier density per unit cell in Bohr^-3.
+    n::T # Absolute carrier density in Bohr^-3.
     ϵM::T # Macroscopic dielectric constant. Unitless.
     smearing::T # Smearing of frequency in Rydberg.
 end

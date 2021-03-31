@@ -104,10 +104,12 @@ function run_eph_outer_loop_q(
 
     Threads.@threads :static for ik in 1:nk
         xk = kpoints.vectors[ik]
-        set_eigen!(el_k_save[ik], model.el_ham, xk, "gridopt")
-        set_window!(el_k_save[ik], window)
-        set_velocity_diag!(el_k_save[ik], model.el_ham_R, xk, "gridopt")
-        ek_full_save[:, ik] .= el_k_save[ik].e_full
+        el_k = el_k_save[ik]
+
+        set_eigen!(el_k, model.el_ham, xk, "gridopt")
+        set_window!(el_k, window)
+        set_velocity_diag!(el_k, model.el_ham_R, xk, "gridopt")
+        ek_full_save[:, ik] .= el_k.e_full
     end # ik
 
     # Compute chemical potential
@@ -158,9 +160,8 @@ function run_eph_outer_loop_q(
             set_eigen!(epdata.el_kq, model.el_ham, xkq, fourier_mode)
 
             # Set energy window, skip if no state is inside the window
-            skip_k = set_window!(epdata.el_k, window)
             skip_kq = set_window!(epdata.el_kq, window)
-            if skip_k || skip_kq
+            if skip_kq
                 continue
             end
 

@@ -15,8 +15,8 @@ export bisect
 """
 Occupation of a fermion at energy `e` and temperature `T`.
 """
-function occ_fermion(e, T; occ_type="fd")
-    if occ_type == "fd"
+function occ_fermion(e, T; occ_type=:FermiDirac)
+    if occ_type == :FermiDirac
         if T > 1.0E-8
             return 1 / (exp(e/T) + 1)
         else
@@ -31,16 +31,13 @@ end
 Derivative of the fermion occupation function with respect to `e`. Approximation to minus
 the delta function divided by temperature.
 """
-function occ_fermion_derivative(e, T; occ_type="fd")
-    if occ_type == "fd"
-        if T > 1.0E-8
-            # occ = occ_fermion(e, T, occ_type="fd")
-            # return occ * (1 - occ) / T
-            x = e / T
-            return -1 / (2 + exp(x) + exp(-x)) / T
-        else
-            return zero(e)
-        end
+function occ_fermion_derivative(e, T; occ_type=:FermiDirac)
+    if occ_type == :FermiDirac
+        x = e / T
+        return -1 / (2 + exp(x) + exp(-x)) / T
+        # The following is mathematically equivalent, but is numerically unstable if e << -T
+        # occ = occ_fermion(e, T, occ_type=:FermiDirac)
+        # return -occ * (1 - occ) / T
     else
         throw(ArgumentError("unknown occ_type $occ_type"))
     end
@@ -49,8 +46,8 @@ end
 """
 Occupation of a boson at energy `e` and temperature `T`.
 """
-function occ_boson(e, T, occ_type="be")
-    if occ_type == "be"
+function occ_boson(e, T, occ_type=:BoseEinstein)
+    if occ_type == :BoseEinstein
         if T > 1.0E-8
             return 1 / (exp(e/T) - 1)
         else

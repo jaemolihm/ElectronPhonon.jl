@@ -96,7 +96,7 @@ function set_window!(el::ElectronState, window=(-Inf,Inf))
         return true
     end
     if ibands[1] <= el.nband_ignore
-        throw(BoundsError("Selected bands ($(ibands[1]):$(ibands[end])) must not include " *
+        throw(ArgumentError("Selected bands ($(ibands[1]):$(ibands[end])) must not include " *
             "bands 1 to nband_ignore ($(el.nband_ignore))."))
     end
     if ibands[end] - ibands[1] + 1 > el.nband_bound
