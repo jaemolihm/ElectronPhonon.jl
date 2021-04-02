@@ -107,7 +107,7 @@ function compute_mobility_serta!(params::TransportParams, inv_τ, el_states,
 
             for iband in el.rng
                 enk = el.e[iband]
-                @views vnk = el.vdiag[:, iband]
+                vnk = el.vdiag[iband]
 
                 # Skip if enk is outside the window
                 if enk < window[1] || enk > window[2]

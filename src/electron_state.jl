@@ -30,7 +30,7 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
 
     # These arrays are defined only for bands inside the window
     e::Vector{T} # Eigenvalues at bands inside the energy window
-    vdiag::Matrix{T} # Diagonal components of band velocity inside the energy window
+    vdiag::Vector{Vec3{T}} # Diagonal components of band velocity in Cartesian coordinates.
     occupation::Vector{T} # Electron occupation number
 end
 
@@ -49,7 +49,7 @@ function ElectronState(T, nw, nband_bound=nw, nband_ignore=0)
         rng_full=1:0,
         rng=1:0,
         e=zeros(T, nband_bound),
-        vdiag=zeros(T, 3, nband_bound),
+        vdiag=[@SVector zeros(T, 3) for i in 1:nband_bound],
         occupation=zeros(T, nband_bound),
     )
 end
@@ -78,8 +78,10 @@ function copyto!(dest::ElectronState, src::ElectronState)
     dest.u_full .= src.u_full
     dest.rng_full = src.rng_full
     dest.rng = src.rng
-    @views dest.e[src.rng] .= src.e[src.rng]
-    @views dest.vdiag[:, src.rng] .= src.vdiag[:, src.rng]
+    for ib in src.rng
+        dest.e[ib] = src.e[ib]
+        dest.vdiag[ib] = src.vdiag[ib]
+    end
     dest
 end
 
@@ -126,6 +128,12 @@ Compute electron eigenenergy and eigenvector and save them in el.
 """
 function set_eigen!(el::ElectronState, el_ham, xk, fourier_mode="normal")
     get_el_eigen!(el.e_full, el.u_full, el.nw, el_ham, xk, fourier_mode)
+
+    # Set window to the default value: [nband_ignore+1, nband_ignore+nband_bound].
+    el.rng_full = el.nband_ignore+1:el.nband_ignore+el.nband_bound
+    el.rng = el.rng_full .- el.nband_ignore
+    el.nband = el.nband_bound
+    @views el.e[el.rng] .= el.e_full[el.rng_full]
 end
 
 """
@@ -134,6 +142,6 @@ Compute electron band velocity, only the band-diagonal part.
 """
 function set_velocity_diag!(el::ElectronState, el_ham_R, xk, fourier_mode="normal")
     uk = get_u(el)
-    velocity_diag = view(el.vdiag, :, el.rng)
+    @views velocity_diag = reshape(reinterpret(Float64, el.vdiag[el.rng]), 3, el.nband)
     get_el_velocity_diag!(velocity_diag, el.nw, el_ham_R, xk, uk, fourier_mode)
 end
