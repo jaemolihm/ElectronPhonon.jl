@@ -12,6 +12,22 @@ struct Kpoints{T <: Real}
     ngrid::NTuple{3,Int64}
 end
 
+function sort!(k::Kpoints)
+    inds = sortperm(k.vectors)
+    k.vectors .= k.vectors[inds]
+    k.weights .= k.weights[inds]
+    k
+end
+
+function Kpoints(xks::AbstractArray{T, 2}) where {T <: Real}
+    if size(xks, 1) != 3
+        throw(ArgumentError("first dimension of xks must be 3"))
+    end
+    n = size(xks, 2)
+    vectors = collect(vec(reinterpret(Vec3{T}, xks)))
+    Kpoints(n, vectors, ones(n) ./ n, (0, 0, 0))
+end
+
 """
     generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer)
 Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
@@ -94,3 +110,47 @@ function redistribute_kpoints(k::Kpoints, comm::MPI.Comm)
 end
 
 redistribute_kpoints(k::Kpoints, comm::Nothing) = k
+
+
+"""
+    kpoints_create_subgrid(k::EPW.Kpoints, nsubgrid)
+For kpoints from a regular grid, divide each k points and generate kpoints from a subgrid.
+"""
+function kpoints_create_subgrid(k::EPW.Kpoints, nsubgrid)
+    # Check arguments
+    if any(nsubgrid .< 1)
+        throw(ArgumentError("nsubgrid must be positive, not $nsubgrid."))
+    end
+    if any(k.ngrid .< 1)
+        throw(ArgumentError("k must be from a regular grid. k.ngrid = $(k.ngrid)"))
+    end
+    # If nsubgrid is (1, 1, 1), do nothing.
+    if all(nsubgrid .== 1)
+        return k
+    end
+
+    multiple = prod(nsubgrid)
+    new_n = k.n * multiple
+    new_ngrid = k.ngrid .* nsubgrid
+
+    new_weights = repeat(k.weights, inner=multiple)
+    new_weights ./= multiple
+
+    # Create a list of subsampled k vectors
+    new_vectors = zeros(eltype(k.vectors), new_n)
+    dk = 1 ./ k.ngrid ./ nsubgrid
+    shift = (1 .- nsubgrid) ./ 2 .* dk
+    new_ik = 0
+    for ik in 1:k.n
+        xk = k.vectors[ik]
+        for i1 in 0:nsubgrid[1] - 1
+            for i2 in 0:nsubgrid[2] - 1
+                for i3 in 0:nsubgrid[3] - 1
+                    new_ik += 1
+                    new_vectors[new_ik] = xk .+ dk .* (i1, i2, i3) .+ shift
+                end
+            end
+        end
+    end
+    EPW.Kpoints(new_n, new_vectors, new_weights, new_ngrid)
+end
