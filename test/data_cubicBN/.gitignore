@@ -12,3 +12,5 @@ inv_tau*
 Fsparse/*
 lambda.*
 linewidth.*
+specfun.phon.*
+specfun_sup.phon
