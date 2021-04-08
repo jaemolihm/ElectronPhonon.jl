@@ -44,6 +44,7 @@ function run_eph_outer_loop_q(
         window=(-Inf,Inf),
         elself_params=nothing::Union{Nothing,ElectronSelfEnergyParams},
         phself_params=nothing::Union{Nothing,PhononSelfEnergyParams},
+        phspec_params=nothing::Union{Nothing,PhononSpectralParams},
         transport_params=nothing::Union{Nothing,TransportParams},
     )
 
@@ -53,6 +54,7 @@ function run_eph_outer_loop_q(
 
     compute_elself = elself_params !== nothing
     compute_phself = phself_params !== nothing
+    compute_phspec = phspec_params !== nothing
     compute_transport = transport_params !== nothing
 
     nw = model.nw
@@ -66,14 +68,19 @@ function run_eph_outer_loop_q(
     kpoints, iband_min, iband_max = setup_kgrid(k_input, nw, model.el_ham, window, mpi_comm_k)
 
     # Generate q points
-    if typeof(q_input) == EPW.Kpoints
-        error("q_input as EPW.Kpoints not implemented")
-    else
+    if q_input isa EPW.Kpoints
+        if mpi_comm_q !== nothing
+            error("q_input as EPW.Kpoints with mpi_comm_q not implemented")
+        end
+        qpoints_all = q_input
+    elseif q_input isa NTuple{3,Int}
         if mpi_comm_q === nothing
             qpoints_all = generate_kvec_grid(q_input...)
         else
             qpoints_all = generate_kvec_grid(q_input..., mpi_comm_q)
         end
+    else
+        error("type of q_input is wrong")
     end
     qpoints_filtered = filter_qpoints(qpoints_all, kpoints, nw, model.el_ham, window)
     qpoints = redistribute_kpoints(qpoints_filtered, mpi_comm_q)
@@ -91,7 +98,10 @@ function run_eph_outer_loop_q(
     end
     if compute_phself
         phselfs = [PhononSelfEnergy(Float64, nband, nmodes, nq,
-            length(elself_params.Tlist)) for i=1:Threads.nthreads()]
+            length(phself_params.Tlist)) for i=1:Threads.nthreads()]
+    end
+    if compute_phspec
+        phspecs = [PhononSpectralData(phspec_params, nmodes, nq) for i=1:Threads.nthreads()]
     end
     if compute_transport
         transport_serta = TransportSERTA(Float64, nband, nmodes, nk,
@@ -182,6 +192,9 @@ function run_eph_outer_loop_q(
             if compute_phself
                 compute_phonon_selfen!(phselfs[tid], epdata, phself_params, iq)
             end
+            if compute_phspec
+                compute_phonon_spectral!(phspecs[tid], epdata, phspec_params, iq)
+            end
             if compute_transport
                 compute_lifetime_serta!(transport_serta, epdata, transport_params, ik)
             end
@@ -215,6 +228,23 @@ function run_eph_outer_loop_q(
             average_degeneracy!(ph_imsigma_avg[:,:,iT], ph_imsigma[:,:,iT], omega_save)
         end
         output["phself_imsigma"] = EPW.mpi_gather(ph_imsigma_avg, mpi_comm_q)
+    end
+
+    if compute_phspec
+        # TODO: MPI k, MPI q, threading are not tested.
+        ph_selfen_dynamic = sum([phspec.selfen for phspec in phspecs]) .* phspec_params.degeneracy
+        ph_selfen_static = sum([phspec.selfen_static for phspec in phspecs]) .* phspec_params.degeneracy
+
+        # calculate selfen_non_adiabatic(ω) = selfen_dynamic(ω) - selfen_static
+        ph_selfen_non_adiabatic = copy(ph_selfen_dynamic)
+        for arr in eachslice(ph_selfen_non_adiabatic, dims=1)
+            arr .-= ph_selfen_static
+        end
+
+        ph_green = calculate_phonon_green(phspec_params.ωlist, omega_save, ph_selfen_non_adiabatic)
+        output["ph_green"] = ph_green
+        output["ph_selfen_dynamic"] = ph_selfen_dynamic
+        output["ph_selfen_static"] = ph_selfen_static
     end
 
     if compute_transport

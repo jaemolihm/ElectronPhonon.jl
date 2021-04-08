@@ -9,11 +9,10 @@ Base.@kwdef struct PhononSelfEnergyParams{T <: Real}
     Tlist::Vector{T} # Temperature
     μ::T # Fermi level
     smearing::T # Smearing parameter for delta function
-    # TODO: Should spin_degeneracy be Int or Float?
-    spin_degeneracy::T # Spin degeneracy
+    spin_degeneracy::T # degeneracy of electron bands (e.g. spin degeneracy)
 end
 
-# Data and buffers for self-energy of electron
+# Data and buffers for phonon self-energy
 Base.@kwdef struct PhononSelfEnergy{T <: Real}
     imsigma::Array{T, 3}
 end
@@ -43,7 +42,7 @@ end
         # Calculate imaginary part of phonon self-energy
         for imode in 1:epdata.nmodes
             omega = epdata.ph.e[imode]
-            if (omega < omega_acoustic)
+            if omega < omega_acoustic
                 continue
             end
 

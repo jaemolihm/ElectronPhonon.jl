@@ -60,6 +60,7 @@ end
 
 const inv_sqrtpi = 1 / sqrt(pi)
 function gaussian(value)
+    # TODO: type stability
     # One without the conditional is slightly (~2.5 %) faster.
     exp(-value^2) * inv_sqrtpi
     # abs(value) < 15.0 ? exp(-value^2) * inv_sqrtpi : 0.0
