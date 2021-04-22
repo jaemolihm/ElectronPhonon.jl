@@ -11,14 +11,13 @@ using Random
     op_r = randn(ComplexF64, 6, nr)
 
     # Constructor should throw error if irvec is not sorted
-    @test_throws ErrorException obj = WannierObject(nr+1, irvec, op_r)
-    @test_throws ErrorException obj = WannierObject(nr, irvec, op_r)
+    @test_throws ErrorException obj = WannierObject(irvec, op_r)
 
     ind = sortperm(irvec, by=x->reverse(x))
     irvec = irvec[ind]
     op_r = op_r[:, ind]
 
-    obj = WannierObject(nr, irvec, op_r)
+    obj = WannierObject(irvec, op_r)
 
     xk1 = Vec3([0.3, -0.4, 0.7])
     xk2 = Vec3([0.3, -0.4, -0.5])
@@ -46,7 +45,7 @@ using Random
 
     # Update op_r
     op_r_new = randn(ComplexF64, 6, nr)
-    obj_new = WannierObject(nr, irvec, op_r_new)
+    obj_new = WannierObject(irvec, op_r_new)
     update_op_r!(obj, op_r_new)
 
     get_fourier!(op_k_normal, obj, xk1, mode="normal")

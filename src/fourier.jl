@@ -15,9 +15,9 @@ export update_op_r!
 abstract type AbstractWannierObject{T<:Real} end
 
 "Check validity of input for WannierObject constructor"
-function check_wannierobject(nr, irvec::Vector{Vec3{Int}}, op_r)
-    if length(irvec) != nr
-        @error ("length(irvec) must be nr=$nr, not $(length(irvec))")
+function check_wannierobject(irvec::Vector{Vec3{Int}}, op_r)
+    if size(op_r, 2) != length(irvec)
+        @error ("size(op_r, 2)=$(size(op_r, 2)) must equal length(irvec)=$(length(irvec))")
         return false
     end
     if ! issorted(irvec, by=x->reverse(x))
@@ -42,8 +42,9 @@ Base.@kwdef struct WannierObject{T} <: AbstractWannierObject{T}
     phases::Vector{Vector{Complex{T}}}
 end
 
-function WannierObject(nr, irvec::Vector{Vec3{Int}}, op_r)
-    if ! check_wannierobject(nr, irvec, op_r)
+function WannierObject(irvec::Vector{Vec3{Int}}, op_r)
+    nr = length(irvec)
+    if ! check_wannierobject(irvec, op_r)
         error("WannierObject constructor check failed")
     end
     T = eltype(op_r).parameters[1]

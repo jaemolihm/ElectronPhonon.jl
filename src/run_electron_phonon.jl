@@ -131,7 +131,7 @@ function run_eph_outer_loop_q(
     ph = PhononState(Float64, nmodes)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epobj_eRpq = WannierObject(model.el_ham.nr, model.el_ham.irvec,
+    epobj_eRpq = WannierObject(model.el_ham.irvec,
                 zeros(ComplexF64, (nw*nw*nmodes, model.el_ham.nr)))
 
     mpi_isroot() && @info "Number of q points = $nq"

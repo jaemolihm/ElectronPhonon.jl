@@ -183,7 +183,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         empat_filename = "tmp_epmat.bin"
 
         # epmat stays on disk. Read each epmat for each ir and write to file.
-        size_column =  sizeof(ComplexF64)*nw^2*nrr_k*nmodes # Size of one column of data
+        size_column =  sizeof(ComplexF64)*nw^2*nr_el*nmodes # Size of one column of data
 
         # Open file to write
         filename = joinpath(tmpdir, empat_filename)
@@ -220,8 +220,8 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     # Second index: R vectors
     ham = reshape(ham, (nw*nw, nr_el))
     dyn_r = reshape(dyn_r, (nmodes*nmodes, nr_ph))
-    el_ham = WannierObject(nr_el, irvec_el, ham)
-    ph_dyn = WannierObject(nr_ph, irvec_ph, dyn_r)
+    el_ham = WannierObject(irvec_el, ham)
+    ph_dyn = WannierObject(irvec_ph, dyn_r)
 
     # R * ham for electron velocity
     ham_R = zeros(eltype(ham), (nw*nw, 3, nr_el))
@@ -230,17 +230,17 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
             ham_R[:, i, ir] .= im .* ham[:, ir] .* dot(lattice[i, :], irvec_el[ir])
         end
     end
-    el_ham_R = WannierObject(nr_el, irvec_el, reshape(ham_R, (nw*nw*3, nr_el)))
+    el_ham_R = WannierObject(irvec_el, reshape(ham_R, (nw*nw*3, nr_el)))
 
     # Electron position (dipole) matrix elements
     pos2 = permutedims(pos, [2, 3, 1, 4])
-    el_pos = WannierObject(nr_el, irvec_el, reshape(pos2, (nw*nw*3, nr_el)))
+    el_pos = WannierObject(irvec_el, reshape(pos2, (nw*nw*3, nr_el)))
 
     # Electron velocity matrix elements
     if has_velocity
         vel = vel[:, :, :, ind_el]
         vel2 = permutedims(vel, [2, 3, 1, 4])
-        el_vel = WannierObject(nr_el, irvec_el, reshape(vel2, (nw*nw*3, nr_el)))
+        el_vel = WannierObject(irvec_el, reshape(vel2, (nw*nw*3, nr_el)))
     else
         el_vel = nothing
     end
@@ -249,8 +249,8 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         epmat = DiskWannierObject(Float64, "epmat", nr_ep, irvec_ep, nw*nw*nmodes*nr_el,
             tmpdir, empat_filename)
     else
-        epmat_re_rp = reshape(epmat_re_rp, (nw*nw*nmodes*nrr_k, nr_ep))
-        epmat = WannierObject(nr_ep, irvec_ep, epmat_re_rp)
+        epmat_re_rp = reshape(epmat_re_rp, (nw*nw*nmodes*nr_el, nr_ep))
+        epmat = WannierObject(irvec_ep, epmat_re_rp)
     end
 
     model = ModelEPW(alat=alat, lattice=lattice, recip_lattice=recip_lattice,
