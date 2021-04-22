@@ -2,7 +2,7 @@
 # For computing electron-phonon coupling at fine a k and q point
 
 import Base.@kwdef
-import EPW.WanToBloch: get_eph_Rq_to_kq!
+import EPW.WanToBloch: get_eph_Rq_to_kq!, get_eph_kR_to_kq!
 
 export ElPhData
 # export apply_gauge_matrix!
@@ -133,4 +133,14 @@ function get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk, fourier_mode="norma
     ukq = get_u(epdata.el_kq)
     @views ep_kq = epdata.ep[epdata.el_kq.rng, epdata.el_k.rng, :]
     get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq, fourier_mode)
+end
+
+"""
+    get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq, fourier_mode="normal")
+Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
+"""
+function get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq, fourier_mode="normal")
+    ukq = get_u(epdata.el_kq)
+    @views ep_kq = epdata.ep[epdata.el_kq.rng, epdata.el_k.rng, :]
+    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epdata.ph.u, ukq, fourier_mode)
 end

@@ -17,6 +17,8 @@ export get_el_velocity_diag!
 export get_ph_eigen!
 export get_eph_RR_to_Rq!
 export get_eph_Rq_to_kq!
+export get_eph_RR_to_kR!
+export get_eph_kR_to_kq!
 
 # TODO: Allow the type to change.
 # Preallocated buffers
@@ -26,8 +28,13 @@ const _buffer_el_velocity_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_ph_eigen = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_nothreads_eph_RR_to_Rq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
 const _buffer_nothreads_eph_RR_to_Rq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
+const _buffer_nothreads_eph_RR_to_kR = [Array{ComplexF64, 4}(undef, 0, 0, 0, 0)]
+const _buffer_nothreads_eph_RR_to_kR2 = [Array{ComplexF64, 4}(undef, 0, 0, 0, 0)]
+const _buffer_nothreads_eph_RR_to_kR_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_eph_Rq_to_kq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
 const _buffer_eph_Rq_to_kq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
+const _buffer_eph_kR_to_kq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
+const _buffer_eph_kR_to_kq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
 
 function __init__()
     Threads.resize_nthreads!(_buffer_el_eigen)
@@ -36,6 +43,8 @@ function __init__()
     Threads.resize_nthreads!(_buffer_ph_eigen)
     Threads.resize_nthreads!(_buffer_eph_Rq_to_kq)
     Threads.resize_nthreads!(_buffer_eph_Rq_to_kq_tmp)
+    Threads.resize_nthreads!(_buffer_eph_kR_to_kq)
+    Threads.resize_nthreads!(_buffer_eph_kR_to_kq_tmp)
 end
 
 """
@@ -207,6 +216,102 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
     @views @inbounds for imode = 1:nmodes
         mul!(tmp, ep_kq_wan[:, :, imode], uk)
         mul!(ep_kq[:, :, imode], ukq_adj, tmp)
+    end
+    nothing
+end
+
+"""
+`get_eph_RR_to_kR!(epobj_eRpq::WannierObject{T}, epmat::AbstractWannierObject{T},
+    xk, uk, fourier_mode="normal") where {T}`
+
+Compute electron-phonon coupling matrix in electron Bloch, phonon Wannier basis.
+Multithreading is not supported because of large buffer array size.
+
+# Arguments
+- `epobj_ekpR`: Output. E-ph matrix in electron Wannier, phonon Bloch basis.
+    Must be initialized before calling. Only the op_r field is modified.
+- `epmat`: Input. E-ph matrix in electron Wannier, phonon Wannier basis.
+- `xk`: Input. k point vector.
+- `uk`: Input. nw * nw matrix containing electron eigenvectors at k.
+"""
+@timing "w2b_eph_RRtokR" function get_eph_RR_to_kR!(epobj_ekpR::WannierObject{T},
+        epmat::AbstractWannierObject{T}, xk, uk, fourier_mode="normal") where {T}
+    """
+    size(uk) = (nw, nband)
+    size(epobj_ekpR.op_r) = (nw * nband_bound * nmodes, nr_ep)
+    size(epmat.op_r) = (nw^2 * nmodes * nr_ep, nr_el)
+    """
+    nr_ep = length(epmat.irvec_next)
+    nw, nband = size(uk)
+    nmodes = div(epmat.ndata, nw^2 * nr_ep)
+    nband_bound = div(epobj_ekpR.ndata, nw * nmodes)
+    @assert nband <= nband_bound
+    @assert Threads.threadid() == 1
+
+    # FIXME: ep_kR2 is used to avoid passing non-contiguous view to update_op_r!. But
+    # the downside is needing more memory... Can this be fixed?
+    ep_kR = _get_buffer(_buffer_nothreads_eph_RR_to_kR, (nw, nw, nmodes, nr_ep))
+    ep_kR2 = _get_buffer(_buffer_nothreads_eph_RR_to_kR2, (nw, nband_bound, nmodes, nr_ep))
+    ep_kR_tmp_full = _get_buffer(_buffer_nothreads_eph_RR_to_kR_tmp, (nw, nw))
+    ep_kR_tmp = view(ep_kR_tmp_full, :, 1:nband)
+
+    get_fourier!(ep_kR, epmat, xk, mode=fourier_mode)
+
+    # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
+    for ir in 1:nr_ep
+        @views @inbounds for imode in 1:nmodes
+            mul!(ep_kR_tmp, ep_kR[:, :, imode, ir], uk)
+            ep_kR2[:, 1:nband, imode, ir] .= ep_kR_tmp
+        end
+    end
+    update_op_r!(epobj_ekpR, ep_kR2)
+    nothing
+end
+
+"""
+    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xk, u_ph, ukq, fourier_mode="normal")
+Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
+The electron state at k should be already in the eigenstate basis in epobj_ekpR.
+
+# Arguments
+- `ep_kq`: Output. E-ph matrix in electron and phonon Bloch basis.
+- `epobj_ekpR`: Input. AbstractWannierObject. E-ph matrix in electron Wannier,
+    phonon Bloch basis.
+- `xq`: Input. q point vector.
+- `u_ph`: Input. nmodes * nmodes matrix containing phonon eigenvectors.
+- `ukq`: Input. Electron eigenstate at k+q.
+- `rngk`, `rngkq`: Input. Range of electron states inside the window.
+"""
+@timing "w2b_eph_kRtokq" function get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, u_ph, ukq,
+        fourier_mode="normal")
+    """
+    size(ep_kq) = (nbandkq, nbandk, nmodes)
+    size(epobj_ekpR.op_r) = (nw * nband_bound * nmodes, nr_ep)
+    size(ukq) = (nw, nbandkq)
+    size(u_ph) = (nmodes, nmodes)
+    """
+    nbandkq, nbandk, nmodes = size(ep_kq)
+    nw = size(ukq, 1)
+    nmodes = size(u_ph, 1)
+    nband_bound = div(epobj_ekpR.ndata, nw * nmodes)
+    @assert size(ukq, 2) == nbandkq
+
+    ep_kq_wan = _get_buffer(_buffer_eph_kR_to_kq, (nw, nband_bound, nmodes))
+    tmp_full = _get_buffer(_buffer_eph_kR_to_kq_tmp, (nw, nw))
+    tmp = view(tmp_full, 1:nbandkq, 1:nbandk)
+
+    get_fourier!(ep_kq_wan, epobj_ekpR, xq, mode=fourier_mode)
+
+    # Transform from phonon Cartesian to eigenmode basis and from electron Wannier at k+q
+    # to eigenstate basis. The electron at k is already in eigenstate basis.
+    # ep_kq[ibkq, :, imode] = ukq'[ibkq, iw] * ep_kq_wan[iw, :, jmode] * u_ph[jmode, imode]
+    ukq_adj = Adjoint(ukq)
+    ep_kq .= 0
+    @views @inbounds for jmode = 1:nmodes
+        mul!(tmp, ukq_adj, ep_kq_wan[:, 1:nbandk, jmode])
+        for imode in 1:nmodes
+            ep_kq[:, :, imode] .+= tmp .* u_ph[jmode, imode]
+        end
     end
     nothing
 end

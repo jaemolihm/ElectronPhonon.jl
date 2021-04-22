@@ -44,13 +44,14 @@ end
 
 "Read file and create ModelEPW object in the MPI root.
 Broadcast to all other processors."
-function load_model(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing)
+function load_model(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing;
+        epmat_outer_momentum="ph")
     # Read model from file
     if mpi_initialized()
         # FIXME: Read only in the root core, and then bcast.
         # The implementation below breaks if epmat size is large. MPI bcast of large array
         # with sizeof(array) is greater than typemax(Cint) was not possible.
-        model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
+        model = load_model_from_epw(folder, epmat_on_disk, tmpdir, epmat_outer_momentum)
         # if mpi_isroot(EPW.mpi_world_comm())
         #     model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
         # else
@@ -59,7 +60,7 @@ function load_model(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing)
         # # Broadcast to all processors
         # model = mpi_bcast(model, EPW.mpi_world_comm())
     else
-        model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
+        model = load_model_from_epw(folder, epmat_on_disk, tmpdir, epmat_outer_momentum)
     end
     model
 end
@@ -71,13 +72,20 @@ epmat_on_disk
     If false, load epmat to memory.
 tmpdir
     Directory to write temporary binary files for epmat_on_disk=false calse.
+epmat_outer_momentum
+    Outer momentum that model.epmat couples to. "ph" (default) or "el".
 """
-function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing)
+function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing,
+        epmat_outer_momentum="ph")
     T = Float64
 
-    if epmat_on_disk && tmpdir == nothing
+    if epmat_on_disk && tmpdir === nothing
         error("If epmat_on_disk is true, tmpdir must be provided.")
     end
+    if epmat_outer_momentum ∉ ["ph", "el"]
+        throw(ArgumentError("epmat_outer_momentum must be ph or el."))
+    end
+
     # Read binary data written by EPW and create ModelEPW object
     f = FortranFile(joinpath(folder, "epw_data_julia.bin"), "r")
 
@@ -186,7 +194,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         empat_filename = "tmp_epmat.bin"
 
         # epmat stays on disk. Read each epmat for each ir and write to file.
-        size_column =  sizeof(ComplexF64)*nw^2*nr_el*nmodes # Size of one column of data
+        size_column = sizeof(ComplexF64)*nw^2*nmodes # Size of one column of data
 
         # Open file to write
         filename = joinpath(tmpdir, empat_filename)
@@ -201,10 +209,16 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
             # Shuffle irvec_el
             epmat_re_rp_ir = epmat_re_rp_ir[:, :, :, ind_el]
 
-            # Write to file, as index epmat[:, :, :, :, ir_new]
-            ir_new = findfirst(ind_ep .== ir) # Index of R point after sorting
-            seek(fw, size_column * (ir_new - 1))
-            write(fw, epmat_re_rp_ir)
+            # Write to file, as index epmat[:, :, :, :, ir_ep]
+            ir_ep = findfirst(ind_ep .== ir) # Index of R point after sorting
+            for ir_el in 1:nr_el
+                if epmat_outer_momentum == "ph"
+                    seek(fw, size_column * (nr_el * (ir_ep - 1) + ir_el - 1))
+                else # epmat_outer_momentum == "el"
+                    seek(fw, size_column * (nr_ep * (ir_el - 1) + ir_ep - 1))
+                end
+                write(fw, epmat_re_rp_ir[:,:,:,ir_el])
+            end
         end
         close(fw)
     else
@@ -215,6 +229,9 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
             epmat_re_rp[:,:,:,:,ir] = permutedims(epmat_re_rp_read_ir, [1, 2, 4, 3])
         end
         epmat_re_rp = epmat_re_rp[:, :, :, ind_el, ind_ep]
+        if epmat_outer_momentum == "el"
+            epmat_re_rp = permutedims(epmat_re_rp, [1, 2, 3, 5, 4])
+        end
     end
     close(f)
 
@@ -249,13 +266,22 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     end
 
     if epmat_on_disk
-        epmat = DiskWannierObject(Float64, "epmat", nr_ep, irvec_ep, nw*nw*nmodes*nr_el,
-            tmpdir, empat_filename, irvec_next=irvec_el)
+        if epmat_outer_momentum == "ph"
+            epmat = DiskWannierObject(Float64, "epmat", nr_ep, irvec_ep, nw*nw*nmodes*nr_el,
+                tmpdir, empat_filename, irvec_next=irvec_el)
+        else # epmat_outer_momentum == "el"
+            epmat = DiskWannierObject(Float64, "epmat", nr_el, irvec_el, nw*nw*nmodes*nr_ep,
+                tmpdir, empat_filename, irvec_next=irvec_ep)
+        end
     else
-        epmat_re_rp = reshape(epmat_re_rp, (nw*nw*nmodes*nr_el, nr_ep))
-        epmat = WannierObject(irvec_ep, epmat_re_rp, irvec_next=irvec_el)
+        if epmat_outer_momentum == "ph"
+            epmat_re_rp = reshape(epmat_re_rp, (nw*nw*nmodes*nr_el, nr_ep))
+            epmat = WannierObject(irvec_ep, epmat_re_rp, irvec_next=irvec_el)
+        else # epmat_outer_momentum == "el"
+            epmat_re_rp = reshape(epmat_re_rp, (nw*nw*nmodes*nr_ep, nr_el))
+            epmat = WannierObject(irvec_el, epmat_re_rp, irvec_next=irvec_ep)
+        end
     end
-    epmat_outer_momentum = "ph"
 
     model = ModelEPW(alat=alat, lattice=lattice, recip_lattice=recip_lattice,
         volume=volume, nw=nw, nmodes=nmodes, mass=mass, atom_pos=atom_pos,

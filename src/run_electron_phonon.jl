@@ -48,6 +48,10 @@ function run_eph_outer_loop_q(
         transport_params=nothing::Union{Nothing,TransportParams},
     )
 
+    if model.epmat_outer_momentum != "ph"
+        throw(ArgumentError("model.epmat_outer_momentum must be ph"))
+    end
+
     # TODO: Allow k_input to be a Kpoints object
     # TODO: Allow q_input to be a Kpoints object
     # TODO: Implement mpi_comm_k
