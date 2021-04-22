@@ -47,7 +47,8 @@ end
     compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::TransportParams, ik)
 Compute electron inverse lifetime for given k and q point data in epdata
 """
-function compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::TransportParams, ik)
+@timing "compute_τ_serta" function compute_lifetime_serta!(transdata::TransportSERTA,
+        epdata, params::TransportParams, ik)
     inv_smear = 1 / params.smearing
 
     ph_occ = epdata.ph.occupation
@@ -128,6 +129,10 @@ function compute_mobility_serta!(params::TransportParams, inv_τ, el_states,
     return σlist
 end
 
+"""
+    transport_print_mobility(σlist, transport_params, volume)
+Utility to calculate and print mobility in SI units.
+"""
 function transport_print_mobility(σlist, transport_params, volume)
     carrier_density_SI = transport_params.n / volume * unit_to_aru(:cm)^3
     charge_density_SI = carrier_density_SI * units.e_SI
