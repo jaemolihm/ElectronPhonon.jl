@@ -36,7 +36,10 @@ Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
     # TODO: Use real-valuedness of dyn_r
     # TODO: Use Hermiticity of dyn_q
 
-    epmat::WannType # electron-phonon coupling matrix in electron and phonon Wannier representation
+    # electron-phonon coupling matrix in electron and phonon Wannier representation
+    epmat::WannType
+    # The crystal momentum that the outer R index of epmat couples. "k" or "q".
+    epmat_outer_momentum::String
 end
 
 "Read file and create ModelEPW object in the MPI root.
@@ -247,17 +250,18 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
 
     if epmat_on_disk
         epmat = DiskWannierObject(Float64, "epmat", nr_ep, irvec_ep, nw*nw*nmodes*nr_el,
-            tmpdir, empat_filename)
+            tmpdir, empat_filename, irvec_next=irvec_el)
     else
         epmat_re_rp = reshape(epmat_re_rp, (nw*nw*nmodes*nr_el, nr_ep))
-        epmat = WannierObject(irvec_ep, epmat_re_rp)
+        epmat = WannierObject(irvec_ep, epmat_re_rp, irvec_next=irvec_el)
     end
+    epmat_outer_momentum = "ph"
 
     model = ModelEPW(alat=alat, lattice=lattice, recip_lattice=recip_lattice,
         volume=volume, nw=nw, nmodes=nmodes, mass=mass, atom_pos=atom_pos,
         use_polar_dipole=use_polar_dipole, polar_phonon=polar_phonon, polar_eph=polar_eph,
         el_ham=el_ham, el_ham_R=el_ham_R, el_pos=el_pos, el_vel=el_vel,
-        ph_dyn=ph_dyn, epmat=epmat
+        ph_dyn=ph_dyn, epmat=epmat, epmat_outer_momentum=epmat_outer_momentum
     )
 
     model

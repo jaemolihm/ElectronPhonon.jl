@@ -40,9 +40,12 @@ Base.@kwdef struct WannierObject{T} <: AbstractWannierObject{T}
     # Allocated buffer for normal Fourier transform
     rdotks::Vector{Vector{T}}
     phases::Vector{Vector{Complex{T}}}
+
+    # For a higher-order WannierObject, the irvec to be used to Fourier transform op_k.
+    irvec_next::Union{Nothing,Vector{Vec3{Int}}}
 end
 
-function WannierObject(irvec::Vector{Vec3{Int}}, op_r)
+function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing)
     nr = length(irvec)
     if ! check_wannierobject(irvec, op_r)
         error("WannierObject constructor check failed")
@@ -51,7 +54,8 @@ function WannierObject(irvec::Vector{Vec3{Int}}, op_r)
     WannierObject{T}(nr=nr, irvec=irvec, op_r=op_r, ndata=size(op_r, 1),
         gridopts=[GridOpt{T}() for i=1:Threads.nthreads()],
         rdotks=[zeros(T, nr) for i=1:Threads.nthreads()],
-        phases=[zeros(Complex{T}, nr) for i=1:Threads.nthreads()]
+        phases=[zeros(Complex{T}, nr) for i=1:Threads.nthreads()],
+        irvec_next=irvec_next,
         )
 end
 

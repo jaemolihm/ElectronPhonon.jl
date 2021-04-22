@@ -43,6 +43,9 @@ Base.@kwdef struct DiskWannierObject{T} <: AbstractWannierObject{T}
     rdotks::Vector{Vector{T}}
     phases::Vector{Vector{Complex{T}}}
 
+    # For a higher-order WannierObject, the irvec to be used to Fourier transform op_k.
+    irvec_next::Union{Nothing,Vector{Vec3{Int}}}
+
     # For reading data from file
     tag::String
     dir::String
@@ -56,13 +59,15 @@ Base.@kwdef struct DiskWannierObject{T} <: AbstractWannierObject{T}
     ranges::Vector{UnitRange{Int}}
 end
 
-function DiskWannierObject(T, tag, nr, irvec::Vector{Vec3{Int}}, ndata, dir, filename)
+function DiskWannierObject(T, tag, nr, irvec::Vector{Vec3{Int}}, ndata, dir, filename;
+        irvec_next=nothing)
     ranges = split_evenly(1:ndata, nthreads())
     DiskWannierObject{T}(tag=tag, nr=nr, irvec=irvec, ndata=ndata,
         dir=dir, filename=filename,
         rdotks=[zeros(T, nr) for i=1:nthreads()],
         phases=[zeros(Complex{T}, nr) for i=1:nthreads()],
         ranges=ranges,
+        irvec_next=irvec_next,
         gridopts=[DiskGridOpt{T}() for i=1:Threads.nthreads()],
         buffers_r=[zeros(Complex{T}, length(rng)) for rng in ranges],
         buffers_w=[zeros(Complex{T}, length(rng)) for rng in ranges],
