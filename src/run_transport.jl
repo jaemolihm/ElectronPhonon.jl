@@ -49,10 +49,11 @@ function run_transport(
 
     @timing "setup kgrid" begin
         # Generate k points
-        kpts, iband_min_k, iband_max_k = setup_kgrid(k_input, nw, model.el_ham, window, mpi_comm_k)
+        kpts, iband_min_k, iband_max_k, nelec_below_window = setup_kgrid(k_input, nw,
+            model.el_ham, window, mpi_comm_k)
 
         # Generate k+q points
-        kqpts, iband_min_kq, iband_max_kq = setup_kgrid(q_input, nw, model.el_ham, window, mpi_comm_k)
+        kqpts, iband_min_kq, iband_max_kq, _ = setup_kgrid(q_input, nw, model.el_ham, window, mpi_comm_k)
     end
 
     iband_min = min(iband_min_k, iband_min_kq)

@@ -6,14 +6,14 @@ function setup_kgrid(k_input, nw, el_ham, window, mpi_comm_k)
         error("k_input as EPW.Kpoints not implemented")
     else
         if mpi_comm_k === nothing
-            kpoints, iband_min, iband_max = filter_kpoints_grid(k_input...,
-            nw, el_ham, window)
+            kpoints, iband_min, iband_max, nelec_below_window = filter_kpoints_grid(
+                k_input..., nw, el_ham, window)
         else
-            kpoints, iband_min, iband_max = filter_kpoints_grid(k_input...,
-            nw, el_ham, window, mpi_comm_k)
+            kpoints, iband_min, iband_max, nelec_below_window = filter_kpoints_grid(
+                k_input..., nw, el_ham, window, mpi_comm_k)
         end
     end
-    kpoints, iband_min, iband_max
+    kpoints, iband_min, iband_max, nelec_below_window
 end
 
 """
@@ -69,7 +69,8 @@ function run_eph_outer_loop_q(
     end
 
     # Generate k points
-    kpoints, iband_min, iband_max = setup_kgrid(k_input, nw, model.el_ham, window, mpi_comm_k)
+    kpoints, iband_min, iband_max, nelec_below_window = setup_kgrid(k_input, nw,
+        model.el_ham, window, mpi_comm_k)
 
     # Generate q points
     if q_input isa EPW.Kpoints
