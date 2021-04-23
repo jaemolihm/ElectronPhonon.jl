@@ -7,6 +7,7 @@ function run_transport(
         mpi_comm_q=nothing,
         fourier_mode="gridopt",
         window=(-Inf,Inf),
+        folder,
     )
     """
     The q point grid must be a multiple of the k point grid. If so, the k+q points lie on
@@ -95,6 +96,18 @@ function run_transport(
         end # ik
     end
 
+    # Preallocate arrays for saving data for creating BTEdata
+    # TODO: Is this efficient for multithreading?
+    g2_save = zeros(Float64, nband, nband, nmodes, nkq)
+    ωq_save = zeros(Float64, nmodes, nkq)
+    nbandkq_save = zeros(Int, nkq)
+    ekq_save = zeros(Float64, nband, nkq)
+    for ikq in 1:nkq
+        el = el_kq_save[ikq]
+        nbandkq_save[ikq] = el.nband
+        ekq_save[el.rng, ikq] = el.e[el.rng]
+    end
+
     # Dictionary to save phonon states
     ph_save = Dict{NTuple{3, Int}, PhononState{Float64}}()
 
@@ -107,7 +120,13 @@ function run_transport(
         μ = transport_set_μ!(transport_params, ek_full_save, kpts.weights, model.volume)
     end
 
-    # # E-ph matrix in electron Wannier, phonon Bloch representation
+    # Open HDF5 file for writing BTEdata
+    fid_btedata = open_BTEdata_file_for_write(joinpath(folder, "btedata.h5"),
+        nk, nband, nkq, nband, nmodes)
+    fid_btedata["electron/weights"] = kpts.weights
+    write_attribute(fid_btedata["electron"], "nelec_below_window", nelec_below_window)
+
+    # E-ph matrix in electron Wannier, phonon Bloch representation
     epobj_ekpR = WannierObject(model.epmat.irvec_next,
                 zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
 
@@ -173,8 +192,20 @@ function run_transport(
             if compute_transport
                 compute_lifetime_serta!(transport_serta, epdata, transport_params, ik)
             end
+
+            ωq_save[:, ikq] .= epdata.ph.e
+            g2_save[:, :, :, ikq] .= epdata.g2
         end # ikq
+
+        btedata = BTEdata(xk=xk, nbandk=el_k.nband, ek=el_k.e[el_k.rng], nkp=nkq,
+            xkp=kqpts.vectors, nbandkp_max=nband, nbandkp=nbandkq_save, ekp=ekq_save,
+            nmodes=nmodes, ωq=ωq_save, g2=g2_save)
+
+        dump_BTEdata(fid_btedata["electron/ik$ik"], btedata)
+
     end # ik
+
+    close(fid_btedata)
 
     output = Dict()
 
