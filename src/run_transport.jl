@@ -102,10 +102,12 @@ function run_transport(
     ωq_save = zeros(Float64, nmodes, nkq)
     nbandkq_save = zeros(Int, nkq)
     ekq_save = zeros(Float64, nband, nkq)
-    for ikq in 1:nkq
+    vkq_save = zeros(Vec3{Float64}, nband, nkq)
+    @views for ikq in 1:nkq
         el = el_kq_save[ikq]
         nbandkq_save[ikq] = el.nband
         ekq_save[el.rng, ikq] = el.e[el.rng]
+        vkq_save[el.rng, ikq] .= el.vdiag[el.rng]
     end
 
     # Dictionary to save phonon states
@@ -197,8 +199,10 @@ function run_transport(
             g2_save[:, :, :, ikq] .= epdata.g2
         end # ikq
 
-        btedata = BTEdata(xk=xk, nbandk=el_k.nband, ek=el_k.e[el_k.rng], nkp=nkq,
-            xkp=kqpts.vectors, nbandkp_max=nband, nbandkp=nbandkq_save, ekp=ekq_save,
+        btedata = BTEdata(
+            xk=xk, nbandk=el_k.nband, ek=el_k.e[el_k.rng], vk=el_k.vdiag[el_k.rng],
+            nkp=nkq, weights=kqpts.weights, xkp=kqpts.vectors, nbandkp_max=nband,
+            nbandkp=nbandkq_save, ekp=ekq_save, vkp=vkq_save,
             nmodes=nmodes, ωq=ωq_save, g2=g2_save)
 
         dump_BTEdata(fid_btedata["electron/ik$ik"], btedata)
@@ -214,6 +218,7 @@ function run_transport(
         σlist = compute_mobility_serta!(transport_params, transport_serta.inv_τ,
             el_k_save, kpts.weights, window)
         output["transport_σlist"] = σlist
+        output["inv_τ"] = transport_serta.inv_τ
     end
 
     output
