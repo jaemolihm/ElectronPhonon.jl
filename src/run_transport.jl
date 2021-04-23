@@ -1,20 +1,24 @@
 function run_transport(
-    model::ModelEPW,
-    k_input::Union{NTuple{3,Int}, Kpoints},
-    kq_input::Union{NTuple{3,Int}, Kpoints};
-    transport_params,
-    mpi_comm_k=nothing,
-    mpi_comm_q=nothing,
-    fourier_mode="gridopt",
-    window=(-Inf,Inf),
+        model::ModelEPW,
+        k_input::Union{NTuple{3,Int}, Kpoints},
+        q_input::Union{NTuple{3,Int}, Kpoints};
+        transport_params,
+        mpi_comm_k=nothing,
+        mpi_comm_q=nothing,
+        fourier_mode="gridopt",
+        window=(-Inf,Inf),
     )
+    """
+    The q point grid must be a multiple of the k point grid. If so, the k+q points lie on
+    the same grid as the q points.
+    """
 
     """
     Things to implement
     - mpi_comm_k
     - mpi_comm_q
     - k_input to be a Kpoints object
-    - kq_input to be a Kpoints object
+    - q_input to be a Kpoints object
     - Additional sampling around q=0
     """
     if mpi_comm_k !== nothing
@@ -26,12 +30,15 @@ function run_transport(
     if k_input isa Kpoints
         error("k_input isa Kpoints not implemented")
     end
-    if kq_input isa Kpoints
-        error("kq_input isa Kpoints not implemented")
+    if q_input isa Kpoints
+        error("q_input isa Kpoints not implemented")
     end
 
     if model.epmat_outer_momentum != "el"
         throw(ArgumentError("model.epmat_outer_momentum must be el"))
+    end
+    if mod.(q_input, k_input) != (0, 0, 0)
+        throw(ArgumentError("q grid must be an integer multiple of k grid."))
     end
 
     compute_transport = transport_params isa TransportParams
@@ -45,7 +52,7 @@ function run_transport(
         kpts, iband_min_k, iband_max_k = setup_kgrid(k_input, nw, model.el_ham, window, mpi_comm_k)
 
         # Generate k+q points
-        kqpts, iband_min_kq, iband_max_kq = setup_kgrid(kq_input, nw, model.el_ham, window, mpi_comm_k)
+        kqpts, iband_min_kq, iband_max_kq = setup_kgrid(q_input, nw, model.el_ham, window, mpi_comm_k)
     end
 
     iband_min = min(iband_min_k, iband_min_kq)
@@ -68,7 +75,7 @@ function run_transport(
         el_k_save = [ElectronState(Float64, nw, nband, nband_ignore) for ik=1:nk]
         el_kq_save = [ElectronState(Float64, nw, nband, nband_ignore) for ik=1:nkq]
 
-        Threads.@threads :static for ik in 1:nk
+        for ik in 1:nk
             xk = kpts.vectors[ik]
             el = el_k_save[ik]
 
@@ -77,7 +84,7 @@ function run_transport(
             set_velocity_diag!(el, model.el_ham_R, xk, "gridopt")
         end # ik
 
-        Threads.@threads :static for ik in 1:nkq
+        for ik in 1:nkq
             xk = kqpts.vectors[ik]
             el = el_kq_save[ik]
 
@@ -87,19 +94,17 @@ function run_transport(
         end # ik
     end
 
-    # Compute chemical potential
-    @timing "chemical pot." begin
-        ek_full_save = zeros(Float64, nw, nk)
-        for ik in 1:nk
-            ek_full_save[:, ik] .= el_k_save[ik].e_full
-        end
-        if compute_transport
-            μ = transport_set_μ!(transport_params, ek_full_save, kpts.weights, model.volume)
-        end
-    end
+    # Dictionary to save phonon states
+    ph_save = Dict{NTuple{3, Int}, PhononState{Float64}}()
 
-    # omega_save = zeros(nmodes, nq)
-    # ph = PhononState(Float64, nmodes)
+    # Compute chemical potential
+    ek_full_save = zeros(Float64, nw, nk)
+    for ik in 1:nk
+        ek_full_save[:, ik] .= el_k_save[ik].e_full
+    end
+    if compute_transport
+        μ = transport_set_μ!(transport_params, ek_full_save, kpts.weights, model.volume)
+    end
 
     # # E-ph matrix in electron Wannier, phonon Bloch representation
     epobj_ekpR = WannierObject(model.epmat.irvec_next,
@@ -126,14 +131,31 @@ function run_transport(
             tid = Threads.threadid()
             epdata = epdatas[tid]
 
-            xkq = kqpts.vectors[ikq]
-            xq = xkq - xk
-
             epdata.wtk = kpts.weights[ik]
             epdata.wtq = kqpts.weights[ikq]
 
-            # Phonon eigenvalues
-            set_eigen!(epdata.ph, model, xq, fourier_mode)
+            xkq = kqpts.vectors[ikq]
+            xq = xkq - xk
+
+            # Move xq inside [-0.5, 0.5]^3. This doesn't changes the Fourier transform but
+            # makes the long-range part more robust.
+            xq = mod.(xq .+ 0.5, 1.0) .- 0.5
+
+            # Reusing phonon states
+            xq_int = round.(Int, xq .* kqpts.ngrid)
+            if ! isapprox(xq, xq_int ./ kqpts.ngrid, atol=10*eps(eltype(xq)))
+                @show xq, kqpts.ngrid, xq_int, xq .- xq_int ./ kqpts.ngrid
+                error("xq is not on the grid")
+            end
+
+            if haskey(ph_save, xq_int.data)
+                # Phonon eigenvalues already calculated. Copy from ph_save.
+                copyto!(epdata.ph, ph_save[xq_int.data])
+            else
+                # Phonon eigenvalues not calculated. Calculate and save at ph_save.
+                set_eigen!(epdata.ph, model, xq, fourier_mode)
+                ph_save[xq_int.data] = deepcopy(epdata.ph)
+            end
 
             # Use saved data for electron state at k+q.
             copyto!(epdata.el_kq, el_kq_save[ikq])
