@@ -35,8 +35,7 @@ function transport_set_μ!(params::TransportParams, energy, weights, volume)
     mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (volume/unit_to_aru(:cm)^3)
 
     for (iT, T) in enumerate(params.Tlist)
-        μ = find_chemical_potential(ncarrier_target, T, energy, weights,
-            params.carrier_type, params.nband_valence)
+        μ = find_chemical_potential(ncarrier_target, T, energy, weights, params.nband_valence)
         params.μlist[iT] = μ
         mpi_isroot() && @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
     end

@@ -29,7 +29,7 @@ export epdata_set_mmat!
 
     # Electron-phonon coupling
     ep::Array{Complex{T}, 3}
-    g2::Array{Complex{T}, 3}
+    g2::Array{T, 3}
 
     # Preallocated buffer of size nw * nw.
     buffer::Matrix{Complex{T}}
@@ -49,7 +49,7 @@ function ElPhData(T, nw, nmodes, nband=nw, nband_ignore=0)
         ph=PhononState(T, nmodes),
         mmat=Matrix{Complex{T}}(undef, nband, nband),
         ep=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
-        g2=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
+        g2=Array{T, 3}(undef, nband, nband, nmodes),
         buffer=Matrix{Complex{T}}(undef, nw, nw),
         nband_ignore=nband_ignore,
     )
