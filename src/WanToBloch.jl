@@ -139,8 +139,10 @@ Compute electron eigenenergy and eigenvector.
     if polar !== nothing
         dynmat_dipole!(dynq, xq, polar, 1)
     end
-    dynq[:, :] ./= sqrt.(mass)
-    dynq[:, :] ./= sqrt.(mass)'
+    @inbounds for j=1:nmodes, i=1:nmodes
+        dynq[i, j] /= sqrt(mass[i])
+        dynq[i, j] /= sqrt(mass[j])
+    end
     values .= solve_eigen_ph!(vectors, dynq, mass)
     nothing
 end
