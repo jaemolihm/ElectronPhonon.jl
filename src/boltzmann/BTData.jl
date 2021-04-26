@@ -64,7 +64,7 @@ end
     dump_BTData(f, obj::AbstractBTData{T}) where {T}
 Dump BTData object `obj` to an HDF5 file or group `f`.
 """
-function dump_BTData(f, obj::AbstractBTData{T}) where {T}
+@timing "dump_BTData" function dump_BTData(f, obj::AbstractBTData{T}) where {T}
     for n in fieldnames(typeof(obj))
         f[String(n)] = _data_julia_to_hdf5(getfield(obj, n))
     end
@@ -74,7 +74,7 @@ end
     load_BTData(f, BTType::DataType)
 Load BTData object of type `BTType` from an HDF5 file or group `f`.
 """
-function load_BTData(f, BTType::DataType)
+@timing "load_BTData" function load_BTData(f, BTType::DataType)
     if ! (BTType <: AbstractBTData)
         error("BTType must be a subtype of AbstractBTData")
     end

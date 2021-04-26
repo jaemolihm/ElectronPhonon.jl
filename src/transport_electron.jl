@@ -90,8 +90,8 @@ end
         weights, window=(-Inf, Inf))
 Compute electron inverse lifetime for given k and q point data in epdata
 """
-function compute_mobility_serta!(params::TransportParams, inv_τ, el_states,
-    weights, window=(-Inf, Inf))
+function compute_mobility_serta!(params::TransportParams{R}, inv_τ,
+        el_states::Vector{ElectronState{R}}, weights, window=(-Inf, Inf)) where {R <: Real}
 
     nband, nk = size(inv_τ)
     @assert length(el_states) == nk

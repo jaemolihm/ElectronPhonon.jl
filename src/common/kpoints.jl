@@ -16,7 +16,7 @@ function sort!(k::Kpoints)
     inds = sortperm(k.vectors)
     k.vectors .= k.vectors[inds]
     k.weights .= k.weights[inds]
-    k
+    inds
 end
 
 function Kpoints(xks::AbstractArray{T, 2}) where {T <: Real}

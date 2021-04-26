@@ -11,4 +11,7 @@ using Test
     include("test_cubicBN_spectral.jl")
     include("test_cubicBN_selfen.jl")
     include("test_cubicBN_transport.jl")
+
+    # Boltzmann routines
+    include("boltzmann/test_hdf5.jl")
 end

@@ -13,18 +13,24 @@ Compute carrier density.
 - energy: band energy
 - weights: k-point weights.
 """
-function compute_ncarrier(μ, T, energy, weights)
-    compute_ncarrier(μ, T, energy, weights, 1, size(energy, 1))
-end
-
-function compute_ncarrier(μ, T, energy, weights, iband_from, iband_to)
+function compute_ncarrier(μ, T, energy::AbstractArray{R, 2}, weights) where {R <: Real}
     nk = size(energy, 2)
     @assert length(weights) == nk
-    ncarrier = eltype(energy)(0)
+    ncarrier = zero(R)
     for ik in 1:nk
-        for iband in iband_from:iband_to
+        for iband in 1:size(energy, 1)
             ncarrier += weights[ik] * occ_fermion(energy[iband, ik] - μ, T)
         end
+    end
+    ncarrier
+end
+
+function compute_ncarrier(μ, T, energy::AbstractArray{R, 1}, weights) where {R <: Real}
+    n = length(energy)
+    @assert length(weights) == n
+    ncarrier = zero(R)
+    for i in 1:n
+        ncarrier += weights[i] * occ_fermion(energy[i] - μ, T)
     end
     ncarrier
 end
