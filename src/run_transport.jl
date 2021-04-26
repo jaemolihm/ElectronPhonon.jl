@@ -1,8 +1,43 @@
+
+"""
+Calculate electron states and write BTStates object to HDF5 file.
+"""
+@timing "el_states" function write_electron_BTStates(g, kpts, model, window, nband, nband_ignore)
+    # TODO: MPI
+    el_save = [ElectronState(Float64, model.nw, nband, nband_ignore) for i=1:kpts.n]
+    for ik in 1:kpts.n
+        xk = kpts.vectors[ik]
+        el = el_save[ik]
+
+        set_eigen!(el, model.el_ham, xk, "gridopt")
+        set_window!(el, window)
+        set_velocity_diag!(el, model.el_ham_R, xk, "gridopt")
+    end # ik
+    el_boltzmann, imap = electron_states_to_BTStates(el_save, kpts)
+    dump_BTData(g, el_boltzmann)
+    el_save, imap
+end
+
+"""
+Calculate phonon states and write BTStates object to HDF5 file.
+"""
+@timing "ph_states" function write_phonon_BTStates(g, kpts, model)
+    # TODO: MPI
+    ph_save = [PhononState(Float64, model.nmodes) for i=1:kpts.n]
+    for ik in 1:kpts.n
+        xk = kpts.vectors[ik]
+        ph = ph_save[ik]
+        set_eigen!(ph, model, xk, "gridopt")
+    end # ik
+    ph_boltzmann, imap = phonon_states_to_BTStates(ph_save, kpts)
+    dump_BTData(g, ph_boltzmann)
+    ph_save, imap
+end
+
 function run_transport(
         model::ModelEPW,
         k_input::Union{NTuple{3,Int}, Kpoints},
         q_input::Union{NTuple{3,Int}, Kpoints};
-        transport_params,
         mpi_comm_k=nothing,
         mpi_comm_q=nothing,
         fourier_mode="gridopt",
@@ -42,11 +77,8 @@ function run_transport(
         throw(ArgumentError("q grid must be an integer multiple of k grid."))
     end
 
-    compute_transport = transport_params isa TransportParams
-
     nw = model.nw
     nmodes = model.nmodes
-
 
     @timing "setup kgrid" begin
         # Generate k points
@@ -65,68 +97,69 @@ function run_transport(
     nband = iband_max - iband_min + 1
     nband_ignore = iband_min - 1
 
+    # Map k and k+q points to q points
+    T = eltype(kpts.weights)
+    xqs = Vector{Vec3{T}}()
+    map_xq_int_to_iq = Dict{NTuple{3, Int}, Int}()
+    iq = 0
+    for ik in 1:nk
+        xk = kpts.vectors[ik]
+        for ikq in 1:nkq
+            xkq = kqpts.vectors[ikq]
+            xq = xkq - xk
+
+            # Move xq inside [-0.5, 0.5]^3. This doesn't change the Fourier transform but
+            # makes the long-range part more robust.
+            xq = mod.(xq .+ 0.5, 1.0) .- 0.5
+
+            # Reusing phonon states
+            xq_int = round.(Int, xq .* kqpts.ngrid)
+            if ! isapprox(xq, xq_int ./ kqpts.ngrid, atol=10*eps(eltype(xq)))
+                @show xq, kqpts.ngrid, xq_int, xq .- xq_int ./ kqpts.ngrid
+                error("xq is not on the grid")
+            end
+
+            # Find new q points, append to map_xq_int_to_iq and xqs
+            if ! haskey(map_xq_int_to_iq, xq_int.data)
+                iq += 1
+                map_xq_int_to_iq[xq_int.data] = iq
+                push!(xqs, xq)
+            end
+        end
+    end
+    nq = length(xqs)
+    qpts = EPW.Kpoints{T}(nq, xqs, ones(T, nq) ./ prod(kqpts.ngrid), kqpts.ngrid)
+    inds = EPW.sort!(qpts)
+    for key in keys(map_xq_int_to_iq)
+        map_xq_int_to_iq[key] = findfirst(inds .== map_xq_int_to_iq[key])
+    end
+
     epdatas = [ElPhData(Float64, nw, nmodes, nband, nband_ignore) for i=1:Threads.nthreads()]
 
-    if compute_transport
-        transport_serta = TransportSERTA(Float64, nband, nmodes, nk,
-            length(transport_params.Tlist))
-    end
+    # Open HDF5 file for writing BTEdata
+    fid_btedata = h5open(joinpath(folder, "btedata.h5"), "w")
+    # Write some attributes to file
+    g = create_group(fid_btedata, "electron")
+    write_attribute(fid_btedata["electron"], "nk", nk)
+    write_attribute(fid_btedata["electron"], "nbandk_max", nband)
+    fid_btedata["electron/weights"] = kpts.weights
+    write_attribute(fid_btedata["electron"], "nelec_below_window", nelec_below_window)
 
-    # Compute and save electron state at k and k+q
-    @timing "el_k el_kq" begin
-        el_k_save = [ElectronState(Float64, nw, nband, nband_ignore) for ik=1:nk]
-        el_kq_save = [ElectronState(Float64, nw, nband, nband_ignore) for ik=1:nkq]
+    # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
+    g = create_group(fid_btedata, "initialstate_electron")
+    el_k_save, imap_el_k = write_electron_BTStates(g, kpts, model, window, nband, nband_ignore)
+    g = create_group(fid_btedata, "finalstate_electron")
+    el_kq_save, imap_el_kq = write_electron_BTStates(g, kqpts, model, window, nband, nband_ignore)
 
-        for ik in 1:nk
-            xk = kpts.vectors[ik]
-            el = el_k_save[ik]
-
-            set_eigen!(el, model.el_ham, xk, "gridopt")
-            set_window!(el, window)
-            set_velocity_diag!(el, model.el_ham_R, xk, "gridopt")
-        end # ik
-
-        for ik in 1:nkq
-            xk = kqpts.vectors[ik]
-            el = el_kq_save[ik]
-
-            set_eigen!(el, model.el_ham, xk, "gridopt")
-            set_window!(el, window)
-            set_velocity_diag!(el, model.el_ham_R, xk, "gridopt")
-        end # ik
-    end
+    # Write phonon states to HDF5 file
+    g = create_group(fid_btedata, "phonon")
+    _, imap_ph = write_phonon_BTStates(g, qpts, model)
 
     # Preallocate arrays for saving data for creating BTEdata
-    # TODO: Is this efficient for multithreading?
-    g2_save = zeros(Float64, nband, nband, nmodes, nkq)
-    ωq_save = zeros(Float64, nmodes, nkq)
-    nbandkq_save = zeros(Int, nkq)
-    ekq_save = zeros(Float64, nband, nkq)
-    vkq_save = zeros(Vec3{Float64}, nband, nkq)
-    @views for ikq in 1:nkq
-        el = el_kq_save[ikq]
-        nbandkq_save[ikq] = el.nband
-        ekq_save[el.rng, ikq] = el.e[el.rng]
-        vkq_save[el.rng, ikq] .= el.vdiag[el.rng]
-    end
+
 
     # Dictionary to save phonon states
     ph_save = Dict{NTuple{3, Int}, PhononState{Float64}}()
-
-    # Compute chemical potential
-    ek_full_save = zeros(Float64, nw, nk)
-    for ik in 1:nk
-        ek_full_save[:, ik] .= el_k_save[ik].e_full
-    end
-    if compute_transport
-        μ = transport_set_μ!(transport_params, ek_full_save, kpts.weights, model.volume)
-    end
-
-    # Open HDF5 file for writing BTEdata
-    fid_btedata = open_BTEdata_file_for_write(joinpath(folder, "btedata.h5"),
-        nk, nband, nkq, nband, nmodes)
-    fid_btedata["electron/weights"] = kpts.weights
-    write_attribute(fid_btedata["electron"], "nelec_below_window", nelec_below_window)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epobj_ekpR = WannierObject(model.epmat.irvec_next,
@@ -148,6 +181,14 @@ function run_transport(
 
         get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, EPW.get_u(el_k), fourier_mode)
 
+        # Setup for collecting scattering processes
+        bt_nscat = 0
+        bt_ind_el_i = Vector{Int}()
+        bt_ind_el_f = Vector{Int}()
+        bt_ind_ph = Vector{Int}()
+        bt_sign_ph = Vector{Int}()
+        bt_mel = Vector{Float64}()
+
         # Threads.@threads :static for ikq in 1:nkq
         for ikq in 1:nkq
             tid = Threads.threadid()
@@ -159,7 +200,7 @@ function run_transport(
             xkq = kqpts.vectors[ikq]
             xq = xkq - xk
 
-            # Move xq inside [-0.5, 0.5]^3. This doesn't changes the Fourier transform but
+            # Move xq inside [-0.5, 0.5]^3. This doesn't change the Fourier transform but
             # makes the long-range part more robust.
             xq = mod.(xq .+ 0.5, 1.0) .- 0.5
 
@@ -170,6 +211,10 @@ function run_transport(
                 error("xq is not on the grid")
             end
 
+            # Index of q point in the global list
+            iq = map_xq_int_to_iq[xq_int.data]
+
+            # Phonon eigenvalues and eigenstates
             if haskey(ph_save, xq_int.data)
                 # Phonon eigenvalues already calculated. Copy from ph_save.
                 copyto!(epdata.ph, ph_save[xq_int.data])
@@ -190,36 +235,36 @@ function run_transport(
             end
             epdata_set_g2!(epdata)
 
-            # Now, we are done with matrix elements. All data saved in epdata.
-            if compute_transport
-                compute_lifetime_serta!(transport_serta, epdata, transport_params, ik)
+            for imode in 1:nmodes
+                for jb in epdata.el_kq.rng
+                    for ib in epdata.el_k.rng
+                        @inbounds for sign_ph in (-1, 1)
+                            # if ik == 1 && ikq <= 10
+                            #     @info (epdata.el_k.e[ib] - epdata.el_kq.e[jb]
+                            #         - sign_ph * epdata.ph.e[imode]) / EPW.unit_to_aru(:meV)
+                            # end
+                            # if (epdata.el_k.e[ib] - epdata.el_kq.e[jb]
+                            #     - sign_ph * epdata.ph.e[imode]) > 50.0 * EPW.unit_to_aru(:meV)
+                            #     continue
+                            # end
+                            bt_nscat += 1
+                            push!(bt_ind_el_i, imap_el_k[ib, ik])
+                            push!(bt_ind_el_f, imap_el_kq[jb, ikq])
+                            push!(bt_ind_ph, imap_ph[imode, iq])
+                            push!(bt_sign_ph, sign_ph)
+                            push!(bt_mel, epdata.g2[jb, ib, imode])
+                        end
+                    end
+                end
             end
-
-            ωq_save[:, ikq] .= epdata.ph.e
-            g2_save[:, :, :, ikq] .= epdata.g2
         end # ikq
 
-        btedata = BTEdata(
-            xk=xk, nbandk=el_k.nband, ek=el_k.e[el_k.rng], vk=el_k.vdiag[el_k.rng],
-            nkp=nkq, weights=kqpts.weights, xkp=kqpts.vectors, nbandkp_max=nband,
-            nbandkp=nbandkq_save, ekp=ekq_save, vkp=vkq_save,
-            nmodes=nmodes, ωq=ωq_save, g2=g2_save)
-
-        dump_BTEdata(fid_btedata["electron/ik$ik"], btedata)
-
+        @views bt_scattering = ElPhScatteringData{Float64}(bt_nscat, bt_ind_el_i[1:bt_nscat],
+            bt_ind_el_f[1:bt_nscat], bt_ind_ph[1:bt_nscat], bt_sign_ph[1:bt_nscat],
+            bt_mel[1:bt_nscat])
+        g = create_group(fid_btedata, "scattering/ik$ik")
+        dump_BTData(g, bt_scattering)
     end # ik
-
     close(fid_btedata)
-
-    output = Dict()
-
-    if compute_transport
-        EPW.mpi_sum!(transport_serta.inv_τ, mpi_comm_q)
-        σlist = compute_mobility_serta!(transport_params, transport_serta.inv_τ,
-            el_k_save, kpts.weights, window)
-        output["transport_σlist"] = σlist
-        output["inv_τ"] = transport_serta.inv_τ
-    end
-
-    output
+    nothing
 end
