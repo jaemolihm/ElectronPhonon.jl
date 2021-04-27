@@ -1,6 +1,7 @@
 # __precompile__(true)
 
 using LinearAlgebra
+using EPW.AllocatedLAPACK: epw_syev!
 
 export solve_eigen_el!
 export solve_eigen_el_valueonly!
@@ -9,23 +10,22 @@ export solve_eigen_ph_valueonly!
 
 "Get eigenenergy and eigenvector of electrons at a single k point.
 Input hk is not destroyed at output."
-@timing "eig_el" function solve_eigen_el!(eigvectors, hk)
+@timing "eig_el" function solve_eigen_el!(eigvalues, eigvectors, hk)
     @assert size(eigvectors) == size(hk)
     # Directly calling LAPACK.syev! is more efficient than
     # eigen(Hermitian(hk)) for small matrices, because eigen uses
     # SYEVR which is slower than SYEV for small matrices
     # eigvalues, eigvectors[:, :] = eigen(Hermitian(hk))
+    # Use AllocatedLAPACK module for preallocating and reusing workspaces
     eigvectors .= hk
-    eigvalues, = LAPACK.syev!('V', 'U', eigvectors)
-    return eigvalues::Vector{eltype(hk).parameters[1]}
+    epw_syev!('V', 'U', eigvectors, eigvalues)
 end
 
 "Get eigenenergy of electrons at a single k point.
 Input hk is destroyed at output."
-@timing "eig_el_val" function solve_eigen_el_valueonly!(hk)
+@timing "eig_el_val" function solve_eigen_el_valueonly!(eigvalues, hk)
     # eigvalues = eigvals(Hermitian(hk))
-    eigvalues = LAPACK.syev!('N', 'U', hk)
-    return eigvalues::Vector{eltype(hk).parameters[1]}
+    epw_syev!('N', 'U', hk, eigvalues)[1]
 end
 
 "Get frequency and eigenmode of phonons at a single q point.

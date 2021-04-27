@@ -78,7 +78,7 @@ Compute electron eigenenergy and eigenvector.
     hk = _get_buffer(_buffer_el_eigen, (nw, nw))
 
     get_fourier!(hk, el_ham, xk, mode=fourier_mode)
-    values .= solve_eigen_el!(vectors, hk)
+    solve_eigen_el!(values, vectors, hk)
     nothing
 end
 
@@ -86,12 +86,13 @@ end
     get_el_eigen_valueonly!(values, nw, el_ham, xk, fourier_mode="normal")
 """
 @timing "w2b_el_eigval" function get_el_eigen_valueonly!(values, nw, el_ham, xk, fourier_mode="normal")
+    # FIXME: Names get_el_eigen_valueonly! and solve_eigen_el_valueonly! are confusing.
     @assert size(values) == (nw,)
 
     hk = _get_buffer(_buffer_el_eigen, (nw, nw))
 
     get_fourier!(hk, el_ham, xk, mode=fourier_mode)
-    values .= solve_eigen_el_valueonly!(hk)
+    solve_eigen_el_valueonly!(values, hk)
     nothing
 end
 

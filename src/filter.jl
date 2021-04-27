@@ -34,10 +34,11 @@ function filter_kpoints(kpoints::Kpoints, nw, el_ham, window, fourier_mode="norm
     ik_keep = zeros(Bool, kpoints.n)
     band_min = nw
     band_max = 1
+    eigenvalues = zeros(Float64, nw)
     for ik in 1:kpoints.n
         xk = kpoints.vectors[ik]
         get_fourier!(hk, el_ham, xk, mode=fourier_mode)
-        eigenvalues = solve_eigen_el_valueonly!(hk)
+        solve_eigen_el_valueonly!(eigenvalues, hk)
         bands_in_window = inside_window(eigenvalues, window...)
         nelec_below_window += (bands_in_window.start - 1) * kpoints.weights[ik]
         if ! isempty(bands_in_window)

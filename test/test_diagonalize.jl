@@ -10,9 +10,13 @@ using LinearAlgebra
 
     F = eigen(A)
 
-    @test F.values ≈ solve_eigen_el_valueonly!(copy(A))
+    values = zero(F.values)
+    @test F.values ≈ solve_eigen_el_valueonly!(values, copy(A))
+    @test F.values ≈ values
 
     vectors = similar(A)
-    @test F.values ≈ solve_eigen_el!(vectors, copy(A))
+    values = zero(F.values)
+    @test F.values ≈ solve_eigen_el!(values, vectors, copy(A))[1]
+    @test F.values ≈ values
     @test vectors .* F.values' ≈ A * vectors
 end
