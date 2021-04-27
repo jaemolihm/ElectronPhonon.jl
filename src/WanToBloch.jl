@@ -149,7 +149,7 @@ Compute electron eigenenergy and eigenvector.
         dynq[i, j] /= sqrt(mass[i])
         dynq[i, j] /= sqrt(mass[j])
     end
-    values .= solve_eigen_ph!(vectors, dynq, mass)
+    solve_eigen_ph!(values, vectors, dynq, mass)
     nothing
 end
 
