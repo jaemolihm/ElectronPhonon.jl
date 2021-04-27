@@ -15,7 +15,7 @@ export bisect
 """
 Occupation of a fermion at energy `e` and temperature `T`.
 """
-function occ_fermion(e, T; occ_type=:FermiDirac)
+@inline function occ_fermion(e, T; occ_type=:FermiDirac)
     if occ_type == :FermiDirac
         if T > 1.0E-8
             return 1 / (exp(e/T) + 1)
@@ -31,7 +31,7 @@ end
 Derivative of the fermion occupation function with respect to `e`. Approximation to minus
 the delta function divided by temperature.
 """
-function occ_fermion_derivative(e, T; occ_type=:FermiDirac)
+@inline function occ_fermion_derivative(e, T; occ_type=:FermiDirac)
     if occ_type == :FermiDirac
         x = e / T
         return -1 / (2 + exp(x) + exp(-x)) / T
@@ -46,7 +46,7 @@ end
 """
 Occupation of a boson at energy `e` and temperature `T`.
 """
-function occ_boson(e, T, occ_type=:BoseEinstein)
+@inline function occ_boson(e, T, occ_type=:BoseEinstein)
     if occ_type == :BoseEinstein
         if T > 1.0E-8
             return 1 / (exp(e/T) - 1)
@@ -59,7 +59,7 @@ function occ_boson(e, T, occ_type=:BoseEinstein)
 end
 
 const inv_sqrtpi = 1 / sqrt(pi)
-function gaussian(value)
+@inline function gaussian(value)
     # TODO: type stability
     # One without the conditional is slightly (~2.5 %) faster.
     exp(-value^2) * inv_sqrtpi
