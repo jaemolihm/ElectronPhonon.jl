@@ -63,7 +63,7 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window)
 
     # If the window is trivial, return the whole grid
     if window === (-Inf, Inf)
-        return kpoints, 1, nw
+        return kpoints, 1, nw, zero(eltype(window))
     end
 
     nelec_below_window = zero(eltype(window))
@@ -104,7 +104,7 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Co
 
     # If the window is trivial, return the whole grid
     if window === (-Inf, Inf)
-        return kpoints, 1, nw
+        return kpoints, 1, nw, zero(eltype(window))
     end
 
     nelec_below_window = zero(eltype(window))
