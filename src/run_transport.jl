@@ -1,4 +1,6 @@
 
+using HDF5
+
 """
 Calculate electron states and write BTStates object to HDF5 file.
 """
@@ -28,6 +30,7 @@ Calculate phonon states and write BTStates object to HDF5 file.
         xk = kpts.vectors[ik]
         ph = ph_save[ik]
         set_eigen!(ph, model, xk, "gridopt")
+        set_velocity_diag!(ph, model, xk, "gridopt")
     end # ik
     ph_boltzmann, imap = phonon_states_to_BTStates(ph_save, kpts)
     dump_BTData(g, ph_boltzmann)

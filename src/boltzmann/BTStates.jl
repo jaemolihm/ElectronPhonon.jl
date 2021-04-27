@@ -69,8 +69,6 @@ Transform Vector of PhononState to a BTState.
 """
 function phonon_states_to_BTStates(ph_states::Vector{PhononState{T}},
         kpts::EPW.Kpoints{T}) where {T <: Real}
-    # TODO: Currently, phonon velocity is not implemented, so vdiag is set to 0.
-    # When phonon velocity is implemented, update vdiag.
     nk = length(ph_states)
     nmodes = ph_states[1].nmodes
     imap = zeros(Int, nmodes, nk)
@@ -88,7 +86,7 @@ function phonon_states_to_BTStates(ph_states::Vector{PhononState{T}},
         for imode in 1:nmodes
             istate += 1
             e[istate] = ph.e[imode]
-            # vdiag[istate] = ph.vdiag[imode]
+            vdiag[istate] = ph.vdiag[imode]
             k_weight[istate] = kpts.weights[ik]
             xks[istate] = kpts.vectors[ik]
             iband[istate] = imode

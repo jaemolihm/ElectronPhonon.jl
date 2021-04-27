@@ -33,6 +33,7 @@ Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
     el_vel::Union{WannierObject{Float64},Nothing} # ELectron velocity matrix
 
     ph_dyn::WannierObject{Float64} # Phonon dynamical matrix
+    ph_dyn_R::WannierObject{Float64} # Phonon dynamical matrix
     # TODO: Use real-valuedness of dyn_r
     # TODO: Use Hermiticity of dyn_q
 
@@ -158,8 +159,8 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     # Phonon dynamical matrix
     nr_ph = convert(Int, read(f, Int32))
     irvec_ph = convert.(Int, read(f, (Int32, 3, nr_ph)))
-    dyn_r_real = read(f, (Float64, nmodes, nmodes, nr_ph))
-    dyn_r = complex(dyn_r_real)
+    dyn_real = read(f, (Float64, nmodes, nmodes, nr_ph))
+    dyn = complex(dyn_real)
 
     # Electron-phonon matrix
     nr_ep = convert(Int, read(f, Int32))
@@ -186,7 +187,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     # Shuffle matrix elements accordingly
     ham = ham[:, :, ind_el]
     pos = pos[:, :, :, ind_el]
-    dyn_r = dyn_r[:, :, ind_ph]
+    dyn = dyn[:, :, ind_ph]
 
     # Electron-phonon coupling
     # This part is the bottleneck of this function.
@@ -239,18 +240,13 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     # First index: all other indices
     # Second index: R vectors
     ham = reshape(ham, (nw*nw, nr_el))
-    dyn_r = reshape(dyn_r, (nmodes*nmodes, nr_ph))
+    dyn = reshape(dyn, (nmodes*nmodes, nr_ph))
     el_ham = WannierObject(irvec_el, ham)
-    ph_dyn = WannierObject(irvec_ph, dyn_r)
+    ph_dyn = WannierObject(irvec_ph, dyn)
 
-    # R * ham for electron velocity
-    ham_R = zeros(eltype(ham), (nw*nw, 3, nr_el))
-    for ir = 1:nr_el
-        @views for i = 1:3
-            ham_R[:, i, ir] .= im .* ham[:, ir] .* dot(lattice[i, :], irvec_el[ir])
-        end
-    end
-    el_ham_R = WannierObject(irvec_el, reshape(ham_R, (nw*nw*3, nr_el)))
+    # R * ham for electron and phonon velocity
+    el_ham_R = wannier_object_multiply_R(el_ham, lattice)
+    ph_dyn_R = wannier_object_multiply_R(ph_dyn, lattice)
 
     # Electron position (dipole) matrix elements
     pos2 = permutedims(pos, [2, 3, 1, 4])
@@ -287,7 +283,8 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         volume=volume, nw=nw, nmodes=nmodes, mass=mass, atom_pos=atom_pos,
         use_polar_dipole=use_polar_dipole, polar_phonon=polar_phonon, polar_eph=polar_eph,
         el_ham=el_ham, el_ham_R=el_ham_R, el_pos=el_pos, el_vel=el_vel,
-        ph_dyn=ph_dyn, epmat=epmat, epmat_outer_momentum=epmat_outer_momentum
+        ph_dyn=ph_dyn, ph_dyn_R=ph_dyn_R,
+        epmat=epmat, epmat_outer_momentum=epmat_outer_momentum
     )
 
     model

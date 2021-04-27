@@ -61,6 +61,16 @@ end
 
 # WannierObject(nr, irvec::Array{Int,2}, op_r) = WannierObject(nr, reinterpret(Vec3{Int}, vec(irvec))[:], op_r)
 
+function wannier_object_multiply_R(obj::AbstractWannierObject{T}, lattice) where {T}
+    opR_r = zeros(Complex{T}, (obj.ndata, 3, obj.nr))
+    for ir = 1:obj.nr
+        @views for i = 1:3
+            opR_r[:, i, ir] .= im .* obj.op_r[:, ir] .* dot(lattice[i, :], obj.irvec[ir])
+        end
+    end
+    WannierObject(obj.irvec, reshape(opR_r, (obj.ndata*3, obj.nr)))
+end
+
 function get_phase_expikr!(obj, xk, tid)
     rdotk = obj.rdotks[tid]
     phase = obj.phases[tid]

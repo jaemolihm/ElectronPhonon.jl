@@ -15,6 +15,7 @@ export get_el_eigen!
 export get_el_eigen_valueonly!
 export get_el_velocity_diag!
 export get_ph_eigen!
+export get_ph_velocity_diag!
 export get_eph_RR_to_Rq!
 export get_eph_Rq_to_kq!
 export get_eph_RR_to_kR!
@@ -25,6 +26,8 @@ export get_eph_kR_to_kq!
 const _buffer_el_eigen = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_el_velocity = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
 const _buffer_el_velocity_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
+const _buffer_ph_velocity = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
+const _buffer_ph_velocity_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_ph_eigen = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_nothreads_eph_RR_to_Rq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
 const _buffer_nothreads_eph_RR_to_Rq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
@@ -40,6 +43,8 @@ function __init__()
     Threads.resize_nthreads!(_buffer_el_eigen)
     Threads.resize_nthreads!(_buffer_el_velocity)
     Threads.resize_nthreads!(_buffer_el_velocity_tmp)
+    Threads.resize_nthreads!(_buffer_ph_velocity)
+    Threads.resize_nthreads!(_buffer_ph_velocity_tmp)
     Threads.resize_nthreads!(_buffer_ph_eigen)
     Threads.resize_nthreads!(_buffer_eph_Rq_to_kq)
     Threads.resize_nthreads!(_buffer_eph_Rq_to_kq_tmp)
@@ -91,7 +96,7 @@ end
 end
 
 """
-    get_el_velocity!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
+    get_el_velocity_diag!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
 Compute electron band velocity, only the band-diagonal part.
 
 velocity_diag: nband-dimensional vector.
@@ -144,6 +149,36 @@ Compute electron eigenenergy and eigenvector.
         dynq[i, j] /= sqrt(mass[j])
     end
     values .= solve_eigen_ph!(vectors, dynq, mass)
+    nothing
+end
+
+"""
+    get_ph_velocity_diag!(vel_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
+Compute electron band velocity, only the band-diagonal part.
+# Outputs
+- `vel_diag`: (3, nmodes) array, contains diagonal band velocity.
+# Inputs
+- `uk`: nmodes * nmodes matrix containing phonon eigenvectors.
+"""
+@timing "w2b_ph_vel" function get_ph_velocity_diag!(vel_diag, ph_dyn_R, xk, uk, fourier_mode="normal")
+    # FIXME: Polar is not implemented.
+    nmodes = size(uk, 1)
+    @assert size(uk) == (nmodes, nmodes)
+    @assert size(vel_diag) == (3, nmodes)
+
+    vk = _get_buffer(_buffer_ph_velocity, (nmodes, nmodes, 3))
+    tmp = _get_buffer(_buffer_ph_velocity_tmp, (nmodes, nmodes))
+
+    get_fourier!(vk, ph_dyn_R, xk, mode=fourier_mode)
+
+    # vel_diag[idir, i] = uk'[i, :] * vk[:, :, idir] * uk[:, i]
+    @views @inbounds for idir = 1:3
+        # The sqrt(mass) factors are already included in the eigenvectors
+        mul!(tmp, vk[:, :, idir], uk)
+        for i in 1:nmodes
+            vel_diag[idir, i] = real(dot(uk[:, i], tmp[:, i]))
+        end
+    end
     nothing
 end
 
