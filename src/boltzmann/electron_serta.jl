@@ -21,7 +21,8 @@ function bte_compute_μ!(params::TransportParams{R}, el::BTStates{R}, volume) wh
     nothing
 end
 
-function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params::TransportParams{R}) where {R}
+function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params::TransportParams{R}, recip_lattice, ngrid) where {R}
+    # TODO: Clean input params recip_lattice and ngrid
     inv_η = 1 / params.smearing
 
     for iscat in 1:scat.n
@@ -38,19 +39,37 @@ function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params::Transport
         e_i = el_i.e[ind_el_i]
         e_f = el_f.e[ind_el_f]
 
+        # sign_ph = +1: phonon emission.   e_k -> e_kq + phonon
+        # sign_ph = -1: phonon absorption. e_k + phonon -> e_kq
+        delta_e = e_i - e_f - sign_ph * ω_ph
+
+        # For electron final state occupation, use e_k - sign_ph * ω_ph instead of e_kq,
+        # using energy conservation. The former is better because the phonon velocity is
+        # much smaller than the electron velocity, so that it changes less w.r.t q.
+        e_f_occupation = e_i - sign_ph * ω_ph
+        # e_f_occupation = e_f
+
+        if params.smearing > 0
+            # Gaussian smearing
+            delta = gaussian(delta_e * inv_η) * inv_η
+        else
+            # tetrahedron
+            v_cart = - el_f.vdiag[ind_el_f] - sign_ph * ph.vdiag[ind_ph]
+            v_delta_e = v_cart' * recip_lattice
+            delta = delta_parallelepiped(zero(R), delta_e, v_delta_e, 1 ./ ngrid)
+        end
+
+        coeff1 = 2π * el_f.k_weight[ind_el_f] * g2 * delta
+
         for iT in 1:length(params.Tlist)
             T = params.Tlist[iT]
             μ = params.μlist[iT]
             n_ph = occ_boson(ω_ph, T)
-            f_kq = occ_fermion(e_f - μ, T)
+            f_kq = occ_fermion(e_f_occupation - μ, T)
 
-            # sign_ph = +1: phonon emission.   e_k -> e_kq + phonon
-            # sign_ph = -1: phonon absorption. e_k + phonon -> e_kq
-            delta_e = e_i - e_f - sign_ph * ω_ph
-            delta = gaussian(delta_e * inv_η) * inv_η
             fcoeff = sign_ph == 1 ? n_ph + 1 - f_kq : n_ph + f_kq
 
-            inv_τ[ind_el_i, iT] += (2π * el_f.k_weight[ind_el_f] * g2 * fcoeff * delta)
+            inv_τ[ind_el_i, iT] += coeff1 * fcoeff
         end
     end
     inv_τ

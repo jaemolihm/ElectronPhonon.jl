@@ -6,7 +6,7 @@ Calculate electron states and write BTStates object to HDF5 file.
 """
 @timing "el_states" function write_electron_BTStates(g, kpts, model, window, nband, nband_ignore)
     # TODO: MPI
-    el_save = [ElectronState(Float64, model.nw, nband, nband_ignore) for i=1:kpts.n]
+    @timing "init" el_save = [ElectronState(Float64, model.nw, nband, nband_ignore) for i=1:kpts.n]
     for ik in 1:kpts.n
         xk = kpts.vectors[ik]
         el = el_save[ik]
@@ -25,7 +25,7 @@ Calculate phonon states and write BTStates object to HDF5 file.
 """
 @timing "ph_states" function write_phonon_BTStates(g, kpts, model)
     # TODO: MPI
-    ph_save = [PhononState(Float64, model.nmodes) for i=1:kpts.n]
+    @timing "init" ph_save = [PhononState(Float64, model.nmodes) for i=1:kpts.n]
     for ik in 1:kpts.n
         xk = kpts.vectors[ik]
         ph = ph_save[ik]
@@ -170,6 +170,7 @@ function run_transport(
 
     mpi_isroot() && @info "Number of k   points = $nk"
     mpi_isroot() && @info "Number of k+q points = $nkq"
+    mpi_isroot() && @info "Number of q   points = $nq"
 
     @timing "main loop" for ik in 1:nk
         if mod(ik, 100) == 0
@@ -216,16 +217,7 @@ function run_transport(
 
             # Index of q point in the global list
             iq = map_xq_int_to_iq[xq_int.data]
-
-            # Phonon eigenvalues and eigenstates
-            if haskey(ph_save, xq_int.data)
-                # Phonon eigenvalues already calculated. Copy from ph_save.
-                copyto!(epdata.ph, ph_save[xq_int.data])
-            else
-                # Phonon eigenvalues not calculated. Calculate and save at ph_save.
-                set_eigen!(epdata.ph, model, xq, fourier_mode)
-                ph_save[xq_int.data] = deepcopy(epdata.ph)
-            end
+            copyto!(epdata.ph, ph_save[iq])
 
             # Use saved data for electron state at k+q.
             copyto!(epdata.el_kq, el_kq_save[ikq])
@@ -238,7 +230,7 @@ function run_transport(
             end
             epdata_set_g2!(epdata)
 
-            for imode in 1:nmodes
+            @timing "bt_push" for imode in 1:nmodes
                 for jb in epdata.el_kq.rng
                     for ib in epdata.el_k.rng
                         @inbounds for sign_ph in (-1, 1)
@@ -262,11 +254,13 @@ function run_transport(
             end
         end # ikq
 
-        @views bt_scattering = ElPhScatteringData{Float64}(bt_nscat, bt_ind_el_i[1:bt_nscat],
-            bt_ind_el_f[1:bt_nscat], bt_ind_ph[1:bt_nscat], bt_sign_ph[1:bt_nscat],
-            bt_mel[1:bt_nscat])
-        g = create_group(fid_btedata, "scattering/ik$ik")
-        dump_BTData(g, bt_scattering)
+        @timing "bt_dump" begin
+            @views bt_scattering = ElPhScatteringData{Float64}(bt_nscat, bt_ind_el_i[1:bt_nscat],
+                bt_ind_el_f[1:bt_nscat], bt_ind_ph[1:bt_nscat], bt_sign_ph[1:bt_nscat],
+                bt_mel[1:bt_nscat])
+            g = create_group(fid_btedata, "scattering/ik$ik")
+            dump_BTData(g, bt_scattering)
+        end
     end # ik
     close(fid_btedata)
     nothing
