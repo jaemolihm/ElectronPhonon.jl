@@ -46,6 +46,7 @@ function run_transport(
         fourier_mode="gridopt",
         window=(-Inf,Inf),
         folder,
+        energy_conservation=(:None, 0.0)
     )
     """
     The q point grid must be a multiple of the k point grid. If so, the k+q points lie on
@@ -83,12 +84,16 @@ function run_transport(
     nw = model.nw
     nmodes = model.nmodes
 
+    energy_conservation_mode, energy_conservation_tol = energy_conservation
+
     @timing "setup kgrid" begin
         # Generate k points
+        mpi_isroot() && @info "Setting k-point grid"
         kpts, iband_min_k, iband_max_k, nelec_below_window = setup_kgrid(k_input, nw,
             model.el_ham, window, mpi_comm_k)
 
         # Generate k+q points
+        mpi_isroot() && @info "Setting k+q-point grid"
         kqpts, iband_min_kq, iband_max_kq, _ = setup_kgrid(q_input, nw, model.el_ham, window, mpi_comm_k)
     end
 
@@ -101,78 +106,96 @@ function run_transport(
     nband_ignore = iband_min - 1
 
     # Map k and k+q points to q points
-    T = eltype(kpts.weights)
-    xqs = Vector{Vec3{T}}()
-    map_xq_int_to_iq = Dict{NTuple{3, Int}, Int}()
-    iq = 0
-    for ik in 1:nk
-        xk = kpts.vectors[ik]
-        for ikq in 1:nkq
-            xkq = kqpts.vectors[ikq]
-            xq = xkq - xk
+    mpi_isroot() && @info "Finding the list of q points"
+    @timing "qpts" begin
+        T = eltype(kpts.weights)
+        xqs = Vector{Vec3{T}}()
+        map_xq_int_to_iq = Dict{NTuple{3, Int}, Int}()
+        map_iq_to_xq_int = Vector{NTuple{3, Int}}()
+        iq = 0
+        for ik in 1:nk
+            xk = kpts.vectors[ik]
+            for ikq in 1:nkq
+                xkq = kqpts.vectors[ikq]
+                xq = xkq - xk
 
-            # Move xq inside [-0.5, 0.5]^3. This doesn't change the Fourier transform but
-            # makes the long-range part more robust.
-            xq = mod.(xq .+ 0.5, 1.0) .- 0.5
+                # Move xq inside [-0.5, 0.5]^3. This doesn't change the Fourier transform but
+                # makes the long-range part more robust.
+                xq = mod.(xq .+ 0.5, 1.0) .- 0.5
 
-            # Reusing phonon states
-            xq_int = round.(Int, xq .* kqpts.ngrid)
-            if ! isapprox(xq, xq_int ./ kqpts.ngrid, atol=10*eps(eltype(xq)))
-                @show xq, kqpts.ngrid, xq_int, xq .- xq_int ./ kqpts.ngrid
-                error("xq is not on the grid")
-            end
+                # Reusing phonon states
+                xq_int = round.(Int, xq .* kqpts.ngrid)
+                if ! isapprox(xq, xq_int ./ kqpts.ngrid, atol=10*eps(eltype(xq)))
+                    @show xq, kqpts.ngrid, xq_int, xq .- xq_int ./ kqpts.ngrid
+                    error("xq is not on the grid")
+                end
 
-            # Find new q points, append to map_xq_int_to_iq and xqs
-            if ! haskey(map_xq_int_to_iq, xq_int.data)
-                iq += 1
-                map_xq_int_to_iq[xq_int.data] = iq
-                push!(xqs, xq)
+                # Find new q points, append to map_xq_int_to_iq and xqs
+                if xq_int.data ∉ keys(map_xq_int_to_iq)
+                    iq += 1
+                    map_xq_int_to_iq[xq_int.data] = iq
+                    push!(map_iq_to_xq_int, xq_int.data)
+                    push!(xqs, xq)
+                end
             end
         end
+        nq = length(xqs)
+        qpts = EPW.Kpoints{T}(nq, xqs, ones(T, nq) ./ prod(kqpts.ngrid), kqpts.ngrid)
+        inds = EPW.sort!(qpts)
+        for iq_new = 1:nq
+            key = map_iq_to_xq_int[inds[iq_new]]
+            map_xq_int_to_iq[key] = iq_new
+        end
+        # map_iq_to_xq_int is not used anymore
+        map_iq_to_xq_int = nothing
     end
-    nq = length(xqs)
-    qpts = EPW.Kpoints{T}(nq, xqs, ones(T, nq) ./ prod(kqpts.ngrid), kqpts.ngrid)
-    inds = EPW.sort!(qpts)
-    for key in keys(map_xq_int_to_iq)
-        map_xq_int_to_iq[key] = findfirst(inds .== map_xq_int_to_iq[key])
+
+    mpi_isroot() && @info "Calculating electron and phonon states"
+    @timing "hdf init" begin
+        epdatas = [ElPhData(Float64, nw, nmodes, nband, nband_ignore) for i=1:Threads.nthreads()]
+
+        # Open HDF5 file for writing BTEdata
+        fid_btedata = h5open(joinpath(folder, "btedata.h5"), "w")
+        # Write some attributes to file
+        g = create_group(fid_btedata, "electron")
+        write_attribute(fid_btedata["electron"], "nk", nk)
+        write_attribute(fid_btedata["electron"], "nbandk_max", nband)
+        fid_btedata["electron/weights"] = kpts.weights
+        write_attribute(fid_btedata["electron"], "nelec_below_window", nelec_below_window)
+
+        # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
+        mpi_isroot() && @info "Calculating electron states at k"
+        g = create_group(fid_btedata, "initialstate_electron")
+        el_k_save, imap_el_k = write_electron_BTStates(g, kpts, model, window, nband, nband_ignore)
+        mpi_isroot() && @info "Calculating electron states at k+q"
+        g = create_group(fid_btedata, "finalstate_electron")
+        el_kq_save, imap_el_kq = write_electron_BTStates(g, kqpts, model, window, nband, nband_ignore)
+
+        # Write phonon states to HDF5 file
+        mpi_isroot() && @info "Calculating phonon states"
+        g = create_group(fid_btedata, "phonon")
+        ph_save, imap_ph = write_phonon_BTStates(g, qpts, model)
     end
-
-    epdatas = [ElPhData(Float64, nw, nmodes, nband, nband_ignore) for i=1:Threads.nthreads()]
-
-    # Open HDF5 file for writing BTEdata
-    fid_btedata = h5open(joinpath(folder, "btedata.h5"), "w")
-    # Write some attributes to file
-    g = create_group(fid_btedata, "electron")
-    write_attribute(fid_btedata["electron"], "nk", nk)
-    write_attribute(fid_btedata["electron"], "nbandk_max", nband)
-    fid_btedata["electron/weights"] = kpts.weights
-    write_attribute(fid_btedata["electron"], "nelec_below_window", nelec_below_window)
-
-    # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
-    g = create_group(fid_btedata, "initialstate_electron")
-    el_k_save, imap_el_k = write_electron_BTStates(g, kpts, model, window, nband, nband_ignore)
-    g = create_group(fid_btedata, "finalstate_electron")
-    el_kq_save, imap_el_kq = write_electron_BTStates(g, kqpts, model, window, nband, nband_ignore)
-
-    # Write phonon states to HDF5 file
-    g = create_group(fid_btedata, "phonon")
-    _, imap_ph = write_phonon_BTStates(g, qpts, model)
-
-    # Preallocate arrays for saving data for creating BTEdata
-
-
-    # Dictionary to save phonon states
-    ph_save = Dict{NTuple{3, Int}, PhononState{Float64}}()
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epobj_ekpR = WannierObject(model.epmat.irvec_next,
                 zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
 
+    # Setup for collecting scattering processes
+    max_nscat = nkq * nmodes * nband^2 * 2
+    bt_ind_el_i = zeros(Int, max_nscat)
+    bt_ind_el_f = zeros(Int, max_nscat)
+    bt_ind_ph = zeros(Int, max_nscat)
+    bt_sign_ph = zeros(Int, max_nscat)
+    bt_mel = zeros(Float64, max_nscat)
+
     mpi_isroot() && @info "Number of k   points = $nk"
     mpi_isroot() && @info "Number of k+q points = $nkq"
     mpi_isroot() && @info "Number of q   points = $nq"
 
-    @timing "main loop" for ik in 1:nk
+    # @timing "main loop"
+    nscat_tot = 0
+    for ik in 1:nk
         if mod(ik, 100) == 0
             mpi_isroot() && @info "ik = $ik"
         end
@@ -185,13 +208,7 @@ function run_transport(
 
         get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, EPW.get_u(el_k), fourier_mode)
 
-        # Setup for collecting scattering processes
         bt_nscat = 0
-        bt_ind_el_i = Vector{Int}()
-        bt_ind_el_f = Vector{Int}()
-        bt_ind_ph = Vector{Int}()
-        bt_sign_ph = Vector{Int}()
-        bt_mel = Vector{Float64}()
 
         # Threads.@threads :static for ikq in 1:nkq
         for ikq in 1:nkq
@@ -230,24 +247,34 @@ function run_transport(
             end
             epdata_set_g2!(epdata)
 
+            el_k = epdata.el_k
+            el_kq = epdata.el_kq
+            ph = epdata.ph
+
             @timing "bt_push" for imode in 1:nmodes
-                for jb in epdata.el_kq.rng
-                    for ib in epdata.el_k.rng
+                for jb in el_kq.rng
+                    for ib in el_k.rng
                         @inbounds for sign_ph in (-1, 1)
-                            # if ik == 1 && ikq <= 10
-                            #     @info (epdata.el_k.e[ib] - epdata.el_kq.e[jb]
-                            #         - sign_ph * epdata.ph.e[imode]) / EPW.unit_to_aru(:meV)
-                            # end
-                            # if (epdata.el_k.e[ib] - epdata.el_kq.e[jb]
-                            #     - sign_ph * epdata.ph.e[imode]) > 50.0 * EPW.unit_to_aru(:meV)
-                            #     continue
-                            # end
+                            # Save only if the scattering satisfies energy conservation
+                            e0 = el_k.e[ib] - el_kq.e[jb] - sign_ph * ph.e[imode]
+                            if energy_conservation_mode == :Fixed
+                                if e0 > energy_conservation_tol
+                                    continue
+                                end
+                            elseif energy_conservation_mode == :Linear
+                                v0_cart = - el_kq.vdiag[jb] - sign_ph * ph.vdiag[imode]
+                                v0 = model.recip_lattice' * v0_cart
+                                de_max = sum(abs.(v0) ./ kqpts.ngrid) / 2
+                                if de_max < abs(e0)
+                                    continue
+                                end
+                            end
                             bt_nscat += 1
-                            push!(bt_ind_el_i, imap_el_k[ib, ik])
-                            push!(bt_ind_el_f, imap_el_kq[jb, ikq])
-                            push!(bt_ind_ph, imap_ph[imode, iq])
-                            push!(bt_sign_ph, sign_ph)
-                            push!(bt_mel, epdata.g2[jb, ib, imode])
+                            bt_ind_el_i[bt_nscat] = imap_el_k[ib, ik]
+                            bt_ind_el_f[bt_nscat] = imap_el_kq[jb, ikq]
+                            bt_ind_ph[bt_nscat] = imap_ph[imode, iq]
+                            bt_sign_ph[bt_nscat] = sign_ph
+                            bt_mel[bt_nscat] = epdata.g2[jb, ib, imode]
                         end
                     end
                 end
@@ -261,7 +288,10 @@ function run_transport(
             g = create_group(fid_btedata, "scattering/ik$ik")
             dump_BTData(g, bt_scattering)
         end
+
+        nscat_tot += bt_nscat
     end # ik
     close(fid_btedata)
+    @info "nscat_tot = $nscat_tot"
     nothing
 end
