@@ -95,20 +95,16 @@ end
 #     end
 # end
 
-" Set epdata.g2[:, :, imode] = |epdata.ep[:, :, imode]|^2 / (2 omega)
-g2 is set to 0.0 if omega < omega_acoustic."
-@timing "setg2" function epdata_set_g2!(epdata)
+" Set epdata.g2[:, :, imode] = |epdata.ep[:, :, imode]|^2 / (2 omega)"
+function epdata_set_g2!(epdata)
     rngk = epdata.el_k.rng
     rngkq = epdata.el_kq.rng
     for imode in 1:epdata.nmodes
-        omega = epdata.ph.e[imode]
-        if (omega < omega_acoustic)
-            epdata.g2[:, :, imode] .= 0
-            continue
-        end
-        inv_2omega = 1 / (2 * omega)
-        @views epdata.g2[rngkq, rngk, imode] .= (
-            abs2.(epdata.ep[rngkq, rngk, imode]) .* inv_2omega)
+        # The lower bound for phonon frequency is not set here. If ω is close to 0, g2 may
+        # be very large. This should be handled when calculating physical quantities.
+        ω = epdata.ph.e[imode]
+        inv_2ω = 1 / (2 * ω)
+        @views epdata.g2[rngkq, rngk, imode] .= (abs2.(epdata.ep[rngkq, rngk, imode]) .* inv_2ω)
     end
 end
 
