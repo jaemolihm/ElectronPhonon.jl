@@ -4,6 +4,7 @@ using Test
 @testset "EPW.jl" begin
     include("test_occupation.jl")
     include("test_kpoints.jl")
+    include("test_symmetry.jl")
     include("test_fourier.jl")
     include("test_diagonalize.jl")
 

@@ -16,6 +16,7 @@ include("common/utils.jl")
 include("common/mpi.jl")
 include("common/split_evenly.jl")
 include("common/kpoints.jl")
+include("common/symmetry.jl")
 include("common/fermi_energy.jl")
 include("common/AllocatedLAPACK.jl")
 
