@@ -3,6 +3,8 @@ using FortranFiles
 
 export load_model
 
+fortran_read_bool(f) = Bool(abs(read(f, Int32))) # In fortran file, 0 is false, -1 or +1 is true
+
 "Tight-binding model for electron, phonon, and electron-phonon coupling.
 All data is in coarse real-space grid."
 Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
@@ -12,6 +14,10 @@ Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
     lattice::Mat3{Float64}
     recip_lattice::Mat3{Float64}
     volume::Float64
+
+    # Symmetries
+    symmetries::Vector{SymOp}
+    time_reversal::Bool
 
     # Atom information
     mass::Array{Float64,1}
@@ -93,7 +99,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     # Structure parameters
     alat = read(f, Float64)
     at_in_alat = read(f, (Float64, 3, 3))
-    natoms = convert(Int, read(f, Int32))
+    natoms = Int(read(f, Int32))
     atom_pos_arr = read(f, (Float64, 3, natoms))
     atom_pos = reinterpret(Vec3{T}, atom_pos_arr)[:]
 
@@ -101,17 +107,23 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     recip_lattice = 2T(π) * inv(lattice')
     volume = abs(det(lattice))
 
+    # Symmetries
+    nsym = Int(read(f, Int32))
+    symmetry_S = Int.(read(f, (Int32, 3, 3, nsym)))
+    symmetry_tau = read(f, (Float64, 3, nsym))
+    time_reversal = fortran_read_bool(f)
+    symmetries = [(Mat3(symmetry_S[:, :, i]), Vec3(symmetry_tau[:, i])) for i in 1:nsym]
+
     # Wannier parameters
-    nw = convert(Int, read(f, Int32))
-    nmodes = convert(Int, read(f, Int32))
+    nw = Int(read(f, Int32))
+    nmodes = Int(read(f, Int32))
     mass = read(f, (Float64, nmodes))
 
     nkc = tuple(convert.(Int, read(f, (Int32, 3)))...)
     nqc = tuple(convert.(Int, read(f, (Int32, 3)))...)
 
     # Polar parameters
-    use_polar_dipole_fortran = read(f, Int32) # 0 is false, +1 or -1 is true
-    use_polar_dipole = convert(Bool, abs(use_polar_dipole_fortran))
+    use_polar_dipole = fortran_read_bool(f)
 
     if use_polar_dipole
         ϵ_arr = read(f, (Float64, 3, 3))
@@ -150,8 +162,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     pos = read(f, (ComplexF64, 3, nw, nw, nrr_k))
 
     # Electron velocity matrix. Optional
-    has_velocity_fortran = read(f, Int32) # 0 is false, +1 or -1 is true
-    has_velocity = convert(Bool, abs(has_velocity_fortran))
+    has_velocity = fortran_read_bool(f)
     if has_velocity
         vel = read(f, (ComplexF64, 3, nw, nw, nrr_k))
     end
@@ -281,6 +292,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
 
     model = ModelEPW(alat=alat, lattice=lattice, recip_lattice=recip_lattice,
         volume=volume, nw=nw, nmodes=nmodes, mass=mass, atom_pos=atom_pos,
+        symmetries=symmetries, time_reversal=time_reversal,
         use_polar_dipole=use_polar_dipole, polar_phonon=polar_phonon, polar_eph=polar_eph,
         el_ham=el_ham, el_ham_R=el_ham_R, el_pos=el_pos, el_vel=el_vel,
         ph_dyn=ph_dyn, ph_dyn_R=ph_dyn_R,
