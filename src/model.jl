@@ -113,13 +113,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     time_reversal = fortran_read_bool(f)
     Ss = [Mat3(symmetry_S[:, :, i]) for i in 1:nsym]
     τs = [Vec3(symmetry_τ[:, i]) for i in 1:nsym]
-    Scarts = [inv(lattice') * S * lattice' for S in Ss]
-    τcarts = [lattice * τ for τ in τs]
-    itrevs = time_reversal ? [1, -1] : [1]
-    for Scart in Scarts
-        @assert Scart' * Scart ≈ I
-    end
-    symmetry = Symmetry(nsym, Ss, τs, Scarts, τcarts, time_reversal, itrevs)
+    symmetry = create_symmetry_object(Ss, τs, time_reversal, lattice)
 
     # Wannier parameters
     nw = Int(read(f, Int32))

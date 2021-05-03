@@ -176,22 +176,47 @@ end
 const SymOp = Tuple{Mat3{Int}, Vec3{Float64}}
 identity_symop() = (Mat3{Int}(I), Vec3(zeros(3)))
 
-"""Symmetry operations. Noncollinear symmetry not implemented."""
+"""Symmetry operations"""
 struct Symmetry
-    "number of symmetry operations"
+    "Number of symmetry operations. Maximum 96 (because of time reversal)."
     nsym::Int
-    "rotation matrix in reciprocal crystal coordinates"
+    "Rotation matrix in reciprocal crystal coordinates"
     S::Vector{Mat3{Int}}
-    "fractional translation in real-space crystal coordinates"
+    "Fractional translation in real-space crystal coordinates"
     τ::Vector{Vec3{Float64}}
-    "rotation matrix in reciprocal Cartesian coordinates"
+    "Rotation matrix in reciprocal Cartesian coordinates"
     Scart::Vector{Mat3{Float64}}
-    "fractional translation in real-space Cartesian coordinates (alat units)"
+    "Fractional translation in real-space Cartesian coordinates (alat units)"
     τcart::Vector{Vec3{Float64}}
-    "time reversal symmetry"
+    "true if the symmetry operation includes inversion (i.e. is an improper rotation)"
+    is_inv::Vector{Bool}
+    "true if the symmetry operation includes time reversal"
+    is_tr::Vector{Bool}
+    "true if the system have time reversal symmetry"
     time_reversal::Bool
-    "list of time-reversal operations. [+1,] or [+1, -1]"
-    itrevs::Vector{Int}
+end
+
+function create_symmetry_object(Ss, τs, time_reversal, lattice)
+    # FIXME: Complicated magnetic symmetry operations not implemented. Only grey groups
+    # (time_reversal = true) or colorless groups (time_reversal = false)
+    nsym = length(Ss)
+    Scarts = [inv(lattice') * S * lattice' for S in Ss]
+    τcarts = [lattice * τ for τ in τs]
+    itrevs = time_reversal ? [1, -1] : [1]
+    is_inv = [det(S) < 0 ? true : false for S in Ss]
+    is_tr = [false for _ in 1:nsym]
+    if time_reversal
+        # Add TR * S for each spatial symmetry S.
+        append!(Ss, Ss)
+        append!(τs, τs)
+        append!(Scarts, Scarts)
+        append!(τcarts, τcarts)
+        append!(itrevs, itrevs)
+        append!(is_inv, is_inv)
+        append!(is_tr, [true for _ in 1:nsym])
+        nsym *= 2
+    end
+    Symmetry(nsym, Ss, τs, Scarts, τcarts, is_inv, is_tr, time_reversal)
 end
 
 """
@@ -202,6 +227,7 @@ String is an indicator for atom types. The Vector part is the list of atom posit
 the crystal coordinates.
 """
 function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1e-5)
+    # FIXME: is noncollinear symmetry implemented?
     Ss = Vector{Mat3{Int}}()
     τs = Vector{Vec3{Float64}}()
     # Get symmetries from spglib
@@ -216,13 +242,8 @@ function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1
         push!(Ss, S)
         push!(τs, τ)
     end
-
-    nsym = length(Ss)
-    Scarts = [inv(lattice') * S * lattice' for S in Ss]
-    τcarts = [lattice * τ for τ in τs]
     time_reversal = magnetic_moments == [] ? true : false
-    itrevs = time_reversal ? [1, -1] : [1]
-    Symmetry(nsym, Ss, τs, Scarts, τcarts, time_reversal, itrevs)
+    create_symmetry_object(Ss, τs, time_reversal, lattice)
 end
 
 # """
@@ -283,14 +304,13 @@ normalize_kpoint_coordinate(k::AbstractVector) = normalize_kpoint_coordinate.(k)
 
 
 @doc raw"""
-     bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry)
+     bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; ignore_time_reversal=false)
 Construct the irreducible wedge of a uniform Gamma-centered Brillouin zone mesh for sampling
 ``k``-Points. The function returns a `Kpoints` object.
+- `ignore_time_reversal`: If true, ignore all symmetries involving time reversal.
 """
-function bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; disable_time_reversal=false)
-    nsym = symmetry.nsym
-    itrevs = disable_time_reversal ? [1] : symmetry.itrevs
-
+function bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; ignore_time_reversal=false)
+    nsym_used = ignore_time_reversal ? sum(.!symmetry.is_tr) : symmetry.nsym
     weight_irr_int = Vector{Int}()
     k_irr = Vector{Vec3{Float64}}()
     found = zeros(Bool, kgrid_size...)
@@ -305,23 +325,24 @@ function bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; disable_time_reversal=f
         # Check if there are equivalent k-point to the remaining k points
         # Also, count the number of symops that map k to itself.
         nsym_star = 0
-        for S in symmetry.S
-            for itrev in itrevs
-                Sk = mod.(itrev * S * k, 1)
-                if Sk > k
-                    i1, i2, i3 = Int.(Sk.data .* kgrid_size) .+ 1
-                    found[i1, i2, i3] = true
-                elseif Sk == k
-                    nsym_star += 1
-                else
-                    # If Sk is not in the later k points and not itself, i) the grid breaks the
-                    # symmetry, or ii) symmetry search has a problem.
-                    error("Problem in symmetry of the irreducible k points")
-                end
+        for (S, is_tr) in zip(symmetry.S, symmetry.is_tr)
+            if ignore_time_reversal && is_tr
+                continue
+            end
+            Sk = is_tr ? mod.(-S * k, 1) : mod.(S * k, 1)
+            if Sk > k
+                i1, i2, i3 = Int.(Sk.data .* kgrid_size) .+ 1
+                found[i1, i2, i3] = true
+            elseif Sk == k
+                nsym_star += 1
+            else
+                # If Sk is not in the later k points and not itself, i) the grid breaks the
+                # symmetry, or ii) symmetry search has a problem.
+                error("Problem in symmetry of the irreducible k points")
             end
         end
         push!(k_irr, k)
-        push!(weight_irr_int, nsym * length(itrevs) / nsym_star)
+        push!(weight_irr_int, nsym_used / nsym_star)
     end
     @assert sum(weight_irr_int) == prod(kgrid_size)
     weight_irr = weight_irr_int / prod(kgrid_size)
