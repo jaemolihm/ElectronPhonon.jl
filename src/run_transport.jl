@@ -44,9 +44,11 @@ function run_transport(
         mpi_comm_k=nothing,
         mpi_comm_q=nothing,
         fourier_mode="gridopt",
-        window=(-Inf,Inf),
+        window_k=(-Inf,Inf),
+        window_kq=(-Inf,Inf),
         folder,
-        energy_conservation=(:None, 0.0)
+        energy_conservation=(:None, 0.0),
+        use_irr_k=true,
     )
     """
     The q point grid must be a multiple of the k point grid. If so, the k+q points lie on
@@ -89,12 +91,17 @@ function run_transport(
     @timing "setup kgrid" begin
         # Generate k points
         mpi_isroot() && @info "Setting k-point grid"
-        kpts, iband_min_k, iband_max_k, nelec_below_window = setup_kgrid(k_input, nw,
-            model.el_ham, window, mpi_comm_k)
+        if use_irr_k
+            kpts, iband_min_k, iband_max_k, nelec_below_window = setup_kgrid(k_input, nw,
+                model.el_ham, window_k, mpi_comm_k, symmetry=model.symmetry)
+        else
+            kpts, iband_min_k, iband_max_k, nelec_below_window = setup_kgrid(k_input, nw,
+                model.el_ham, window_k, mpi_comm_k)
+        end
 
         # Generate k+q points
         mpi_isroot() && @info "Setting k+q-point grid"
-        kqpts, iband_min_kq, iband_max_kq, _ = setup_kgrid(q_input, nw, model.el_ham, window, mpi_comm_k)
+        kqpts, iband_min_kq, iband_max_kq, _ = setup_kgrid(q_input, nw, model.el_ham, window_kq, mpi_comm_k)
     end
 
     iband_min = min(iband_min_k, iband_min_kq)
@@ -166,10 +173,10 @@ function run_transport(
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && @info "Calculating electron states at k"
         g = create_group(fid_btedata, "initialstate_electron")
-        el_k_save, imap_el_k = write_electron_BTStates(g, kpts, model, window, nband, nband_ignore)
+        el_k_save, imap_el_k = write_electron_BTStates(g, kpts, model, window_k, nband, nband_ignore)
         mpi_isroot() && @info "Calculating electron states at k+q"
         g = create_group(fid_btedata, "finalstate_electron")
-        el_kq_save, imap_el_kq = write_electron_BTStates(g, kqpts, model, window, nband, nband_ignore)
+        el_kq_save, imap_el_kq = write_electron_BTStates(g, kqpts, model, window_kq, nband, nband_ignore)
 
         # Write phonon states to HDF5 file
         mpi_isroot() && @info "Calculating phonon states"

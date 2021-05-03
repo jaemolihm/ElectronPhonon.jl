@@ -1,16 +1,16 @@
 
 using EPW.WanToBloch
 
-function setup_kgrid(k_input, nw, el_ham, window, mpi_comm_k)
+function setup_kgrid(k_input, nw, el_ham, window, mpi_comm_k; symmetry=nothing)
     if typeof(k_input) == EPW.Kpoints
         error("k_input as EPW.Kpoints not implemented")
     else
         if mpi_comm_k === nothing
             kpoints, iband_min, iband_max, nelec_below_window = filter_kpoints_grid(
-                k_input..., nw, el_ham, window)
+                k_input..., nw, el_ham, window, symmetry=symmetry)
         else
             kpoints, iband_min, iband_max, nelec_below_window = filter_kpoints_grid(
-                k_input..., nw, el_ham, window, mpi_comm_k)
+                k_input..., nw, el_ham, window, mpi_comm_k, symmetry=symmetry)
         end
     end
     kpoints, iband_min, iband_max, nelec_below_window

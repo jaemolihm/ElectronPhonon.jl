@@ -25,7 +25,7 @@ end
 """
 function filter_kpoints(kpoints::Kpoints, nw, el_ham, window, fourier_mode="normal")
     # If the window is trivial, return the original kpoints
-    if window === (-Inf, Inf)
+    if window == (-Inf, Inf)
         return kpoints, 1, nw
     end
     nelec_below_window = zero(eltype(window))
@@ -59,11 +59,15 @@ Generate k grid of size nk1 * nk2 * nk3 and filter the k points
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window)
-    kpoints = generate_kvec_grid(nk1, nk2, nk3)
+function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window; symmetry=nothing)
+    if symmetry === nothing
+        kpoints = generate_kvec_grid(nk1, nk2, nk3)
+    else
+        kpoints = bzmesh_ir_wedge((nk1, nk2, nk3), symmetry)
+    end
 
     # If the window is trivial, return the whole grid
-    if window === (-Inf, Inf)
+    if window == (-Inf, Inf)
         return kpoints, 1, nw, zero(eltype(window))
     end
 
@@ -99,12 +103,22 @@ Obtained k points are distributed over the MPI communicator mpi_comm.
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Comm)
+function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Comm; symmetry=nothing)
     # Distribute k points
-    kpoints = generate_kvec_grid(nk1, nk2, nk3, mpi_comm)
+    if symmetry === nothing
+        kpoints = generate_kvec_grid(nk1, nk2, nk3, mpi_comm)
+    else
+        # Create the irreducible k points in the root. Then redistribute.
+        if mpi_isroot(mpi_comm)
+            kpoints = bzmesh_ir_wedge((nk1, nk2, nk3), symmetry)
+        else
+            kpoints = Kpoints(0, Vector{Vec3{Float64}}(), Vector{Float64}(), (nk1, nk2, nk3))
+        end
+        kpoints = redistribute_kpoints(kpoints, mpi_comm)
+    end
 
     # If the window is trivial, return the whole grid
-    if window === (-Inf, Inf)
+    if window == (-Inf, Inf)
         return kpoints, 1, nw, zero(eltype(window))
     end
 

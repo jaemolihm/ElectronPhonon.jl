@@ -305,10 +305,10 @@ end
 normalize_kpoint_coordinate(k::AbstractVector) = normalize_kpoint_coordinate.(k)
 
 
-@doc raw"""
-     bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; ignore_time_reversal=false)
-Construct the irreducible wedge of a uniform Gamma-centered Brillouin zone mesh for sampling
-``k``-Points. The function returns a `Kpoints` object.
+"""
+    bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; ignore_time_reversal=false)
+Construct the irreducible wedge of a uniform Brillouin zone mesh for sampling ``k``-Points.
+The mesh includes the Gamma point. Returns a `Kpoints` object.
 - `ignore_time_reversal`: If true, ignore all symmetries involving time reversal.
 """
 function bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; ignore_time_reversal=false)
@@ -409,20 +409,28 @@ function symmetrize(mat::StaticMatrix, symmetry; tr_odd=false, axial=false)
     mat_symm
 end
 
-function symmetrize_array(arr::AbstractArray{T}, symmetry; order, kwargs...) where {T}
+"""
+    symmetrize_array(arr::AbstractArray{T}, symmetry; order, tr_odd=false, axial=false)
+Symmetrize a tensor by applying all the symmetry and forming the average.
+# Inputs
+- `order`: The order of the tensor. The first `order` indices of `arr` are the tensor indices. The remaining indices denote multiple tensors.
+- `tr_odd`: true if the tensor is odd under time reversal.
+- `axial`: true if the tensor is axial (a pseudotensor). Obtains additional -1 sign under inversion.
+"""
+function symmetrize_array(arr::AbstractArray{T}, symmetry; order, tr_odd=false, axial=false) where {T}
     @assert all(size(arr)[1:order] .== 3)
     arr_sym = zero(arr)
     @views if order == 0
         for i in eachindex(arr)
-            arr_sym[i] = symmetrize(arr[i], symmetry; kwargs...)
+            arr_sym[i] = symmetrize(arr[i], symmetry, tr_odd=tr_odd, axial=axial)
         end
     elseif order == 1
         for ind in CartesianIndices(size(arr)[order+1:end])
-        arr_sym[:, ind] .= symmetrize(SVector{3}(arr[:, ind]), symmetry; kwargs...)
+            arr_sym[:, ind] .= symmetrize(SVector{3}(arr[:, ind]), symmetry, tr_odd=tr_odd, axial=axial)
         end
     elseif order == 2
         for ind in CartesianIndices(size(arr)[order+1:end])
-        arr_sym[:, :, ind] .= symmetrize(SMatrix{3, 3}(arr[:, :, ind]), symmetry; kwargs...)
+            arr_sym[:, :, ind] .= symmetrize(SMatrix{3, 3}(arr[:, :, ind]), symmetry, tr_odd=tr_odd, axial=axial)
         end
     else
         error("Order $order not implemented")
