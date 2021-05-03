@@ -8,6 +8,8 @@ using LinearAlgebra
 export Symmetry
 export symmetry_operations
 export bzmesh_ir_wedge
+export symmetrize
+export symmetrize_array
 
 # Routines for interaction with spglib
 # Note: spglib/C uses the row-major convention, thus we need to perform transposes
@@ -348,4 +350,82 @@ function bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; ignore_time_reversal=fa
     weight_irr = weight_irr_int / prod(kgrid_size)
     k_irr, weight_irr
     Kpoints{Float64}(length(k_irr), k_irr, weight_irr, kgrid_size)
+end
+
+
+# Symmetrization of tensors
+
+"""
+    symmetrize(tensor::StaticArray, symmetry::Symmetry; tr_odd=false, axial=false)
+Symmetrize a tensor by applying all the symmetry and forming the average.
+For array of StaticArrays, use `symmetrize.(arr, Ref(symmetry))`.
+- `tr_odd`: true if the tensor is odd under time reversal.
+- `axial`: true if the tensor is axial (a pseudotensor). Obtains additional -1 sign under inversion.
+"""
+symmetrize(arr, symmetry; tr_odd, axial) = error("Symmetrization Not implemented for this data type")
+
+function symmetrize(scalar::Number, symmetry; tr_odd=false, axial=false)
+    scalar_symm = scalar
+    if tr_odd && any(symmetry.is_tr)
+        scalar_symm = zero(scalar)
+    end
+    if axial && any(symmetry.is_inv)
+        scalar_symm = zero(scalar)
+    end
+    scalar_symm
+end
+
+function symmetrize(vec::StaticVector, symmetry; tr_odd=false, axial=false)
+    @assert size(vec) == (3,)
+    vec_symm = zero(vec)
+    for (S, is_inv, is_tr) in zip(symmetry.Scart, symmetry.is_inv, symmetry.is_tr)
+        sign_coeff = 1
+        if axial && is_inv
+            sign_coeff *= -1
+        end
+        if tr_odd && is_tr
+            sign_coeff *= -1
+        end
+        vec_symm = vec_symm + sign_coeff * S * vec
+    end
+    vec_symm = vec_symm / symmetry.nsym
+    vec_symm
+end
+
+function symmetrize(mat::StaticMatrix, symmetry; tr_odd=false, axial=false)
+    @assert size(mat) == (3, 3)
+    mat_symm = zero(mat)
+    for (S, is_inv, is_tr) in zip(symmetry.Scart, symmetry.is_inv, symmetry.is_tr)
+        sign_coeff = 1
+        if axial && is_inv
+            sign_coeff *= -1
+        end
+        if tr_odd && is_tr
+            sign_coeff *= -1
+        end
+        mat_symm = mat_symm + sign_coeff * S' * mat * S
+    end
+    mat_symm = mat_symm / symmetry.nsym
+    mat_symm
+end
+
+function symmetrize_array(arr::AbstractArray{T}, symmetry; order, kwargs...) where {T}
+    @assert all(size(arr)[1:order] .== 3)
+    arr_sym = zero(arr)
+    @views if order == 0
+        for i in eachindex(arr)
+            arr_sym[i] = symmetrize(arr[i], symmetry; kwargs...)
+        end
+    elseif order == 1
+        for ind in CartesianIndices(size(arr)[order+1:end])
+        arr_sym[:, ind] .= symmetrize(SVector{3}(arr[:, ind]), symmetry; kwargs...)
+        end
+    elseif order == 2
+        for ind in CartesianIndices(size(arr)[order+1:end])
+        arr_sym[:, :, ind] .= symmetrize(SMatrix{3, 3}(arr[:, :, ind]), symmetry; kwargs...)
+        end
+    else
+        error("Order $order not implemented")
+    end
+    arr_sym
 end
