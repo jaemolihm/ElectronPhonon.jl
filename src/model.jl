@@ -16,8 +16,7 @@ Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
     volume::Float64
 
     # Symmetries
-    symmetries::Vector{SymOp}
-    time_reversal::Bool
+    symmetry::Symmetry
 
     # Atom information
     mass::Array{Float64,1}
@@ -110,9 +109,17 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     # Symmetries
     nsym = Int(read(f, Int32))
     symmetry_S = Int.(read(f, (Int32, 3, 3, nsym)))
-    symmetry_tau = read(f, (Float64, 3, nsym))
+    symmetry_τ = read(f, (Float64, 3, nsym))
     time_reversal = fortran_read_bool(f)
-    symmetries = [(Mat3(symmetry_S[:, :, i]), Vec3(symmetry_tau[:, i])) for i in 1:nsym]
+    Ss = [Mat3(symmetry_S[:, :, i]) for i in 1:nsym]
+    τs = [Vec3(symmetry_τ[:, i]) for i in 1:nsym]
+    Scarts = [inv(lattice') * S * lattice' for S in Ss]
+    τcarts = [lattice * τ for τ in τs]
+    itrevs = time_reversal ? [1, -1] : [1]
+    for Scart in Scarts
+        @assert Scart' * Scart ≈ I
+    end
+    symmetry = Symmetry(nsym, Ss, τs, Scarts, τcarts, time_reversal, itrevs)
 
     # Wannier parameters
     nw = Int(read(f, Int32))
@@ -292,7 +299,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
 
     model = ModelEPW(alat=alat, lattice=lattice, recip_lattice=recip_lattice,
         volume=volume, nw=nw, nmodes=nmodes, mass=mass, atom_pos=atom_pos,
-        symmetries=symmetries, time_reversal=time_reversal,
+        symmetry=symmetry,
         use_polar_dipole=use_polar_dipole, polar_phonon=polar_phonon, polar_eph=polar_eph,
         el_ham=el_ham, el_ham_R=el_ham_R, el_pos=el_pos, el_vel=el_vel,
         ph_dyn=ph_dyn, ph_dyn_R=ph_dyn_R,

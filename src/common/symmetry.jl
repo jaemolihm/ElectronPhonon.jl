@@ -5,6 +5,7 @@ using spglib_jll
 using StaticArrays
 using LinearAlgebra
 
+export Symmetry
 export symmetry_operations
 export bzmesh_ir_wedge
 
@@ -172,6 +173,26 @@ function spglib_get_stabilized_reciprocal_mesh(kgrid_size, rotations::Vector;
     return n_kpts, Int.(mapping), [Vec3{Int}(grid_address[:, i]) for i in 1:nkpt]
 end
 
+const SymOp = Tuple{Mat3{Int}, Vec3{Float64}}
+identity_symop() = (Mat3{Int}(I), Vec3(zeros(3)))
+
+"""Symmetry operations. Noncollinear symmetry not implemented."""
+struct Symmetry
+    "number of symmetry operations"
+    nsym::Int
+    "rotation matrix in reciprocal crystal coordinates"
+    S::Vector{Mat3{Int}}
+    "fractional translation in real-space crystal coordinates"
+    τ::Vector{Vec3{Float64}}
+    "rotation matrix in reciprocal Cartesian coordinates"
+    Scart::Vector{Mat3{Float64}}
+    "fractional translation in real-space Cartesian coordinates (alat units)"
+    τcart::Vector{Vec3{Float64}}
+    "time reversal symmetry"
+    time_reversal::Bool
+    "list of time-reversal operations. [+1,] or [+1, -1]"
+    itrevs::Vector{Int}
+end
 
 """
     symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1e-5)
@@ -181,7 +202,8 @@ String is an indicator for atom types. The Vector part is the list of atom posit
 the crystal coordinates.
 """
 function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1e-5)
-    symmetries = Vector{SymOp}()
+    Ss = Vector{Mat3{Int}}()
+    τs = Vector{Vec3{Float64}}()
     # Get symmetries from spglib
     Stildes, τtildes = spglib_get_symmetry(lattice, atoms, magnetic_moments;
                                            tol_symmetry=tol_symmetry)
@@ -191,59 +213,65 @@ function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1
         τ = -Stildes[isym] \ τtildes[isym]  # in fractional real-space coordinates
         τ = τ .- floor.(τ)
         @assert all(0 .≤ τ .< 1)
-        push!(symmetries, (S, τ))
+        push!(Ss, S)
+        push!(τs, τ)
     end
 
-    unique(symmetries)
+    nsym = length(Ss)
+    Scarts = [inv(lattice') * S * lattice' for S in Ss]
+    τcarts = [lattice * τ for τ in τs]
+    time_reversal = magnetic_moments == [] ? true : false
+    itrevs = time_reversal ? [1, -1] : [1]
+    Symmetry(nsym, Ss, τs, Scarts, τcarts, time_reversal, itrevs)
 end
 
-"""
-Implements a primitive search to find an irreducible subset of kpoints
-amongst the provided kpoints.
-"""
-function find_irreducible_kpoints(kcoords, Stildes, τtildes)
+# """
+# Implements a primitive search to find an irreducible subset of kpoints
+# amongst the provided kpoints.
+# """
+# function find_irreducible_kpoints(kcoords, Stildes, τtildes)
 
-    # This function is required because spglib sometimes flags kpoints
-    # as reducible, where we cannot find a symmetry operation to
-    # generate them from the provided irreducible kpoints. This
-    # reimplements that part of spglib, with a possibly very slow
-    # algorithm.
+#     # This function is required because spglib sometimes flags kpoints
+#     # as reducible, where we cannot find a symmetry operation to
+#     # generate them from the provided irreducible kpoints. This
+#     # reimplements that part of spglib, with a possibly very slow
+#     # algorithm.
 
-    # Flag which kpoints have already been mapped to another irred.
-    # kpoint or which have been decided to be irreducible.
-    kcoords_mapped = zeros(Bool, length(kcoords))
-    kirreds = empty(kcoords)           # Container for irreducible kpoints
-    ksymops = Vector{Vector{SymOp}}()  # Corresponding symops
+#     # Flag which kpoints have already been mapped to another irred.
+#     # kpoint or which have been decided to be irreducible.
+#     kcoords_mapped = zeros(Bool, length(kcoords))
+#     kirreds = empty(kcoords)           # Container for irreducible kpoints
+#     ksymops = Vector{Vector{SymOp}}()  # Corresponding symops
 
-    while !all(kcoords_mapped)
-        # Select next not mapped kpoint as irreducible
-        ik = findfirst(isequal(false), kcoords_mapped)
-        push!(kirreds, kcoords[ik])
-        thisk_symops = [identity_symop()]
-        kcoords_mapped[ik] = true
+#     while !all(kcoords_mapped)
+#         # Select next not mapped kpoint as irreducible
+#         ik = findfirst(isequal(false), kcoords_mapped)
+#         push!(kirreds, kcoords[ik])
+#         thisk_symops = [identity_symop()]
+#         kcoords_mapped[ik] = true
 
-        for jk in findall(.!kcoords_mapped)
-            isym = findfirst(1:length(Stildes)) do isym
-                # If the difference between kred and Stilde' * k == Stilde^{-1} * k
-                # is only integer in fractional reciprocal-space coordinates, then
-                # kred and S' * k are equivalent k-Points
-                all(isinteger, kcoords[jk] - (Stildes[isym]' * kcoords[ik]))
-            end
+#         for jk in findall(.!kcoords_mapped)
+#             isym = findfirst(1:length(Stildes)) do isym
+#                 # If the difference between kred and Stilde' * k == Stilde^{-1} * k
+#                 # is only integer in fractional reciprocal-space coordinates, then
+#                 # kred and S' * k are equivalent k-Points
+#                 all(isinteger, kcoords[jk] - (Stildes[isym]' * kcoords[ik]))
+#             end
 
-            if !isnothing(isym)  # Found a reducible kpoint
-                kcoords_mapped[jk] = true
-                S = Stildes[isym]'                  # in fractional reciprocal coordinates
-                τ = -Stildes[isym] \ τtildes[isym]  # in fractional real-space coordinates
-                τ = τ .- floor.(τ)
-                @assert all(0 .≤ τ .< 1)
-                push!(thisk_symops, (S, τ))
-            end
-        end  # jk
+#             if !isnothing(isym)  # Found a reducible kpoint
+#                 kcoords_mapped[jk] = true
+#                 S = Stildes[isym]'                  # in fractional reciprocal coordinates
+#                 τ = -Stildes[isym] \ τtildes[isym]  # in fractional real-space coordinates
+#                 τ = τ .- floor.(τ)
+#                 @assert all(0 .≤ τ .< 1)
+#                 push!(thisk_symops, (S, τ))
+#             end
+#         end  # jk
 
-        push!(ksymops, thisk_symops)
-    end
-    kirreds, ksymops
-end
+#         push!(ksymops, thisk_symops)
+#     end
+#     kirreds, ksymops
+# end
 
 """Bring kpoint coordinates into the range [0.0, 1.0)"""
 function normalize_kpoint_coordinate(x::Real)
@@ -255,14 +283,13 @@ normalize_kpoint_coordinate(k::AbstractVector) = normalize_kpoint_coordinate.(k)
 
 
 @doc raw"""
-     bzmesh_ir_wedge(kgrid_size, symmetries; tol_symmetry=1e-6)
+     bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry)
 Construct the irreducible wedge of a uniform Gamma-centered Brillouin zone mesh for sampling
 ``k``-Points. The function returns a `Kpoints` object.
 """
-function bzmesh_ir_wedge(kgrid_size, symmetries; time_reversal=false, tol_symmetry=1e-6)
-    itrevs = time_reversal ? (1, -1) : (1,)
-    ntrev = length(itrevs)
-    nsym = length(symmetries)
+function bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; disable_time_reversal=false)
+    nsym = symmetry.nsym
+    itrevs = disable_time_reversal ? [1] : symmetry.itrevs
 
     weight_irr_int = Vector{Int}()
     k_irr = Vector{Vec3{Float64}}()
@@ -278,9 +305,9 @@ function bzmesh_ir_wedge(kgrid_size, symmetries; time_reversal=false, tol_symmet
         # Check if there are equivalent k-point to the remaining k points
         # Also, count the number of symops that map k to itself.
         nsym_star = 0
-        for symop in symmetries
+        for S in symmetry.S
             for itrev in itrevs
-                Sk = mod.(itrev * symop[1] * k, 1)
+                Sk = mod.(itrev * S * k, 1)
                 if Sk > k
                     i1, i2, i3 = Int.(Sk.data .* kgrid_size) .+ 1
                     found[i1, i2, i3] = true
@@ -294,7 +321,7 @@ function bzmesh_ir_wedge(kgrid_size, symmetries; time_reversal=false, tol_symmet
             end
         end
         push!(k_irr, k)
-        push!(weight_irr_int, nsym * ntrev / nsym_star)
+        push!(weight_irr_int, nsym * length(itrevs) / nsym_star)
     end
     @assert sum(weight_irr_int) == prod(kgrid_size)
     weight_irr = weight_irr_int / prod(kgrid_size)
