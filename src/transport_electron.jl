@@ -136,7 +136,8 @@ function transport_print_mobility(σlist, transport_params, volume)
     carrier_density_SI = transport_params.n / volume * unit_to_aru(:cm)^3
     charge_density_SI = carrier_density_SI * units.e_SI
 
-    σ_Si = σlist .* (units.e_SI^2 / volume * unit_to_aru(:ħ) * unit_to_aru(:cm))
+    σ_SI = σlist .* (units.e_SI^2 / volume * unit_to_aru(:ħ) * unit_to_aru(:cm))
+    mobility_SI = σ_SI ./ charge_density_SI
 
     println("======= Electron mobility =======")
     println("Carrier density (cm^-3) =  $carrier_density_SI")
@@ -145,8 +146,9 @@ function transport_print_mobility(σlist, transport_params, volume)
         @printf "μ (eV) = %.4f\n" transport_params.μlist[iT] / unit_to_aru(:eV)
         println("mobility (cm^2/Vs) = ")
         for i in 1:3
-            @printf "%10.3f %10.3f %10.3f\n" (σ_Si[:, i, iT] ./ charge_density_SI)...
+            @printf "%10.3f %10.3f %10.3f\n" mobility_SI[:, i, iT]...
         end
         println()
     end
+    mobility_SI
 end

@@ -7,7 +7,6 @@ export compute_lifetime_serta!
 
 # TODO: Merge with transport_electron.jl (or deprecate the latter)
 
-
 function bte_compute_μ!(params::TransportParams{R}, el::BTStates{R}, volume) where {R <: Real}
     ncarrier_target = params.n / params.spin_degeneracy
 
@@ -21,9 +20,14 @@ function bte_compute_μ!(params::TransportParams{R}, el::BTStates{R}, volume) wh
     nothing
 end
 
-function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params::TransportParams{R}, recip_lattice, ngrid) where {R}
+function compute_lifetime_serta!(inv_τ, btmodel, params::TransportParams{R}, recip_lattice, ngrid) where {R}
     # TODO: Clean input params recip_lattice and ngrid
+    # TODO: add smearing_mode field in params. (:Gaussian, :Lorentzian, :Tetrahedron)
     inv_η = 1 / params.smearing
+    el_i = btmodel.el_i
+    el_f = btmodel.el_f
+    ph = btmodel.ph
+    scat = btmodel.scattering
 
     for iscat in 1:scat.n
         ind_el_i = scat.ind_el_i[iscat]
@@ -46,8 +50,8 @@ function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params::Transport
         # For electron final state occupation, use e_k - sign_ph * ω_ph instead of e_kq,
         # using energy conservation. The former is better because the phonon velocity is
         # much smaller than the electron velocity, so that it changes less w.r.t q.
-        e_f_occupation = e_i - sign_ph * ω_ph
-        # e_f_occupation = e_f
+        # e_f_occupation = e_i - sign_ph * ω_ph
+        e_f_occupation = e_f
 
         if params.smearing > 0
             # Gaussian smearing
@@ -76,26 +80,48 @@ function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params::Transport
 end
 
 
-function compute_mobility_serta!(params::TransportParams{R}, inv_τ, el::BTStates{R}) where {R}
+function compute_mobility_serta!(params::TransportParams{R}, inv_τ, el::BTStates{R},
+        ngrid, recip_lattice) where {R}
     @assert el.n == size(inv_τ, 1)
 
     σlist = zeros(eltype(inv_τ), 3, 3, length(params.Tlist))
+
+    emax = maximum(el.e)
+    emin = minimum(el.e)
 
     for iT in 1:length(params.Tlist)
         T = params.Tlist[iT]
         μ = params.μlist[iT]
 
+        # Maximum occupation for given energies
+        if emax < μ
+            dfocc_max = -EPW.occ_fermion_derivative(emax - μ, T)
+        elseif emin > μ
+            dfocc_max = -EPW.occ_fermion_derivative(emin - μ, T)
+        else
+            # energy range include enk - μ = 0.
+            dfocc_max = -EPW.occ_fermion_derivative(zero(T), T)
+        end
+        @info dfocc_max
+
+        cnt = 0
         for i = 1:el.n
             enk = el.e[i]
             vnk = el.vdiag[i]
 
-            dfocc = -EPW.occ_fermion_derivative(enk - μ, T)
+            dfocc = -occ_fermion_derivative(enk - μ, T)
+            # if dfocc > dfocc_max / 1E4
+            #     # Near the Fermi level. Use subsampling.
+            #     dfocc = -occ_fermion_derivative_smear(enk, vnk, μ, T, ngrid, recip_lattice, (8, 8, 8))
+            #     cnt += 1
+            # end
             τ = 1 / inv_τ[i, iT]
 
-            for j=1:3, i=1:3
-                σlist[i, j, iT] += el.k_weight[i] * dfocc * τ * vnk[i] * vnk[j]
+            for b=1:3, a=1:3
+                σlist[a, b, iT] += el.k_weight[i] * dfocc * τ * vnk[a] * vnk[b]
             end
         end # i
+        @info "cnt = $cnt"
     end # temperatures
     σlist .*= params.spin_degeneracy
     σlist

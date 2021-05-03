@@ -186,25 +186,26 @@ function run_transport(
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epobj_ekpR = WannierObject(model.epmat.irvec_next,
-                zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
 
     # Setup for collecting scattering processes
-    max_nscat = nkq * nmodes * nband^2 * 2
-    bt_ind_el_i = zeros(Int, max_nscat)
-    bt_ind_el_f = zeros(Int, max_nscat)
-    bt_ind_ph = zeros(Int, max_nscat)
-    bt_sign_ph = zeros(Int, max_nscat)
-    bt_mel = zeros(Float64, max_nscat)
+    @timing "bt init" begin
+        max_nscat = nkq * nmodes * nband^2 * 2
+        bt_scat = ElPhScatteringData{Float64}(max_nscat)
+    end
 
     mpi_isroot() && @info "Number of k   points = $nk"
     mpi_isroot() && @info "Number of k+q points = $nkq"
     mpi_isroot() && @info "Number of q   points = $nq"
+    flush(stdout)
+    flush(stderr)
 
-    # @timing "main loop"
     nscat_tot = 0
     for ik in 1:nk
         if mod(ik, 100) == 0
             mpi_isroot() && @info "ik = $ik"
+            flush(stdout)
+            flush(stderr)
         end
         xk = kpts.vectors[ik]
         el_k = el_k_save[ik]
@@ -246,17 +247,42 @@ function run_transport(
             # Use saved data for electron state at k+q.
             copyto!(epdata.el_kq, el_kq_save[ikq])
 
+            el_k = epdata.el_k
+            el_kq = epdata.el_kq
+            ph = epdata.ph
+
+            # Check if energy-conserving scattering exists. If not, skip the remaining parts.
+            @timing "econv" if energy_conservation_mode != :None
+                skip = true
+                @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
+                    e0 = el_k.e[ib] - el_kq.e[jb] - sign_ph * ph.e[imode]
+                    if energy_conservation_mode == :Fixed
+                        if e0 <= energy_conservation_tol
+                            skip = false
+                            break
+                        end
+                    elseif energy_conservation_mode == :Linear
+                        v0_cart = - el_kq.vdiag[jb] - sign_ph * ph.vdiag[imode]
+                        v0 = model.recip_lattice' * v0_cart
+                        de_max = sum(abs.(v0) ./ kqpts.ngrid) / 2
+                        if abs(e0) <= de_max
+                            skip = false
+                            break
+                        end
+                    end
+                end
+                if skip
+                    continue
+                end
+            end
+
             # Compute electron-phonon coupling
             get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
             if any(xq .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
-                eph_dipole!(epdata.ep, xq, model.polar_eph, ph.u, epdata.mmat, 1)
+                eph_dipole!(epdata.ep, xq, model.polar_eph, epdata.ph.u, epdata.mmat, 1)
             end
             epdata_set_g2!(epdata)
-
-            el_k = epdata.el_k
-            el_kq = epdata.el_kq
-            ph = epdata.ph
 
             @timing "bt_push" for imode in 1:nmodes
                 for jb in el_kq.rng
@@ -272,16 +298,16 @@ function run_transport(
                                 v0_cart = - el_kq.vdiag[jb] - sign_ph * ph.vdiag[imode]
                                 v0 = model.recip_lattice' * v0_cart
                                 de_max = sum(abs.(v0) ./ kqpts.ngrid) / 2
-                                if de_max < abs(e0)
+                                if abs(e0) > de_max
                                     continue
                                 end
                             end
                             bt_nscat += 1
-                            bt_ind_el_i[bt_nscat] = imap_el_k[ib, ik]
-                            bt_ind_el_f[bt_nscat] = imap_el_kq[jb, ikq]
-                            bt_ind_ph[bt_nscat] = imap_ph[imode, iq]
-                            bt_sign_ph[bt_nscat] = sign_ph
-                            bt_mel[bt_nscat] = epdata.g2[jb, ib, imode]
+                            bt_scat.ind_el_i[bt_nscat] = imap_el_k[ib, ik]
+                            bt_scat.ind_el_f[bt_nscat] = imap_el_kq[jb, ikq]
+                            bt_scat.ind_ph[bt_nscat] = imap_ph[imode, iq]
+                            bt_scat.sign_ph[bt_nscat] = sign_ph
+                            bt_scat.mel[bt_nscat] = epdata.g2[jb, ib, imode]
                         end
                     end
                 end
@@ -289,11 +315,8 @@ function run_transport(
         end # ikq
 
         @timing "bt_dump" begin
-            @views bt_scattering = ElPhScatteringData{Float64}(bt_nscat, bt_ind_el_i[1:bt_nscat],
-                bt_ind_el_f[1:bt_nscat], bt_ind_ph[1:bt_nscat], bt_sign_ph[1:bt_nscat],
-                bt_mel[1:bt_nscat])
             g = create_group(fid_btedata, "scattering/ik$ik")
-            dump_BTData(g, bt_scattering)
+            dump_BTData(g, bt_scat, bt_nscat)
         end
 
         nscat_tot += bt_nscat
