@@ -13,9 +13,13 @@ Transform `x` into a type that can be written to a HDF5 file. Default case.
 """
 _data_julia_to_hdf5(x) = x
 
+"""    _data_julia_to_hdf5(x::Tuple)
+Transform a tuple to an array."""
+_data_julia_to_hdf5(x::Tuple) = collect(x)
+
 """
     _data_julia_to_hdf5(x::T) where {T <: SArray}
-Transform Transform a staticarray to an array."""
+Transform a staticarray to an array."""
 function _data_julia_to_hdf5(x::T) where {T <: SArray}
     collect(reshape(reinterpret(eltype(T), x), size(T)...))
 end
@@ -36,17 +40,17 @@ The only nontrivial part is transforming an array to a StaticArray or an array o
 function _data_hdf5_to_julia(x, OutType::Type)
     if x isa OutType
         return x
-    end
-    # Transform an array to a staticarray
-    if OutType <: SArray
+    elseif OutType <: Tuple
+        return OutType(x)
+    elseif OutType <: SArray
+        # Transform an array to a staticarray
         sarray_size = size(OutType)
         if size(x) != sarray_size
             error("Size of x $(size(x)) not consistent with OutType $OutType")
         end
         return OutType(x)
-    end
-    # Transform a high-dimensional array to an array of staticarrays
-    if OutType <: AbstractArray && eltype(OutType) <: SArray
+    elseif OutType <: AbstractArray && eltype(OutType) <: SArray
+        # Transform a high-dimensional array to an array of staticarrays
         sarray_size = size(eltype(OutType))
         if size(x)[1:length(sarray_size)] != sarray_size
             error("Size of x $(size(x)) not consistent with OutType $OutType")

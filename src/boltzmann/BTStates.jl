@@ -11,6 +11,7 @@ struct BTStates{T <: Real} <: AbstractBTData{T}
     k_weight::Vector{T} # Brillouin zone weights
     xks::Vector{Vec3{T}} # crystal momentum of the states
     iband::Vector{Int} # Band index of the states
+    ngrid::NTuple{3, Int} # Grid size
 end
 
 
@@ -26,6 +27,7 @@ Transform Vector of ElectronState to a BTState.
         kpts::EPW.Kpoints{T}) where {T <: Real}
     nk = length(el_states)
     n = sum([el.nband for el in el_states])
+    ngrid = kpts.ngrid
     max_nband = maximum([el.nband for el in el_states])
     imap = zeros(Int, max_nband, nk)
 
@@ -55,7 +57,7 @@ Transform Vector of ElectronState to a BTState.
         end
     end
     nband = iband_max - iband_min + 1
-    BTStates{T}(n, nk, nband, e, vdiag, k_weight, xks, iband), imap
+    BTStates{T}(n, nk, nband, e, vdiag, k_weight, xks, iband, ngrid), imap
 end
 
 
@@ -71,6 +73,7 @@ Transform Vector of PhononState to a BTState.
         kpts::EPW.Kpoints{T}) where {T <: Real}
     nk = length(ph_states)
     nmodes = ph_states[1].nmodes
+    ngrid = kpts.ngrid
     imap = zeros(Int, nmodes, nk)
 
     nband = nmodes
@@ -93,7 +96,7 @@ Transform Vector of PhononState to a BTState.
             imap[imode, ik] = istate
         end
     end
-    BTStates{T}(n, nk, nband, e, vdiag, k_weight, xks, iband), imap
+    BTStates{T}(n, nk, nband, e, vdiag, k_weight, xks, iband, ngrid), imap
 end
 
 # TODO: Make ElectronState and PhononState similar so only one function is needed.
