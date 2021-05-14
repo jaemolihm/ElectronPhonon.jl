@@ -253,12 +253,12 @@ function run_transport(
 
             # Check if energy-conserving scattering exists. If not, skip the remaining parts.
             @timing "econv" if energy_conservation_mode != :None
-                skip = true
+                skip_q = true
                 @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
                     e0 = el_k.e[ib] - el_kq.e[jb] - sign_ph * ph.e[imode]
                     if energy_conservation_mode == :Fixed
                         if e0 <= energy_conservation_tol
-                            skip = false
+                            skip_q = false
                             break
                         end
                     elseif energy_conservation_mode == :Linear
@@ -266,12 +266,12 @@ function run_transport(
                         v0 = model.recip_lattice' * v0_cart
                         de_max = sum(abs.(v0) ./ kqpts.ngrid) / 2
                         if abs(e0) <= de_max
-                            skip = false
+                            skip_q = false
                             break
                         end
                     end
                 end
-                if skip
+                if skip_q
                     continue
                 end
             end

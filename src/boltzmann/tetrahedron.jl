@@ -13,6 +13,7 @@ const KLIST = [SVector{3,Int}(-1, -1, -1),
 
 export delta_tetrahedron
 export delta_parallelepiped
+export delta_tetrahedron_weights
 
 @inline function delta_tetrahedron(etarget, e1234)
     """
@@ -33,8 +34,10 @@ export delta_parallelepiped
         c1 = 3 / ((e2 - e1) * (e3 - e1) * (e4 - e1))
         return (etarget - e1)^2 * c1
     elseif e2 < etarget <= e3
-        c2 = 3 / ((e4 - e1) * (e3 - e1))
-        c3 = 3 * (e4 + e3 - e2 - e1) / ((e4 - e1) * (e3 - e1) * (e4 - e2) * (e3 -e2))
+        e31 = e3 - e1
+        e41 = e4 - e1
+        c2 = 3 / (e41 * e31)
+        c3 = 3 * (e4 + e3 - e2 - e1) / (e41 * e31 * (e4 - e2) * (e3 -e2))
         return (2*etarget - e1 - e2) * c2 - (etarget - e2)^2 * c3
     elseif e3 < etarget <= e4
         c4 = 3 / ((e4 - e1) * (e4 - e2) * (e4 - e3))
@@ -57,14 +60,15 @@ end
         return zero(T), 0
     end
     L_div_2 = L ./ 2
-    e1 = e0 + (-v0[1] * L_div_2[1] - v0[2] * L_div_2[2] - v0[3] * L_div_2[3])
-    e2 = e0 + (+v0[1] * L_div_2[1] - v0[2] * L_div_2[2] - v0[3] * L_div_2[3])
-    e3 = e0 + (-v0[1] * L_div_2[1] + v0[2] * L_div_2[2] - v0[3] * L_div_2[3])
-    e4 = e0 + (+v0[1] * L_div_2[1] + v0[2] * L_div_2[2] - v0[3] * L_div_2[3])
-    e5 = e0 + (-v0[1] * L_div_2[1] - v0[2] * L_div_2[2] + v0[3] * L_div_2[3])
-    e6 = e0 + (+v0[1] * L_div_2[1] - v0[2] * L_div_2[2] + v0[3] * L_div_2[3])
-    e7 = e0 + (-v0[1] * L_div_2[1] + v0[2] * L_div_2[2] + v0[3] * L_div_2[3])
-    e8 = e0 + (+v0[1] * L_div_2[1] + v0[2] * L_div_2[2] + v0[3] * L_div_2[3])
+    v0_L = v0 .* L_div_2
+    e1 = e0 - v0_L[1] - v0_L[2] - v0_L[3]
+    e2 = e0 + v0_L[1] - v0_L[2] - v0_L[3]
+    e3 = e0 - v0_L[1] + v0_L[2] - v0_L[3]
+    e4 = e0 + v0_L[1] + v0_L[2] - v0_L[3]
+    e5 = e0 - v0_L[1] - v0_L[2] + v0_L[3]
+    e6 = e0 + v0_L[1] - v0_L[2] + v0_L[3]
+    e7 = e0 - v0_L[1] + v0_L[2] + v0_L[3]
+    e8 = e0 + v0_L[1] + v0_L[2] + v0_L[3]
     val = zero(T)
     val += delta_tetrahedron(etarget, SVector{4,T}(e1, e2, e4, e5))
     val += delta_tetrahedron(etarget, SVector{4,T}(e1, e3, e4, e5))
@@ -163,3 +167,74 @@ lengths. Sample around `nsample_1d` points along each dimension, and at most
 
     return val / 6, nsamples
 end
+
+
+function delta_tetrahedron_weights(etarget, e1234)
+    """
+    Calcultate weights for evaluating I = int_{tetrahedron} d^3k f(k) delta(etarget - e(k)) / vol
+    where e(k) is a linear function, e1, ..., e4 are the values of e(k) at
+    the four vertices of the tetrahedron, and vol is the volume of the tetrahedron.
+    With the output `w1234`, `I = sum_{i=1}^{4} f(k_i) w_i` holds.
+
+    Ref: Appendix B of Blöchl et al, PRB 16 232 (1994). Since the reference is for step functions,
+    we take the derivative with respect to e_F in all equations in the reference.
+
+    # Input
+    - etarget: energy where the delta function becomes nonzero
+    - e1234: Array containing energy at the four vertices of the tetrahedron
+    # Output
+    - w1234: Array containing weights at the four vertices
+    """
+    inds = sortperm(e1234)
+    e1, e2, e3, e4 = e1234[inds]
+    if e1 < etarget <= e2
+        c11 = (etarget - e1)^2 / ((e2 - e1) * (e3 - e1) * (e4 - e1))
+        c12 = (etarget - e1) * c11
+        w2 = c12 / (e2 - e1)
+        w3 = c12 / (e3 - e1)
+        w4 = c12 / (e4 - e1)
+        w1 = 3 * c11 - (w2 + w3 + w4)
+    elseif e2 < etarget <= e3
+        # local variables
+        # eei = etarget - ei
+        ee1 = etarget - e1
+        ee2 = etarget - e2
+        ee3 = etarget - e3
+        ee4 = etarget - e4
+        # eij = ei - ej
+        e41 = e4 - e1
+        e31 = e3 - e1
+        e42 = e4 - e2
+        e32 = e3 - e2
+        # equation (B11)
+        c1  = ee1^2 / (4 * e41 * e31)
+        dc1 = ee1 / (2 * e41 * e31)
+        # equation (B12)
+        c2  = - ee1 * ee2 * ee3 / (4 * e41 * e32 * e31 )
+        dc2 = ( - ee2 * ee3 - ee1 * ee3 - ee1 * ee2 ) / (4 * e41 * e32 * e31)
+        # equation (B13)
+        c3  = - ee2^2 * ee4 / (4 * e42 * e32 * e41)
+        dc3 = - (2 * ee2 * ee4 + ee2^2) / (4 * e42 * e32 * e41)
+
+        # weights: derivatives of equations (B7-B10)
+        w1 = dc1 - ((dc1 + dc2) * ee3 + c1 + c2) / e31 - ((dc1 + dc2 + dc3) * ee4 + c1 + c2 + c3) / e41
+        w2 = dc1 + dc2 + dc3 - ((dc2 + dc3) * ee3 + c2 + c3) / e32 - (dc3 * ee4 + c3) / e42
+        w3 = ((dc1 + dc2 ) * ee1 + c1 + c2) / e31 + ((dc2 + dc3) * ee2 + c2 + c3) / e32
+        w4 = ((dc1 + dc2 + dc3) * ee1 + c1 + c2 + c3) / e41 + (dc3 * ee2 + c3) / e42
+    elseif e3 < etarget <= e4
+        c31 = (e4 - etarget)^2 / ((e4 - e1) * (e4 - e2) * (e4 - e3))
+        c32 = (e4 - etarget) * c31
+        w1 = c32 / (e4 - e1)
+        w2 = c32 / (e4 - e2)
+        w3 = c32 / (e4 - e3)
+        w4 = 3 * c31 - (w1 + w2 + w3)
+    else
+        w1, w2, w3, w4 = zero(etarget), zero(etarget), zero(etarget), zero(etarget)
+    end
+    w1234 = SVector(w1, w2, w3, w4)
+    # w1234 are the weights in the sorted index. Need to invert the indices to original index.
+    w1234[sortperm(inds)]
+end
+
+# TODO: Blöchl correction (Eq. (22))
+# TODO: Add tests (e.g. sum of weights == total weight)

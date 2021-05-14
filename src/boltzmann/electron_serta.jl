@@ -2,12 +2,34 @@
 Electron conductivity in the self-energy relaxation time (SERTA) approximation
 """
 
+using Parameters: @with_kw
+
+export ElectronTransportParams
 export bte_compute_μ!
 export compute_lifetime_serta!
 
 # TODO: Merge with transport_electron.jl (or deprecate the latter)
 
-function bte_compute_μ!(params::TransportParams{R}, el::BTStates{R}, volume) where {R <: Real}
+"""
+    ElectronTransportParams{T <: Real}
+Parameters for electron transport calculation. Arguments:
+* `Tlist::Vector{T}`: list of temperatures
+* `n::T`: Carrier density
+* `nband_valence::Int`: Number of valence bands (used only for semiconductors)
+* `smearing::Tuple{Symbol, T}`: (:Mode, smearing). Smearing parameter for delta function. Mode can be Gaussian, Lorentzian, and Tetrahedron.
+* `spin_degeneracy::Int`: Spin degeneracy.
+* `μlist::Vector{T}`: Chemical potential. Defaults to 0.
+"""
+@with_kw struct ElectronTransportParams{T <: Real}
+    Tlist::Vector{T}
+    n::T
+    nband_valence::Int
+    smearing::Tuple{Symbol, T}
+    spin_degeneracy::Int
+    μlist::Vector{T} = zeros(T, length(Tlist))
+end
+
+function bte_compute_μ!(params, el::BTStates{R}, volume) where {R <: Real}
     ncarrier_target = params.n / params.spin_degeneracy
 
     mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (volume/unit_to_aru(:cm)^3)
@@ -20,10 +42,12 @@ function bte_compute_μ!(params::TransportParams{R}, el::BTStates{R}, volume) wh
     nothing
 end
 
-function compute_lifetime_serta!(inv_τ, btmodel, params::TransportParams{R}, recip_lattice, ngrid) where {R}
+function compute_lifetime_serta!(inv_τ, btmodel, params, recip_lattice, ngrid)
     # TODO: Clean input params recip_lattice and ngrid
     # TODO: add smearing_mode field in params. (:Gaussian, :Lorentzian, :Tetrahedron)
-    inv_η = 1 / params.smearing
+    R = eltype(inv_τ)
+    η = params.smearing[2]
+    inv_η = 1 / η
     el_i = btmodel.el_i
     el_f = btmodel.el_f
     ph = btmodel.ph
@@ -50,16 +74,16 @@ function compute_lifetime_serta!(inv_τ, btmodel, params::TransportParams{R}, re
         # For electron final state occupation, use e_k - sign_ph * ω_ph instead of e_kq,
         # using energy conservation. The former is better because the phonon velocity is
         # much smaller than the electron velocity, so that it changes less w.r.t q.
-        # e_f_occupation = e_i - sign_ph * ω_ph
-        e_f_occupation = e_f
+        e_f_occupation = e_i - sign_ph * ω_ph
+        # e_f_occupation = e_f
 
-        if params.smearing > 0
-            # Gaussian smearing
+        if params.smearing[1] == :Gaussian
             delta = gaussian(delta_e * inv_η) * inv_η
-        else
-            # tetrahedron
+        elseif params.smearing[1] == :Lorentzian
+            delta = η / (delta_e^2 + η^2) / π
+        elseif params.smearing[1] == :Tetrahedron
             v_cart = - el_f.vdiag[ind_el_f] - sign_ph * ph.vdiag[ind_ph]
-            v_delta_e = v_cart' * recip_lattice
+            v_delta_e = recip_lattice' * v_cart
             delta = delta_parallelepiped(zero(R), delta_e, v_delta_e, 1 ./ ngrid)
         end
 
@@ -80,8 +104,7 @@ function compute_lifetime_serta!(inv_τ, btmodel, params::TransportParams{R}, re
 end
 
 
-function compute_mobility_serta!(params::TransportParams{R}, inv_τ, el::BTStates{R},
-        ngrid, recip_lattice) where {R}
+function compute_mobility_serta!(params, inv_τ, el::BTStates{R}, ngrid, recip_lattice) where {R}
     @assert el.n == size(inv_τ, 1)
 
     σlist = zeros(eltype(inv_τ), 3, 3, length(params.Tlist))
@@ -102,7 +125,7 @@ function compute_mobility_serta!(params::TransportParams{R}, inv_τ, el::BTState
             # energy range include enk - μ = 0.
             dfocc_max = -EPW.occ_fermion_derivative(zero(T), T)
         end
-        @info dfocc_max
+        # @info dfocc_max
 
         cnt = 0
         for i = 1:el.n

@@ -35,6 +35,9 @@ function copyto!(dest::PhononState, src::PhononState)
     dest.e .= src.e
     dest.u .= src.u
     dest.occupation .= src.occupation
+    for i in 1:src.nmodes
+        dest.vdiag[i] = src.vdiag[i]
+    end
     dest
 end
 

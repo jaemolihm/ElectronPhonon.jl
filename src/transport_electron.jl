@@ -29,7 +29,7 @@ function TransportSERTA(T, nband::Int, nmodes::Int, nk::Int, ntemperatures::Int)
 end
 
 # TODO: Add test for electron and hole case
-function transport_set_μ!(params::TransportParams, energy, weights, volume)
+function transport_set_μ!(params, energy, weights, volume)
     ncarrier_target = params.n / params.spin_degeneracy
 
     mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (volume/unit_to_aru(:cm)^3)
@@ -132,23 +132,25 @@ end
     transport_print_mobility(σlist, transport_params, volume)
 Utility to calculate and print mobility in SI units.
 """
-function transport_print_mobility(σlist, transport_params, volume)
+function transport_print_mobility(σlist, transport_params, volume; print=true)
     carrier_density_SI = transport_params.n / volume * unit_to_aru(:cm)^3
     charge_density_SI = carrier_density_SI * units.e_SI
 
     σ_SI = σlist .* (units.e_SI^2 / volume * unit_to_aru(:ħ) * unit_to_aru(:cm))
     mobility_SI = σ_SI ./ charge_density_SI
 
-    println("======= Electron mobility =======")
-    println("Carrier density (cm^-3) =  $carrier_density_SI")
-    for iT in 1:length(transport_params.Tlist)
-        println("T (K)  = $(transport_params.Tlist[iT] / unit_to_aru(:K))")
-        @printf "μ (eV) = %.4f\n" transport_params.μlist[iT] / unit_to_aru(:eV)
-        println("mobility (cm^2/Vs) = ")
-        for i in 1:3
-            @printf "%10.3f %10.3f %10.3f\n" mobility_SI[:, i, iT]...
+    if print
+        println("======= Electron mobility =======")
+        println("Carrier density (cm^-3) =  $carrier_density_SI")
+        for iT in 1:length(transport_params.Tlist)
+            println("T (K)  = $(transport_params.Tlist[iT] / unit_to_aru(:K))")
+            @printf "μ (eV) = %.4f\n" transport_params.μlist[iT] / unit_to_aru(:eV)
+            println("mobility (cm^2/Vs) = ")
+            for i in 1:3
+                @printf "%10.3f %10.3f %10.3f\n" mobility_SI[:, i, iT]...
+            end
+            println()
         end
-        println()
     end
     mobility_SI
 end

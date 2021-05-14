@@ -14,7 +14,6 @@ struct BTStates{T <: Real} <: AbstractBTData{T}
     ngrid::NTuple{3, Int} # Grid size
 end
 
-
 """
     electron_states_to_BTStates(el_states::Vector{ElectronState{T}},
     kpts::EPW.Kpoints{T}) where {T <: Real}
@@ -28,8 +27,8 @@ Transform Vector of ElectronState to a BTState.
     nk = length(el_states)
     n = sum([el.nband for el in el_states])
     ngrid = kpts.ngrid
-    max_nband = maximum([el.nband for el in el_states])
-    imap = zeros(Int, max_nband, nk)
+    max_nband_bound = maximum([el.nband_bound for el in el_states])
+    imap = zeros(Int, max_nband_bound, nk)
 
     e = zeros(T, n)
     vdiag = zeros(Vec3{T}, n)
@@ -52,7 +51,7 @@ Transform Vector of ElectronState to a BTState.
             vdiag[istate] = el.vdiag[ib]
             k_weight[istate] = kpts.weights[ik]
             xks[istate] = kpts.vectors[ik]
-            iband[istate] = el.rng_full[ib]
+            iband[istate] = ib + el.nband_ignore
             imap[ib, ik] = istate
         end
     end
@@ -100,3 +99,26 @@ Transform Vector of PhononState to a BTState.
 end
 
 # TODO: Make ElectronState and PhononState similar so only one function is needed.
+
+"""
+    states_index_map(states, symmetry=nothing)
+Create a map (xk_int, iband) => i
+"""
+function states_index_map(states, symmetry=nothing)
+    index_map = Dict{NTuple{4, Int}, Int}()
+    for i in 1:states.n
+        xk_int = mod.(round.(Int, states.xks[i] .* states.ngrid), states.ngrid)
+        index_map[(xk_int.data..., states.iband[i])] = i
+        if symmetry !== nothing
+            for (S, is_tr) in zip(symmetry.S, symmetry.is_tr)
+                Sk = is_tr * S * states.xks[i]
+                Sk_int = mod.(round.(Int, Sk .* states.ngrid), states.ngrid)
+                key = (Sk_int.data..., states.iband[i])
+                if ! haskey(index_map, key)
+                    index_map[key] = i
+                end
+            end
+        end
+    end
+    index_map
+end
