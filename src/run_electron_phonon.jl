@@ -88,7 +88,7 @@ function run_eph_outer_loop_q(
         error("type of q_input is wrong")
     end
     qpoints_filtered = filter_qpoints(qpoints_all, kpoints, nw, model.el_ham, window)
-    qpoints = redistribute_kpoints(qpoints_filtered, mpi_comm_q)
+    qpoints = mpi_gather_and_scatter(qpoints_filtered, mpi_comm_q)
 
     nk = kpoints.n
     nq = qpoints.n

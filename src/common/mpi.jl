@@ -5,7 +5,6 @@
 using MPI
 
 export mpi_initialized
-export mpi_root
 export mpi_nprocs
 export mpi_isroot
 export mpi_myrank
@@ -33,7 +32,8 @@ Number of processors used in MPI. Can be called without ensuring initialization.
 mpi_nprocs(comm=MPI.COMM_WORLD) = (mpi_ensure_initialized(); MPI.Comm_size(comm))
 mpi_isroot(comm=MPI.COMM_WORLD) = (mpi_ensure_initialized(); MPI.Comm_rank(comm) == 0)
 mpi_myrank(comm=MPI.COMM_WORLD) = (mpi_ensure_initialized(); MPI.Comm_rank(comm))
-const mpi_root = 0
+mpi_myrank(comm::Nothing) = 0
+const MPI_ROOT = 0
 
 mpi_sum( arr, comm::MPI.Comm)  = MPI.Allreduce( arr, +, comm)
 mpi_sum!(arr, comm::MPI.Comm)  = MPI.Allreduce!(arr, +, comm)
@@ -44,8 +44,7 @@ mpi_max!(arr, comm::MPI.Comm)  = MPI.Allreduce!(arr, max, comm)
 mpi_mean(arr, comm::MPI.Comm)  = mpi_sum(arr, comm) ./ mpi_nprocs(comm)
 mpi_mean!(arr, comm::MPI.Comm) = (mpi_sum!(arr, comm); arr ./= mpi_nprocs(comm))
 
-mpi_reduce_and(arr, comm::MPI.Comm) = MPI.Allreduce(arr, &, comm)
-mpi_reduce_or(arr, comm::MPI.Comm) = MPI.Allreduce(arr, |, comm)
+mpi_reduce(arr, op, comm::MPI.Comm) = MPI.Allreduce(arr, op, comm)
 
 mpi_bcast!(buf, root::Integer, comm::MPI.Comm) = MPI.Bcast!(buf, root, comm)
 mpi_bcast( obj, root::Integer, comm::MPI.Comm) = MPI.bcast( obj, root, comm)
@@ -60,15 +59,21 @@ mpi_min!(arr, comm::Nothing) = nothing
 mpi_max!(arr, comm::Nothing) = nothing
 mpi_sum!(arr, comm::Nothing) = nothing
 
-"Gathers array along the last dimension"
-function mpi_gather(arr, root::Integer, comm::MPI.Comm)
+function _check_size(arr::AbstractArray, root::Integer, comm::MPI.Comm)
     # Check whether size is equal except for the last dimension
-    # check_dims = 0 if size is okay, 1 otherwise.
+    # size_valid = true if size is okay, false otherwise.
     # Do Allreduce to raise error on all processors
     size_root = mpi_bcast(size(arr), root, comm)
-    check_dims = size(arr)[1:end-1] == size_root[1:end-1] ? 0 : 1
-    check_dims = MPI.Allreduce(check_dims, +, comm)
-    @assert check_dims == 0
+    size_valid = size(arr)[1:end-1] == size_root[1:end-1] ? true : false
+    mpi_reduce(size_valid, &, comm)
+end
+
+"""
+    mpi_gather(arr::AbstractArray, root::Integer, comm::MPI.Comm)
+Gathers array along the last dimension
+"""
+function mpi_gather(arr::AbstractArray, root::Integer, comm::MPI.Comm)
+    @assert _check_size(arr, root, comm)
 
     # Size of array in each processors
     counts = MPI.Allgather([Cint(length(arr))], 1, comm)
@@ -78,22 +83,18 @@ function mpi_gather(arr, root::Integer, comm::MPI.Comm)
     if mpi_isroot(comm)
         return reshape(arr_gathered, (size(arr)[1:end-1]..., :))
     else
-        return nothing
+        return typeof(arr)(undef, size(arr)[1:end-1]..., 0)
     end
 end
+mpi_gather(arr, comm::MPI.Comm) = mpi_gather(arr, MPI_ROOT, comm)
+mpi_gather(x, comm::Nothing) = x
 
-mpi_gather(arr, comm::MPI.Comm) = mpi_gather(arr, 0, comm)
-mpi_gather(arr, comm::Nothing) = arr
-
-"Gathers array along the last dimension to all processes"
-function mpi_allgather(arr, comm::MPI.Comm)
-    # Check whether size is equal except for the last dimension
-    # check_dims = 0 if size is okay, 1 otherwise.
-    # Do Allreduce to raise error on all processors
-    size_root = mpi_bcast(size(arr), 0, comm)
-    check_dims = size(arr)[1:end-1] == size_root[1:end-1] ? 0 : 1
-    check_dims = MPI.Allreduce(check_dims, +, comm)
-    @assert check_dims == 0
+"""
+    mpi_allgather(arr::AbstractArray, comm::MPI.Comm)
+Gathers array along the last dimension to all processes
+"""
+function mpi_allgather(arr::AbstractArray, comm::MPI.Comm)
+    @assert _check_size(arr, MPI_ROOT, comm)
 
     # Size of array in each processors
     counts = MPI.Allgather([Cint(length(arr))], 1, comm)
@@ -102,6 +103,7 @@ function mpi_allgather(arr, comm::MPI.Comm)
     arr_gathered = MPI.Allgatherv(arr, counts, comm)
     reshape(arr_gathered, (size(arr)[1:end-1]..., :))
 end
+mpi_allgather(x, comm::Nothing) = x
 
 """
 Splits an iterator evenly between the processes of `comm` and returns the part handled
@@ -110,5 +112,27 @@ by the current process.
 function mpi_split_iterator(itr, comm)
     nprocs = mpi_nprocs(comm)
     @assert nprocs <= length(itr)
-    split_evenly(itr, nprocs)[1 + MPI.Comm_rank(comm)]  # MPI ranks are 0-based
+    split_iterator(itr, nprocs)[1 + MPI.Comm_rank(comm)]  # MPI ranks are 0-based
 end
+
+"""
+    mpi_scatter(arr, comm::MPI.Comm)
+Scatters array along the last dimension from root to all processes.
+"""
+function mpi_scatter(arr::AbstractArray, comm::MPI.Comm)
+    @assert _check_size(arr, MPI_ROOT, comm)
+
+    dims = mpi_bcast(size(arr), comm)
+
+    # Size of array in each processors.
+    # block_size: first to second last dimensions.
+    # tot_count: last dimensions.
+    block_size = prod(dims[1:end-1])
+    tot_count = dims[end]
+    counts = split_count(tot_count, mpi_nprocs(comm)) .* block_size
+    counts_cint = Cint.(counts)
+
+    arr_scattered = MPI.Scatterv(arr, counts_cint, MPI_ROOT, comm)
+    reshape(arr_scattered, (dims[1:end-1]..., :))
+end
+mpi_scatter(x, comm::Nothing) = x

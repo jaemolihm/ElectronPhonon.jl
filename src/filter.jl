@@ -112,9 +112,9 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Co
         if mpi_isroot(mpi_comm)
             kpoints = bzmesh_ir_wedge((nk1, nk2, nk3), symmetry)
         else
-            kpoints = Kpoints(0, Vector{Vec3{Float64}}(), Vector{Float64}(), (nk1, nk2, nk3))
+            kpoints = Kpoints{Float64}()
         end
-        kpoints = redistribute_kpoints(kpoints, mpi_comm)
+        kpoints = mpi_scatter(kpoints, mpi_comm)
     end
 
     # If the window is trivial, return the whole grid
@@ -149,7 +149,7 @@ function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Co
     band_max = mpi_max(band_max, mpi_comm)
     nelec_below_window = mpi_sum(nelec_below_window, mpi_comm)
 
-    new_kpoints = redistribute_kpoints(k_filtered, mpi_comm)
+    new_kpoints = mpi_gather_and_scatter(k_filtered, mpi_comm)
     new_kpoints, band_min, band_max, nelec_below_window
 end
 

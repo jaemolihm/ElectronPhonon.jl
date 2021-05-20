@@ -61,7 +61,7 @@ end
 
 function DiskWannierObject(T, tag, nr, irvec::Vector{Vec3{Int}}, ndata, dir, filename;
         irvec_next=nothing)
-    ranges = split_evenly(1:ndata, nthreads())
+    ranges = split_iterator(1:ndata, nthreads())
     DiskWannierObject{T}(tag=tag, nr=nr, irvec=irvec, ndata=ndata,
         dir=dir, filename=filename,
         rdotks=[zeros(T, nr) for i=1:nthreads()],

@@ -12,6 +12,8 @@ struct Kpoints{T <: Real}
     ngrid::NTuple{3,Int64}
 end
 
+Kpoints{T}() where {T} = Kpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), (0, 0, 0))
+
 function sort!(k::Kpoints)
     inds = sortperm(k.vectors)
     k.vectors .= k.vectors[inds]
@@ -90,26 +92,49 @@ function get_filtered_kpoints(k, ik_keep)
     Kpoints(sum(ik_keep), k.vectors[ik_keep], k.weights[ik_keep], k.ngrid)
 end
 
-"Collect and uniformly redistribute Kpoints among processers"
-function redistribute_kpoints(k::Kpoints, comm::MPI.Comm)
-    # TODO: Do this without allgather, by using point-to-point communication.
-    # Gather filtered k points
-    kvectors = EPW.mpi_allgather(k.vectors, comm)
-    weights = EPW.mpi_allgather(k.weights, comm)
-
-    # If k.ngrid is not same among processers, set k.ngrid to (0,0,0).
-    ngrid_root = EPW.mpi_bcast(k.ngrid, comm)
-    is_ngrid_equal = EPW.mpi_reduce_and(k.ngrid == ngrid_root, comm)
-    if ! is_ngrid_equal
-        k.ngrid = (0, 0, 0)
-    end
-
-    # Redistribute k points
-    range = EPW.mpi_split_iterator(1:length(kvectors), comm)
-    Kpoints(length(range), kvectors[range], weights[range], k.ngrid)
+function _gather_ngrid(ngrid, comm)
+    # If ngrid is not same among processers, set ngrid to (0,0,0).
+    ngrid_root = EPW.mpi_bcast(ngrid, comm)
+    all_ngrids_same = EPW.mpi_reduce(ngrid == ngrid_root, &, comm)
+    new_ngrid = all_ngrids_same ? ngrid_root : (0, 0, 0)
+    new_ngrid
 end
 
-redistribute_kpoints(k::Kpoints, comm::Nothing) = k
+"mpi_gather(k::Kpoints, comm::MPI.Comm)"
+function mpi_gather(k::Kpoints{FT}, comm::MPI.Comm) where {FT}
+    kvectors = EPW.mpi_gather(k.vectors, comm)
+    weights = EPW.mpi_gather(k.weights, comm)
+    new_ngrid = _gather_ngrid(k.ngrid, comm)
+    if mpi_isroot(comm)
+        Kpoints{FT}(length(kvectors), kvectors, weights, new_ngrid)
+    else
+        Kpoints{FT}(0, Vector{Vec3{FT}}(), Vector{FT}(), new_ngrid)
+    end
+end
+
+"""
+    mpi_allgather(k::Kpoints, comm::MPI.Comm)
+"""
+function mpi_allgather(k::Kpoints, comm::MPI.Comm)
+    kvectors = EPW.mpi_allgather(k.vectors, comm)
+    weights = EPW.mpi_allgather(k.weights, comm)
+    new_ngrid = _gather_ngrid(k.ngrid, comm)
+    Kpoints(length(kvectors), kvectors, weights, new_ngrid)
+end
+
+"""
+    mpi_scatter(k::Kpoints{FT}, comm::MPI.Comm) where {FT}
+"""
+function mpi_scatter(k::Kpoints{FT}, comm::MPI.Comm) where {FT}
+    ngrid = mpi_bcast(k.ngrid, comm)
+    vectors = mpi_scatter(k.vectors, comm)
+    weights = mpi_scatter(k.weights, comm)
+    Kpoints{FT}(length(vectors), vectors, weights, ngrid)
+end
+
+"Collect and uniformly redistribute Kpoints among processers"
+mpi_gather_and_scatter(k::Kpoints, comm::MPI.Comm) = mpi_scatter(mpi_gather(k, comm), comm)
+mpi_gather_and_scatter(k::Kpoints, comm::Nothing) = k
 
 
 """
