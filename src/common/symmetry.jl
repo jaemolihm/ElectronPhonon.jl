@@ -299,6 +299,7 @@ end
 """Bring kpoint coordinates into the range [0.0, 1.0)"""
 function normalize_kpoint_coordinate(x::Real)
     x = x - floor(Int, x)
+    x = x - floor(Int, x) # Single line can fail if x = -1e-18
     @assert 0.0 ≤ x < 1.0
     x
 end
