@@ -132,14 +132,14 @@ end
     transport_print_mobility(σlist, transport_params, volume)
 Utility to calculate and print mobility in SI units.
 """
-function transport_print_mobility(σlist, transport_params, volume; print=true)
+function transport_print_mobility(σlist, transport_params, volume; do_print=true)
     carrier_density_SI = transport_params.n / volume * unit_to_aru(:cm)^3
     charge_density_SI = carrier_density_SI * units.e_SI
 
     σ_SI = σlist .* (units.e_SI^2 / volume * unit_to_aru(:ħ) * unit_to_aru(:cm))
     mobility_SI = σ_SI ./ charge_density_SI
 
-    if print
+    if do_print
         println("======= Electron mobility =======")
         println("Carrier density (cm^-3) =  $carrier_density_SI")
         for iT in 1:length(transport_params.Tlist)

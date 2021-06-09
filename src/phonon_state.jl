@@ -27,7 +27,7 @@ function PhononState(T, nmodes)
     )
 end
 
-function copyto!(dest::PhononState, src::PhononState)
+function Base.copyto!(dest::PhononState, src::PhononState)
     if dest.nmodes < src.nmodes
         throw(ArgumentError("src.nmodes ($(src.nmodes)) cannot be greater " *
             "than dest.nmodes ($(dest.nmodes))"))

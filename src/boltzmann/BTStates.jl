@@ -1,17 +1,30 @@
-
 "States in Boltzmann transport calculation"
 
-struct BTStates{T <: Real} <: AbstractBTData{T}
-    # Each index (i = 1, ..., n) represents a single state in the Brillouin zone.
-    n::Int # Number of states
-    nk::Int # Number of k points
-    nband::Int # Number of bands
-    e::Vector{T} # Energy
-    vdiag::Vector{Vec3{T}} # Velocity in Cartesian coordinates
-    k_weight::Vector{T} # Brillouin zone weights
-    xks::Vector{Vec3{T}} # crystal momentum of the states
-    iband::Vector{Int} # Band index of the states
-    ngrid::NTuple{3, Int} # Grid size
+using Parameters: @with_kw
+
+"""
+    @with_kw struct BTStates{T <: Real} <: AbstractBTData{T}
+Each index (i = 1, ..., n) represents a single state in the Brillouin zone.
+"""
+@with_kw struct BTStates{T <: Real} <: AbstractBTData{T}
+    # Number of states
+    n::Int
+    # Number of k points
+    nk::Int
+    # Number of bands
+    nband::Int
+    # Energy
+    e::Vector{T} = Vector{T}()
+    # Velocity in Cartesian coordinates
+    vdiag::Vector{Vec3{T}} = Vector{Vec3{T}}()
+    # Brillouin zone weights
+    k_weight::Vector{T} = Vector{T}()
+    # crystal momentum of the states
+    xks::Vector{Vec3{T}} = Vector{Vec3{T}}()
+    # Band index of the states
+    iband::Vector{Int} = Vector{Int}()
+    # Grid size
+    ngrid::NTuple{3, Int}
 end
 
 """
@@ -104,10 +117,14 @@ end
     states_index_map(states, symmetry=nothing)
 Create a map (xk_int, iband) => i
 """
-function states_index_map(states, symmetry=nothing)
+function states_index_map(states, symmetry=nothing; xk_shift=nothing)
     index_map = Dict{NTuple{4, Int}, Int}()
     for i in 1:states.n
-        xk_int = mod.(round.(Int, states.xks[i] .* states.ngrid), states.ngrid)
+        if xk_shift === nothing
+            xk_int = mod.(round.(Int, states.xks[i] .* states.ngrid), states.ngrid)
+        else
+            xk_int = mod.(round.(Int, (states.xks[i] + xk_shift) .* states.ngrid), states.ngrid)
+        end
         index_map[(xk_int.data..., states.iband[i])] = i
         if symmetry !== nothing
             for (S, is_tr) in zip(symmetry.S, symmetry.is_tr)
@@ -121,4 +138,28 @@ function states_index_map(states, symmetry=nothing)
         end
     end
     index_map
+end
+
+function mpi_gather(s::BTStates{FT}, comm::MPI.Comm) where {FT}
+    # FIXME: nk is incorrect
+    n = mpi_sum(s.n, comm)
+    iband = mpi_gather(s.iband, comm)
+    e = mpi_gather(s.e, comm)
+    vdiag = mpi_gather(s.vdiag, comm)
+    k_weight = mpi_gather(s.k_weight, comm)
+    xks = mpi_gather(s.xks, comm)
+
+    # If ngrid is not same among processers, set ngrid to (0,0,0).
+    ngrid_root = mpi_bcast(s.ngrid, comm)
+    all_ngrids_same = EPW.mpi_reduce(s.ngrid == ngrid_root, &, comm)
+    ngrid = all_ngrids_same ? ngrid_root : (0, 0, 0)
+
+    if mpi_isroot(comm)
+        @assert n == length(iband) == length(e) == length(vdiag) == length(k_weight) == length(xks)
+        nband = length(Set(iband))
+        nk = -1
+        BTStates{FT}(n=n, nk=nk, nband=nband, e=e, vdiag=vdiag, k_weight=k_weight, xks=xks, iband=iband, ngrid=ngrid)
+    else
+        BTStates{FT}(n=0, nk=0, nband=0, ngrid=ngrid)
+    end
 end

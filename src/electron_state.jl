@@ -59,7 +59,7 @@ Return eigenvector for bands inside the window."""
 get_u(el) = view(el.u_full, :, el.rng_full)
 
 
-function copyto!(dest::ElectronState, src::ElectronState)
+function Base.copyto!(dest::ElectronState, src::ElectronState)
     if dest.nband_bound < src.nband_bound
         throw(ArgumentError("src.nband_bound ($(src.nband_bound)) cannot be greater " *
             "than dest.nband_bound ($(dest.nband_bound))"))
@@ -95,6 +95,9 @@ function set_window!(el::ElectronState, window=(-Inf,Inf))
     ibands = EPW.inside_window(el.e_full, window...)
     # If no bands are selected, return true.
     if isempty(ibands)
+        el.nband = 0
+        el.rng = 1:0
+        el.rng_full = 1:0
         return true
     end
     if ibands[1] <= el.nband_ignore

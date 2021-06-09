@@ -8,6 +8,11 @@ export mpi_initialized
 export mpi_nprocs
 export mpi_isroot
 export mpi_myrank
+export mpi_sum
+export mpi_sum!
+export mpi_gather
+export mpi_allgather
+export mpi_scatter
 
 """
 Initialize MPI. Must be called before doing any non-trivial MPI work

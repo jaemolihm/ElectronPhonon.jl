@@ -2,6 +2,7 @@
 # Data and functions for k points
 using MPI
 
+export Kpoints
 export generate_kvec_grid
 
 struct Kpoints{T <: Real}
@@ -21,12 +22,12 @@ function sort!(k::Kpoints)
     inds
 end
 
-function Kpoints(xks::AbstractArray{T, 2}) where {T <: Real}
+function Kpoints(xks::AbstractArray{T}) where {T <: Real}
     if size(xks, 1) != 3
         throw(ArgumentError("first dimension of xks must be 3"))
     end
-    n = size(xks, 2)
     vectors = collect(vec(reinterpret(Vec3{T}, xks)))
+    n = length(vectors)
     Kpoints(n, vectors, ones(n) ./ n, (0, 0, 0))
 end
 
@@ -35,28 +36,34 @@ end
 Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
 Return all k points.
 """
-function generate_kvec_grid(nk1, nk2, nk3)
+function generate_kvec_grid(nk1, nk2, nk3; kshift=[0, 0, 0])
     nk = nk1 * nk2 * nk3
-    generate_kvec_grid(nk1, nk2, nk3, 1:nk)
+    generate_kvec_grid(nk1, nk2, nk3, 1:nk, kshift=kshift)
 end
 
 """
     generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer, rng)
 Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
 Return k points for global index in the given range.
+-`kshift`: Shift for the grid. Each element can be 0 or 1//2.
 """
-function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int})
+function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int}; kshift=[0, 0, 0])
     # TODO: Type
     nk_grid = nk1 * nk2 * nk3
     @assert rng[1] >= 1
     @assert rng[end] <= nk_grid
     kvecs = Vector{Vec3{Float64}}()
+
+    kshift = Vec3{Rational{Int}}(kshift)
+    all(ks in (0, 1//2) for ks in kshift) || error("Only kshifts of 0 or 1//2 implemented.")
+    kshift = kshift ./ (nk1, nk2, nk3)
+
     for ik in rng
         # For (i, j, k), make k the fastest axis
         k = mod(ik-1, nk3)
         j = mod(div(ik-1 - k, nk3), nk2)
         i = mod(div(ik-1 - k - j*nk3, nk2*nk3), nk1)
-        push!(kvecs, Vec3{Float64}(i/nk1, j/nk2, k/nk3))
+        push!(kvecs, Vec3{Float64}(i/nk1, j/nk2, k/nk3) + kshift)
     end
     nk = length(kvecs)
     Kpoints(nk, kvecs, fill(1/nk_grid, (nk,)), (nk1, nk2, nk3))
@@ -67,10 +74,10 @@ end
 Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
 Return all k points. k points are distributed over the MPI communicator mpi_comm.
 """
-function generate_kvec_grid(nk1, nk2, nk3, mpi_comm::MPI.Comm)
+function generate_kvec_grid(nk1, nk2, nk3, mpi_comm::MPI.Comm; kshift=[0, 0, 0])
     nk = nk1 * nk2 * nk3
     range = mpi_split_iterator(1:nk, mpi_comm)
-    generate_kvec_grid(nk1, nk2, nk3, range)
+    generate_kvec_grid(nk1, nk2, nk3, range, kshift=kshift)
 end
 
 # "generate grid of k points"

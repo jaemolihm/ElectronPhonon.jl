@@ -56,8 +56,8 @@ end
     Divide the parallelepiped into six tetrahedra and use tetrahedron integration.
     """
     if norm(v0) < 1E-10
-        # Velocity is too small. Tetrahedron method does not work.
-        return zero(T), 0
+        # Velocity is too small. Single-point tetrahedron method does not work.
+        return zero(T)
     end
     L_div_2 = L ./ 2
     v0_L = v0 .* L_div_2
@@ -69,13 +69,28 @@ end
     e6 = e0 + v0_L[1] - v0_L[2] + v0_L[3]
     e7 = e0 - v0_L[1] + v0_L[2] + v0_L[3]
     e8 = e0 + v0_L[1] + v0_L[2] + v0_L[3]
-    val = zero(T)
-    val += delta_tetrahedron(etarget, SVector{4,T}(e1, e2, e4, e5))
-    val += delta_tetrahedron(etarget, SVector{4,T}(e1, e3, e4, e5))
-    val += delta_tetrahedron(etarget, SVector{4,T}(e2, e4, e6, e5))
-    val += delta_tetrahedron(etarget, SVector{4,T}(e3, e4, e7, e5))
-    val += delta_tetrahedron(etarget, SVector{4,T}(e4, e7, e8, e5))
-    val += delta_tetrahedron(etarget, SVector{4,T}(e4, e6, e8, e5))
+    delta_parallelepiped_vertex(etarget, e1, e2, e3, e4, e5, e6, e7, e8)
+end
+
+@inline function delta_parallelepiped_vertex(etarget::FT, e1, e2, e3, e4, e5, e6, e7, e8) where {FT}
+    """
+    Calcultate val = int_{parallelepiped} d^3k delta(`etarget` - e(k)) / volume.
+    `e1`, ..., `e8` are the energies at the eight vertices of the parallelepiped.
+    Divide the parallelepiped into six tetrahedra and use tetrahedron integration.
+    """
+    val = zero(FT)
+    # val += delta_tetrahedron(etarget, SVector{4,FT}(e1, e2, e4, e5))
+    # val += delta_tetrahedron(etarget, SVector{4,FT}(e1, e3, e4, e5))
+    # val += delta_tetrahedron(etarget, SVector{4,FT}(e2, e4, e6, e5))
+    # val += delta_tetrahedron(etarget, SVector{4,FT}(e3, e4, e7, e5))
+    # val += delta_tetrahedron(etarget, SVector{4,FT}(e4, e7, e8, e5))
+    # val += delta_tetrahedron(etarget, SVector{4,FT}(e4, e6, e8, e5))
+    val += delta_tetrahedron(etarget, SVector{4,FT}(e1, e8, e6, e2))
+    val += delta_tetrahedron(etarget, SVector{4,FT}(e1, e8, e2, e4))
+    val += delta_tetrahedron(etarget, SVector{4,FT}(e1, e8, e4, e3))
+    val += delta_tetrahedron(etarget, SVector{4,FT}(e1, e8, e3, e7))
+    val += delta_tetrahedron(etarget, SVector{4,FT}(e1, e8, e7, e5))
+    val += delta_tetrahedron(etarget, SVector{4,FT}(e1, e8, e5, e6))
     return val / 6
 end
 
@@ -187,6 +202,7 @@ function delta_tetrahedron_weights(etarget, e1234)
     """
     inds = sortperm(e1234)
     e1, e2, e3, e4 = e1234[inds]
+    allzero = false
     if e1 < etarget <= e2
         c11 = (etarget - e1)^2 / ((e2 - e1) * (e3 - e1) * (e4 - e1))
         c12 = (etarget - e1) * c11
@@ -206,17 +222,17 @@ function delta_tetrahedron_weights(etarget, e1234)
         e31 = e3 - e1
         e42 = e4 - e2
         e32 = e3 - e2
-        # equation (B11)
+        # Eq. (B11)
         c1  = ee1^2 / (4 * e41 * e31)
         dc1 = ee1 / (2 * e41 * e31)
-        # equation (B12)
+        # Eq. (B12)
         c2  = - ee1 * ee2 * ee3 / (4 * e41 * e32 * e31 )
         dc2 = ( - ee2 * ee3 - ee1 * ee3 - ee1 * ee2 ) / (4 * e41 * e32 * e31)
-        # equation (B13)
+        # Eq. (B13)
         c3  = - ee2^2 * ee4 / (4 * e42 * e32 * e41)
         dc3 = - (2 * ee2 * ee4 + ee2^2) / (4 * e42 * e32 * e41)
 
-        # weights: derivatives of equations (B7-B10)
+        # weights: derivatives of Eqs. (B7-B10)
         w1 = dc1 - ((dc1 + dc2) * ee3 + c1 + c2) / e31 - ((dc1 + dc2 + dc3) * ee4 + c1 + c2 + c3) / e41
         w2 = dc1 + dc2 + dc3 - ((dc2 + dc3) * ee3 + c2 + c3) / e32 - (dc3 * ee4 + c3) / e42
         w3 = ((dc1 + dc2 ) * ee1 + c1 + c2) / e31 + ((dc2 + dc3) * ee2 + c2 + c3) / e32
@@ -230,9 +246,27 @@ function delta_tetrahedron_weights(etarget, e1234)
         w4 = 3 * c31 - (w1 + w2 + w3)
     else
         w1, w2, w3, w4 = zero(etarget), zero(etarget), zero(etarget), zero(etarget)
+        allzero = true
     end
-    w1234 = SVector(w1, w2, w3, w4)
+
+    # Blöchl correction Eq. (22)
+    esum = sum(e1234)
+    if e1 < etarget <= e2
+        dw = 6 * (etarget - e1) / ((e2 - e1) * (e3 - e1) * (e4 - e1))
+    elseif e2 < etarget <= e3
+        dw = 6 * (1 - (etarget - e2) * (e4 + e3 - e2 - e1) / ((e4 - e2) * (e3 -e2))) / (e41 * e31)
+    elseif e3 < etarget <= e4
+        dw = 6 * (etarget - e4) / ((e4 - e1) * (e4 - e2) * (e4 - e3))
+    end
+    if ! allzero
+        w1 += (esum - 4 * e1) * dw / 40
+        w2 += (esum - 4 * e2) * dw / 40
+        w3 += (esum - 4 * e3) * dw / 40
+        w4 += (esum - 4 * e4) * dw / 40
+    end
+
     # w1234 are the weights in the sorted index. Need to invert the indices to original index.
+    w1234 = SVector(w1, w2, w3, w4)
     w1234[sortperm(inds)]
 end
 

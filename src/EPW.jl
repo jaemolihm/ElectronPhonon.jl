@@ -36,6 +36,7 @@ include("selfenergy_electron.jl")
 include("selfenergy_phonon.jl")
 include("spectral_phonon.jl")
 include("transport_electron.jl")
+include("run_eigenvalues.jl")
 include("run_electron_phonon.jl")
 
 include("boltzmann/tetrahedron.jl")
@@ -43,6 +44,8 @@ include("boltzmann/BTData.jl")
 include("boltzmann/BTStates.jl")
 include("boltzmann/BTScatterings.jl")
 include("boltzmann/electron_serta.jl")
+include("boltzmann/interpolate_energy.jl")
+include("boltzmann/doublegrid.jl")
 include("run_transport.jl")
 
 
