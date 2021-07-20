@@ -1,0 +1,241 @@
+                                                                                      
+                                       ``:oss/                                        
+                           `.+s+.     .+ys--yh+     `./ss+.                           
+                          -sh//yy+`   +yy   +yy    -+h+-oyy                           
+                          -yh- .oyy/.-sh.   .syo-.:sy-  /yh                           
+                 `.-.`    `yh+   -oyyyo.     `/syys:    oys      `.`                  
+               `/+ssys+-` `sh+      `                   oys`   .:osyo`                
+               -yh- ./syyooyo`                          .sys+/oyo--yh/                
+               `yy+    .-:-.                             `-/+/:`  -sh-                
+                /yh.                                              oys                 
+          ``..---hho---------`   .---------..`      `.-----.`    -hd+---.             
+       `./osmNMMMMMMMMMMMMMMMs. +NNMMMMMMMMNNmh+.   yNMMMMMNm-  oNMMMMMNmo++:`        
+       +sy--/sdMMMhyyyyyyyNMMh- .oyNMMmyyyyyhNMMm+` -yMMMdyyo:` .oyyNMMNhs+syy`       
+       -yy/   /MMM+.`-+/``mMMy-   `mMMh:`````.dMMN:` `MMMy-`-dhhy```mMMy:``+hs        
+        -yy+` /MMMo:-mMM+`-oo/.    mMMh:     `dMMN/`  dMMm:`dMMMMy..MMMo-.+yo`        
+         .sys`/MMMMNNMMMs-         mMMmyooooymMMNo:   oMMM/sMMMMMM++MMN//oh:          
+          `sh+/MMMhyyMMMs- `-`     mMMMMMMMMMNmy+-`   -MMMhMMMsmMMmdMMd/yy+           
+    `-/+++oyy-/MMM+.`/hh/.`mNm:`   mMMd+/////:-.`      NMMMMMd/:NMMMMMy:/yyo/:.`      
+   +os+//:-..-oMMMo:--:::-/MMMo. .-mMMd+---`           hMMMMN+. oMMMMMo. `-+osyso:`   
+   syo     `mNMMMMMNNNNNNNNMMMo.oNNMMMMMNNNN:`         +MMMMs:`  dMMMN/`     ``:syo   
+   /yh`     :syyyyyyyyyyyyyyyy+.`+syyyyyyyyo:`         .oyys:`   .oyys:`        +yh   
+   -yh-        ````````````````    `````````              ``        ``          oys   
+   -+h/------------------------::::::::://////++++++++++++++++++++++///////::::/yd:   
+   shdddddddddddddddddddddddddddddhhhhhhhhyyyyyssssssssssssssssyyyyyyyhhhhhhhddddh`   
+                                                                                      
+  S. Ponce, E. R. Margine, C. Verdi, and F. Giustino,                                 
+                                                Comput. Phys. Commun. 209, 116 (2016) 
+                                                                                      
+
+     Program EPW v.5.3.1 starts on 20Jul2021 at 12:47:16 
+
+     This program is part of the open-source Quantum ESPRESSO suite
+     for quantum simulation of materials; please cite
+         "P. Giannozzi et al., J. Phys.:Condens. Matter 21 395502 (2009);
+         "P. Giannozzi et al., J. Phys.:Condens. Matter 29 465901 (2017);
+          URL http://www.quantum-espresso.org", 
+     in publications or presentations arising from this work. More details at
+     http://www.quantum-espresso.org/quote
+
+     Parallel version (MPI), running on     1 processors
+
+     MPI processes distributed on     1 nodes
+     Reading input from epw.specfun.in
+
+     Reading supplied temperature list.
+                      
+     ------------------------------------------------------------------------ 
+                   RESTART - RESTART - RESTART - RESTART                         
+     Restart is done without reading PWSCF save file.                  
+     Be aware that some consistency checks are therefore not done.                  
+     ------------------------------------------------------------------------ 
+                      
+
+     --                                                                         
+
+     bravais-lattice index     =            0
+     lattice parameter (a_0)   =       0.0000  a.u.
+     unit-cell volume          =       0.0000 (a.u.)^3
+     number of atoms/cell      =            0
+     number of atomic types    =            0
+     kinetic-energy cut-off    =       0.0000  Ry
+     charge density cut-off    =       0.0000  Ry
+     Exchange-correlation= not set
+                           (  -1  -1  -1  -1  -1  -1  -1)
+
+
+     celldm(1)=    0.00000  celldm(2)=    0.00000  celldm(3)=    0.00000
+     celldm(4)=    0.00000  celldm(5)=    0.00000  celldm(6)=    0.00000
+
+     crystal axes: (cart. coord. in units of a_0)
+               a(1) = (  0.0000  0.0000  0.0000 )  
+               a(2) = (  0.0000  0.0000  0.0000 )  
+               a(3) = (  0.0000  0.0000  0.0000 )  
+
+     reciprocal axes: (cart. coord. in units 2 pi/a_0)
+               b(1) = (  0.0000  0.0000  0.0000 )  
+               b(2) = (  0.0000  0.0000  0.0000 )  
+               b(3) = (  0.0000  0.0000  0.0000 )  
+
+
+     Atoms inside the unit cell: 
+
+   Cartesian axes
+
+     site n.  atom      mass           positions (a_0 units)
+
+ 
+     No symmetry!
+
+     G cutoff =    0.0000  (      0 G-vectors)     FFT grid: (  0,  0,  0)
+     number of k points=    0
+                       cart. coord. in units 2pi/a_0
+     EPW          :      0.00s CPU      0.00s WALL
+
+     EPW          :      0.00s CPU      0.00s WALL
+
+
+     -------------------------------------------------------------------
+     Using bn.ukk from disk
+     -------------------------------------------------------------------
+
+     Symmetries of Bravais lattice:  48
+     Symmetries of crystal:          24
+
+     Do not need to read .epb files; read .fmt files
+
+
+     Band disentanglement is used: nbndsub =    8
+
+     Computes the analytic long-range interaction for polar materials [lpolar]
+      
+     Construct the Wigner-Seitz cell using Wannier centers and atomic positions 
+     Number of WS vectors for electrons      123
+     Number of WS vectors for phonons       25
+     Number of WS vectors for electron-phonon       25
+     Maximum number of cores for efficient parallelization       50
+
+     Reading Hamiltonian, Dynamical matrix and EP vertex in Wann rep from file
+
+
+     Reading interatomic force constants
+
+     Read Z* and epsilon
+     IFC last    0.0091940
+      Imposed simple ASR
+
+     Finished reading ifcs
+
+
+     Finished reading Wann rep data from file
+
+     ===================================================================
+     Memory usage:  VmHWM =        61Mb
+                   VmPeak =      2613Mb
+     ===================================================================
+     
+     Using q-mesh file: qpt.specfun.dat
+     Size of q point mesh for interpolation:          1
+     Using uniform k-mesh:    5   5   5
+     Size of k point mesh for interpolation:        250
+     Max number of k points per pool:              250
+
+     Fermi energy coarse grid =  10.921574 eV
+
+     ===================================================================
+
+     Fermi energy is read from the input file: Ef =  25.000000 eV
+
+     ===================================================================
+
+              ibndmin =     2  ebndmin =     5.860 eV
+              ibndmax =     8  ebndmax =    27.710 eV
+
+
+     Number of ep-matrix elements per pool :        36750 ~=  287.11 Kb (@ 8 bytes/ DP)
+      
+     A selecq.fmt file was found but re-created because selecqread == .FALSE. 
+     We only need to compute        1 q-points
+      
+
+     ===================================================================
+     Phonon Spectral Function Self-Energy in the Migdal Approximation (on the fly)
+     ===================================================================
+
+
+     Fermi Surface thickness =  20.000000 eV
+
+     Golden Rule strictly enforced with T =   0.017235 eV
+     Gaussian Broadening:   0.500000 eV, ngauss=   1
+     DOS =  0.516659 states/spin/eV/Unit Cell at Ef= 25.000000 eV
+
+
+     Real and Imaginary part of the phonon self-energy (omega=0) without gamma0.
+     Omega(   1 )=   0.0554 eV   Re[Pi]=     -78.486333 meV Im[Pi]=      -4.961224 meV
+     Omega(   2 )=   0.0661 eV   Re[Pi]=     -89.963867 meV Im[Pi]=      -5.973457 meV
+     Omega(   3 )=   0.0911 eV   Re[Pi]=    -114.467311 meV Im[Pi]=     -15.785848 meV
+     Omega(   4 )=   0.1220 eV   Re[Pi]=    -227.617967 meV Im[Pi]=     -17.607940 meV
+     Omega(   5 )=   0.1239 eV   Re[Pi]=    -193.740506 meV Im[Pi]=     -12.014386 meV
+     Omega(   6 )=   0.1476 eV   Re[Pi]=    -220.729467 meV Im[Pi]=     -34.116175 meV
+     Number of (k,k+q) pairs on the Fermi surface:      125 out of        1
+
+     ===================================================================
+     Phonon Spectral Function Self-Energy in the Migdal Approximation (on the fly)
+     ===================================================================
+
+
+     Fermi Surface thickness =  20.000000 eV
+
+     Golden Rule strictly enforced with T =   0.025852 eV
+     Gaussian Broadening:   0.500000 eV, ngauss=   1
+     DOS =  0.516659 states/spin/eV/Unit Cell at Ef= 25.000000 eV
+
+
+     Real and Imaginary part of the phonon self-energy (omega=0) without gamma0.
+     Omega(   1 )=   0.0554 eV   Re[Pi]=     -78.766588 meV Im[Pi]=      -4.720348 meV
+     Omega(   2 )=   0.0661 eV   Re[Pi]=     -90.339257 meV Im[Pi]=      -5.558379 meV
+     Omega(   3 )=   0.0911 eV   Re[Pi]=    -114.914732 meV Im[Pi]=     -14.881848 meV
+     Omega(   4 )=   0.1220 eV   Re[Pi]=    -227.950776 meV Im[Pi]=     -16.748181 meV
+     Omega(   5 )=   0.1239 eV   Re[Pi]=    -194.151188 meV Im[Pi]=     -11.293182 meV
+     Omega(   6 )=   0.1476 eV   Re[Pi]=    -220.945790 meV Im[Pi]=     -32.074109 meV
+     Number of (k,k+q) pairs on the Fermi surface:      125 out of        1
+     -------------------------------------------------------------------
+
+     ===================================================================
+     Memory usage:  VmHWM =        64Mb
+                   VmPeak =      2627Mb
+     ===================================================================
+
+
+     Unfolding on the coarse grid
+     elphon_wrap  :      0.01s CPU      0.01s WALL (       1 calls)
+
+     INITIALIZATION: 
+
+
+
+
+     Electron-Phonon interpolation
+     ephwann      :      0.49s CPU      0.51s WALL (       1 calls)
+     ep-interp    :      0.09s CPU      0.09s WALL (       1 calls)
+
+     wigner_seitz :      0.31s CPU      0.31s WALL (       1 calls)
+     rgd_blk_fine :      0.00s CPU      0.01s WALL (     125 calls)
+     DynW2B       :      0.00s CPU      0.00s WALL (       1 calls)
+     HamW2B       :      0.01s CPU      0.01s WALL (     376 calls)
+     vmeW2B       :      0.03s CPU      0.03s WALL (     375 calls)
+     ephW2Bp      :      0.00s CPU      0.00s WALL (       1 calls)
+     ephW2B       :      0.01s CPU      0.01s WALL (     125 calls)
+
+
+     MPI routines
+
+
+     Total program execution
+     EPW          :      0.50s CPU      0.52s WALL
+
+     ===============================================================================
+     The functionality-dependent EPW.bib file was created with suggested citations. 
+     Please consider citing the papers listed in EPW.bib.                           
+     ===============================================================================
+                                                                                    

@@ -6,7 +6,6 @@ decay.*
 EPW.bib
 *.bin
 *.fmt
-*.out
 sparse?
 inv_tau*
 Fsparse/*
