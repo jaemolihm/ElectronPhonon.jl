@@ -15,7 +15,7 @@ export compute_lifetime_serta!
     ElectronTransportParams{T <: Real}
 Parameters for electron transport calculation. Arguments:
 * `Tlist::Vector{T}`: list of temperatures
-* `n::T`: Carrier density
+* `n::T`: Carrier density. Relative to the reference configuration where nband_valence bands are filled.
 * `nband_valence::Int`: Number of valence bands (used only for semiconductors)
 * `smearing::Tuple{Symbol, T}`: (:Mode, smearing). Smearing parameter for delta function. Mode can be Gaussian, Lorentzian, and Tetrahedron.
 * `spin_degeneracy::Int`: Spin degeneracy.
@@ -33,6 +33,10 @@ end
 function bte_compute_μ!(params, el::BTStates{R}, volume; do_print=true) where {R <: Real}
     ncarrier_target = params.n / params.spin_degeneracy
 
+    # The carrier density is relative to the reference configuration where nband_valence bands are filled.
+    # Add contribution from the states in el which are filled in the reference configuration.
+    ncarrier_target += sum(el.k_weight[el.iband .≤ params.nband_valence])
+
     do_print && mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (volume/unit_to_aru(:cm)^3)
 
     for (iT, T) in enumerate(params.Tlist)
@@ -40,7 +44,7 @@ function bte_compute_μ!(params, el::BTStates{R}, volume; do_print=true) where {
         params.μlist[iT] = μ
         do_print && mpi_isroot() && @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
     end
-    nothing
+    params.μlist
 end
 
 

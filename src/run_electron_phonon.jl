@@ -258,6 +258,7 @@ function run_eph_outer_loop_q(
         σlist = compute_mobility_serta!(transport_params, transport_serta.inv_τ,
             el_k_save, kpoints.weights, window)
         output["transport_σlist"] = σlist
+        # output["transport_inv_τ"] = transport_serta.inv_τ
     end
 
     output
