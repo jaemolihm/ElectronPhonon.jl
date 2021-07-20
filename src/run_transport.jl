@@ -127,6 +127,7 @@ function run_transport(
 
     mpi_isroot() && println("Calculating electron and phonon states")
     g = nothing
+    # TODO: parallelize this part
     @timing "hdf init" begin
         # Open HDF5 file for writing BTEdata
         fid_btedata = h5open(joinpath(folder, "btedata.rank$(mpi_myrank(mpi_comm_k)).h5"), "w")
