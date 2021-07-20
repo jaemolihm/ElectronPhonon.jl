@@ -80,50 +80,13 @@ function run_transport(
     nband = iband_max - iband_min + 1
     nband_ignore = iband_min - 1
 
-    # Map k and k+q points to q points
-    mpi_isroot() && println("Finding the list of q points")
-    @timing "qpts" begin
-        T = eltype(kpts.weights)
-        xqs = Vector{Vec3{T}}()
-        map_xq_int_to_iq = Dict{NTuple{3, Int}, Int}()
-        map_iq_to_xq_int = Vector{NTuple{3, Int}}()
-        iq = 0
-        for ik in 1:nk
-            xk = kpts.vectors[ik]
-            for ikq in 1:nkq
-                xkq = kqpts.vectors[ikq]
-                xq = xkq - xk
-
-                # Move xq inside [-0.5, 0.5]^3. This doesn't change the Fourier transform but
-                # makes the long-range part more robust.
-                xq = mod.(xq .+ 0.5, 1.0) .- 0.5
-
-                # Reusing phonon states
-                xq_int = round.(Int, xq .* kqpts.ngrid)
-                if ! isapprox(xq, xq_int ./ kqpts.ngrid, atol=10*eps(eltype(xq)))
-                    @show xq, kqpts.ngrid, xq_int, xq .- xq_int ./ kqpts.ngrid
-                    error("xq is not on the grid")
-                end
-
-                # Find new q points, append to map_xq_int_to_iq and xqs
-                if xq_int.data ∉ keys(map_xq_int_to_iq)
-                    iq += 1
-                    map_xq_int_to_iq[xq_int.data] = iq
-                    push!(map_iq_to_xq_int, xq_int.data)
-                    push!(xqs, xq)
-                end
-            end
-        end
-        nq = length(xqs)
-        qpts = EPW.Kpoints{T}(nq, xqs, ones(T, nq) ./ prod(kqpts.ngrid), kqpts.ngrid)
-        inds = EPW.sort!(qpts)
-        for iq_new = 1:nq
-            key = map_iq_to_xq_int[inds[iq_new]]
-            map_xq_int_to_iq[key] = iq_new
-        end
-        # map_iq_to_xq_int is not used anymore
-        map_iq_to_xq_int = nothing
+    xk_xkq_to_xq(xk, xkq) = mod.(xkq - xk .+ 0.5, 1.0) .- 0.5
+    qpts, map_xq_int_to_iq = let kqpts = kqpts
+        xq_to_xq_int(xq) = round.(Int, xq .* kqpts.ngrid)
+        xq_int_to_xq(xq_int) = xq_int ./ kqpts.ngrid
+        add_two_kpoint_grids(kpts, kqpts, kqpts.ngrid, xk_xkq_to_xq, xq_to_xq_int, xq_int_to_xq)
     end
+    nq = qpts.n
 
     mpi_isroot() && println("Calculating electron and phonon states")
     g = nothing
@@ -160,7 +123,8 @@ function run_transport(
     end
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData(Float64, nw, nmodes, nband, nband_ignore) for _ in 1:Threads.nthreads()]
+    epdatas = [ElPhData{Float64}(nw, nmodes, nband, nband_ignore)]
+    Threads.resize_nthreads!(epdatas)
     epobj_ekpR = WannierObject(model.epmat.irvec_next,
     zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
 
@@ -302,5 +266,5 @@ function run_transport(
     end # ik
     close(fid_btedata)
     @info "nscat_tot = $nscat_tot"
-    nothing
+    (nband=nband, nband_ignore=nband_ignore, kpts=kpts, qpts=qpts, kqpts=kqpts)
 end

@@ -1,20 +1,16 @@
 
 using EPW.WanToBloch
 
+function setup_kgrid(k_input::Kpoints{T}, nw, el_ham, window, mpi_comm_k; symmetry=nothing, kshift=[0, 0, 0]) where {T}
+    filter_kpoints(k_input, nw, el_ham, window, "normal")
+end
+
 function setup_kgrid(k_input, nw, el_ham, window, mpi_comm_k; symmetry=nothing, kshift=[0, 0, 0])
-    if k_input isa Kpoints
-        kpoints, iband_min, iband_max, nelec_below_window = filter_kpoints(
-            k_input, nw, el_ham, window, "normal")
+    if mpi_comm_k === nothing
+        return filter_kpoints_grid(k_input..., nw, el_ham, window, symmetry=symmetry, kshift=kshift)
     else
-        if mpi_comm_k === nothing
-            kpoints, iband_min, iband_max, nelec_below_window = filter_kpoints_grid(
-                k_input..., nw, el_ham, window, symmetry=symmetry, kshift=kshift)
-        else
-            kpoints, iband_min, iband_max, nelec_below_window = filter_kpoints_grid(
-                k_input..., nw, el_ham, window, mpi_comm_k, symmetry=symmetry, kshift=kshift)
-        end
+        return filter_kpoints_grid(k_input..., nw, el_ham, window, mpi_comm_k, symmetry=symmetry, kshift=kshift)
     end
-    kpoints, iband_min, iband_max, nelec_below_window
 end
 
 """

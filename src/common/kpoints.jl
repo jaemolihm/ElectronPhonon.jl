@@ -5,6 +5,8 @@ using MPI
 export Kpoints
 export generate_kvec_grid
 
+# TODO: Add `shift` field for shifted regular grid.
+
 struct Kpoints{T <: Real}
     n::Int                   # Number of k points
     vectors::Vector{Vec3{T}} # Fractional coordinate of k points
@@ -185,4 +187,53 @@ function kpoints_create_subgrid(k::EPW.Kpoints, nsubgrid)
         end
     end
     EPW.Kpoints(new_n, new_vectors, new_weights, new_ngrid)
+end
+
+"""
+    add_two_kpoint_grids(kpts, qpts, k_q_to_kq, map_real_to_int, map_int_to_real)
+For k and q in kpts and qpts, return Kpoint with `kq = k_q_to_kq(k, q)`.
+ngrid_kq: ngrid for kq points
+k_q_to_kq: function from (k, q) to kq
+map_real_to_int: mapping of kq to kq_int, the integer coordinates on the grid
+map_int_to_real: mapping of kq_int to kq. Inverse of map_real_to_int.
+TODO: a better name is needed. Not limited to "add"ing.
+TODO: Add test.
+"""
+function add_two_kpoint_grids(kpts, qpts, ngrid_kq, k_q_to_kq, map_real_to_int, map_int_to_real)
+    T = eltype(kpts.weights)
+    xkqs = Vector{Vec3{T}}()
+    map_xkq_int_to_ikq = Dict{NTuple{3, Int}, Int}()
+    map_ikq_to_xkq_int = Vector{NTuple{3, Int}}()
+    ikq = 0
+    for iq in 1:qpts.n
+        xq = qpts.vectors[iq]
+        for ik in 1:kpts.n
+            xk = kpts.vectors[ik]
+            xkq = k_q_to_kq(xk, xq)
+
+            # We need to check whether two kq points are same.
+            # To do this, we map from the real vector to the integer vector.
+            xkq_int = map_real_to_int(xkq)
+            if ! isapprox(xkq, map_int_to_real(xkq_int), atol=10*eps(eltype(xkq)))
+                @show xkq, map_int_to_real(xkq_int)
+                error("xkq not correctly mapped to integer vector")
+            end
+
+            # Find new k+q points, append to map_xkq_int_to_ikq and xkqs
+            if xkq_int.data ∉ keys(map_xkq_int_to_ikq)
+                ikq += 1
+                map_xkq_int_to_ikq[xkq_int.data] = ikq
+                push!(map_ikq_to_xkq_int, xkq_int.data)
+                push!(xkqs, xkq)
+            end
+        end
+    end
+    nkq = length(xkqs)
+    kqpts = EPW.Kpoints{T}(nkq, xkqs, ones(T, nkq) ./ prod(ngrid_kq), ngrid_kq)
+    inds = EPW.sort!(kqpts)
+    for ikq_new = 1:nkq
+        key = map_ikq_to_xkq_int[inds[ikq_new]]
+        map_xkq_int_to_ikq[key] = ikq_new
+    end
+    kqpts, map_xkq_int_to_ikq
 end

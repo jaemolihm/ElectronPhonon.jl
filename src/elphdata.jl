@@ -38,7 +38,7 @@ export epdata_set_mmat!
     nband_ignore::Int
 end
 
-function ElPhData(T, nw, nmodes, nband=nw, nband_ignore=0)
+function ElPhData{T}(nw, nmodes, nband=nw, nband_ignore=0) where {T}
     @assert nband > 0
     @assert nband_ignore >= 0
     @assert nband + nband_ignore <= nw
@@ -54,6 +54,9 @@ function ElPhData(T, nw, nmodes, nband=nw, nband_ignore=0)
         nband_ignore=nband_ignore,
     )
 end
+
+# TODO: Remove and replace with above
+ElPhData(T, nw, nmodes, nband=nw, nband_ignore=0) = ElPhData{T}(nw, nmodes, nband, nband_ignore)
 
 # """
 #     apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
