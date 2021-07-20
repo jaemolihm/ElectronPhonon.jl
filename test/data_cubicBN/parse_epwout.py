@@ -118,7 +118,7 @@ if __name__ == "__main__":
 
     el_energy, el_imsigma = read_epw_out_el(filename, nk, nband, ntemperatures)
     ph_energy, ph_imsigma = read_epw_out_ph(filename, nq, nmodes, ntemperatures)
-    ph_selfen_omega, ph_specfun = read_specfun_ph(nq, nmodes, ntemperatures)
+    # ph_selfen_omega, ph_specfun = read_specfun_ph(nq, nmodes, ntemperatures)
 
     # Save transpose array because Julia uses column-major order while
     # python uses row-major order.

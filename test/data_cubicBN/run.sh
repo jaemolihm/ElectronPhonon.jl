@@ -23,4 +23,6 @@ mpirun -np 2 $QE/epw.x -nk 2 -in epw_setup.in > epw_setup.out
 # EPW
 mpirun -np 1 $QE/epw.x -nk 1 -in epw.selfen.in > epw.selfen.out
 mpirun -np 1 $QE/epw.x -nk 1 -in epw.transport.hole.in > epw.transport.hole.out
-
+rm inv_tau* restart.fmt IBTEvel_sup.fmt
+mpirun -np 1 $QE/epw.x -nk 1 -in epw.transport.elec.in > epw.transport.elec.out
+./parse_epwout.py

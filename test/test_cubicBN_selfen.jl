@@ -62,9 +62,9 @@ using NPZ
         @test iband_min == 2
         @test iband_max == 8
 
-        @test maximum(abs.(ek_ref - output["ek"][iband_min:iband_max, :])) < 2.e-4
-        @test maximum(abs.(omega_ref - output["omega"])) < 1.e-8
-        @test maximum(abs.(ph_imsigma_ref - output["phself_imsigma"])) < 1.e-8
+        @test ek_ref ≈ output["ek"][iband_min:iband_max, :] atol=2.e-4
+        @test all(isapprox.(omega_ref, output["omega"], atol=1.e-8))
+        @test all(isapprox.(ph_imsigma_ref, output["phself_imsigma"], atol=1.e-8))
 
         # Electron self-energy error can be large for states whose energy is near the window
         # boundary, with separation not much larger than the smearing.
@@ -81,9 +81,9 @@ using NPZ
         @test iband_min == 2
         @test iband_max == 8
 
-        @test maximum(abs.(ek_ref - output_disk["ek"][iband_min:iband_max, :])) < 2.e-4
-        @test maximum(abs.(omega_ref - output_disk["omega"])) < 1.e-8
-        @test maximum(abs.(ph_imsigma_ref - output_disk["phself_imsigma"])) < 1.e-8
+        @test ek_ref ≈ output_disk["ek"][iband_min:iband_max, :] atol=2.e-4
+        @test all(isapprox.(omega_ref, output_disk["omega"], atol=1.e-8))
+        @test all(isapprox.(ph_imsigma_ref, output_disk["phself_imsigma"], atol=1.e-8))
 
         # Electron self-energy error can be large for states whose energy is near the window
         # boundary, with separation not much larger than the smearing.
