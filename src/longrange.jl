@@ -1,6 +1,8 @@
 
 # Long-range parts of phonon dynamical matrix and electron-phonon coupling
 
+# TODO: If xq = 0, return.
+
 export Polar
 export dynmat_dipole!
 export eph_dipole!

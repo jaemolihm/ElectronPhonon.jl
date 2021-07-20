@@ -63,7 +63,7 @@ Compute electron inverse lifetime for given k and q point data in epdata
         # Calculate inverse electron lifetime
         for imode in 1:epdata.nmodes
             omega = epdata.ph.e[imode]
-            if (omega < omega_acoustic)
+            if omega < omega_acoustic
                 continue
             end
 

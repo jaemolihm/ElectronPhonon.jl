@@ -84,8 +84,10 @@ function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params, recip_lat
         # For electron final state occupation, use e_k - sign_ph * ω_ph instead of e_kq,
         # using energy conservation. The former is better because the phonon velocity is
         # much smaller than the electron velocity, so that it changes less w.r.t q.
-        e_f_occupation = e_i - sign_ph * ω_ph
-        # e_f_occupation = e_f
+        # e_f_occupation = e_i - sign_ph * ω_ph
+
+        # FIXME: The above is not done because it changed mobility a lot (525 to 12000) for cubicBN test (test/boltzmann/test_mobility.jl)
+        e_f_occupation = e_f
 
         if params.smearing[1] == :Gaussian
             delta = gaussian(delta_e * inv_η) * inv_η

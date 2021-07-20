@@ -16,4 +16,5 @@ using Test
 
     # Boltzmann routines
     include("boltzmann/test_hdf5.jl")
+    include("boltzmann/test_mobility.jl")
 end
