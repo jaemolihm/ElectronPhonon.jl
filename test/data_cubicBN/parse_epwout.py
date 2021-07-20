@@ -128,5 +128,6 @@ if __name__ == "__main__":
     np.save("ph_imsigma.npy", np.transpose(ph_imsigma))
 
     # ph_selfen_omega, ph_specfun are already in column-major order. No need to transpose.
+    # Not currently used in test. (see note_EPW.md)
     # np.save("ph_selfen_omega.npy", ph_selfen_omega)
     # np.save("ph_specfun.npy", ph_specfun)

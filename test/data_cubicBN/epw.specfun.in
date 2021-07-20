@@ -28,14 +28,7 @@
   wannierize  = .false.
   num_iter    = 1000
   dis_win_max = 100.0
-  dis_froz_max= 8.5
-  iprint      = 2
-  proj(1)     = 'f=-0.125,-0.125,-0.125:sp3:z=0,0,1:x=0,1,0:zona=2.0'
-  proj(2)     = 'f= 0.125, 0.125, 0.125:sp3:z=0,0,1:x=1,0,0:zona=2.0'
-  wdata(1)    = 'dis_num_iter = 1000'
-  wdata(2)    = 'dis_conv_tol = 1E-10'
-  wdata(3)    = 'conv_tol = 1E-10'
-  wdata(4)    = 'conv_window = 5'
+  dis_froz_max= 25.0
 
   efermi_read = .true.
   fermi_energy= 25.0 ! eV
@@ -45,9 +38,9 @@
   nstemp      = 2
   temps       = 200.0 300.0 ! K
 
-  nk1         = 2
-  nk2         = 2
-  nk3         = 2
+  nk1         = 4
+  nk2         = 4
+  nk3         = 4
 
   nq1         = 2
   nq2         = 2
@@ -57,7 +50,5 @@
   nkf2        = 5
   nkf3        = 5
 
-  nqf1        = 5
-  nqf2        = 5
-  nqf3        = 5
+  filqf       = 'qpt.specfun.dat'
  /

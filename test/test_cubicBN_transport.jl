@@ -6,21 +6,20 @@ using NPZ
 
 @testset "cubicBN transport" begin
     # Reference data created from EPW
-    μlist_ref = [11.6637, 11.7570, 11.8509] .* unit_to_aru(:eV)
+    μlist_ref = [11.138597, 11.247340, 11.357359] .* unit_to_aru(:eV)
 
     # Reference data created from Julia
     transport_σlist_ref_data = [
-        [ 0.0007277045977865537, -9.146768638385551e-5, -6.538945892541539e-6,
-         -9.146768638385552e-5,   1.1507356970359729e-5, 8.253931700230572e-7,
-         -6.53894589254154e-6,    8.253931700230572e-7,  6.185872520204095e-8],
-        [ 0.00011011471247628569,-1.368971748554584e-5, -9.598293254227398e-7,
-         -1.3689717485545842e-5,  1.9047441221659623e-6, 1.6022725431498375e-7,
-         -9.598293254227396e-7,   1.6022732760193538e-7, 1.0239805726826327e-7],
-        [ 2.2221943050100873e-5, -2.2559080962660653e-6,-1.6344068322456315e-7,
-         -2.2559080962660653e-6,  1.049317363049582e-6,  9.825701481924823e-8,
-         -1.6344068322456313e-7,  9.825701481924826e-8,  4.882202079807381e-7]
+        [6.679703708189413e-9 -2.0436829784200155e-10 2.929302418762372e-10;
+        -2.0436829784200176e-10 6.628794599955531e-9 -5.807371865799194e-10;
+        2.929302418762373e-10 -5.807371865799194e-10 1.0247776600023677e-8],
+        [1.272079939076327e-7 -4.028623691601275e-9 6.515938390733756e-9;
+        -4.0286236916012755e-9 1.261459276891857e-7 -1.2685585188816758e-8;
+        6.515938390733756e-9 -1.2685585188816758e-8 2.0366319596835616e-7],
+        [4.6754483480973187e-7 -1.4969270849906877e-8 2.5731495540812904e-8;
+        -1.496927084990687e-8 4.6350774299947803e-7 -4.976362345164354e-8;
+        2.5731495540812884e-8 -4.976362345164354e-8 7.652329739886983e-7]
     ]
-
     transport_σlist_ref = reshape(hcat(transport_σlist_ref_data...), 3, 3, 3)
 
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
@@ -32,12 +31,12 @@ using NPZ
     Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)
     smearing = 80.0 * unit_to_aru(:meV)
 
-    window_min = 10.9 * unit_to_aru(:eV)
-    window_max = 11.9 * unit_to_aru(:eV)
+    window_min = 10.5 * unit_to_aru(:eV)
+    window_max = 11.3 * unit_to_aru(:eV)
     window = (window_min, window_max)
 
-    nklist = (15, 15, 15)
-    nqlist = (15, 15, 15)
+    nklist = (12, 12, 12)
+    nqlist = (12, 12, 12)
 
     transport_params = TransportParams{Float64}(
         Tlist = Tlist,
@@ -60,6 +59,6 @@ using NPZ
 
     @test output["iband_min"] == 2
     @test output["iband_max"] == 4
-    @test transport_params.μlist ≈ μlist_ref atol=1.e-5
+    @test transport_params.μlist ≈ μlist_ref atol=1.e-7
     @test output["transport_σlist"] ≈ transport_σlist_ref atol=1.e-10
 end

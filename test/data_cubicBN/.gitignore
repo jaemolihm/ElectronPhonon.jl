@@ -14,3 +14,5 @@ lambda.*
 linewidth.*
 specfun.phon.*
 specfun_sup.phon
+bn_hr.dat
+bn_wsvec.dat
