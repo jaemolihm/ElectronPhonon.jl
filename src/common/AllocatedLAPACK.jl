@@ -1,6 +1,10 @@
 """
 Wrapper of a very small part of LAPACK routines. Use allocated workspaces for repeated calls.
 Also, make syev! type stable.
+
+TODO: Add tests
+TODO: Add zheevd, zheevr, zheevx
+TODO: Add utility function to check runtime of different diagonalization routines
 """
 
 module AllocatedLAPACK
@@ -27,9 +31,9 @@ function __init__()
 end
 
 # Hermitian eigensolvers
-for (syev, syevr, sygvd, elty, relty, workspaces) in
-    ((:zheev_,:zheevr_,:zhegvd_,:ComplexF64,:Float64,:_buffer_zheev),
-     (:cheev_,:cheevr_,:chegvd_,:ComplexF32,:Float32,:_buffer_cheev))
+for (syev, elty, relty, workspaces) in
+    ((:zheev_,:ComplexF64,:Float64,:_buffer_zheev),
+     (:cheev_,:ComplexF32,:Float32,:_buffer_cheev))
     @eval begin
         # SUBROUTINE ZHEEV( JOBZ, UPLO, N, A, LDA, W, WORK, LWORK, RWORK, INFO )
         # *     .. Scalar Arguments ..

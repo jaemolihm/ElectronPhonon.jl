@@ -36,6 +36,7 @@ include("selfenergy_electron.jl")
 include("selfenergy_phonon.jl")
 include("spectral_phonon.jl")
 include("transport_electron.jl")
+include("compute_states.jl")
 include("run_eigenvalues.jl")
 include("run_electron_phonon.jl")
 

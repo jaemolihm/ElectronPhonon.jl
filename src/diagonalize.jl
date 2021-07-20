@@ -55,14 +55,16 @@ end
 
 "Get frequency of phonons at a single q point.
 Input dynq is destroyed at output."
-@timing "eig_ph_val" function solve_eigen_ph_valueonly!(dynq)
+@timing "eig_ph_val" function solve_eigen_ph_valueonly!(eigvalues, dynq)
     # Directly calling LAPACK.syev! is more efficient than eigen(Hermitian(hk))
     # But, for the sake of type stability, we use eigen and eigvals.
     # eigvalues = LAPACK.syev!('N', 'U', dynq)
-    eigvalues = eigvals!(Hermitian(dynq))
+    # eigvalues = eigvals!(Hermitian(dynq))
+
+    # Use AllocatedLAPACK module for preallocating and reusing workspaces
+    epw_syev!('N', 'U', dynq, eigvalues)[1]
 
     # Computed eigenvalues are omega^2. Return sign(omega^2) * omega.
-    eigvalues_sqrt = sqrt.(abs.(eigvalues))
-    eigvalues_sqrt[eigvalues .< 0.0] .*= -1
-    return eigvalues_sqrt
+    @. eigvalues = sqrt(abs(eigvalues)) * sign(eigvalues)
+    return eigvalues
 end

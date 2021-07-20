@@ -8,6 +8,7 @@ export copyto!
 export set_window!
 export set_occupation!
 export set_eigen!
+export set_eigen_valueonly!
 export set_velocity_diag!
 
 Base.@kwdef mutable struct ElectronState{T <: Real}
@@ -34,7 +35,7 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
     occupation::Vector{T} # Electron occupation number
 end
 
-function ElectronState(T, nw, nband_bound=nw, nband_ignore=0)
+function ElectronState{T}(nw, nband_bound=nw, nband_ignore=0) where {T}
     @assert nband_bound > 0
     @assert nband_ignore >= 0
     @assert nband_bound + nband_ignore <= nw
@@ -53,6 +54,9 @@ function ElectronState(T, nw, nband_bound=nw, nband_ignore=0)
         occupation=zeros(T, nband_bound),
     )
 end
+
+# TODO: Remove this function, use the parametric one.
+ElectronState(T, nw, nband_bound=nw, nband_ignore=0) = ElectronState{T}(nw, nband_bound, nband_ignore)
 
 """ get_u(el)
 Return eigenvector for bands inside the window."""
@@ -131,6 +135,20 @@ Compute electron eigenenergy and eigenvector and save them in el.
 """
 function set_eigen!(el::ElectronState, el_ham, xk, fourier_mode="normal")
     get_el_eigen!(el.e_full, el.u_full, el.nw, el_ham, xk, fourier_mode)
+
+    # Set window to the default value: [nband_ignore+1, nband_ignore+nband_bound].
+    el.rng_full = el.nband_ignore+1:el.nband_ignore+el.nband_bound
+    el.rng = el.rng_full .- el.nband_ignore
+    el.nband = el.nband_bound
+    @views el.e[el.rng] .= el.e_full[el.rng_full]
+end
+
+"""
+    set_eigen_valueonly!(el::ElectronState, el_ham, xk, fourier_mode="normal")
+Compute electron eigenenergy and save them in el.
+"""
+function set_eigen_valueonly!(el::ElectronState, el_ham, xk, fourier_mode="normal")
+    get_el_eigen_valueonly!(el.e_full, el.nw, el_ham, xk, fourier_mode)
 
     # Set window to the default value: [nband_ignore+1, nband_ignore+nband_bound].
     el.rng_full = el.nband_ignore+1:el.nband_ignore+el.nband_bound

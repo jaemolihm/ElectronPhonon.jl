@@ -8,13 +8,14 @@ using LinearAlgebra
 using EPW: @timing
 using EPW: AbstractWannierObject, WannierObject
 using EPW: get_fourier!, update_op_r!
-using EPW: solve_eigen_el!, solve_eigen_el_valueonly!, solve_eigen_ph!
+using EPW: solve_eigen_el!, solve_eigen_el_valueonly!, solve_eigen_ph!, solve_eigen_ph_valueonly!
 using EPW: dynmat_dipole!
 
 export get_el_eigen!
 export get_el_eigen_valueonly!
 export get_el_velocity_diag!
 export get_ph_eigen!
+export get_ph_eigen_valueonly!
 export get_ph_velocity_diag!
 export get_eph_RR_to_Rq!
 export get_eph_Rq_to_kq!
@@ -28,7 +29,7 @@ const _buffer_el_velocity = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
 const _buffer_el_velocity_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_ph_velocity = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
 const _buffer_ph_velocity_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
-# const _buffer_ph_eigen = [Array{ComplexF64, 2}(undef, 0, 0)]
+const _buffer_ph_eigen = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_nothreads_eph_RR_to_Rq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
 const _buffer_nothreads_eph_RR_to_Rq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_nothreads_eph_RR_to_kR = [Array{ComplexF64, 4}(undef, 0, 0, 0, 0)]
@@ -45,7 +46,7 @@ function __init__()
     Threads.resize_nthreads!(_buffer_el_velocity_tmp)
     Threads.resize_nthreads!(_buffer_ph_velocity)
     Threads.resize_nthreads!(_buffer_ph_velocity_tmp)
-    # Threads.resize_nthreads!(_buffer_ph_eigen)
+    Threads.resize_nthreads!(_buffer_ph_eigen)
     Threads.resize_nthreads!(_buffer_eph_Rq_to_kq)
     Threads.resize_nthreads!(_buffer_eph_Rq_to_kq_tmp)
     Threads.resize_nthreads!(_buffer_eph_kR_to_kq)
@@ -128,6 +129,7 @@ end
 
 # =============================================================================
 #  Phonons
+# FIXME: fourier_mode vs mode, keyword or positional
 
 """
     get_ph_eigen!(values, vectors, ph_dyn, mass, xq, polar=nothing; fourier_mode="normal")
@@ -154,6 +156,29 @@ Compute electron eigenenergy and eigenvector.
     solve_eigen_ph!(values, vectors, dynq, mass)
     nothing
 end
+
+"""
+    get_el_eigen_valueonly!(values, nw, el_ham, xk, fourier_mode="normal")
+"""
+@timing "w2b_ph_eigval" function get_ph_eigen_valueonly!(values, ph_dyn, mass, xq, polar=nothing, fourier_mode="normal")
+    nmodes = length(values)
+    @assert size(mass) == (nmodes,)
+    @assert ph_dyn.ndata == nmodes^2
+
+    dynq = _get_buffer(_buffer_ph_eigen, (nmodes, nmodes))
+
+    get_fourier!(dynq, ph_dyn, xq, mode=fourier_mode)
+    if ! isnothing(polar)
+        dynmat_dipole!(dynq, xq, polar, 1)
+    end
+    @inbounds for j=1:nmodes, i=1:nmodes
+        dynq[i, j] /= sqrt(mass[i])
+        dynq[i, j] /= sqrt(mass[j])
+    end
+    solve_eigen_ph_valueonly!(values, dynq)
+    nothing
+end
+
 
 """
     get_ph_velocity_diag!(vel_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")

@@ -6,8 +6,9 @@ using EPW.WanToBloch: get_ph_eigen!
 export PhononState
 export copyto!
 export set_occupation!
-# export set_eigen!
-# export set_velocity_diag!
+export set_eigen!
+export set_eigen_valueonly!
+export set_velocity_diag!
 
 Base.@kwdef mutable struct PhononState{T <: Real}
     nmodes::Int # Number of modes
@@ -17,7 +18,7 @@ Base.@kwdef mutable struct PhononState{T <: Real}
     occupation::Vector{T} # Phonon occupation number
 end
 
-function PhononState(T, nmodes)
+function PhononState{T}(nmodes) where {T}
     PhononState{T}(
         nmodes=nmodes,
         e=zeros(T, nmodes),
@@ -26,6 +27,10 @@ function PhononState(T, nmodes)
         occupation=zeros(T, nmodes),
     )
 end
+
+
+# TODO: Remove this function, use the parametric one.
+PhononState(T, nmodes) = PhononState{T}(nmodes)
 
 function Base.copyto!(dest::PhononState, src::PhononState)
     if dest.nmodes < src.nmodes
@@ -56,6 +61,14 @@ Compute electron eigenenergy and eigenvector and save them in el.
 function set_eigen!(ph::PhononState, model, xk, fourier_mode="normal")
     get_ph_eigen!(ph.e, ph.u, model.ph_dyn, model.mass, xk,
         model.polar_phonon, fourier_mode=fourier_mode)
+end
+
+"""
+    set_eigen_valueonly!(ph::PhononState, model, xk, fourier_mode="normal")
+Compute electron eigenenergy and save them in el.
+"""
+function set_eigen_valueonly!(ph::PhononState, model, xk, fourier_mode="normal")
+    get_ph_eigen_valueonly!(ph.e, model.ph_dyn, model.mass, xk, model.polar_phonon, fourier_mode)
 end
 
 """
