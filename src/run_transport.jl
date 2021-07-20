@@ -3,43 +3,6 @@ using Base.Threads
 using HDF5
 
 """
-Calculate electron states and write BTStates object to HDF5 file.
-"""
-@timing "el_states" function write_electron_BTStates(g, kpts, model, window, nband, nband_ignore)
-    # TODO: MPI
-    @timing "init" el_save = [ElectronState(Float64, model.nw, nband, nband_ignore) for i=1:kpts.n]
-    @threads :static for ik in 1:kpts.n
-        xk = kpts.vectors[ik]
-        el = el_save[ik]
-
-        set_eigen!(el, model.el_ham, xk, "gridopt")
-        set_window!(el, window)
-        set_velocity_diag!(el, model.el_ham_R, xk, "gridopt")
-    end # ik
-    el_boltzmann, imap = electron_states_to_BTStates(el_save, kpts)
-    dump_BTData(g, el_boltzmann)
-    el_save, imap
-end
-
-"""
-Calculate phonon states and write BTStates object to HDF5 file.
-"""
-@timing "ph_states" function write_phonon_BTStates(g, kpts, model)
-    # TODO: MPI
-    @timing "init" ph_save = [PhononState(Float64, model.nmodes) for i=1:kpts.n]
-    @threads :static for ik in 1:kpts.n
-        xk = kpts.vectors[ik]
-        ph = ph_save[ik]
-        set_eigen!(ph, model, xk, "gridopt")
-        set_velocity_diag!(ph, model, xk, "gridopt")
-    end # ik
-    ph_boltzmann, imap = phonon_states_to_BTStates(ph_save, kpts)
-    dump_BTData(g, ph_boltzmann)
-    ph_save, imap
-end
-
-
-"""
 - `energy_conservation = (mode::Symbol, param::Real)`: Method to determine energy conservation. Only the scatterings that follow the energy conservation are calculated and saved.
     - `mode = :None`: Do not use energy conservation.
     - `mode = :Fixed`: Use fixed tolerence `param` for energy conservation. (Useful for fixed smearing)
@@ -176,16 +139,23 @@ function run_transport(
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
+        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband, nband_ignore, "gridopt")
+        el_k_boltzmann, imap_el_k = electron_states_to_BTStates(el_k_save, kpts)
         g = create_group(fid_btedata, "initialstate_electron")
-        el_k_save, imap_el_k = write_electron_BTStates(g, kpts, model, window_k, nband, nband_ignore)
+        dump_BTData(g, el_k_boltzmann)
+
         mpi_isroot() && println("Calculating electron states at k+q")
+        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore, "gridopt")
+        el_kq_boltzmann, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts)
         g = create_group(fid_btedata, "finalstate_electron")
-        el_kq_save, imap_el_kq = write_electron_BTStates(g, kqpts, model, window_kq, nband, nband_ignore)
+        dump_BTData(g, el_kq_boltzmann)
 
         # Write phonon states to HDF5 file
         mpi_isroot() && println("Calculating phonon states")
+        ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], "gridopt")
+        ph_boltzmann, imap_ph = phonon_states_to_BTStates(ph_save, qpts)
         g = create_group(fid_btedata, "phonon")
-        ph_save, imap_ph = write_phonon_BTStates(g, qpts, model)
+        dump_BTData(g, ph_boltzmann)
     end
 
     # E-ph matrix in electron Wannier, phonon Bloch representation

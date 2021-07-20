@@ -64,9 +64,9 @@ using NPZ
             spin_degeneracy = 2
         )
 
-        btmodel = load_ElPhBTModel(joinpath(tmp_dir, "btedata.rank0.h5"));
+        btmodel = load_ElPhBTModel(joinpath(tmp_dir, "btedata.rank0.h5"))
 
-        EPW.bte_compute_μ!(transport_params, btmodel.el_i, model_el.volume)
+        EPW.bte_compute_μ!(transport_params, btmodel.el_i, model_el.volume, do_print=false)
 
         inv_τ = zeros(Float64, btmodel.el_i.n, length(transport_params.Tlist))
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
@@ -129,9 +129,9 @@ using NPZ
             spin_degeneracy = 2
         )
 
-        btmodel = load_ElPhBTModel(joinpath(tmp_dir, "btedata.rank0.h5"));
+        btmodel = load_ElPhBTModel(joinpath(tmp_dir, "btedata.rank0.h5"))
 
-        EPW.bte_compute_μ!(transport_params, btmodel.el_i, model_el.volume)
+        EPW.bte_compute_μ!(transport_params, btmodel.el_i, model_el.volume, do_print=false)
 
         inv_τ = zeros(Float64, btmodel.el_i.n, length(transport_params.Tlist))
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
