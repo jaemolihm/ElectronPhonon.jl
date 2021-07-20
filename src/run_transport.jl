@@ -285,7 +285,7 @@ function run_transport(
 
             # Compute electron-phonon coupling
             get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
-            if any(xq .> 1.0e-8) && model.use_polar_dipole
+            if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 eph_dipole!(epdata.ep, xq, model.polar_eph, epdata.ph.u, epdata.mmat, 1)
             end

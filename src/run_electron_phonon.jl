@@ -183,7 +183,7 @@ function run_eph_outer_loop_q(
 
             set_velocity_diag!(epdata.el_kq, model.el_ham_R, xkq, fourier_mode)
             get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
-            if any(xq .> 1.0e-8) && model.use_polar_dipole
+            if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 eph_dipole!(epdata.ep, xq, model.polar_eph, ph.u, epdata.mmat, 1)
             end
