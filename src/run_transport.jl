@@ -52,9 +52,6 @@ function run_transport(
     end
 
     nw = model.nw
-    nmodes = model.nmodes
-
-    energy_conservation_mode, energy_conservation_tol = energy_conservation
 
     @timing "setup kgrid" begin
         # Generate k points
@@ -75,8 +72,6 @@ function run_transport(
     iband_min = min(iband_min_k, iband_min_kq)
     iband_max = max(iband_max_k, iband_max_kq)
 
-    nk = kpts.n
-    nkq = kqpts.n
     nband = iband_max - iband_min + 1
     nband_ignore = iband_min - 1
 
@@ -86,14 +81,31 @@ function run_transport(
         xq_int_to_xq(xq_int) = xq_int ./ kqpts.ngrid
         add_two_kpoint_grids(kpts, kqpts, kqpts.ngrid, xk_xkq_to_xq, xq_to_xq_int, xq_int_to_xq)
     end
+
+    btedata_prefix = joinpath(folder, "btedata")
+    compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts,
+    map_xq_int_to_iq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+
+    (nband=nband, nband_ignore=nband_ignore, kpts=kpts, qpts=qpts, kqpts=kqpts)
+end
+
+function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts,
+    kqpts, qpts, map_xq_int_to_iq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q,
+    fourier_mode)
+
+    nw = model.nw
+    nmodes = model.nmodes
+    nk = kpts.n
     nq = qpts.n
+    nkq = kqpts.n
+    energy_conservation_mode, energy_conservation_tol = energy_conservation
 
     mpi_isroot() && println("Calculating electron and phonon states")
     g = nothing
     # TODO: parallelize this part
     @timing "hdf init" begin
         # Open HDF5 file for writing BTEdata
-        fid_btedata = h5open(joinpath(folder, "btedata.rank$(mpi_myrank(mpi_comm_k)).h5"), "w")
+        fid_btedata = h5open("$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5", "w")
         #     # Write some attributes to file
         #     g = create_group(fid_btedata, "electron")
         #     write_attribute(fid_btedata["electron"], "nk", nk)
@@ -266,5 +278,5 @@ function run_transport(
     end # ik
     close(fid_btedata)
     @info "nscat_tot = $nscat_tot"
-    (nband=nband, nband_ignore=nband_ignore, kpts=kpts, qpts=qpts, kqpts=kqpts)
+    nothing
 end
