@@ -33,10 +33,10 @@ function gridopt_initialize_irvec!(gridopt, irvec)
 
     # Initialize 23
     gridopt.k1 = NaN
-    gridopt.irvec_23 = unique([Vec2(r[2:3]) for r in irvec])
+    @views gridopt.irvec_23 = unique([Vec2(r[2:3]) for r in irvec])
     gridopt.nr_23 = length(gridopt.irvec_23)
     gridopt.irmap_rng_23 = Array{UnitRange{Int64},1}()
-    for r_23 in gridopt.irvec_23
+    @views for r_23 in gridopt.irvec_23
         ir_first = findfirst(x -> x[2:3] == r_23, irvec)
         ir_last = findlast(x -> x[2:3] == r_23, irvec)
         push!(gridopt.irmap_rng_23, ir_first:ir_last)
@@ -47,7 +47,7 @@ function gridopt_initialize_irvec!(gridopt, irvec)
     gridopt.irvec_3 = unique([r[2] for r in gridopt.irvec_23])
     gridopt.nr_3 = length(gridopt.irvec_3)
     gridopt.irmap_rng_3 = Array{UnitRange{Int64},1}()
-    for r_3 in gridopt.irvec_3
+    @views for r_3 in gridopt.irvec_3
         ir_first = findfirst(x -> x[2] == r_3, gridopt.irvec_23)
         ir_last = findlast(x -> x[2] == r_3, gridopt.irvec_23)
         push!(gridopt.irmap_rng_3, ir_first:ir_last)
