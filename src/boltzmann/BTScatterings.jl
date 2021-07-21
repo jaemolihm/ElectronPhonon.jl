@@ -14,6 +14,17 @@ struct ElPhScatteringData{T <: Real} <: AbstractBTData{T}
     mel::Vector{T} # Scattering matrix elements. (Squared e-ph matrix elements.)
 end
 
+Base.iterate(scat::ElPhScatteringData{T}, state=1) where {T} = state > scat.n ? nothing : ((ind_el_i=scat.ind_el_i[state],
+    ind_el_f=scat.ind_el_f[state], ind_ph=scat.ind_ph[state], sign_ph=scat.sign_ph[state], mel=scat.mel[state]), state+1)
+Base.length(scat::ElPhScatteringData) = scat.n
+Base.eltype(::Type{ElPhScatteringData{T}}) where {T} = NamedTuple{(:ind_el_i, :ind_el_f, :ind_ph, :sign_ph, :mel), Tuple{Int64, Int64, Int64, Int64, Float64}}
+
+# TODO: Enable ElPhScatteringData to have AbstractArray so that filtered data becomes a view, not a copy.
+function Base.filter(f, scat::ElPhScatteringData{T}) where {T}
+    inds = map(s -> f(s), scat)
+    ElPhScatteringData{T}(sum(inds), scat.ind_el_i[inds], scat.ind_el_f[inds], scat.ind_ph[inds], scat.sign_ph[inds], scat.mel[inds])
+end
+
 function ElPhScatteringData{T}(n) where {T}
     ElPhScatteringData{T}(n, zeros(Int, n), zeros(Int, n), zeros(Int, n), zeros(Int, n), zeros(T, n))
 end

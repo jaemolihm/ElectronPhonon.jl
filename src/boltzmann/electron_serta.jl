@@ -64,15 +64,15 @@ function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params, recip_lat
     ngrid = el_f.ngrid
 
     # iscat_print_step = max(1, round(Int, scat.n / 10))
-    for iscat in 1:scat.n
+    for (iscat, s) in enumerate(scat)
         # if mod(iscat, iscat_print_step) == 0
         #     @printf("%.1f %% done\n", iscat / scat.n * 100)
         # end
-        ind_el_i = scat.ind_el_i[iscat]
-        ind_el_f = scat.ind_el_f[iscat]
-        ind_ph = scat.ind_ph[iscat]
-        sign_ph = scat.sign_ph[iscat]
-        g2 = scat.mel[iscat]
+        ind_el_i = s.ind_el_i
+        ind_el_f = s.ind_el_f
+        ind_ph = s.ind_ph
+        sign_ph = s.sign_ph
+        g2 = s.mel
 
         ω_ph = ph.e[ind_ph]
         if ω_ph < omega_acoustic
