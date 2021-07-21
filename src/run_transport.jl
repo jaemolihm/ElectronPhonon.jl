@@ -86,7 +86,7 @@ function run_transport(
     compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts,
     map_xq_int_to_iq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
 
-    (nband=nband, nband_ignore=nband_ignore, kpts=kpts, qpts=qpts, kqpts=kqpts)
+    (nband=nband, nband_ignore=nband_ignore, kpts=kpts, qpts=qpts, kqpts=kqpts, map_xq_int_to_iq=map_xq_int_to_iq)
 end
 
 function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts,
@@ -98,7 +98,6 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
     nk = kpts.n
     nq = qpts.n
     nkq = kqpts.n
-    energy_conservation_mode, energy_conservation_tol = energy_conservation
 
     mpi_isroot() && println("Calculating electron and phonon states")
     g = nothing
@@ -186,49 +185,24 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             # makes the long-range part more robust.
             xq = mod.(xq .+ 0.5, 1.0) .- 0.5
 
-            # Reusing phonon states
+            # Reusing phonon states: map xq to iq, the index of q point in the global list
             xq_int = round.(Int, xq .* kqpts.ngrid)
             if ! isapprox(xq, xq_int ./ kqpts.ngrid, atol=10*eps(eltype(xq)))
                 @show xq, kqpts.ngrid, xq_int, xq .- xq_int ./ kqpts.ngrid
                 error("xq is not on the grid")
             end
-
-            # Index of q point in the global list
             iq = map_xq_int_to_iq[xq_int.data]
-            copyto!(epdata.ph, ph_save[iq])
 
-            # Use saved data for electron state at k+q.
+            # Copy saved electron and phonon states to epdata
+            copyto!(epdata.ph, ph_save[iq])
             copyto!(epdata.el_kq, el_kq_save[ikq])
 
             el_k = epdata.el_k
             el_kq = epdata.el_kq
             ph = epdata.ph
 
-            # Check if energy-conserving scattering exists. If not, skip the remaining parts.
-            @timing "econv" if energy_conservation_mode != :None
-                skip_q = true
-                @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
-                    e0 = el_k.e[ib] - el_kq.e[jb] - sign_ph * ph.e[imode]
-                    if energy_conservation_mode == :Fixed
-                        if e0 <= energy_conservation_tol
-                            skip_q = false
-                            break
-                        end
-                    elseif energy_conservation_mode == :Linear
-                        max_curvature = energy_conservation_tol
-                        v0_cart = - el_kq.vdiag[jb] - sign_ph * ph.vdiag[imode]
-                        v0 = model.recip_lattice' * v0_cart
-                        de_max = sum(abs.(v0) ./ kqpts.ngrid) / 2 + max_curvature * sum(1 ./ kqpts.ngrid.^2) / 4
-                        if abs(e0) <= de_max
-                            skip_q = false
-                            break
-                        end
-                    end
-                end
-                if skip_q
-                    continue
-                end
-            end
+            # If all bands and modes do not satisfy energy conservation, skip this (k, q) point pair.
+            check_energy_conservation_all(epdata, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
             get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
@@ -238,34 +212,16 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             end
             epdata_set_g2!(epdata)
 
-            @timing "bt_push" for imode in 1:nmodes
-                for jb in el_kq.rng
-                    for ib in el_k.rng
-                        @inbounds for sign_ph in (-1, 1)
-                            # Save only if the scattering satisfies energy conservation
-                            e0 = el_k.e[ib] - el_kq.e[jb] - sign_ph * ph.e[imode]
-                            if energy_conservation_mode == :Fixed
-                                if e0 > energy_conservation_tol
-                                    continue
-                                end
-                            elseif energy_conservation_mode == :Linear
-                                max_curvature = energy_conservation_tol
-                                v0_cart = - el_kq.vdiag[jb] - sign_ph * ph.vdiag[imode]
-                                v0 = model.recip_lattice' * v0_cart
-                                de_max = sum(abs.(v0) ./ kqpts.ngrid) / 2 + max_curvature * sum(1 ./ kqpts.ngrid.^2) / 4
-                                if abs(e0) > de_max
-                                    continue
-                                end
-                            end
-                            bt_nscat += 1
-                            bt_scat.ind_el_i[bt_nscat] = imap_el_k[ib, ik]
-                            bt_scat.ind_el_f[bt_nscat] = imap_el_kq[jb, ikq]
-                            bt_scat.ind_ph[bt_nscat] = imap_ph[imode, iq]
-                            bt_scat.sign_ph[bt_nscat] = sign_ph
-                            bt_scat.mel[bt_nscat] = epdata.g2[jb, ib, imode]
-                        end
-                    end
-                end
+            @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
+                # Save only if the scattering satisfies energy conservation
+                check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, model.recip_lattice, energy_conservation...) || continue
+
+                bt_nscat += 1
+                bt_scat.ind_el_i[bt_nscat] = imap_el_k[ib, ik]
+                bt_scat.ind_el_f[bt_nscat] = imap_el_kq[jb, ikq]
+                bt_scat.ind_ph[bt_nscat] = imap_ph[imode, iq]
+                bt_scat.sign_ph[bt_nscat] = sign_ph
+                bt_scat.mel[bt_nscat] = epdata.g2[jb, ib, imode]
             end
         end # ikq
 
@@ -279,4 +235,43 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
     close(fid_btedata)
     @info "nscat_tot = $nscat_tot"
     nothing
+end
+
+# Check if given scattering satisfies energy conservation.
+function check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, recip_lattice, econv_mode, econv_tol)
+    if econv_mode == :None
+        # Do not check energy conservation. Always return true.
+        return true
+    elseif econv_mode == :Fixed
+        # Check if energy difference is within the range [-econv_tol, econv_tol]
+        e0 = el_k.e[ib] - el_kq.e[jb] - sign_ph * ph.e[imode]
+        return abs(e0) <= econv_tol
+    elseif econv_mode == :Linear
+        # Check if linearly-interpolated energy can be zero in the q-point grid box.
+        # Use econv_tol as the maximum possible curvature of the energy difference.
+        max_curvature = econv_tol
+        v0_cart = - el_kq.vdiag[jb] - sign_ph * ph.vdiag[imode]
+        v0 = recip_lattice' * v0_cart
+        de_max = sum(abs.(v0) ./ kqpts.ngrid) / 2 + max_curvature * sum(1 ./ kqpts.ngrid.^2) / 4
+        return abs(e0) <= de_max
+    else
+        error("energy conservation mode not identified")
+    end
+end
+
+# Check if energy-conserving scattering exists for all bands, modes, and sign_ph, and return true if so.
+@timing "econv_all" function check_energy_conservation_all(epdata, recip_lattice, econv_mode, econv_tol)
+    el_k = epdata.el_k
+    el_kq = epdata.el_kq
+    ph = epdata.ph
+
+    # If econv_mode is :None, do not check energy conservation. Always return true.
+    econv_mode == :None && return true
+
+    # Loop over all scattering processes. If there is an energy-conserving one, return true
+    @inbounds for imode in 1:ph.nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
+        check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, recip_lattice, econv_mode, econv_tol) && return true
+    end
+    # If all scatterings are energy non-conserving, return false
+    return false
 end
