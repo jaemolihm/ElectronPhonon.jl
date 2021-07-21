@@ -5,21 +5,6 @@ using NPZ
 # TODO: Add test without polar_eph
 
 @testset "boltzmann cubicBN transport" begin
-    # Reference data created from EPW
-    μlist_ref_epw = [15.361083, 15.355056, 15.349019] .* unit_to_aru(:eV)
-    mobility_ref_epw_data = [
-        [0.525206E+03    0.101254E-05   -0.105157E-07;
-        0.101254E-05    0.525206E+03    0.136829E-05;
-        -0.105157E-07    0.136829E-05    0.525206E+03],
-        [0.339362E+03    0.340667E-05    0.274588E-05;
-        0.340667E-05    0.339362E+03   -0.186869E-05;
-        0.274588E-05   -0.186869E-05    0.339362E+03],
-        [0.242791E+03    0.105480E-03    0.105008E-03;
-        0.105480E-03    0.242791E+03   -0.104381E-03;
-        0.105008E-03   -0.104381E-03    0.242791E+03],
-    ]
-    mobility_ref_epw = reshape(hcat(mobility_ref_epw_data...), 3, 3, 3)
-
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
@@ -36,6 +21,21 @@ using NPZ
     energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
 
     @testset "electron doping" begin
+        # Reference data created from EPW
+        μlist_ref_epw = [15.361083, 15.355056, 15.349019] .* unit_to_aru(:eV)
+        mobility_ref_epw_data = [
+            [0.525206E+03    0.101254E-05   -0.105157E-07;
+            0.101254E-05    0.525206E+03    0.136829E-05;
+            -0.105157E-07    0.136829E-05    0.525206E+03],
+            [0.339362E+03    0.340667E-05    0.274588E-05;
+            0.340667E-05    0.339362E+03   -0.186869E-05;
+            0.274588E-05   -0.186869E-05    0.339362E+03],
+            [0.242791E+03    0.105480E-03    0.105008E-03;
+            0.105480E-03    0.242791E+03   -0.104381E-03;
+            0.105008E-03   -0.104381E-03    0.242791E+03],
+        ]
+        mobility_ref_epw = reshape(hcat(mobility_ref_epw_data...), 3, 3, 3)
+
         window = (15.0, 16.0) .* unit_to_aru(:eV)
         window_k  = window
         window_kq = window
@@ -158,6 +158,45 @@ using NPZ
         mobility_serta = EPW.transport_print_mobility(output["transport_σlist"], transport_params_serta, model_ph.volume, do_print=false)
         @test all(isapprox.(transport_params.μlist, transport_params_serta.μlist, atol=1e-7))
         @test all(isapprox.(mobility, mobility_serta, atol=2e-1))
+    end
+
+    @testset "subgrid q" begin
+        window_k  = (15.0, 15.8) .* unit_to_aru(:eV)
+        window_kq = (15.0, 16.0) .* unit_to_aru(:eV)
+
+        nklist = (15, 15, 15)
+        nqlist = (15, 15, 15)
+
+        # Calculate matrix elements
+        @time output = EPW.run_transport(
+            model_el, nklist, nqlist,
+            fourier_mode = "gridopt",
+            folder = tmp_dir,
+            window_k  = window_k,
+            window_kq = window_kq,
+            use_irr_k = true,
+            energy_conservation = energy_conservation,
+        )
+        @test output.kpts.n == 3
+        @test output.kqpts.n == 48
+        @test output.qpts.n == 103
+
+        subgrid_q_max = 0.07
+        subgrid_scale = (2, 2, 2)
+
+        @time output_subgrid = run_transport_subgrid_q(
+            model_ph, output.kpts, output.qpts, output.nband, output.nband_ignore, subgrid_q_max, subgrid_scale;
+            fourier_mode = "gridopt",
+            window_k = window_k,
+            window_kq = window_kq,
+            folder = tmp_dir,
+            energy_conservation = energy_conservation,
+        )
+        @test output_subgrid.kpts.n == 3
+        @test output_subgrid.kqpts.n == 264
+        @test output_subgrid.qpts.n == 136
+        @test output_subgrid.nband == output.nband
+        @test output_subgrid.nband_ignore == output.nband_ignore
     end
 end
 

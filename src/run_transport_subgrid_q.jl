@@ -64,7 +64,7 @@ function run_transport_subgrid_q(
     # To do so, one needs to use model with epmat_outer_momentum == "ph".
     compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, xq_shift, map_xkq_int_to_ikq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
 
-    (qpts=qpts, kqpts=kqpts)
+    (kpts=kpts, qpts=qpts, kqpts=kqpts, nband=nband, nband_ignore=nband_ignore)
 end
 
 
@@ -134,7 +134,7 @@ function compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_
 
     nscat_tot = 0
     for iq in 1:nq
-        if mod(iq, 5) == 0
+        if mod(iq, 10) == 0
             println("iq = $iq")
             # mpi_isroot() && println("iq = $iq")
             flush(stdout)
