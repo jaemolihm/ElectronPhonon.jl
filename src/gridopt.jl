@@ -37,8 +37,8 @@ function gridopt_initialize_irvec!(gridopt, irvec)
     gridopt.nr_23 = length(gridopt.irvec_23)
     gridopt.irmap_rng_23 = Array{UnitRange{Int64},1}()
     for r_23 in gridopt.irvec_23
-        ir_first = findfirst(map(x -> x[2:3] == r_23, irvec))
-        ir_last = findlast(map(x -> x[2:3] == r_23, irvec))
+        ir_first = findfirst(x -> x[2:3] == r_23, irvec)
+        ir_last = findlast(x -> x[2:3] == r_23, irvec)
         push!(gridopt.irmap_rng_23, ir_first:ir_last)
     end
 
@@ -48,8 +48,8 @@ function gridopt_initialize_irvec!(gridopt, irvec)
     gridopt.nr_3 = length(gridopt.irvec_3)
     gridopt.irmap_rng_3 = Array{UnitRange{Int64},1}()
     for r_3 in gridopt.irvec_3
-        ir_first = findfirst(map(x -> x[2] == r_3, gridopt.irvec_23))
-        ir_last = findlast(map(x -> x[2] == r_3, gridopt.irvec_23))
+        ir_first = findfirst(x -> x[2] == r_3, gridopt.irvec_23)
+        ir_last = findlast(x -> x[2] == r_3, gridopt.irvec_23)
         push!(gridopt.irmap_rng_3, ir_first:ir_last)
     end
 
