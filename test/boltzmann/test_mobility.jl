@@ -3,8 +3,6 @@ using EPW
 using NPZ
 
 # TODO: Add test without polar_eph
-# This file is currently just copied from test_cubicBN_transport.jl.
-# Need to make some changes...
 
 @testset "boltzmann cubicBN transport" begin
     # Reference data created from EPW

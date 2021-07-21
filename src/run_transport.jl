@@ -136,8 +136,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epdatas = [ElPhData{Float64}(nw, nmodes, nband, nband_ignore)]
     Threads.resize_nthreads!(epdatas)
-    epobj_ekpR = WannierObject(model.epmat.irvec_next,
-    zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
 
     # Setup for collecting scattering processes
     @timing "bt init" begin
@@ -214,7 +213,8 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
 
             @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
                 # Save only if the scattering satisfies energy conservation
-                check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, model.recip_lattice, energy_conservation...) || continue
+                check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
+                    model.recip_lattice, energy_conservation...) || continue
 
                 bt_nscat += 1
                 bt_scat.ind_el_i[bt_nscat] = imap_el_k[ib, ik]
