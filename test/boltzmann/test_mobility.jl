@@ -197,6 +197,20 @@ using NPZ
         @test output_subgrid.qpts.n == 136
         @test output_subgrid.nband == output.nband
         @test output_subgrid.nband_ignore == output.nband_ignore
+
+        @time output_subgrid_el = run_transport_subgrid_q(
+            model_el, output.kpts, output.qpts, output.nband, output.nband_ignore, subgrid_q_max, subgrid_scale;
+            fourier_mode = "gridopt",
+            window_k = window_k,
+            window_kq = window_kq,
+            folder = tmp_dir,
+            energy_conservation = energy_conservation,
+        )
+        @test output_subgrid_el.kpts.n == 3
+        @test output_subgrid_el.kqpts.n == 264
+        @test output_subgrid_el.qpts.n == 136
+        @test output_subgrid_el.nband == output.nband
+        @test output_subgrid_el.nband_ignore == output.nband_ignore
     end
 end
 

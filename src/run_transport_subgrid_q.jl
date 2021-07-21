@@ -48,7 +48,7 @@ function run_transport_subgrid_q(
     # Compute q point object for the subgrid
     qpts = EPW.kpoints_create_subgrid(qpts_to_subgrid, subgrid_scale)
     indmap = EPW.sort!(qpts)
-    # iq_subgrid_to_original = repeat(iqs_to_subgrid, inner=prod(subgrid_scale))[indmap]
+    iq_subgrid_to_grid = repeat(iqs_to_subgrid, inner=prod(subgrid_scale))[indmap]
     xq_shift = map(n -> mod(n, 2) == 0 ? 1/(2*n) : 0, subgrid_scale) ./ qpts_original.ngrid
 
     # Map k and q points to k+q points
@@ -62,9 +62,13 @@ function run_transport_subgrid_q(
     # Since the number of subgrid q points are typically smaller than the number of k points,
     # it is better to use outer_q than to use outer_k.
     # To do so, one needs to use model with epmat_outer_momentum == "ph".
-    compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, xq_shift, map_xkq_int_to_ikq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+    if model.epmat_outer_momentum == "ph"
+        compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, xq_shift, map_xkq_int_to_ikq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+    elseif model.epmat_outer_momentum == "el"
+        compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, xq_shift, map_xkq_int_to_ikq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+    end
 
-    (kpts=kpts, qpts=qpts, kqpts=kqpts, nband=nband, nband_ignore=nband_ignore)
+    (kpts=kpts, qpts=qpts, kqpts=kqpts, nband=nband, nband_ignore=nband_ignore, iq_subgrid_to_grid=iq_subgrid_to_grid)
 end
 
 
@@ -199,7 +203,7 @@ function compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_
         end # ik
 
         @timing "bt_dump" begin
-            g = create_group(fid_btedata, "scattering/$iq")
+            g = create_group(fid_btedata, "scattering/iq$iq")
             dump_BTData(g, bt_scat, bt_nscat)
         end
 
@@ -215,7 +219,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
     fourier_mode)
 
     if model.epmat_outer_momentum != "el"
-        throw(ArgumentError("model.epmat_outer_momentum must be el"))
+        error("model.epmat_outer_momentum must be el")
     end
 
     nw = model.nw
@@ -264,7 +268,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
 
     # Setup for collecting scattering processes
     @timing "bt init" begin
-        max_nscat = nk * nmodes * nband^2 * 2
+        max_nscat = nq * nmodes * nband^2 * 2
         bt_scat = ElPhScatteringData{Float64}(max_nscat)
     end
 
@@ -337,10 +341,10 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
                 bt_scat.sign_ph[bt_nscat] = sign_ph
                 bt_scat.mel[bt_nscat] = epdata.g2[jb, ib, imode]
             end
-        end # ikq
+        end # iq
 
         @timing "bt_dump" begin
-            g = create_group(fid_btedata, "scattering/$ik")
+            g = create_group(fid_btedata, "scattering/ik$ik")
             dump_BTData(g, bt_scat, bt_nscat)
         end
 

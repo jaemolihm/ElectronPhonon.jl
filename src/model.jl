@@ -3,6 +3,8 @@ using FortranFiles
 
 export load_model
 
+# TODO: Implement Base.show(model::ModelEPW)
+
 fortran_read_bool(f) = Bool(abs(read(f, Int32))) # In fortran file, 0 is false, -1 or +1 is true
 
 "Tight-binding model for electron, phonon, and electron-phonon coupling.

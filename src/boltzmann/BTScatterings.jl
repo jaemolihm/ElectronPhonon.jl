@@ -78,20 +78,19 @@ function load_ElPhBTModel(filename, T=Float64)
 
     # Read scattering
     f = fid["scattering"]
-    nscat_tot = sum([read(f["ik$ik"], "n") for ik in 1:el_i.nk])
+    nscat_tot = mapreduce(g -> read(g, "n"), +, f)
     scattering = EPW.ElPhScatteringData{T}(nscat_tot)
     nscat_cumulative = 0
-    for ik = 1:el_i.nk
-        g = f["ik$ik"]
-        scat_ik = load_BTData(g, typeof(scattering))
-        nscat_ik = scat_ik.n
-        rng = nscat_cumulative+1:nscat_cumulative+nscat_ik
-        scattering.ind_el_i[rng] .= scat_ik.ind_el_i
-        scattering.ind_el_f[rng] .= scat_ik.ind_el_f
-        scattering.ind_ph[rng] .= scat_ik.ind_ph
-        scattering.sign_ph[rng] .= scat_ik.sign_ph
-        scattering.mel[rng] .= scat_ik.mel
-        nscat_cumulative += nscat_ik
+    for g in f
+        scat_i = load_BTData(g, typeof(scattering))
+        nscat_i = scat_i.n
+        rng = nscat_cumulative+1:nscat_cumulative+nscat_i
+        scattering.ind_el_i[rng] .= scat_i.ind_el_i
+        scattering.ind_el_f[rng] .= scat_i.ind_el_f
+        scattering.ind_ph[rng] .= scat_i.ind_ph
+        scattering.sign_ph[rng] .= scat_i.sign_ph
+        scattering.mel[rng] .= scat_i.mel
+        nscat_cumulative += nscat_i
     end
     close(fid)
     ElPhBTModel(el_i, el_f, ph, scattering)
