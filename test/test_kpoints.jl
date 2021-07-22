@@ -53,6 +53,17 @@ end
     for i in 1:size(xks, 2)
         @test kpts.vectors[i] ≈ xks[:, inds[i]]
     end
+
+    kpts1 = Kpoints(xks)
+    kpts2 = Kpoints(xks)
+    center = (0, 1//2, 1)
+    shift_center!(kpts2, center)
+    for k in kpts2.vectors
+        @test all(abs.(k .- center) .< 0.5 + 1e-8)
+    end
+    for dk in kpts2.vectors .- kpts1.vectors
+        @test all(abs.(dk - round.(Int, dk)) .< 1e-8)
+    end
 end
 
 @testset "kpoints: GridKpoints" begin

@@ -32,6 +32,13 @@ end
 
 Base.sortperm(k::AbstractKpoints) = sortperm(k.vectors)
 
+function shift_center!(k::AbstractKpoints, center)
+    for ik in 1:k.n
+        k.vectors[ik] = mod.(k.vectors[ik] .- center .+ 1//2, 1) .+ center .- 1//2
+    end
+    k
+end
+
 function Base.sort!(k::Kpoints)
     inds = sortperm(k.vectors)
     k.vectors .= k.vectors[inds]

@@ -75,7 +75,7 @@ function run_transport(
     nband = iband_max - iband_min + 1
     nband_ignore = iband_min - 1
 
-    xk_xkq_to_xq(xk, xkq) = mod.(xkq - xk .+ 0.5, 1.0) .- 0.5
+    xk_xkq_to_xq(xk, xkq) = mod.(xkq - xk .+ 1//2, 1) .- 1//2
     qpts, map_xq_int_to_iq = let kqpts = kqpts
         xq_to_xq_int(xq) = round.(Int, xq .* kqpts.ngrid)
         xq_int_to_xq(xq_int) = xq_int ./ kqpts.ngrid
@@ -182,7 +182,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
 
             # Move xq inside [-0.5, 0.5]^3. This doesn't change the Fourier transform but
             # makes the long-range part more robust.
-            xq = mod.(xq .+ 0.5, 1.0) .- 0.5
+            xq = mod.(xq .+ 1//2, 1) .- 1//2
 
             # Reusing phonon states: map xq to iq, the index of q point in the global list
             xq_int = round.(Int, xq .* kqpts.ngrid)
