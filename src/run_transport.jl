@@ -75,23 +75,21 @@ function run_transport(
     nband = iband_max - iband_min + 1
     nband_ignore = iband_min - 1
 
-    xk_xkq_to_xq(xk, xkq) = mod.(xkq - xk .+ 1//2, 1) .- 1//2
-    qpts, map_xq_int_to_iq = let kqpts = kqpts
-        xq_to_xq_int(xq) = round.(Int, xq .* kqpts.ngrid)
-        xq_int_to_xq(xq_int) = xq_int ./ kqpts.ngrid
-        add_two_kpoint_grids(kpts, kqpts, kqpts.ngrid, xk_xkq_to_xq, xq_to_xq_int, xq_int_to_xq)
-    end
+    qpts = add_two_kpoint_grids(kqpts, kpts, -, kqpts.ngrid)
+
+    # Move xq inside [-0.5, 0.5]^3. This doesn't change the Fourier transform but
+    # makes the long-range part more robust.
+    sort!(shift_center!(qpts, (0, 0, 0)))
 
     btedata_prefix = joinpath(folder, "btedata")
     compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts,
-    map_xq_int_to_iq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+        nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
 
-    (nband=nband, nband_ignore=nband_ignore, kpts=kpts, qpts=qpts, kqpts=kqpts, map_xq_int_to_iq=map_xq_int_to_iq)
+    (nband=nband, nband_ignore=nband_ignore, kpts=kpts, qpts=qpts, kqpts=kqpts)
 end
 
 function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts,
-    kqpts, qpts, map_xq_int_to_iq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q,
-    fourier_mode)
+    kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
 
     nw = model.nw
     nmodes = model.nmodes
@@ -180,17 +178,9 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             xkq = kqpts.vectors[ikq]
             xq = xkq - xk
 
-            # Move xq inside [-0.5, 0.5]^3. This doesn't change the Fourier transform but
-            # makes the long-range part more robust.
-            xq = mod.(xq .+ 1//2, 1) .- 1//2
-
-            # Reusing phonon states: map xq to iq, the index of q point in the global list
-            xq_int = round.(Int, xq .* kqpts.ngrid)
-            if ! isapprox(xq, xq_int ./ kqpts.ngrid, atol=10*eps(eltype(xq)))
-                @show xq, kqpts.ngrid, xq_int, xq .- xq_int ./ kqpts.ngrid
-                error("xq is not on the grid")
-            end
-            iq = map_xq_int_to_iq[xq_int.data]
+            # Find xq in qpts. Since xq can be shifted by a lattice vector, take xq from qpts.vectors
+            iq = xk_to_ik(xq, qpts)
+            xq = qpts.vectors[iq]
 
             # Copy saved electron and phonon states to epdata
             copyto!(epdata.ph, ph_save[iq])

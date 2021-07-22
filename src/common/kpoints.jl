@@ -6,6 +6,7 @@ export Kpoints
 export generate_kvec_grid
 export GridKpoints
 export xk_to_ik
+export shift_center!
 
 abstract type AbstractKpoints{T <: Real} end
 
@@ -191,55 +192,50 @@ function kpoints_create_subgrid(k::Kpoints, nsubgrid)
 end
 
 """
-    add_two_kpoint_grids(kpts, qpts, k_q_to_kq, map_real_to_int, map_int_to_real)
-For k and q in kpts and qpts, return Kpoint with `kq = k_q_to_kq(k, q)`.
+    add_two_kpoint_grids(kpts, qpts, op, ngrid_kq)
+For k and q in kpts and qpts, return Kpoint with `kq = op(k, q)`.
 ngrid_kq: ngrid for kq points
-k_q_to_kq: function from (k, q) to kq
-map_real_to_int: mapping of kq to kq_int, the integer coordinates on the grid
-map_int_to_real: mapping of kq_int to kq. Inverse of map_real_to_int.
+op: function from (k, q) to kq. Only + and -.
 TODO: a better name is needed. Not limited to "add"ing.
 TODO: Add test.
 """
-function add_two_kpoint_grids(kpts, qpts, ngrid_kq, k_q_to_kq, map_real_to_int, map_int_to_real)
+function add_two_kpoint_grids(kpts, qpts, op, ngrid_kq)
+    if Symbol(op) !== :+ && Symbol(op) !== :-
+        error("op must be + or -")
+    end
+    @assert all(kpts.ngrid .> 0)
+    @assert all(qpts.ngrid .> 0)
+
     T = eltype(kpts.weights)
     xkqs = Vector{Vec3{T}}()
-    map_xkq_int_to_ikq = Dict{NTuple{3, Int}, Int}()
-    map_ikq_to_xkq_int = Vector{NTuple{3, Int}}()
+    xkq_hash_to_ikq = Dict{Int, Int}()
+    shift_k = kpts.vectors[1]
+    shift_q = qpts.vectors[1]
+    shift_kq = op(shift_k, shift_q)
+
     ikq = 0
     for iq in 1:qpts.n
         xq = qpts.vectors[iq]
+        xq_rational = round.(Int, (xq - shift_q) .* qpts.ngrid) .// qpts.ngrid
         for ik in 1:kpts.n
             xk = kpts.vectors[ik]
-            xkq = k_q_to_kq(xk, xq)
+            xk_rational = round.(Int, (xk - shift_k) .* kpts.ngrid) .// kpts.ngrid
+            xkq = mod.(op(xk_rational, xq_rational), 1) + shift_kq
 
-            # We need to check whether two kq points are same.
-            # To do this, we map from the real vector to the integer vector.
-            xkq_int = map_real_to_int(xkq)
-            if ! isapprox(xkq, map_int_to_real(xkq_int), atol=10*eps(eltype(xkq)))
-                @show xkq, map_int_to_real(xkq_int)
-                error("xkq not correctly mapped to integer vector")
-            end
-
-            # Find new k+q points, append to map_xkq_int_to_ikq and xkqs
-            if xkq_int.data ∉ keys(map_xkq_int_to_ikq)
+            # Find new k+q points, append to xkq_hash_to_ikq and xkqs
+            xk_hash_value = EPW._hash_xk(xkq, ngrid_kq, shift_kq)
+            if xk_hash_value ∉ keys(xkq_hash_to_ikq)
                 ikq += 1
-                map_xkq_int_to_ikq[xkq_int.data] = ikq
-                push!(map_ikq_to_xkq_int, xkq_int.data)
+                xkq_hash_to_ikq[xk_hash_value] = ikq
                 push!(xkqs, xkq)
+            else
+                @assert xkq ≈ xkqs[xkq_hash_to_ikq[xk_hash_value]]
             end
         end
     end
     nkq = length(xkqs)
-    kqpts = Kpoints{T}(nkq, xkqs, ones(T, nkq) ./ prod(ngrid_kq), ngrid_kq)
-    inds = sortperm(kqpts)
-    sort!(kqpts)
-    for ikq_new = 1:nkq
-        key = map_ikq_to_xkq_int[inds[ikq_new]]
-        map_xkq_int_to_ikq[key] = ikq_new
-    end
-    kqpts, map_xkq_int_to_ikq
+    GridKpoints{T}(nkq, xkqs, ones(T, nkq) ./ prod(ngrid_kq), ngrid_kq, shift_kq, xkq_hash_to_ikq)
 end
-
 
 """k points that form a subset of a regular grid.
 All k points should satisfy ``k = (i, j, k) ./ ngrid + shift`` where i, j, k are integers.
@@ -263,7 +259,7 @@ struct GridKpoints{T} <: AbstractKpoints{T}
     _xk_hash_to_ik::Dict{Int,Int}
 end
 
-function GridKpoints(kpts::EPW.Kpoints{T}) where {T}
+function GridKpoints(kpts::Kpoints{T}) where {T}
     all(kpts.ngrid .> 0) || error("kpts must be on a grid to make GridKpoints")
     if kpts.n == 0
         return GridKpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), kpts.ngrid, zero(Vec3{T}), Dict{Int,Int}())
@@ -272,6 +268,9 @@ function GridKpoints(kpts::EPW.Kpoints{T}) where {T}
     _xk_hash_to_ik = Dict(_hash_xk.(kpts.vectors, Ref(kpts.ngrid), Ref(shift)) .=> 1:kpts.n)
     GridKpoints{T}(kpts.n, kpts.vectors, kpts.weights, kpts.ngrid, shift, _xk_hash_to_ik)
 end
+
+# Reduce GridKpoints to Kpoints
+Kpoints(k::GridKpoints{T}) where {T} = Kpoints{T}(k.n, k.vectors, k.weights, k.ngrid)
 
 function _hash_xk(xk, ngrid, shift)
     xk_int = mod.(round.(Int, (xk - shift) .* ngrid), ngrid)
@@ -282,8 +281,10 @@ _hash_xk(xk, kpts::GridKpoints) = _hash_xk(xk, kpts.ngrid, kpts.shift)
 # Retern index of given xk vector
 xk_to_ik(xk, kpts) = kpts._xk_hash_to_ik[_hash_xk(xk, kpts)]
 
+Base.sortperm(k::GridKpoints) = sortperm(map(xk -> round.(Int, (xk - k.shift) .* k.ngrid), k.vectors))
+
 function Base.sort!(k::GridKpoints)
-    inds = sortperm(k.vectors)
+    inds = sortperm(k)
     k.vectors .= k.vectors[inds]
     k.weights .= k.weights[inds]
     for (ik, xk) in enumerate(k.vectors)
@@ -291,3 +292,6 @@ function Base.sort!(k::GridKpoints)
     end
     k
 end
+
+get_filtered_kpoints(k::GridKpoints, ik_keep) = GridKpoints(get_filtered_kpoints(Kpoints(k), ik_keep))
+kpoints_create_subgrid(k::GridKpoints, nsubgrid) = GridKpoints(kpoints_create_subgrid(Kpoints(k), nsubgrid))

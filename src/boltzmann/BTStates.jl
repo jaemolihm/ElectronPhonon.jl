@@ -36,7 +36,7 @@ Transform Vector of ElectronState to a BTState.
 - `imap`: imap[ib, ik] is the index of the state in BTStates (for ib in `el_states[ik].rng`)
 """
 @timing "el_to_BT" function electron_states_to_BTStates(el_states::Vector{ElectronState{T}},
-        kpts::EPW.Kpoints{T}) where {T <: Real}
+        kpts::EPW.AbstractKpoints{T}) where {T <: Real}
     nk = length(el_states)
     n = sum([el.nband for el in el_states])
     ngrid = kpts.ngrid
@@ -82,7 +82,7 @@ Transform Vector of PhononState to a BTState.
 - `imap`: imap[ib, ik] is the index of the state in BTStates (for ib in `ph_states[ik].rng`)
 """
 @timing "ph_to_BT" function phonon_states_to_BTStates(ph_states::Vector{PhononState{T}},
-        kpts::EPW.Kpoints{T}) where {T <: Real}
+        kpts::EPW.AbstractKpoints{T}) where {T <: Real}
     nk = length(ph_states)
     nmodes = ph_states[1].nmodes
     ngrid = kpts.ngrid

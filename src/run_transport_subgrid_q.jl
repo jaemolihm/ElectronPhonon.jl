@@ -16,8 +16,8 @@ TODO:
 """
 function run_transport_subgrid_q(
         model::ModelEPW,
-        kpts::Kpoints,
-        qpts_original::Kpoints,
+        kpts::AbstractKpoints,
+        qpts_original::AbstractKpoints,
         nband,
         nband_ignore,
         subgrid_q_max,
@@ -50,14 +50,11 @@ function run_transport_subgrid_q(
     indmap = sortperm(qpts)
     sort!(qpts)
     iq_subgrid_to_grid = repeat(iqs_to_subgrid, inner=prod(subgrid_scale))[indmap]
-    xq_shift = map(n -> mod(n, 2) == 0 ? 1/(2*n) : 0, subgrid_scale) ./ qpts_original.ngrid
 
     # Map k and q points to k+q points
     mpi_isroot() && println("Finding the list of k+q points")
-    xk_xq_to_xkq(xk, xq) = mod.(xk + xq, 1)
-    xkq_to_xkq_int(xkq) = round.(Int, (xkq .- xq_shift) .* qpts.ngrid)
-    xkq_int_to_xkq(xkq_int) = xkq_int ./ qpts.ngrid .+ xq_shift
-    kqpts, map_xkq_int_to_ikq = EPW.add_two_kpoint_grids(kpts, qpts, qpts.ngrid, xk_xq_to_xkq, xkq_to_xkq_int, xkq_int_to_xkq)
+    kqpts = add_two_kpoint_grids(kpts, qpts, +, qpts.ngrid)
+    sort!(kqpts)
 
     btedata_prefix = joinpath(folder, "btedata_subgrid")
 
@@ -65,9 +62,9 @@ function run_transport_subgrid_q(
     # it is better to use outer_q than to use outer_k.
     # To do so, one needs to use model with epmat_outer_momentum == "ph".
     if model.epmat_outer_momentum == "ph"
-        compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, xq_shift, map_xkq_int_to_ikq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+        compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
     elseif model.epmat_outer_momentum == "el"
-        compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, xq_shift, map_xkq_int_to_ikq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+        compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
     end
 
     (kpts=kpts, qpts=qpts, kqpts=kqpts, nband=nband, nband_ignore=nband_ignore, iq_subgrid_to_grid=iq_subgrid_to_grid)
@@ -75,8 +72,7 @@ end
 
 
 function compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_k, window_kq, kpts,
-    kqpts, qpts, xq_shift, map_xkq_int_to_ikq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q,
-    fourier_mode)
+    kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
 
     if model.epmat_outer_momentum != "ph"
         throw(ArgumentError("model.epmat_outer_momentum must be ph"))
@@ -166,11 +162,9 @@ function compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_
             epdata.wtq = qpts.weights[iq]
 
             xk = kpts.vectors[ik]
-            xkq = mod.(xk + xq, 1)
 
             # Reusing k+q states: map xkq to ikq, the index of k+q point in the global list
-            xkq_int = round.(Int, (xkq .- xq_shift) .* qpts.ngrid)
-            ikq = map_xkq_int_to_ikq[xkq_int.data]
+            ikq = xk_to_ik(xk + xq, kqpts)
 
             # Copy saved electron and phonon states to epdata
             copyto!(epdata.el_k, el_k_save[ik])
@@ -218,8 +212,7 @@ function compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_
 end
 
 function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_k, window_kq, kpts,
-    kqpts, qpts, xq_shift, map_xkq_int_to_ikq, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q,
-    fourier_mode)
+    kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
 
     if model.epmat_outer_momentum != "el"
         error("model.epmat_outer_momentum must be el")
@@ -308,11 +301,9 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
             epdata.wtq = qpts.weights[iq]
 
             xq = qpts.vectors[iq]
-            xkq = mod.(xk + xq, 1)
 
             # Reusing k+q states: map xkq to ikq, the index of k+q point in the global list
-            xkq_int = round.(Int, (xkq .- xq_shift) .* qpts.ngrid)
-            ikq = map_xkq_int_to_ikq[xkq_int.data]
+            ikq = xk_to_ik(xk + xq, kqpts)
 
             # Copy saved electron and phonon states to epdata
             copyto!(epdata.ph, ph_save[iq])
