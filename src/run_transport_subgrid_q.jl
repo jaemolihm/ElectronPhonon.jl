@@ -179,7 +179,7 @@ function compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_
             ph = epdata.ph
 
             # If all bands and modes do not satisfy energy conservation, skip this (k, q) point pair.
-            check_energy_conservation_all(epdata, model.recip_lattice, energy_conservation...) || continue
+            check_energy_conservation_all(epdata, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
             get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
@@ -191,7 +191,8 @@ function compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_
 
             @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
                 # Save only if the scattering satisfies energy conservation
-                check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, model.recip_lattice, energy_conservation...) || continue
+                check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
+                    qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
                 bt_nscat += 1
                 bt_scat.ind_el_i[bt_nscat] = imap_el_k[ib, ik]
@@ -320,7 +321,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
             ph = epdata.ph
 
             # If all bands and modes do not satisfy energy conservation, skip this (k, q) point pair.
-            check_energy_conservation_all(epdata, model.recip_lattice, energy_conservation...) || continue
+            check_energy_conservation_all(epdata, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
             get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
@@ -332,7 +333,8 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
 
             @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
                 # Save only if the scattering satisfies energy conservation
-                check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, model.recip_lattice, energy_conservation...) || continue
+                check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
+                    qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
                 bt_nscat += 1
                 bt_scat.ind_el_i[bt_nscat] = imap_el_k[ib, ik]

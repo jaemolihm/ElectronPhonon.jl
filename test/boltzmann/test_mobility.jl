@@ -3,6 +3,7 @@ using EPW
 using NPZ
 
 # TODO: Add test without polar_eph
+# TODO: Add test with tetrahedron
 
 @testset "boltzmann cubicBN transport" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
@@ -18,7 +19,6 @@ using NPZ
     Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)
 
     smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
-    energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
 
     @testset "electron doping" begin
         # Reference data created from EPW
@@ -36,6 +36,7 @@ using NPZ
         ]
         mobility_ref_epw = reshape(hcat(mobility_ref_epw_data...), 3, 3, 3)
 
+        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
         window = (15.0, 16.0) .* unit_to_aru(:eV)
         window_k  = window
         window_kq = window
@@ -99,6 +100,7 @@ using NPZ
     end
 
     @testset "hole doping" begin
+        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
         window = (10.5, 11.0) .* unit_to_aru(:eV)
         window_k  = window
         window_kq = window
@@ -161,6 +163,7 @@ using NPZ
     end
 
     @testset "subgrid q" begin
+        energy_conservation = (:Linear, 0.0)
         window_k  = (15.0, 15.8) .* unit_to_aru(:eV)
         window_kq = (15.0, 16.0) .* unit_to_aru(:eV)
 

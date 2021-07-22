@@ -201,7 +201,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             ph = epdata.ph
 
             # If all bands and modes do not satisfy energy conservation, skip this (k, q) point pair.
-            check_energy_conservation_all(epdata, model.recip_lattice, energy_conservation...) || continue
+            check_energy_conservation_all(epdata, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
             get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
@@ -214,7 +214,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
                 # Save only if the scattering satisfies energy conservation
                 check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
-                    model.recip_lattice, energy_conservation...) || continue
+                    kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
                 bt_nscat += 1
                 bt_scat.ind_el_i[bt_nscat] = imap_el_k[ib, ik]
@@ -238,7 +238,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
 end
 
 # Check if given scattering satisfies energy conservation.
-function check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, recip_lattice, econv_mode, econv_tol)
+function check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, ngrid, recip_lattice, econv_mode, econv_tol)
     if econv_mode == :None
         # Do not check energy conservation. Always return true.
         return true
@@ -249,10 +249,11 @@ function check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, reci
     elseif econv_mode == :Linear
         # Check if linearly-interpolated energy can be zero in the q-point grid box.
         # Use econv_tol as the maximum possible curvature of the energy difference.
+        e0 = el_k.e[ib] - el_kq.e[jb] - sign_ph * ph.e[imode]
         max_curvature = econv_tol
         v0_cart = - el_kq.vdiag[jb] - sign_ph * ph.vdiag[imode]
         v0 = recip_lattice' * v0_cart
-        de_max = sum(abs.(v0) ./ kqpts.ngrid) / 2 + max_curvature * sum(1 ./ kqpts.ngrid.^2) / 4
+        de_max = sum(abs.(v0) ./ ngrid) / 2 + max_curvature * sum(1 ./ ngrid.^2) / 4
         return abs(e0) <= de_max
     else
         error("energy conservation mode not identified")
@@ -260,7 +261,7 @@ function check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, reci
 end
 
 # Check if energy-conserving scattering exists for all bands, modes, and sign_ph, and return true if so.
-@timing "econv_all" function check_energy_conservation_all(epdata, recip_lattice, econv_mode, econv_tol)
+@timing "econv_all" function check_energy_conservation_all(epdata, ngrid, recip_lattice, econv_mode, econv_tol)
     el_k = epdata.el_k
     el_kq = epdata.el_kq
     ph = epdata.ph
@@ -270,7 +271,7 @@ end
 
     # Loop over all scattering processes. If there is an energy-conserving one, return true
     @inbounds for imode in 1:ph.nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
-        check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, recip_lattice, econv_mode, econv_tol) && return true
+        check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, ngrid, recip_lattice, econv_mode, econv_tol) && return true
     end
     # If all scatterings are energy non-conserving, return false
     return false
