@@ -54,9 +54,10 @@ function run_transport_subgrid_q(
 
     # Map k and q points to k+q points
     mpi_isroot() && println("Finding the list of k+q points")
+    xk_xq_to_xkq(xk, xq) = mod.(xk + xq, 1)
     xkq_to_xkq_int(xkq) = round.(Int, (xkq .- xq_shift) .* qpts.ngrid)
     xkq_int_to_xkq(xkq_int) = xkq_int ./ qpts.ngrid .+ xq_shift
-    kqpts, map_xkq_int_to_ikq = EPW.add_two_kpoint_grids(kpts, qpts, qpts.ngrid, +, xkq_to_xkq_int, xkq_int_to_xkq)
+    kqpts, map_xkq_int_to_ikq = EPW.add_two_kpoint_grids(kpts, qpts, qpts.ngrid, xk_xq_to_xkq, xkq_to_xkq_int, xkq_int_to_xkq)
 
     btedata_prefix = joinpath(folder, "btedata_subgrid")
 
@@ -165,7 +166,7 @@ function compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_
             epdata.wtq = qpts.weights[iq]
 
             xk = kpts.vectors[ik]
-            xkq = xk + xq
+            xkq = mod.(xk + xq, 1)
 
             # Reusing k+q states: map xkq to ikq, the index of k+q point in the global list
             xkq_int = round.(Int, (xkq .- xq_shift) .* qpts.ngrid)
@@ -307,7 +308,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
             epdata.wtq = qpts.weights[iq]
 
             xq = qpts.vectors[iq]
-            xkq = xk + xq
+            xkq = mod.(xk + xq, 1)
 
             # Reusing k+q states: map xkq to ikq, the index of k+q point in the global list
             xkq_int = round.(Int, (xkq .- xq_shift) .* qpts.ngrid)
