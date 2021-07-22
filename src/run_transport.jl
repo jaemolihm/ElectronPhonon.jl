@@ -57,12 +57,12 @@ function run_transport(
         # Generate k points
         mpi_isroot() && println("Setting k-point grid")
         symmetry = use_irr_k ? model.symmetry : nothing
-        kpts, iband_min_k, iband_max_k, nelec_below_window = setup_kgrid(k_input, nw,
+        kpts, iband_min_k, iband_max_k, nelec_below_window = filter_kpoints(k_input, nw,
             model.el_ham, window_k, mpi_comm_k, symmetry=symmetry)
 
         # Generate k+q points
         mpi_isroot() && println("Setting k+q-point grid")
-        kqpts, iband_min_kq, iband_max_kq, _ = setup_kgrid(q_input, nw, model.el_ham, window_kq, mpi_comm_k)
+        kqpts, iband_min_kq, iband_max_kq, _ = filter_kpoints(q_input, nw, model.el_ham, window_kq, mpi_comm_k)
         if mpi_comm_k !== nothing
             # k+q points are not distributed over mpi_comm_k
             kqpts = mpi_allgather(kqpts, mpi_comm_k)

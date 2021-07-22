@@ -2,20 +2,17 @@
 "Functions for filtering k points and bands outside a certain energy window"
 
 # TODO: Threads
+# TODO: Rename filter_kpoints -> filter_kpoints_by_energy / initialize_and_filter_kpoints
 
 using Base.Threads
 using MPI
 using EPW: Kpoints
 
-# export inside_window
-export filter_kpoints
 export filter_kpoints
 export filter_qpoints
 
-"Test whether e is inside the window. Assume e is sorted"
-function inside_window(e, window_min, window_max)
-    searchsortedfirst(e, window_min):searchsortedlast(e, window_max)
-end
+# range of bands inside the window. Assume e is sorted in ascending order.
+inside_window(e, window_min, window_max) = searchsortedfirst(e, window_min):searchsortedlast(e, window_max)
 
 """Filter Kpoints object
 # Output
@@ -23,7 +20,7 @@ end
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(kpoints::AbstractKpoints, nw, el_ham, window, fourier_mode="normal")
+function filter_kpoints(kpoints::AbstractKpoints, nw, el_ham, window; fourier_mode="normal")
     # If the window is trivial, return the original kpoints
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
     ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode)
@@ -39,7 +36,7 @@ Generate k grid of size nk1 * nk2 * nk3 and filter the k points, where nks = (nk
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; symmetry=nothing, kshift=[0, 0, 0])
+function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode="gridopt", symmetry=nothing, kshift=[0, 0, 0])
     if symmetry !== nothing && (! all(kshift .== 0))
         error("nonzero kshift and symmetry incompatible (not implemented)")
     end
@@ -52,13 +49,12 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; symmetry=not
     # If the window is trivial, return the whole grid
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
 
-    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, "gridopt")
+    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode)
     nelec_below_window /= prod(nks)
     EPW.get_filtered_kpoints(kpoints, ik_keep), band_min, band_max, nelec_below_window
 end
 
-filter_kpoints(k_input, nw, el_ham, window, mpi_comm::Nothing; symmetry=nothing, kshift=[0, 0, 0]) = (
-filter_kpoints(k_input, nw, el_ham, window, symmetry=symmetry, kshift=kshift))
+filter_kpoints(k_input, nw, el_ham, window, mpi_comm::Nothing; kwargs...) = filter_kpoints(k_input, nw, el_ham, window; kwargs...)
 
 """
     filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MPI.Comm) -> Kpoints
@@ -70,7 +66,7 @@ Obtained k points are distributed over the MPI communicator mpi_comm.
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MPI.Comm; symmetry=nothing, kshift=[0, 0, 0])
+function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MPI.Comm; fourier_mode="gridopt", symmetry=nothing, kshift=[0, 0, 0])
     if symmetry !== nothing && (! all(kshift .== 0))
         error("nonzero kshift and symmetry incompatible (not implemented)")
     end
@@ -90,7 +86,7 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MP
     # If the window is trivial, return the whole grid
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
 
-    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, "gridopt")
+    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode)
 
     nelec_below_window /= prod(nks)
 

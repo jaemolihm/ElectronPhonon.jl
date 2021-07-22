@@ -1,14 +1,6 @@
 
 using EPW.WanToBloch
 
-function setup_kgrid(k_input::Kpoints{T}, nw, el_ham, window, mpi_comm_k; symmetry=nothing, kshift=[0, 0, 0]) where {T}
-    filter_kpoints(k_input, nw, el_ham, window, "normal")
-end
-
-function setup_kgrid(k_input, nw, el_ham, window, mpi_comm_k; symmetry=nothing, kshift=[0, 0, 0])
-    filter_kpoints(k_input, nw, el_ham, window, mpi_comm_k, symmetry=symmetry, kshift=kshift)
-end
-
 """
     run_eph_outer_loop_q(
         model::EPW.ModelEPW,
@@ -62,7 +54,7 @@ function run_eph_outer_loop_q(
     end
 
     # Generate k points
-    kpoints, iband_min, iband_max, nelec_below_window = setup_kgrid(k_input, nw,
+    kpoints, iband_min, iband_max, nelec_below_window = filter_kpoints(k_input, nw,
         model.el_ham, window, mpi_comm_k)
 
     # Generate q points
