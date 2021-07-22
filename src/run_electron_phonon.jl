@@ -6,11 +6,7 @@ function setup_kgrid(k_input::Kpoints{T}, nw, el_ham, window, mpi_comm_k; symmet
 end
 
 function setup_kgrid(k_input, nw, el_ham, window, mpi_comm_k; symmetry=nothing, kshift=[0, 0, 0])
-    if mpi_comm_k === nothing
-        return filter_kpoints_grid(k_input..., nw, el_ham, window, symmetry=symmetry, kshift=kshift)
-    else
-        return filter_kpoints_grid(k_input..., nw, el_ham, window, mpi_comm_k, symmetry=symmetry, kshift=kshift)
-    end
+    filter_kpoints(k_input, nw, el_ham, window, mpi_comm_k, symmetry=symmetry, kshift=kshift)
 end
 
 """

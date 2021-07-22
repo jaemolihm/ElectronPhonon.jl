@@ -9,7 +9,7 @@ using EPW: Kpoints
 
 # export inside_window
 export filter_kpoints
-export filter_kpoints_grid
+export filter_kpoints
 export filter_qpoints
 
 "Test whether e is inside the window. Assume e is sorted"
@@ -23,64 +23,88 @@ end
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(kpoints::Kpoints, nw, el_ham, window, fourier_mode="normal")
+function filter_kpoints(kpoints::AbstractKpoints, nw, el_ham, window, fourier_mode="normal")
     # If the window is trivial, return the original kpoints
-    if window == (-Inf, Inf)
-        return kpoints, 1, nw
-    end
-    nelec_below_window = zero(eltype(window))
-
-    hk = zeros(ComplexF64, nw, nw)
-    ik_keep = zeros(Bool, kpoints.n)
-    band_min = nw
-    band_max = 1
-    eigenvalues = zeros(Float64, nw)
-    for ik in 1:kpoints.n
-        xk = kpoints.vectors[ik]
-        get_fourier!(hk, el_ham, xk, mode=fourier_mode)
-        solve_eigen_el_valueonly!(eigenvalues, hk)
-        bands_in_window = inside_window(eigenvalues, window...)
-        nelec_below_window += (bands_in_window.start - 1) * kpoints.weights[ik]
-        if ! isempty(bands_in_window)
-            ik_keep[ik] = true
-            band_min = min(bands_in_window[1], band_min)
-            band_max = max(bands_in_window[end], band_max)
-        end
-    end
-    EPW.get_filtered_kpoints(kpoints, ik_keep), band_min, band_max, nelec_below_window
+    window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
+    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode)
+    get_filtered_kpoints(kpoints, ik_keep), band_min, band_max, nelec_below_window
 end
 
 """
-    filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window) -> Kpoints
+    filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window) -> Kpoints
 
-Generate k grid of size nk1 * nk2 * nk3 and filter the k points
+Generate k grid of size nk1 * nk2 * nk3 and filter the k points, where nks = (nk1, nk2, nk3).
 # Output
 - `kpts`: Filtered kpoints.
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window; symmetry=nothing, kshift=[0, 0, 0])
+function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; symmetry=nothing, kshift=[0, 0, 0])
     if symmetry !== nothing && (! all(kshift .== 0))
         error("nonzero kshift and symmetry incompatible (not implemented)")
     end
-
     if symmetry === nothing
-        kpoints = generate_kvec_grid(nk1, nk2, nk3, kshift=kshift)
+        kpoints = generate_kvec_grid(nks..., kshift=kshift)
     else
-        kpoints = bzmesh_ir_wedge((nk1, nk2, nk3), symmetry)
+        kpoints = bzmesh_ir_wedge(nks, symmetry)
     end
 
     # If the window is trivial, return the whole grid
-    if window == (-Inf, Inf)
-        return kpoints, 1, nw, zero(eltype(window))
-    end
+    window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
 
-    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window)
-    nelec_below_window /= nk1 * nk2 * nk3
+    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, "gridopt")
+    nelec_below_window /= prod(nks)
     EPW.get_filtered_kpoints(kpoints, ik_keep), band_min, band_max, nelec_below_window
 end
 
-function _filter_kpoints(nw, kpoints, el_ham, window)
+filter_kpoints(k_input, nw, el_ham, window, mpi_comm::Nothing; symmetry=nothing, kshift=[0, 0, 0]) = (
+filter_kpoints(k_input, nw, el_ham, window, symmetry=symmetry, kshift=kshift))
+
+"""
+    filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MPI.Comm) -> Kpoints
+
+Generate k grid of size nk1 * nk2 * nk3 and filter the k points, where nks = (nk1, nk2, nk3).
+Obtained k points are distributed over the MPI communicator mpi_comm.
+# Output
+- `new_kpoints`: Filtered kpoints, equally redistributed among `mpi_comm`.
+- `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
+- `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
+"""
+function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MPI.Comm; symmetry=nothing, kshift=[0, 0, 0])
+    if symmetry !== nothing && (! all(kshift .== 0))
+        error("nonzero kshift and symmetry incompatible (not implemented)")
+    end
+    # Distribute k points
+    if symmetry === nothing
+        kpoints = generate_kvec_grid(nks..., mpi_comm, kshift=kshift)
+    else
+        # Create the irreducible k points in the root. Then redistribute.
+        if mpi_isroot(mpi_comm)
+            kpoints = bzmesh_ir_wedge(nks, symmetry)
+        else
+            kpoints = Kpoints{Float64}()
+        end
+        kpoints = mpi_scatter(kpoints, mpi_comm)
+    end
+
+    # If the window is trivial, return the whole grid
+    window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
+
+    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, "gridopt")
+
+    nelec_below_window /= prod(nks)
+
+    k_filtered = EPW.get_filtered_kpoints(kpoints, ik_keep)
+
+    band_min = mpi_min(band_min, mpi_comm)
+    band_max = mpi_max(band_max, mpi_comm)
+    nelec_below_window = mpi_sum(nelec_below_window, mpi_comm)
+
+    new_kpoints = mpi_gather_and_scatter(k_filtered, mpi_comm)
+    new_kpoints, band_min, band_max, nelec_below_window
+end
+
+function _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode="normal")
     eigenvalues_ = [zeros(Float64, nw) for _ in 1:nthreads()]
     ik_keep_ = [zeros(Bool, kpoints.n) for _ in 1:nthreads()]
     nelec_below_window_ = [zero(eltype(window)) for _ in 1:nthreads()]
@@ -90,7 +114,7 @@ function _filter_kpoints(nw, kpoints, el_ham, window)
     @threads :static for ik in 1:kpoints.n
         xk = kpoints.vectors[ik]
         eigenvalues = eigenvalues_[threadid()]
-        get_el_eigen_valueonly!(eigenvalues, nw, el_ham, xk, "gridopt")
+        get_el_eigen_valueonly!(eigenvalues, nw, el_ham, xk, fourier_mode)
         bands_in_window = inside_window(eigenvalues, window...)
         nelec_below_window_[threadid()] += bands_in_window.start - 1
         if ! isempty(bands_in_window)
@@ -107,51 +131,6 @@ function _filter_kpoints(nw, kpoints, el_ham, window)
     ik_keep, band_min, band_max, nelec_below_window
 end
 
-"""
-    filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Comm) -> Kpoints
-
-Generate k grid of size nk1 * nk2 * nk3 and filter the k points.
-Obtained k points are distributed over the MPI communicator mpi_comm.
-# Output
-- `new_kpoints`: Filtered kpoints, equally redistributed among `mpi_comm`.
-- `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
-- `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
-"""
-function filter_kpoints_grid(nk1, nk2, nk3, nw, el_ham, window, mpi_comm::MPI.Comm; symmetry=nothing, kshift=[0, 0, 0])
-    if symmetry !== nothing && (! all(kshift .== 0))
-        error("nonzero kshift and symmetry incompatible (not implemented)")
-    end
-    # Distribute k points
-    if symmetry === nothing
-        kpoints = generate_kvec_grid(nk1, nk2, nk3, mpi_comm, kshift=kshift)
-    else
-        # Create the irreducible k points in the root. Then redistribute.
-        if mpi_isroot(mpi_comm)
-            kpoints = bzmesh_ir_wedge((nk1, nk2, nk3), symmetry)
-        else
-            kpoints = Kpoints{Float64}()
-        end
-        kpoints = mpi_scatter(kpoints, mpi_comm)
-    end
-
-    # If the window is trivial, return the whole grid
-    if window == (-Inf, Inf)
-        return kpoints, 1, nw, zero(eltype(window))
-    end
-
-    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window)
-
-    nelec_below_window /= nk1 * nk2 * nk3
-
-    k_filtered = EPW.get_filtered_kpoints(kpoints, ik_keep)
-
-    band_min = mpi_min(band_min, mpi_comm)
-    band_max = mpi_max(band_max, mpi_comm)
-    nelec_below_window = mpi_sum(nelec_below_window, mpi_comm)
-
-    new_kpoints = mpi_gather_and_scatter(k_filtered, mpi_comm)
-    new_kpoints, band_min, band_max, nelec_below_window
-end
 
 """
     filter_qpoints(qpoints, kpoints, nw, el_ham)
