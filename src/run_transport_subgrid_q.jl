@@ -47,7 +47,8 @@ function run_transport_subgrid_q(
 
     # Compute q point object for the subgrid
     qpts = EPW.kpoints_create_subgrid(qpts_to_subgrid, subgrid_scale)
-    indmap = EPW.sort!(qpts)
+    indmap = sortperm(qpts)
+    sort!(qpts)
     iq_subgrid_to_grid = repeat(iqs_to_subgrid, inner=prod(subgrid_scale))[indmap]
     xq_shift = map(n -> mod(n, 2) == 0 ? 1/(2*n) : 0, subgrid_scale) ./ qpts_original.ngrid
 

@@ -11,7 +11,7 @@ abstract type AbstractKpoints{T <: Real} end
 
 # TODO: Add `shift` field for shifted regular grid.
 
-struct Kpoints{T <: Real}
+struct Kpoints{T} <: AbstractKpoints{T}
     n::Int                   # Number of k points
     vectors::Vector{Vec3{T}} # Fractional coordinate of k points
     weights::Vector{T}       # Weight of each k points
@@ -30,11 +30,13 @@ function Kpoints(xks::AbstractArray{T}) where {T <: Real}
     Kpoints(n, vectors, ones(n) ./ n, (0, 0, 0))
 end
 
+Base.sortperm(k::AbstractKpoints) = sortperm(k.vectors)
+
 function Base.sort!(k::Kpoints)
     inds = sortperm(k.vectors)
     k.vectors .= k.vectors[inds]
     k.weights .= k.weights[inds]
-    inds
+    k
 end
 
 """
@@ -222,7 +224,8 @@ function add_two_kpoint_grids(kpts, qpts, ngrid_kq, k_q_to_kq, map_real_to_int, 
     end
     nkq = length(xkqs)
     kqpts = Kpoints{T}(nkq, xkqs, ones(T, nkq) ./ prod(ngrid_kq), ngrid_kq)
-    inds = sort!(kqpts)
+    inds = sortperm(kqpts)
+    sort!(kqpts)
     for ikq_new = 1:nkq
         key = map_ikq_to_xkq_int[inds[ikq_new]]
         map_xkq_int_to_ikq[key] = ikq_new
@@ -264,7 +267,7 @@ function GridKpoints(kpts::EPW.Kpoints{T}) where {T}
 end
 
 function _hash_xk(xk, ngrid, shift)
-    xk_int = round.(Int, (xk .- shift) .* ngrid)
+    xk_int = mod.(round.(Int, (xk - shift) .* ngrid), ngrid)
     (xk_int[1] * ngrid[2] + xk_int[2]) * ngrid[3] + xk_int[3]
 end
 _hash_xk(xk, kpts::GridKpoints) = _hash_xk(xk, kpts.ngrid, kpts.shift)
@@ -279,5 +282,5 @@ function Base.sort!(k::GridKpoints)
     for (ik, xk) in enumerate(k.vectors)
         k._xk_hash_to_ik[_hash_xk(xk, k)] = ik
     end
-    inds
+    k
 end
