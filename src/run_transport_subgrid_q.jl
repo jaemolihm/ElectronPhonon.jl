@@ -61,11 +61,12 @@ function run_transport_subgrid_q(
     # Since the number of subgrid q points are typically smaller than the number of k points,
     # it is better to use outer_q than to use outer_k.
     # To do so, one needs to use model with epmat_outer_momentum == "ph".
-    if model.epmat_outer_momentum == "ph"
-        compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
-    elseif model.epmat_outer_momentum == "el"
-        compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+    compute_func = if model.epmat_outer_momentum == "ph"
+        compute_electron_phonon_bte_data_outer_q
+    else
+        compute_electron_phonon_bte_data_outer_k
     end
+    compute_func(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
 
     (kpts=kpts, qpts=qpts, kqpts=kqpts, nband=nband, nband_ignore=nband_ignore, iq_subgrid_to_grid=iq_subgrid_to_grid)
 end

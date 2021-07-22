@@ -176,10 +176,9 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             epdata.wtq = kqpts.weights[ikq]
 
             xkq = kqpts.vectors[ikq]
-            xq = xkq - xk
 
             # Find xq in qpts. Since xq can be shifted by a lattice vector, take xq from qpts.vectors
-            iq = xk_to_ik(xq, qpts)
+            iq = xk_to_ik(xkq - xk, qpts)
             xq = qpts.vectors[iq]
 
             # Copy saved electron and phonon states to epdata
