@@ -4,6 +4,10 @@ using MPI
 
 export Kpoints
 export generate_kvec_grid
+export GridKpoints
+export xk_to_ik
+
+abstract type AbstractKpoints{T <: Real} end
 
 # TODO: Add `shift` field for shifted regular grid.
 
@@ -17,13 +21,6 @@ end
 
 Kpoints{T}() where {T} = Kpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), (0, 0, 0))
 
-function sort!(k::Kpoints)
-    inds = sortperm(k.vectors)
-    k.vectors .= k.vectors[inds]
-    k.weights .= k.weights[inds]
-    inds
-end
-
 function Kpoints(xks::AbstractArray{T}) where {T <: Real}
     if size(xks, 1) != 3
         throw(ArgumentError("first dimension of xks must be 3"))
@@ -31,6 +28,13 @@ function Kpoints(xks::AbstractArray{T}) where {T <: Real}
     vectors = collect(vec(reinterpret(Vec3{T}, xks)))
     n = length(vectors)
     Kpoints(n, vectors, ones(n) ./ n, (0, 0, 0))
+end
+
+function Base.sort!(k::Kpoints)
+    inds = sortperm(k.vectors)
+    k.vectors .= k.vectors[inds]
+    k.weights .= k.weights[inds]
+    inds
 end
 
 """
@@ -82,22 +86,10 @@ function generate_kvec_grid(nk1, nk2, nk3, mpi_comm::MPI.Comm; kshift=[0, 0, 0])
     generate_kvec_grid(nk1, nk2, nk3, range, kshift=kshift)
 end
 
-# "generate grid of k points"
-# function generate_kvec_grid_array(nkf)
-#     kvecs = zeros(3, nkf[1] * nkf[2] * nkf[3])
-#     ind = 0
-#     for i in 1:nkf[1], j in 1:nkf[2], k in 1:nkf[3]
-#         ind += 1
-#         kvecs[:, ind] .= [(i-1) / nkf[1], (j-1) / nkf[2], (k-1) / nkf[3]]
-#     end
-#     nk = size(kvecs)[2]
-#     kvecs, nk
-# end
-
 "Filter kpoints using a Boolean vector ik_keep. Retern Kpoints object where
 only k points with ik_keep = true are kept."
-function get_filtered_kpoints(k, ik_keep)
-    @assert length(ik_keep) == k.n
+function get_filtered_kpoints(k::Kpoints, ik_keep)
+    length(ik_keep) == k.n || error("length of ik_keep must be equal to k.n")
     Kpoints(sum(ik_keep), k.vectors[ik_keep], k.weights[ik_keep], k.ngrid)
 end
 
@@ -147,10 +139,10 @@ mpi_gather_and_scatter(k::Kpoints, comm::Nothing) = k
 
 
 """
-    kpoints_create_subgrid(k::EPW.Kpoints, nsubgrid)
+    kpoints_create_subgrid(k::Kpoints, nsubgrid)
 For kpoints from a regular grid, divide each k points and generate kpoints from a subgrid.
 """
-function kpoints_create_subgrid(k::EPW.Kpoints, nsubgrid)
+function kpoints_create_subgrid(k::Kpoints, nsubgrid)
     # Check arguments
     if any(nsubgrid .< 1)
         throw(ArgumentError("nsubgrid must be positive, not $nsubgrid."))
@@ -229,11 +221,63 @@ function add_two_kpoint_grids(kpts, qpts, ngrid_kq, k_q_to_kq, map_real_to_int, 
         end
     end
     nkq = length(xkqs)
-    kqpts = EPW.Kpoints{T}(nkq, xkqs, ones(T, nkq) ./ prod(ngrid_kq), ngrid_kq)
-    inds = EPW.sort!(kqpts)
+    kqpts = Kpoints{T}(nkq, xkqs, ones(T, nkq) ./ prod(ngrid_kq), ngrid_kq)
+    inds = sort!(kqpts)
     for ikq_new = 1:nkq
         key = map_ikq_to_xkq_int[inds[ikq_new]]
         map_xkq_int_to_ikq[key] = ikq_new
     end
     kqpts, map_xkq_int_to_ikq
+end
+
+
+"""k points that form a subset of a regular grid.
+All k points should satisfy ``k = (i, j, k) ./ ngrid + shift`` where i, j, k are integers.
+It is assumed that k1 and k2 such that mod(k1, 1) == mod(k2, 1) are not present.
+(This is needed to use `_hash_xk` which gives a single integer. If not, one should use 3-tuple
+of integers, which cost more memory.)
+- `n`: number of k points
+- `vectors`: fractional coordinates of the k points
+- `weights`: weights of the k points for Brillouin zone integration
+Additional arguments for `GridKpoints`:
+- `ngrid`: size of the grid
+- `shift`: shift of the grid from (0, 0, 0)
+- `_xk_hash_to_ik`: dictionary for mapping `_hash_xk(kpts.vectors[ik], kpts)` to `ik`
+"""
+struct GridKpoints{T} <: AbstractKpoints{T}
+    n::Int
+    vectors::Vector{Vec3{T}}
+    weights::Vector{T}
+    ngrid::NTuple{3,Int}
+    shift::Vec3{T}
+    _xk_hash_to_ik::Dict{Int,Int}
+end
+
+function GridKpoints(kpts::EPW.Kpoints{T}) where {T}
+    all(kpts.ngrid .> 0) || error("kpts must be on a grid to make GridKpoints")
+    if kpts.n == 0
+        return GridKpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), kpts.ngrid, zero(Vec3{T}), Dict{Int,Int}())
+    end
+    shift = mod.(kpts.vectors[1], 1 ./ kpts.ngrid)
+    _xk_hash_to_ik = Dict(_hash_xk.(kpts.vectors, Ref(kpts.ngrid), Ref(shift)) .=> 1:kpts.n)
+    GridKpoints{T}(kpts.n, kpts.vectors, kpts.weights, kpts.ngrid, shift, _xk_hash_to_ik)
+end
+
+function _hash_xk(xk, ngrid, shift)
+    xk_int = round.(Int, (xk .- shift) .* ngrid)
+    (xk_int[1] * ngrid[2] + xk_int[2]) * ngrid[3] + xk_int[3]
+end
+_hash_xk(xk, kpts::GridKpoints) = _hash_xk(xk, kpts.ngrid, kpts.shift)
+
+# Retern index of given xk vector
+xk_to_ik(xk, kpts) = kpts._xk_hash_to_ik[_hash_xk(xk, kpts)]
+
+function Base.sort!(k::GridKpoints)
+    inds = sortperm(k.vectors)
+    k.vectors .= k.vectors[inds]
+    k.weights .= k.weights[inds]
+    for (ik, xk) in enumerate(k.vectors)
+        k._xk_hash_to_ik[_hash_xk(xk, k)] = ik
+    end
+    inds
 end

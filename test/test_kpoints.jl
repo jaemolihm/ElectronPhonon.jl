@@ -48,9 +48,32 @@ end
     @test kpts.ngrid == (0, 0, 0)
 
     kpts.weights .= [1, 2, 3, 4]
-    EPW.sort!(kpts)
+    sort!(kpts)
     @test kpts.weights ≈ inds
     for i in 1:size(xks, 2)
         @test kpts.vectors[i] ≈ xks[:, inds[i]]
     end
+end
+
+@testset "kpoints: GridKpoints" begin
+    Random.seed!(111)
+    N = 3
+    kshift = [0, 1//2, 1//2]
+    kpts = EPW.generate_kvec_grid(N, N, N, kshift=kshift)
+    kpts = EPW.get_filtered_kpoints(kpts, rand(Bool, kpts.n))
+    gridkpts = GridKpoints(kpts)
+    @test gridkpts.ngrid == (N, N, N)
+    @test gridkpts.shift ≈ kshift ./ (N, N, N)
+    @test all(xk_to_ik.(gridkpts.vectors, Ref(gridkpts)) .== 1:gridkpts.n)
+
+    # test mixed order
+    inds = randperm(kpts.n)
+    kpts_mix = Kpoints(kpts.n, kpts.vectors[inds], kpts.weights[inds], kpts.ngrid)
+    gridkpts_mix = GridKpoints(kpts_mix)
+    @test all(xk_to_ik.(gridkpts_mix.vectors, Ref(gridkpts_mix)) .== 1:gridkpts_mix.n)
+
+    # test sorting GridKpoints
+    sort!(gridkpts_mix)
+    @test all(gridkpts_mix.vectors .≈ gridkpts.vectors)
+    @test all(xk_to_ik.(gridkpts_mix.vectors, Ref(gridkpts_mix)) .== 1:gridkpts_mix.n)
 end
