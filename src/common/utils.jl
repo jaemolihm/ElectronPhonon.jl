@@ -13,6 +13,7 @@ export average_degeneracy
 export bisect
 
 """
+    occ_fermion(e, T; occ_type=:FermiDirac)
 Occupation of a fermion at energy `e` and temperature `T`.
 """
 @inline function occ_fermion(e, T; occ_type=:FermiDirac)
@@ -28,8 +29,9 @@ Occupation of a fermion at energy `e` and temperature `T`.
 end
 
 """
-Derivative of the fermion occupation function with respect to `e`. Approximation to minus
-the delta function divided by temperature.
+    occ_fermion_derivative(e, T; occ_type=:FermiDirac)
+Derivative of the fermion occupation function with respect to `e` at temperature `T`.
+Approximation to minus the delta function divided by temperature.
 """
 @inline function occ_fermion_derivative(e, T; occ_type=:FermiDirac)
     if occ_type == :FermiDirac
@@ -44,6 +46,7 @@ the delta function divided by temperature.
 end
 
 """
+    occ_boson(e, T, occ_type=:BoseEinstein)
 Occupation of a boson at energy `e` and temperature `T`.
 """
 @inline function occ_boson(e, T, occ_type=:BoseEinstein)
