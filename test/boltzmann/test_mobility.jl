@@ -184,7 +184,7 @@ using NPZ
         @test output.kqpts.n == 48
         @test output.qpts.n == 103
 
-        subgrid_q_max = 0.07
+        subgrid_q_max = 0.15
         subgrid_scale = (2, 2, 2)
 
         @time output_subgrid = run_transport_subgrid_q(
@@ -196,8 +196,8 @@ using NPZ
             energy_conservation = energy_conservation,
         )
         @test output_subgrid.kpts.n == 3
-        @test output_subgrid.kqpts.n == 264
-        @test output_subgrid.qpts.n == 136
+        @test output_subgrid.kqpts.n == 216
+        @test output_subgrid.qpts.n == 104
         @test output_subgrid.nband == output.nband
         @test output_subgrid.nband_ignore == output.nband_ignore
 
@@ -210,8 +210,8 @@ using NPZ
             energy_conservation = energy_conservation,
         )
         @test output_subgrid_el.kpts.n == 3
-        @test output_subgrid_el.kqpts.n == 264
-        @test output_subgrid_el.qpts.n == 136
+        @test output_subgrid_el.kqpts.n == 216
+        @test output_subgrid_el.qpts.n == 104
         @test output_subgrid_el.nband == output.nband
         @test output_subgrid_el.nband_ignore == output.nband_ignore
     end

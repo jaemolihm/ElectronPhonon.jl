@@ -8,7 +8,8 @@ export run_transport_subgrid_q
 For given `kpts` and `qpts`, subdivide q points with ``|q| < subgrid_q_max`` by `subgrid_scale`
 and calculate e-ph scattering data.
 The q point grid must be a multiple of the k point grid.
-FIXME: |q| < subgrid_q_max or all(abs.(q) < subgrid_q_max)? Crystal vs cartesian?
+- `subgrid_q_max`: maximum |q_cart| for subdividing. In (2π / model.alat) units.
+FIXME: |q_cart| < subgrid_q_max or all(abs.(q) < subgrid_q_max)? Crystal vs cartesian?
 TODO:
 - Cleanup input parameters nband and nband_ignore
 - Implement mpi_comm_k
@@ -41,7 +42,7 @@ function run_transport_subgrid_q(
     end
 
     # Find list of q points to make subgrid
-    do_subgrid = [all(abs.(xq) .< subgrid_q_max) for xq in qpts_original.vectors]
+    do_subgrid = [norm(model.recip_lattice * xq) / (2π / model.alat) < subgrid_q_max for xq in qpts_original.vectors]
     iqs_to_subgrid = (1:qpts_original.n)[do_subgrid]
     qpts_to_subgrid = EPW.get_filtered_kpoints(qpts_original, do_subgrid)
 
