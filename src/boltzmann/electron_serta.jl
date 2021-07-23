@@ -119,6 +119,76 @@ function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params, recip_lat
     inv_τ
 end
 
+function compute_lifetime_serta_mode!(inv_τ_mode, btmodel, params, recip_lattice)
+    el_i = btmodel.el_i
+    el_f = btmodel.el_f
+    ph = btmodel.ph
+    scat = btmodel.scattering
+    compute_lifetime_serta_mode!(inv_τ_mode, el_i, el_f, ph, scat, params, recip_lattice)
+end
+
+function compute_lifetime_serta_mode!(inv_τ_mode, el_i, el_f, ph, scat, params, recip_lattice)
+    # TODO: Clean input param recip_lattice
+    FT = eltype(inv_τ_mode)
+    η = params.smearing[2]
+    inv_η = 1 / η
+    ngrid = el_f.ngrid
+
+    # iscat_print_step = max(1, round(Int, scat.n / 10))
+    for (iscat, s) in enumerate(scat)
+        # if mod(iscat, iscat_print_step) == 0
+        #     @printf("%.1f %% done\n", iscat / scat.n * 100)
+        # end
+        ind_el_i = s.ind_el_i
+        ind_el_f = s.ind_el_f
+        ind_ph = s.ind_ph
+        sign_ph = s.sign_ph
+        g2 = s.mel
+
+        ω_ph = ph.e[ind_ph]
+        if ω_ph < omega_acoustic
+            continue
+        end
+        e_i = el_i.e[ind_el_i]
+        e_f = el_f.e[ind_el_f]
+
+        # sign_ph = +1: phonon emission.   e_k -> e_kq + phonon
+        # sign_ph = -1: phonon absorption. e_k + phonon -> e_kq
+        delta_e = e_i - e_f - sign_ph * ω_ph
+
+        # For electron final state occupation, use e_k - sign_ph * ω_ph instead of e_kq,
+        # using energy conservation. The former is better because the phonon velocity is
+        # much smaller than the electron velocity, so that it changes less w.r.t q.
+        # e_f_occupation = e_i - sign_ph * ω_ph
+
+        # FIXME: The above is not done because it changed mobility a lot (525 to 12000) for cubicBN test (test/boltzmann/test_mobility.jl)
+        e_f_occupation = e_f
+
+        if params.smearing[1] == :Gaussian
+            delta = gaussian(delta_e * inv_η) * inv_η
+        elseif params.smearing[1] == :Lorentzian
+            delta = η / (delta_e^2 + η^2) / π
+        elseif params.smearing[1] == :Tetrahedron
+            v_cart = - el_f.vdiag[ind_el_f] - sign_ph * ph.vdiag[ind_ph]
+            v_delta_e = recip_lattice' * v_cart
+            delta = delta_parallelepiped(zero(FT), delta_e, v_delta_e, 1 ./ ngrid)
+        end
+
+        coeff1 = 2π * el_f.k_weight[ind_el_f] * g2 * delta
+
+        for iT in 1:length(params.Tlist)
+            T = params.Tlist[iT]
+            μ = params.μlist[iT]
+            n_ph = occ_boson(ω_ph, T)
+            f_kq = occ_fermion(e_f_occupation - μ, T)
+
+            fcoeff = sign_ph == 1 ? n_ph + 1 - f_kq : n_ph + f_kq
+
+            inv_τ_mode[ind_el_i, ind_ph, iT] += coeff1 * fcoeff
+        end
+    end
+    inv_τ_mode
+end
 
 function compute_mobility_serta!(params, inv_τ, el::BTStates{R}, ngrid, recip_lattice) where {R}
     @assert el.n == size(inv_τ, 1)
