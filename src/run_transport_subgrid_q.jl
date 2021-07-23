@@ -68,7 +68,11 @@ function run_transport_subgrid_q(
     end
     compute_func(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
 
-    (kpts=kpts, qpts=qpts, kqpts=kqpts, nband=nband, nband_ignore=nband_ignore, iq_subgrid_to_grid=iq_subgrid_to_grid)
+    fid_btedata = h5open("$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5", "cw")
+    fid_btedata["iq_subgrid_to_grid"] = iq_subgrid_to_grid
+    close(fid_btedata)
+
+    (kpts=kpts, qpts=qpts, kqpts=kqpts, nband=nband, nband_ignore=nband_ignore)
 end
 
 
