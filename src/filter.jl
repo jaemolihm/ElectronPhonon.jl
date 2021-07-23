@@ -20,7 +20,7 @@ inside_window(e, window_min, window_max) = searchsortedfirst(e, window_min):sear
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(kpoints::AbstractKpoints, nw, el_ham, window; fourier_mode="normal")
+function filter_kpoints(kpoints::AbstractKpoints, nw, el_ham, window; fourier_mode="normal", symmetry=nothing, kshift=nothing)
     # If the window is trivial, return the original kpoints
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
     ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode)

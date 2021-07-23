@@ -10,8 +10,8 @@ using HDF5
 """
 function run_transport(
         model::ModelEPW,
-        k_input::Union{NTuple{3,Int}, Kpoints},
-        q_input::Union{NTuple{3,Int}, Kpoints};
+        k_input::Union{NTuple{3,Int}, AbstractKpoints},
+        q_input::Union{NTuple{3,Int}, AbstractKpoints};
         mpi_comm_k=nothing,
         mpi_comm_q=nothing,
         fourier_mode="gridopt",
@@ -37,9 +37,6 @@ function run_transport(
     if mpi_comm_q !== nothing
         error("mpi_comm_q not implemented")
     end
-    if k_input isa Kpoints
-        error("k_input isa Kpoints not implemented")
-    end
     if q_input isa Kpoints
         error("q_input isa Kpoints not implemented")
     end
@@ -47,9 +44,9 @@ function run_transport(
     if model.epmat_outer_momentum != "el"
         throw(ArgumentError("model.epmat_outer_momentum must be el"))
     end
-    if mod.(q_input, k_input) != (0, 0, 0)
-        throw(ArgumentError("q grid must be an integer multiple of k grid."))
-    end
+    kgrid = k_input isa Kpoints ? k_input.ngrid : k_input
+    qgrid = q_input isa Kpoints ? q_input.ngrid : q_input
+    mod.(qgrid, kgrid) == (0, 0, 0) || throw(ArgumentError("q grid must be an integer multiple of k grid."))
 
     nw = model.nw
 
@@ -163,7 +160,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             copyto!(epdata.el_k, el_k)
         end
 
-        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, EPW.get_u(el_k), fourier_mode)
+        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, get_u(el_k), fourier_mode)
 
         bt_nscat = 0
 

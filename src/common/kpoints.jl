@@ -22,6 +22,7 @@ end
 
 Kpoints{T}() where {T} = Kpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), (0, 0, 0))
 
+# Initializing Kpoints with a k point array
 function Kpoints(xks::AbstractArray{T}) where {T <: Real}
     if size(xks, 1) != 3
         throw(ArgumentError("first dimension of xks must be 3"))
@@ -30,6 +31,9 @@ function Kpoints(xks::AbstractArray{T}) where {T <: Real}
     n = length(vectors)
     Kpoints(n, vectors, ones(n) ./ n, (0, 0, 0))
 end
+
+# Initializing Kpoints with a single k point
+Kpoints(xk::Vec3{T}) where {T <: Real} = Kpoints{T}(1, [xk], [T(1)], (1, 1, 1))
 
 Base.sortperm(k::AbstractKpoints) = sortperm(k.vectors)
 
