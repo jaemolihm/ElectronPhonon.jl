@@ -135,7 +135,14 @@ function run_eph_outer_loop_q(
 
         # Phonon eigenvalues
         set_eigen!(ph, model, xq, fourier_mode)
+        if model.use_polar_dipole
+            set_eph_dipole_coeff!(ph, model, xq)
+        end
         omega_save[:, iq] .= ph.e
+
+        for epdata in epdatas
+            copyto!(epdata.ph, ph)
+        end
 
         get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u, fourier_mode)
 
@@ -151,7 +158,6 @@ function run_eph_outer_loop_q(
 
             epdata.wtk = kpoints.weights[ik]
             epdata.wtq = qpoints.weights[iq]
-            copyto!(epdata.ph, ph)
 
             # Use saved data for electron state at k.
             copyto!(epdata.el_k, el_k_save[ik])
@@ -169,7 +175,7 @@ function run_eph_outer_loop_q(
             get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
-                eph_dipole!(epdata.ep, xq, model.polar_eph, ph.u, epdata.mmat, 1)
+                model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
             end
             epdata_set_g2!(epdata)
 

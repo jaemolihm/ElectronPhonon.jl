@@ -16,6 +16,7 @@ Base.@kwdef mutable struct PhononState{T <: Real}
     u::Matrix{Complex{T}} # Phonon eigenmodes
     vdiag::Vector{Vec3{T}} # Diagonal components of band velocity in Cartesian coordinates.
     occupation::Vector{T} # Phonon occupation number
+    eph_dipole_coeff::Vector{Complex{T}} # dipole potential coefficients for e-ph coupling
 end
 
 function PhononState{T}(nmodes) where {T}
@@ -25,6 +26,7 @@ function PhononState{T}(nmodes) where {T}
         u=zeros(Complex{T}, nmodes, nmodes),
         vdiag=zeros(Vec3{T}, nmodes),
         occupation=zeros(T, nmodes),
+        eph_dipole_coeff=zeros(Complex{T}, nmodes)
     )
 end
 
@@ -40,6 +42,7 @@ function Base.copyto!(dest::PhononState, src::PhononState)
     dest.e .= src.e
     dest.u .= src.u
     dest.occupation .= src.occupation
+    dest.eph_dipole_coeff .= src.eph_dipole_coeff
     for i in 1:src.nmodes
         dest.vdiag[i] = src.vdiag[i]
     end
@@ -87,4 +90,13 @@ function set_velocity_diag!(ph::PhononState{T}, model, xk, fourier_mode="normal"
         end
         vdiag[:, imode] ./= 2 .* ph.e[imode]
     end
+end
+
+"""
+    set_eph_dipole_coeff!(ph::PhononState{T}, model, xk)
+Compute the coefficients for the dipole electron-phonon coupling. The phonon eigenstates must
+be already set.
+"""
+function set_eph_dipole_coeff!(ph::PhononState{T}, model, xk) where {T}
+    get_eph_dipole_coeffs!(ph.eph_dipole_coeff, xk, model.polar_eph, ph.u)
 end

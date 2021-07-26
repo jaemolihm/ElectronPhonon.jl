@@ -102,25 +102,21 @@ Polar{T}(::Nothing) where {T} = Polar{T}(use=false, alat=0, volume=0, nmodes=0, 
     end
 end
 
-# Compute eph_kq += sign * (eph_kq from dipole potential)
-@timing "lr_eph_dip" function eph_dipole!(eph, xq, polar::Polar{T}, u_ph, mmat, sign=1) where {T}
-    if ! polar.use
-        return
+# Compute coefficients for dipole e-ph coupling. The coefficients depend only on the phonon properties.
+function get_eph_dipole_coeffs!(coeff, xq, polar::Polar{T}, u_ph) where {T}
+    if ! polar.use || all(abs.(xq) .<= 1.0e-8)
+        coeff .= 0
+        return coeff
     end
-
-    @assert eltype(eph) == Complex{T}
 
     atom_pos = polar.atom_pos
     natom = length(atom_pos)
-    nmodes = 3 * natom
     nxs = polar.nxs
-    fac = 1im * sign * EPW.e2 * 4T(π) / polar.volume
+    fac = 1im * EPW.e2 * 4T(π) / polar.volume
 
     # temporary vectors of size (nmodes,)
-    coeffs1 = polar.tmp1
-    coeffs2 = polar.tmp2
-    coeffs1 .= 0
-    coeffs2 .= 0
+    tmp = polar.tmp1
+    tmp .= 0
 
     for n1 in -nxs[1]:nxs[1], n2 in -nxs[2]:nxs[2], n3 in -nxs[3]:nxs[3]
         G = polar.recip_lattice * (xq .+ (n1, n2, n3)) / (2T(π) / polar.alat)
@@ -134,17 +130,30 @@ end
         GϵG *= 2T(π) / polar.alat
         fac2 = fac * exp(-GϵG / (4 * polar.η)) / GϵG
         for iatom in 1:natom
-            phasefac = cis(-2T(π) * dot(G, atom_pos[iatom]))
+            phasefac = cispi(-2 * dot(G, atom_pos[iatom]))
             @views for ipol in 1:3
                 GZ = dot(G, polar.Z[iatom][:, ipol])
-                coeffs1[3*(iatom-1)+ipol] += fac2 * phasefac * GZ
+                tmp[3*(iatom-1)+ipol] += fac2 * phasefac * GZ
             end
         end
     end
 
-    mul!(coeffs2, Transpose(u_ph), coeffs1)
+    mul!(coeff, Transpose(u_ph), tmp)
+    coeff
+end
+
+# Compute eph_kq += sign * (eph_kq from dipole potential)
+@timing "lr_eph_dip" function eph_dipole!(eph, xq, polar::Polar{T}, u_ph, mmat, sign=1) where {T}
+    polar.use || return eph
+
+    @assert eltype(eph) == Complex{T}
+
+    nmodes = polar.nmodes
+    coeff = polar.tmp2
+    get_eph_dipole_coeffs!(coeff, xq, polar, u_ph)
 
     @views @inbounds for imode = 1:nmodes
-        eph[:, :, imode] .+= coeffs2[imode] .* mmat
+        eph[:, :, imode] .+= (sign * coeff[imode]) .* mmat
     end
+    eph
 end

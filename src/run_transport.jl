@@ -122,7 +122,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
 
         # Write phonon states to HDF5 file
         mpi_isroot() && println("Calculating phonon states")
-        ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], "gridopt")
+        ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"], "gridopt")
         ph_boltzmann, imap_ph = phonon_states_to_BTStates(ph_save, qpts)
         g = create_group(fid_btedata, "phonon")
         dump_BTData(g, ph_boltzmann)
@@ -193,7 +193,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
-                eph_dipole!(epdata.ep, xq, model.polar_eph, epdata.ph.u, epdata.mmat, 1)
+                model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
             end
             epdata_set_g2!(epdata)
 

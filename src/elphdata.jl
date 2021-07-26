@@ -8,6 +8,7 @@ export ElPhData
 # export apply_gauge_matrix!
 export epdata_set_g2!
 export epdata_set_mmat!
+export epdata_compute_eph_dipole!
 
 # TODO: Rename to ElPhState?
 
@@ -142,4 +143,15 @@ function get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq, fourier_mode="norma
     ukq = get_u(epdata.el_kq)
     @views ep_kq = epdata.ep[epdata.el_kq.rng, epdata.el_k.rng, :]
     get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epdata.ph.u, ukq, fourier_mode)
+end
+
+"""
+    epdata_compute_eph_dipole!(epdata::ElPhData, polar::Polar, sign=1)
+Compute electron-phonon coupling matrix elements using pre-computed `ph.eph_dipole_coeff` and `mmat`.
+"""
+function epdata_compute_eph_dipole!(epdata::ElPhData, sign=1)
+    coeff = epdata.ph.eph_dipole_coeff
+    @views @inbounds for imode = 1:epdata.nmodes
+        epdata.ep[:, :, imode] .+= (sign * coeff[imode]) .* epdata.mmat
+    end
 end

@@ -46,12 +46,12 @@ end
 """
     compute_phonon_states(model, kpts, quantities, window, nband, nband_ignore)
 Compute the quantities listed in `quantities` and return a vector of PhononState.
-`quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal"
+`quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"
 TODO: Implement quantities "velocity"
 """
 function compute_phonon_states(model, kpts, quantities, fourier_mode="normal")
     # TODO: MPI, threading
-    allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal"]
+    allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]
     for quantity in quantities
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
     end
@@ -77,6 +77,9 @@ function compute_phonon_states(model, kpts, quantities, fourier_mode="normal")
                 error("velocity not implemented")
             elseif "velocity_diagonal" ∈ quantities
                 set_velocity_diag!(ph, model, xk, fourier_mode)
+            end
+            if "eph_dipole_coeff" ∈ quantities
+                set_eph_dipole_coeff!(ph, model, xk)
             end
         end
     end # ik
