@@ -7,11 +7,12 @@ export Polar
 export dynmat_dipole!
 export eph_dipole!
 
-Base.@kwdef struct Polar{T<:Real}
+Base.@kwdef struct Polar{T <: Real}
     use::Bool # If true, use polar correction
     # Structure information
     alat::T
     volume::T
+    nmodes::Int
     recip_lattice::Mat3{T}
     atom_pos::Vector{Vec3{T}}
     # Dipole term information
@@ -20,11 +21,15 @@ Base.@kwdef struct Polar{T<:Real}
     nxs::NTuple{3, Int} # Bounds of reciprocal space grid points to do Ewald sum
     cutoff::T # Maximum exponent for the reciprocal space Ewald sum
     η::T # Ewald parameter
+    # preallocaetd buffer
+    tmp1::Vector{Complex{T}} = zeros(Complex{T}, nmodes)
+    tmp2::Vector{Complex{T}} = zeros(Complex{T}, nmodes)
 end
 
 # Null initialization for non-polar case
-Polar(T) = Polar{T}(use=false, alat=0, volume=0, recip_lattice=zeros(Mat3{T}), atom_pos=[],
-                    ϵ=zeros(Mat3{T}), Z=[], nxs=(0,0,0), cutoff=0, η=0)
+# FIXME: defining Polar{T}() does not work. (maybe overriden by @kwdef.)
+Polar{T}(::Nothing) where {T} = Polar{T}(use=false, alat=0, volume=0, nmodes=0, recip_lattice=zeros(Mat3{T}),
+    atom_pos=[], ϵ=zeros(Mat3{T}), Z=[], nxs=(0,0,0), cutoff=0, η=0)
 
 # Compute dynmat += sign * (dynmat from dipole-dipole interaction)
 @timing "lr_dyn_dip" function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}
@@ -41,7 +46,7 @@ Polar(T) = Polar{T}(use=false, alat=0, volume=0, recip_lattice=zeros(Mat3{T}), a
 
     # First term: q-independent part.
     for n1 in -nxs[1]:nxs[1], n2 in -nxs[2]:nxs[2], n3 in -nxs[3]:nxs[3]
-        G = polar.recip_lattice * Vec3{Int}(n1, n2, n3) ./ (2π / polar.alat)
+        G = polar.recip_lattice * Vec3{Int}(n1, n2, n3) / (2π / polar.alat)
         GϵG = G' * polar.ϵ * G
 
         # Skip if G=0 or if exponenent GϵG is large
@@ -71,7 +76,7 @@ Polar(T) = Polar{T}(use=false, alat=0, volume=0, recip_lattice=zeros(Mat3{T}), a
     # Second term: q-dependent part.
     # Note that the definition of G is different: xq is added.
     for n1 in -nxs[1]:nxs[1], n2 in -nxs[2]:nxs[2], n3 in -nxs[3]:nxs[3]
-        G = polar.recip_lattice * (xq .+ Vec3{Int}(n1, n2, n3)) ./ (2π / polar.alat)
+        G = polar.recip_lattice * (xq .+ (n1, n2, n3)) / (2π / polar.alat)
         GϵG = G' * polar.ϵ * G
 
         # Skip if G=0 or if exponenent GϵG is large
@@ -111,12 +116,14 @@ end
     nxs = polar.nxs
     fac = 1im * sign * EPW.e2 * 4T(π) / polar.volume
 
-    # TODO: Get rid of this allocation
-    coeffs1 = zeros(Complex{T}, nmodes)
-    coeffs2 = zeros(Complex{T}, nmodes)
+    # temporary vectors of size (nmodes,)
+    coeffs1 = polar.tmp1
+    coeffs2 = polar.tmp2
+    coeffs1 .= 0
+    coeffs2 .= 0
 
     for n1 in -nxs[1]:nxs[1], n2 in -nxs[2]:nxs[2], n3 in -nxs[3]:nxs[3]
-        G = polar.recip_lattice * (xq + Vec3{Int}(n1, n2, n3)) / (2T(π) / polar.alat)
+        G = polar.recip_lattice * (xq .+ (n1, n2, n3)) / (2T(π) / polar.alat)
         GϵG = G' * polar.ϵ * G
 
         # Skip if G=0 or if exponenent GϵG is large

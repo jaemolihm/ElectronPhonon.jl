@@ -146,17 +146,15 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
             end
         end
         nxs = tuple(nxs_array...)
-        polar_phonon = Polar(use=true, alat=alat, volume=volume, recip_lattice=recip_lattice,
-            atom_pos=atom_pos, ϵ=ϵ, Z=Z, nxs=nxs, cutoff=cutoff, η=η)
+        polar_phonon = Polar{T}(use=true; alat, volume, nmodes, recip_lattice, atom_pos, ϵ, Z, nxs, cutoff, η)
 
         # For e-ph coupling, nxs is nqc. See SUBROUTINE rgd_blk_epw_fine of EPW
         nxs = map(x -> 1 < x < 5 ? 5 : x, nqc) # quick-and-dirty fix for small nqc
-        polar_eph = Polar(use=true, alat=alat, volume=volume, recip_lattice=recip_lattice,
-            atom_pos=atom_pos, ϵ=ϵ, Z=Z, nxs=nxs, cutoff=cutoff, η=η)
+        polar_eph = Polar{T}(use=true; alat, volume, nmodes, recip_lattice, atom_pos, ϵ, Z, nxs, cutoff, η)
     else
         # Set null objects
-        polar_phonon = Polar(T)
-        polar_eph = Polar(T)
+        polar_phonon = Polar{T}(nothing)
+        polar_eph = Polar{T}(nothing)
     end
 
     # Electron Hamiltonian
