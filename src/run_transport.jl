@@ -182,7 +182,6 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             copyto!(epdata.ph, ph_save[iq])
             copyto!(epdata.el_kq, el_kq_save[ikq])
 
-            el_k = epdata.el_k
             el_kq = epdata.el_kq
             ph = epdata.ph
 

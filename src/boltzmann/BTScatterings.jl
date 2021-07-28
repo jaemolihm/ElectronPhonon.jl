@@ -49,12 +49,69 @@ Dump BTData object `obj` to an HDF5 file or group `f`.
     if num > obj.n
         error("Number of scattering processes $num cannot be greater than obj.n $(obj.n)")
     end
-    @views for name in fieldnames(typeof(obj))
-        if name == :n
-            f[String(name)] = _data_julia_to_hdf5(num)
-        else
-            f[String(name)] = _data_julia_to_hdf5(getfield(obj, name)[1:num])
+    # @views for name in fieldnames(typeof(obj))
+    #     if name == :n
+    #         f[String(name)] = _data_julia_to_hdf5(num)
+    #     else
+    #         f[String(name)] = _data_julia_to_hdf5(getfield(obj, name)[1:num])
+    #     end
+    # end
+    f["n"] = num
+    @views f["ind_el_i"] = obj.ind_el_i[1:num]
+    @views f["ind_el_f"] = obj.ind_el_f[1:num]
+    @views f["ind_ph"] = obj.ind_ph[1:num]
+    @views f["sign_ph"] = obj.sign_ph[1:num]
+    @views f["mel"] = obj.mel[1:num]
+end
+
+"""
+    dump_BTData(f, objs::Vector{ElPhScatteringData{T}}, nums)
+Dump BTData objects in `objs` to an HDF5 file or group `f`.
+- `nums`: Number of scattering processes to save for each object in `objs`.
+TODO: clean up. Maybe use TypedTables...
+"""
+@timing "dump_BTData" function dump_BTData(f, objs::Vector{ElPhScatteringData{T}}, nums) where {T}
+    for (obj, num) in zip(objs, nums)
+        if num > obj.n
+            error("Number of scattering processes $num cannot be greater than obj.n $(obj.n)")
         end
+    end
+    num_tot = sum(nums)
+    # for name in fieldnames(eltype(objs))
+    #     if name == :n
+    #         f[String(name)] = _data_julia_to_hdf5(num_tot)
+    #     else
+    #         dset = create_dataset(f, String(name), datatype(eltype(fieldtype(ElPhScatteringData{T}, name))), (num_tot,))
+    #         i = 0
+    #         @views for (obj, num) in zip(objs, nums)
+    #             dset[i+1:i+num] = getfield(obj, name)[1:num]
+    #             i += num
+    #         end
+    #     end
+    # end
+    f["n"] = _data_julia_to_hdf5(num_tot)
+    dset1 = create_dataset(f, "ind_el_i", datatype(Int), (num_tot,))
+    dset2 = create_dataset(f, "ind_el_f", datatype(Int), (num_tot,))
+    dset3 = create_dataset(f, "ind_ph", datatype(Int), (num_tot,))
+    dset4 = create_dataset(f, "sign_ph", datatype(Int), (num_tot,))
+    dset5 = create_dataset(f, "mel", datatype(T), (num_tot,))
+    i = 0
+    @views for (obj, num) in zip(objs, nums)
+        dset1[i+1:i+num] = obj.ind_el_i[1:num]
+        dset2[i+1:i+num] = obj.ind_el_f[1:num]
+        dset3[i+1:i+num] = obj.ind_ph[1:num]
+        dset4[i+1:i+num] = obj.sign_ph[1:num]
+        dset5[i+1:i+num] = obj.mel[1:num]
+        i += num
+    end
+end
+
+function _dump_array_to_hdf5()
+    dset = create_dataset(f, String(name), datatype(eltype(fieldtype(ElPhScatteringData{T}, name))), (num_tot,))
+    i = 0
+    @views for (obj, num) in zip(objs, nums)
+        dset[i+1:i+num] = getfield(obj, name)[1:num]
+        i += num
     end
 end
 
