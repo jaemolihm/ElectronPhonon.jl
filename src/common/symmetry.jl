@@ -438,3 +438,5 @@ function symmetrize_array(arr::AbstractArray{T}, symmetry; order, tr_odd=false, 
     end
     arr_sym
 end
+
+symmetrize_array(arr::AbstractArray, symmetry::Nothing; order) = arr

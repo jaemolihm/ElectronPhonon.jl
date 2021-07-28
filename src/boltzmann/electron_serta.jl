@@ -7,6 +7,7 @@ using Printf
 export bte_compute_μ!
 export compute_lifetime_serta!
 export compute_conductivity_serta!
+export compute_transport_distribution_function
 
 # TODO: Merge with transport_electron.jl (or deprecate the latter)
 
@@ -340,4 +341,36 @@ function debug_compute_lifetime_serta!(inv_τ, btmodel, params, recip_lattice, n
         @info "Sampling: $cnt times / Total: $(scat.n)"
     end
     inv_τ
+end
+
+
+"""
+    compute_transport_distribution_function(elist::AbstractVector{R}, smearing, el, inv_τ, params) where {R}
+Compute the transport distribution function ``Σ^{a,b}(elist)``, where
+``Σ^{a,b}(e) = 1/volume * ∑_{n,k} v^a_{nk} * v^b_{nk} * df_{nk} / τ_{nk} * δ(e - e_{nk})``.
+``Σ^{a,b}(e)`` satisfies ``σ^{a,b} = ∫de (-df(e)/de) Σ^{a,b}(e)``.
+We use Gaussian smearing for the delta function using `smearing`.
+"""
+function compute_transport_distribution_function(elist::AbstractVector{R}, smearing, el, inv_τ, params, symmetry=nothing) where {R}
+    Tlist = params.Tlist
+    μlist = params.μlist
+    e = el.e
+    w = el.k_weight
+    vv_nosym = collect(reshape(reinterpret(Float64, [v * v' for v in el.vdiag]), 3, 3, :))
+    vv = symmetrize_array(vv_nosym, symmetry, order=2)
+    Σ_tdf = zeros(R, length(elist), 3, 3, length(Tlist))
+    σ_list = zeros(R, el.n)
+    for iT in 1:length(Tlist)
+        T = Tlist[iT]
+        μ = μlist[iT]
+        dfocc = -EPW.occ_fermion_derivative.(e .- μ, T)
+        @views for a in 1:3, b in 1:3
+            @. σ_list = w * dfocc * vv[a, b, :] / inv_τ[:, iT]
+            for i in 1:el.n
+                @. Σ_tdf[:, a, b, iT] += σ_list[i] * gaussian((elist - e[i]) / smearing) / smearing
+            end
+        end
+    end
+    Σ_tdf .*= params.spin_degeneracy / params.volume
+    Σ_tdf
 end
