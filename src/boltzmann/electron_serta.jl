@@ -9,14 +9,14 @@ export compute_lifetime_serta!
 
 # TODO: Merge with transport_electron.jl (or deprecate the latter)
 
-function bte_compute_μ!(params, el::BTStates{R}, volume; do_print=true) where {R <: Real}
+function bte_compute_μ!(params, el::BTStates{R}; do_print=true) where {R <: Real}
     ncarrier_target = params.n / params.spin_degeneracy
 
     # The carrier density is relative to the reference configuration where nband_valence bands are filled.
     # Add contribution from the states in el which are filled in the reference configuration.
     ncarrier_target += sum(el.k_weight[el.iband .≤ params.nband_valence])
 
-    do_print && mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (volume/unit_to_aru(:cm)^3)
+    do_print && mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (params.volume/unit_to_aru(:cm)^3)
 
     for (iT, T) in enumerate(params.Tlist)
         μ = find_chemical_potential(ncarrier_target, T, el.e, el.k_weight, 0)

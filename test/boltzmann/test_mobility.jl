@@ -57,6 +57,7 @@ using EPW
         transport_params = ElectronTransportParams{Float64}(
             Tlist = Tlist,
             n = 1.0e20 * model_el.volume / unit_to_aru(:cm)^3,
+            volume = model_el.volume,
             smearing = smearing,
             nband_valence = 4,
             spin_degeneracy = 2
@@ -64,13 +65,13 @@ using EPW
 
         btmodel = load_ElPhBTModel(joinpath(tmp_dir, "btedata.rank0.h5"))
 
-        EPW.bte_compute_μ!(transport_params, btmodel.el_i, model_el.volume, do_print=false)
+        bte_compute_μ!(transport_params, btmodel.el_i, do_print=false)
 
         inv_τ = zeros(Float64, btmodel.el_i.n, length(transport_params.Tlist))
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
         σlist = EPW.compute_mobility_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
         σlist = symmetrize_array(σlist, model_el.symmetry, order=2)
-        mobility = EPW.transport_print_mobility(σlist, transport_params, model_el.volume, do_print=false)
+        mobility = transport_print_mobility(σlist, transport_params, do_print=false)
 
         @test all(isapprox.(transport_params.μlist, μlist_ref_epw, atol=1e-7))
         @test all(isapprox.(mobility, mobility_ref_epw, atol=2e-1))
@@ -81,6 +82,7 @@ using EPW
             n = transport_params.n,
             smearing = (:Gaussian, transport_params.smearing[2]),
             nband_valence = 4,
+            volume = model_el.volume,
             spin_degeneracy = 2
         )
 
@@ -92,7 +94,7 @@ using EPW
             transport_params=transport_params_serta,
         )
 
-        mobility_serta = EPW.transport_print_mobility(output["transport_σlist"], transport_params_serta, model_ph.volume, do_print=false)
+        mobility_serta = transport_print_mobility(output["transport_σlist"], transport_params_serta, do_print=false)
         @test all(isapprox.(transport_params.μlist, transport_params_serta.μlist, atol=1e-7))
         @test all(isapprox.(mobility, mobility_serta, atol=2e-1))
     end
@@ -124,18 +126,19 @@ using EPW
             n = -1.0e21 * model_el.volume / unit_to_aru(:cm)^3,
             smearing = smearing,
             nband_valence = 4,
+            volume = model_el.volume,
             spin_degeneracy = 2
         )
 
         btmodel = load_ElPhBTModel(joinpath(tmp_dir, "btedata.rank0.h5"))
 
-        EPW.bte_compute_μ!(transport_params, btmodel.el_i, model_el.volume, do_print=false)
+        bte_compute_μ!(transport_params, btmodel.el_i, do_print=false)
 
         inv_τ = zeros(Float64, btmodel.el_i.n, length(transport_params.Tlist))
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
         σlist = EPW.compute_mobility_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
         # σlist = symmetrize_array(σlist, model_el.symmetry, order=2)
-        mobility = EPW.transport_print_mobility(σlist, transport_params, model_el.volume, do_print=false)
+        mobility = transport_print_mobility(σlist, transport_params, do_print=false)
 
         # Comparison with SERTA transport module (the non-Boltzmann one)
         transport_params_serta = ElectronTransportParams{Float64}(
@@ -143,6 +146,7 @@ using EPW
             n = transport_params.n,
             smearing = (:Gaussian, transport_params.smearing[2]),
             nband_valence = 4,
+            volume = model_el.volume,
             spin_degeneracy = 2
         )
 
@@ -154,7 +158,7 @@ using EPW
             transport_params=transport_params_serta,
         )
 
-        mobility_serta = EPW.transport_print_mobility(output["transport_σlist"], transport_params_serta, model_ph.volume, do_print=false)
+        mobility_serta = transport_print_mobility(output["transport_σlist"], transport_params_serta, do_print=false)
         @test all(isapprox.(transport_params.μlist, transport_params_serta.μlist, atol=1e-7))
         @test all(isapprox.(mobility, mobility_serta, atol=2e-1))
     end

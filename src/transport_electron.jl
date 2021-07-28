@@ -4,6 +4,7 @@ using Base.Threads
 using Printf
 
 export ElectronTransportParams
+export transport_print_mobility
 
 # TODO: Allow multiple carrier density
 
@@ -13,6 +14,7 @@ Parameters for electron transport calculation. Arguments:
 * `Tlist::Vector{T}`: list of temperatures
 * `n::T`: Number of carriers per unit cell, relative to the reference configuration where `nband_valence` bands are filled.
 * `nband_valence::Int`: Number of valence bands (used only for semiconductors)
+* `volume::T`: Volume of the unit cell
 * `smearing::Tuple{Symbol, T}`: (:Mode, smearing). Smearing parameter for delta function. Mode can be Gaussian, Lorentzian, and Tetrahedron.
 * `spin_degeneracy::Int`: Spin degeneracy.
 * `μlist::Vector{T}`: Chemical potential.
@@ -20,7 +22,8 @@ Parameters for electron transport calculation. Arguments:
 Base.@kwdef struct ElectronTransportParams{T <: Real}
     Tlist::Vector{T}
     n::T
-    nband_valence::Int
+    nband_valence::Int = 0
+    volume::T
     smearing::Tuple{Symbol, T}
     spin_degeneracy::Int
     μlist::Vector{T} = Vector{T}(undef, length(Tlist))
@@ -39,10 +42,10 @@ function TransportSERTA(T, nband::Int, nmodes::Int, nk::Int, ntemperatures::Int)
 end
 
 # TODO: Add test for electron and hole case
-function transport_set_μ!(params, energy, weights, volume)
+function transport_set_μ!(params, energy, weights)
     ncarrier_target = params.n / params.spin_degeneracy
 
-    mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (volume/unit_to_aru(:cm)^3)
+    mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (params.volume/unit_to_aru(:cm)^3)
 
     for (iT, T) in enumerate(params.Tlist)
         μ = find_chemical_potential(ncarrier_target, T, energy, weights, params.nband_valence)
@@ -142,22 +145,22 @@ function compute_mobility_serta!(params::ElectronTransportParams{R}, inv_τ,
 end
 
 """
-    transport_print_mobility(σlist, transport_params, volume)
+    transport_print_mobility(σlist, params::ElectronTransportParams; do_print=true)
 Utility to calculate and print mobility in SI units.
 """
-function transport_print_mobility(σlist, transport_params, volume; do_print=true)
-    carrier_density_SI = transport_params.n / volume * unit_to_aru(:cm)^3
+function transport_print_mobility(σlist, params::ElectronTransportParams; do_print=true)
+    carrier_density_SI = params.n / params.volume * unit_to_aru(:cm)^3
     charge_density_SI = carrier_density_SI * units.e_SI
 
-    σ_SI = σlist .* (units.e_SI^2 / volume * unit_to_aru(:ħ) * unit_to_aru(:cm))
+    σ_SI = σlist .* (units.e_SI^2 / params.volume * unit_to_aru(:ħ) * unit_to_aru(:cm))
     mobility_SI = σ_SI ./ charge_density_SI
 
     if do_print
         println("======= Electron mobility =======")
         println("Carrier density (cm^-3) =  $carrier_density_SI")
-        for iT in 1:length(transport_params.Tlist)
-            println("T (K)  = $(transport_params.Tlist[iT] / unit_to_aru(:K))")
-            @printf "μ (eV) = %.4f\n" transport_params.μlist[iT] / unit_to_aru(:eV)
+        for iT in 1:length(params.Tlist)
+            println("T (K)  = $(params.Tlist[iT] / unit_to_aru(:K))")
+            @printf "μ (eV) = %.4f\n" params.μlist[iT] / unit_to_aru(:eV)
             println("mobility (cm^2/Vs) = ")
             for i in 1:3
                 @printf "%10.3f %10.3f %10.3f\n" mobility_SI[:, i, iT]...

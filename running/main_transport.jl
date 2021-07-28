@@ -40,6 +40,7 @@ transport_params = ElectronTransportParams{Float64}(
     n = 1.0e15 * model.volume / unit_to_aru(:cm)^3,
     smearing = 50.0 * unit_to_aru(:meV),
     nband_valence = 4,
+    volume = model.volume,
     spin_degeneracy = 2
 )
 
@@ -51,7 +52,7 @@ transport_params = ElectronTransportParams{Float64}(
     transport_params=transport_params,
 )
 
-EPW.transport_print_mobility(output["transport_σlist"], transport_params, model.volume)
+transport_print_mobility(output["transport_σlist"], transport_params)
 
 @assert output["transport_σlist"][1, 1, 1] ≈ 0.001409019384286128
 @assert output["transport_σlist"][2, 2, 2] ≈ 0.0005270865433373303

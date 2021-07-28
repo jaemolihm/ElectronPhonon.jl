@@ -40,6 +40,7 @@ using EPW
     transport_params = ElectronTransportParams{Float64}(
         Tlist = Tlist,
         n = -1.0e15 * model.volume / unit_to_aru(:cm)^3,
+        volume = model.volume,
         smearing = (:Gaussian, smearing),
         nband_valence = 4,
         spin_degeneracy = 2
@@ -53,7 +54,7 @@ using EPW
         transport_params=transport_params,
     )
 
-    # EPW.transport_print_mobility(output["transport_σlist"], transport_params, model.volume)
+    transport_print_mobility(output["transport_σlist"], transport_params; do_print=false)
 
     @test output["iband_min"] == 2
     @test output["iband_max"] == 4

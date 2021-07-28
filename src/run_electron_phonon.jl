@@ -114,7 +114,7 @@ function run_eph_outer_loop_q(
 
     # Compute chemical potential
     if compute_transport
-        μ = transport_set_μ!(transport_params, ek_full_save, kpoints.weights, model.volume)
+        transport_set_μ!(transport_params, ek_full_save, kpoints.weights)
     end
 
     omega_save = zeros(nmodes, nq)
