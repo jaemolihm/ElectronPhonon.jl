@@ -1,6 +1,5 @@
 using Test
 using EPW
-using NPZ
 
 # TODO: Add test without polar_eph
 # TODO: Add test with tetrahedron
@@ -77,11 +76,10 @@ using NPZ
         @test all(isapprox.(mobility, mobility_ref_epw, atol=2e-1))
 
         # Comparison with SERTA transport module (the non-Boltzmann one)
-        transport_params_serta = TransportParams{Float64}(
+        transport_params_serta = ElectronTransportParams{Float64}(
             Tlist = transport_params.Tlist,
             n = transport_params.n,
-            smearing = transport_params.smearing[2],
-            carrier_type = "e",
+            smearing = (:Gaussian, transport_params.smearing[2]),
             nband_valence = 4,
             spin_degeneracy = 2
         )
@@ -140,11 +138,10 @@ using NPZ
         mobility = EPW.transport_print_mobility(σlist, transport_params, model_el.volume, do_print=false)
 
         # Comparison with SERTA transport module (the non-Boltzmann one)
-        transport_params_serta = TransportParams{Float64}(
+        transport_params_serta = ElectronTransportParams{Float64}(
             Tlist = transport_params.Tlist,
             n = transport_params.n,
-            smearing = transport_params.smearing[2],
-            carrier_type = "h",
+            smearing = (:Gaussian, transport_params.smearing[2]),
             nband_valence = 4,
             spin_degeneracy = 2
         )

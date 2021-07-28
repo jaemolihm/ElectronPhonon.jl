@@ -3,32 +3,11 @@ Electron conductivity in the self-energy relaxation time (SERTA) approximation
 """
 
 using Printf
-using Parameters: @with_kw
 
-export ElectronTransportParams
 export bte_compute_μ!
 export compute_lifetime_serta!
 
 # TODO: Merge with transport_electron.jl (or deprecate the latter)
-
-"""
-    ElectronTransportParams{T <: Real}
-Parameters for electron transport calculation. Arguments:
-* `Tlist::Vector{T}`: list of temperatures
-* `n::T`: Carrier density. Relative to the reference configuration where nband_valence bands are filled.
-* `nband_valence::Int`: Number of valence bands (used only for semiconductors)
-* `smearing::Tuple{Symbol, T}`: (:Mode, smearing). Smearing parameter for delta function. Mode can be Gaussian, Lorentzian, and Tetrahedron.
-* `spin_degeneracy::Int`: Spin degeneracy.
-* `μlist::Vector{T}`: Chemical potential. Defaults to 0.
-"""
-@with_kw struct ElectronTransportParams{T <: Real}
-    Tlist::Vector{T}
-    n::T
-    nband_valence::Int
-    smearing::Tuple{Symbol, T}
-    spin_degeneracy::Int
-    μlist::Vector{T} = zeros(T, length(Tlist))
-end
 
 function bte_compute_μ!(params, el::BTStates{R}, volume; do_print=true) where {R <: Real}
     ncarrier_target = params.n / params.spin_degeneracy

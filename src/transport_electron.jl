@@ -1,19 +1,29 @@
 
 # Functions related to calculation of electron conductivity
 using Base.Threads
-using Parameters
 using Printf
 
-export TransportParams
+export ElectronTransportParams
 
-@with_kw struct TransportParams{T <: Real}
-    Tlist::Vector{T} # Temperature
-    n::T # Carrier density
-    carrier_type::String # e (electron) or h (hole)
-    nband_valence::Int # Number of valence bands (used only for semiconductors)
-    smearing::T # Smearing parameter for delta function
-    spin_degeneracy::Int # Spin degeneracy
-    μlist::Vector{T} = zeros(T, length(Tlist)) # Output. Chemical poetntial
+# TODO: Allow multiple carrier density
+
+"""
+    ElectronTransportParams{T <: Real}
+Parameters for electron transport calculation. Arguments:
+* `Tlist::Vector{T}`: list of temperatures
+* `n::T`: Number of carriers per unit cell, relative to the reference configuration where `nband_valence` bands are filled.
+* `nband_valence::Int`: Number of valence bands (used only for semiconductors)
+* `smearing::Tuple{Symbol, T}`: (:Mode, smearing). Smearing parameter for delta function. Mode can be Gaussian, Lorentzian, and Tetrahedron.
+* `spin_degeneracy::Int`: Spin degeneracy.
+* `μlist::Vector{T}`: Chemical potential.
+"""
+Base.@kwdef struct ElectronTransportParams{T <: Real}
+    Tlist::Vector{T}
+    n::T
+    nband_valence::Int
+    smearing::Tuple{Symbol, T}
+    spin_degeneracy::Int
+    μlist::Vector{T} = Vector{T}(undef, length(Tlist))
 end
 
 # Data and buffers for SERTA (self-energy relaxation-time approximation) conductivity
@@ -43,12 +53,15 @@ function transport_set_μ!(params, energy, weights, volume)
 end
 
 """
-    compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::TransportParams, ik)
+    compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::ElectronTransportParams, ik)
 Compute electron inverse lifetime for given k and q point data in epdata
 """
 @timing "compute_τ_serta" function compute_lifetime_serta!(transdata::TransportSERTA,
-        epdata, params::TransportParams, ik)
-    inv_smear = 1 / params.smearing
+        epdata, params::ElectronTransportParams, ik)
+    if params.smearing[1] !== :Gaussian
+        error("$(params.smearing[1]) not implemented. Only Gaussian smearing is implemented.")
+    end
+    inv_smear = 1 / params.smearing[2]
 
     ph_occ = epdata.ph.occupation
     el_kq_occ = epdata.el_kq.occupation
@@ -86,11 +99,11 @@ Compute electron inverse lifetime for given k and q point data in epdata
 end
 
 """
-    compute_mobility_serta!(params::TransportParams, inv_τ, energy, vel_diag,
+    compute_mobility_serta!(params::ElectronTransportParams, inv_τ, energy, vel_diag,
         weights, window=(-Inf, Inf))
 Compute electron inverse lifetime for given k and q point data in epdata
 """
-function compute_mobility_serta!(params::TransportParams{R}, inv_τ,
+function compute_mobility_serta!(params::ElectronTransportParams{R}, inv_τ,
         el_states::Vector{ElectronState{R}}, weights, window=(-Inf, Inf)) where {R <: Real}
 
     nband, nk = size(inv_τ)

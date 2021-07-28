@@ -35,11 +35,10 @@ model = load_model(folder, true, "/home/jmlim/julia_epw/tmp")
 nklist = (15, 15, 15)
 nqlist = (15, 15, 15)
 
-transport_params = TransportParams{Float64}(
+transport_params = ElectronTransportParams{Float64}(
     Tlist = [100.0, 200.0, 300.0] .* unit_to_aru(:K),
     n = 1.0e15 * model.volume / unit_to_aru(:cm)^3,
     smearing = 50.0 * unit_to_aru(:meV),
-    carrier_type = "e",
     nband_valence = 4,
     spin_degeneracy = 2
 )

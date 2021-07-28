@@ -12,7 +12,7 @@ using EPW.WanToBloch
         window=(-Inf,Inf),
         elself_params=nothing::Union{Nothing,ElectronSelfEnergyParams},
         phself_params=nothing::Union{Nothing,PhononSelfEnergyParams},
-        transport_params=nothing::Union{Nothing,TransportParams},
+        transport_params=nothing::Union{Nothing,ElectronTransportParams},
     )
 Loop over k and q points to compute e-ph related quantities.
 
@@ -30,7 +30,7 @@ function run_eph_outer_loop_q(
         elself_params=nothing::Union{Nothing,ElectronSelfEnergyParams},
         phself_params=nothing::Union{Nothing,PhononSelfEnergyParams},
         phspec_params=nothing::Union{Nothing,PhononSpectralParams},
-        transport_params=nothing::Union{Nothing,TransportParams},
+        transport_params=nothing::Union{Nothing,ElectronTransportParams},
     )
 
     if model.epmat_outer_momentum != "ph"

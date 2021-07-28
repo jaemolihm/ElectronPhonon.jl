@@ -1,6 +1,5 @@
 using Test
 using EPW
-using NPZ
 
 # TODO: Add test without polar_eph
 
@@ -38,11 +37,10 @@ using NPZ
     nklist = (12, 12, 12)
     nqlist = (12, 12, 12)
 
-    transport_params = TransportParams{Float64}(
+    transport_params = ElectronTransportParams{Float64}(
         Tlist = Tlist,
         n = -1.0e15 * model.volume / unit_to_aru(:cm)^3,
-        smearing = smearing,
-        carrier_type = "h",
+        smearing = (:Gaussian, smearing),
         nband_valence = 4,
         spin_degeneracy = 2
     )
