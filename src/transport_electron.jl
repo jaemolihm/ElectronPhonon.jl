@@ -141,7 +141,7 @@ function compute_conductivity_serta!(params::ElectronTransportParams{R}, inv_τ,
             end # iband
         end # ik
     end # temperatures
-    σlist .*= params.spin_degeneracy
+    σlist .*= params.spin_degeneracy / params.volume
     return σlist
 end
 
@@ -153,7 +153,7 @@ function transport_print_mobility(σlist, params::ElectronTransportParams; do_pr
     carrier_density_SI = params.n / params.volume * unit_to_aru(:cm)^3
     charge_density_SI = carrier_density_SI * units.e_SI
 
-    σ_SI = σlist .* (units.e_SI^2 / params.volume * unit_to_aru(:ħ) * unit_to_aru(:cm))
+    σ_SI = σlist .* (units.e_SI^2 * unit_to_aru(:ħ) * unit_to_aru(:cm))
     mobility_SI = σ_SI ./ charge_density_SI
 
     if do_print

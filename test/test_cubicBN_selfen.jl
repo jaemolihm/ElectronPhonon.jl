@@ -2,6 +2,8 @@ using Test
 using EPW
 using NPZ
 
+# TODO: Add test with use_ws = false
+
 @testset "cubicBN self-energy" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")

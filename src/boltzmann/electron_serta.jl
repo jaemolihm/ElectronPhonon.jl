@@ -212,7 +212,7 @@ function compute_conductivity_serta!(params, inv_τ, el::BTStates{R}, ngrid, rec
         end # i
         # @info "cnt = $cnt"
     end # temperatures
-    σlist .*= params.spin_degeneracy
+    σlist .*= params.spin_degeneracy / params.volume
     σlist
 end
 
