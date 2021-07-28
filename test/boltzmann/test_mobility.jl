@@ -69,7 +69,7 @@ using EPW
 
         inv_τ = zeros(Float64, btmodel.el_i.n, length(transport_params.Tlist))
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
-        σlist = EPW.compute_mobility_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
+        σlist = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
         σlist = symmetrize_array(σlist, model_el.symmetry, order=2)
         mobility = transport_print_mobility(σlist, transport_params, do_print=false)
 
@@ -136,7 +136,7 @@ using EPW
 
         inv_τ = zeros(Float64, btmodel.el_i.n, length(transport_params.Tlist))
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
-        σlist = EPW.compute_mobility_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
+        σlist = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
         # σlist = symmetrize_array(σlist, model_el.symmetry, order=2)
         mobility = transport_print_mobility(σlist, transport_params, do_print=false)
 

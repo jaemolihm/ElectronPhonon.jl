@@ -4,6 +4,7 @@ using Base.Threads
 using Printf
 
 export ElectronTransportParams
+export compute_conductivity_serta!
 export transport_print_mobility
 
 # TODO: Allow multiple carrier density
@@ -102,11 +103,11 @@ Compute electron inverse lifetime for given k and q point data in epdata
 end
 
 """
-    compute_mobility_serta!(params::ElectronTransportParams, inv_τ, energy, vel_diag,
+    compute_conductivity_serta!(params::ElectronTransportParams, inv_τ, energy, vel_diag,
         weights, window=(-Inf, Inf))
 Compute electron inverse lifetime for given k and q point data in epdata
 """
-function compute_mobility_serta!(params::ElectronTransportParams{R}, inv_τ,
+function compute_conductivity_serta!(params::ElectronTransportParams{R}, inv_τ,
         el_states::Vector{ElectronState{R}}, weights, window=(-Inf, Inf)) where {R <: Real}
 
     nband, nk = size(inv_τ)

@@ -245,7 +245,7 @@ function run_eph_outer_loop_q(
 
     if compute_transport
         EPW.mpi_sum!(transport_serta.inv_τ, mpi_comm_q)
-        σlist = compute_mobility_serta!(transport_params, transport_serta.inv_τ,
+        σlist = compute_conductivity_serta!(transport_params, transport_serta.inv_τ,
             el_k_save, kpoints.weights, window)
         output["transport_σlist"] = σlist
         # output["transport_inv_τ"] = transport_serta.inv_τ

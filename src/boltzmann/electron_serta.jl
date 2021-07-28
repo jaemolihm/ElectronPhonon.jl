@@ -6,6 +6,7 @@ using Printf
 
 export bte_compute_μ!
 export compute_lifetime_serta!
+export compute_conductivity_serta!
 
 # TODO: Merge with transport_electron.jl (or deprecate the latter)
 
@@ -169,7 +170,7 @@ function compute_lifetime_serta_mode!(inv_τ_mode, el_i, el_f, ph, scat, params,
     inv_τ_mode
 end
 
-function compute_mobility_serta!(params, inv_τ, el::BTStates{R}, ngrid, recip_lattice) where {R}
+function compute_conductivity_serta!(params, inv_τ, el::BTStates{R}, ngrid, recip_lattice) where {R}
     @assert el.n == size(inv_τ, 1)
 
     σlist = zeros(eltype(inv_τ), 3, 3, length(params.Tlist))
