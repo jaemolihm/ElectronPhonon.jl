@@ -5,6 +5,7 @@ using HDF5
 export run_transport_subgrid_q
 
 # FIXME: Merge various compute_electron_phonon_bte_* routines.
+# TODO: Save qpts to file
 
 """
 For given `kpts` and `qpts`, subdivide q points with ``|q| < subgrid_q_max`` by `subgrid_scale`

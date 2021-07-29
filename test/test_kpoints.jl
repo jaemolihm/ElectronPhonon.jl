@@ -1,7 +1,6 @@
 using Test
 using Random
 using EPW
-using EPW: Kpoints
 
 @testset "kpoints: grid" begin
     nk1 = 2
@@ -69,12 +68,14 @@ end
 @testset "kpoints: GridKpoints" begin
     Random.seed!(111)
     N = 3
-    kshift = [0, 1//2, 1//2]
-    kpts = EPW.generate_kvec_grid(N, N, N, kshift=kshift)
+    kshift = [0, 1//2, 1//2] ./ N
+    kpts = generate_kvec_grid(N, N, N, kshift=kshift)
+    @test kpts.vectors[1] ≈ Vec3(0, 1//2N, 1//2N)
+
     kpts = EPW.get_filtered_kpoints(kpts, rand(Bool, kpts.n))
     gridkpts = GridKpoints(kpts)
     @test gridkpts.ngrid == (N, N, N)
-    @test gridkpts.shift ≈ kshift ./ (N, N, N)
+    @test gridkpts.shift ≈ kshift
     @test all(xk_to_ik.(gridkpts.vectors, Ref(gridkpts)) .== 1:gridkpts.n)
 
     # test mixed order

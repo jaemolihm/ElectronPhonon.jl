@@ -117,14 +117,10 @@ end
     states_index_map(states, symmetry=nothing)
 Create a map (xk_int, iband) => i
 """
-function states_index_map(states, symmetry=nothing; xk_shift=nothing)
+function states_index_map(states, symmetry=nothing; xk_shift=Vec3(0, 0, 0))
     index_map = Dict{NTuple{4, Int}, Int}()
     for i in 1:states.n
-        if xk_shift === nothing
-            xk_int = mod.(round.(Int, states.xks[i] .* states.ngrid), states.ngrid)
-        else
-            xk_int = mod.(round.(Int, (states.xks[i] + xk_shift) .* states.ngrid), states.ngrid)
-        end
+        xk_int = mod.(round.(Int, (states.xks[i] - xk_shift) .* states.ngrid), states.ngrid)
         index_map[(xk_int.data..., states.iband[i])] = i
         if symmetry !== nothing
             for (S, is_tr) in zip(symmetry.S, symmetry.is_tr)

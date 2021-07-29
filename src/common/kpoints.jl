@@ -67,16 +67,12 @@ Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
 Return k points for global index in the given range.
 -`kshift`: Shift for the grid. Each element can be 0 or 1//2.
 """
-function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int}; kshift=[0, 0, 0])
+function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int}; kshift=(0, 0, 0))
     # TODO: Type
     nk_grid = nk1 * nk2 * nk3
     @assert rng[1] >= 1
     @assert rng[end] <= nk_grid
     kvecs = Vector{Vec3{Float64}}()
-
-    kshift = Vec3{Rational{Int}}(kshift)
-    all(ks in (0, 1//2) for ks in kshift) || error("Only kshifts of 0 or 1//2 implemented.")
-    kshift = kshift ./ (nk1, nk2, nk3)
 
     for ik in rng
         # For (i, j, k), make k the fastest axis
