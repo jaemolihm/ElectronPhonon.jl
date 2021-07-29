@@ -44,8 +44,8 @@ function run_transport(
     if model.epmat_outer_momentum != "el"
         throw(ArgumentError("model.epmat_outer_momentum must be el"))
     end
-    kgrid = k_input isa Kpoints ? k_input.ngrid : k_input
-    qgrid = q_input isa Kpoints ? q_input.ngrid : q_input
+    kgrid = k_input isa AbstractKpoints ? k_input.ngrid : k_input
+    qgrid = q_input isa AbstractKpoints ? q_input.ngrid : q_input
     mod.(qgrid, kgrid) == (0, 0, 0) || throw(ArgumentError("q grid must be an integer multiple of k grid."))
 
     nw = model.nw

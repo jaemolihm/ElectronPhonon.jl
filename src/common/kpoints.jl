@@ -269,6 +269,8 @@ function GridKpoints(kpts::Kpoints{T}) where {T}
     GridKpoints{T}(kpts.n, kpts.vectors, kpts.weights, kpts.ngrid, shift, _xk_hash_to_ik)
 end
 
+GridKpoints(xk::Vec3{T}) where {T <: Real} = GridKpoints(Kpoints(xk))
+
 # Reduce GridKpoints to Kpoints
 Kpoints(k::GridKpoints{T}) where {T} = Kpoints{T}(k.n, k.vectors, k.weights, k.ngrid)
 
