@@ -65,7 +65,7 @@ end
     generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer, rng)
 Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
 Return k points for global index in the given range.
--`shift`: Shift for the grid. Each element can be 0 or 1//2.
+-`shift`: Shift for the grid in the crystal coordinates.
 """
 function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int}; shift=(0, 0, 0))
     # TODO: Type
