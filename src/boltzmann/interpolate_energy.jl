@@ -29,7 +29,7 @@ Evaluate interpolation for electron bands inside `window`. Returns `itp_dict`, w
 `itp_dict[iband](k1, k2, k3)` is the energy of `iband`-th band at ``k=(k1, k2, k3)```.
 """
 function evaluate_itp_el(model, ngrid, window=(-Inf, Inf); kshift=(0, 0, 0), mode=Cubic(Periodic(OnCell())))
-    kpts = EPW.generate_kvec_grid(ngrid..., kshift=kshift)
+    kpts = generate_kvec_grid(ngrid..., shift=kshift)
     e = compute_eigenvalues_el(model, kpts)
     # kpts have k[3] as the fastest index. We need k[1] to be the fastest index.
     e = permutedims(reshape(e, (:, ngrid[3], ngrid[2], ngrid[1])), (4, 3, 2, 1))
@@ -44,7 +44,7 @@ Evaluate interpolation for phonon bands inside `window`. Returns `itp_dict`, whe
 `itp_dict[iband](k1, k2, k3)` is the energy of `iband`-th band at ``k=(k1, k2, k3)```.
 """
 function evaluate_itp_ph(model, ngrid; kshift=(0, 0, 0), mode=Cubic(Periodic(OnCell())))
-    kpts = EPW.generate_kvec_grid(ngrid..., kshift=kshift)
+    kpts = generate_kvec_grid(ngrid..., shift=kshift)
     e = compute_eigenvalues_ph(model, kpts)
     # kpts have k[3] as the fastest index. We need k[1] to be the fastest index.
     e = permutedims(reshape(e, (:, ngrid[3], ngrid[2], ngrid[1])), (4, 3, 2, 1));

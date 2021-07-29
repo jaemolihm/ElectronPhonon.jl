@@ -20,7 +20,7 @@ inside_window(e, window_min, window_max) = searchsortedfirst(e, window_min):sear
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(kpoints::AbstractKpoints, nw, el_ham, window; fourier_mode="normal", symmetry=nothing, kshift=nothing)
+function filter_kpoints(kpoints::AbstractKpoints, nw, el_ham, window; fourier_mode="normal", symmetry=nothing, shift=nothing)
     # If the window is trivial, return the original kpoints
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
     ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode)
@@ -36,12 +36,12 @@ Generate k grid of size nk1 * nk2 * nk3 and filter the k points, where nks = (nk
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode="gridopt", symmetry=nothing, kshift=[0, 0, 0])
-    if symmetry !== nothing && (! all(kshift .== 0))
-        error("nonzero kshift and symmetry incompatible (not implemented)")
+function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode="gridopt", symmetry=nothing, shift=[0, 0, 0])
+    if symmetry !== nothing && (! all(shift .== 0))
+        error("nonzero shift and symmetry incompatible (not implemented)")
     end
     if symmetry === nothing
-        kpoints = generate_kvec_grid(nks..., kshift=kshift)
+        kpoints = generate_kvec_grid(nks...; shift)
     else
         kpoints = bzmesh_ir_wedge(nks, symmetry)
     end
@@ -66,13 +66,13 @@ Obtained k points are distributed over the MPI communicator mpi_comm.
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MPI.Comm; fourier_mode="gridopt", symmetry=nothing, kshift=[0, 0, 0])
-    if symmetry !== nothing && (! all(kshift .== 0))
-        error("nonzero kshift and symmetry incompatible (not implemented)")
+function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MPI.Comm; fourier_mode="gridopt", symmetry=nothing, shift=[0, 0, 0])
+    if symmetry !== nothing && (! all(shift .== 0))
+        error("nonzero shift and symmetry incompatible (not implemented)")
     end
     # Distribute k points
     if symmetry === nothing
-        kpoints = generate_kvec_grid(nks..., mpi_comm, kshift=kshift)
+        kpoints = generate_kvec_grid(nks..., mpi_comm; shift)
     else
         # Create the irreducible k points in the root. Then redistribute.
         if mpi_isroot(mpi_comm)

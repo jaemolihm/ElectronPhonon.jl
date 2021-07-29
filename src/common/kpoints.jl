@@ -56,18 +56,18 @@ end
 Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
 Return all k points.
 """
-function generate_kvec_grid(nk1, nk2, nk3; kshift=[0, 0, 0])
+function generate_kvec_grid(nk1, nk2, nk3; shift=(0, 0, 0))
     nk = nk1 * nk2 * nk3
-    generate_kvec_grid(nk1, nk2, nk3, 1:nk, kshift=kshift)
+    generate_kvec_grid(nk1, nk2, nk3, 1:nk; shift)
 end
 
 """
     generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer, rng)
 Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
 Return k points for global index in the given range.
--`kshift`: Shift for the grid. Each element can be 0 or 1//2.
+-`shift`: Shift for the grid. Each element can be 0 or 1//2.
 """
-function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int}; kshift=(0, 0, 0))
+function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int}; shift=(0, 0, 0))
     # TODO: Type
     nk_grid = nk1 * nk2 * nk3
     @assert rng[1] >= 1
@@ -79,7 +79,7 @@ function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int}; kshift=(0, 0, 0)
         k = mod(ik-1, nk3)
         j = mod(div(ik-1 - k, nk3), nk2)
         i = mod(div(ik-1 - k - j*nk3, nk2*nk3), nk1)
-        push!(kvecs, Vec3{Float64}(i/nk1, j/nk2, k/nk3) + kshift)
+        push!(kvecs, Vec3{Float64}(i/nk1, j/nk2, k/nk3) .+ shift)
     end
     nk = length(kvecs)
     Kpoints(nk, kvecs, fill(1/nk_grid, (nk,)), (nk1, nk2, nk3))
@@ -90,10 +90,10 @@ end
 Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
 Return all k points. k points are distributed over the MPI communicator mpi_comm.
 """
-function generate_kvec_grid(nk1, nk2, nk3, mpi_comm::MPI.Comm; kshift=[0, 0, 0])
+function generate_kvec_grid(nk1, nk2, nk3, mpi_comm::MPI.Comm; shift=(0, 0, 0))
     nk = nk1 * nk2 * nk3
     range = mpi_split_iterator(1:nk, mpi_comm)
-    generate_kvec_grid(nk1, nk2, nk3, range, kshift=kshift)
+    generate_kvec_grid(nk1, nk2, nk3, range; shift)
 end
 
 "Filter kpoints using a Boolean vector ik_keep. Retern Kpoints object where
