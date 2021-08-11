@@ -145,7 +145,7 @@ function compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_
 
     nscat_tot = 0
     for iq in 1:nq
-        if mod(iq, 10) == 0
+        if mod(iq, 100) == 0
             println("iq = $iq")
             # mpi_isroot() && println("iq = $iq")
             flush(stdout)
@@ -285,7 +285,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
 
     nscat_tot = 0
     for ik in 1:nk
-        if mod(ik, 20) == 0
+        if mod(ik, 100) == 0
             println("ik = $ik")
             # mpi_isroot() && println("isk = $ik")
             flush(stdout)
