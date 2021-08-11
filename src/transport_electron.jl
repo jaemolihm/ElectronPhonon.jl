@@ -27,7 +27,7 @@ Base.@kwdef struct ElectronTransportParams{T <: Real}
     volume::T
     smearing::Tuple{Symbol, T}
     spin_degeneracy::Int
-    μlist::Vector{T} = Vector{T}(undef, length(Tlist))
+    μlist::Vector{T} = fill(T(NaN), length(Tlist))
 end
 
 # Data and buffers for SERTA (self-energy relaxation-time approximation) conductivity
