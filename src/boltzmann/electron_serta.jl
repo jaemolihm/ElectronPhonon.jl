@@ -40,9 +40,6 @@ end
 
 function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params, recip_lattice; mode_resolved=false)
     # TODO: Clean input param recip_lattice
-    η = params.smearing[2]
-    inv_η = 1 / η
-
     inv_τ_iscat = zeros(eltype(inv_τ), length(params.Tlist))
 
     # iscat_print_step = max(1, round(Int, scat.n / 10))
@@ -50,7 +47,7 @@ function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params, recip_lat
         # if mod(iscat, iscat_print_step) == 0
         #     @printf("%.1f %% done\n", iscat / scat.n * 100)
         # end
-        _compute_lifetime_serta_single_scattering!(inv_τ_iscat, el_i, el_f, ph, params, s, inv_η, recip_lattice)
+        _compute_lifetime_serta_single_scattering!(inv_τ_iscat, el_i, el_f, ph, params, s, recip_lattice)
 
         if mode_resolved
             inv_τ[s.ind_el_i, s.ind_ph, :] .+= inv_τ_iscat
@@ -61,10 +58,10 @@ function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params, recip_lat
     inv_τ
 end
 
-# FIXME: cleanup arguments (inv_η, recip_lattice)
-# FIXME: Does inv_η really save time?
-function _compute_lifetime_serta_single_scattering!(inv_τ::AbstractArray{FT}, el_i, el_f, ph, params, s, inv_η, recip_lattice) where {FT}
+function _compute_lifetime_serta_single_scattering!(inv_τ::AbstractArray{FT}, el_i, el_f, ph, params, s, recip_lattice) where {FT}
+    η = params.smearing[2]
     ngrid = el_f.ngrid
+
     ind_el_i = s.ind_el_i
     ind_el_f = s.ind_el_f
     ind_ph = s.ind_ph
@@ -92,6 +89,7 @@ function _compute_lifetime_serta_single_scattering!(inv_τ::AbstractArray{FT}, e
     e_f_occupation = e_f
 
     if params.smearing[1] == :Gaussian
+        inv_η = 1 / η
         delta = gaussian(delta_e * inv_η) * inv_η
     elseif params.smearing[1] == :Lorentzian
         delta = η / (delta_e^2 + η^2) / π
