@@ -14,10 +14,18 @@ struct ElPhScatteringData{T <: Real} <: AbstractBTData{T}
     mel::Vector{T} # Scattering matrix elements. (Squared e-ph matrix elements.)
 end
 
-Base.iterate(scat::ElPhScatteringData{T}, state=1) where {T} = state > scat.n ? nothing : ((ind_el_i=scat.ind_el_i[state],
-    ind_el_f=scat.ind_el_f[state], ind_ph=scat.ind_ph[state], sign_ph=scat.sign_ph[state], mel=scat.mel[state]), state+1)
+# Indexing
+function Base.getindex(scat::ElPhScatteringData{T}, i::Int) where {T}
+    1 <= i <= scat.n || throw(BoundsError(scat, i))
+    (ind_el_i=scat.ind_el_i[i], ind_el_f=scat.ind_el_f[i], ind_ph=scat.ind_ph[i], sign_ph=scat.sign_ph[i], mel=scat.mel[i])
+end
+Base.firstindex(scat::ElPhScatteringData) = 1
+Base.lastindex(scat::ElPhScatteringData) = scat.n
+
+# Iterating
+Base.iterate(scat::ElPhScatteringData{T}, state=1) where {T} = state > scat.n ? nothing : (scat[state], state+1)
 Base.length(scat::ElPhScatteringData) = scat.n
-Base.eltype(::Type{ElPhScatteringData{T}}) where {T} = NamedTuple{(:ind_el_i, :ind_el_f, :ind_ph, :sign_ph, :mel), Tuple{Int64, Int64, Int64, Int64, Float64}}
+Base.eltype(::Type{ElPhScatteringData{T}}) where {T} = NamedTuple{(:ind_el_i, :ind_el_f, :ind_ph, :sign_ph, :mel), Tuple{Int64, Int64, Int64, Int64, T}}
 
 # TODO: Enable ElPhScatteringData to have AbstractArray so that filtered data becomes a view, not a copy.
 function Base.filter(f, scat::ElPhScatteringData{T}) where {T}

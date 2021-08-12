@@ -98,6 +98,7 @@ function _compute_lifetime_serta_single_scattering!(inv_τ::AbstractArray{FT}, e
         v_delta_e = recip_lattice' * v_cart
         delta = delta_parallelepiped(zero(FT), delta_e, v_delta_e, 1 ./ ngrid)
     end
+    delta < eps(FT) && return
 
     coeff1 = 2FT(π) * el_f.k_weight[ind_el_f] * g2 * delta
 
