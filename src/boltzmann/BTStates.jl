@@ -27,6 +27,14 @@ Each index (i = 1, ..., n) represents a single state in the Brillouin zone.
     ngrid::NTuple{3, Int}
 end
 
+# Indexing
+function Base.getindex(s::BTStates{T}, i::Int) where {T}
+    1 <= i <= s.n || throw(BoundsError(s, i))
+    (xks=s.xks[i], iband=s.iband[i], e=s.e[i], vdiag=s.vdiag[i], k_weight=s.k_weight[i])
+end
+Base.firstindex(s::BTStates) = 1
+Base.lastindex(s::BTStates) = s.n
+
 """
     electron_states_to_BTStates(el_states::Vector{ElectronState{T}},
     kpts::EPW.Kpoints{T}) where {T <: Real}
