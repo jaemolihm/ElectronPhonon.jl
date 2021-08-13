@@ -3,6 +3,8 @@
 
 # TODO: If xq = 0, return.
 
+using Optim
+
 export Polar
 export dynmat_dipole!
 export eph_dipole!
@@ -21,9 +23,50 @@ Base.@kwdef struct Polar{T <: Real}
     nxs::NTuple{3, Int} # Bounds of reciprocal space grid points to do Ewald sum
     cutoff::T # Maximum exponent for the reciprocal space Ewald sum
     η::T # Ewald parameter
+    # G vectors to use in the Ewald sum
+    Glist::Vector{Vec3{Int}} = get_Glist(nxs, η, recip_lattice, alat, ϵ, cutoff)
     # preallocaetd buffer
     tmp1::Vector{Complex{T}} = zeros(Complex{T}, nmodes)
     tmp2::Vector{Complex{T}} = zeros(Complex{T}, nmodes)
+end
+
+"""
+Compute list of G vectors such that (q+G)/ϵ(q+G) / (2π / alat)^2 / (4 * η) < cutoff for some q in [-0.5, 0.5]^3
+Do this by computing minval = min_{q ∈ [-0.5, 0.5]^3} (q+G) * ϵ * (q+G)
+Select the G vector if minval / (2π / alat)^2 / (4 * η) < cutoff.
+"""
+function get_Glist(nxs, η, recip_lattice, alat, ϵ, cutoff)
+    FT = typeof(η)
+    ϵ_crystal = recip_lattice' * ϵ * recip_lattice
+
+    f(qG) = qG' * ϵ_crystal * qG
+    function g!(G, qG)
+        G .= 2 .* (ϵ_crystal * qG)
+    end
+
+    xq_upper = Vec3{FT}(1//2, 1//2, 1//2)
+    xq_lower = -xq_upper
+    xq_initial = Vec3{FT}(0, 0, 0)
+
+    Glist = Vector{Vec3{Int}}()
+
+    for ci in CartesianIndices((-nxs[1]:nxs[1], -nxs[2]:nxs[2], -nxs[3]:nxs[3]))
+        G_crystal = Vec3{Int}(ci.I)
+
+        lower = Vector(xq_lower + G_crystal)
+        upper = Vector(xq_upper + G_crystal)
+        initial_x = Vector(xq_initial + G_crystal)
+        inner_optimizer = Optim.LBFGS()
+        results = optimize(f, g!, lower, upper, initial_x, Fminbox(inner_optimizer))
+
+        minval = Optim.minimum(results)
+        GϵG = minval / (2π / alat)^2 / (4 * η)
+
+        if GϵG < cutoff
+            push!(Glist, G_crystal)
+        end
+    end
+    Glist
 end
 
 # Null initialization for non-polar case
@@ -37,16 +80,18 @@ Polar{T}(::Nothing) where {T} = Polar{T}(use=false, alat=0, volume=0, nmodes=0, 
         return
     end
 
+    # Map xq to inside [-0.5, 0.5]^3
+    xq = normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
+
     @assert eltype(dynmat) == Complex{T}
 
     atom_pos = polar.atom_pos
     natom = length(atom_pos)
-    nxs = polar.nxs
     fac = sign * EPW.e2 * 4T(π) / polar.volume
 
     # First term: q-independent part.
-    for n1 in -nxs[1]:nxs[1], n2 in -nxs[2]:nxs[2], n3 in -nxs[3]:nxs[3]
-        G = polar.recip_lattice * Vec3{Int}(n1, n2, n3) / (2π / polar.alat)
+    for G_crystal in polar.Glist
+        G = polar.recip_lattice * G_crystal / (2π / polar.alat)
         GϵG = G' * polar.ϵ * G
 
         # Skip if G=0 or if exponenent GϵG is large
@@ -75,8 +120,8 @@ Polar{T}(::Nothing) where {T} = Polar{T}(use=false, alat=0, volume=0, nmodes=0, 
 
     # Second term: q-dependent part.
     # Note that the definition of G is different: xq is added.
-    for n1 in -nxs[1]:nxs[1], n2 in -nxs[2]:nxs[2], n3 in -nxs[3]:nxs[3]
-        G = polar.recip_lattice * (xq .+ (n1, n2, n3)) / (2π / polar.alat)
+    for G_crystal in polar.Glist
+        G = polar.recip_lattice * (xq .+ G_crystal) / (2π / polar.alat)
         GϵG = G' * polar.ϵ * G
 
         # Skip if G=0 or if exponenent GϵG is large
@@ -109,17 +154,19 @@ function get_eph_dipole_coeffs!(coeff, xq, polar::Polar{T}, u_ph) where {T}
         return coeff
     end
 
+    # Map xq to inside [-0.5, 0.5]^3
+    xq = normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
+
     atom_pos = polar.atom_pos
     natom = length(atom_pos)
-    nxs = polar.nxs
     fac = 1im * EPW.e2 * 4T(π) / polar.volume
 
     # temporary vectors of size (nmodes,)
     tmp = polar.tmp1
     tmp .= 0
 
-    for n1 in -nxs[1]:nxs[1], n2 in -nxs[2]:nxs[2], n3 in -nxs[3]:nxs[3]
-        G = polar.recip_lattice * (xq .+ (n1, n2, n3)) / (2T(π) / polar.alat)
+    for G_crystal in polar.Glist
+        G = polar.recip_lattice * (xq .+ G_crystal) / (2T(π) / polar.alat)
         GϵG = G' * polar.ϵ * G
 
         # Skip if G=0 or if exponenent GϵG is large
