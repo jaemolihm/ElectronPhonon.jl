@@ -59,6 +59,8 @@ function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params, recip_lat
 end
 
 function _compute_lifetime_serta_single_scattering!(inv_τ::AbstractArray{FT}, el_i, el_f, ph, params, s, recip_lattice) where {FT}
+    inv_τ .= 0
+
     η = params.smearing[2]
     ngrid = el_f.ngrid
 
@@ -69,10 +71,9 @@ function _compute_lifetime_serta_single_scattering!(inv_τ::AbstractArray{FT}, e
     g2 = s.mel
 
     ω_ph = ph.e[ind_ph]
-    if ω_ph < omega_acoustic
-        inv_τ .= 0
-        return
-    end
+    # Skip if phonon frequency is too close to 0 (acoustic phonon at q=0)
+    ω_ph < omega_acoustic && return
+
     e_i = el_i.e[ind_el_i]
     e_f = el_f.e[ind_el_f]
 

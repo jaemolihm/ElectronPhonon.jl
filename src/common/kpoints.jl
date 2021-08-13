@@ -273,6 +273,7 @@ GridKpoints(xk::Vec3{T}) where {T <: Real} = GridKpoints(Kpoints(xk))
 
 # Reduce GridKpoints to Kpoints
 Kpoints(k::GridKpoints{T}) where {T} = Kpoints{T}(k.n, k.vectors, k.weights, k.ngrid)
+GridKpoints(k::GridKpoints) = k
 
 function _hash_xk(xk, ngrid, shift)
     xk_int = mod.(round.(Int, (xk - shift) .* ngrid), ngrid)
