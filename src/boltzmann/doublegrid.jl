@@ -3,6 +3,7 @@ Routines for doublegrid calculation of sum over crystal momenta.
 """
 
 using Interpolations: gradient
+using TetrahedronIntegration
 
 export compute_lifetime_serta_doublegrid_interpolation
 
@@ -190,7 +191,7 @@ function compute_lifetime_serta_doublegrid_interpolation(el_i, el_f, ph, scat_fi
                             continue
                         end
                         cnt_debug += 1
-                        delta = EPW.delta_parallelepiped_vertex(zero(FT), δe_cube...) / prod(subgrid)
+                        delta = delta_parallelepiped_vertex(zero(FT), δe_cube...) / prod(subgrid)
                         e_ph_cube = map(c -> e_ph_subgrid[(ci.I .+ c)..., ind_ph], CUBE_VERTICES)
                         e_ph_occupation = sum(e_ph_cube) / length(e_ph_cube)
                     end

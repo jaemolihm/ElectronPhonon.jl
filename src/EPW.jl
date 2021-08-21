@@ -40,7 +40,6 @@ include("compute_states.jl")
 include("run_eigenvalues.jl")
 include("run_electron_phonon.jl")
 
-include("boltzmann/tetrahedron.jl")
 include("boltzmann/BTData.jl")
 include("boltzmann/BTStates.jl")
 include("boltzmann/BTScatterings.jl")

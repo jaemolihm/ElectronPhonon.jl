@@ -45,6 +45,11 @@ git-tree-sha1 = "bdc0937269321858ab2a4f288486cb258b9a0af7"
 uuid = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
 version = "1.3.0"
 
+[[Combinatorics]]
+git-tree-sha1 = "08c8b6831dc00bfea825826be0bc8336fc369860"
+uuid = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
+version = "1.0.2"
+
 [[CommonSubexpressions]]
 deps = ["MacroTools", "Test"]
 git-tree-sha1 = "7b8a93dba8af7e3b42fecabf646260105ac373f7"
@@ -128,6 +133,12 @@ deps = ["CommonSubexpressions", "DiffResults", "DiffRules", "LinearAlgebra", "Na
 git-tree-sha1 = "b5e930ac60b613ef3406da6d4f42c35d8dc51419"
 uuid = "f6369f11-7733-5829-9624-2563aa707210"
 version = "0.10.19"
+
+[[HCubature]]
+deps = ["Combinatorics", "DataStructures", "LinearAlgebra", "QuadGK", "StaticArrays"]
+git-tree-sha1 = "134af3b940d1ca25b19bc9740948157cee7ff8fa"
+uuid = "19dc6840-f33b-545b-b366-655c7e3ffd49"
+version = "1.5.0"
 
 [[HDF5]]
 deps = ["Blosc", "Compat", "HDF5_jll", "Libdl", "Mmap", "Random", "Requires"]
@@ -336,6 +347,12 @@ version = "1.2.1"
 deps = ["Unicode"]
 uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 
+[[QuadGK]]
+deps = ["DataStructures", "LinearAlgebra"]
+git-tree-sha1 = "12fbe86da16df6679be7521dfb39fbc861e1dc7b"
+uuid = "1fd47b50-473d-5c70-9696-f719f8f3bcdc"
+version = "2.4.1"
+
 [[REPL]]
 deps = ["InteractiveUtils", "Markdown", "Sockets", "Unicode"]
 uuid = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
@@ -428,6 +445,14 @@ uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
 [[Test]]
 deps = ["InteractiveUtils", "Logging", "Random", "Serialization"]
 uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[[TetrahedronIntegration]]
+deps = ["HCubature", "LinearAlgebra", "SpecialFunctions", "StaticArrays"]
+git-tree-sha1 = "342c85ecaabb40be3563e52225616214b4e35c57"
+repo-rev = "master"
+repo-url = "https://github.com/jaemolihm/TetrahedronIntegration.jl.git"
+uuid = "0f92f267-01b4-444d-9255-64945246b180"
+version = "0.1.0"
 
 [[TimerOutputs]]
 deps = ["Printf"]

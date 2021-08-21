@@ -4,6 +4,7 @@ FIXME: Add test for compute_lifetime_serta_mode!
 """
 
 using Printf
+using TetrahedronIntegration
 
 export bte_compute_μ!
 export compute_lifetime_serta!
