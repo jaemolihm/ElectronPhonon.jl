@@ -36,7 +36,7 @@ Generate k grid of size nk1 * nk2 * nk3 and filter the k points, where nks = (nk
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode="gridopt", symmetry=nothing, shift=[0, 0, 0])
+function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode="gridopt", symmetry=nothing, shift=(0, 0, 0))
     if symmetry !== nothing && (! all(shift .== 0))
         error("nonzero shift and symmetry incompatible (not implemented)")
     end

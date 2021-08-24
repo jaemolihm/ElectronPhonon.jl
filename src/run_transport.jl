@@ -42,11 +42,11 @@ function run_transport(
     end
 
     if model.epmat_outer_momentum != "el"
-        throw(ArgumentError("model.epmat_outer_momentum must be el"))
+        error("model.epmat_outer_momentum must be el")
     end
     kgrid = k_input isa AbstractKpoints ? k_input.ngrid : k_input
     qgrid = q_input isa AbstractKpoints ? q_input.ngrid : q_input
-    mod.(qgrid, kgrid) == (0, 0, 0) || throw(ArgumentError("q grid must be an integer multiple of k grid."))
+    mod.(qgrid, kgrid) == (0, 0, 0) || error("q grid must be an integer multiple of k grid.")
 
     nw = model.nw
 
@@ -59,7 +59,14 @@ function run_transport(
 
         # Generate k+q points
         mpi_isroot() && println("Setting k+q-point grid")
-        kqpts, iband_min_kq, iband_max_kq, _ = filter_kpoints(q_input, nw, model.el_ham, window_kq, mpi_comm_k)
+        # If k_input is a GridKpoint, set shift for kqpts so that qpts includes the Gamma point.
+        if k_input isa GridKpoints
+            shift = k_input.shift
+        else
+            shift = (0, 0, 0)
+        end
+        # shift = shift .+ (1//2, 1//2, 1//2) ./ qgrid
+        kqpts, iband_min_kq, iband_max_kq, _ = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift)
         if mpi_comm_k !== nothing
             # k+q points are not distributed over mpi_comm_k
             kqpts = mpi_allgather(kqpts, mpi_comm_k)
