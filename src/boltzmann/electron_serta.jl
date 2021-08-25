@@ -99,6 +99,10 @@ function _compute_lifetime_serta_single_scattering!(inv_τ::AbstractArray{FT}, e
         v_cart = - el_f.vdiag[ind_el_f] - sign_ph * ph.vdiag[ind_ph]
         v_delta_e = recip_lattice' * v_cart
         delta = delta_parallelepiped(zero(FT), delta_e, v_delta_e, 1 ./ ngrid)
+    elseif params.smearing[1] == :GaussianTetrahedron
+        v_cart = - el_f.vdiag[ind_el_f] - sign_ph * ph.vdiag[ind_ph]
+        v_delta_e = recip_lattice' * v_cart
+        delta = gaussian_parallelepiped(η, delta_e, v_delta_e, 1 ./ ngrid) / η
     end
     delta < eps(FT) && return
 

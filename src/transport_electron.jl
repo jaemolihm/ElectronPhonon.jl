@@ -16,7 +16,7 @@ Parameters for electron transport calculation. Arguments:
 * `n::T`: Number of carriers per unit cell, relative to the reference configuration where `nband_valence` bands are filled.
 * `nband_valence::Int`: Number of valence bands (used only for semiconductors)
 * `volume::T`: Volume of the unit cell
-* `smearing::Tuple{Symbol, T}`: (:Mode, smearing). Smearing parameter for delta function. Mode can be Gaussian, Lorentzian, and Tetrahedron.
+* `smearing::Tuple{Symbol, T}`: (:Mode, smearing). Smearing parameter for delta function. Mode can be Gaussian, Lorentzian, Tetrahedron, and GaussianTetrahedron.
 * `spin_degeneracy::Int`: Spin degeneracy.
 * `μlist::Vector{T}`: Chemical potential.
 """
