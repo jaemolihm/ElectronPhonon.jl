@@ -7,6 +7,7 @@ using HDF5
     - `mode = :None`: Do not use energy conservation.
     - `mode = :Fixed`: Use fixed tolerence `param` for energy conservation. (Useful for fixed smearing)
     - `mode = :Linear`: Use band velocity to extrapolate energy and determine energy conservation. `param` is the maximum curvature of the band. (Useful for tetrahedron integration and adaptive smearing).
+- `shift_q`: shift of the q-point grid in units of the grid size.
 """
 function run_transport(
         model::ModelEPW,
@@ -20,7 +21,9 @@ function run_transport(
         folder,
         energy_conservation=(:None, 0.0),
         use_irr_k=true,
+        shift_q=(0, 0, 0),
     )
+    FT = Float64
     """
     The q point grid must be a multiple of the k point grid. If so, the k+q points lie on
     the same grid as the q points.
@@ -60,13 +63,9 @@ function run_transport(
         # Generate k+q points
         mpi_isroot() && println("Setting k+q-point grid")
         # If k_input is a GridKpoint, set shift for kqpts so that qpts includes the Gamma point.
-        if k_input isa GridKpoints
-            shift = k_input.shift
-        else
-            shift = (0, 0, 0)
-        end
-        # shift = shift .+ (1//2, 1//2, 1//2) ./ qgrid
-        kqpts, iband_min_kq, iband_max_kq, _ = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift)
+        shift_k = k_input isa GridKpoints ? Vec3{FT}(k_input.shift) : Vec3{FT}(0, 0, 0)
+        shift_kq = shift_k .+ shift_q ./ qgrid
+        kqpts, iband_min_kq, iband_max_kq, _ = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq)
         if mpi_comm_k !== nothing
             # k+q points are not distributed over mpi_comm_k
             kqpts = mpi_allgather(kqpts, mpi_comm_k)

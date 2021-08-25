@@ -51,9 +51,9 @@ function compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, params, recip_lat
         _compute_lifetime_serta_single_scattering!(inv_τ_iscat, el_i, el_f, ph, params, s, recip_lattice)
 
         if mode_resolved
-            inv_τ[s.ind_el_i, s.ind_ph, :] .+= inv_τ_iscat
+            @views inv_τ[s.ind_el_i, s.ind_ph, :] .+= inv_τ_iscat
         else
-            inv_τ[s.ind_el_i, :] .+= inv_τ_iscat
+            @views inv_τ[s.ind_el_i, :] .+= inv_τ_iscat
         end
     end
     inv_τ
