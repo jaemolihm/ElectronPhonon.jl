@@ -19,8 +19,9 @@ mutable struct WorkspaceZHEEV{T}
     work::Vector{Complex{T}}
     lwork::BlasInt
     rwork::Vector{T}
+    W::Vector{T}
 end
-WorkspaceZHEEV{T}() where {T} = WorkspaceZHEEV{T}(0, Vector{Complex{T}}(), BlasInt(-1), Vector{T}())
+WorkspaceZHEEV{T}() where {T} = WorkspaceZHEEV{T}(0, Vector{Complex{T}}(), BlasInt(-1), Vector{T}(), Vector{T}())
 
 const _buffer_zheev = [WorkspaceZHEEV{Float64}()]
 const _buffer_cheev = [WorkspaceZHEEV{Float32}()]
@@ -43,6 +44,17 @@ for (syev, elty, relty, workspaces) in
         # *     .. Array Arguments ..
         #       DOUBLE PRECISION   RWORK( * ), W( * )
         #       COMPLEX*16         A( LDA, * ), WORK( * )
+        function epw_syev!(jobz::AbstractChar, uplo::AbstractChar, A::AbstractMatrix{$elty})
+            n = checksquare(A)
+            workspace = $workspaces[threadid()]
+            if n > workspace.n
+                # Need to regenerate workspace
+                workspace = _epw_syev_alloc(jobz, uplo, A)
+                $workspaces[threadid()] = workspace
+            end
+            _epw_syev!(jobz, uplo, A, workspace.W, workspace)
+        end
+
         function epw_syev!(jobz::AbstractChar, uplo::AbstractChar, A::AbstractMatrix{$elty}, W::AbstractVector{$relty})
             n = checksquare(A)
             workspace = $workspaces[threadid()]
@@ -89,7 +101,7 @@ for (syev, elty, relty, workspaces) in
             chklapackerror(info[])
             lwork = BlasInt(real(work[1]))
             resize!(work, lwork)
-            WorkspaceZHEEV{$relty}(n, work, lwork, rwork)
+            WorkspaceZHEEV{$relty}(n, work, lwork, rwork, W)
         end
     end
 end
