@@ -1,7 +1,8 @@
 
 # Electron eigenvalue and eigenvector at a single k point
 
-using EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag!
+using EPW.AllocatedLAPACK: epw_syev!
+using EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag!, get_el_velocity!
 
 export ElectronState
 export copyto!
@@ -32,6 +33,7 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
     # These arrays are defined only for bands inside the window
     e::Vector{T} # Eigenvalues at bands inside the energy window
     vdiag::Vector{Vec3{T}} # Diagonal components of band velocity in Cartesian coordinates.
+    v::Matrix{Vec3{Complex{T}}} # Velocity matrix in Cartesian coordinates.
     occupation::Vector{T} # Electron occupation number
 end
 
@@ -50,7 +52,8 @@ function ElectronState{T}(nw, nband_bound=nw, nband_ignore=0) where {T}
         rng_full=1:0,
         rng=1:0,
         e=zeros(T, nband_bound),
-        vdiag=[@SVector zeros(T, 3) for i in 1:nband_bound],
+        vdiag=fill(zeros(Vec3{T}), (nband_bound,)),
+        v=fill(zeros(Vec3{Complex{T}}), (nband_bound, nband_bound)),
         occupation=zeros(T, nband_bound),
     )
 end
@@ -85,6 +88,9 @@ function Base.copyto!(dest::ElectronState, src::ElectronState)
     for ib in src.rng
         dest.e[ib] = src.e[ib]
         dest.vdiag[ib] = src.vdiag[ib]
+        for jb in src.rng
+            dest.v[jb, ib] = src.v[jb, ib]
+        end
     end
     dest
 end
@@ -161,8 +167,54 @@ end
     set_velocity_diag!(el::ElectronState, el_ham_R, xk, fourier_mode="normal")
 Compute electron band velocity, only the band-diagonal part.
 """
-function set_velocity_diag!(el::ElectronState, el_ham_R, xk, fourier_mode="normal")
+function set_velocity_diag!(el::ElectronState{FT}, el_ham_R, xk, fourier_mode="normal") where {FT}
+    degen_cutoff = 1e-6
     uk = get_u(el)
-    @views velocity_diag = reshape(reinterpret(Float64, el.vdiag[el.rng]), 3, el.nband)
-    get_el_velocity_diag!(velocity_diag, el.nw, el_ham_R, xk, uk, fourier_mode)
+    @views velocity_diag = reshape(reinterpret(FT, el.vdiag[el.rng]), 3, el.nband)
+
+    if ! is_degenerate(el.e[el.rng], degen_cutoff)
+        get_el_velocity_diag!(velocity_diag, el.nw, el_ham_R, xk, uk, fourier_mode)
+    else
+        # FIXME: This is a fix to mimic EPW.
+        # For degenerate states, choose the gauge to diagonalize velocity matrix along each ipol
+        # This means that the eigenvector for each ipol is different.
+        @views velocity = reshape(reinterpret(Complex{FT}, el.v[el.rng, el.rng]), 3, el.nband, el.nband)
+        get_el_velocity!(velocity, el.nw, el_ham_R, xk, uk, fourier_mode)
+        @views for ib in 1:el.nband
+            velocity_diag[:, ib] .= real(velocity[:, ib, ib])
+        end
+
+        n = el.nband
+        eigvalues = el.e[el.rng]
+        v_eigvals = zeros(FT, el.nband)
+
+        degen_e = eigvalues[1]
+        degen_from = 1
+        degen_to = -1
+        for i in 1:n-1
+            # Check if the degenerate group is terminated
+            if abs(degen_e - eigvalues[i+1]) > degen_cutoff
+                degen_to = i
+            elseif i == n-1
+                degen_to = i + 1
+            else
+                continue # degenerate group is not terminated, continue to next band.
+            end
+
+            # fix gauge by diagonalizing the velocity matrix
+            ndegen = degen_to - degen_from + 1
+            @views if ndegen > 1
+                rng = degen_from:degen_to
+                for idir in 1:3
+                    v_block = velocity[idir, rng, rng]
+                    epw_syev!('N', 'U', Matrix(v_block), v_eigvals[rng])
+                    velocity_diag[idir, rng] .= v_eigvals[rng]
+                end
+            end
+
+            # setup for next degenerate group
+            degen_e = eigvalues[i+1]
+            degen_from = i + 1
+        end
+    end
 end

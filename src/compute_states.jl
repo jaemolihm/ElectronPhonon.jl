@@ -42,6 +42,10 @@ function compute_electron_states(model, kpts, quantities, window, nband, nband_i
     states
 end
 
+function compute_electron_states(model, kpts, quantities, fourier_mode="normal")
+    compute_electron_states(model, kpts, quantities, (-Inf, Inf), model.nw, 0, fourier_mode)
+end
+
 
 """
     compute_phonon_states(model, kpts, quantities, window, nband, nband_ignore)

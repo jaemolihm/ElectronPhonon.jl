@@ -14,6 +14,7 @@ using EPW: dynmat_dipole!
 export get_el_eigen!
 export get_el_eigen_valueonly!
 export get_el_velocity_diag!
+export get_el_velocity!
 export get_ph_eigen!
 export get_ph_eigen_valueonly!
 export get_ph_velocity_diag!
@@ -125,7 +126,32 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
     nothing
 end
 
-# TODO: Implement get_el_velocity (off-digonal velocity matrix)
+"""
+    get_el_velocity!(velocity, nw, el_ham_R, xk, uk, fourier_mode="normal")
+Compute electron band velocity.
+FIXME: Position matrix element contribution is not included
+
+velocity: (3, nband, nband) matrix
+uk: nw * nband matrix containing nband eigenvectors of H(k).
+"""
+@timing "w2b_el_vel" function get_el_velocity!(velocity, nw, el_ham_R, xk, uk, fourier_mode="normal")
+    @assert size(uk, 1) == nw
+    nband = size(uk, 2)
+    @assert size(velocity) == (3, nband, nband)
+
+    vk = _get_buffer(_buffer_el_velocity, (nw, nw, 3))
+    tmp_full = _get_buffer(_buffer_el_velocity_tmp, (nw, nw))
+    tmp = view(tmp_full, :, 1:nband)
+
+    get_fourier!(vk, el_ham_R, xk, mode=fourier_mode)
+
+    # velocity[idir, :, :] = Adjoint(uk) * vk[:, :, idir] * uk
+    @views @inbounds for idir = 1:3
+        mul!(tmp, vk[:, :, idir], uk)
+        mul!(velocity[idir, :, :], Adjoint(uk), tmp)
+    end
+    nothing
+end
 
 # =============================================================================
 #  Phonons
