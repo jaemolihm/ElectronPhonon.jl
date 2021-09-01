@@ -22,6 +22,7 @@ function run_transport(
         energy_conservation=(:None, 0.0),
         use_irr_k=true,
         shift_q=(0, 0, 0),
+        average_degeneracy=false,
     )
     FT = Float64
     """
@@ -86,13 +87,13 @@ function run_transport(
 
     btedata_prefix = joinpath(folder, "btedata")
     compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts,
-        nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+        nband, nband_ignore, energy_conservation, average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
 
     (nband=nband, nband_ignore=nband_ignore, kpts=kpts, qpts=qpts, kqpts=kqpts)
 end
 
 function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts,
-    kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+    kqpts, qpts, nband, nband_ignore, energy_conservation, average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
 
     nw = model.nw
     nmodes = model.nmodes
@@ -201,6 +202,11 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
             end
             epdata_set_g2!(epdata)
+
+            # Average g2 over degenerate electron bands
+            if average_degeneracy
+                epdata_g2_degenerate_average!(epdata)
+            end
 
             @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
                 # Save only if the scattering satisfies energy conservation

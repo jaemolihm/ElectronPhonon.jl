@@ -16,7 +16,7 @@
   use_ws      = .true.
   vme         = .true.
 
-  export_julia = .false.
+!  export_julia = .false.
 
   scattering  = .true.
   iterative_bte = .true.
@@ -25,7 +25,7 @@
   int_mob     = .false.
   carrier     = .true.
   ncarrier    = 1E20
-  mp_mesh_k   = .false.
+  mp_mesh_k   = .true.
 
   efermi_read = .true.
   fermi_energy= 15.4 ! eV
@@ -46,7 +46,7 @@
   nqf2        = 15
   nqf3        = 15
 
-  use_opt_w2b = .true.
+!  use_opt_w2b = .true.
 
   nbndsub     =  8
 

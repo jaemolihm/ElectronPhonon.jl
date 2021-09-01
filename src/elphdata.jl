@@ -6,6 +6,7 @@ import EPW.WanToBloch: get_eph_Rq_to_kq!, get_eph_kR_to_kq!
 
 export ElPhData
 # export apply_gauge_matrix!
+export get_u
 export epdata_set_g2!
 export epdata_set_mmat!
 export epdata_compute_eph_dipole!
@@ -154,4 +155,44 @@ function epdata_compute_eph_dipole!(epdata::ElPhData, sign=1)
     @views @inbounds for imode = 1:epdata.nmodes
         epdata.ep[:, :, imode] .+= (sign * coeff[imode]) .* epdata.mmat
     end
+end
+
+
+"""
+    epdata_g2_degenerate_average!(epdata::ElPhData)
+Avearage g2 over degenerate bands of el_k and el_kq
+"""
+function epdata_g2_degenerate_average!(epdata::ElPhData{FT}) where {FT}
+    degen_cutoff = 1e-6
+    el_k = epdata.el_k
+    el_kq = epdata.el_kq
+    g2_avg = zero(epdata.g2)
+
+    # average over bands at k
+    @views for ib in el_k.rng
+        ndegen = 0
+        for jb in el_k.rng
+            if abs(el_k.e[ib] - el_k.e[jb]) <= degen_cutoff
+                g2_avg[el_kq.rng, ib, :] .+= epdata.g2[el_kq.rng, jb, :]
+                ndegen += 1
+            end
+        end
+        g2_avg[:, ib, :] ./= ndegen
+    end
+    epdata.g2 .= g2_avg
+
+    # average over bands at k+q
+    g2_avg .= 0
+    @views for ib in el_kq.rng
+        ndegen = 0
+        for jb in el_kq.rng
+            if abs(el_kq.e[ib] - el_kq.e[jb]) <= degen_cutoff
+                g2_avg[ib, el_k.rng, :] .+= epdata.g2[jb, el_k.rng, :]
+                ndegen += 1
+            end
+        end
+        g2_avg[ib, :, :] ./= ndegen
+    end
+    epdata.g2 .= g2_avg
+    nothing
 end

@@ -16,7 +16,7 @@
   use_ws      = .true.
   vme         = .true.
 
-  export_julia = .false.
+!  export_julia = .false.
 
   scattering  = .true.
   iterative_bte = .true.
@@ -38,15 +38,15 @@
   nstemp      = 2
   temps       = 200.0 300.0 400.0 ! K
 
-  nkf1        = 12
-  nkf2        = 12
-  nkf3        = 12
+  nkf1        = 15
+  nkf2        = 15
+  nkf3        = 15
 
-  nqf1        = 12
-  nqf2        = 12
-  nqf3        = 12
+  nqf1        = 15
+  nqf2        = 15
+  nqf3        = 15
 
-  use_opt_w2b = .true.
+!  use_opt_w2b = .true.
 
   nbndsub     =  8
 

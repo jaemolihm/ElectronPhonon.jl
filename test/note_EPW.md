@@ -20,3 +20,13 @@ self-energy.
 self-energy is aveaged over degenerate states, so they are not affected by degeneracy.
 But, the self-energy for phonon spectral function is not averaged over degenerate states.
 So, one should compare only the q points without any degeneracy between phonon modes.
+
+4. For degenerate states, EPW fixes the gauge by diagonalizing a perturbation matrix (see
+wan2bloch.f90). Also, EPW averages the |g|^2 matrix element over degenerate electro bands
+at k and k+q in IBTE calculations (see io_transport.f90). So, in this Julia code, the gauge
+fixing is implemented. The averaging of g2 can be activated by passing
+`average_degeneracy = true` to `run_transport`.
+Also, current (2021/09/01) public version of EPW also diagonalizes the velocity matrix
+within the degenerate subspace. However, this method is inconsistent so it will be removed
+in EPW in the future (https://forum.epw-code.org/viewtopic.php?f=3&t=1495). So, the EPW
+reference results are created by removing the corresponding code in subroutine vmewan2bloch.

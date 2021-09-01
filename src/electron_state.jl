@@ -65,6 +65,8 @@ ElectronState(T, nw, nband_bound=nw, nband_ignore=0) = ElectronState{T}(nw, nban
 Return eigenvector for bands inside the window."""
 get_u(el) = view(el.u_full, :, el.rng_full)
 
+# This defines el.u, but it is type unstable
+# Base.getproperty(el::ElectronState, v::Symbol) = v === :u ? view(el.u_full, :, el.rng_full) : getfield(el, v)
 
 function Base.copyto!(dest::ElectronState, src::ElectronState)
     if dest.nband_bound < src.nband_bound

@@ -326,3 +326,106 @@ function compute_transport_distribution_function(elist::AbstractVector{R}, smear
     Σ_tdf .*= params.spin_degeneracy / params.volume
     Σ_tdf
 end
+
+
+# Running SERTA mobility calculation
+# FIXME: remove recip_lattice argument (add it to transport_params?)
+function run_serta(filename, transport_params, symmetry, recip_lattice; do_print=false)
+    FT = Float64
+
+    # Read btedata
+    fid = h5open(filename, "r")
+    el_i = load_BTData(fid["initialstate_electron"], EPW.BTStates{FT})
+    el_f = load_BTData(fid["finalstate_electron"], EPW.BTStates{FT})
+    ph = load_BTData(fid["phonon"], EPW.BTStates{FT})
+
+    # Compute chemical potential
+    bte_compute_μ!(transport_params, el_i; do_print)
+
+    inv_τ = zeros(FT, el_i.n, length(transport_params.Tlist))
+
+    # Compute lifetime
+    mpi_isroot() && println("Original grid: Total $(length(fid["scattering"])) groups of scattering")
+    @time for (ig, g) in enumerate(fid["scattering"])
+        mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
+        scat = load_BTData(g, EPW.ElPhScatteringData{FT})
+        compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, transport_params, recip_lattice)
+    end
+
+    close(fid)
+
+    σlist = compute_conductivity_serta!(transport_params, inv_τ, el_i, el_i.ngrid, recip_lattice)
+    σlist = symmetrize_array(σlist, symmetry, order=2)
+    mobility_list = transport_print_mobility(σlist, transport_params; do_print)
+
+    (; inv_τ, σlist, mobility_list, el_i)
+end
+
+
+# FIXME: qpts should be read from file
+# FIXME: remove recip_lattice argument (add it to transport_params?)
+function run_serta_subgrid(filename_original, filename_subgrid, transport_params, symmetry, qpts, recip_lattice; do_print=false)
+    FT = Float64
+
+    # Read original grid btedata
+    fid = h5open(filename_original, "r")
+    el_i = load_BTData(fid["initialstate_electron"], EPW.BTStates{FT})
+    el_f = load_BTData(fid["finalstate_electron"], EPW.BTStates{FT})
+    ph = load_BTData(fid["phonon"], EPW.BTStates{FT})
+
+    # Read subgrid btedata
+    fid_sub = h5open(filename_subgrid, "r")
+    el_i_sub = load_BTData(fid_sub["initialstate_electron"], EPW.BTStates{FT})
+    el_f_sub = load_BTData(fid_sub["finalstate_electron"], EPW.BTStates{FT})
+    ph_sub = load_BTData(fid_sub["phonon"], EPW.BTStates{FT})
+    iq_subgrid_to_grid = read(fid_sub, "iq_subgrid_to_grid")
+
+    # Compute chemical potential
+    bte_compute_μ!(transport_params, el_i; do_print)
+
+    # Check the initial states are identical for grid and subgrid models
+    @assert all(isapprox.(el_i.e, el_i_sub.e))
+
+    # For the original grid, filter only states not subdivided
+    ind_ph_map = EPW.states_index_map(ph)
+    ind_ph_filter = fill(true, ph.n)
+    for iq in unique(iq_subgrid_to_grid)
+        xq = qpts.vectors[iq]
+        xq_int = mod.(round.(Int, xq .* ph.ngrid), ph.ngrid)
+        for imode in 1:ph.nband
+            key = (xq_int.data..., imode)
+            if haskey(ind_ph_map, key)
+                ind_ph_filter[ind_ph_map[key]] = false
+            end
+        end
+    end
+
+    inv_τ = zeros(FT, el_i.n, length(transport_params.Tlist))
+
+    # Contribution from the original grid. Reading scattering one ik at a time
+    mpi_isroot() && println("Original grid: Total $(length(fid["scattering"])) groups of scattering")
+    @time for (ig, g) in enumerate(fid["scattering"])
+        mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
+        scat = load_BTData(g, EPW.ElPhScatteringData{FT})
+        scat_exclude_subgrid = filter(s -> ind_ph_filter[s.ind_ph], scat)
+        compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat_exclude_subgrid, transport_params, recip_lattice)
+    end
+    inv_τ_only_original = copy(inv_τ)
+
+    # Contribution from the q subgrid. Reading scattering one ik at a time
+    mpi_isroot() && println("Subgrid: Total $(length(fid["scattering"])) groups of scattering")
+    @time for (ig, g) in enumerate(fid_sub["scattering"])
+        mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
+        scat = load_BTData(g, EPW.ElPhScatteringData{FT})
+        compute_lifetime_serta!(inv_τ, el_i_sub, el_f_sub, ph_sub, scat, transport_params, recip_lattice)
+    end
+
+    close(fid)
+    close(fid_sub)
+
+    σlist = compute_conductivity_serta!(transport_params, inv_τ, el_i, el_i.ngrid, recip_lattice)
+    σlist = symmetrize_array(σlist, symmetry, order=2)
+    mobility_list = transport_print_mobility(σlist, transport_params; do_print)
+
+    (; inv_τ, σlist, mobility_list, el_i, inv_τ_only_original)
+end
