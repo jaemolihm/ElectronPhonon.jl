@@ -33,8 +33,9 @@ export epdata_compute_eph_dipole!
     ep::Array{Complex{T}, 3}
     g2::Array{T, 3}
 
-    # Preallocated buffer of size nw * nw.
+    # Preallocated buffers
     buffer::Matrix{Complex{T}}
+    buffer2::Array{T, 3} = zeros(T, nband, nband, nmodes)
 
     # Electron energy window.
     nband_ignore::Int
@@ -45,7 +46,7 @@ function ElPhData{T}(nw, nmodes, nband=nw, nband_ignore=0) where {T}
     @assert nband_ignore >= 0
     @assert nband + nband_ignore <= nw
 
-    ElPhData(nw=nw, nmodes=nmodes, nband=nband, wtk=T(0), wtq=T(0),
+    ElPhData{T}(nw=nw, nmodes=nmodes, nband=nband, wtk=T(0), wtq=T(0),
         el_k=ElectronState(T, nw, nband, nband_ignore),
         el_kq=ElectronState(T, nw, nband, nband_ignore),
         ph=PhononState(T, nmodes),
@@ -166,9 +167,10 @@ function epdata_g2_degenerate_average!(epdata::ElPhData{FT}) where {FT}
     degen_cutoff = 1e-6
     el_k = epdata.el_k
     el_kq = epdata.el_kq
-    g2_avg = zero(epdata.g2)
+    g2_avg = epdata.buffer2
 
     # average over bands at k
+    g2_avg .= 0
     @views for ib in el_k.rng
         ndegen = 0
         for jb in el_k.rng
