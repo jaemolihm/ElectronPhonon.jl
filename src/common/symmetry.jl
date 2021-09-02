@@ -363,9 +363,11 @@ For array of StaticArrays, use `symmetrize.(arr, Ref(symmetry))`.
 - `tr_odd`: true if the tensor is odd under time reversal.
 - `axial`: true if the tensor is axial (a pseudotensor). Obtains additional -1 sign under inversion.
 """
-symmetrize(arr, symmetry; tr_odd, axial) = error("Symmetrization Not implemented for this data type")
+symmetrize(arr, symmetry::Symmetry; tr_odd, axial) = error("Symmetrization Not implemented for this data type")
 
-function symmetrize(scalar::Number, symmetry; tr_odd=false, axial=false)
+symmetrize(arr, symmetry::Nothing) = arr
+
+function symmetrize(scalar::Number, symmetry::Symmetry; tr_odd=false, axial=false)
     scalar_symm = scalar
     if tr_odd && any(symmetry.is_tr)
         scalar_symm = zero(scalar)
@@ -376,7 +378,7 @@ function symmetrize(scalar::Number, symmetry; tr_odd=false, axial=false)
     scalar_symm
 end
 
-function symmetrize(vec::StaticVector, symmetry; tr_odd=false, axial=false)
+function symmetrize(vec::StaticVector, symmetry::Symmetry; tr_odd=false, axial=false)
     @assert size(vec) == (3,)
     vec_symm = zero(vec)
     for (S, is_inv, is_tr) in zip(symmetry.Scart, symmetry.is_inv, symmetry.is_tr)
@@ -393,7 +395,7 @@ function symmetrize(vec::StaticVector, symmetry; tr_odd=false, axial=false)
     vec_symm
 end
 
-function symmetrize(mat::StaticMatrix, symmetry; tr_odd=false, axial=false)
+function symmetrize(mat::StaticMatrix, symmetry::Symmetry; tr_odd=false, axial=false)
     @assert size(mat) == (3, 3)
     mat_symm = zero(mat)
     for (S, is_inv, is_tr) in zip(symmetry.Scart, symmetry.is_inv, symmetry.is_tr)

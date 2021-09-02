@@ -26,6 +26,7 @@ Each index (i = 1, ..., n) represents a single state in the Brillouin zone.
     # Grid size
     ngrid::NTuple{3, Int}
 end
+# TODO: Add kshift
 
 # Indexing
 function Base.getindex(s::BTStates{T}, i::Int) where {T}
