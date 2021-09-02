@@ -154,7 +154,7 @@ function transport_print_mobility(σlist, params::ElectronTransportParams; do_pr
     charge_density_SI = carrier_density_SI * units.e_SI
 
     σ_SI = σlist .* (units.e_SI^2 * unit_to_aru(:ħ) * unit_to_aru(:cm))
-    mobility_SI = σ_SI ./ charge_density_SI
+    mobility_SI = σ_SI ./ abs(charge_density_SI)
 
     if do_print
         println("======= Electron mobility =======")

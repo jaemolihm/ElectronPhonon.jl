@@ -275,7 +275,7 @@ end
     @testset "hole doping" begin
         # Reference data created from EPW
         μlist_ref_epw = [11.127288, 11.232666, 11.342843] .* unit_to_aru(:eV)
-        mobility_ref_epw = -reshape(hcat([
+        mobility_ref_epw = reshape(hcat([
             [ 0.109805E+01  0.276227E-01  -0.139287E+00;
               0.276227E-01  0.103019E+01   0.177595E-01;
              -0.139287E+00  0.177595E-01   0.117709E+01],
