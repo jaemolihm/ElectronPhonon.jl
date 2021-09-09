@@ -53,6 +53,8 @@ function compute_bte_scattering_matrix(filename, params, recip_lattice)
             # Swap ind_el_i and ind_el_f because we are calculating the scattering-in process
             # Before swapping, the energy change is δe = e_i - e_f - sign_ph * ω_ph.
             # To preserve δe when swapping i and f, we need to change sign_ph to -sign_ph.
+            # FIXME: For tetrahedron, currently the el_i and ph are linearly interpolated.
+            #        Maybe one should add an option to choose which energies are interpolated.
             s_swap = (ind_el_i=s.ind_el_f, ind_el_f=s.ind_el_i, ind_ph=s.ind_ph, sign_ph=-s.sign_ph, mel=s.mel)
             EPW._compute_lifetime_serta_single_scattering!(inv_τ_iscat, el_f, el_i, ph, params, s_swap, recip_lattice)
 
