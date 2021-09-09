@@ -28,7 +28,7 @@ function bte_compute_μ!(params, el::BTStates{R}, nelec_below_window=zero(R); do
     do_print && mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (params.volume/unit_to_aru(:cm)^3)
 
     for (iT, T) in enumerate(params.Tlist)
-        μ = find_chemical_potential(ncarrier_target, T, el.e, el.k_weight, 0)
+        μ = find_chemical_potential(ncarrier_target, T, el.e, el.k_weight)
         params.μlist[iT] = μ
         do_print && mpi_isroot() && @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
     end

@@ -36,7 +36,7 @@ end
     @test EPW.compute_ncarrier(-Inf, T, energy, weights) ≈ 0
 
     for ncarrier in [1e-3, -1e-3]
-        μ = EPW.find_chemical_potential(ncarrier, T, energy, weights, nband_valence)
+        μ = EPW.find_chemical_potential(ncarrier + nband_valence, T, energy, weights)
         @test EPW.compute_ncarrier(μ, T, energy, weights) ≈ ncarrier + nband_valence
     end
 end

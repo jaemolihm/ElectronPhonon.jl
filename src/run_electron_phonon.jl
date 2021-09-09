@@ -114,7 +114,10 @@ function run_eph_outer_loop_q(
 
     # Compute chemical potential
     if compute_transport
-        transport_set_μ!(transport_params, ek_full_save, kpoints.weights)
+        # Use only the states inside the window
+        ek_for_μ = copy(ek_full_save)
+        @. ek_for_μ[(ek_for_μ < window[1]) | (ek_for_μ > window[2])] = Inf
+        transport_set_μ!(transport_params, ek_for_μ, kpoints.weights, nelec_below_window)
     end
 
     omega_save = zeros(nmodes, nq)

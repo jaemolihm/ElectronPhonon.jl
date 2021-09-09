@@ -36,19 +36,16 @@ function compute_ncarrier(μ, T, energy::AbstractArray{R, 1}, weights) where {R 
 end
 
 """
-    find_chemical_potential(ncarrier, T, energy, weights, nband_valence)
+    find_chemical_potential(ncarrier, T, energy, weights)
 Find chemical potential for target carrier density using bisection.
 - `ncarrier`: target carrier density (electron or hole density)
 - `T`: temperature
 - `energy`: band energy
 - `weights`: k-point weights.
-- `nband_valence`: Number of valence bands. It is assumed that `nband_valence` bands are
-    occupied at every k points not included.
 """
-function find_chemical_potential(ncarrier, T, energy, weights, nband_valence)
+function find_chemical_potential(ncarrier, T, energy, weights)
     # FIXME: T=0 case
     # TODO: MPI
-    ncarrier += nband_valence * sum(weights)
 
     # Get rough bounds for μ
     min_μ = minimum(energy) - 10
