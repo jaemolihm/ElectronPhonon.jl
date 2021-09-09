@@ -47,6 +47,7 @@ include("boltzmann/electron_serta.jl")
 include("boltzmann/interpolate_energy.jl")
 include("boltzmann/doublegrid.jl")
 include("boltzmann/gamma_adaptive.jl")
+include("boltzmann/electron_lbte.jl")
 include("run_transport.jl")
 include("run_transport_subgrid_q.jl")
 
