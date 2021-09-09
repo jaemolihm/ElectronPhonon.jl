@@ -16,5 +16,6 @@ using Test
 
     # Boltzmann routines
     include("boltzmann/test_hdf5.jl")
-    include("boltzmann/test_mobility.jl")
+    include("boltzmann/test_el_transport_semiconductor.jl")
+    include("boltzmann/test_el_transport_metal.jl")
 end
