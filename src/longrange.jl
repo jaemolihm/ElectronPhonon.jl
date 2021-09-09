@@ -30,6 +30,10 @@ Base.@kwdef struct Polar{T <: Real}
     tmp2::Vector{Complex{T}} = zeros(Complex{T}, nmodes)
 end
 
+function Base.show(io::IO, obj::Polar)
+    print(io, typeof(obj), "(use=$(obj.use), nmodes=$(obj.nmodes), nxs=$(obj.nxs), η=$(obj.η))")
+end
+
 """
 Compute list of G vectors such that (q+G)/ϵ(q+G) / (2π / alat)^2 / (4 * η) < cutoff for some q in [-0.5, 0.5]^3
 Do this by computing minval = min_{q ∈ [-0.5, 0.5]^3} (q+G) * ϵ * (q+G)

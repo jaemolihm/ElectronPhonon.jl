@@ -198,6 +198,10 @@ struct Symmetry
     time_reversal::Bool
 end
 
+function Base.show(io::IO, obj::Symmetry)
+    print(io, typeof(obj), "(nsym=$(obj.nsym))")
+end
+
 function create_symmetry_object(Ss, τs, time_reversal, lattice)
     # FIXME: Complicated magnetic symmetry operations not implemented. Only grey groups
     # (time_reversal = true) or colorless groups (time_reversal = false)

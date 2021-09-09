@@ -59,6 +59,10 @@ function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing)
         )
 end
 
+function Base.show(io::IO, obj::AbstractWannierObject)
+    print(io, typeof(obj), "(nr=$(obj.nr), ndata=$(obj.ndata))")
+end
+
 # WannierObject(nr, irvec::Array{Int,2}, op_r) = WannierObject(nr, reinterpret(Vec3{Int}, vec(irvec))[:], op_r)
 
 function wannier_object_multiply_R(obj::AbstractWannierObject{T}, lattice) where {T}
