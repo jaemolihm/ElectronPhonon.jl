@@ -1,0 +1,17 @@
+temp/*
+dyn_dir/*
+save/*
+pb.*
+decay.*
+EPW.bib
+tmp_epmat*.bin
+*.fmt
+sparse?
+inv_tau*
+Fsparse/*
+lambda.*
+linewidth.*
+specfun.phon.*
+specfun_sup.phon
+pb_hr.dat
+pb_wsvec.dat

@@ -1,5 +1,6 @@
 using Test
 using EPW
+using LinearAlgebra
 
 # TODO: Add test without polar_eph
 # TODO: Add test with tetrahedron

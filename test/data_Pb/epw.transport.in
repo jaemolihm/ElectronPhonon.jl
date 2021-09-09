@@ -1,0 +1,55 @@
+--
+&inputepw
+  prefix      = 'pb'
+  amass(1)    = 207.2
+  outdir      = './temp/'
+  dvscf_dir   = './save/'
+  etf_mem     = 0
+
+  elph        = .true.
+  kmaps       = .true.  ! if true, read kmaps from file
+  epbread     = .false.
+  epwread     = .true.
+
+  lpolar      = .false.
+  lifc        = .true.
+  use_ws      = .true.
+  vme         = .true.
+
+  nbndsub     =  4
+  bands_skipped = 'exclude_bands = 1-5'
+
+  wannierize  = .false.
+
+  fsthick      = 0.5 ! eV
+  degaussw     = 0.05 ! eV
+  assume_metal = .true.
+  ngaussw      = -99  ! we want F-D distribution for metals
+
+  int_mob       = .true.
+  iterative_bte = .true.
+  scattering    = .true.
+  carrier       = .false.
+  mp_mesh_k     = .true.
+  epmatkqread   = .false.
+  mob_maxiter   = 30
+  broyden_beta  = 1.0
+
+  nstemp        = 2
+  temps         = 100 200 300
+
+  nkf1        = 10
+  nkf2        = 10
+  nkf3        = 10
+  nqf1        = 10
+  nqf2        = 10
+  nqf3        = 10
+
+  nk1         = 3
+  nk2         = 3
+  nk3         = 3
+
+  nq1         = 3
+  nq2         = 3
+  nq3         = 3
+ /
