@@ -50,7 +50,6 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
 
     ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode)
-    nelec_below_window /= prod(nks)
     EPW.get_filtered_kpoints(kpoints, ik_keep), band_min, band_max, nelec_below_window
 end
 
@@ -88,8 +87,6 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MP
 
     ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode)
 
-    nelec_below_window /= prod(nks)
-
     k_filtered = EPW.get_filtered_kpoints(kpoints, ik_keep)
 
     band_min = mpi_min(band_min, mpi_comm)
@@ -112,7 +109,7 @@ function _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode="normal")
         eigenvalues = eigenvalues_[threadid()]
         get_el_eigen_valueonly!(eigenvalues, nw, el_ham, xk, fourier_mode)
         bands_in_window = inside_window(eigenvalues, window...)
-        nelec_below_window_[threadid()] += bands_in_window.start - 1
+        nelec_below_window_[threadid()] += (bands_in_window.start - 1) * kpoints.weights[ik]
         if ! isempty(bands_in_window)
             ik_keep_[threadid()][ik] = true
             band_min_[threadid()] = min(bands_in_window[1], band_min_[threadid()])

@@ -76,7 +76,7 @@ end
 # Null initialization for non-polar case
 # FIXME: defining Polar{T}() does not work. (maybe overriden by @kwdef.)
 Polar{T}(::Nothing) where {T} = Polar{T}(use=false, alat=0, volume=0, nmodes=0, recip_lattice=zeros(Mat3{T}),
-    atom_pos=[], ϵ=zeros(Mat3{T}), Z=[], nxs=(0,0,0), cutoff=0, η=0)
+    atom_pos=[], ϵ=zeros(Mat3{T}), Z=[], nxs=(0,0,0), cutoff=0, η=0, Glist=[])
 
 # Compute dynmat += sign * (dynmat from dipole-dipole interaction)
 @timing "lr_dyn_dip" function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}

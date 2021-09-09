@@ -89,7 +89,7 @@ function run_transport(
     compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts,
         nband, nband_ignore, energy_conservation, average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
 
-    (nband=nband, nband_ignore=nband_ignore, kpts=kpts, qpts=qpts, kqpts=kqpts)
+    (;nband, nband_ignore, kpts, qpts, kqpts, nelec_below_window)
 end
 
 function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts,

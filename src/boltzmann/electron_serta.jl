@@ -13,8 +13,13 @@ export compute_transport_distribution_function
 
 # TODO: Merge with transport_electron.jl (or deprecate the latter)
 
-function bte_compute_μ!(params, el::BTStates{R}; do_print=true) where {R <: Real}
-    ncarrier_target = params.n / params.spin_degeneracy
+"""
+    bte_compute_μ!(params, el::BTStates{R}, nelec_below_window=zero(R); do_print=true) where {R <: Real}
+- `nelec_below_window`: Number of electron per unit cell from states below the window. Spin
+    degeneracy factor not multiplied. Useful for metals.
+"""
+function bte_compute_μ!(params, el::BTStates{R}, nelec_below_window=zero(R); do_print=true) where {R <: Real}
+    ncarrier_target = params.n / params.spin_degeneracy - nelec_below_window
 
     # The carrier density is relative to the reference configuration where nband_valence bands are filled.
     # Add contribution from the states in el which are filled in the reference configuration.
