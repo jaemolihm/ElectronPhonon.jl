@@ -14,16 +14,14 @@ export compute_transport_distribution_function
 # TODO: Merge with transport_electron.jl (or deprecate the latter)
 
 """
-    bte_compute_μ!(params, el::BTStates{R}, nelec_below_window=zero(R); do_print=true) where {R <: Real}
-- `nelec_below_window`: Number of electron per unit cell from states below the window. Spin
-    degeneracy factor not multiplied. Useful for metals.
+    bte_compute_μ!(params, el::BTStates{R}; do_print=true) where {R <: Real}
 """
-function bte_compute_μ!(params, el::BTStates{R}, nelec_below_window=zero(R); do_print=true) where {R <: Real}
-    ncarrier_target = params.n / params.spin_degeneracy - nelec_below_window
-
-    # The carrier density is relative to the reference configuration where nband_valence bands are filled.
-    # Add contribution from the states in el which are filled in the reference configuration.
-    ncarrier_target += sum(el.k_weight[el.iband .≤ params.nband_valence])
+function bte_compute_μ!(params, el::BTStates{R}; do_print=true) where {R <: Real}
+    # Since params.n is the difference of number of electrons per cell from nband_valence,
+    # nband_valence should be added for the real target ncarrier.
+    # Also, el.nstates_base is the contribution to the ncarrier from occupied states
+    # outside the window (i.e. not included in `energy`). So it is subtracted.
+    ncarrier_target = params.n / params.spin_degeneracy + params.nband_valence - el.nstates_base
 
     do_print && mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (params.volume/unit_to_aru(:cm)^3)
 

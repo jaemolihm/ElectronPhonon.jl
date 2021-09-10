@@ -58,15 +58,15 @@ function run_transport(
         # Generate k points
         mpi_isroot() && println("Setting k-point grid")
         symmetry = use_irr_k ? model.symmetry : nothing
-        kpts, iband_min_k, iband_max_k, nelec_below_window = filter_kpoints(k_input, nw,
-            model.el_ham, window_k, mpi_comm_k, symmetry=symmetry)
+        kpts, iband_min_k, iband_max_k, nstates_base_k = filter_kpoints(k_input, nw,
+            model.el_ham, window_k, mpi_comm_k; symmetry)
 
         # Generate k+q points
         mpi_isroot() && println("Setting k+q-point grid")
         # If k_input is a GridKpoint, set shift for kqpts so that qpts includes the Gamma point.
         shift_k = k_input isa GridKpoints ? Vec3{FT}(k_input.shift) : Vec3{FT}(0, 0, 0)
         shift_kq = shift_k .+ shift_q ./ qgrid
-        kqpts, iband_min_kq, iband_max_kq, _ = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq)
+        kqpts, iband_min_kq, iband_max_kq, nstates_base_kq = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq)
         if mpi_comm_k !== nothing
             # k+q points are not distributed over mpi_comm_k
             kqpts = mpi_allgather(kqpts, mpi_comm_k)
@@ -87,13 +87,15 @@ function run_transport(
 
     btedata_prefix = joinpath(folder, "btedata")
     compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts,
-        nband, nband_ignore, energy_conservation, average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
+        nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
+        average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
 
-    (;nband, nband_ignore, kpts, qpts, kqpts, nelec_below_window)
+    (;nband, nband_ignore, kpts, qpts, kqpts)
 end
 
 function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts,
-    kqpts, qpts, nband, nband_ignore, energy_conservation, average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
+    kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
+    average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
 
     nw = model.nw
     nmodes = model.nmodes
@@ -117,13 +119,13 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
         el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband, nband_ignore, "gridopt")
-        el_k_boltzmann, imap_el_k = electron_states_to_BTStates(el_k_save, kpts)
+        el_k_boltzmann, imap_el_k = electron_states_to_BTStates(el_k_save, kpts, nstates_base_k)
         g = create_group(fid_btedata, "initialstate_electron")
         dump_BTData(g, el_k_boltzmann)
 
         mpi_isroot() && println("Calculating electron states at k+q")
         el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore, "gridopt")
-        el_kq_boltzmann, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts)
+        el_kq_boltzmann, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts, nstates_base_kq)
         g = create_group(fid_btedata, "finalstate_electron")
         dump_BTData(g, el_kq_boltzmann)
 

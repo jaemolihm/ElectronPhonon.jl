@@ -25,6 +25,9 @@ Each index (i = 1, ..., n) represents a single state in the Brillouin zone.
     iband::Vector{Int} = Vector{Int}()
     # Grid size
     ngrid::NTuple{3, Int}
+    # Number of occupied states per unit cell that are not explicitly included, e.g. because
+    # they are below the window. Used only for electrons.
+    nstates_base::T = 0
 end
 # TODO: Add kshift
 
@@ -45,7 +48,7 @@ Transform Vector of ElectronState to a BTState.
 - `imap`: imap[ib, ik] is the index of the state in BTStates (for ib in `el_states[ik].rng`)
 """
 @timing "el_to_BT" function electron_states_to_BTStates(el_states::Vector{ElectronState{T}},
-        kpts::EPW.AbstractKpoints{T}) where {T <: Real}
+        kpts::EPW.AbstractKpoints{T}, nstates_base=0) where {T <: Real}
     nk = length(el_states)
     n = sum([el.nband for el in el_states])
     ngrid = kpts.ngrid
@@ -78,7 +81,7 @@ Transform Vector of ElectronState to a BTState.
         end
     end
     nband = iband_max - iband_min + 1
-    BTStates{T}(n, nk, nband, e, vdiag, k_weight, xks, iband, ngrid), imap
+    BTStates{T}(n, nk, nband, e, vdiag, k_weight, xks, iband, ngrid, nstates_base), imap
 end
 
 
@@ -117,7 +120,7 @@ Transform Vector of PhononState to a BTState.
             imap[imode, ik] = istate
         end
     end
-    BTStates{T}(n, nk, nband, e, vdiag, k_weight, xks, iband, ngrid), imap
+    BTStates{T}(;n, nk, nband, e, vdiag, k_weight, xks, iband, ngrid), imap
 end
 
 # TODO: Make ElectronState and PhononState similar so only one function is needed.
@@ -153,6 +156,8 @@ function mpi_gather(s::BTStates{FT}, comm::MPI.Comm) where {FT}
     vdiag = mpi_gather(s.vdiag, comm)
     k_weight = mpi_gather(s.k_weight, comm)
     xks = mpi_gather(s.xks, comm)
+    # FIXME: Should this be done? (mpi_sum for nelec_below_window is called in filter.jl)
+    # nstates_base = mpi_sum(s.nstates_base, comm)
 
     # If ngrid is not same among processers, set ngrid to (0,0,0).
     ngrid_root = mpi_bcast(s.ngrid, comm)
@@ -163,7 +168,7 @@ function mpi_gather(s::BTStates{FT}, comm::MPI.Comm) where {FT}
         @assert n == length(iband) == length(e) == length(vdiag) == length(k_weight) == length(xks)
         nband = length(Set(iband))
         nk = -1
-        BTStates{FT}(n=n, nk=nk, nband=nband, e=e, vdiag=vdiag, k_weight=k_weight, xks=xks, iband=iband, ngrid=ngrid)
+        BTStates{FT}(; n, nk, nband, e, vdiag, k_weight, xks, iband, ngrid, nstates_base)
     else
         BTStates{FT}(n=0, nk=0, nband=0, ngrid=ngrid)
     end

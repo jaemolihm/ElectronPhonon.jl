@@ -355,8 +355,8 @@ end
         # SERTA
         output_serta = EPW.run_serta(filename_btedata, transport_params, nothing, model.recip_lattice);
         @test output.qpts.n == 495
-        @test all(isapprox.(transport_params.μlist, μlist_ref_epw, atol=2e-6 * unit_to_aru(:eV)))
-        @test all(isapprox.(output_serta.mobility_list, mobility_ref_epw_iter0, atol=3e-4))
+        @test all(isapprox.(transport_params.μlist, μlist_ref_epw, atol=3e-6 * unit_to_aru(:eV)))
+        @test all(isapprox.(output_serta.mobility_list, mobility_ref_epw_iter0, atol=1e-3))
 
         # LBTE
         @time bte_scat_mat, el_i, el_f, ph = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
@@ -375,7 +375,7 @@ end
         @test mobility_serta ≈ output_serta.mobility_list
         @test all(isapprox.(mobility_serta, mobility_ref_epw_iter0, atol=1e-3))
         @test all(isapprox.(mobility_iter1, mobility_ref_epw_iter1, atol=1e-3))
-        @test all(isapprox.(mobility_convd, mobility_ref_epw_convd, atol=1e-3))
+        @test all(isapprox.(mobility_convd, mobility_ref_epw_convd, atol=2e-3))
     end
 end
 

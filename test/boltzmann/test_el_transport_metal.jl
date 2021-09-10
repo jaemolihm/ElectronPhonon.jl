@@ -54,7 +54,7 @@ using HDF5
     close(fid)
 
     # Compute chemical potential
-    bte_compute_μ!(transport_params, el_i, output.nelec_below_window)
+    bte_compute_μ!(transport_params, el_i)
 
     @test all(isapprox.(transport_params.μlist, μlist_ref_epw, atol=2e-6 * unit_to_aru(:eV)))
 
