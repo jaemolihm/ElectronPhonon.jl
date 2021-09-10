@@ -59,22 +59,28 @@ using LinearAlgebra
     @test all(isapprox.(output_serta.σ_SI, σ_ref_epw_iter0, atol=0.2))
 
     # LBTE
-    @time bte_scat_mat, el_i, el_f, ph = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model_el.recip_lattice);
+    @time bte_scat_mat, el_i, el_f, ph = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model_el.recip_lattice)
     @test length(bte_scat_mat) == length(transport_params.Tlist)
     @test all(size.(bte_scat_mat) .== Ref((el_i.n, el_f.n)))
 
-    inv_τ = output_serta.inv_τ;
-    @time output_iter1 = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model_el.symmetry, max_iter=1);
-    @time output_convd = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model_el.symmetry);
+    inv_τ = output_serta.inv_τ
+    @time output_iter1 = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model_el.symmetry, max_iter=1)
+    @time output_convd = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model_el.symmetry)
 
-    σ_SI_serta, _ = transport_print_mobility(output_iter1.σ_serta_list, transport_params, do_print=true)
-    σ_SI_iter1, _ = transport_print_mobility(output_iter1.σ_list, transport_params, do_print=true)
-    σ_SI_convd, _ = transport_print_mobility(output_convd.σ_list, transport_params, do_print=true)
+    σ_SI_serta, _ = transport_print_mobility(output_iter1.σ_serta_list, transport_params, do_print=false)
+    σ_SI_iter1, _ = transport_print_mobility(output_iter1.σ_list, transport_params, do_print=false)
+    σ_SI_convd, _ = transport_print_mobility(output_convd.σ_list, transport_params, do_print=false)
 
     @test σ_SI_serta ≈ output_serta.σ_SI
     @test all(isapprox.(σ_SI_serta, σ_ref_epw_iter0, atol=0.2))
     @test all(isapprox.(σ_SI_iter1, σ_ref_epw_iter1, atol=0.2))
     @test all(isapprox.(σ_SI_convd, σ_ref_epw_convd, atol=0.5))
 
-    # TODO: Test TDF
+    @testset "TDF" begin
+        tdf_smearing = 10.0 * EPW.unit_to_aru(:meV)
+        elist = range(minimum(el_i.e) - 3e-3, maximum(el_i.e) + 3e-3, length=1001)
+        Σ_tdf = compute_transport_distribution_function(elist, tdf_smearing, el_i, output_serta.inv_τ, transport_params, model_el.symmetry)
+        @test size(Σ_tdf) == (length(elist), 3, 3, length(transport_params.Tlist))
+        @test dropdims(sum(Σ_tdf, dims=1), dims=1) .* (elist[2] - elist[1]) ≈ output_serta.σlist
+    end
 end

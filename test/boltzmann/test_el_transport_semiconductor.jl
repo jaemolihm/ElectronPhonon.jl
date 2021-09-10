@@ -81,13 +81,14 @@ using LinearAlgebra
         @test all(isapprox.(transport_params.μlist, transport_params_serta.μlist, atol=1e-7))
         @test all(isapprox.(mobility, mobility_serta, atol=2e-1))
 
-        # test transport_distribution_function
-        el = btmodel.el_i
-        tdf_smearing = 10.0 * EPW.unit_to_aru(:meV)
-        elist = range(minimum(el.e) - 3e-3, maximum(el.e) + 3e-3, length=1001)
-        Σ_tdf = compute_transport_distribution_function(elist, tdf_smearing, el, inv_τ, transport_params, model_ph.symmetry)
-        @test size(Σ_tdf) == (length(elist), 3, 3, length(transport_params.Tlist))
-        @test dropdims(sum(Σ_tdf, dims=1), dims=1) .* (elist[2] - elist[1]) ≈ σlist
+        @testset "TDF" begin
+            el = btmodel.el_i
+            tdf_smearing = 10.0 * EPW.unit_to_aru(:meV)
+            elist = range(minimum(el.e) - 3e-3, maximum(el.e) + 3e-3, length=1001)
+            Σ_tdf = compute_transport_distribution_function(elist, tdf_smearing, el, inv_τ, transport_params, model_ph.symmetry)
+            @test size(Σ_tdf) == (length(elist), 3, 3, length(transport_params.Tlist))
+            @test dropdims(sum(Σ_tdf, dims=1), dims=1) .* (elist[2] - elist[1]) ≈ σlist
+        end
     end
 
     @testset "hole doping" begin
