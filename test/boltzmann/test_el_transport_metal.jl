@@ -1,6 +1,6 @@
 using Test
 using EPW
-using HDF5
+using LinearAlgebra
 
 @testset "Transport electron metal" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
@@ -14,6 +14,9 @@ using HDF5
 
     # Reference data from EPW
     μlist_ref_epw = [11.449807639297191, 11.479920504373881, 11.513292262946232] .* unit_to_aru(:eV)
+    σ_ref_epw_iter0 = reshape(hcat(0.966388E+05*I(3), 0.214829E+05*I(3), 0.843989E+04*I(3)), 3, 3, 3)
+    σ_ref_epw_iter1 = reshape(hcat(0.107119E+06*I(3), 0.239672E+05*I(3), 0.943501E+04*I(3)), 3, 3, 3)
+    σ_ref_epw_convd = reshape(hcat(0.110039E+06*I(3), 0.246179E+05*I(3), 0.968863E+04*I(3)), 3, 3, 3)
 
     # Parameters
     e_fermi = 11.594123 * EPW.unit_to_aru(:eV)
@@ -37,6 +40,7 @@ using HDF5
         energy_conservation = energy_conservation,
         average_degeneracy = true,
     )
+    filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
     @test output.qpts.n == 723
 
     transport_params = ElectronTransportParams{Float64}(
@@ -47,18 +51,16 @@ using HDF5
         volume = model_el.volume,
         spin_degeneracy = 2
     )
+    @test transport_params.type === :Metal
 
-    # Read electron and phonon states (do not read scattering here)
-    fid = h5open(joinpath(tmp_dir, "btedata.rank0.h5"), "r")
-    el_i = load_BTData(fid["initialstate_electron"], EPW.BTStates{Float64})
-    close(fid)
-
-    # Compute chemical potential
-    bte_compute_μ!(transport_params, el_i)
-
+    # SERTA
+    output_serta = EPW.run_serta(filename_btedata, transport_params, model_el.symmetry, model_el.recip_lattice)
     @test all(isapprox.(transport_params.μlist, μlist_ref_epw, atol=2e-6 * unit_to_aru(:eV)))
+    @test all(isapprox.(output_serta.σ_SI, σ_ref_epw_iter0, atol=0.2))
 
-    # TODO: Test Run serta
     # TODO: Test LBTE
+    # @show maximum(abs.(output_serta.σ_SI .- σ_ref_epw_iter0))
+    # @show abs.(output_serta.σ_SI .- σ_ref_epw_iter0) ./ output_serta.σ_SI
+
     # TODO: Test TDF
 end

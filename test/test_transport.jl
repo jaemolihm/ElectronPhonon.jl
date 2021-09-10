@@ -61,7 +61,7 @@ using EPW
         window=window,
         transport_params=transport_params,
     )
-    mobility = transport_print_mobility(output["transport_σlist"], transport_params; do_print=false)
+    _, mobility = transport_print_mobility(output["transport_σlist"], transport_params; do_print=false)
 
     @test output["iband_min"] == 2
     @test output["iband_max"] == 4
@@ -127,7 +127,7 @@ end
         window=window,
         transport_params=transport_params,
     )
-    mobility = transport_print_mobility(output["transport_σlist"], transport_params; do_print=false)
+    _, mobility = transport_print_mobility(output["transport_σlist"], transport_params; do_print=false)
 
     @test output["iband_min"] == 2
     @test output["iband_max"] == 3

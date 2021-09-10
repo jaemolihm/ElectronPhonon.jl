@@ -13,12 +13,16 @@ export transport_print_mobility
     ElectronTransportParams{T <: Real}
 Parameters for electron transport calculation. Arguments:
 * `Tlist::Vector{T}`: list of temperatures
-* `n::T`: Number of carriers per unit cell, relative to the reference configuration where `nband_valence` bands are filled.
+* `n::T`: Number of carriers per unit cell, relative to the reference configuration where
+    `spin_degeneracy * nband_valence` bands are filled. Includes the spin degeneracy.
 * `nband_valence::Int`: Number of valence bands, excluding spin degeneracy (used only for semiconductors)
 * `volume::T`: Volume of the unit cell
-* `smearing::Tuple{Symbol, T}`: (:Mode, smearing). Smearing parameter for delta function. Mode can be Gaussian, Lorentzian, Tetrahedron, and GaussianTetrahedron.
+* `smearing::Tuple{Symbol, T}`: `(:Mode, smearing)`. Smearing parameter for delta function.
+    Mode can be Gaussian, Lorentzian, Tetrahedron, and GaussianTetrahedron.
 * `spin_degeneracy::Int`: Spin degeneracy.
 * `μlist::Vector{T}`: Chemical potential.
+* `type::Symbol`: Type of the carrier. `:Metal` or `:Semiconductor`. Defaults to `:Metal` if
+    abs(n) >= 1 and to `:Semiconductor` otherwise.
 """
 Base.@kwdef struct ElectronTransportParams{T <: Real}
     Tlist::Vector{T}
@@ -28,6 +32,7 @@ Base.@kwdef struct ElectronTransportParams{T <: Real}
     smearing::Tuple{Symbol, T}
     spin_degeneracy::Int
     μlist::Vector{T} = fill(T(NaN), length(Tlist))
+    type::Symbol = abs(n) >= 1 ? :Metal : :Semiconductor
 end
 
 # Data and buffers for SERTA (self-energy relaxation-time approximation) conductivity
@@ -166,17 +171,30 @@ function transport_print_mobility(σlist, params::ElectronTransportParams; do_pr
     mobility_SI = σ_SI ./ abs(charge_density_SI)
 
     if do_print
-        println("======= Electron mobility =======")
-        println("Carrier density (cm^-3) =  $carrier_density_SI")
-        for iT in 1:length(params.Tlist)
-            println("T (K)  = $(params.Tlist[iT] / unit_to_aru(:K))")
-            @printf "μ (eV) = %.4f\n" params.μlist[iT] / unit_to_aru(:eV)
-            println("mobility (cm^2/Vs) = ")
-            for i in 1:3
-                @printf "%10.3f %10.3f %10.3f\n" mobility_SI[:, i, iT]...
+        if params.type === :Semiconductor
+            println("======= Electrical mobility =======")
+            println("Carrier density (cm^-3) =  $carrier_density_SI")
+            for iT in 1:length(params.Tlist)
+                println("T (K)  = $(params.Tlist[iT] / unit_to_aru(:K))")
+                @printf "μ (eV) = %.4f\n" params.μlist[iT] / unit_to_aru(:eV)
+                println("mobility (cm^2/Vs) = ")
+                for i in 1:3
+                    @printf "%10.3f %10.3f %10.3f\n" mobility_SI[:, i, iT]...
+                end
+                println()
             end
-            println()
+        else
+            println("======= Electrical conductivity =======")
+            for iT in 1:length(params.Tlist)
+                println("T (K)  = $(params.Tlist[iT] / unit_to_aru(:K))")
+                @printf "μ (eV) = %.4f\n" params.μlist[iT] / unit_to_aru(:eV)
+                println("mobility (1/(Ω*cm)) = ")
+                for i in 1:3
+                    @printf "%12.3f %12.3f %12.3f\n" σ_SI[:, i, iT]...
+                end
+                println()
+            end
         end
     end
-    mobility_SI
+    σ_SI, mobility_SI
 end

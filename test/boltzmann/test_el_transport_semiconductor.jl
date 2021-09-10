@@ -57,7 +57,7 @@ using LinearAlgebra
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
         σlist = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
         σlist = symmetrize_array(σlist, model_el.symmetry, order=2)
-        mobility = transport_print_mobility(σlist, transport_params, do_print=false)
+        _, mobility = transport_print_mobility(σlist, transport_params, do_print=false)
 
         # Comparison with SERTA transport module (the non-Boltzmann one)
         transport_params_serta = ElectronTransportParams{Float64}(
@@ -77,7 +77,7 @@ using LinearAlgebra
             transport_params=transport_params_serta,
         )
 
-        mobility_serta = transport_print_mobility(output["transport_σlist"], transport_params_serta, do_print=false)
+        _, mobility_serta = transport_print_mobility(output["transport_σlist"], transport_params_serta, do_print=false)
         @test all(isapprox.(transport_params.μlist, transport_params_serta.μlist, atol=1e-7))
         @test all(isapprox.(mobility, mobility_serta, atol=2e-1))
 
@@ -129,7 +129,7 @@ using LinearAlgebra
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
         σlist = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
         # σlist = symmetrize_array(σlist, model_el.symmetry, order=2)
-        mobility = transport_print_mobility(σlist, transport_params, do_print=false)
+        _, mobility = transport_print_mobility(σlist, transport_params, do_print=false)
 
         # Comparison with SERTA transport module (the non-Boltzmann one)
         transport_params_serta = ElectronTransportParams{Float64}(
@@ -149,7 +149,7 @@ using LinearAlgebra
             transport_params=transport_params_serta,
         )
 
-        mobility_serta = transport_print_mobility(output["transport_σlist"], transport_params_serta, do_print=false)
+        _, mobility_serta = transport_print_mobility(output["transport_σlist"], transport_params_serta, do_print=false)
         @test all(isapprox.(transport_params.μlist, transport_params_serta.μlist, atol=1e-7))
         @test all(isapprox.(mobility, mobility_serta, atol=2e-1))
     end
@@ -248,6 +248,7 @@ end
             energy_conservation = energy_conservation,
             average_degeneracy = true,
         )
+        filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
 
         transport_params = ElectronTransportParams{Float64}(
             Tlist = Tlist,
@@ -257,14 +258,14 @@ end
             nband_valence = 4,
             spin_degeneracy = 2
         )
-        filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
+        @test transport_params.type === :Semiconductor
 
         # SERTA
         output_serta = EPW.run_serta(filename_btedata, transport_params, model.symmetry, model.recip_lattice);
 
         @test output.qpts.n == 58
         @test all(isapprox.(transport_params.μlist, μlist_ref_epw, atol=2e-6 * unit_to_aru(:eV)))
-        @test all(isapprox.(output_serta.mobility_list, mobility_ref_epw_iter0, atol=1e-3))
+        @test all(isapprox.(output_serta.mobility_SI, mobility_ref_epw_iter0, atol=1e-3))
 
         # LBTE
         @time bte_scat_mat, el_i, el_f, ph = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
@@ -275,11 +276,11 @@ end
         @time output_iter1 = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model.symmetry, max_iter=1);
         @time output_convd = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model.symmetry);
 
-        mobility_serta = transport_print_mobility(output_iter1.σ_serta_list, transport_params, do_print=false)
-        mobility_iter1 = transport_print_mobility(output_iter1.σ_list, transport_params, do_print=false)
-        mobility_convd = transport_print_mobility(output_convd.σ_list, transport_params, do_print=false)
+        _, mobility_serta = transport_print_mobility(output_iter1.σ_serta_list, transport_params, do_print=false)
+        _, mobility_iter1 = transport_print_mobility(output_iter1.σ_list, transport_params, do_print=false)
+        _, mobility_convd = transport_print_mobility(output_convd.σ_list, transport_params, do_print=false)
 
-        @test mobility_serta ≈ output_serta.mobility_list
+        @test mobility_serta ≈ output_serta.mobility_SI
         @test all(isapprox.(mobility_serta, mobility_ref_epw_iter0, atol=1e-3))
         @test all(isapprox.(mobility_iter1, mobility_ref_epw_iter1, atol=1e-3))
         @test all(isapprox.(mobility_convd, mobility_ref_epw_convd, atol=1e-3))
@@ -341,6 +342,7 @@ end
             energy_conservation = energy_conservation,
             average_degeneracy = true,
         )
+        filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
 
         transport_params = ElectronTransportParams{Float64}(
             Tlist = Tlist,
@@ -350,13 +352,13 @@ end
             volume = model.volume,
             spin_degeneracy = 2,
         )
-        filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
+        @test transport_params.type === :Semiconductor
 
         # SERTA
         output_serta = EPW.run_serta(filename_btedata, transport_params, nothing, model.recip_lattice);
         @test output.qpts.n == 495
         @test all(isapprox.(transport_params.μlist, μlist_ref_epw, atol=3e-6 * unit_to_aru(:eV)))
-        @test all(isapprox.(output_serta.mobility_list, mobility_ref_epw_iter0, atol=1e-3))
+        @test all(isapprox.(output_serta.mobility_SI, mobility_ref_epw_iter0, atol=1e-3))
 
         # LBTE
         @time bte_scat_mat, el_i, el_f, ph = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
@@ -368,11 +370,11 @@ end
         @time output_convd = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, nothing, rtol=1e-7);
         # BTE does not converge for the default rtol = 1e-10, so I set rtol = 1e-7 to mimic EPW which uses atol = 1e-6.
 
-        mobility_serta = transport_print_mobility(output_iter1.σ_serta_list, transport_params, do_print=false)
-        mobility_iter1 = transport_print_mobility(output_iter1.σ_list, transport_params, do_print=false)
-        mobility_convd = transport_print_mobility(output_convd.σ_list, transport_params, do_print=false)
+        _, mobility_serta = transport_print_mobility(output_iter1.σ_serta_list, transport_params, do_print=false)
+        _, mobility_iter1 = transport_print_mobility(output_iter1.σ_list, transport_params, do_print=false)
+        _, mobility_convd = transport_print_mobility(output_convd.σ_list, transport_params, do_print=false)
 
-        @test mobility_serta ≈ output_serta.mobility_list
+        @test mobility_serta ≈ output_serta.mobility_SI
         @test all(isapprox.(mobility_serta, mobility_ref_epw_iter0, atol=1e-3))
         @test all(isapprox.(mobility_iter1, mobility_ref_epw_iter1, atol=1e-3))
         @test all(isapprox.(mobility_convd, mobility_ref_epw_convd, atol=2e-3))
