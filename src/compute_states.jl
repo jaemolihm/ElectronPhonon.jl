@@ -4,15 +4,16 @@ export compute_phonon_states
 """
     compute_electron_states(model, kpts, quantities, window, nband, nband_ignore)
 Compute the quantities listed in `quantities` and return a vector of ElectronState.
-`quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal"
-TODO: Implement quantities "velocity"
+`quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "velocity"
+FIXME: Position matrix element contribution is not included in velocity
 """
 function compute_electron_states(model, kpts, quantities, window, nband, nband_ignore, fourier_mode="normal")
     # TODO: MPI, threading
-    allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal"]
-    for quantity in quantities
+    allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity"]
+    for quantity ∈ quantities
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
     end
+    "velocity" ∈ quantities && @warn "position matrix element contribution is not implemented. Thus, interband velocity is inaccurate"
     nw = model.nw
 
     states = [ElectronState(Float64, nw, nband, nband_ignore) for ik=1:kpts.n]
@@ -32,8 +33,8 @@ function compute_electron_states(model, kpts, quantities, window, nband, nband_i
             set_eigen!(el, model.el_ham, xk, fourier_mode)
             set_window!(el, window)
             if "velocity" ∈ quantities
-                # not implemented
-                error("velocity not implemented")
+                set_velocity!(el, model.el_ham_R, xk, fourier_mode)
+                el.vdiag[el.rng] .= real.(diag(el.v[el.rng, el.rng]))
             elseif "velocity_diagonal" ∈ quantities
                 set_velocity_diag!(el, model.el_ham_R, xk, fourier_mode)
             end

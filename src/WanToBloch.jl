@@ -130,6 +130,7 @@ end
     get_el_velocity!(velocity, nw, el_ham_R, xk, uk, fourier_mode="normal")
 Compute electron band velocity.
 FIXME: Position matrix element contribution is not included
+FIXME: Add test
 
 velocity: (3, nband, nband) matrix
 uk: nw * nband matrix containing nband eigenvectors of H(k).

@@ -174,3 +174,14 @@ function set_velocity_diag!(el::ElectronState{FT}, el_ham_R, xk, fourier_mode="n
     @views velocity_diag = reshape(reinterpret(FT, el.vdiag[el.rng]), 3, el.nband)
     get_el_velocity_diag!(velocity_diag, el.nw, el_ham_R, xk, uk, fourier_mode)
 end
+
+"""
+    set_velocity(el::ElectronState, el_ham_R, xk, fourier_mode="normal")
+Compute electron band velocity.
+FIXME: Position matrix element contribution is not included in get_el_velocity!
+"""
+function set_velocity!(el::ElectronState{FT}, el_ham_R, xk, fourier_mode="normal") where {FT}
+    uk = get_u(el)
+    @views velocity = reshape(reinterpret(Complex{FT}, el.v[el.rng, el.rng]), 3, el.nband, el.nband)
+    get_el_velocity!(velocity, el.nw, el_ham_R, xk, uk, fourier_mode)
+end
