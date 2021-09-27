@@ -49,23 +49,23 @@ end
 
 # TODO: Add unit test for electron and hole case
 """
-    transport_set_μ!(params, energy, weights, nelec_below_window=0)
+    transport_set_μ!(params, energy, weights, nelec_below_window=0; do_print=true)
 - `nelec_below_window`: Number of electron per unit cell from states below the window. Spin
     degeneracy factor not multiplied.
 """
-function transport_set_μ!(params, energy, weights, nelec_below_window=0)
+function transport_set_μ!(params, energy, weights, nelec_below_window=0; do_print=true)
     # Since params.n is the difference of number of electrons per cell from nband_valence,
     # nband_valence should be added for the real target ncarrier.
     # Also, nelec_below_window is the contribution to the ncarrier from occupied states
     # outside the window (i.e. not included in `energy`). So it is subtracted.
     ncarrier_target = params.n / params.spin_degeneracy + params.nband_valence - nelec_below_window
 
-    mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (params.volume/unit_to_aru(:cm)^3)
+    do_print && mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (params.volume/unit_to_aru(:cm)^3)
 
     for (iT, T) in enumerate(params.Tlist)
         μ = find_chemical_potential(ncarrier_target, T, energy, weights)
         params.μlist[iT] = μ
-        mpi_isroot() && @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
+        do_print && mpi_isroot() && @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
     end
     nothing
 end
