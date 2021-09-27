@@ -39,8 +39,7 @@ Input hk is not destroyed at output."
     epw_syev!('V', 'U', eigvectors, eigvalues)
 
     # If there are no degenerate bands, return
-    degen_cutoff = 1e-6
-    is_degenerate(eigvalues, degen_cutoff) || return eigvalues, eigvectors
+    is_degenerate(eigvalues, electron_degen_cutoff) || return eigvalues, eigvectors
 
     # FIXME: This is a fix to mimic EPW. Later, a correct gauge-invariant formula should be implemented.
     # Fix eigenvector gauge for degenerate bands. Follow what is done in EPW.
@@ -55,7 +54,7 @@ Input hk is not destroyed at output."
     degen_to = -1
     for i in 1:n-1
         # Check if the degenerate group is terminated
-        if abs(degen_e - eigvalues[i+1]) > degen_cutoff
+        if abs(degen_e - eigvalues[i+1]) > electron_degen_cutoff
             degen_to = i
         elseif i == n-1
             degen_to = i + 1

@@ -164,7 +164,6 @@ end
 Avearage g2 over degenerate bands of el_k and el_kq
 """
 function epdata_g2_degenerate_average!(epdata::ElPhData{FT}) where {FT}
-    degen_cutoff = 1e-6
     el_k = epdata.el_k
     el_kq = epdata.el_kq
     g2_avg = epdata.buffer2
@@ -174,7 +173,7 @@ function epdata_g2_degenerate_average!(epdata::ElPhData{FT}) where {FT}
     @views for ib in el_k.rng
         ndegen = 0
         for jb in el_k.rng
-            if abs(el_k.e[ib] - el_k.e[jb]) <= degen_cutoff
+            if abs(el_k.e[ib] - el_k.e[jb]) <= electron_degen_cutoff
                 g2_avg[el_kq.rng, ib, :] .+= epdata.g2[el_kq.rng, jb, :]
                 ndegen += 1
             end
@@ -188,7 +187,7 @@ function epdata_g2_degenerate_average!(epdata::ElPhData{FT}) where {FT}
     @views for ib in el_kq.rng
         ndegen = 0
         for jb in el_kq.rng
-            if abs(el_kq.e[ib] - el_kq.e[jb]) <= degen_cutoff
+            if abs(el_kq.e[ib] - el_kq.e[jb]) <= electron_degen_cutoff
                 g2_avg[ib, el_k.rng, :] .+= epdata.g2[jb, el_k.rng, :]
                 ndegen += 1
             end
