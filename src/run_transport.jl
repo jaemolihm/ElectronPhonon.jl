@@ -38,16 +38,10 @@ function run_transport(
     - q_input to be a Kpoints object
     - Additional sampling around q=0
     """
-    if mpi_comm_q !== nothing
-        error("mpi_comm_q not implemented")
-    end
-    if q_input isa Kpoints
-        error("q_input isa Kpoints not implemented")
-    end
+    mpi_comm_q !== nothing && error("mpi_comm_q not implemented")
+    q_input isa Kpoints && error("q_input isa Kpoints not implemented")
+    model.epmat_outer_momentum != "el" && error("model.epmat_outer_momentum must be el")
 
-    if model.epmat_outer_momentum != "el"
-        error("model.epmat_outer_momentum must be el")
-    end
     kgrid = k_input isa AbstractKpoints ? k_input.ngrid : k_input
     qgrid = q_input isa AbstractKpoints ? q_input.ngrid : q_input
     mod.(qgrid, kgrid) == (0, 0, 0) || error("q grid must be an integer multiple of k grid.")
@@ -59,16 +53,16 @@ function run_transport(
         mpi_isroot() && println("Setting k-point grid")
         symmetry = use_irr_k ? model.symmetry : nothing
         kpts, iband_min_k, iband_max_k, nstates_base_k = filter_kpoints(k_input, nw,
-            model.el_ham, window_k, mpi_comm_k; symmetry)
+            model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
 
         # Generate k+q points
         mpi_isroot() && println("Setting k+q-point grid")
         # If k_input is a GridKpoint, set shift for kqpts so that qpts includes the Gamma point.
         shift_k = k_input isa GridKpoints ? Vec3{FT}(k_input.shift) : Vec3{FT}(0, 0, 0)
         shift_kq = shift_k .+ shift_q ./ qgrid
-        kqpts, iband_min_kq, iband_max_kq, nstates_base_kq = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq)
+        kqpts, iband_min_kq, iband_max_kq, nstates_base_kq = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq; fourier_mode)
         if mpi_comm_k !== nothing
-            # k+q points are not distributed over mpi_comm_k
+            # k+q points are not distributed over mpi_comm_k in the remaining part.
             kqpts = mpi_allgather(kqpts, mpi_comm_k)
         end
     end

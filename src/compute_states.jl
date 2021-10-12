@@ -10,7 +10,7 @@ FIXME: Position matrix element contribution is not included in velocity
 function compute_electron_states(model, kpts, quantities, window, nband, nband_ignore, fourier_mode="normal")
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity"]
-    for quantity ∈ quantities
+    for quantity in quantities
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
     end
     "velocity" ∈ quantities && @warn "position matrix element contribution is not implemented. Thus, interband velocity is inaccurate"

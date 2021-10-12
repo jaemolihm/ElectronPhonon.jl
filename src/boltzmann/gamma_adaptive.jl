@@ -109,6 +109,7 @@ function gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, 
 
     mpi_isroot() && println("Computing inverse lifetime")
     for ind_el_i in 1:el_i.n
+        mpi_isroot() && mod(ind_el_i, 1000) == 0 && println("State $ind_el_i / $(el_i.n)")
         xk = el_i.xks[ind_el_i]
         iband_k = el_i.iband[ind_el_i]
         ik = xk_to_ik(xk, kpts)
