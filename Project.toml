@@ -4,9 +4,11 @@ authors = ["Jae-Mo Lihm <jaemolim96@gmail.com> and contributors"]
 version = "0.1.0"
 
 [deps]
+Dictionaries = "85a47980-9c8c-11e8-2b9f-f7ca1fa99fb4"
 FortranFiles = "c58ffaec-ab22-586d-bfc5-781a99fd0b10"
 HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
 Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
 NPZ = "15e1cf62-19b3-5cfa-8e77-841668bca605"

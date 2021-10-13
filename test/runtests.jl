@@ -19,4 +19,5 @@ using Test
     include("boltzmann/test_el_constant_rta.jl")
     include("boltzmann/test_el_transport_semiconductor.jl")
     include("boltzmann/test_el_transport_metal.jl")
+    include("boltzmann/test_el_master_equation.jl")
 end
