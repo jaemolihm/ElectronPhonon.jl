@@ -33,7 +33,7 @@ using JLD2
         symmetry = nothing
 
         # Calculate matrix elements
-        @time EPW.run_transport_coherence(
+        @time EPW.run_transport(
             model_el, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -42,6 +42,7 @@ using JLD2
             energy_conservation = energy_conservation,
             use_irr_k = false,
             average_degeneracy = false,
+            run_for_qme = true,
         )
 
         transport_params = ElectronTransportParams{Float64}(
@@ -129,7 +130,7 @@ using JLD2
         symmetry = nothing
 
         # Calculate matrix elements
-        @time EPW.run_transport_coherence(
+        @time EPW.run_transport(
             model_el, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -138,6 +139,7 @@ using JLD2
             energy_conservation = energy_conservation,
             use_irr_k = false,
             average_degeneracy = false,
+            run_for_qme = true,
         )
 
         filename = joinpath(tmp_dir, "btedata_coherence.rank0.jld2")

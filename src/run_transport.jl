@@ -8,6 +8,9 @@ using HDF5
     - `mode = :Fixed`: Use fixed tolerence `param` for energy conservation. (Useful for fixed smearing)
     - `mode = :Linear`: Use band velocity to extrapolate energy and determine energy conservation. `param` is the maximum curvature of the band. (Useful for tetrahedron integration and adaptive smearing).
 - `shift_q`: shift of the q-point grid in units of the grid size.
+- `run_for_qme`: If true, calculate matrix elements for quantum master equation. If false, calculate
+    for semiclassical Boltzmann equation(default: false)
+- `qme_offdiag_cutoff`: Maximum interband energy difference to include the off-diagonal part. Used only if `run_for_qme`==true.
 """
 function run_transport(
         model::ModelEPW,
@@ -23,6 +26,8 @@ function run_transport(
         use_irr_k=true,
         shift_q=(0, 0, 0),
         average_degeneracy=false,
+        run_for_qme=false,
+        qme_offdiag_cutoff=EPW.electron_degen_cutoff,
     )
     FT = Float64
     """
@@ -46,6 +51,16 @@ function run_transport(
     qgrid = q_input isa AbstractKpoints ? q_input.ngrid : q_input
     mod.(qgrid, kgrid) == (0, 0, 0) || error("q grid must be an integer multiple of k grid.")
 
+    if run_for_qme
+        k_input isa AbstractKpoints && error("for run_for_qme==true, k_input must be a NTuple")
+        q_input isa AbstractKpoints && error("for run_for_qme==true, q_input must be a NTuple")
+        mpi_comm_k !== nothing && error("for run_for_qme==true, mpi_comm_k not implemented")
+        kgrid != qgrid && error("for run_for_qme==true, kgrid and qgrid must be the same (otherwise not implemented)")
+        use_irr_k && error("for run_for_qme==true, use_irr_k not implemented")
+        shift_q != (0, 0, 0) && error("for run_for_qme==true, shift_q not implemented")
+        all(window_k .≈ window_kq) || error("for run_for_qme==true, window_k and window_kq must be the same (otherwise not implemented")
+    end
+
     nw = model.nw
 
     @timing "setup kgrid" begin
@@ -55,15 +70,25 @@ function run_transport(
         kpts, iband_min_k, iband_max_k, nstates_base_k = filter_kpoints(k_input, nw,
             model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
 
-        # Generate k+q points
-        mpi_isroot() && println("Setting k+q-point grid")
-        # If k_input is a GridKpoint, set shift for kqpts so that qpts includes the Gamma point.
-        shift_k = k_input isa GridKpoints ? Vec3{FT}(k_input.shift) : Vec3{FT}(0, 0, 0)
-        shift_kq = shift_k .+ shift_q ./ qgrid
-        kqpts, iband_min_kq, iband_max_kq, nstates_base_kq = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq; fourier_mode)
-        if mpi_comm_k !== nothing
-            # k+q points are not distributed over mpi_comm_k in the remaining part.
-            kqpts = mpi_allgather(kqpts, mpi_comm_k)
+        if run_for_qme
+            # TODO: Currently, for coherence transport, kpts and kqpts should be identical.
+            # The reason is that the off-diagonal matrix elements are hard to unfold or interpolate.
+            # In the future, it may be implemented.
+            kqpts = kpts
+            iband_min_kq = iband_min_k
+            iband_max_kq = iband_max_k
+            nstates_base_kq = nstates_base_k
+        else
+            # Generate k+q points
+            mpi_isroot() && println("Setting k+q-point grid")
+            # If k_input is a GridKpoint, set shift for kqpts so that qpts includes the Gamma point.
+            shift_k = k_input isa GridKpoints ? Vec3{FT}(k_input.shift) : Vec3{FT}(0, 0, 0)
+            shift_kq = shift_k .+ shift_q ./ qgrid
+            kqpts, iband_min_kq, iband_max_kq, nstates_base_kq = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq; fourier_mode)
+            if mpi_comm_k !== nothing
+                # k+q points are not distributed over mpi_comm_k in the remaining part.
+                kqpts = mpi_allgather(kqpts, mpi_comm_k)
+            end
         end
     end
 
@@ -79,10 +104,17 @@ function run_transport(
     # makes the long-range part more robust.
     sort!(shift_center!(qpts, (0, 0, 0)))
 
-    btedata_prefix = joinpath(folder, "btedata")
-    compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts,
-        nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
-        average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
+    if run_for_qme
+        btedata_prefix = joinpath(folder, "btedata_coherence")
+        compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq,
+            kpts, kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
+            average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff)
+    else
+        btedata_prefix = joinpath(folder, "btedata")
+        compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq,
+            kpts, kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
+            average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
+    end
 
     (;nband, nband_ignore, kpts, qpts, kqpts)
 end

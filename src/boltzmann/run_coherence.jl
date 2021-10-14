@@ -1,86 +1,8 @@
 using JLD2
 
-export run_transport_coherence
-
-# TODO: Merge with run_transport
-
-function run_transport_coherence(
-        model::ModelEPW,
-        kgrid::NTuple{3,Int},
-        qgrid::NTuple{3,Int};
-        mpi_comm_k=nothing,
-        mpi_comm_q=nothing,
-        fourier_mode="gridopt",
-        window_k=(-Inf,Inf),
-        window_kq=(-Inf,Inf),
-        folder,
-        energy_conservation=(:None, 0.0),
-        use_irr_k=false,
-        shift_q=(0, 0, 0),
-        average_degeneracy=false,
-    )
-    FT = Float64
-    mpi_comm_k !== nothing && error("mpi_comm_k not implemented")
-    mpi_comm_q !== nothing && error("mpi_comm_q not implemented")
-    kgrid != qgrid && error("kgrid and qgrid must be the same (otherwise not implemented")
-    model.epmat_outer_momentum != "el" && error("model.epmat_outer_momentum must be el")
-    use_irr_k && error("use_irr_k not implemented")
-    shift_q != (0, 0, 0) && error("shift_q not implemented")
-    all(window_k .≈ window_kq) || error("window_k and window_kq must be the same (otherwise not implemented")
-
-    # mod.(qgrid, kgrid) == (0, 0, 0) || error("q grid must be an integer multiple of k grid.")
-
-    nw = model.nw
-
-    @timing "setup kgrid" begin
-        # Generate k points
-        mpi_isroot() && println("Setting k-point grid")
-        symmetry = use_irr_k ? model.symmetry : nothing
-        kpts, iband_min_k, iband_max_k, nstates_base_k = filter_kpoints(kgrid, nw,
-            model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
-
-        # # Generate k+q points
-        # mpi_isroot() && println("Setting k+q-point grid")
-        # shift_kq = shift_q ./ qgrid
-        # kqpts, iband_min_kq, iband_max_kq, nstates_base_kq = filter_kpoints(qgrid, nw,
-        #     model.el_ham, window_kq, mpi_comm_k, shift=shift_kq; fourier_mode)
-        # if mpi_comm_k !== nothing
-        #     # k+q points are not distributed over mpi_comm_k in the remaining part.
-        #     kqpts = mpi_allgather(kqpts, mpi_comm_k)
-        # end
-
-        # TODO: Currently, for coherence transport, kpts and kqpts should be identical.
-        # The reason is that the off-diagonal matrix elements are hard to unfold or interpolate.
-        # In the future, it may be implemented.
-        kqpts = kpts
-        iband_min_kq = iband_min_k
-        iband_max_kq = iband_max_k
-        nstates_base_kq = nstates_base_k
-    end
-
-    iband_min = min(iband_min_k, iband_min_kq)
-    iband_max = max(iband_max_k, iband_max_kq)
-
-    nband = iband_max - iband_min + 1
-    nband_ignore = iband_min - 1
-
-    qpts = EPW.add_two_kpoint_grids(kqpts, kpts, -, kqpts.ngrid)
-
-    # Move xq inside [-0.5, 0.5]^3. This doesn't change the Fourier transform but
-    # makes the long-range part more robust.
-    sort!(shift_center!(qpts, (0, 0, 0)))
-
-    btedata_prefix = joinpath(folder, "btedata_coherence")
-    compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq,
-        kpts, kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
-        average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
-
-    (;nband, nband_ignore, kpts, qpts, kqpts)
-end
-
 function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq, kpts,
         kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
-        average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
+        average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff)
     FT = Float64
 
     nw = model.nw
@@ -102,7 +24,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # for (el, xk) in zip(el_k_save, kpts.vectors)
         #     set_gauge_to_diagonalize_velocity_matrix!(el, xk, 1, model)
         # end
-        el_k_boltzmann, _ = electron_states_to_QMEStates(el_k_save, kpts, nstates_base_k)
+        el_k_boltzmann, _ = electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff, nstates_base_k)
         fid_btedata["initialstate_electron"] = el_k_boltzmann
 
         # NOTE: Currently, for coherence transport, the set of electron states at k and k+q
