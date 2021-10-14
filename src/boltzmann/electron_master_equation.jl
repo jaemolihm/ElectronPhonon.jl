@@ -10,8 +10,7 @@ export compute_qme_scattering_matrix, solve_electron_qme
     compute_qme_scattering_matrix(filename, params, el_i, el_f, ph)
 Compute the scattering matrix element for quantum master equation of electrons.
 """
-function compute_qme_scattering_matrix(filename, params, el_i, el_f, ph)
-    FT = Float64
+function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f, ph) where {FT}
     nT = length(params.Tlist)
 
     indmap_el_i = states_index_map(el_i)
@@ -29,9 +28,11 @@ function compute_qme_scattering_matrix(filename, params, el_i, el_f, ph)
     p_mel_ikq = zeros(Complex{FT}, nT)
 
     # Scattering-out matrix
-    S_out = [spzeros(Complex{FT}, el_i.n, el_i.n) for iT in 1:nT]
+    S_out = [spzeros(Complex{FT}, el_i.n, el_i.n) for _ in 1:nT]
 
     @time for ik in 1:el_i.kpts.n
+        mpi_isroot() && mod(ik, 100) == 0 && println("Calculating scattering for group $ik")
+
         scat = load_scatteringdata(fid["scattering/ik$ik"])
 
         # 1. Scattering-out term
