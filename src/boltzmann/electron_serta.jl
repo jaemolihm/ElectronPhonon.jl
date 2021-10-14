@@ -396,7 +396,7 @@ function run_serta_subgrid(filename_original, filename_subgrid, transport_params
         xq = qpts.vectors[iq]
         xq_int = mod.(round.(Int, xq .* ph.ngrid), ph.ngrid)
         for imode in 1:ph.nband
-            key = (xq_int.data..., imode)
+            key = CI(xq_int.data..., imode)
             if haskey(ind_ph_map, key)
                 ind_ph_filter[ind_ph_map[key]] = false
             end

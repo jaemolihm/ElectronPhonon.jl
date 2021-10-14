@@ -16,12 +16,8 @@ const QMEElPhScatteringData{T} = Dictionary{CartesianIndex{5}, ElPhScatteringEle
     ik = g["ik"]::Vector{Int}
     ikq = g["ikq"]::Vector{Int}
 
-    nscat = length(mel)
-    scat = QMEElPhScatteringData{Float64}(sizehint=nscat)
-    for iscat in 1:nscat
-        key = CI(ik[iscat], ib[iscat], ikq[iscat], jb[iscat], imode[iscat])
-        insert!(scat, key, (mel=mel[iscat], econv_p=econv_p[iscat], econv_m=econv_m[iscat]))
-    end
+    f(mel, econv_p, econv_m) = (;mel, econv_p, econv_m)
+    scat = Dictionary(CartesianIndex.(ik, ib, ikq, jb, imode), f.(mel, econv_p, econv_m))
     scat
 end
 

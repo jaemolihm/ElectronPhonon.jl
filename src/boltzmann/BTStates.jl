@@ -1,6 +1,7 @@
 "States in Boltzmann transport calculation"
 
 using Parameters: @with_kw
+using Dictionaries
 
 """
     @with_kw struct BTStates{T <: Real} <: AbstractBTData{T}
@@ -127,20 +128,20 @@ end
 
 """
     states_index_map(states, symmetry=nothing)
-Create a map (xk_int, iband) => i
+Create a map CartesianIndex(xk_int, iband) => i
 """
 function states_index_map(states, symmetry=nothing; xk_shift=Vec3(0, 0, 0))
-    index_map = Dict{NTuple{4, Int}, Int}()
+    index_map = Dictionary{CI{4}, Int}()
     for i in 1:states.n
         xk_int = mod.(round.(Int, (states.xks[i] - xk_shift) .* states.ngrid), states.ngrid)
-        index_map[(xk_int.data..., states.iband[i])] = i
+        insert!(index_map, CI(xk_int.data..., states.iband[i]), i)
         if symmetry !== nothing
             for (S, is_tr) in zip(symmetry.S, symmetry.is_tr)
                 Sk = is_tr * S * states.xks[i]
                 Sk_int = mod.(round.(Int, Sk .* states.ngrid), states.ngrid)
-                key = (Sk_int.data..., states.iband[i])
+                key = CI(Sk_int.data..., states.iband[i])
                 if ! haskey(index_map, key)
-                    index_map[key] = i
+                    insert!(index_map, key, i)
                 end
             end
         end

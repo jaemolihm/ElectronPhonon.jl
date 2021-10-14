@@ -4,6 +4,7 @@ using LinearAlgebra
 using SparseArrays
 using Interpolations
 using Interpolations: WeightedArbIndex, coordslookup, value_weights, weightedindexes
+using Dictionaries
 
 """
     occupation_to_conductivity(δf::Vector{Vec3{FT}}, el, params)
@@ -139,7 +140,7 @@ function unfold_data_map(state::EPW.BTStates{FT}, symmetry) where {FT}
     inds_unfold = Int[]
     values = Mat3{Float64}[]
 
-    indmap = Dict{NTuple{4, Int}, Int}()
+    indmap = Dictionary{CI{4}, Int}()
     ngrid = state.ngrid
     n_unfold = 0
     ndegen_unfold = Int[]
@@ -149,12 +150,12 @@ function unfold_data_map(state::EPW.BTStates{FT}, symmetry) where {FT}
         for (S, is_tr, Scart) in zip(symmetry.S, symmetry.is_tr, symmetry.Scart)
             Sk = is_tr ? -S * xk : S * xk
             Sk_int = mod.(round.(Int, Sk .* ngrid), ngrid)
-            key = (Sk_int.data..., iband)
+            key = CI(Sk_int.data..., iband)
             i_Sk = get(indmap, key, -1)
             if i_Sk == -1
                 # New state
                 n_unfold += 1
-                indmap[key] = n_unfold
+                insert!(indmap, key, n_unfold)
                 push!(inds_i, i)
                 push!(inds_unfold, n_unfold)
                 push!(values, is_tr ? -Scart : Scart)
@@ -193,7 +194,7 @@ function vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
 
         indexes, weights = linear_interpolation_weights(ranges, xk.data)
         for (ind_k, weight) in zip(indexes, weights)
-            key = ((ind_k.-1)..., iband)
+            key = CI((ind_k.-1)..., iband)
             i_unfold = get(indmap_unfold, key, -1)
             if i_unfold != -1
                 if weight > 1e-14

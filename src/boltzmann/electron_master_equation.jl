@@ -17,7 +17,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     ind_ph_map = EPW.states_index_map(ph)
 
     # FIXME: JLD2 group is not iterable...
-    fid = jldopen(filename, "r")
+    fid = jldopen(filename, "r")::JLD2.JLDFile{JLD2.MmapIO}
     mpi_isroot() && println("Original grid: Total $(el_i.kpts.n) groups of scattering")
 
     @assert params.smearing[1] == :Gaussian
@@ -78,16 +78,16 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                 p_mel_ikq .= 0
 
                 for imode in 1:ph.nband
-                    ind_ph = ind_ph_map[(xq_int..., imode)]
+                    ind_ph = ind_ph_map[CI(xq_int..., imode)]
                     ω_ph = ph.e[ind_ph]
                     # Skip if phonon frequency is too close to 0 (acoustic phonon at q=0)
                     ω_ph < EPW.omega_acoustic && continue
 
                     # Matrix element factor
-                    haskey(scat, CI(ik, ib1, ikq, jb, imode)) || continue
-                    haskey(scat, CI(ik, ib2, ikq, jb, imode)) || continue
-                    s1 = scat[CI(ik, ib1, ikq, jb, imode)]
-                    s2 = scat[CI(ik, ib2, ikq, jb, imode)]
+                    s1 = get(scat, CI(ik, ib1, ikq, jb, imode), nothing)
+                    s1 === nothing && continue
+                    s2 = get(scat, CI(ik, ib2, ikq, jb, imode), nothing)
+                    s2 === nothing && continue
                     gg = conj(s1.mel) * s2.mel
 
                     if s1.econv_p && s2.econv_p
