@@ -390,15 +390,15 @@ function run_serta_subgrid(filename_original, filename_subgrid, transport_params
     @assert all(isapprox.(el_i.e, el_i_sub.e))
 
     # For the original grid, filter only states not subdivided
-    ind_ph_map = EPW.states_index_map(ph)
+    ind_ph_map = states_index_map(ph)
     ind_ph_filter = fill(true, ph.n)
     for iq in unique(iq_subgrid_to_grid)
         xq = qpts.vectors[iq]
         xq_int = mod.(round.(Int, xq .* ph.ngrid), ph.ngrid)
+        ind_ph_list = ind_ph_map[CI(xq_int...)]
         for imode in 1:ph.nband
-            key = CI(xq_int.data..., imode)
-            if haskey(ind_ph_map, key)
-                ind_ph_filter[ind_ph_map[key]] = false
+            if ind_ph_list[imode] > 0
+                ind_ph_filter[ind_ph_list[imode]] = false
             end
         end
     end

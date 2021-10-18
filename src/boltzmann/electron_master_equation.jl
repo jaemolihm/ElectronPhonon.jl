@@ -14,7 +14,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     nT = length(params.Tlist)
 
     indmap_el_i = states_index_map(el_i)
-    ind_ph_map = EPW.states_index_map(ph)
+    ind_ph_map = states_index_map(ph)
 
     fid = h5open(filename, "r")
     mpi_isroot() && println("Original grid: Total $(length(fid["scattering"])) groups of scattering")
@@ -73,11 +73,14 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                 ikq = el_f.ik[ind_el_f]
                 xq = el_f.kpts.vectors[ikq] - el_i.kpts.vectors[ik]
                 xq_int = mod.(round.(Int, xq .* ph.ngrid), ph.ngrid)
+                ind_ph_list = get(ind_ph_map, CI(xq_int...), nothing)
+                ind_ph_list === nothing && continue # skip if this xq is not in ph
 
                 p_mel_ikq .= 0
 
                 for imode in 1:ph.nband
-                    ind_ph = ind_ph_map[CI(xq_int..., imode)]
+                    ind_ph = ind_ph_list[imode]
+                    ind_ph == 0 && continue # skip if this imode is not in ph
                     ω_ph = ph.e[ind_ph]
                     # Skip if phonon frequency is too close to 0 (acoustic phonon at q=0)
                     ω_ph < EPW.omega_acoustic && continue
