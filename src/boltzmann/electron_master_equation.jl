@@ -250,6 +250,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
     δρ_external = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter_old = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter_new = zeros(Vec3{Complex{FT}}, el_i.n)
+    δρ_iter_tmp = zeros(Vec3{Complex{FT}}, el_i.n)
 
     if symmetry === nothing
         # FIXME: no symmetry but different grid
@@ -263,47 +264,62 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
     for (iT, (T, μ)) in enumerate(zip(params.Tlist, params.μlist))
         @. δρ_external = el_i.v * -EPW.occ_fermion_derivative(el_i.e1 - μ, T);
         S_out = scat_mat_out[iT]
+        S_out_factorize = factorize(S_out)
 
-        # SERTA: Solve S_out * δρ + δρ_external = 0
-        @views for a in 1:3
-            x = reshape(reinterpret(Complex{FT}, δρ_external), 3, :)[a, :]
-            y = S_out \ x;
-            reshape(reinterpret(Complex{FT}, δρ_serta[:, iT]), 3, :)[a, :] .= .-y
-        end
+        # QME-SERTA: Solve S_out * δρ + δρ_external = 0
+        @views _solve_qme_direct!(δρ_serta[:, iT], S_out_factorize, .-δρ_external)
         σ_serta[:, :, iT] .= symmetrize(occupation_to_conductivity(δρ_serta[:, iT], el_i, params), symmetry)
 
-        # QME: Solve (S_out + S_in) * δρ + δρ_external = 0
+        # QME-exact: Solve (S_out + S_in) * δρ + δρ_external = 0
+        # Solve iteratively the fixed point equation δρ = S_out^{-1} * (-S_in * δρ - δρ_external)
         if scat_mat_in !== nothing
             S_in = scat_mat_in[iT]
-            # # Initial guess: SERTA density matrix
-            # δρ_iter_new .= δρ_serta[:, iT]
-            # σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
 
-            # TODO
-            # for iter in 1:max_iter
-            #     σ_old = σ_new
-            #     δρ_iter_old .= δρ_iter_new
+            # Initial guess: SERTA density matrix
+            @views δρ_iter_new .= δρ_serta[:, iT]
+            σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
 
-            #     # TODO: Symmetry
-            #     # Unfold from δf_i to δf_f
-            #     # δf_f = map_i_to_f * δf_i
+            # Fixed-point iteration
+            for iter in 1:max_iter
+                σ_old = σ_new
+                δρ_iter_old .= δρ_iter_new
 
-            #     # Multiply scattering matrix, and
-            #     δρ_iter_new .= δρ_iter_old .* 0.999 + (scat_mat[iT] * δρ_iter_old) .* 0.001
-            #     σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
-            #     @show σ_new[1, 1]
-            #     if norm(σ_new - σ_old) / norm(σ_new) < rtol
-            #         @info "iT=$iT, converged at iteration $iter"
-            #         break
-            #     elseif iter == max_iter
-            #         @info "iT=$iT, convergence not reached at maximum iteration $max_iter"
-            #     end
-            # end
+                # TODO: Symmetry
+                # Unfold from δf_i to δf_f
+                # δf_f = map_i_to_f * δf_i
 
-            # σ_list[:, :, iT] .= σ
-            # δf_i_list[:, iT] .= δf_i
+                # Compute δρ_iter_new = S_out^{-1} * (-S_in * δρ_iter_old - δρ_external)
+                #                     = - S_out^{-1} * S_in * δρ_iter_old + δρ_serta[:, iT]
+                mul!(δρ_iter_tmp, S_in, δρ_iter_old, -1, 0)
+                _solve_qme_direct!(δρ_iter_new, S_out_factorize, δρ_iter_tmp)
+                @views δρ_iter_new .+= δρ_serta[:, iT]
+                σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
+
+                # Check convergence
+                if norm(σ_new - σ_old) / norm(σ_new) < rtol
+                    @info "iT=$iT, converged at iteration $iter"
+                    break
+                elseif iter == max_iter
+                    @info "iT=$iT, convergence not reached at maximum iteration $max_iter"
+                end
+            end
+
+            σ[:, :, iT] .= σ_new
+            δρ[:, iT] .= δρ_iter_new
+        else
+            σ[:, :, iT] .= NaN
+            # δρ[:, iT] .= NaN # FIXME
         end
     end
     (;σ, σ_serta, δρ_serta, δρ)
 end
 
+# Solve S * δρ = δρ0 using left division.
+function _solve_qme_direct!(δρ::AbstractVector{Vec3{Complex{FT}}}, S, δρ0::AbstractVector{Vec3{Complex{FT}}}) where FT
+    # Here, we use \ although it allocates because non-allocating ldiv! not supported for
+    # sparse matrix: https://github.com/JuliaLang/SuiteSparse.jl/issues/19
+    @views for a in 1:3
+        b = reshape(reinterpret(Complex{FT}, δρ0), 3, :)[a, :]
+        reshape(reinterpret(Complex{FT}, δρ), 3, :)[a, :] .= S \ b;
+    end
+end

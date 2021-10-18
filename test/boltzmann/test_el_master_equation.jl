@@ -64,11 +64,12 @@ using HDF5
         μlist_qme = copy(transport_params.μlist)
 
         # Compute scattering matrix
-        S_out, _ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out; symmetry)
+        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; symmetry)
         _, mobility_qme_serta_SI = transport_print_mobility(out_qme.σ_serta, transport_params, do_print=false);
+        _, mobility_qme_iter_SI = transport_print_mobility(out_qme.σ, transport_params, do_print=false);
 
         # For electron-doped BN, there is only 1 band, so the result is identical to BTE
         # Calculate matrix elements
@@ -85,18 +86,27 @@ using HDF5
 
         output_serta = EPW.run_serta(filename_btedata, transport_params, symmetry, model_el.recip_lattice);
 
+        # LBTE
+        bte_scat_mat, el_i_bte, el_f_bte, ph_bte = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model_el.recip_lattice);
+        inv_τ = output_serta.inv_τ;
+        output_lbte = EPW.solve_electron_bte(el_i_bte, el_f_bte, bte_scat_mat, inv_τ, transport_params, symmetry)
+        _, mobility_bte_serta_SI = transport_print_mobility(output_lbte.σ_serta_list, transport_params, do_print=false);
+        _, mobility_bte_iter_SI = transport_print_mobility(output_lbte.σ_list, transport_params, do_print=false);
+
         # Test QME and BTE result is identical (because there is only one band)
         @test el_i.nband == 1
         @test all(el_i.ib1 .== 1)
         @test all(el_i.ib2 .== 1)
         @test μlist_qme ≈ transport_params.μlist
         @test mobility_qme_serta_SI ≈ output_serta.mobility_SI
+        @test mobility_qme_serta_SI ≈ mobility_bte_serta_SI
+        @test mobility_qme_iter_SI ≈ mobility_bte_iter_SI
     end
 
     @testset "hole doping" begin
         # Reference data created by Julia
         μlist_ref = [0.790917195763113, 0.7915721538246762, 0.7922179662218595]
-        mobility_ref = reshape(hcat([
+        mobility_serta_ref = reshape(hcat([
             [ 154.94103397017716      0.1326859955044396    0.1324776220752463;
                 0.1326877605488312  154.94094743849948     -0.1326439790408618;
                 0.13247694551742326  -0.13264006226947253 154.94099562350138],
@@ -106,6 +116,16 @@ using HDF5
             [  54.80031000518976      0.13764845554718236   0.13761236019306125;
                 0.1376487790868413   54.80029498314644     -0.13764064298926706;
                 0.13761223715127288  -0.13763991994381577  54.80030325365559]]...), 3, 3, 3)
+        mobility_iter_ref = reshape(hcat([
+            [ 171.3724393444944      -0.938067462675716    -0.9382996790526787;
+               -0.9380642534407789  171.37233875273688      0.9381074612202703;
+               -0.9382968095805431    0.9381122409514259  171.3724092682189],
+            [  98.33420466690691     -0.4819817558918622   -0.48207136396687617;
+               -0.48198094701940075  98.33416520844746      0.48199785392067246;
+               -0.482070570718436     0.4819993393961689   98.33419407518866],
+            [  62.258325888820735    -0.28605374243001874  -0.2860959621291857;
+               -0.28605357204272724  62.25830715818872      0.28606168396235326;
+               -0.2860957139306533    0.28606231267524573  62.25832122844622]]...), 3, 3, 3)
 
         energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
         window = (10.5, 11.0) .* unit_to_aru(:eV)
@@ -152,13 +172,15 @@ using HDF5
         μlist_qme = copy(transport_params.μlist)
 
         # Compute scattering matrix
-        S_out, _ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out; symmetry)
+        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; symmetry)
         _, mobility_qme_serta_SI = transport_print_mobility(out_qme.σ_serta, transport_params, do_print=false)
+        _, mobility_qme_iter_SI = transport_print_mobility(out_qme.σ, transport_params, do_print=false);
 
         @test transport_params.μlist ≈ μlist_ref
-        @test mobility_qme_serta_SI ≈ mobility_ref
+        @test mobility_qme_serta_SI ≈ mobility_serta_ref
+        @test mobility_qme_iter_SI ≈ mobility_iter_ref
     end
 end
