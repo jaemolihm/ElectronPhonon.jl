@@ -39,6 +39,47 @@ end
 Base.firstindex(s::QMEStates) = 1
 Base.lastindex(s::QMEStates) = s.n
 
+
+# HDF IO
+# TODO: Move kpoints IO to kpoints.jl. Rename load_BTData -> load_from_hdf(?)
+# TODO: Merge _data_hdf5_to_julia and dump_BTData
+@timing "dump_BTData" function dump_BTData(f, obj::QMEStates{T}) where {T}
+    for name in fieldnames(typeof(obj))
+        if name === :kpts
+            g = create_group(f, String(name))
+            dump_BTData(g, getfield(obj, name))
+        else
+            f[String(name)] = _data_julia_to_hdf5(getfield(obj, name))
+        end
+    end
+end
+
+function dump_BTData(f, obj::AbstractKpoints{T}) where T
+    for name in fieldnames(typeof(obj))
+        if name !== :_xk_hash_to_ik
+            f[String(name)] = _data_julia_to_hdf5(getfield(obj, name))
+        end
+    end
+end
+
+@timing "load_BTData" function load_BTData(f, T::Type{QMEStates{FT}}) where FT
+    data = []
+    for (i, name) in enumerate(fieldnames(T))
+        if name === :kpts
+            push!(data, load_BTData(f[String(name)], T.types[i]))
+        else
+            push!(data, _data_hdf5_to_julia(read(f, String(name)), T.types[i]))
+        end
+    end
+    T(data...)
+end
+
+function load_BTData(f, T::Type{GridKpoints{FT}}) where FT
+    kpts = load_BTData(f, Kpoints{FT})
+    GridKpoints(kpts)
+end
+
+
 """
 - `offdiag_cutoff`: Maximum interband energy difference to include the off-diagonal part.
 """

@@ -1,4 +1,4 @@
-using JLD2
+using HDF5
 
 function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq, kpts,
         kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
@@ -16,7 +16,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # TODO: parallelize this part
     @timing "hdf init" begin
         # Open HDF5 file for writing BTEdata
-        fid_btedata = jldopen("$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).jld2", "w")
+        fid_btedata = h5open("$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5", "w")
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
@@ -25,7 +25,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         #     set_gauge_to_diagonalize_velocity_matrix!(el, xk, 1, model)
         # end
         el_k_boltzmann, _ = electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff, nstates_base_k)
-        fid_btedata["initialstate_electron"] = el_k_boltzmann
+        g = create_group(fid_btedata, "initialstate_electron")
+        dump_BTData(g, el_k_boltzmann)
 
         # NOTE: Currently, for coherence transport, the set of electron states at k and k+q
         # are chosen to be identical to ensure consistent gauge
@@ -34,13 +35,15 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         el_kq_boltzmann = el_k_boltzmann
         # el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore, "gridopt")
         # el_kq_boltzmann, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts, nstates_base_kq)
-        fid_btedata["finalstate_electron"] = el_kq_boltzmann
+        g = create_group(fid_btedata, "finalstate_electron")
+        dump_BTData(g, el_kq_boltzmann)
 
         # Write phonon states to HDF5 file
         mpi_isroot() && println("Calculating phonon states")
         ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"], "gridopt")
         ph_boltzmann, _ = phonon_states_to_BTStates(ph_save, qpts)
-        fid_btedata["phonon"] = ph_boltzmann
+        g = create_group(fid_btedata, "phonon")
+        dump_BTData(g, ph_boltzmann)
     end
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
@@ -51,8 +54,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # Setup for collecting scattering processes
     max_nscat = nkq * nmodes * nband^2
     bt_mel = zeros(Complex{FT}, max_nscat)
-    bt_econv_p = falses(max_nscat)
-    bt_econv_m = falses(max_nscat)
+    bt_econv_p = zeros(Bool, max_nscat)
+    bt_econv_m = zeros(Bool, max_nscat) # FIXME: Cannot use BitVector because strides(::BitVector) is not defined
     bt_ib = zeros(Int16, max_nscat) # For band indices, use Int16 assuming they do not exceed 32767
     bt_jb = zeros(Int16, max_nscat)
     bt_imode = zeros(Int16, max_nscat)
@@ -142,15 +145,16 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             end
         end # ikq
 
-        @timing "bt_dump" begin
-            fid_btedata["scattering/ik$ik/mel"] = bt_mel[1:bt_nscat]
-            fid_btedata["scattering/ik$ik/econv_p"] = bt_econv_p[1:bt_nscat]
-            fid_btedata["scattering/ik$ik/econv_m"] = bt_econv_m[1:bt_nscat]
-            fid_btedata["scattering/ik$ik/ib"] = bt_ib[1:bt_nscat]
-            fid_btedata["scattering/ik$ik/jb"] = bt_jb[1:bt_nscat]
-            fid_btedata["scattering/ik$ik/imode"] = bt_imode[1:bt_nscat]
-            fid_btedata["scattering/ik$ik/ik"] = bt_ik[1:bt_nscat]
-            fid_btedata["scattering/ik$ik/ikq"] = bt_ikq[1:bt_nscat]
+        @timing "bt_dump" @views begin
+            g = create_group(fid_btedata, "scattering/ik$ik")
+            g["mel"] = bt_mel[1:bt_nscat]
+            g["econv_p"] = bt_econv_p[1:bt_nscat]
+            g["econv_m"] = bt_econv_m[1:bt_nscat]
+            g["ib"] = bt_ib[1:bt_nscat]
+            g["jb"] = bt_jb[1:bt_nscat]
+            g["imode"] = bt_imode[1:bt_nscat]
+            g["ik"] = bt_ik[1:bt_nscat]
+            g["ikq"] = bt_ikq[1:bt_nscat]
         end
 
         nscat_tot += bt_nscat

@@ -1,7 +1,7 @@
 using Test
 using EPW
 using LinearAlgebra
-using JLD2
+using HDF5
 
 # TODO: Add test without polar_eph
 
@@ -54,11 +54,11 @@ using JLD2
             spin_degeneracy = 2
         )
 
-        filename = joinpath(tmp_dir, "btedata_coherence.rank0.jld2")
-        fid = jldopen(filename, "r")
-        el_i = fid["initialstate_electron"];
-        el_f = fid["finalstate_electron"];
-        ph = fid["phonon"];
+        filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
+        fid = h5open(filename, "r")
+        el_i = load_BTData(fid["initialstate_electron"], EPW.QMEStates{Float64})
+        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{Float64})
+        ph = load_BTData(fid["phonon"], EPW.BTStates{Float64})
         close(fid)
 
         # Compute chemical potential
@@ -142,11 +142,11 @@ using JLD2
             run_for_qme = true,
         )
 
-        filename = joinpath(tmp_dir, "btedata_coherence.rank0.jld2")
-        fid = jldopen(filename, "r")
-        el_i = fid["initialstate_electron"];
-        el_f = fid["finalstate_electron"];
-        ph = fid["phonon"];
+        filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
+        fid = h5open(filename, "r")
+        el_i = load_BTData(fid["initialstate_electron"], EPW.QMEStates{Float64})
+        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{Float64})
+        ph = load_BTData(fid["phonon"], EPW.BTStates{Float64})
         close(fid)
 
         # Compute chemical potential

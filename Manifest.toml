@@ -117,12 +117,6 @@ version = "0.8.4"
 deps = ["ArgTools", "LibCURL", "NetworkOptions"]
 uuid = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 
-[[FileIO]]
-deps = ["Pkg", "Requires", "UUIDs"]
-git-tree-sha1 = "3c041d2ac0a52a12a27af2782b34900d9c3ee68c"
-uuid = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
-version = "1.11.1"
-
 [[FillArrays]]
 deps = ["LinearAlgebra", "Random", "SparseArrays", "Statistics"]
 git-tree-sha1 = "8c8eac2af06ce35973c3eadb4ab3243076a408e7"
@@ -188,12 +182,6 @@ version = "0.13.2"
 git-tree-sha1 = "f76424439413893a832026ca355fe273e93bce94"
 uuid = "92d709cd-6900-40b7-9082-c6be49f344b6"
 version = "0.1.0"
-
-[[JLD2]]
-deps = ["DataStructures", "FileIO", "MacroTools", "Mmap", "Pkg", "Printf", "Reexport", "TranscodingStreams", "UUIDs"]
-git-tree-sha1 = "46b7834ec8165c541b0b5d1c8ba63ec940723ffb"
-uuid = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
-version = "0.4.15"
 
 [[JLLWrappers]]
 deps = ["Preferences"]
@@ -389,11 +377,6 @@ git-tree-sha1 = "37d210f612d70f3f7d57d488cb3b6eff56ad4e41"
 uuid = "c84ed2f1-dad5-54f0-aa8e-dbefe2724439"
 version = "0.4.0"
 
-[[Reexport]]
-git-tree-sha1 = "45e428421666073eab6f2da5c9d310d99bb12f9b"
-uuid = "189a3867-3050-52da-a836-e630ba90ab69"
-version = "1.2.2"
-
 [[Requires]]
 deps = ["UUIDs"]
 git-tree-sha1 = "4036a3bd08ac7e968e27c203d45f5fff15020621"
@@ -487,12 +470,6 @@ deps = ["Printf"]
 git-tree-sha1 = "3318281dd4121ecf9713ce1383b9ace7d7476fdd"
 uuid = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 version = "0.5.7"
-
-[[TranscodingStreams]]
-deps = ["Random", "Test"]
-git-tree-sha1 = "216b95ea110b5972db65aa90f88d8d89dcb8851c"
-uuid = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
-version = "0.9.6"
 
 [[UUIDs]]
 deps = ["Random", "SHA"]

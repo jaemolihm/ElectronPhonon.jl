@@ -16,9 +16,8 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     indmap_el_i = states_index_map(el_i)
     ind_ph_map = EPW.states_index_map(ph)
 
-    # FIXME: JLD2 group is not iterable...
-    fid = jldopen(filename, "r")::JLD2.JLDFile{JLD2.MmapIO}
-    mpi_isroot() && println("Original grid: Total $(el_i.kpts.n) groups of scattering")
+    fid = h5open(filename, "r")
+    mpi_isroot() && println("Original grid: Total $(length(fid["scattering"])) groups of scattering")
 
     @assert params.smearing[1] == :Gaussian
     η = params.smearing[2]
