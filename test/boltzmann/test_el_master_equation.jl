@@ -64,10 +64,10 @@ using HDF5
         μlist_qme = copy(transport_params.μlist)
 
         # Compute scattering matrix
-        S_out = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        S_out, _ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(el_i, el_f, S_out, transport_params, symmetry)
+        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out; symmetry)
         _, mobility_qme_serta_SI = transport_print_mobility(out_qme.σ_serta, transport_params, do_print=false);
 
         # For electron-doped BN, there is only 1 band, so the result is identical to BTE
@@ -152,10 +152,10 @@ using HDF5
         μlist_qme = copy(transport_params.μlist)
 
         # Compute scattering matrix
-        S_out = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        S_out, _ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(el_i, el_f, S_out, transport_params, symmetry)
+        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out; symmetry)
         _, mobility_qme_serta_SI = transport_print_mobility(out_qme.σ_serta, transport_params, do_print=false)
 
         @test transport_params.μlist ≈ μlist_ref

@@ -25,9 +25,12 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
 
     p_mel = zeros(Complex{FT}, nT)
     p_mel_ikq = zeros(Complex{FT}, nT)
+    s_mel_ikq = zeros(Complex{FT}, nT)
 
-    # Scattering-out matrix
+    # Scattering-out and scattering-in matrices
+    # S_out is sparse (block diagonal) while S_in is not sparse in general.
     S_out = [spzeros(Complex{FT}, el_i.n, el_i.n) for _ in 1:nT]
+    S_in = [zeros(Complex{FT}, el_i.n, el_i.n) for _ in 1:nT]
 
     @time for ik in 1:el_i.kpts.n
         mpi_isroot() && mod(ik, 100) == 0 && println("Calculating scattering for group $ik")
@@ -124,10 +127,65 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
         end # ib1, ib2
 
         # 2. Scattering-in term
-        # TODO
+        # dδρ_{ib1,ib2,k}/dt = sum_{ikq, imode, jb1, jb2, ±} g*_{jb1, ib1} * g_{jb2, ib2}
+        #                    * δ^{1/2}(e_ib1 - e_jb1 ± ω_imode) * δ^{1/2}(e_ib2 - e_jb2 ± ω_imode)
+        #                    * (n_imode +     (f_jb1 + f_jb2) / 2 )       (+)
+        #                      (n_imode + 1 - (f_jb1 + f_jb2) / 2 )       (-)
+
+        for ib2 in 1:el_i.nband, ib1 in 1:el_i.nband
+            # Calculate only if (ib1, ib2, ik) ∈ el_i
+            ind_el_i = get(indmap_el_i, CI(ib1, ib2, ik), nothing)
+            ind_el_i === nothing && continue
+            e_i1 = el_i.e1[ind_el_i]
+            e_i2 = el_i.e2[ind_el_i]
+
+            for ind_el_f in 1:el_f.n
+                jb1 = el_f.ib1[ind_el_f]
+                jb2 = el_f.ib2[ind_el_f]
+                e_f1 = el_f.e1[ind_el_f]
+                e_f2 = el_f.e2[ind_el_f]
+
+                # Find q point
+                ikq = el_f.ik[ind_el_f]
+                xq = el_f.kpts.vectors[ikq] - el_i.kpts.vectors[ik]
+                xq_int = mod.(round.(Int, xq .* ph.ngrid), ph.ngrid)
+                ind_ph_list = get(ind_ph_map, CI(xq_int...), nothing)
+                ind_ph_list === nothing && continue # skip if this xq is not in ph
+
+                s_mel_ikq .= 0
+
+                for imode in 1:ph.nband
+                    ind_ph = ind_ph_list[imode]
+                    ind_ph == 0 && continue # skip if this imode is not in ph
+                    ω_ph = ph.e[ind_ph]
+                    # Skip if phonon frequency is too close to 0 (acoustic phonon at q=0)
+                    ω_ph < EPW.omega_acoustic && continue
+
+                    # Matrix element factor
+                    s1 = get(scat, CI(ik, ib1, ikq, jb1, imode), nothing)
+                    s1 === nothing && continue
+                    s2 = get(scat, CI(ik, ib2, ikq, jb2, imode), nothing)
+                    s2 === nothing && continue
+                    gg = conj(s1.mel) * s2.mel
+
+                    if s1.econv_p && s2.econv_p
+                        _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, +1, inv_η, params.Tlist, params.μlist)
+                    end
+                    if s1.econv_m && s1.econv_m
+                        _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, -1, inv_η, params.Tlist, params.μlist)
+                    end
+                end
+                s_mel_ikq .*= 2FT(π) * el_f.kpts.weights[ikq]
+
+                for iT in 1:nT
+                    S_in[iT][ind_el_i, ind_el_f] += s_mel_ikq[iT]
+                end
+            end
+        end
+
     end # ik
     close(fid)
-    S_out
+    S_out, S_in
 end
 
 function _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_ph, inv_η, Tlist, μlist)
@@ -145,6 +203,23 @@ function _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_
     end
 end
 
+function _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, sign_ph, inv_η, Tlist, μlist)
+    # energy conservation factor
+    delta1 = gaussian((e_i1 - e_f1 - sign_ph * ω_ph) * inv_η) * inv_η
+    delta2 = gaussian((e_i2 - e_f2 - sign_ph * ω_ph) * inv_η) * inv_η
+    delta = sqrt(delta1 * delta2)
+    for (iT, (T, μ)) in enumerate(zip(Tlist, μlist))
+        # occupation factor
+        n_ph = occ_boson(ω_ph, T)
+        f_kq1 = occ_fermion(e_i1 - μ, T)
+        f_kq2 = occ_fermion(e_i2 - μ, T)
+        favg = (f_kq1 + f_kq2) / 2
+        n = sign_ph == 1 ? n_ph + favg : n_ph + 1 - favg
+        # scattering matrix element
+        s_mel_ikq[iT] += gg * delta * n
+    end
+end
+
 """
     occupation_to_conductivity(δρ::Vector{Vec3{FT}}, el::QMEStates{FT}, params) where {FT}
 Compute electron conductivity using the density matrix `δρ`.
@@ -159,14 +234,14 @@ function occupation_to_conductivity(δρ::Vector{Vec3{Complex{FT}}}, el::QMEStat
 end
 
 """
-    function solve_electron_qme(el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out, params,
-        symmetry=nothing; max_iter=100, rtol=1e-10) where {FT}
+    function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
+        scat_mat_in=nothing; symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
 Solve quantum master equation for electrons.
 TODO: symmetry
 TODO: scattering out term (i.e. beyond serta)
 """
-function solve_electron_qme(el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out, params,
-        symmetry=nothing; max_iter=100, rtol=1e-10) where {FT}
+function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
+        scat_mat_in=nothing; symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
     σ_serta = zeros(FT, 3, 3, length(params.Tlist))
     σ = zeros(FT, 3, 3, length(params.Tlist))
     δρ_serta = zeros(Vec3{Complex{FT}}, el_i.n, length(params.Tlist))
@@ -187,44 +262,47 @@ function solve_electron_qme(el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_o
 
     for (iT, (T, μ)) in enumerate(zip(params.Tlist, params.μlist))
         @. δρ_external = el_i.v * -EPW.occ_fermion_derivative(el_i.e1 - μ, T);
-        Sout = scat_mat_out[iT]
+        S_out = scat_mat_out[iT]
 
         # SERTA: Solve S_out * δρ + δρ_external = 0
         @views for a in 1:3
             x = reshape(reinterpret(Complex{FT}, δρ_external), 3, :)[a, :]
-            y = Sout \ x;
+            y = S_out \ x;
             reshape(reinterpret(Complex{FT}, δρ_serta[:, iT]), 3, :)[a, :] .= .-y
         end
         σ_serta[:, :, iT] .= symmetrize(occupation_to_conductivity(δρ_serta[:, iT], el_i, params), symmetry)
 
         # QME: Solve (S_out + S_in) * δρ + δρ_external = 0
-        # Initial guess: SERTA density matrix
-        δρ_iter_new .= δρ_serta[:, iT]
-        σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
+        if scat_mat_in !== nothing
+            S_in = scat_mat_in[iT]
+            # # Initial guess: SERTA density matrix
+            # δρ_iter_new .= δρ_serta[:, iT]
+            # σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
 
-        # TODO
-        # for iter in 1:max_iter
-        #     σ_old = σ_new
-        #     δρ_iter_old .= δρ_iter_new
+            # TODO
+            # for iter in 1:max_iter
+            #     σ_old = σ_new
+            #     δρ_iter_old .= δρ_iter_new
 
-        #     # TODO: Symmetry
-        #     # Unfold from δf_i to δf_f
-        #     # δf_f = map_i_to_f * δf_i
+            #     # TODO: Symmetry
+            #     # Unfold from δf_i to δf_f
+            #     # δf_f = map_i_to_f * δf_i
 
-        #     # Multiply scattering matrix, and
-        #     δρ_iter_new .= δρ_iter_old .* 0.999 + (scat_mat[iT] * δρ_iter_old) .* 0.001
-        #     σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
-        #     @show σ_new[1, 1]
-        #     if norm(σ_new - σ_old) / norm(σ_new) < rtol
-        #         @info "iT=$iT, converged at iteration $iter"
-        #         break
-        #     elseif iter == max_iter
-        #         @info "iT=$iT, convergence not reached at maximum iteration $max_iter"
-        #     end
-        # end
+            #     # Multiply scattering matrix, and
+            #     δρ_iter_new .= δρ_iter_old .* 0.999 + (scat_mat[iT] * δρ_iter_old) .* 0.001
+            #     σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
+            #     @show σ_new[1, 1]
+            #     if norm(σ_new - σ_old) / norm(σ_new) < rtol
+            #         @info "iT=$iT, converged at iteration $iter"
+            #         break
+            #     elseif iter == max_iter
+            #         @info "iT=$iT, convergence not reached at maximum iteration $max_iter"
+            #     end
+            # end
 
-        # σ_list[:, :, iT] .= σ
-        # δf_i_list[:, iT] .= δf_i
+            # σ_list[:, :, iT] .= σ
+            # δf_i_list[:, iT] .= δf_i
+        end
     end
     (;σ, σ_serta, δρ_serta, δρ)
 end
