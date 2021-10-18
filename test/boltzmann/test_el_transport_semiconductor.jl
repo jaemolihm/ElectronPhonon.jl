@@ -156,9 +156,21 @@ using LinearAlgebra
     end
 
     @testset "subgrid q" begin
-        energy_conservation = (:Linear, 0.0)
+        # Reference data created from Julia
+        moblity_ref = cat([151.01109772119713, 69.43136894242731, 34.79747084838265] .* Ref(I(3))..., dims=3)
+
+        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
         window_k  = (15.0, 15.8) .* unit_to_aru(:eV)
         window_kq = (15.0, 16.0) .* unit_to_aru(:eV)
+
+        transport_params = ElectronTransportParams{Float64}(
+            Tlist = Tlist,
+            n = 1.0e20 * model_el.volume / unit_to_aru(:cm)^3,
+            volume = model_el.volume,
+            smearing = smearing,
+            nband_valence = 4,
+            spin_degeneracy = 2
+        )
 
         nklist = (15, 15, 15)
         nqlist = (15, 15, 15)
@@ -173,6 +185,7 @@ using LinearAlgebra
             use_irr_k = true,
             energy_conservation = energy_conservation,
         )
+        filename_original = joinpath(tmp_dir, "btedata.rank0.h5")
         @test output.kpts.n == 3
         @test output.kqpts.n == 48
         @test output.qpts.n == 103
@@ -180,33 +193,28 @@ using LinearAlgebra
         subgrid_q_max = 0.15
         subgrid_scale = (2, 2, 2)
 
-        @time output_subgrid = run_transport_subgrid_q(
-            model_ph, output.kpts, output.qpts, output.nband, output.nband_ignore, subgrid_q_max, subgrid_scale;
-            fourier_mode = "gridopt",
-            window_k = window_k,
-            window_kq = window_kq,
-            folder = tmp_dir,
-            energy_conservation = energy_conservation,
-        )
-        @test output_subgrid.kpts.n == 3
-        @test output_subgrid.kqpts.n == 216
-        @test output_subgrid.qpts.n == 104
-        @test output_subgrid.nband == output.nband
-        @test output_subgrid.nband_ignore == output.nband_ignore
+        for model in [model_ph, model_el]
+            @time output_subgrid = run_transport_subgrid_q(
+                model, output.kpts, output.qpts, output.nband, output.nband_ignore, subgrid_q_max, subgrid_scale;
+                fourier_mode = "gridopt",
+                window_k = window_k,
+                window_kq = window_kq,
+                folder = tmp_dir,
+                energy_conservation = energy_conservation,
+            )
+            filename_subgrid = joinpath(tmp_dir, "btedata_subgrid.rank0.h5")
 
-        @time output_subgrid_el = run_transport_subgrid_q(
-            model_el, output.kpts, output.qpts, output.nband, output.nband_ignore, subgrid_q_max, subgrid_scale;
-            fourier_mode = "gridopt",
-            window_k = window_k,
-            window_kq = window_kq,
-            folder = tmp_dir,
-            energy_conservation = energy_conservation,
-        )
-        @test output_subgrid_el.kpts.n == 3
-        @test output_subgrid_el.kqpts.n == 216
-        @test output_subgrid_el.qpts.n == 104
-        @test output_subgrid_el.nband == output.nband
-        @test output_subgrid_el.nband_ignore == output.nband_ignore
+            @test output_subgrid.kpts.n == 3
+            @test output_subgrid.kqpts.n == 216
+            @test output_subgrid.qpts.n == 104
+            @test output_subgrid.nband == output.nband
+            @test output_subgrid.nband_ignore == output.nband_ignore
+
+            # Calculate mobility
+            output_serta_subgrid = EPW.run_serta_subgrid(filename_original, filename_subgrid, transport_params, model.symmetry, output.qpts, model.recip_lattice, do_print=true);
+
+            @test output_serta_subgrid.mobility_SI ≈ moblity_ref
+        end
     end
 end
 

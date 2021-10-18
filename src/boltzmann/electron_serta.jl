@@ -428,7 +428,7 @@ function run_serta_subgrid(filename_original, filename_subgrid, transport_params
 
     σlist = compute_conductivity_serta!(transport_params, inv_τ, el_i, el_i.ngrid, recip_lattice)
     σlist = symmetrize_array(σlist, symmetry, order=2)
-    mobility_list = transport_print_mobility(σlist, transport_params; do_print)
+    σ_SI, mobility_SI = transport_print_mobility(σlist, transport_params; do_print)
 
-    (; inv_τ, σlist, mobility_list, el_i, inv_τ_only_original)
+    (; inv_τ, σlist, σ_SI, mobility_SI, el_i, inv_τ_only_original)
 end
