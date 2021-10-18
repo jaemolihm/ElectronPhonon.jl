@@ -6,8 +6,8 @@ const ElPhScatteringElement{T} = NamedTuple{(:mel, :econv_p, :econv_m), Tuple{Co
 # Map (ik, ib, ikq, jb, imode) to a ElPhScatteringElement
 const QMEElPhScatteringData{T} = Dictionary{CartesianIndex{5}, ElPhScatteringElement{T}}
 
-@inline function load_scatteringdata(f)
-    mel = _data_hdf5_to_julia(read(f, "mel"), Vector{Complex{Float64}})
+@inline function load_BTData(f, T::Type{QMEElPhScatteringData{FT}}) where FT
+    mel = _data_hdf5_to_julia(read(f, "mel"), Vector{Complex{FT}})
     econv_p = _data_hdf5_to_julia(read(f, "econv_p"), BitVector)
     econv_m = _data_hdf5_to_julia(read(f, "econv_m"), BitVector)
     ib = _data_hdf5_to_julia(read(f, "ib"), Vector{Int16})

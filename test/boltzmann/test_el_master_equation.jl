@@ -3,8 +3,6 @@ using EPW
 using LinearAlgebra
 using HDF5
 
-# TODO: Add test without polar_eph
-
 @testset "Transport electron QME" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")

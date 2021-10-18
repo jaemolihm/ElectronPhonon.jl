@@ -32,7 +32,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     @time for ik in 1:el_i.kpts.n
         mpi_isroot() && mod(ik, 100) == 0 && println("Calculating scattering for group $ik")
 
-        scat = load_scatteringdata(fid["scattering/ik$ik"])
+        scat = load_BTData(fid["scattering/ik$ik"], QMEElPhScatteringData{FT})
 
         # 1. Scattering-out term
         # P_{ib1, ib2} = sum_{ikq, imode, jb, ±} g*_{jb, ib1} * g_{jb, ib2}
