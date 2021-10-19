@@ -54,9 +54,9 @@ using HDF5
 
         filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
         fid = h5open(filename, "r")
-        el_i = load_BTData(fid["initialstate_electron"], EPW.QMEStates{Float64})
-        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{Float64})
-        ph = load_BTData(fid["phonon"], EPW.BTStates{Float64})
+        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
+        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
+        ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
         close(fid)
 
         # Compute chemical potential
@@ -162,9 +162,9 @@ using HDF5
 
         filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
         fid = h5open(filename, "r")
-        el_i = load_BTData(fid["initialstate_electron"], EPW.QMEStates{Float64})
-        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{Float64})
-        ph = load_BTData(fid["phonon"], EPW.BTStates{Float64})
+        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
+        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
+        ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
         close(fid)
 
         # Compute chemical potential

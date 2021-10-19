@@ -33,9 +33,9 @@ TODO: Is this valid if time-reversal is broken?
 function compute_bte_scattering_matrix(filename, params, recip_lattice)
     # Read btedata
     fid = h5open(filename, "r")
-    el_i = load_BTData(fid["initialstate_electron"], EPW.BTStates{Float64})
-    el_f = load_BTData(fid["finalstate_electron"], EPW.BTStates{Float64})
-    ph = load_BTData(fid["phonon"], EPW.BTStates{Float64})
+    el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{Float64})
+    el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.BTStates{Float64})
+    ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
 
     # Compute chemical potential
     bte_compute_μ!(params, el_i)
@@ -45,9 +45,11 @@ function compute_bte_scattering_matrix(filename, params, recip_lattice)
     inv_τ_iscat = zeros(Float64, nT)
 
     # Compute scattering matrix
-    mpi_isroot() && println("Original grid: Total $(length(fid["scattering"])) groups of scattering")
-    for (ig, g) in enumerate(fid["scattering"])
+    group_scattering = open_group(fid, "scattering")
+    mpi_isroot() && println("Original grid: Total $(length(group_scattering)) groups of scattering")
+    @time for (ig, key) in enumerate(keys(group_scattering))
         mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
+        g = open_group(group_scattering, key)
         scat = load_BTData(g, EPW.ElPhScatteringData{Float64})
 
         for (iscat, s) in enumerate(scat)

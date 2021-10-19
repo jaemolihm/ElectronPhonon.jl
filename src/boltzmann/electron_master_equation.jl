@@ -17,7 +17,8 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     ind_ph_map = states_index_map(ph)
 
     fid = h5open(filename, "r")
-    mpi_isroot() && println("Original grid: Total $(length(fid["scattering"])) groups of scattering")
+    group_scattering = open_group(fid, "scattering")
+    mpi_isroot() && println("Original grid: Total $(length(group_scattering)) groups of scattering")
 
     @assert params.smearing[1] == :Gaussian
     η = params.smearing[2]
@@ -35,7 +36,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     @time for ik in 1:el_i.kpts.n
         mpi_isroot() && mod(ik, 100) == 0 && println("Calculating scattering for group $ik")
 
-        scat = load_BTData(fid["scattering/ik$ik"], QMEElPhScatteringData{FT})
+        scat = load_BTData(open_group(group_scattering, "ik$ik"), QMEElPhScatteringData{FT})
 
         # 1. Scattering-out term
         # P_{ib1, ib2} = sum_{ikq, imode, jb, ±} g*_{jb, ib1} * g_{jb, ib2}

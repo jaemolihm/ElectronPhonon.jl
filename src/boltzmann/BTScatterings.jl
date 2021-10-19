@@ -137,16 +137,17 @@ end
 function load_ElPhBTModel(filename, T=Float64)
     # TODO: Optimize
     fid = h5open(filename, "r")
-    el_i = load_BTData(fid["initialstate_electron"], EPW.BTStates{T})
-    el_f = load_BTData(fid["finalstate_electron"], EPW.BTStates{T})
-    ph = load_BTData(fid["phonon"], EPW.BTStates{T})
+    el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{T})
+    el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.BTStates{T})
+    ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{T})
 
     # Read scattering
-    f = fid["scattering"]
-    nscat_tot = mapreduce(g -> read(g, "n"), +, f)
+    group_scattering = open_group(fid, "scattering")
+    nscat_tot = mapreduce(g -> read(g, "n"), +, group_scattering)
     scattering = EPW.ElPhScatteringData{T}(nscat_tot)
     nscat_cumulative = 0
-    for g in f
+    for key in keys(group_scattering)
+        g = open_group(group_scattering, key)
         scat_i = load_BTData(g, typeof(scattering))
         nscat_i = scat_i.n
         rng = nscat_cumulative+1:nscat_cumulative+nscat_i

@@ -338,9 +338,9 @@ function run_serta(filename, transport_params, symmetry, recip_lattice; do_print
 
     # Read btedata
     fid = h5open(filename, "r")
-    el_i = load_BTData(fid["initialstate_electron"], EPW.BTStates{FT})
-    el_f = load_BTData(fid["finalstate_electron"], EPW.BTStates{FT})
-    ph = load_BTData(fid["phonon"], EPW.BTStates{FT})
+    el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{FT})
+    el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.BTStates{FT})
+    ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{FT})
 
     # Compute chemical potential
     bte_compute_μ!(transport_params, el_i; do_print)
@@ -348,9 +348,11 @@ function run_serta(filename, transport_params, symmetry, recip_lattice; do_print
     inv_τ = zeros(FT, el_i.n, length(transport_params.Tlist))
 
     # Compute lifetime
-    mpi_isroot() && println("Original grid: Total $(length(fid["scattering"])) groups of scattering")
-    @time for (ig, g) in enumerate(fid["scattering"])
+    group_scattering = open_group(fid, "scattering")
+    mpi_isroot() && println("Original grid: Total $(length(group_scattering)) groups of scattering")
+    @time for (ig, key) in enumerate(keys(group_scattering))
         mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
+        g = open_group(group_scattering, key)
         scat = load_BTData(g, EPW.ElPhScatteringData{FT})
         compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, transport_params, recip_lattice)
     end
@@ -372,9 +374,9 @@ function run_serta_subgrid(filename_original, filename_subgrid, transport_params
 
     # Read original grid btedata
     fid = h5open(filename_original, "r")
-    el_i = load_BTData(fid["initialstate_electron"], EPW.BTStates{FT})
-    el_f = load_BTData(fid["finalstate_electron"], EPW.BTStates{FT})
-    ph = load_BTData(fid["phonon"], EPW.BTStates{FT})
+    el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{FT})
+    el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.BTStates{FT})
+    ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{FT})
 
     # Read subgrid btedata
     fid_sub = h5open(filename_subgrid, "r")
@@ -406,20 +408,22 @@ function run_serta_subgrid(filename_original, filename_subgrid, transport_params
     inv_τ = zeros(FT, el_i.n, length(transport_params.Tlist))
 
     # Contribution from the original grid. Reading scattering one ik at a time
-    mpi_isroot() && println("Original grid: Total $(length(fid["scattering"])) groups of scattering")
-    @time for (ig, g) in enumerate(fid["scattering"])
+    group_scattering = open_group(fid, "scattering")
+    mpi_isroot() && println("Original grid: Total $(length(group_scattering)) groups of scattering")
+    @time for (ig, key) in enumerate(keys(group_scattering))
         mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
-        scat = load_BTData(g, EPW.ElPhScatteringData{FT})
+        scat = load_BTData(open_group(group_scattering, key), EPW.ElPhScatteringData{FT})
         scat_exclude_subgrid = filter(s -> ind_ph_filter[s.ind_ph], scat)
         compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat_exclude_subgrid, transport_params, recip_lattice)
     end
     inv_τ_only_original = copy(inv_τ)
 
     # Contribution from the q subgrid. Reading scattering one ik at a time
-    mpi_isroot() && println("Subgrid: Total $(length(fid["scattering"])) groups of scattering")
-    @time for (ig, g) in enumerate(fid_sub["scattering"])
+    group_scattering_sub = open_group(fid_sub, "scattering")
+    mpi_isroot() && println("Subgrid: Total $(length(group_scattering_sub)) groups of scattering")
+    @time for (ig, key) in enumerate(keys(group_scattering_sub))
         mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
-        scat = load_BTData(g, EPW.ElPhScatteringData{FT})
+        scat = load_BTData(open_group(group_scattering_sub, key), EPW.ElPhScatteringData{FT})
         compute_lifetime_serta!(inv_τ, el_i_sub, el_f_sub, ph_sub, scat, transport_params, recip_lattice)
     end
 
