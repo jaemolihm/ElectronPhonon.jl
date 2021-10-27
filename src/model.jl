@@ -18,7 +18,7 @@ Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
     volume::Float64
 
     # Symmetries
-    symmetry::Symmetry
+    symmetry::Symmetry{Float64}
 
     # Atom information
     mass::Array{Float64,1}
@@ -115,7 +115,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     time_reversal = fortran_read_bool(f)
     Ss = [Mat3(symmetry_S[:, :, i]) for i in 1:nsym]
     τs = [Vec3(symmetry_τ[:, i]) for i in 1:nsym]
-    symmetry = create_symmetry_object(Ss, τs, time_reversal, lattice)
+    symmetry = Symmetry(Ss, τs, time_reversal, lattice)
 
     # Wannier parameters
     nw = Int(read(f, Int32))

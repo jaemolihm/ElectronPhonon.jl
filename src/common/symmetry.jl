@@ -179,17 +179,17 @@ const SymOp = Tuple{Mat3{Int}, Vec3{Float64}}
 identity_symop() = (Mat3{Int}(I), Vec3(zeros(3)))
 
 """Symmetry operations"""
-struct Symmetry
+struct Symmetry{FT}
     "Number of symmetry operations. Maximum 96 (because of time reversal)."
     nsym::Int
     "Rotation matrix in reciprocal crystal coordinates"
     S::Vector{Mat3{Int}}
     "Fractional translation in real-space crystal coordinates"
-    τ::Vector{Vec3{Float64}}
+    τ::Vector{Vec3{FT}}
     "Rotation matrix in reciprocal Cartesian coordinates"
-    Scart::Vector{Mat3{Float64}}
+    Scart::Vector{Mat3{FT}}
     "Fractional translation in real-space Cartesian coordinates (alat units)"
-    τcart::Vector{Vec3{Float64}}
+    τcart::Vector{Vec3{FT}}
     "true if the symmetry operation includes inversion (i.e. is an improper rotation)"
     is_inv::Vector{Bool}
     "true if the symmetry operation includes time reversal"
@@ -198,17 +198,15 @@ struct Symmetry
     time_reversal::Bool
 end
 
-function Base.show(io::IO, obj::Symmetry)
-    print(io, typeof(obj), "(nsym=$(obj.nsym))")
-end
-
-function create_symmetry_object(Ss, τs, time_reversal, lattice)
+function Symmetry(Ss_, τs_, time_reversal, lattice_)
     # FIXME: Complicated magnetic symmetry operations not implemented. Only grey groups
     # (time_reversal = true) or colorless groups (time_reversal = false)
+    lattice = Mat3(lattice_)
+    Ss = deepcopy(Ss_)
+    τs = deepcopy(τs_)
     nsym = length(Ss)
     Scarts = [inv(lattice') * S * lattice' for S in Ss]
     τcarts = [lattice * τ for τ in τs]
-    itrevs = time_reversal ? [1, -1] : [1]
     is_inv = [det(S) < 0 ? true : false for S in Ss]
     is_tr = [false for _ in 1:nsym]
     if time_reversal
@@ -217,12 +215,15 @@ function create_symmetry_object(Ss, τs, time_reversal, lattice)
         append!(τs, τs)
         append!(Scarts, Scarts)
         append!(τcarts, τcarts)
-        append!(itrevs, itrevs)
         append!(is_inv, is_inv)
         append!(is_tr, [true for _ in 1:nsym])
         nsym *= 2
     end
     Symmetry(nsym, Ss, τs, Scarts, τcarts, is_inv, is_tr, time_reversal)
+end
+
+function Base.show(io::IO, obj::Symmetry)
+    print(io, typeof(obj), "(nsym=$(obj.nsym))")
 end
 
 """
@@ -249,7 +250,7 @@ function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1
         push!(τs, τ)
     end
     time_reversal = magnetic_moments == [] ? true : false
-    create_symmetry_object(Ss, τs, time_reversal, lattice)
+    Symmetry(Ss, τs, time_reversal, lattice)
 end
 
 # """

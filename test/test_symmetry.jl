@@ -107,7 +107,7 @@ end
 
     # Axial vector
     Ss = [Mat3{Int}(I(3)), Mat3{Int}(-I(3))]
-    symmetry = EPW.create_symmetry_object(Ss, zeros(Vec3{Float64}, 2), true, lattice)
+    symmetry = Symmetry(Ss, zeros(Vec3{Float64}, 2), true, lattice)
     v = Vec3{Float64}(rand(3))
     @test symmetrize(v, symmetry) ≈ zero(v)
     @test symmetrize(v, symmetry, axial=true) ≈ v
