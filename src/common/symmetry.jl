@@ -226,6 +226,16 @@ function Base.show(io::IO, obj::Symmetry)
     print(io, typeof(obj), "(nsym=$(obj.nsym))")
 end
 
+function Base.getindex(sym::Symmetry, i)
+    1 <= i <= sym.nsym || throw(BoundsError(sym, i))
+    (S=sym.S[i], τ=sym.τ[i], Scart=sym.Scart[i], τcart=sym.τcart[i], is_inv=sym.is_inv[i], is_tr=sym.is_tr[i])
+end
+Base.firstindex(sym::Symmetry) = 1
+Base.lastindex(sym::Symmetry) = sym.nsym
+
+Base.iterate(sym::Symmetry, state=1) = state > sym.nsym ? nothing : (sym[state], state+1)
+Base.length(sym::Symmetry) = sym.nsym
+
 """
     symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1e-5)
 Compute the spatial symmetry operations of the system by calling spglib.
