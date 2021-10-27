@@ -7,7 +7,7 @@ Compute the quantities listed in `quantities` and return a vector of ElectronSta
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "velocity"
 FIXME: Position matrix element contribution is not included in velocity
 """
-function compute_electron_states(model, kpts, quantities, window, nband, nband_ignore, fourier_mode="normal")
+function compute_electron_states(model, kpts, quantities, window, nband, nband_ignore; fourier_mode="normal")
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity"]
     for quantity in quantities
@@ -43,8 +43,8 @@ function compute_electron_states(model, kpts, quantities, window, nband, nband_i
     states
 end
 
-function compute_electron_states(model, kpts, quantities, fourier_mode="normal")
-    compute_electron_states(model, kpts, quantities, (-Inf, Inf), model.nw, 0, fourier_mode)
+function compute_electron_states(model, kpts, quantities; fourier_mode="normal")
+    compute_electron_states(model, kpts, quantities, (-Inf, Inf), model.nw, 0; fourier_mode)
 end
 
 
@@ -54,7 +54,7 @@ Compute the quantities listed in `quantities` and return a vector of PhononState
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"
 TODO: Implement quantities "velocity"
 """
-function compute_phonon_states(model, kpts, quantities, fourier_mode="normal")
+function compute_phonon_states(model, kpts, quantities; fourier_mode="normal")
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]
     for quantity in quantities

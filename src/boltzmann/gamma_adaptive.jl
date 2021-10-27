@@ -24,7 +24,7 @@ function run_gamma_adaptive(kpts::GridKpoints{FT}, qpts_original::GridKpoints{FT
 
     # 1. Compute electron states and matrix elements at k.
     mpi_isroot() && println("Computing electron states at k")
-    el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband, nband_ignore, "gridopt")
+    el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband, nband_ignore; fourier_mode)
     el_i, imap_el_k = electron_states_to_BTStates(el_k_save, kpts)
     g_gamma_save = gamma_adaptive_compute_g_gamma(model, kpts, el_k_save, nband, nband_ignore; fourier_mode)
 
@@ -95,7 +95,7 @@ function gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, 
     ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"], "gridopt");
 
     mpi_isroot() && println("Computing electron states at k+q")
-    el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore, "gridopt");
+    el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore, fourier_mode="gridopt");
 
     el_f, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts)
     ph, imap_ph = phonon_states_to_BTStates(ph_save, qpts)

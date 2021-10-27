@@ -107,20 +107,20 @@ function compute_electron_phonon_bte_data_outer_q(model, btedata_prefix, window_
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
-        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband, nband_ignore, "gridopt")
+        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband, nband_ignore; fourier_mode)
         el_k_boltzmann, imap_el_k = electron_states_to_BTStates(el_k_save, kpts)
         g = create_group(fid_btedata, "initialstate_electron")
         dump_BTData(g, el_k_boltzmann)
 
         mpi_isroot() && println("Calculating electron states at k+q")
-        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore, "gridopt")
+        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore; fourier_mode)
         el_kq_boltzmann, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts)
         g = create_group(fid_btedata, "finalstate_electron")
         dump_BTData(g, el_kq_boltzmann)
 
         # Write phonon states to HDF5 file
         mpi_isroot() && println("Calculating phonon states")
-        ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"], "gridopt")
+        ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
         ph_boltzmann, imap_ph = phonon_states_to_BTStates(ph_save, qpts)
         g = create_group(fid_btedata, "phonon")
         dump_BTData(g, ph_boltzmann)
@@ -247,20 +247,20 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
-        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband, nband_ignore, "gridopt")
+        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband, nband_ignore; fourier_mode)
         el_k_boltzmann, imap_el_k = electron_states_to_BTStates(el_k_save, kpts)
         g = create_group(fid_btedata, "initialstate_electron")
         dump_BTData(g, el_k_boltzmann)
 
         mpi_isroot() && println("Calculating electron states at k+q")
-        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore, "gridopt")
+        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore; fourier_mode)
         el_kq_boltzmann, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts)
         g = create_group(fid_btedata, "finalstate_electron")
         dump_BTData(g, el_kq_boltzmann)
 
         # Write phonon states to HDF5 file
         mpi_isroot() && println("Calculating phonon states")
-        ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"], "gridopt")
+        ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
         ph_boltzmann, imap_ph = phonon_states_to_BTStates(ph_save, qpts)
         g = create_group(fid_btedata, "phonon")
         dump_BTData(g, ph_boltzmann)
