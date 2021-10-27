@@ -134,7 +134,7 @@ end
 """
     unfold_data_map(state::EPW.BTStates{FT}, symmetry) -> (map_unfold, indmap)
 Construct a sparse matrix that unfolds a vector field defined on `state` using `symmetry`.
-Assume the vector field is polar (i.e. not a pseudovector) and even under time reversal.
+Assume the vector field is polar (i.e. not a pseudovector) and odd under time reversal.
 For the unfolded states, `indmap[(xk_int..., iband)] = i` holds.
 """
 function unfold_data_map(state::EPW.BTStates{FT}, symmetry) where {FT}
