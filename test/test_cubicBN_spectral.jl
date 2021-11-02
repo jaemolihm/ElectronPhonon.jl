@@ -58,10 +58,10 @@ using NPZ
         @test size(output["ph_selfen_static"]) == (6, 2, 1)
         @test output["ph_selfen_static"] ≈ real.(output["ph_selfen_dynamic"][1, :, :, :])
         # Comparing with previous Julia calculation (not EPW)
-        @test output["ph_green"][1,1,1,1] ≈ -475.7952489842732 - 85.19500012385838im
-        @test output["ph_green"][2,4,2,1] ≈ -227.200162845575 - 380.47175530108007im
-        @test output["ph_selfen_dynamic"][1,1,1,1] ≈ -0.005171810651802322 - 0.00036464326665328067im
-        @test output["ph_selfen_dynamic"][2,3,2,1] ≈ -0.008272200993521831 - 0.0016227371488728394im
+        @test output["ph_green"][1,1,1,1] ≈ -477.0758888247567 - 81.65023963465329im
+        @test output["ph_green"][2,4,2,1] ≈ -224.60934165464215 - 379.6900677093217im
+        @test output["ph_selfen_dynamic"][1,1,1,1] ≈ -0.00540478575049532 - 0.00034853322695178423im
+        @test output["ph_selfen_dynamic"][2,3,2,1] ≈ -0.008443720535297577 - 0.001786060328193317im
     end
 
     @testset "WannierObject, gridopt" begin

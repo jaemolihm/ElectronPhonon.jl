@@ -5,7 +5,7 @@ using LinearAlgebra
 # TODO: Add test without polar_eph
 # TODO: Add test with tetrahedron
 
-@testset "Transport electron SERTA" begin
+@testset "Transport electron semiconductor SERTA" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
@@ -157,7 +157,7 @@ using LinearAlgebra
 
     @testset "subgrid q" begin
         # Reference data created from Julia
-        moblity_ref = cat([151.01109772119713, 69.43136894242731, 34.79747084838265] .* Ref(I(3))..., dims=3)
+        moblity_ref = cat([139.2223930040638, 63.903148701648945, 32.01401923743331] .* Ref(I(3))..., dims=3)
 
         energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
         window_k  = (15.0, 15.8) .* unit_to_aru(:eV)
@@ -211,7 +211,7 @@ using LinearAlgebra
             @test output_subgrid.nband_ignore == output.nband_ignore
 
             # Calculate mobility
-            output_serta_subgrid = EPW.run_serta_subgrid(filename_original, filename_subgrid, transport_params, model.symmetry, output.qpts, model.recip_lattice, do_print=true);
+            output_serta_subgrid = EPW.run_serta_subgrid(filename_original, filename_subgrid, transport_params, model.symmetry, output.qpts, model.recip_lattice, do_print=false);
 
             @test output_serta_subgrid.mobility_SI ≈ moblity_ref
         end
@@ -219,7 +219,7 @@ using LinearAlgebra
 end
 
 # Compare with EPW
-@testset "Transport electron EPW" begin
+@testset "Transport electron semiconductor EPW" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
@@ -231,10 +231,10 @@ end
 
     @testset "electron doping" begin
         # Reference data created from EPW
-        μlist_ref_epw = [15.361083, 15.355056, 15.349019] .* unit_to_aru(:eV)
-        mobility_ref_epw_iter0 = reshape(hcat(0.525206E+03*I(3), 0.339362E+03*I(3), 0.242791E+03*I(3)), 3, 3, 3)
-        mobility_ref_epw_iter1 = reshape(hcat(0.339165E+03*I(3), 0.215227E+03*I(3), 0.152650E+03*I(3)), 3, 3, 3)
-        mobility_ref_epw_convd = reshape(hcat(0.387834E+03*I(3), 0.248549E+03*I(3), 0.177283E+03*I(3)), 3, 3, 3)
+        μlist_ref_epw = [15.359384, 15.353358, 15.347321] .* unit_to_aru(:eV)
+        mobility_ref_epw_iter0 = reshape(hcat(0.484502E+03*I(3), 0.313252E+03*I(3), 0.224213E+03*I(3)), 3, 3, 3)
+        mobility_ref_epw_iter1 = reshape(hcat(0.313101E+03*I(3), 0.199038E+03*I(3), 0.141522E+03*I(3)), 3, 3, 3)
+        mobility_ref_epw_convd = reshape(hcat(0.357899E+03*I(3), 0.229641E+03*I(3), 0.164057E+03*I(3)), 3, 3, 3)
 
         Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)
         smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
@@ -292,42 +292,42 @@ end
         @test mobility_serta ≈ output_serta.mobility_SI
         @test all(isapprox.(mobility_serta, mobility_ref_epw_iter0, atol=1e-3))
         @test all(isapprox.(mobility_iter1, mobility_ref_epw_iter1, atol=1e-3))
-        @test all(isapprox.(mobility_convd, mobility_ref_epw_convd, atol=1e-3))
+        @test all(isapprox.(mobility_convd, mobility_ref_epw_convd, atol=2e-3))
     end
 
     @testset "hole doping" begin
         # Reference data created from EPW
-        μlist_ref_epw = [11.127288, 11.232666, 11.342843] .* unit_to_aru(:eV)
+        μlist_ref_epw = [11.127307, 11.232810, 11.343188] .* unit_to_aru(:eV)
         mobility_ref_epw_iter0 = reshape(hcat([
-            [ 0.109805E+01  0.276227E-01  -0.139287E+00;
-              0.276227E-01  0.103019E+01   0.177595E-01;
-             -0.139287E+00  0.177595E-01   0.117709E+01],
-            [ 0.542588E+01  0.171530E+00  -0.777768E+00;
-              0.171530E+00  0.504036E+01   0.865870E-01;
-             -0.777768E+00  0.865870E-01   0.587510E+01],
-            [ 0.912517E+01  0.319938E+00  -0.137994E+01;
-              0.319938E+00  0.843549E+01   0.142274E+00;
-             -0.137994E+01  0.142274E+00   0.992912E+01]]...), 3, 3, 3)
+            [0.125944E+01    0.865760E-01    0.296743E-01;
+             0.865760E-01    0.122832E+01    0.143106E+00;
+             0.296743E-01    0.143106E+00    0.107778E+01],
+            [0.611312E+01    0.501977E+00    0.182462E+00;
+             0.501977E+00    0.593903E+01    0.783224E+00;
+             0.182462E+00    0.783224E+00    0.509630E+01],
+            [0.101831E+02    0.905950E+00    0.337459E+00;
+             0.905950E+00    0.987422E+01    0.137435E+01;
+             0.337459E+00    0.137435E+01    0.837843E+01]]...), 3, 3, 3)
         mobility_ref_epw_iter1 = reshape(hcat([
-            [ 0.115913E+01  0.242461E-01  -0.142664E+00;
-              0.242462E-01  0.109126E+01   0.211369E-01;
-             -0.142664E+00  0.211369E-01   0.123817E+01],
-            [ 0.580257E+01  0.154023E+00  -0.795275E+00;
-              0.154023E+00  0.541705E+01   0.104098E+00;
-             -0.795275E+00  0.104098E+00   0.625179E+01],
-            [ 0.986194E+01  0.287574E+00  -0.141231E+01;
-              0.287574E+00  0.917226E+01   0.174645E+00;
-             -0.141231E+01  0.174645E+00   0.106659E+02]]...), 3, 3, 3)
+            [0.132323E+01    0.824362E-01    0.255344E-01;
+             0.824362E-01    0.129212E+01    0.147246E+00;
+             0.255344E-01    0.147246E+00    0.114158E+01],
+            [0.649693E+01    0.481153E+00    0.161639E+00;
+             0.481153E+00    0.632284E+01    0.804048E+00;
+             0.161639E+00    0.804048E+00    0.548011E+01],
+            [0.109247E+02    0.868220E+00    0.299729E+00;
+             0.868220E+00    0.106159E+02    0.141208E+01;
+             0.299729E+00    0.141208E+01    0.912008E+01]]...), 3, 3, 3)
         mobility_ref_epw_convd = reshape(hcat([
-            [ 0.116434E+01  0.237450E-01  -0.143165E+00;
-              0.237450E-01  0.109647E+01   0.216381E-01;
-             -0.143165E+00  0.216381E-01   0.124337E+01],
-            [ 0.584452E+01  0.150388E+00  -0.798910E+00;
-              0.150388E+00  0.545900E+01   0.107733E+00;
-             -0.798910E+00  0.107733E+00   0.629373E+01],
-            [ 0.996696E+01  0.278711E+00  -0.142117E+01;
-              0.278711E+00  0.927728E+01   0.183508E+00;
-             -0.142117E+01  0.183508E+00   0.107709E+02]]...), 3, 3, 3)
+            [0.132851E+01    0.818554E-01    0.249536E-01;
+             0.818554E-01    0.129739E+01    0.147827E+00;
+             0.249536E-01    0.147827E+00    0.114686E+01],
+            [0.653845E+01    0.477030E+00    0.157516E+00;
+             0.477030E+00    0.636435E+01    0.808171E+00;
+             0.157516E+00    0.808171E+00    0.552163E+01],
+            [0.110284E+02    0.858277E+00    0.289786E+00;
+             0.858277E+00    0.107195E+02    0.142202E+01;
+             0.289786E+00    0.142202E+01    0.922374E+01]]...), 3, 3, 3)
 
         Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)
         smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
@@ -385,7 +385,7 @@ end
 
         @test mobility_serta ≈ output_serta.mobility_SI
         @test all(isapprox.(mobility_serta, mobility_ref_epw_iter0, atol=1e-3))
-        @test all(isapprox.(mobility_iter1, mobility_ref_epw_iter1, atol=1e-3))
+        @test all(isapprox.(mobility_iter1, mobility_ref_epw_iter1, atol=2e-3))
         @test all(isapprox.(mobility_convd, mobility_ref_epw_convd, atol=2e-3))
     end
 end

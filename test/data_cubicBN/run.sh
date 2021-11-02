@@ -4,6 +4,7 @@ export OMP_NUM_THREADS=1
 
 # quantum espresso executable
 QE=/home/jmlim/julia_epw/qe-dev/bin
+QE_ORIGINAL=/home/jmlim/julia_epw/qe-original/bin
 
 # SCF, phonon
 mkdir -p dyn_dir
@@ -24,5 +25,6 @@ mpirun -np 2 $QE/epw.x -nk 2 -in epw_setup.in > epw_setup.out
 mpirun -np 1 $QE/epw.x -nk 1 -in epw.selfen.in > epw.selfen.out
 mpirun -np 1 $QE/epw.x -nk 1 -in epw.transport.hole.in > epw.transport.hole.out
 rm inv_tau* restart.fmt IBTEvel_sup.fmt
-mpirun -np 1 $QE/epw.x -nk 1 -in epw.transport.elec.in > epw.transport.elec.out
+# NOTE: This must be run using QE_ORIGINAL because mp_mesh_k is not implemented in QE.
+mpirun -np 1 $QE_ORIGINAL/epw.x -nk 1 -in epw.transport.elec.in > epw.transport.elec.out
 ./parse_epwout.py

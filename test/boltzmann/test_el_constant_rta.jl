@@ -2,8 +2,7 @@ using Test
 using EPW
 using LinearAlgebra
 
-
-@testset "Transport electron SERTA" begin
+@testset "Transport electron CRTA" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
@@ -116,9 +115,9 @@ using LinearAlgebra
         @test out_crta.σlist_vdiag ≈ σlist
         @test out_crta.mobility_vdiag_SI ≈ mobility_SI
 
-        # full_velocity is not identical to vdiag because there are degenerate bands
+        # full_velocity should not be identical to vdiag because there are degenerate bands
         @test !(out_crta.σlist_full_velocity ≈ σlist)
         @test !(out_crta.mobility_full_velocity_SI ≈ mobility_SI)
-        @test out_crta.mobility_full_velocity_SI ≈ cat(Ref(I(3)) .* [502.35721152824993, 355.75266310949695, 275.0957563739647]..., dims=3)
+        @test out_crta.mobility_full_velocity_SI ≈ cat(Ref(I(3)) .* [491.3933241052932, 350.18428492817515, 271.55562535095663]..., dims=3)
     end
 end

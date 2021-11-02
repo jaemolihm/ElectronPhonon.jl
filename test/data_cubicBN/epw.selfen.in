@@ -25,7 +25,7 @@
 
   wannierize  = .false.
   num_iter    = 1000
-  dis_win_max = 100.0
+  dis_win_max = 36.0
   dis_froz_max= 25.0
 
   efermi_read = .true.
