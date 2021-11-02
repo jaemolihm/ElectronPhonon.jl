@@ -7,40 +7,45 @@ export load_model
 
 fortran_read_bool(f) = Bool(abs(read(f, Int32))) # In fortran file, 0 is false, -1 or +1 is true
 
+struct SymmetryOperators{FT <: AbstractFloat, WannType <: AbstractWannierObject{FT}}
+    symmetry::Symmetry{FT}
+    operators::Vector{WannType}
+end
+
 "Tight-binding model for electron, phonon, and electron-phonon coupling.
 All data is in coarse real-space grid."
-Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
+Base.@kwdef mutable struct ModelEPW{FT <: AbstractFloat, WannType <: AbstractWannierObject{FT}}
     # Lattice information
-    alat::Float64 # Lattice parameter
+    alat::FT # Lattice parameter
     # Lattice vector in Bohr. lattice[:, i] is the i-th lattice vector.
-    lattice::Mat3{Float64}
-    recip_lattice::Mat3{Float64}
-    volume::Float64
+    lattice::Mat3{FT}
+    recip_lattice::Mat3{FT}
+    volume::FT
 
     # Symmetries
-    symmetry::Symmetry{Float64}
+    symmetry::Symmetry{FT}
 
     # Atom information
-    mass::Array{Float64,1}
-    atom_pos::Vector{Vec3{Float64}}
+    mass::Vector{FT}
+    atom_pos::Vector{Vec3{FT}}
 
     nw::Int
     nmodes::Int
 
     # Long-range term in polar systems
     use_polar_dipole::Bool
-    polar_phonon::Polar{Float64}
-    polar_eph::Polar{Float64}
+    polar_phonon::Polar{FT}
+    polar_eph::Polar{FT}
 
-    el_ham::WannierObject{Float64} # ELectron Hamiltonian
+    el_ham::WannierObject{FT} # ELectron Hamiltonian
     # TODO: Use Hermiticity of hk
 
-    el_ham_R::WannierObject{Float64} # Electron Hamiltonian times R
-    el_pos::WannierObject{Float64} # Electron position (dipole)
-    el_vel::Union{WannierObject{Float64},Nothing} # ELectron velocity matrix
+    el_ham_R::WannierObject{FT} # Electron Hamiltonian times R
+    el_pos::WannierObject{FT} # Electron position (dipole)
+    el_vel::Union{WannierObject{FT},Nothing} # ELectron velocity matrix
 
-    ph_dyn::WannierObject{Float64} # Phonon dynamical matrix
-    ph_dyn_R::WannierObject{Float64} # Phonon dynamical matrix
+    ph_dyn::WannierObject{FT} # Phonon dynamical matrix
+    ph_dyn_R::WannierObject{FT} # Phonon dynamical matrix
     # TODO: Use real-valuedness of dyn_r
     # TODO: Use Hermiticity of dyn_q
 
@@ -48,18 +53,21 @@ Base.@kwdef struct ModelEPW{WannType <: AbstractWannierObject{Float64}}
     epmat::WannType
     # The crystal momentum that the outer R index of epmat couples. "k" or "q".
     epmat_outer_momentum::String
+
+    # Symmetry operators for Wannier functions
+    el_sym::Union{SymmetryOperators{FT, WannierObject{FT}}, Nothing} = nothing
 end
 
 "Read file and create ModelEPW object in the MPI root.
 Broadcast to all other processors."
 function load_model(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing;
-        epmat_outer_momentum="ph")
+        epmat_outer_momentum="ph", load_symmetry_operators=false)
     # Read model from file
     if mpi_initialized()
         # FIXME: Read only in the root core, and then bcast.
         # The implementation below breaks if epmat size is large. MPI bcast of large array
         # with sizeof(array) is greater than typemax(Cint) was not possible.
-        model = load_model_from_epw(folder, epmat_on_disk, tmpdir, epmat_outer_momentum)
+        model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators)
         # if mpi_isroot(EPW.mpi_world_comm())
         #     model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
         # else
@@ -68,7 +76,7 @@ function load_model(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing;
         # # Broadcast to all processors
         # model = mpi_bcast(model, EPW.mpi_world_comm())
     else
-        model = load_model_from_epw(folder, epmat_on_disk, tmpdir, epmat_outer_momentum)
+        model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators)
     end
     model
 end
@@ -83,8 +91,8 @@ tmpdir
 epmat_outer_momentum
     Outer momentum that model.epmat couples to. "ph" (default) or "el".
 """
-function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing,
-        epmat_outer_momentum="ph")
+function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing;
+        epmat_outer_momentum, load_symmetry_operators)
     T = Float64
 
     if epmat_on_disk && tmpdir === nothing
@@ -292,14 +300,60 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         end
     end
 
-    model = ModelEPW(alat=alat, lattice=lattice, recip_lattice=recip_lattice,
-        volume=volume, nw=nw, nmodes=nmodes, mass=mass, atom_pos=atom_pos,
-        symmetry=symmetry,
-        use_polar_dipole=use_polar_dipole, polar_phonon=polar_phonon, polar_eph=polar_eph,
-        el_ham=el_ham, el_ham_R=el_ham_R, el_pos=el_pos, el_vel=el_vel,
-        ph_dyn=ph_dyn, ph_dyn_R=ph_dyn_R,
-        epmat=epmat, epmat_outer_momentum=epmat_outer_momentum
-    )
+    if load_symmetry_operators
+        el_sym = load_symmetry_operators_from_epw(folder)
+    else
+        el_sym = nothing
+    end
 
-    model
+    model = ModelEPW(;alat, lattice, recip_lattice, volume, nw, nmodes, mass, atom_pos, symmetry,
+        use_polar_dipole, polar_phonon, polar_eph,
+        el_ham, el_ham_R, el_pos, el_vel,
+        ph_dyn, ph_dyn_R,
+        epmat, epmat_outer_momentum,
+        el_sym,
+    )
+end
+
+function load_symmetry_operators_from_epw(folder)
+    f = FortranFile(joinpath(folder, "epw_data_julia_symmetry.bin"), "r")
+
+    alat = read(f, Float64)
+    at_in_alat = read(f, (Float64, 3, 3))
+    lattice = Mat3(at_in_alat .* alat)
+
+    nsym = Int(read(f, Int32))
+    symmetry_S = Int.(read(f, (Int32, 3, 3, nsym)))
+    symmetry_τ = read(f, (Float64, 3, nsym))
+    time_reversal = EPW.fortran_read_bool(f)
+
+    Ss = [Mat3(symmetry_S[:, :, i]) for i in 1:nsym]
+    τs = [Vec3(symmetry_τ[:, i]) for i in 1:nsym]
+
+    # We do not use time reversal for symmetry matrices because off-diagonal elements in QME
+    # breaks the time-reversal symmetry even for the linear response.
+    symmetry = Symmetry(Ss, τs, false, lattice)
+
+    nw = Int(read(f, Int32))
+    nrr = Int(read(f, Int32))
+    irvec_raw = convert.(Int, read(f, (Int32, 3, nrr)))
+    irvec = reinterpret(Vec3{Int}, irvec_raw)[:]
+    ind_el = sortperm(irvec, by=x->reverse(x))
+    irvec = irvec[ind_el]
+
+    operators = Vector{WannierObject{Float64}}()
+    @views for isym in 1:nsym
+        symmetry_mel = read(f, (ComplexF64, nw, nw, nrr))
+        symmetry_mel .= symmetry_mel[:, :, ind_el]
+        push!(operators, WannierObject(irvec, reshape(symmetry_mel, (nw*nw, nrr))))
+    end
+    close(f)
+
+    @assert symmetry.nsym == length(operators)
+
+    SymmetryOperators(symmetry, operators)
+end
+
+function Base.show(io::IO, sym::SymmetryOperators)
+    print(io, "$(typeof(sym)) with $(sym.symmetry.nsym) symmetries")
 end
