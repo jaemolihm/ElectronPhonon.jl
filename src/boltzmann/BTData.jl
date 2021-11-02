@@ -64,10 +64,10 @@ end
 
 
 """
-    dump_BTData(f, obj::AbstractBTData{T}) where {T}
+    dump_BTData(f, obj) where {T}
 Dump BTData object `obj` to an HDF5 file or group `f`.
 """
-@timing "dump_BTData" function dump_BTData(f, obj::AbstractBTData{T}) where {T}
+@timing "dump_BTData" function dump_BTData(f, obj) where {T}
     for name in fieldnames(typeof(obj))
         f[String(name)] = _data_julia_to_hdf5(getfield(obj, name))
     end

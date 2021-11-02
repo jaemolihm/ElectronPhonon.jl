@@ -7,6 +7,7 @@ using Test
     include("test_symmetry.jl")
     include("test_fourier.jl")
     include("test_diagonalize.jl")
+    include("test_hdf_io.jl")
 
     # Integration tests
     include("test_cubicBN_eigenvalues.jl")
