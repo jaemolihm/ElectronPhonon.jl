@@ -2,7 +2,8 @@ using HDF5
 
 function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq, kpts,
         kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
-        average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff)
+        average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff;
+        kwargs...)
     FT = Float64
 
     nw = model.nw
@@ -31,10 +32,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # NOTE: Currently, for coherence transport, the set of electron states at k and k+q
         # are chosen to be identical to ensure consistent gauge
         # mpi_isroot() && println("Calculating electron states at k+q")
-        el_kq_save = el_k_save
-        el_kq_boltzmann = el_k_boltzmann
-        # el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore; fourier_mode)
-        # el_kq_boltzmann, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts, nstates_base_kq)
+        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity"], window_kq, nband, nband_ignore; fourier_mode)
+        el_kq_boltzmann, _ = electron_states_to_QMEStates(el_kq_save, kqpts, qme_offdiag_cutoff, nstates_base_kq)
         g = create_group(fid_btedata, "finalstate_electron")
         dump_BTData(g, el_kq_boltzmann)
 
@@ -46,6 +45,55 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         dump_BTData(g, ph_boltzmann)
     end
 
+    # Write gauge matrices for symmetry unfolding
+    # TODO: Optimize memory and disk usage by writing only nonzero matrix elements
+    if symmetry !== nothing
+        mpi_isroot() && println("Calculating and writing symmetry gauge matrices")
+        if model.el_sym.symmetry === nothing
+            error("model.el_sym must be set to use symmetry in QME. Set load_symmetry_operators = true in load_model.")
+        end
+        if ! symmetry_is_subset(symmetry, model.el_sym.symmetry)
+            error("symmetry for QME must be a subset of model.el_sym.symmetry, not model.symmetry.")
+        end
+
+        # Write symmetry object to file
+        g = create_group(fid_btedata, "symmetry/symmetry")
+        dump_BTData(g, symmetry)
+
+        tmp_arr_full = zeros(Complex{FT}, nw, nw)
+        sym_k = zeros(Complex{FT}, nw, nw)
+        sym_gauge = zeros(Complex{FT}, nband, nband, nk)
+        is_degenerate = zeros(Bool, nband, nband, nk) # FIXME: Cannot use BitVector because HDF5.jl does not support it.
+        for isym = 1:symmetry.nsym
+            # Find symmetry in model.el_sym
+            isym_el = findfirst(s -> s ≈ symmetry[isym], model.el_sym.symmetry)
+
+            sym_gauge .= 0
+            is_degenerate .= false
+            @views for ik = 1:nk
+                xk = kpts.vectors[ik]
+                sxk = symmetry[isym].S * xk
+                isk = xk_to_ik(sxk, kqpts)
+                rng = el_k_save[ik].rng
+                e = el_k_save[ik].e
+
+                # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k)
+                get_fourier!(sym_k, model.el_sym.operators[isym_el], xk, mode=fourier_mode)
+                tmp_arr = view(tmp_arr_full, :, 1:el_k_save[ik].nband)
+                mul!(tmp_arr, sym_k, get_u(el_k_save[ik]))
+                mul!(sym_gauge[rng, rng, ik], get_u(el_kq_save[isk])', tmp_arr)
+
+                # Set is_degenerate
+                for jb in rng, ib in rng
+                    is_degenerate[ib, jb, ik] = abs(e[ib] - e[jb]) < electron_degen_cutoff
+                end
+            end
+            g = create_group(fid_btedata, "symmetry/isym$isym")
+            g["sym_gauge"] = sym_gauge
+            g["is_degenerate"] = is_degenerate
+        end
+    end
+
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epdatas = [ElPhData{Float64}(nw, nmodes, nband, nband_ignore)]
     Threads.resize_nthreads!(epdatas)
@@ -55,7 +103,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     max_nscat = nkq * nmodes * nband^2
     bt_mel = zeros(Complex{FT}, max_nscat)
     bt_econv_p = zeros(Bool, max_nscat)
-    bt_econv_m = zeros(Bool, max_nscat) # FIXME: Cannot use BitVector because strides(::BitVector) is not defined
+    bt_econv_m = zeros(Bool, max_nscat) # FIXME: Cannot use BitVector because HDF5.jl does not support it.
     bt_ib = zeros(Int16, max_nscat) # For band indices, use Int16 assuming they do not exceed 32767
     bt_jb = zeros(Int16, max_nscat)
     bt_imode = zeros(Int16, max_nscat)

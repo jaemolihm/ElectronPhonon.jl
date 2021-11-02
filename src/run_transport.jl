@@ -28,6 +28,8 @@ function run_transport(
         average_degeneracy=false,
         run_for_qme=false,
         qme_offdiag_cutoff=EPW.electron_degen_cutoff,
+        symmetry = nothing,
+        kwargs...
     )
     FT = Float64
     """
@@ -56,9 +58,16 @@ function run_transport(
         q_input isa AbstractKpoints && error("for run_for_qme==true, q_input must be a NTuple")
         mpi_comm_k !== nothing && error("for run_for_qme==true, mpi_comm_k not implemented")
         kgrid != qgrid && error("for run_for_qme==true, kgrid and qgrid must be the same (otherwise not implemented)")
-        use_irr_k && error("for run_for_qme==true, use_irr_k not implemented")
+        use_irr_k && model.el_sym === nothing && error("for run_for_qme=true and use_irr_k=true, model.el_sym must be set. (Pass load_symmetry_operators=true to load_model).")
         shift_q != (0, 0, 0) && error("for run_for_qme==true, shift_q not implemented")
         all(window_k .≈ window_kq) || error("for run_for_qme==true, window_k and window_kq must be the same (otherwise not implemented")
+    end
+
+    if use_irr_k && symmetry === nothing
+        println("use_irr_k = true, but symmetry is not passed. Set symmetry to default (maximal symmetry).")
+        # For QME, one should use model.el_sym.symmetry, not model.symmetry because the symmetry
+        # gauge matrix elements needs to be calculated.
+        symmetry = run_for_qme ? model.el_sym.symmetry : model.symmetry
     end
 
     nw = model.nw
@@ -66,29 +75,18 @@ function run_transport(
     @timing "setup kgrid" begin
         # Generate k points
         mpi_isroot() && println("Setting k-point grid")
-        symmetry = use_irr_k ? model.symmetry : nothing
         kpts, iband_min_k, iband_max_k, nstates_base_k = filter_kpoints(k_input, nw,
             model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
 
-        if run_for_qme
-            # TODO: Currently, for coherence transport, kpts and kqpts should be identical.
-            # The reason is that the off-diagonal matrix elements are hard to unfold or interpolate.
-            # In the future, it may be implemented.
-            kqpts = kpts
-            iband_min_kq = iband_min_k
-            iband_max_kq = iband_max_k
-            nstates_base_kq = nstates_base_k
-        else
-            # Generate k+q points
-            mpi_isroot() && println("Setting k+q-point grid")
-            # If k_input is a GridKpoint, set shift for kqpts so that qpts includes the Gamma point.
-            shift_k = k_input isa GridKpoints ? Vec3{FT}(k_input.shift) : Vec3{FT}(0, 0, 0)
-            shift_kq = shift_k .+ shift_q ./ qgrid
-            kqpts, iband_min_kq, iband_max_kq, nstates_base_kq = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq; fourier_mode)
-            if mpi_comm_k !== nothing
-                # k+q points are not distributed over mpi_comm_k in the remaining part.
-                kqpts = mpi_allgather(kqpts, mpi_comm_k)
-            end
+        # Generate k+q points
+        mpi_isroot() && println("Setting k+q-point grid")
+        # If k_input is a GridKpoint, set shift for kqpts so that qpts includes the Gamma point.
+        shift_k = k_input isa GridKpoints ? Vec3{FT}(k_input.shift) : Vec3{FT}(0, 0, 0)
+        shift_kq = shift_k .+ shift_q ./ qgrid
+        kqpts, iband_min_kq, iband_max_kq, nstates_base_kq = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq; fourier_mode)
+        if mpi_comm_k !== nothing
+            # k+q points are not distributed over mpi_comm_k in the remaining part.
+            kqpts = mpi_allgather(kqpts, mpi_comm_k)
         end
     end
 
@@ -107,13 +105,13 @@ function run_transport(
     if run_for_qme
         btedata_prefix = joinpath(folder, "btedata_coherence")
         compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq,
-            kpts, kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
-            average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff)
+            GridKpoints(kpts), GridKpoints(kqpts), qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
+            average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff; kwargs...)
     else
         btedata_prefix = joinpath(folder, "btedata")
         compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq,
             kpts, kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
-            average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
+            average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode; kwargs...)
     end
 
     (;nband, nband_ignore, kpts, qpts, kqpts)
@@ -121,7 +119,7 @@ end
 
 function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts,
     kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
-    average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode)
+    average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode; kwargs...)
 
     nw = model.nw
     nmodes = model.nmodes

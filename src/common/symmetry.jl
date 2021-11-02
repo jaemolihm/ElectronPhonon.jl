@@ -253,6 +253,7 @@ Base.lastindex(sym::Symmetry) = sym.nsym
 
 Base.iterate(sym::Symmetry, state=1) = state > sym.nsym ? nothing : (sym[state], state+1)
 Base.length(sym::Symmetry) = sym.nsym
+Base.keys(sym::Symmetry) = LinearIndices(1:sym.nsym)
 
 # Check whether sym1 is a subset of sym2
 function symmetry_is_subset(sym1, sym2)
