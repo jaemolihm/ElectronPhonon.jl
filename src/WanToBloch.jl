@@ -146,10 +146,10 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
 
     get_fourier!(vk, el_ham_R, xk, mode=fourier_mode)
 
-    # velocity[idir, :, :] = Adjoint(uk) * vk[:, :, idir] * uk
+    # velocity[idir, :, :] = uk' * vk[:, :, idir] * uk
     @views @inbounds for idir = 1:3
         mul!(tmp, vk[:, :, idir], uk)
-        mul!(velocity[idir, :, :], Adjoint(uk), tmp)
+        mul!(velocity[idir, :, :], uk', tmp)
     end
     nothing
 end
@@ -304,10 +304,9 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 
     # Rotate e-ph matrix from electron Wannier to eigenstate basis
     # ep_kq[ibkq, ibk, imode] = ukq'[ibkq, :] * ep_kq_wan[:, :, imode] * uk[:, ibk]
-    ukq_adj = Adjoint(ukq)
     @views @inbounds for imode = 1:nmodes
         mul!(tmp, ep_kq_wan[:, :, imode], uk)
-        mul!(ep_kq[:, :, imode], ukq_adj, tmp)
+        mul!(ep_kq[:, :, imode], ukq', tmp)
     end
     nothing
 end
@@ -397,10 +396,9 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
     # Transform from phonon Cartesian to eigenmode basis and from electron Wannier at k+q
     # to eigenstate basis. The electron at k is already in eigenstate basis.
     # ep_kq[ibkq, :, imode] = ukq'[ibkq, iw] * ep_kq_wan[iw, :, jmode] * u_ph[jmode, imode]
-    ukq_adj = Adjoint(ukq)
     ep_kq .= 0
     @views @inbounds for jmode = 1:nmodes
-        mul!(tmp, ukq_adj, ep_kq_wan[:, 1:nbandk, jmode])
+        mul!(tmp, ukq', ep_kq_wan[:, 1:nbandk, jmode])
         for imode in 1:nmodes
             ep_kq[:, :, imode] .+= tmp .* u_ph[jmode, imode]
         end

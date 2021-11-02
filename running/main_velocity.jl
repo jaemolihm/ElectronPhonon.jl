@@ -38,7 +38,7 @@ Threads.@threads :static for ik in 1:kpoints.n
 
     get_fourier!(vk, model.el_ham_R, xk, mode="normal")
     for idir in 1:3
-        veldiagk_save[idir, :, ik] .= real(diag(Adjoint(uk_save[:,:,ik]) * vk[:,:,idir] * uk_save[:,:,ik]))
+        veldiagk_save[idir, :, ik] .= real(diag(uk_save[:,:,ik]' * vk[:,:,idir] * uk_save[:,:,ik]))
     end
 end # ik
 

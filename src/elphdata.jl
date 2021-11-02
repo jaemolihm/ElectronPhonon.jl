@@ -64,7 +64,7 @@ ElPhData(T, nw, nmodes, nband=nw, nband_ignore=0) = ElPhData{T}(nw, nmodes, nban
 # """
 #     apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
 
-# Compute op_h = Adjoint(uleft) * op_w * uright
+# Compute op_h = uleft' * op_w * uright
 # left, right are "k" or "k+q".
 
 # ndim: Optional. Third dimension of op_h and op_w. Loop over i=1:ndim.
@@ -86,7 +86,7 @@ ElPhData(T, nw, nmodes, nband=nw, nband_ignore=0) = ElPhData{T}(nw, nmodes, nban
 #     rngright = (right == "k") ? epdata.el_k.rng : epdata.el_kq.rng
 #     uleft = (left == "k") ? epdata.uk_full : epdata.ukq_full
 #     uright = (right == "k") ? epdata.uk_full : epdata.ukq_full
-#     @views uleft_adj = Adjoint(uleft[:, rngleft .+ offset])
+#     @views uleft_adj = uleft[:, rngleft .+ offset]'
 #     @views uright = uright[:, rngright .+ offset]
 #     @views tmp = epdata.buffer[:, rngright]
 
@@ -121,7 +121,7 @@ end
     uk = get_u(epdata.el_k)
     ukq = get_u(epdata.el_kq)
     epdata.mmat .= 0
-    @views mul!(epdata.mmat[rngkq, rngk], Adjoint(ukq), uk)
+    @views mul!(epdata.mmat[rngkq, rngk], ukq', uk)
 end
 
 # Define wrappers of WanToBloch functions

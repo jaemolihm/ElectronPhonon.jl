@@ -66,7 +66,7 @@ Input hk is not destroyed at output."
         ndegen = degen_to - degen_from + 1
         @views if ndegen > 1
             rng = degen_from:degen_to
-            perturbation_matrix = Adjoint(eigvectors[:, rng]) * hk * eigvectors[:, rng]
+            perturbation_matrix = eigvectors[:, rng]' * hk * eigvectors[:, rng]
             epw_syev!('V', 'U', perturbation_matrix)
             eigvectors[:, rng] .= eigvectors[:, rng] * perturbation_matrix
         end

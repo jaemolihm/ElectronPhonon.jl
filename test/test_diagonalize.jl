@@ -6,7 +6,7 @@ using LinearAlgebra
 @testset "diagonalize" begin
     Random.seed!(123)
     A = randn(ComplexF64, 5, 5)
-    A .+= Adjoint(A)
+    A .+= A'
 
     F = eigen(A)
 
