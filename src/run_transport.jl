@@ -75,8 +75,9 @@ function run_transport(
     @timing "setup kgrid" begin
         # Generate k points
         mpi_isroot() && println("Setting k-point grid")
+        symmetry_k = use_irr_k ? symmetry : nothing
         kpts, iband_min_k, iband_max_k, nstates_base_k = filter_kpoints(k_input, nw,
-            model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
+            model.el_ham, window_k, mpi_comm_k, symmetry=symmetry_k; fourier_mode)
 
         # Generate k+q points
         mpi_isroot() && println("Setting k+q-point grid")

@@ -2,7 +2,7 @@ using SparseArrays
 
 # Constructing and solving quantum master equation for electrons
 
-# TODO: Scattering in term
+# TODO: Modularize. Make QMEModel type.
 
 export compute_qme_scattering_matrix, solve_electron_qme
 
@@ -10,7 +10,7 @@ export compute_qme_scattering_matrix, solve_electron_qme
     compute_qme_scattering_matrix(filename, params, el_i, el_f, ph)
 Compute the scattering matrix element for quantum master equation of electrons.
 """
-function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f, ph) where {FT}
+function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, ph) where {FT}
     nT = length(params.Tlist)
 
     indmap_el_i = states_index_map(el_i)
@@ -31,7 +31,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     # Scattering-out and scattering-in matrices
     # S_out is sparse (block diagonal) while S_in is not sparse in general.
     S_out = [spzeros(Complex{FT}, el_i.n, el_i.n) for _ in 1:nT]
-    S_in = [zeros(Complex{FT}, el_i.n, el_i.n) for _ in 1:nT]
+    S_in = [zeros(Complex{FT}, el_i.n, el_f.n) for _ in 1:nT]
 
     for ik in 1:el_i.kpts.n
         mpi_isroot() && mod(ik, 100) == 0 && println("Calculating scattering for group $ik")
@@ -238,11 +238,9 @@ end
     function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
         scat_mat_in=nothing; symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
 Solve quantum master equation for electrons.
-TODO: symmetry
-TODO: scattering out term (i.e. beyond serta)
 """
 function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
-        scat_mat_in=nothing; symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
+        scat_mat_in=nothing; filename=nothing, symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
     σ_serta = zeros(FT, 3, 3, length(params.Tlist))
     σ = zeros(FT, 3, 3, length(params.Tlist))
     δρ_serta = zeros(Vec3{Complex{FT}}, el_i.n, length(params.Tlist))
@@ -258,8 +256,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
         @assert el_i.n == el_f.n
         map_i_to_f = I(el_i.n)
     else
-        error("symmetry not implemented")
-        # map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
+        map_i_to_f = _qme_linear_response_unfold_map(el_i, el_f, filename)
     end
 
     for (iT, (T, μ)) in enumerate(zip(params.Tlist, params.μlist))
@@ -285,13 +282,12 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
                 σ_old = σ_new
                 δρ_iter_old .= δρ_iter_new
 
-                # TODO: Symmetry
-                # Unfold from δf_i to δf_f
-                # δf_f = map_i_to_f * δf_i
+                # Unfold from el_i to el_f
+                δρ_iter_old_f = map_i_to_f * δρ_iter_old
 
                 # Compute δρ_iter_new = S_out^{-1} * (-S_in * δρ_iter_old - δρ_external)
                 #                     = - S_out^{-1} * S_in * δρ_iter_old + δρ_serta[:, iT]
-                mul!(δρ_iter_tmp, S_in, δρ_iter_old, -1, 0)
+                mul!(δρ_iter_tmp, S_in, δρ_iter_old_f, -1, 0)
                 _solve_qme_direct!(δρ_iter_new, S_out_factorize, δρ_iter_tmp)
                 @views δρ_iter_new .+= δρ_serta[:, iT]
                 σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
@@ -323,4 +319,53 @@ function _solve_qme_direct!(δρ::AbstractVector{Vec3{Complex{FT}}}, S, δρ0::A
         b = reshape(reinterpret(Complex{FT}, δρ0), 3, :)[a, :]
         reshape(reinterpret(Complex{FT}, δρ), 3, :)[a, :] .= S \ b;
     end
+end
+
+function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
+    indmap_el_i = EPW.states_index_map(el_i);
+    indmap_el_f = EPW.states_index_map(el_f);
+
+    fid = h5open(filename, "r")
+    symmetry = load_BTData(open_group(fid, "symmetry/symmetry"), Symmetry{FT})
+
+    cnt_inds_f = zeros(Int, el_f.n);
+    unfold_map = spzeros(Mat3{ComplexF64}, el_f.n, el_i.n);
+    for isym in 1:symmetry.nsym
+        # Read symmetry gauge matrix elements
+        Scart = symmetry[isym].Scart
+        group_sym = open_group(fid, "symmetry/isym$isym")
+        sym_gauge = read(group_sym, "sym_gauge")
+        is_degenerate = read(group_sym, "is_degenerate")
+
+        for ik in 1:el_i.kpts.n
+            xk = el_i.kpts.vectors[ik]
+            sxk = symmetry[isym].S * xk
+            isk = xk_to_ik(sxk, el_f.kpts)
+
+            # Set unfolding matrix
+            for ib2 in 1:el_i.nband, ib1 in 1:el_i.nband
+                ind_el_i = get(indmap_el_i, EPW.CI(ib1, ib2, ik), -1)
+                ind_el_i == -1 && continue
+                # continue only if ib1 and jb1 are degenerate, and ib2 and jb2 are degenerate.
+                for jb2 in 1:el_f.nband
+                    is_degenerate[jb2, ib2, ik] || continue
+                    for jb1 in 1:el_f.nband
+                        is_degenerate[jb1, ib1, ik] || continue
+                        ind_el_f = get(indmap_el_f, EPW.CI(jb1, jb2, isk), -1)
+                        gauge_coeff = sym_gauge[jb1, ib1, ik] * conj(sym_gauge[jb2, ib2, ik])
+                        unfold_map[ind_el_f, ind_el_i] += Scart * gauge_coeff
+                        # Count number of k points that are mapped to this Sk point
+                        if (ib1 == jb1) && (ib2 == jb2)
+                            cnt_inds_f[ind_el_f] += 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+    close(fid)
+
+    inv_cnt_inds_f = 1 ./ cnt_inds_f
+    unfold_map .*= inv_cnt_inds_f
+    unfold_map
 end
