@@ -112,3 +112,25 @@ end
     @test symmetrize(v, symmetry) ≈ zero(v)
     @test symmetrize(v, symmetry, axial=true) ≈ v
 end
+
+@testset "symmetry subset" begin
+    lattice = 2.0 * [[0 1 1.];
+                     [1 0 1.];
+                     [1 1 0.]]
+    lattice_low = 2.0 * [[0 1 1.];
+                         [1 0 1.];
+                         [1 1 0.1]]
+    atoms = ["Si" => [ones(3)/8, -ones(3)/8]]
+    atoms_low = ["B" => [ones(3)/8], "N" => [-ones(3)/8]]
+    symmetry_high = symmetry_operations(lattice, atoms)
+
+    symmetry_low1 = symmetry_operations(lattice, atoms_low)
+    symmetry_low2 = symmetry_operations(lattice_low, atoms)
+
+    @test symmetry_is_subset(symmetry_high, symmetry_high) == true
+    @test symmetry_is_subset(symmetry_low1, symmetry_high) == true
+    @test symmetry_is_subset(symmetry_low2, symmetry_high) == true
+    @test symmetry_is_subset(symmetry_high, symmetry_low1) == false
+    @test symmetry_is_subset(symmetry_low1, symmetry_low2) == false
+    @test symmetry_is_subset(symmetry_low2, symmetry_low1) == false
+end

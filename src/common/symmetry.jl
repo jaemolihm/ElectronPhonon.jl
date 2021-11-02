@@ -7,6 +7,7 @@ using LinearAlgebra
 
 export Symmetry
 export symmetry_operations
+export symmetry_is_subset
 export bzmesh_ir_wedge
 export symmetrize
 export symmetrize_array
@@ -175,8 +176,25 @@ function spglib_get_stabilized_reciprocal_mesh(kgrid_size, rotations::Vector;
     return n_kpts, Int.(mapping), [Vec3{Int}(grid_address[:, i]) for i in 1:nkpt]
 end
 
-const SymOp = Tuple{Mat3{Int}, Vec3{Float64}}
-identity_symop() = (Mat3{Int}(I), Vec3(zeros(3)))
+struct SymOp{FT}
+    S::Mat3{Int}
+    τ::Vec3{FT}
+    Scart::Mat3{FT}
+    τcart::Vec3{FT}
+    is_inv::Bool
+    is_tr::Bool
+end
+
+function Base.isapprox(s1::SymOp, s2::SymOp)
+    s1.S == s2.S || return false
+    all((s1.τ - s2.τ) - round.(Int, s1.τ - s2.τ) .≈ 0) || return false
+    s1.Scart ≈ s2.Scart || return false
+    # τcart cannot be checked because it can differ by a lattice vector.
+    # But we check τ so the result should be fine.
+    s1.is_inv == s2.is_inv || return false
+    s1.is_tr == s2.is_tr || return false
+    return true
+end
 
 """Symmetry operations"""
 struct Symmetry{FT}
@@ -228,13 +246,22 @@ end
 
 function Base.getindex(sym::Symmetry, i)
     1 <= i <= sym.nsym || throw(BoundsError(sym, i))
-    (S=sym.S[i], τ=sym.τ[i], Scart=sym.Scart[i], τcart=sym.τcart[i], is_inv=sym.is_inv[i], is_tr=sym.is_tr[i])
+    SymOp(sym.S[i], sym.τ[i], sym.Scart[i], sym.τcart[i], sym.is_inv[i], sym.is_tr[i])
 end
 Base.firstindex(sym::Symmetry) = 1
 Base.lastindex(sym::Symmetry) = sym.nsym
 
 Base.iterate(sym::Symmetry, state=1) = state > sym.nsym ? nothing : (sym[state], state+1)
 Base.length(sym::Symmetry) = sym.nsym
+
+# Check whether sym1 is a subset of sym2
+function symmetry_is_subset(sym1, sym2)
+    for s1 in sym1
+        # Look for s1 in sym2. If not present, return false.
+        any(s1 ≈ s2 for s2 in sym2) || return false
+    end
+    return true
+end
 
 """
     symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1e-5)

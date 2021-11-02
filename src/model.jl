@@ -302,6 +302,8 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
 
     if load_symmetry_operators
         el_sym = load_symmetry_operators_from_epw(folder)
+        # Check el_sym.symmetry is a subset of model symmetry
+        @assert symmetry_is_subset(el_sym.symmetry, symmetry) "el_sym.symmetry must be a subset of model symmetry"
     else
         el_sym = nothing
     end
