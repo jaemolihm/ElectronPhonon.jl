@@ -27,7 +27,7 @@
                                                 Comput. Phys. Commun. 209, 116 (2016) 
                                                                                       
 
-     Program EPW v.5.3.1 starts on  2Nov2021 at 12:45:49 
+     Program EPW v.5.3.1 starts on  8Nov2021 at 14: 7: 8 
 
      This program is part of the open-source Quantum ESPRESSO suite
      for quantum simulation of materials; please cite
@@ -194,9 +194,9 @@
                 l(2) =   0
                 l(3) =   1
                 l(4) =   1
-     EPW          :      0.24s CPU      0.26s WALL
+     EPW          :      0.52s CPU      1.23s WALL
 
-     EPW          :      0.42s CPU      0.44s WALL
+     EPW          :      0.72s CPU      1.43s WALL
 
      -------------------------------------------------------------------
      Wannierization on  4 x  4 x  4 electronic grid
@@ -315,13 +315,13 @@
      (  -0.16873   0.08127   0.16873) :   1.00894
  
      -------------------------------------------------------------------
-     WANNIER      :      4.67s CPU      4.75s WALL (       1 calls)
+     WANNIER      :      4.78s CPU      4.99s WALL (       1 calls)
      -------------------------------------------------------------------
 
      Calculating kgmap
 
      Progress kgmap: ########################################
-     kmaps        :      0.01s CPU      0.01s WALL (       1 calls)
+     kmaps        :      0.02s CPU      0.02s WALL (       1 calls)
      Symmetries of Bravais lattice:  48
      Symmetries of crystal:          24
 
@@ -423,7 +423,7 @@
      Writing Hamiltonian, Dynamical matrix and EP vertex in Wann rep to file
 
      ===================================================================
-     Memory usage:  VmHWM =       181Mb
+     Memory usage:  VmHWM =       165Mb
                    VmPeak =      3771Mb
      ===================================================================
      
@@ -448,6 +448,10 @@
      Writing data to read in the Julia code
 
      Calculating symmetry matrix elements, nsym = 24
+
+     Calculating kgmap
+
+     Progress kgmap: ########################################
   1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
 
      Number of ep-matrix elements per pool :          384 ~=    3.00 Kb (@ 8 bytes/ DP)
@@ -456,35 +460,35 @@
      We only need to compute        1 q-points
       
      ===================================================================
-     Memory usage:  VmHWM =       181Mb
+     Memory usage:  VmHWM =       165Mb
                    VmPeak =      3771Mb
      ===================================================================
 
 
      Unfolding on the coarse grid
-     elphon_wrap  :     22.38s CPU     22.60s WALL (       1 calls)
+     elphon_wrap  :     22.55s CPU     23.01s WALL (       1 calls)
 
      INITIALIZATION: 
 
-     set_drhoc    :      0.74s CPU      0.74s WALL (       9 calls)
+     set_drhoc    :      0.72s CPU      0.72s WALL (       9 calls)
      init_vloc    :      0.00s CPU      0.00s WALL (       1 calls)
-     init_us_1    :      0.02s CPU      0.02s WALL (       2 calls)
+     init_us_1    :      0.03s CPU      0.03s WALL (       2 calls)
 
 
 
      Electron-Phonon interpolation
-     ephwann      :      0.68s CPU      0.76s WALL (       1 calls)
+     ephwann      :      0.88s CPU      1.05s WALL (       1 calls)
      ep-interp    :      0.00s CPU      0.00s WALL (       1 calls)
 
      Ham: step 1  :      0.00s CPU      0.00s WALL (       1 calls)
-     Ham: step 2  :      0.01s CPU      0.01s WALL (       1 calls)
+     Ham: step 2  :      0.00s CPU      0.00s WALL (       1 calls)
      ep: step 1   :      0.00s CPU      0.00s WALL (      48 calls)
-     ep: step 2   :      0.35s CPU      0.43s WALL (       1 calls)
-     wigner_seitz :      0.22s CPU      0.22s WALL (       1 calls)
+     ep: step 2   :      0.45s CPU      0.61s WALL (       1 calls)
+     wigner_seitz :      0.31s CPU      0.31s WALL (       1 calls)
      julia_export :      0.00s CPU      0.02s WALL (       1 calls)
-     julia_symm   :      0.20s CPU      0.25s WALL (       1 calls)
+     julia_symm   :      0.26s CPU      0.31s WALL (       1 calls)
      DynW2B       :      0.00s CPU      0.00s WALL (       1 calls)
-     HamW2B       :      0.00s CPU      0.00s WALL (       3 calls)
+     HamW2B       :      0.00s CPU      0.01s WALL (       3 calls)
      vmeW2B       :      0.00s CPU      0.00s WALL (       3 calls)
      ephW2Bp      :      0.00s CPU      0.00s WALL (       1 calls)
      ephW2B       :      0.00s CPU      0.00s WALL (       1 calls)
@@ -494,7 +498,7 @@
 
 
      Total program execution
-     EPW          :     28.15s CPU     28.55s WALL
+     EPW          :     28.93s CPU     30.47s WALL
 
      ===============================================================================
      The functionality-dependent EPW.bib file was created with suggested citations. 

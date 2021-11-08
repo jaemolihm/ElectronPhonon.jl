@@ -28,6 +28,7 @@ Base.@kwdef mutable struct ModelEPW{FT <: AbstractFloat, WannType <: AbstractWan
     # Atom information
     mass::Vector{FT}
     atom_pos::Vector{Vec3{FT}}
+    atom_labels::Vector{String}
 
     nw::Int
     nmodes::Int
@@ -110,6 +111,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     at_in_alat = read(f, (Float64, 3, 3))
     natoms = Int(read(f, Int32))
     atom_pos_arr = read(f, (Float64, 3, natoms))
+    atom_labels = String.(trim.(read(f, (FString{3}, natoms))))
     atom_pos = reinterpret(Vec3{T}, atom_pos_arr)[:]
 
     lattice = Mat3{T}(at_in_alat .* alat)
@@ -308,7 +310,8 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         el_sym = nothing
     end
 
-    model = ModelEPW(;alat, lattice, recip_lattice, volume, nw, nmodes, mass, atom_pos, symmetry,
+    model = ModelEPW(;alat, lattice, recip_lattice, volume, nw, nmodes,
+        mass, atom_pos, atom_labels, symmetry,
         use_polar_dipole, polar_phonon, polar_eph,
         el_ham, el_ham_R, el_pos, el_vel,
         ph_dyn, ph_dyn_R,
