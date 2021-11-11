@@ -1,6 +1,7 @@
 using Test
 using EPW
 using LinearAlgebra
+using PyPlot
 
 @testset "plot bandstructure" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
@@ -75,6 +76,16 @@ using LinearAlgebra
     @test plot_xdata.xticks ≈ ref_xticks
     @test plot_xdata.xlabels == ref_xlabels
 
+    # Test whether plot_bandstructure runs
+    out = plot_bandstructure(model, kline_density=10)
+    @test out.fig isa PyPlot.Figure
+    @test out.kpts.vectors ≈ kpts.vectors
+    @test size(out.e_el) == (model.nw, kpts.n)
+    @test size(out.e_ph) == (model.nmodes, kpts.n)
+    @test out.plot_xdata.x ≈ plot_xdata.x
+    @test out.plot_xdata.xticks ≈ plot_xdata.xticks
+    @test out.plot_xdata.xlabels == plot_xdata.xlabels
+
     # Test whether the k path is the same if different lattice convention is used
     alat = 5.0
     lattice = alat * Mat3([[1 -1/2 0]; [0 sqrt(3)/2 0]; [0 0 sqrt(8/3)]])
@@ -98,9 +109,9 @@ using LinearAlgebra
 
     kpts, plot_xdata = EPW.high_symmetry_kpath(model, kline_density=50)
     kpts_new, plot_xdata_new = EPW.high_symmetry_kpath(model_new, kline_density=50)
-    @test plot_xdata[:x] ≈ plot_xdata_new[:x]
-    @test plot_xdata[:xticks] ≈ plot_xdata_new[:xticks]
-    @test plot_xdata[:xlabels] == plot_xdata_new[:xlabels]
+    @test plot_xdata.x ≈ plot_xdata_new.x
+    @test plot_xdata.xticks ≈ plot_xdata_new.xticks
+    @test plot_xdata.xlabels == plot_xdata_new.xlabels
     @test kpts.n == kpts_new.n
     # Compare k points in Cartesian coordinates
     @test Ref(inv(lattice)') .* kpts.vectors ≈ Ref(inv(lattice_new)') .* kpts_new.vectors
