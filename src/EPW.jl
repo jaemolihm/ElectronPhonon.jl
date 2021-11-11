@@ -59,5 +59,6 @@ include("boltzmann/electron_lbte.jl")
 include("run_transport.jl")
 include("run_transport_subgrid_q.jl")
 
+include("postprocess/plot_bandstructure.jl")
 
 end
