@@ -11,22 +11,23 @@ function plot_bandstructure(model; kline_density=40, close_fig=true)
     kpts, plot_xdata = high_symmetry_kpath(model; kline_density)
 
     # Calculate eigenvalues
-    e_el = compute_eigenvalues_el(model, kpts)
-    e_ph = compute_eigenvalues_ph(model, kpts)
+    e_el = compute_eigenvalues_el(model, kpts, fourier_mode="normal")
+    e_ph = compute_eigenvalues_ph(model, kpts, fourier_mode="normal")
 
     # Plot band structure
     fig, plotaxes = PyPlot.subplots(1, 2, figsize=(8, 3))
-    plot_band_data(plotaxes[1], e_el ./ unit_to_aru(:eV),  plot_xdata, ylabel="energy (eV)", title="Electron")
-    plot_band_data(plotaxes[2], e_ph ./ unit_to_aru(:meV), plot_xdata, ylabel="energy (meV)", title="Phonon")
+    plot_band_data(plotaxes[1], e_el ./ unit_to_aru(:eV),  plot_xdata, ylabel="energy (eV)", title="Electron", c="k")
+    plot_band_data(plotaxes[2], e_ph ./ unit_to_aru(:meV), plot_xdata, ylabel="energy (meV)", title="Phonon", c="k")
     plotaxes[2].axhline(0, c="k", lw=1)
     display(fig)
     close_fig && close(fig)
     (;fig, kpts, e_el, e_ph, plot_xdata)
 end
 
-function plot_band_data(axis, data, plot_xdata; ylabel=nothing, title=nothing)
+function plot_band_data(axis, data, plot_xdata; ylabel=nothing, title=nothing, c=nothing)
+    get_color(i) = c === nothing ? "C$(mod(i, 10))" : c
     for iband in 1:size(data, 1)
-        axis.plot(plot_xdata.x, data[iband, :], c="k")
+        axis.plot(plot_xdata.x, data[iband, :], c=c)
     end
     for x in plot_xdata.xticks
         axis.axvline(x, c="k", lw=1, ls="--")

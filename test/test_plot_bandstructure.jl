@@ -116,3 +116,13 @@ using PyPlot
     # Compare k points in Cartesian coordinates
     @test Ref(inv(lattice)') .* kpts.vectors ≈ Ref(inv(lattice_new)') .* kpts_new.vectors
 end
+
+@testset "plot deformation pot." begin
+    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
+    model = load_model(folder, epmat_outer_momentum="el")
+
+    # Test that the function runs. No test for the correctness.
+    plot_electron_phonon_deformation_potential(model)
+    plot_electron_phonon_deformation_potential(model, Vec3(0.0, 0.5, 0.0), band_rng=1:2, kline_density=15, include_polar=false)
+end

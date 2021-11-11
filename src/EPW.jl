@@ -60,5 +60,6 @@ include("run_transport.jl")
 include("run_transport_subgrid_q.jl")
 
 include("postprocess/plot_bandstructure.jl")
+include("postprocess/plot_electron_phonon.jl")
 
 end
