@@ -27,7 +27,7 @@ Base.@kwdef mutable struct ModelEPW{FT <: AbstractFloat, WannType <: AbstractWan
 
     # Atom information
     mass::Vector{FT}
-    atom_pos::Vector{Vec3{FT}}
+    atom_pos::Vector{Vec3{FT}} # Atom position in alat units, Cartesian coordinates
     atom_labels::Vector{String}
 
     nw::Int

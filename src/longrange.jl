@@ -16,7 +16,7 @@ Base.@kwdef struct Polar{T <: Real}
     volume::T
     nmodes::Int
     recip_lattice::Mat3{T}
-    atom_pos::Vector{Vec3{T}}
+    atom_pos::Vector{Vec3{T}} # Atom position in alat units
     # Dipole term information
     ϵ::Mat3{T} # Dielectric tensor
     Z::Vector{Mat3{T}} # Born effective charge tensor
