@@ -139,8 +139,8 @@ function spglib_get_symmetry(lattice, atoms, magnetic_moments=[]; tol_symmetry=1
 end
 
 # Convert atom_pos_crys and atom_labels to Spglib atom data structure
-function spglib_atoms(atom_pos_crys::Vector{Vec3{FT}}, atom_labels::Vector{String}, magnetic_moments=[]) where FT
-    atoms_dict = Dict{String, Vector{Vector{Float64}}}()
+function spglib_atoms(atom_pos_crys::Vector{T}, atom_labels::Vector{String}, magnetic_moments=[]) where T <: AbstractVector{FT} where FT
+    atoms_dict = Dict{String, Vector{Vector{FT}}}()
     for (pos, label) in zip(atom_pos_crys, atom_labels)
         if haskey(atoms_dict, label)
             push!(atoms_dict[label], pos)

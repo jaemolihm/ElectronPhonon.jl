@@ -1,13 +1,14 @@
 import Brillouin
 import PyPlot
 
-# TODO: Add test
+export plot_bandstructure
+
 # TODO: Fermi level
 # TODO: Time reversal symmetry
 # TODO: Magnetic moments
 
-function plot_bandstructure(model; kline_density=40)
-    kpts, plot_xdata = high_symmetry_kpath(model, kline_density)
+function plot_bandstructure(model; kline_density=40, close_fig=true)
+    kpts, plot_xdata = high_symmetry_kpath(model; kline_density)
 
     # Calculate eigenvalues
     e_el = compute_eigenvalues_el(model, kpts)
@@ -19,6 +20,7 @@ function plot_bandstructure(model; kline_density=40)
     plot_band_data(plotaxes[2], e_ph ./ unit_to_aru(:meV), plot_xdata, ylabel="energy (meV)", title="Phonon")
     plotaxes[2].axhline(0, c="k", lw=1)
     display(fig)
+    close_fig && close(fig)
     (;fig, kpts, e_el, e_ph, plot_xdata)
 end
 
@@ -48,7 +50,7 @@ The `kline_density` is given in number of ``k``-points per inverse bohrs (i.e.
 overall in units of length).
 (Adapted from DFTK.jl)
 """
-function high_symmetry_kpath(model, kline_density=40)
+function high_symmetry_kpath(model; kline_density=40)
     # - Brillouin.jl expects the input direct lattice to be in the conventional lattice
     #   in the convention of the International Table of Crystallography Vol A (ITA).
     # - spglib uses this convention for the returned conventional lattice,
@@ -61,18 +63,17 @@ function high_symmetry_kpath(model, kline_density=40)
     # primitive lattice vector in CDML convention.
     kp     = Brillouin.irrfbz_path(sgnum, Vec3(eachcol(conv_latt)))
     kinter = Brillouin.interpolate(kp, density=kline_density)
+    plot_xdata = get_band_plot_xdata(kinter)
 
     # Now, kinter is in crystal coordinates of the primitive lattice vector in CDML convention,
     # not model.lattuce. So, we convert kinter to crystal coordiantes in model.lattice by
     # converting as follows:
     # crystal (standard primitive) -> Cartesian -> crystal (model.lattice)
     kinter_cart = Brillouin.cartesianize(kinter)
-    recip_basis = Vec3(eachcol(model.recip_lattice))
+    recip_basis = Vec3(eachcol(inv(model.lattice)' .* 2π))
     for ik in 1:length(kinter_cart)
         kinter[ik] = Brillouin.latticize(kinter_cart[ik], recip_basis)
     end
-
-    plot_xdata = get_band_plot_xdata(kinter)
     kpts = Kpoints(kinter)
 
     kpts, plot_xdata
