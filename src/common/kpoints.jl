@@ -22,14 +22,18 @@ end
 
 Kpoints{T}() where {T} = Kpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), (0, 0, 0))
 
+# Initializing Kpoints with a vector of k points
+function Kpoints(xks::AbstractVector{Vec3{T}}) where {T <: Real}
+    n = length(xks)
+    Kpoints{T}(n, Vector(xks), ones(n) ./ n, (0, 0, 0))
+end
+
 # Initializing Kpoints with a k point array
 function Kpoints(xks::AbstractArray{T}) where {T <: Real}
     if size(xks, 1) != 3
         throw(ArgumentError("first dimension of xks must be 3"))
     end
-    vectors = collect(vec(reinterpret(Vec3{T}, xks)))
-    n = length(vectors)
-    Kpoints(n, vectors, ones(n) ./ n, (0, 0, 0))
+    Kpoints(collect(vec(reinterpret(Vec3{T}, xks))))
 end
 
 # Initializing Kpoints with a single k point
