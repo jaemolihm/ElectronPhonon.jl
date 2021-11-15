@@ -4,6 +4,7 @@ authors = ["Jae-Mo Lihm <jaemolim96@gmail.com> and contributors"]
 version = "0.1.0"
 
 [deps]
+Bravais = "ada6cbde-b013-4edf-aa94-f6abe8bd6e6b"
 Brillouin = "23470ee3-d0df-4052-8b1a-8cbd6363e7f0"
 Dictionaries = "85a47980-9c8c-11e8-2b9f-f7ca1fa99fb4"
 FortranFiles = "c58ffaec-ab22-586d-bfc5-781a99fd0b10"

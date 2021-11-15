@@ -1,5 +1,6 @@
 import Brillouin
 import PyPlot
+import Bravais
 
 export plot_bandstructure
 
@@ -40,6 +41,39 @@ function plot_band_data(axis, data, plot_xdata; ylabel=nothing, title=nothing, c
     nothing
 end
 
+# Generalizes Brillouin.irrfbz_path to work with arbitrary cell.
+function irrfbz_path_for_cell(cell)
+    # standardize cell
+    dset = Spglib.get_dataset(cell)
+    sgnum = dset.spacegroup_number
+    std_lattice = Bravais.DirectBasis(collect(eachcol(dset.std_lattice)))
+    # TODO: For triclinic, one may need additional reduction (niggli) because seek-path
+    #       uses a different convention from spglib.
+
+    # If the input cell is a supercell (without any distortion), then the irrfbz algorithm cannot work
+    if round(Int, det(cell.lattice) / det(dset.primitive_lattice)) != 1
+        @warn "input cell is a supercell. irrfbz Does not give a correct k path."
+    end
+
+    # Calculate kpath for standard primitive cell
+    kp = Brillouin.irrfbz_path(sgnum, std_lattice)
+
+    # Convert to original lattice
+    # cell.lattice = rotation * primitive_lattice * transformation
+    rotation = dset.std_rotation_matrix
+    transformation = inv(Bravais.primitivebasismatrix(Bravais.centering(sgnum, 3))) * dset.transformation_matrix'
+
+    # Rotate k points in Cartesian space by `rotation`
+    recip_basis = Bravais.reciprocalbasis(Bravais.DirectBasis(collect(eachcol(Matrix(cell.lattice)))))
+    kp_cart = Brillouin.cartesianize(kp)
+    for (lab, kv) in Brillouin.points(kp_cart)
+        Brillouin.points(kp_cart)[lab] = rotation * kv
+    end
+    kp_new = Brillouin.latticize(kp_cart, recip_basis)
+    kp_new
+end
+
+
 """
 Extract the high-symmetry ``k``-point path corresponding to the passed model
 using `Brillouin.jl`. Uses the conventions described in the reference work by
@@ -52,31 +86,14 @@ overall in units of length).
 (Adapted from DFTK.jl)
 """
 function high_symmetry_kpath(model; kline_density=40)
-    # - Brillouin.jl expects the input direct lattice to be in the conventional lattice
-    #   in the convention of the International Table of Crystallography Vol A (ITA).
-    # - spglib uses this convention for the returned conventional lattice,
-    #   so it can be directly used as input to Brillouin.jl
-    # - The output k-Points and reciprocal lattices will be in the CDML convention.
-    conv_latt = EPW.get_spglib_lattice(model, to_primitive=false)
-    sgnum     = EPW.spglib_spacegroup_number(model)  # Get ITA space-group number
+    spg_positions, spg_numbers, _ = spglib_atoms(atom_pos_crys(model), model.atom_labels)
+    structure = Spglib.Cell(model.lattice, spg_positions, spg_numbers)
 
-    # Calculate high-symmetry k path. The k points are in crystal coordinates of the
-    # primitive lattice vector in CDML convention.
-    kp     = Brillouin.irrfbz_path(sgnum, Vec3(eachcol(conv_latt)))
+    kp = irrfbz_path_for_cell(structure)
     kinter = Brillouin.interpolate(kp, density=kline_density)
+
     plot_xdata = get_band_plot_xdata(kinter)
-
-    # Now, kinter is in crystal coordinates of the primitive lattice vector in CDML convention,
-    # not model.lattuce. So, we convert kinter to crystal coordiantes in model.lattice by
-    # converting as follows:
-    # crystal (standard primitive) -> Cartesian -> crystal (model.lattice)
-    kinter_cart = Brillouin.cartesianize(kinter)
-    recip_basis = Vec3(eachcol(inv(model.lattice)' .* 2π))
-    for ik in 1:length(kinter_cart)
-        kinter[ik] = Brillouin.latticize(kinter_cart[ik], recip_basis)
-    end
     kpts = Kpoints(kinter)
-
     kpts, plot_xdata
 end
 
@@ -104,7 +121,7 @@ function get_band_plot_xdata(kinter)
                 push!(xlabels, String(label))
             end
         end
-        xshift += xs[ibranch][end]
+        xshift = xs[ibranch][end]
     end
     x = vcat(xs...)
     (;x, xticks, xlabels)
