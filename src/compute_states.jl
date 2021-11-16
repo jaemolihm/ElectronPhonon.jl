@@ -36,7 +36,9 @@ function compute_electron_states(model, kpts, quantities, window, nband, nband_i
             set_window!(el, window)
             if "velocity" ∈ quantities
                 set_velocity!(el, model, xk, fourier_mode)
-                el.vdiag[el.rng] .= real.(diag(el.v[el.rng, el.rng]))
+                for i in el.rng
+                    el.vdiag[i] = real.(el.v[i, i])
+                end
             elseif "velocity_diagonal" ∈ quantities
                 set_velocity_diag!(el, model, xk, fourier_mode)
             end

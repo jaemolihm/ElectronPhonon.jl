@@ -172,8 +172,20 @@ Compute electron band velocity, only the band-diagonal part.
 """
 function set_velocity_diag!(el::ElectronState{FT}, model, xk, fourier_mode="normal") where {FT}
     uk = get_u(el)
-    @views velocity_diag = reshape(reinterpret(FT, el.vdiag[el.rng]), 3, el.nband)
-    get_el_velocity_diag_berry_connection!(velocity_diag, el.nw, model.el_ham_R, xk, uk, fourier_mode)
+    if model.el_velocity_mode === :Direct
+        # For direct Wannier interpolation, there is no faster way to calculate only the diagonal part.
+        # So we just calculate the full velocity matrix and set take the diagonal part.
+        @views velocity = reshape(reinterpret(Complex{FT}, el.v[el.rng, el.rng]), 3, el.nband, el.nband)
+        get_el_velocity_direct!(velocity, el.nw, model.el_vel, xk, uk, fourier_mode)
+        for i in el.rng
+            el.vdiag[i] = real.(el.v[i, i])
+        end
+    elseif model.el_velocity_mode === :BerryConnection
+        # For Berry connection method, we ignore the Berry connection contribution which is
+        # zero for the diagonal part.
+        @views velocity_diag = reshape(reinterpret(FT, el.vdiag[el.rng]), 3, el.nband)
+        get_el_velocity_diag_berry_connection!(velocity_diag, el.nw, model.el_ham_R, xk, uk, fourier_mode)
+    end
 end
 
 """
