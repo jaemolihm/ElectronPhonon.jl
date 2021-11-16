@@ -118,6 +118,6 @@ using LinearAlgebra
         # full_velocity should not be identical to vdiag because there are degenerate bands
         @test !(out_crta.σlist_full_velocity ≈ σlist)
         @test !(out_crta.mobility_full_velocity_SI ≈ mobility_SI)
-        @test out_crta.mobility_full_velocity_SI ≈ cat(Ref(I(3)) .* [491.3933241052932, 350.18428492817515, 271.55562535095663]..., dims=3)
+        @test out_crta.mobility_full_velocity_SI ≈ cat(Ref(I(3)) .* [491.4008316455876, 350.18972508269235, 271.5598769595231]..., dims=3)
     end
 end

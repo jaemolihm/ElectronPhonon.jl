@@ -26,9 +26,16 @@ function plot_bandstructure(model; kline_density=40, close_fig=true)
 end
 
 function plot_band_data(axis, data, plot_xdata; ylabel=nothing, title=nothing, c=nothing)
-    get_color(i) = c === nothing ? "C$(mod(i, 10))" : c
-    for iband in 1:size(data, 1)
-        axis.plot(plot_xdata.x, data[iband, :], c=c)
+    if ndims(data) == 1
+        c = c === nothing ? "k" : c
+        axis.plot(plot_xdata.x, data, c=c)
+    elseif ndims(data) == 2
+        get_color(i) = c === nothing ? "C$(mod(i, 10))" : c
+        for iband in 1:size(data, 1)
+            axis.plot(plot_xdata.x, data[iband, :], c=c)
+        end
+    else
+        @warn "data should be a vector or matrix to be plotted"
     end
     for x in plot_xdata.xticks
         axis.axvline(x, c="k", lw=1, ls="--")
