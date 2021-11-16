@@ -13,7 +13,9 @@ function compute_electron_states(model, kpts, quantities, window, nband, nband_i
     for quantity in quantities
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
     end
-    "velocity" ∈ quantities && @warn "position matrix element contribution is not implemented. Thus, interband velocity is inaccurate"
+    if "velocity" ∈ quantities && model.el_velocity_mode == :BerryConnection
+        @warn "position matrix element contribution is not implemented. Thus, interband velocity is inaccurate"
+    end
     nw = model.nw
 
     states = [ElectronState(Float64, nw, nband, nband_ignore) for ik=1:kpts.n]

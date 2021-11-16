@@ -158,6 +158,35 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
     nothing
 end
 
+"""
+    get_el_velocity_direct!(velocity, nw, el_vel, xk, uk, fourier_mode="normal")
+Compute electron band velocity by direct Wannier interpolation of ``dH/dk`` matrix elements.
+- `el_vel`: a `WannierObject`, containing matrix elements of ``dH/dk`` in real-space Wannier basis.
+- `velocity``: (3, `nband`, `nband`) matrix
+- `uk`: `nw` * `nband` matrix containing nband eigenvectors of ``H(k)``.
+
+TODO: Can we reduce code duplication with get_el_velocity_berry_connection?
+"""
+@timing "w2b_el_vel" function get_el_velocity_direct!(velocity, nw, el_vel, xk, uk, fourier_mode="normal")
+    @assert size(uk, 1) == nw
+    nband = size(uk, 2)
+    @assert size(velocity) == (3, nband, nband)
+
+    vk = _get_buffer(_buffer_el_velocity, (nw, nw, 3))
+    tmp_full = _get_buffer(_buffer_el_velocity_tmp, (nw, nw))
+    tmp = view(tmp_full, :, 1:nband)
+
+    get_fourier!(vk, el_vel, xk, mode=fourier_mode)
+
+    # velocity[idir, :, :] = uk' * vk[:, :, idir] * uk
+    @views @inbounds for idir = 1:3
+        mul!(tmp, vk[:, :, idir], uk)
+        mul!(velocity[idir, :, :], uk', tmp)
+    end
+    nothing
+end
+
+
 # =============================================================================
 #  Phonons
 # FIXME: fourier_mode vs mode, keyword or positional

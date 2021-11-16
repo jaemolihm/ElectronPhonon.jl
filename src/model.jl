@@ -107,7 +107,10 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         error("If epmat_on_disk is true, tmpdir must be provided.")
     end
     if epmat_outer_momentum ∉ ["ph", "el"]
-        throw(ArgumentError("epmat_outer_momentum must be ph or el."))
+        error("epmat_outer_momentum must be ph or el.")
+    end
+    if el_velocity_mode ∉ [:Direct, :BerryConnection]
+        error("el_velocity_mode must be :Direct or :BerryConnection")
     end
 
     # Read binary data written by EPW and create ModelEPW object

@@ -2,7 +2,8 @@
 # Electron eigenvalue and eigenvector at a single k point
 
 using EPW.AllocatedLAPACK: epw_syev!
-using EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag_berry_connection!, get_el_velocity_berry_connection!
+using EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag_berry_connection!,
+                      get_el_velocity_berry_connection!, get_el_velocity_direct!
 
 export ElectronState
 export copyto!
@@ -183,5 +184,9 @@ FIXME: Position matrix element contribution is not included in get_el_velocity!
 function set_velocity!(el::ElectronState{FT}, model, xk, fourier_mode="normal") where {FT}
     uk = get_u(el)
     @views velocity = reshape(reinterpret(Complex{FT}, el.v[el.rng, el.rng]), 3, el.nband, el.nband)
-    get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, model.el_pos, el.e, xk, uk, fourier_mode)
+    if model.el_velocity_mode === :Direct
+        get_el_velocity_direct!(velocity, el.nw, model.el_vel, xk, uk, fourier_mode)
+    elseif model.el_velocity_mode === :BerryConnection
+        get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, model.el_pos, el.e, xk, uk, fourier_mode)
+    end
 end
