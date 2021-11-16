@@ -99,13 +99,15 @@ end
 end
 
 """
-    get_el_velocity_diag!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
-Compute electron band velocity, only the band-diagonal part.
+    get_el_velocity_diag_berry_connection!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
+Compute the diagoanl part of electron band velocity using the Berry connection formula. See
+docstring for get_el_velocity_berry_connection! for details.
+For the diagonal part, the Berry connection contribution is zero.
 
 velocity_diag: nband-dimensional vector.
 uk: nw * nband matrix containing nband eigenvectors of H(k).
 """
-@timing "w2b_el_vel" function get_el_velocity_diag!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
+@timing "w2b_el_vel" function get_el_velocity_diag_berry_connection!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity_diag) == (3, nband)
@@ -127,15 +129,17 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
 end
 
 """
-    get_el_velocity!(velocity, nw, el_ham_R, xk, uk, fourier_mode="normal")
-Compute electron band velocity.
+    get_el_velocity_berry_connection!(velocity, nw, el_ham_R, el_pos, ek, xk, uk, fourier_mode="normal")
+Compute electron band velocity using the Berry connection formula:
+``v_{m,n} = (U^\\dagger dH^{(W)}(k) / dk U)_{m,n} + i * (e_m - e_n) * (U^\\dagger A U)_{m,n}``
+(Eq. (31) of X. Wang et al, PRB 74 195118 (2006)).
 FIXME: Position matrix element contribution is not included
 FIXME: Add test
 
 velocity: (3, nband, nband) matrix
 uk: nw * nband matrix containing nband eigenvectors of H(k).
 """
-@timing "w2b_el_vel" function get_el_velocity!(velocity, nw, el_ham_R, xk, uk, fourier_mode="normal")
+@timing "w2b_el_vel" function get_el_velocity_berry_connection!(velocity, nw, el_ham_R, el_pos, ek, xk, uk, fourier_mode="normal")
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)

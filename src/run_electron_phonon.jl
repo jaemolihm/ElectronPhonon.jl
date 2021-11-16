@@ -106,9 +106,9 @@ function run_eph_outer_loop_q(
         xk = kpoints.vectors[ik]
         el_k = el_k_save[ik]
 
-        set_eigen!(el_k, model.el_ham, xk, "gridopt")
+        set_eigen!(el_k, model, xk, "gridopt")
         set_window!(el_k, window)
-        set_velocity_diag!(el_k, model.el_ham_R, xk, "gridopt")
+        set_velocity_diag!(el_k, model, xk, "gridopt")
         ek_full_save[:, ik] .= el_k.e_full
     end # ik
 
@@ -166,7 +166,7 @@ function run_eph_outer_loop_q(
             copyto!(epdata.el_k, el_k_save[ik])
 
             # Compute electron state at k+q.
-            set_eigen!(epdata.el_kq, model.el_ham, xkq, fourier_mode)
+            set_eigen!(epdata.el_kq, model, xkq, fourier_mode)
 
             # Set energy window, skip if no state is inside the window
             skip_kq = set_window!(epdata.el_kq, window)
@@ -174,7 +174,7 @@ function run_eph_outer_loop_q(
                 continue
             end
 
-            set_velocity_diag!(epdata.el_kq, model.el_ham_R, xkq, fourier_mode)
+            set_velocity_diag!(epdata.el_kq, model, xkq, fourier_mode)
             get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)

@@ -2,7 +2,7 @@
 # Electron eigenvalue and eigenvector at a single k point
 
 using EPW.AllocatedLAPACK: epw_syev!
-using EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag!, get_el_velocity!
+using EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag_berry_connection!, get_el_velocity_berry_connection!
 
 export ElectronState
 export copyto!
@@ -138,11 +138,11 @@ end
 # Define wrappers of WanToBloch functions
 
 """
-    set_eigen!(el::ElectronState, el_ham, xk, fourier_mode="normal")
+    set_eigen!(el::ElectronState, model, xk, fourier_mode="normal")
 Compute electron eigenenergy and eigenvector and save them in el.
 """
-function set_eigen!(el::ElectronState, el_ham, xk, fourier_mode="normal")
-    get_el_eigen!(el.e_full, el.u_full, el.nw, el_ham, xk, fourier_mode)
+function set_eigen!(el::ElectronState, model, xk, fourier_mode="normal")
+    get_el_eigen!(el.e_full, el.u_full, el.nw, model.el_ham, xk, fourier_mode)
 
     # Set window to the default value: [nband_ignore+1, nband_ignore+nband_bound].
     el.rng_full = el.nband_ignore+1:el.nband_ignore+el.nband_bound
@@ -152,11 +152,11 @@ function set_eigen!(el::ElectronState, el_ham, xk, fourier_mode="normal")
 end
 
 """
-    set_eigen_valueonly!(el::ElectronState, el_ham, xk, fourier_mode="normal")
+    set_eigen_valueonly!(el::ElectronState, model, xk, fourier_mode="normal")
 Compute electron eigenenergy and save them in el.
 """
-function set_eigen_valueonly!(el::ElectronState, el_ham, xk, fourier_mode="normal")
-    get_el_eigen_valueonly!(el.e_full, el.nw, el_ham, xk, fourier_mode)
+function set_eigen_valueonly!(el::ElectronState, model, xk, fourier_mode="normal")
+    get_el_eigen_valueonly!(el.e_full, el.nw, model.el_ham, xk, fourier_mode)
 
     # Set window to the default value: [nband_ignore+1, nband_ignore+nband_bound].
     el.rng_full = el.nband_ignore+1:el.nband_ignore+el.nband_bound
@@ -166,22 +166,22 @@ function set_eigen_valueonly!(el::ElectronState, el_ham, xk, fourier_mode="norma
 end
 
 """
-    set_velocity_diag!(el::ElectronState, el_ham_R, xk, fourier_mode="normal")
+    set_velocity_diag!(el::ElectronState, model, xk, fourier_mode="normal")
 Compute electron band velocity, only the band-diagonal part.
 """
-function set_velocity_diag!(el::ElectronState{FT}, el_ham_R, xk, fourier_mode="normal") where {FT}
+function set_velocity_diag!(el::ElectronState{FT}, model, xk, fourier_mode="normal") where {FT}
     uk = get_u(el)
     @views velocity_diag = reshape(reinterpret(FT, el.vdiag[el.rng]), 3, el.nband)
-    get_el_velocity_diag!(velocity_diag, el.nw, el_ham_R, xk, uk, fourier_mode)
+    get_el_velocity_diag_berry_connection!(velocity_diag, el.nw, model.el_ham_R, xk, uk, fourier_mode)
 end
 
 """
-    set_velocity(el::ElectronState, el_ham_R, xk, fourier_mode="normal")
+    set_velocity(el::ElectronState, model, xk, fourier_mode="normal")
 Compute electron band velocity.
 FIXME: Position matrix element contribution is not included in get_el_velocity!
 """
-function set_velocity!(el::ElectronState{FT}, el_ham_R, xk, fourier_mode="normal") where {FT}
+function set_velocity!(el::ElectronState{FT}, model, xk, fourier_mode="normal") where {FT}
     uk = get_u(el)
     @views velocity = reshape(reinterpret(Complex{FT}, el.v[el.rng, el.rng]), 3, el.nband, el.nband)
-    get_el_velocity!(velocity, el.nw, el_ham_R, xk, uk, fourier_mode)
+    get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, model.el_pos, el.e, xk, uk, fourier_mode)
 end

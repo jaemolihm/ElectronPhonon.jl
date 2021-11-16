@@ -28,9 +28,9 @@ using EPW
     ph = PhononState(Float64, nmodes)
     el_k = ElectronState(Float64, nw, nband, nband_ignore)
     el_kq = ElectronState(Float64, nw, nband, nband_ignore)
-    set_eigen!(el_k, model_ph.el_ham, xk)
+    set_eigen!(el_k, model_ph, xk)
     set_window!(el_k, window)
-    set_eigen!(el_kq, model_ph.el_ham, xkq)
+    set_eigen!(el_kq, model_ph, xkq)
     set_window!(el_kq, window)
     set_eigen!(ph, model_ph, xq)
     rngk = el_k.rng

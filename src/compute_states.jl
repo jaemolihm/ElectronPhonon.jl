@@ -27,16 +27,16 @@ function compute_electron_states(model, kpts, quantities, window, nband, nband_i
         el = states[ik]
 
         if quantities == ["eigenvalue"]
-            set_eigen_valueonly!(el, model.el_ham, xk, fourier_mode)
+            set_eigen_valueonly!(el, model, xk, fourier_mode)
             set_window!(el, window)
         else
-            set_eigen!(el, model.el_ham, xk, fourier_mode)
+            set_eigen!(el, model, xk, fourier_mode)
             set_window!(el, window)
             if "velocity" ∈ quantities
-                set_velocity!(el, model.el_ham_R, xk, fourier_mode)
+                set_velocity!(el, model, xk, fourier_mode)
                 el.vdiag[el.rng] .= real.(diag(el.v[el.rng, el.rng]))
             elseif "velocity_diagonal" ∈ quantities
-                set_velocity_diag!(el, model.el_ham_R, xk, fourier_mode)
+                set_velocity_diag!(el, model, xk, fourier_mode)
             end
         end
     end # ik

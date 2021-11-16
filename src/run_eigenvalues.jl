@@ -9,7 +9,7 @@ function compute_eigenvalues_el(model, kpts; fourier_mode="gridopt")
     el = ElectronState(Float64, model.nw)
     e = zeros(model.nw, kpts.n)
     for ik in 1:kpts.n
-        set_eigen_valueonly!(el, model.el_ham, kpts.vectors[ik], fourier_mode)
+        set_eigen_valueonly!(el, model, kpts.vectors[ik], fourier_mode)
         e[:, ik] .= el.e_full
     end # ik
     e

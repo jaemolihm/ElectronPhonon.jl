@@ -42,6 +42,8 @@ function plot_band_data(axis, data, plot_xdata; ylabel=nothing, title=nothing, c
 end
 
 # Generalizes Brillouin.irrfbz_path to work with arbitrary cell.
+# TODO: Add tests
+# TODO: Move to a general package
 function irrfbz_path_for_cell(cell)
     # standardize cell
     dset = Spglib.get_dataset(cell)
