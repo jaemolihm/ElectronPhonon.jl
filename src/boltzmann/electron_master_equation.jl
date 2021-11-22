@@ -241,6 +241,9 @@ Solve quantum master equation for electrons.
 """
 function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
         scat_mat_in=nothing; filename=nothing, symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
+    if symmetry !== nothing && filename === nothing
+        error("Symmetry is used. The name of the HDF5 file should be passed.")
+    end
     σ_serta = zeros(FT, 3, 3, length(params.Tlist))
     σ = zeros(FT, 3, 3, length(params.Tlist))
     δρ_serta = zeros(Vec3{Complex{FT}}, el_i.n, length(params.Tlist))
@@ -322,6 +325,8 @@ function _solve_qme_direct!(δρ::AbstractVector{Vec3{Complex{FT}}}, S, δρ0::A
 end
 
 function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
+    isfile(filename) || error("filename is not a valid file.")
+
     indmap_el_i = EPW.states_index_map(el_i);
     indmap_el_f = EPW.states_index_map(el_f);
 
