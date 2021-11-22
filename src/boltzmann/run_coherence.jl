@@ -174,6 +174,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             end
 
             @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng
+                # Ignore negative-frequency mode
+                epdata.ph.e[imode] < 0 && continue
                 # Save only if the scattering satisfies energy conservation
                 econv_p, econv_m = (check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
                 kqpts.ngrid, model.recip_lattice, energy_conservation...) for sign_ph in (1, -1))
