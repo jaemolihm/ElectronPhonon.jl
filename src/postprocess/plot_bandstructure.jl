@@ -8,7 +8,7 @@ export plot_bandstructure
 # TODO: Time reversal symmetry
 # TODO: Magnetic moments
 
-function plot_bandstructure(model; kline_density=40, close_fig=true)
+function plot_bandstructure(model; kline_density=40, close_fig=true, εF=nothing)
     kpts, plot_xdata = high_symmetry_kpath(model; kline_density)
 
     # Calculate eigenvalues
@@ -17,22 +17,29 @@ function plot_bandstructure(model; kline_density=40, close_fig=true)
 
     # Plot band structure
     fig, plotaxes = PyPlot.subplots(1, 2, figsize=(8, 3))
-    plot_band_data(plotaxes[1], e_el ./ unit_to_aru(:eV),  plot_xdata, ylabel="energy (eV)", title="Electron", c="k")
-    plot_band_data(plotaxes[2], e_ph ./ unit_to_aru(:meV), plot_xdata, ylabel="energy (meV)", title="Phonon", c="k")
+    plot_band_data(plotaxes[1], e_el ./ unit_to_aru(:eV),  plot_xdata, ylabel="energy (eV)", title="Electron", fmt="k")
+    plot_band_data(plotaxes[2], e_ph ./ unit_to_aru(:meV), plot_xdata, ylabel="energy (meV)", title="Phonon", fmt="k")
     plotaxes[2].axhline(0, c="k", lw=1)
+
+    # Plot Fermi level if given
+    if εF !== nothing
+        plotaxes[1].axhline(εF / unit_to_aru(:eV), c="b", lw=1)
+        plotaxes[1].set_ylim(εF / unit_to_aru(:eV) .+ [-2.0, 2.0])
+    end
+
     display(fig)
     close_fig && close(fig)
     (;fig, kpts, e_el, e_ph, plot_xdata)
 end
 
-function plot_band_data(axis, data, plot_xdata; ylabel=nothing, title=nothing, c=nothing)
+function plot_band_data(axis, data, plot_xdata; ylabel=nothing, title=nothing, fmt=nothing)
     if ndims(data) == 1
-        c = c === nothing ? "k" : c
-        axis.plot(plot_xdata.x, data, c=c)
+        fmt = fmt === nothing ? "k" : fmt
+        axis.plot(plot_xdata.x, data, fmt)
     elseif ndims(data) == 2
-        get_color(i) = c === nothing ? "C$(mod(i, 10))" : c
+        get_fmt(i) = fmt === nothing ? "C$(mod(i, 10))" : fmt
         for iband in 1:size(data, 1)
-            axis.plot(plot_xdata.x, data[iband, :], c=c)
+            axis.plot(plot_xdata.x, data[iband, :], get_fmt(iband))
         end
     else
         @warn "data should be a vector or matrix to be plotted"
