@@ -133,7 +133,9 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
     # TODO: parallelize this part
     @timing "hdf init" begin
         # Open HDF5 file for writing BTEdata
-        fid_btedata = h5open("$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5", "w")
+        filename = "$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5"
+        rm(filename, force=true)
+        fid_btedata = h5open(filename, "w")
         #     # Write some attributes to file
         #     g = create_group(fid_btedata, "electron")
         #     write_attribute(fid_btedata["electron"], "nk", nk)

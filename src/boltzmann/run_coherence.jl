@@ -17,7 +17,9 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # TODO: parallelize this part
     @timing "hdf init" begin
         # Open HDF5 file for writing BTEdata
-        fid_btedata = h5open("$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5", "w")
+        filename = "$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5"
+        rm(filename, force=true)
+        fid_btedata = h5open(filename, "w")
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
