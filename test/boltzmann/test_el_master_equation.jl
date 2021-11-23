@@ -89,8 +89,8 @@ using HDF5
         bte_scat_mat, el_i_bte, el_f_bte, ph_bte = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
         inv_τ = output_serta.inv_τ;
         output_lbte = EPW.solve_electron_bte(el_i_bte, el_f_bte, bte_scat_mat, inv_τ, transport_params, symmetry)
-        _, mobility_bte_serta_SI = transport_print_mobility(output_lbte.σ_serta_list, transport_params, do_print=false);
-        _, mobility_bte_iter_SI = transport_print_mobility(output_lbte.σ_list, transport_params, do_print=false);
+        _, mobility_bte_serta_SI = transport_print_mobility(output_lbte.σ_serta, transport_params, do_print=false);
+        _, mobility_bte_iter_SI = transport_print_mobility(output_lbte.σ, transport_params, do_print=false);
 
         # Test QME and BTE result is identical (because there is only one band)
         @test el_i.nband == 1

@@ -67,9 +67,9 @@ using LinearAlgebra
     @time output_iter1 = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model_el.symmetry, max_iter=1)
     @time output_convd = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model_el.symmetry)
 
-    σ_SI_serta, _ = transport_print_mobility(output_iter1.σ_serta_list, transport_params, do_print=false)
-    σ_SI_iter1, _ = transport_print_mobility(output_iter1.σ_list, transport_params, do_print=false)
-    σ_SI_convd, _ = transport_print_mobility(output_convd.σ_list, transport_params, do_print=false)
+    σ_SI_serta, _ = transport_print_mobility(output_iter1.σ_serta, transport_params, do_print=false)
+    σ_SI_iter1, _ = transport_print_mobility(output_iter1.σ, transport_params, do_print=false)
+    σ_SI_convd, _ = transport_print_mobility(output_convd.σ, transport_params, do_print=false)
 
     @test σ_SI_serta ≈ output_serta.σ_SI
     @test all(isapprox.(σ_SI_serta, σ_ref_epw_iter0, atol=0.2))

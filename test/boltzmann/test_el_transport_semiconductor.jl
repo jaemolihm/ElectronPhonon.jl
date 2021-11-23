@@ -285,9 +285,9 @@ end
         @time output_iter1 = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model.symmetry, max_iter=1);
         @time output_convd = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model.symmetry);
 
-        _, mobility_serta = transport_print_mobility(output_iter1.σ_serta_list, transport_params, do_print=false)
-        _, mobility_iter1 = transport_print_mobility(output_iter1.σ_list, transport_params, do_print=false)
-        _, mobility_convd = transport_print_mobility(output_convd.σ_list, transport_params, do_print=false)
+        _, mobility_serta = transport_print_mobility(output_iter1.σ_serta, transport_params, do_print=false)
+        _, mobility_iter1 = transport_print_mobility(output_iter1.σ, transport_params, do_print=false)
+        _, mobility_convd = transport_print_mobility(output_convd.σ, transport_params, do_print=false)
 
         @test mobility_serta ≈ output_serta.mobility_SI
         @test all(isapprox.(mobility_serta, mobility_ref_epw_iter0, atol=1e-3))
@@ -379,9 +379,9 @@ end
         @time output_convd = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, nothing, rtol=1e-7);
         # BTE does not converge for the default rtol = 1e-10, so I set rtol = 1e-7 to mimic EPW which uses atol = 1e-6.
 
-        _, mobility_serta = transport_print_mobility(output_iter1.σ_serta_list, transport_params, do_print=false)
-        _, mobility_iter1 = transport_print_mobility(output_iter1.σ_list, transport_params, do_print=false)
-        _, mobility_convd = transport_print_mobility(output_convd.σ_list, transport_params, do_print=false)
+        _, mobility_serta = transport_print_mobility(output_iter1.σ_serta, transport_params, do_print=false)
+        _, mobility_iter1 = transport_print_mobility(output_iter1.σ, transport_params, do_print=false)
+        _, mobility_convd = transport_print_mobility(output_convd.σ, transport_params, do_print=false)
 
         @test mobility_serta ≈ output_serta.mobility_SI
         @test all(isapprox.(mobility_serta, mobility_ref_epw_iter0, atol=1e-3))

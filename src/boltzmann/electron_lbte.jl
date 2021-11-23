@@ -83,10 +83,11 @@ TODO: Currently, only works if el_i and el_f are on the same grid (same ngrid, s
       To fix this, unfolding + interpolation is needed.
 """
 function solve_electron_bte(el_i::EPW.BTStates{FT}, el_f::EPW.BTStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; max_iter=100, rtol=1e-10) where {FT}
-    σ_serta_list = zeros(FT, 3, 3, length(params.Tlist))
-    σ_list = zeros(FT, 3, 3, length(params.Tlist))
-    δf_i_serta_list = zeros(Vec3{FT}, el_i.n, length(params.Tlist))
-    δf_i_list = zeros(Vec3{FT}, el_i.n, length(params.Tlist))
+    output = (σ_serta = zeros(FT, 3, 3, length(params.Tlist)),
+              σ = zeros(FT, 3, 3, length(params.Tlist)),
+              δf_i_serta = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
+              δf_i = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
+    )
 
     if symmetry === nothing
         # FIXME: no symmetry but different grid
@@ -124,12 +125,12 @@ function solve_electron_bte(el_i::EPW.BTStates{FT}, el_f::EPW.BTStates{FT}, scat
             end
         end
 
-        σ_serta_list[:, :, iT] .= σ_serta
-        σ_list[:, :, iT] .= σ
-        δf_i_serta_list[:, iT] .= δf_i_serta
-        δf_i_list[:, iT] .= δf_i
+        output.σ_serta[:, :, iT] .= σ_serta
+        output.σ[:, :, iT] .= σ
+        output.δf_i_serta[:, iT] .= δf_i_serta
+        output.δf_i[:, iT] .= δf_i
     end
-    (;σ_list, σ_serta_list, δf_i_serta_list, δf_i_list)
+    output
 end
 
 """
