@@ -378,6 +378,7 @@ end
 function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
     fid = h5open(filename, "r")
     gauge = read(open_group(fid, "gauge"), "gauge_matrix")
+    is_degenerate = read(open_group(fid, "gauge"), "is_degenerate")
 
     # We assume that all el_i and el_f use the same grid and same shift.
     δk = el_i.kpts.shift ≈ el_f.kpts.shift
@@ -395,12 +396,20 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
 
         ib1 = el_i.ib1[ind_el_i]
         ib2 = el_i.ib2[ind_el_i]
-        ind_el_f = get(indmap_el_f, EPW.CI(ib1, ib2, ik_f), -1)
-        ind_el_f == -1 && continue
 
-        # Set unfolding matrix
-        gauge_coeff = gauge[ib1, ib1, ik] * conj(gauge[ib2, ib2, ik])
-        unfold_map[ind_el_f, ind_el_i] += gauge_coeff
+        # continue only if ib1 and jb1 are degenerate, and ib2 and jb2 are degenerate.
+        for jb2 in 1:el_f.nband
+            is_degenerate[jb2, ib2, ik] || continue
+            for jb1 in 1:el_f.nband
+                is_degenerate[jb1, ib1, ik] || continue
+
+                ind_el_f = get(indmap_el_f, EPW.CI(jb1, jb2, ik_f), -1)
+                ind_el_f == -1 && continue
+
+                gauge_coeff = gauge[jb1, ib1, ik] * conj(gauge[jb2, ib2, ik])
+                unfold_map[ind_el_f, ind_el_i] = gauge_coeff
+            end
+        end
     end
     close(fid)
     unfold_map

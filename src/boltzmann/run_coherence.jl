@@ -36,11 +36,19 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         dump_BTData(g, el_k_boltzmann)
 
         # mpi_isroot() && println("Calculating electron states at k+q")
-        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity"], window_kq, nband, nband_ignore; fourier_mode)
+        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector"], window_kq, nband, nband_ignore; fourier_mode)
         # DEBUG: randomly change the eigenstate gauge at k+q so that the gauge is different from k
         if get(kwargs, :DEBUG_random_gauge, false) == true
+            # Multiply random phase factor
             for el in el_kq_save, ib in 1:el.nband
                 get_u(el)[:, ib] .*= cispi(2*rand())
+            end
+            # Swap degenerate eigenvectors
+            for el in el_kq_save, ib in 1:el.nband-1
+                if abs(el.e[el.rng[ib]] - el.e[el.rng[ib+1]]) < EPW.electron_degen_cutoff && rand() > 0.5
+                    u = get_u(el)
+                    u[:, ib], u[:, ib+1] = u[:, ib+1], u[:, ib]
+                end
             end
         end
         el_kq_boltzmann, _ = electron_states_to_QMEStates(el_kq_save, kqpts, qme_offdiag_cutoff, nstates_base_kq)
@@ -61,13 +69,15 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # TODO: Optimize memory and disk usage by writing only nonzero matrix elements
     # TODO: Merge two cases
     mpi_isroot() && println("Calculating and writing gauge matrices")
+
+    gauge = zeros(Complex{FT}, nband, nband, nk)
+    is_degenerate = zeros(Bool, nband, nband, nk) # FIXME: Cannot use BitVector because HDF5.jl does not support it.
+
     if symmetry !== nothing
         # Write symmetry object to file
         g = create_group(fid_btedata, "gauge/symmetry")
         dump_BTData(g, symmetry)
 
-        gauge = zeros(Complex{FT}, nband, nband, nk)
-        is_degenerate = zeros(Bool, nband, nband, nk) # FIXME: Cannot use BitVector because HDF5.jl does not support it.
         tmp_arr_full = zeros(Complex{FT}, nw, nw)
         sym_k = zeros(Complex{FT}, nw, nw)
         for isym = 1:symmetry.nsym
@@ -111,11 +121,20 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
             rng_k = el_k_save[ik].rng
             rng_kq = el_kq_save[ik_kq].rng
-            # Compute gauge matrix: S_H = U†(k) * U(k)
+            e_k = el_k_save[ik].e
+            e_kq = el_kq_save[ik_kq].e
+
+            # Compute gauge matrix: gauge = U†(k) * U(k)
             mul!(gauge[rng_kq, rng_k, ik], get_u(el_kq_save[ik_kq])', get_u(el_k_save[ik]))
+
+            # Set is_degenerate
+            for ib in rng_k, jb in rng_kq
+                is_degenerate[jb, ib, ik] = abs(e_k[ib] - e_kq[jb]) < electron_degen_cutoff
+            end
         end
         g = create_group(fid_btedata, "gauge")
         g["gauge_matrix"] = gauge
+        g["is_degenerate"] = is_degenerate
     end
 
 

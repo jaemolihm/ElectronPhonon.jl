@@ -385,9 +385,9 @@ end
 end
 
 
+# Randomly perturb the gauge of eigenstates by setting the debugging flag
+# DEBUG_random_gauge to true. And check that the result does not change.
 @testset "Transport electron QME gauge" begin
-    # Randomly perturb the gauge of eigenstates by setting the debugging flag
-    # DEBUG_random_gauge to true. And check that the result does not change.
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     model = load_model(folder, epmat_outer_momentum="el")
