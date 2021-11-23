@@ -20,7 +20,7 @@ function occupation_to_conductivity(δf::Vector{Vec3{FT}}, el, params) where {FT
 end
 
 """
-    compute_bte_scattering_matrix(filename, params, recip_lattice)
+    compute_bte_scattering_matrix(filename, params, recip_lattice, ::Type{FT}=Float64)
 Construct BTE scattering-in matrix: S_{ind_i <- ind_f}. [Eq. (41) of Ponce et al (2020)]
 bte_scat_mat[ind_i, ind_f] = S_{ind_i <- ind_f}
 S_{i<-f} = 2π * ∑_{nu} |g_{fi,p}|^2 [(n_p + 1 - f_i) * δ(e_f - e_i - ω_p) + (n_p + f_i) * δ(e_f - e_i + ω_p)]
@@ -30,19 +30,19 @@ f: electron state in el_f (m, k+q)
 p: phonon state (nu, q)
 TODO: Is this valid if time-reversal is broken?
 """
-function compute_bte_scattering_matrix(filename, params, recip_lattice)
+function compute_bte_scattering_matrix(filename, params, recip_lattice, ::Type{FT}=Float64) where {FT <: AbstractFloat}
     # Read btedata
     fid = h5open(filename, "r")
-    el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{Float64})
-    el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.BTStates{Float64})
-    ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
+    el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{FT})
+    el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.BTStates{FT})
+    ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{FT})
 
     # Compute chemical potential
     bte_compute_μ!(params, el_i)
 
     nT = length(params.Tlist)
     bte_scat_mat = [zeros(el_i.n, el_f.n) for iT in 1:nT]
-    inv_τ_iscat = zeros(Float64, nT)
+    inv_τ_iscat = zeros(FT, nT)
 
     # Compute scattering matrix
     group_scattering = open_group(fid, "scattering")
@@ -50,7 +50,7 @@ function compute_bte_scattering_matrix(filename, params, recip_lattice)
     @time for (ig, key) in enumerate(keys(group_scattering))
         mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
         g = open_group(group_scattering, key)
-        scat = load_BTData(g, EPW.ElPhScatteringData{Float64})
+        scat = load_BTData(g, EPW.ElPhScatteringData{FT})
 
         for (iscat, s) in enumerate(scat)
             # Swap ind_el_i and ind_el_f because we are calculating the scattering-in process

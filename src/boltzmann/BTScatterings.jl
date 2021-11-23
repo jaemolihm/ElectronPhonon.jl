@@ -134,17 +134,17 @@ struct ElPhBTModel{T <: Real}
     scattering::ElPhScatteringData{T} # Scattering processes
 end
 
-function load_ElPhBTModel(filename, T=Float64)
+function load_ElPhBTModel(filename, ::Type{FT}=Float64) where FT
     # TODO: Optimize
     fid = h5open(filename, "r")
-    el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{T})
-    el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.BTStates{T})
-    ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{T})
+    el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{FT})
+    el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.BTStates{FT})
+    ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{FT})
 
     # Read scattering
     group_scattering = open_group(fid, "scattering")
     nscat_tot = mapreduce(g -> read(g, "n"), +, group_scattering)
-    scattering = EPW.ElPhScatteringData{T}(nscat_tot)
+    scattering = EPW.ElPhScatteringData{FT}(nscat_tot)
     nscat_cumulative = 0
     for key in keys(group_scattering)
         g = open_group(group_scattering, key)
