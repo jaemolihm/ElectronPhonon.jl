@@ -102,10 +102,11 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 tmp_arr = view(tmp_arr_full, :, 1:el_k_save[ik].nband)
                 mul!(tmp_arr, sym_k, get_u(el_k_save[ik]))
                 mul!(gauge[rng_sk, rng_k, ik], get_u(el_kq_save[isk])', tmp_arr)
+                # FIXME: Perform SVD to make gauge completely unitary
 
                 # Set is_degenerate
                 for ib in rng_k, jb in rng_sk
-                    is_degenerate[jb, ib, ik] = abs(e_k[ib] - e_sk[jb]) < electron_degen_cutoff
+                    is_degenerate[jb, ib, ik] = abs(e_k[ib] - e_sk[jb]) < 10 * unit_to_aru(:meV)
                 end
             end
             g = create_group(fid_btedata, "gauge/isym$isym")

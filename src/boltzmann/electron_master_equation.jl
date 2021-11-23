@@ -370,6 +370,7 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
     close(fid)
 
     inv_cnt_inds_f = 1 ./ cnt_inds_f
+    inv_cnt_inds_f[cnt_inds_f .== 0] .= 0
     unfold_map .*= inv_cnt_inds_f
     unfold_map
 end

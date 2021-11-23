@@ -390,7 +390,7 @@ end
 @testset "Transport electron QME gauge" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model(folder, epmat_outer_momentum="el")
+    model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
 
     # temporary directory to store output data file
     tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
@@ -416,43 +416,44 @@ end
     nklist = (12, 12, 12)
     nqlist = (12, 12, 12)
 
-    symmetry = nothing
+    for use_irr_k in [false, true]
+        symmetry = use_irr_k ? model.el_sym.symmetry : nothing
 
-    out_qme = Dict()
+        out_qme = Dict()
+        for random_gauge in [false, true]
+            # Calculate matrix elements
+            @time EPW.run_transport(
+                model, nklist, nqlist,
+                fourier_mode = "gridopt",
+                folder = tmp_dir,
+                window_k  = window_k,
+                window_kq = window_kq,
+                energy_conservation = energy_conservation,
+                use_irr_k = use_irr_k,
+                average_degeneracy = false,
+                run_for_qme = true,
+                DEBUG_random_gauge = random_gauge,
+            )
 
-    for random_gauge in [false, true]
-        # Calculate matrix elements
-        @time EPW.run_transport(
-            model, nklist, nqlist,
-            fourier_mode = "gridopt",
-            folder = tmp_dir,
-            window_k  = window_k,
-            window_kq = window_kq,
-            energy_conservation = energy_conservation,
-            use_irr_k = false,
-            average_degeneracy = false,
-            run_for_qme = true,
-            DEBUG_random_gauge = random_gauge,
-        )
+            filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
+            fid = h5open(filename, "r")
+            el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
+            el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
+            ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
+            close(fid)
 
-        filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
-        fid = h5open(filename, "r")
-        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
-        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
-        ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
-        close(fid)
+            # Compute chemical potential
+            bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
+            μlist_qme = copy(transport_params.μlist)
 
-        # Compute chemical potential
-        bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
-        μlist_qme = copy(transport_params.μlist)
+            # Compute scattering matrix
+            S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
-        # Compute scattering matrix
-        S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+            # Solve QME and compute mobility
+            out_qme[random_gauge] = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; filename, symmetry)
+        end
 
-        # Solve QME and compute mobility
-        out_qme[random_gauge] = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; filename, symmetry)
+        @test out_qme[true].σ_serta ≈ out_qme[false].σ_serta
+        @test out_qme[true].σ ≈ out_qme[false].σ
     end
-
-    @test out_qme[true].σ_serta ≈ out_qme[false].σ_serta
-    @test out_qme[true].σ ≈ out_qme[false].σ
 end
