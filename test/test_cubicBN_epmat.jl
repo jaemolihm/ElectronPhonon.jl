@@ -43,7 +43,7 @@ using EPW
         EPW.copyto!(epdata.el_k, el_k)
         EPW.copyto!(epdata.el_kq, el_kq)
 
-        @info model.epmat_outer_momentum
+        @info "$(typeof(model)), epmat_outer_momentum = $(model.epmat_outer_momentum)"
         if model.epmat_outer_momentum == "ph"
             epobj_eRpq = WannierObject(model.epmat.irvec_next,
                         zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))

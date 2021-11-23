@@ -43,9 +43,9 @@ using LinearAlgebra
     filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
     @test output.qpts.n == 723
 
-    transport_params = ElectronTransportParams{Float64}(
+    transport_params = ElectronTransportParams(
         Tlist = Tlist,
-        n = 4,
+        n = 4.,
         smearing = (:Gaussian, 50.0 * unit_to_aru(:meV)),
         nband_valence = 0,
         volume = model_el.volume,
@@ -104,9 +104,9 @@ end
     smearing = (:Gaussian, 50.0 * unit_to_aru(:meV))
     energy_conservation = (:Fixed, 10 * 50.0 * EPW.unit_to_aru(:meV))
 
-    transport_params = ElectronTransportParams{Float64}(
+    transport_params = ElectronTransportParams(
         Tlist = Tlist,
-        n = 4,
+        n = 4.,
         smearing = (:Gaussian, 50.0 * unit_to_aru(:meV)),
         nband_valence = 0,
         volume = model.volume,

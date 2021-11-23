@@ -45,7 +45,7 @@ using EPW
     nklist = (15, 15, 15)
     nqlist = (15, 15, 15)
 
-    transport_params = ElectronTransportParams{Float64}(
+    transport_params = ElectronTransportParams(
         Tlist = Tlist,
         n = -1.0e15 * model.volume / unit_to_aru(:cm)^3,
         volume = model.volume,
@@ -111,9 +111,9 @@ end
     nklist = (10, 10, 10)
     nqlist = (10, 10, 10)
 
-    transport_params = ElectronTransportParams{Float64}(
+    transport_params = ElectronTransportParams(
         Tlist = Tlist,
-        n = 4,
+        n = 4.0,
         volume = model.volume,
         smearing = (:Gaussian, smearing),
         nband_valence = 0,

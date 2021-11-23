@@ -26,7 +26,7 @@ using HDF5
         nklist = (15, 15, 15)
         nqlist = (15, 15, 15)
 
-        transport_params = ElectronTransportParams{Float64}(
+        transport_params = ElectronTransportParams(
             Tlist = Tlist,
             n = 1.0e20 * model.volume / unit_to_aru(:cm)^3,
             volume = model.volume,
@@ -131,7 +131,7 @@ using HDF5
         window_k  = window
         window_kq = window
 
-        transport_params = ElectronTransportParams{Float64}(
+        transport_params = ElectronTransportParams(
             Tlist = Tlist,
             n = -1.0e21 * model.volume / unit_to_aru(:cm)^3,
             smearing = smearing,
@@ -211,7 +211,7 @@ end
         # Disable symmetry because symmetry is not yet implemented in QME
         symmetry = nothing
 
-        transport_params = ElectronTransportParams{Float64}(
+        transport_params = ElectronTransportParams(
             Tlist = Tlist,
             n = 1.0e20 * model.volume / unit_to_aru(:cm)^3,
             volume = model.volume,
@@ -297,7 +297,7 @@ end
         window_k  = window
         window_kq = window
 
-        transport_params = ElectronTransportParams{Float64}(
+        transport_params = ElectronTransportParams(
             Tlist = Tlist,
             n = -1.0e21 * model.volume / unit_to_aru(:cm)^3,
             smearing = smearing,

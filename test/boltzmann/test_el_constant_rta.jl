@@ -38,7 +38,7 @@ using LinearAlgebra
             energy_conservation = energy_conservation,
         )
 
-        transport_params = ElectronTransportParams{Float64}(
+        transport_params = ElectronTransportParams(
             Tlist = Tlist,
             n = 1.0e20 * model_el.volume / unit_to_aru(:cm)^3,
             volume = model_el.volume,
@@ -90,7 +90,7 @@ using LinearAlgebra
             energy_conservation = energy_conservation,
         )
 
-        transport_params = ElectronTransportParams{Float64}(
+        transport_params = ElectronTransportParams(
             Tlist = Tlist,
             n = -1.0e21 * model_el.volume / unit_to_aru(:cm)^3,
             smearing = smearing,

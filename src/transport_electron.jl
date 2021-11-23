@@ -31,7 +31,7 @@ Base.@kwdef struct ElectronTransportParams{T <: Real}
     volume::T
     smearing::Tuple{Symbol, T}
     spin_degeneracy::Int
-    μlist::Vector{T} = fill(T(NaN), length(Tlist))
+    μlist::Vector{T} = fill(convert(eltype(Tlist), NaN), length(Tlist))
     type::Symbol = abs(n) >= 1 ? :Metal : :Semiconductor
 end
 

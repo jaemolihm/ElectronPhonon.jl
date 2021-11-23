@@ -40,7 +40,7 @@ using LinearAlgebra
             energy_conservation = energy_conservation,
         )
 
-        transport_params = ElectronTransportParams{Float64}(
+        transport_params = ElectronTransportParams(
             Tlist = Tlist,
             n = 1.0e20 * model_el.volume / unit_to_aru(:cm)^3,
             volume = model_el.volume,
@@ -60,7 +60,7 @@ using LinearAlgebra
         _, mobility = transport_print_mobility(σ, transport_params, do_print=false)
 
         # Comparison with SERTA transport module (the non-Boltzmann one)
-        transport_params_serta = ElectronTransportParams{Float64}(
+        transport_params_serta = ElectronTransportParams(
             Tlist = transport_params.Tlist,
             n = transport_params.n,
             smearing = (:Gaussian, transport_params.smearing[2]),
@@ -113,7 +113,7 @@ using LinearAlgebra
         # FIXME: Here symmetry is not used (use_irr_k = false) because it changes the result a lot.
         #        Maybe symmetry is broken for e-ph coupling matrix elements.
 
-        transport_params = ElectronTransportParams{Float64}(
+        transport_params = ElectronTransportParams(
             Tlist = Tlist,
             n = -1.0e21 * model_el.volume / unit_to_aru(:cm)^3,
             smearing = smearing,
@@ -133,7 +133,7 @@ using LinearAlgebra
         _, mobility = transport_print_mobility(σ, transport_params, do_print=false)
 
         # Comparison with SERTA transport module (the non-Boltzmann one)
-        transport_params_serta = ElectronTransportParams{Float64}(
+        transport_params_serta = ElectronTransportParams(
             Tlist = transport_params.Tlist,
             n = transport_params.n,
             smearing = (:Gaussian, transport_params.smearing[2]),
@@ -163,7 +163,7 @@ using LinearAlgebra
         window_k  = (15.0, 15.8) .* unit_to_aru(:eV)
         window_kq = (15.0, 16.0) .* unit_to_aru(:eV)
 
-        transport_params = ElectronTransportParams{Float64}(
+        transport_params = ElectronTransportParams(
             Tlist = Tlist,
             n = 1.0e20 * model_el.volume / unit_to_aru(:cm)^3,
             volume = model_el.volume,
@@ -259,7 +259,7 @@ end
         )
         filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
 
-        transport_params = ElectronTransportParams{Float64}(
+        transport_params = ElectronTransportParams(
             Tlist = Tlist,
             n = 1.0e20 * model.volume / unit_to_aru(:cm)^3,
             volume = model.volume,
@@ -353,7 +353,7 @@ end
         )
         filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
 
-        transport_params = ElectronTransportParams{Float64}(
+        transport_params = ElectronTransportParams(
             Tlist = Tlist,
             n = -1.0e15 * model.volume / unit_to_aru(:cm)^3,
             smearing = smearing,
