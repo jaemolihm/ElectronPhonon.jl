@@ -279,6 +279,11 @@ Base.iterate(sym::Symmetry, state=1) = state > sym.nsym ? nothing : (sym[state],
 Base.length(sym::Symmetry) = sym.nsym
 Base.keys(sym::Symmetry) = LinearIndices(1:sym.nsym)
 
+"""Create symmetry object containing only identity"""
+function identity_symmetry(::Type{FT}) where FT
+    Symmetry(1, [Mat3{Int}(I)], [zeros(Vec3{FT})], [Mat3{FT}(I)], [zeros(Vec3{FT})], [false], [false], false)
+end
+
 # Check whether sym1 is a subset of sym2
 function symmetry_is_subset(sym1, sym2)
     for s1 in sym1

@@ -20,7 +20,7 @@ function occupation_to_conductivity(δf::Vector{Vec3{FT}}, el, params) where {FT
 end
 
 """
-    compute_bte_scattering_matrix(filename, params, FT=Float64)
+    compute_bte_scattering_matrix(filename, params, recip_lattice)
 Construct BTE scattering-in matrix: S_{ind_i <- ind_f}. [Eq. (41) of Ponce et al (2020)]
 bte_scat_mat[ind_i, ind_f] = S_{ind_i <- ind_f}
 S_{i<-f} = 2π * ∑_{nu} |g_{fi,p}|^2 [(n_p + 1 - f_i) * δ(e_f - e_i - ω_p) + (n_p + f_i) * δ(e_f - e_i + ω_p)]
@@ -78,9 +78,6 @@ Solve Boltzmann transport equation for electrons.
 ``δf_i[i] = scat_mat[i, j] * δf_f[j] / inv_τ_i[i] + δf_i_serta[i]``
 scat_mat is a rectangular matrix, mapping states in `el_f` to states in `el_i`.
 δf[j] is the occupations for states `el_f` and is calculated by unfolding `δf_i`.
-
-TODO: Currently, only works if el_i and el_f are on the same grid (same ngrid, same shift).
-      To fix this, unfolding + interpolation is needed.
 """
 function solve_electron_bte(el_i::EPW.BTStates{FT}, el_f::EPW.BTStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; max_iter=100, rtol=1e-10) where {FT}
     output = (σ_serta = zeros(FT, 3, 3, length(params.Tlist)),
@@ -89,13 +86,7 @@ function solve_electron_bte(el_i::EPW.BTStates{FT}, el_f::EPW.BTStates{FT}, scat
               δf_i = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
     )
 
-    if symmetry === nothing
-        # FIXME: no symmetry but different grid
-        @assert el_i.n == el_f.n
-        map_i_to_f = I(el_i.n)
-    else
-        map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
-    end
+    map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
 
     for iT in 1:length(params.Tlist)
         μ = params.μlist[iT]
@@ -142,7 +133,7 @@ For the unfolded states, `indmap[(xk_int..., iband)] = i` holds.
 function unfold_data_map(state::EPW.BTStates{FT}, symmetry) where {FT}
     inds_i = Int[]
     inds_unfold = Int[]
-    values = Mat3{Float64}[]
+    values = Mat3{FT}[]
 
     indmap = Dictionary{CI{4}, Int}()
     ngrid = state.ngrid
@@ -175,6 +166,21 @@ function unfold_data_map(state::EPW.BTStates{FT}, symmetry) where {FT}
     sparse(inds_unfold, inds_i, values), indmap
 end
 
+function unfold_data_map(state::EPW.BTStates{FT}, ::Nothing) where {FT}
+    # Special case where no symmetry is used. Unfolding matrix is identity.
+    # One just needs to compute indmap.
+    indmap = Dictionary{CI{4}, Int}()
+    ngrid = state.ngrid
+    for i in 1:state.n
+        # FIXME: using shift in xk
+        xk = state.xks[i]
+        xk_int = mod.(round.(Int, xk .* ngrid), ngrid)
+        iband = state.iband[i]
+        key = CI(xk_int.data..., iband)
+        insert!(indmap, key, i)
+    end
+    I(state.n), indmap
+end
 
 """
     vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry) -> map_i_to_f
@@ -184,13 +190,13 @@ polar (i.e. not a pseudovector) and even under time reversal.
 For vector fields ``f_i`` and ``f_f`` (defined on `el_i` and `el_f`, respectively),
 ``f_f = map_i_to_f * f_i`` holds.
 """
-function vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
+function vector_field_unfold_and_interpolate_map(el_i::EPW.BTStates{FT}, el_f, symmetry) where FT
     map_unfold, indmap_unfold = unfold_data_map(el_i, symmetry)
 
     ranges = map(n -> range(0, 1, length=n+1)[1:end-1], el_i.ngrid)
     inds_f = Int[]
     inds_unfold = Int[]
-    weights_all = Float64[]
+    weights_all = FT[]
 
     for i_f in 1:el_f.n
         xk = el_f.xks[i_f]
