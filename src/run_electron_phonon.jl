@@ -121,7 +121,7 @@ function run_eph_outer_loop_q(
     end
 
     omega_save = zeros(nmodes, nq)
-    ph = PhononState(FT, nmodes)
+    ph = PhononState(nmodes, FT)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epobj_eRpq = WannierObject(model.epmat.irvec_next,

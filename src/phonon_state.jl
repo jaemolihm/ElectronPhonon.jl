@@ -30,9 +30,7 @@ function PhononState{T}(nmodes) where {T}
     )
 end
 
-
-# TODO: Remove this function, use the parametric one.
-PhononState(T, nmodes) = PhononState{T}(nmodes)
+PhononState(nmodes, ::Type{FT}=Float64) where FT = PhononState{FT}(nmodes)
 
 function Base.copyto!(dest::PhononState, src::PhononState)
     if dest.nmodes < src.nmodes

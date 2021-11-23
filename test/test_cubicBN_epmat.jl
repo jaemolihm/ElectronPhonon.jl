@@ -25,7 +25,7 @@ using EPW
     nband_ignore = 1
 
     # setup electron and phonon states
-    ph = PhononState(Float64, nmodes)
+    ph = PhononState(nmodes)
     el_k = ElectronState(nw; nband_bound=nband, nband_ignore)
     el_kq = ElectronState(nw; nband_bound=nband, nband_ignore)
     set_eigen!(el_k, model_ph, xk)
