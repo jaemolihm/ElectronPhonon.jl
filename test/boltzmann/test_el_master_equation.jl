@@ -8,6 +8,7 @@ using HDF5
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder, epmat_outer_momentum="el")
+    model.el_velocity_mode = :BerryConnection
 
     # temporary directory to store output data file
     tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")

@@ -44,7 +44,7 @@ Base.@kwdef mutable struct ModelEPW{FT <: AbstractFloat, WannType <: AbstractWan
     el_ham_R::WannierObject{FT} # Electron Hamiltonian times R
     el_pos::WannierObject{FT} # Electron position (dipole)
     el_vel::Union{WannierObject{FT},Nothing} # ELectron velocity matrix
-    el_velocity_mode::Symbol # :Direct or :BerryConnection.
+    el_velocity_mode::Symbol # :Direct or :BerryConnection. Default: :Direct
     # Two different ways to compute the velocity matrix.
     # If :Direct, use direct interpolation of dH/dk matrix elements (stored in el_vel).
     # If :BerryConnection, compute the Berry connection using el_pos and use Eq. (31) of
@@ -69,13 +69,13 @@ end
 "Read file and create ModelEPW object in the MPI root.
 Broadcast to all other processors."
 function load_model(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing;
-        epmat_outer_momentum="ph", load_symmetry_operators=false, el_velocity_mode=:BerryConnection)
+        epmat_outer_momentum="ph", load_symmetry_operators=false)
     # Read model from file
     if mpi_initialized()
         # FIXME: Read only in the root core, and then bcast.
         # The implementation below breaks if epmat size is large. MPI bcast of large array
         # with sizeof(array) is greater than typemax(Cint) was not possible.
-        model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators, el_velocity_mode)
+        model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators)
         # if mpi_isroot(EPW.mpi_world_comm())
         #     model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
         # else
@@ -84,7 +84,7 @@ function load_model(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing;
         # # Broadcast to all processors
         # model = mpi_bcast(model, EPW.mpi_world_comm())
     else
-        model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators, el_velocity_mode)
+        model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators)
     end
     model
 end
@@ -100,7 +100,7 @@ epmat_outer_momentum
     Outer momentum that model.epmat couples to. "ph" (default) or "el".
 """
 function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing;
-        epmat_outer_momentum, load_symmetry_operators, el_velocity_mode=:BerryConnection)
+        epmat_outer_momentum, load_symmetry_operators)
     T = Float64
 
     if epmat_on_disk && tmpdir === nothing
@@ -108,9 +108,6 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     end
     if epmat_outer_momentum ∉ ["ph", "el"]
         error("epmat_outer_momentum must be ph or el.")
-    end
-    if el_velocity_mode ∉ [:Direct, :BerryConnection]
-        error("el_velocity_mode must be :Direct or :BerryConnection")
     end
 
     # Read binary data written by EPW and create ModelEPW object
@@ -290,8 +287,10 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         vel = vel[:, :, :, ind_el]
         vel2 = permutedims(vel, [2, 3, 1, 4])
         el_vel = WannierObject(irvec_el, reshape(vel2, (nw*nw*3, nr_el)))
+        el_velocity_mode = :Direct
     else
         el_vel = nothing
+        el_velocity_mode = :BerryConnection
     end
 
     if epmat_on_disk

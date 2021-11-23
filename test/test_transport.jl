@@ -33,6 +33,7 @@ using EPW
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder)
+    model.el_velocity_mode = :BerryConnection
     # model_disk = load_model(folder, true, folder)
 
     Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)
@@ -100,6 +101,7 @@ end
     folder = joinpath(BASE_FOLDER, "test", "data_Pb")
 
     model = load_model(folder)
+    model.el_velocity_mode = :BerryConnection
     # model_disk = load_model(folder, true, folder)
 
     Tlist = [100.0, 200.0, 300.0] .* unit_to_aru(:K)

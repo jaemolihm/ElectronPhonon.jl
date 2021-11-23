@@ -7,6 +7,7 @@ using LinearAlgebra
     folder = joinpath(BASE_FOLDER, "test", "data_Pb")
 
     model_el = load_model(folder, epmat_outer_momentum="el")
+    model_el.el_velocity_mode = :BerryConnection
 
     # temporary directory to store output data file
     tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
@@ -91,6 +92,7 @@ end
     folder = joinpath(BASE_FOLDER, "test", "data_Pb")
 
     model = load_model(folder, epmat_outer_momentum="el")
+    model.el_velocity_mode = :BerryConnection
 
     # temporary directory to store output data file
     tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
