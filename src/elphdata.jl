@@ -58,8 +58,7 @@ function ElPhData{T}(nw, nmodes, nband=nw, nband_ignore=0) where {T}
     )
 end
 
-# TODO: Remove and replace with above
-ElPhData(T, nw, nmodes, nband=nw, nband_ignore=0) = ElPhData{T}(nw, nmodes, nband, nband_ignore)
+ElPhData(nw, nmodes, ::Type{FT}=Float64; nband=nw, nband_ignore=0) where FT = ElPhData{FT}(nw, nmodes, nband, nband_ignore)
 
 # """
 #     apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)

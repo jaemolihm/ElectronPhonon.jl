@@ -71,7 +71,7 @@ function fourier_eph(model::EPW.ModelEPW, kpoints::EPW.Kpoints,
     elself = ElectronSelfEnergy(Float64, nw, nmodes, nk)
     phself = PhononSelfEnergy(Float64, nw, nmodes, nq)
 
-    epdatas = [ElPhData(Float64, nw, nmodes) for i=1:nthreads()]
+    epdatas = [ElPhData(nw, nmodes) for i=1:nthreads()]
 
     # Compute electron eigenvectors at k
     ek_save = zeros(Float64, nw, nk)

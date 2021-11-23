@@ -38,7 +38,7 @@ using EPW
     ep_ref = zeros(ComplexF64, (nband, nband, nmodes))
 
     for (i, model) in enumerate([model_ph, model_ph_disk, model_el, model_el_disk])
-        epdata = ElPhData(Float64, nw, nmodes, nband, nband_ignore)
+        epdata = ElPhData(nw, nmodes; nband, nband_ignore)
         EPW.copyto!(epdata.ph, ph)
         EPW.copyto!(epdata.el_k, el_k)
         EPW.copyto!(epdata.el_kq, el_kq)

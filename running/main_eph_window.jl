@@ -42,7 +42,7 @@ addprocs(manager)
         elself = ElectronSelfEnergy(Float64, nband, nmodes, nk)
         phselfs = [PhononSelfEnergy(Float64, nband, nmodes, nq) for i=1:nthreads()]
 
-        epdatas = [ElPhData(Float64, nw, nmodes, nband) for i=1:nthreads()]
+        epdatas = [ElPhData(nw, nmodes; nband) for i=1:nthreads()]
         for epdata in epdatas
             epdata.iband_offset = iband_min - 1
         end

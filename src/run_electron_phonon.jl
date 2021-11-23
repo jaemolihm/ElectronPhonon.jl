@@ -80,7 +80,7 @@ function run_eph_outer_loop_q(
     nband = iband_max - iband_min + 1
     nband_ignore = iband_min - 1
 
-    epdatas = [ElPhData(FT, nw, nmodes, nband, nband_ignore) for i=1:Threads.nthreads()]
+    epdatas = [ElPhData(nw, nmodes, FT; nband, nband_ignore) for i=1:Threads.nthreads()]
 
     # Initialize data structs
     if compute_elself
