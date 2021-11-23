@@ -7,7 +7,7 @@ using HDF5
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
-    model = load_model(folder, epmat_outer_momentum="el")
+    model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
     model.el_velocity_mode = :BerryConnection
 
     # temporary directory to store output data file
@@ -20,9 +20,8 @@ using HDF5
 
     @testset "electron doping" begin
         energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
-        window = (15.0, 16.0) .* unit_to_aru(:eV)
-        window_k  = window
-        window_kq = window
+        window_k  = (15.0, 16.0) .* unit_to_aru(:eV)
+        window_kq = (15.0, 16.2) .* unit_to_aru(:eV)
 
         nklist = (15, 15, 15)
         nqlist = (15, 15, 15)
@@ -36,71 +35,72 @@ using HDF5
             spin_degeneracy = 2
         )
 
-        # Disable symmetry because symmetry is not yet implemented in QME
-        symmetry = nothing
+        for use_irr_k in [false, true]
+            symmetry = use_irr_k ? model.el_sym.symmetry : nothing
 
-        # Calculate matrix elements
-        @time EPW.run_transport(
-            model, nklist, nqlist,
-            fourier_mode = "gridopt",
-            folder = tmp_dir,
-            window_k  = window_k,
-            window_kq = window_kq,
-            energy_conservation = energy_conservation,
-            use_irr_k = false,
-            average_degeneracy = false,
-            run_for_qme = true,
-        )
+            # Calculate matrix elements
+            @time EPW.run_transport(
+                model, nklist, nqlist,
+                fourier_mode = "gridopt",
+                folder = tmp_dir,
+                window_k  = window_k,
+                window_kq = window_kq,
+                energy_conservation = energy_conservation,
+                use_irr_k = use_irr_k,
+                average_degeneracy = false,
+                run_for_qme = true,
+            )
 
-        filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
-        fid = h5open(filename, "r")
-        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
-        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
-        ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
-        close(fid)
+            filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
+            fid = h5open(filename, "r")
+            el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
+            el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
+            ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
+            close(fid)
 
-        # Compute chemical potential
-        bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
-        μlist_qme = copy(transport_params.μlist)
+            # Check that all bands are non-degenerate
+            @test all(el_i.ib1 .== el_i.ib2)
 
-        # Compute scattering matrix
-        S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+            # Compute chemical potential
+            bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
+            μlist_qme = copy(transport_params.μlist)
 
-        # Solve QME and compute mobility
-        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; symmetry, filename)
-        _, mobility_qme_serta_SI = transport_print_mobility(out_qme.σ_serta, transport_params, do_print=false);
-        _, mobility_qme_iter_SI = transport_print_mobility(out_qme.σ, transport_params, do_print=false);
+            # Compute scattering matrix
+            S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
-        # For electron-doped BN, there is only 1 band, so the result is identical to BTE
-        # Calculate matrix elements
-        @time EPW.run_transport(
-            model, nklist, nqlist,
-            fourier_mode = "gridopt",
-            folder = tmp_dir,
-            window_k  = window_k,
-            window_kq = window_kq,
-            use_irr_k = false,
-            energy_conservation = energy_conservation,
-        )
-        filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
+            # Solve QME and compute mobility
+            out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; symmetry, filename)
 
-        output_serta = EPW.run_serta(filename_btedata, transport_params, symmetry, model.recip_lattice);
+            # For electron-doped BN, there is only 1 band, so the result is identical to BTE
+            # Calculate matrix elements
+            @time EPW.run_transport(
+                model, nklist, nqlist,
+                fourier_mode = "gridopt",
+                folder = tmp_dir,
+                window_k  = window_k,
+                window_kq = window_kq,
+                use_irr_k = use_irr_k,
+                symmetry = symmetry, # Need to explicit set because we cannot use time-reversal in QME, but BTE uses it by default
+                energy_conservation = energy_conservation,
+            )
+            filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
 
-        # LBTE
-        bte_scat_mat, el_i_bte, el_f_bte, ph_bte = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
-        inv_τ = output_serta.inv_τ;
-        output_lbte = EPW.solve_electron_bte(el_i_bte, el_f_bte, bte_scat_mat, inv_τ, transport_params, symmetry)
-        _, mobility_bte_serta_SI = transport_print_mobility(output_lbte.σ_serta, transport_params, do_print=false);
-        _, mobility_bte_iter_SI = transport_print_mobility(output_lbte.σ, transport_params, do_print=false);
+            output_serta = EPW.run_serta(filename_btedata, transport_params, symmetry, model.recip_lattice);
 
-        # Test QME and BTE result is identical (because there is only one band)
-        @test el_i.nband == 1
-        @test all(el_i.ib1 .== 1)
-        @test all(el_i.ib2 .== 1)
-        @test μlist_qme ≈ transport_params.μlist
-        @test mobility_qme_serta_SI ≈ output_serta.mobility_SI
-        @test mobility_qme_serta_SI ≈ mobility_bte_serta_SI
-        @test mobility_qme_iter_SI ≈ mobility_bte_iter_SI
+            # LBTE
+            bte_scat_mat, el_i_bte, el_f_bte, ph_bte = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
+            inv_τ = output_serta.inv_τ;
+            output_lbte = EPW.solve_electron_bte(el_i_bte, el_f_bte, bte_scat_mat, inv_τ, transport_params, symmetry)
+
+            # Test QME and BTE result is identical (because there is only one band)
+            @test el_i.nband == 1
+            @test all(el_i.ib1 .== 1)
+            @test all(el_i.ib2 .== 1)
+            @test μlist_qme ≈ transport_params.μlist
+            @test out_qme.σ_serta ≈ output_serta.σ rtol=1e-6
+            @test out_qme.σ_serta ≈ output_lbte.σ_serta rtol=1e-6
+            @test out_qme.σ ≈ output_lbte.σ rtol=1e-6
+        end
     end
 
     @testset "hole doping" begin
