@@ -47,8 +47,8 @@ function ElPhData{T}(nw, nmodes, nband=nw, nband_ignore=0) where {T}
     @assert nband + nband_ignore <= nw
 
     ElPhData{T}(nw=nw, nmodes=nmodes, nband=nband, wtk=T(0), wtq=T(0),
-        el_k=ElectronState(T, nw, nband, nband_ignore),
-        el_kq=ElectronState(T, nw, nband, nband_ignore),
+        el_k=ElectronState(nw, T; nband_bound=nband, nband_ignore),
+        el_kq=ElectronState(nw, T; nband_bound=nband, nband_ignore),
         ph=PhononState(T, nmodes),
         mmat=Matrix{Complex{T}}(undef, nband, nband),
         ep=Array{Complex{T}, 3}(undef, nband, nband, nmodes),

@@ -59,8 +59,7 @@ function ElectronState{T}(nw, nband_bound=nw, nband_ignore=0) where {T}
     )
 end
 
-# TODO: Remove this function, use the parametric one.
-ElectronState(::Type{FT}, nw, nband_bound=nw, nband_ignore=0) where FT = ElectronState{FT}(nw, nband_bound, nband_ignore)
+ElectronState(nw, ::Type{FT}=Float64; nband_bound=nw, nband_ignore=0) where FT = ElectronState{FT}(nw, nband_bound, nband_ignore)
 
 """ get_u(el)
 Return eigenvector for bands inside the window."""

@@ -20,7 +20,7 @@ Loop over k and q points to compute e-ph related quantities.
 - `k_input`, `q_input`: either a 3-element tuple (n1, n2, n3) or a Kpoints object.
 """
 function run_eph_outer_loop_q(
-        model::EPW.ModelEPW,
+        model::EPW.ModelEPW{FT},
         k_input::Union{NTuple{3,Int}, EPW.Kpoints},
         q_input::Union{NTuple{3,Int}, EPW.Kpoints};
         mpi_comm_k=nothing,
@@ -31,7 +31,7 @@ function run_eph_outer_loop_q(
         phself_params=nothing::Union{Nothing,PhononSelfEnergyParams},
         phspec_params=nothing::Union{Nothing,PhononSpectralParams},
         transport_params=nothing::Union{Nothing,ElectronTransportParams},
-    )
+    ) where FT
 
     if model.epmat_outer_momentum != "ph"
         throw(ArgumentError("model.epmat_outer_momentum must be ph"))
@@ -80,27 +80,27 @@ function run_eph_outer_loop_q(
     nband = iband_max - iband_min + 1
     nband_ignore = iband_min - 1
 
-    epdatas = [ElPhData(Float64, nw, nmodes, nband, nband_ignore) for i=1:Threads.nthreads()]
+    epdatas = [ElPhData(FT, nw, nmodes, nband, nband_ignore) for i=1:Threads.nthreads()]
 
     # Initialize data structs
     if compute_elself
-        elself = ElectronSelfEnergy(Float64, nband, nmodes, nk, length(elself_params.Tlist))
+        elself = ElectronSelfEnergy(FT, nband, nmodes, nk, length(elself_params.Tlist))
     end
     if compute_phself
-        phselfs = [PhononSelfEnergy(Float64, nband, nmodes, nq,
+        phselfs = [PhononSelfEnergy(FT, nband, nmodes, nq,
             length(phself_params.Tlist)) for i=1:Threads.nthreads()]
     end
     if compute_phspec
         phspecs = [PhononSpectralData(phspec_params, nmodes, nq) for i=1:Threads.nthreads()]
     end
     if compute_transport
-        transport_serta = TransportSERTA(Float64, nband, nmodes, nk,
+        transport_serta = TransportSERTA(FT, nband, nmodes, nk,
             length(transport_params.Tlist))
     end
 
     # Compute and save electron state at k
-    el_k_save = [ElectronState(Float64, nw, nband, nband_ignore) for ik=1:nk]
-    ek_full_save = zeros(Float64, nw, nk)
+    el_k_save = [ElectronState(nw, FT; nband_bound=nband, nband_ignore) for ik=1:nk]
+    ek_full_save = zeros(FT, nw, nk)
 
     Threads.@threads :static for ik in 1:nk
         xk = kpoints.vectors[ik]
@@ -121,7 +121,7 @@ function run_eph_outer_loop_q(
     end
 
     omega_save = zeros(nmodes, nq)
-    ph = PhononState(Float64, nmodes)
+    ph = PhononState(FT, nmodes)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epobj_eRpq = WannierObject(model.epmat.irvec_next,

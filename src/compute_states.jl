@@ -15,7 +15,7 @@ function compute_electron_states(model, kpts, quantities, window, nband, nband_i
     end
     nw = model.nw
 
-    states = [ElectronState(Float64, nw, nband, nband_ignore) for ik=1:kpts.n]
+    states = [ElectronState(nw; nband_bound=nband, nband_ignore) for ik=1:kpts.n]
     if quantities == []
         return states
     end
