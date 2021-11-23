@@ -109,6 +109,7 @@ function solve_electron_bte(el_i::EPW.BTStates{FT}, el_f::EPW.BTStates{FT}, scat
         for iter in 1:max_iter
             σ_old = σ
 
+            # TODO: (scat_mat[iT] * map_i_to_f) always occur together. Do this outside of loop?
             # Unfold from δf_i to δf_f
             δf_f = map_i_to_f * δf_i
 
@@ -205,10 +206,11 @@ function vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
                     push!(weights_all, weight)
                 end
             else
-                if weight > 1e-13
-                    @show xk, key, weight
-                end
-                @assert weight < 1e-13
+                # Interpolation point for state at el_f not found in el_i.
+                # This may happen when using a different window for el_i and el_f, or due to
+                # slight breaking of symmetry.
+                # We ignore this case, assuming that the vector field is zero for states
+                # not included in el_i.
             end
         end
     end
