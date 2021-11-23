@@ -84,3 +84,59 @@ using LinearAlgebra
         @test dropdims(sum(Σ_tdf, dims=1), dims=1) .* (elist[2] - elist[1]) ≈ output_serta.σ
     end
 end
+
+# Test LBTE where window_k and window_kq are different
+@testset "Transport electron metal window" begin
+    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    folder = joinpath(BASE_FOLDER, "test", "data_Pb")
+
+    model = load_model(folder, epmat_outer_momentum="el")
+
+    # temporary directory to store output data file
+    tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
+    mkpath(tmp_dir)
+
+    # Parameters
+    e_fermi = 11.594123 * EPW.unit_to_aru(:eV)
+    window_k  = (-0.3, 0.3) .* unit_to_aru(:eV) .+ e_fermi
+    window_kq = (-0.5, 0.5) .* unit_to_aru(:eV) .+ e_fermi
+    Tlist = [100.0, 200.0, 300.0] .* unit_to_aru(:K)
+    smearing = (:Gaussian, 50.0 * unit_to_aru(:meV))
+    energy_conservation = (:Fixed, 10 * 50.0 * EPW.unit_to_aru(:meV))
+
+    transport_params = ElectronTransportParams{Float64}(
+        Tlist = Tlist,
+        n = 4,
+        smearing = (:Gaussian, 50.0 * unit_to_aru(:meV)),
+        nband_valence = 0,
+        volume = model.volume,
+        spin_degeneracy = 2
+    )
+
+    nklist = (10, 10, 10)
+    nqlist = (10, 10, 10)
+
+    # Check whether conductivity with and without symmetry are the same
+    output_bte = Dict()
+    for (use_irr_k, symmetry, key) in zip([false, true], [nothing, model.symmetry], ["nosym", "sym"])
+        output = EPW.run_transport(
+            model, nklist, nqlist,
+            fourier_mode = "gridopt",
+            folder = tmp_dir,
+            window_k  = window_k,
+            window_kq = window_kq,
+            use_irr_k = use_irr_k,
+            energy_conservation = energy_conservation,
+            average_degeneracy = true,
+        )
+        filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
+
+        output_serta = EPW.run_serta(filename_btedata, transport_params, symmetry, model.recip_lattice)
+        bte_scat_mat, el_i, el_f, ph = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice)
+        inv_τ = output_serta.inv_τ
+        output_bte[key] = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, symmetry)
+    end
+
+    @test all(isapprox.(output_bte["sym"].σ_serta, output_bte["nosym"].σ_serta, atol=1e-6))
+    @test all(isapprox.(output_bte["sym"].σ, output_bte["nosym"].σ, atol=1e-6))
+end

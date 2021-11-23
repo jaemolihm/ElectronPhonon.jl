@@ -221,7 +221,7 @@ function vector_field_unfold_and_interpolate_map(el_i::EPW.BTStates{FT}, el_f, s
             end
         end
     end
-    map_interpolate = sparse(inds_f, inds_unfold, weights_all)
+    map_interpolate = sparse(inds_f, inds_unfold, weights_all, el_f.n, size(map_unfold, 1))
 
     map_interpolate * map_unfold
 end
