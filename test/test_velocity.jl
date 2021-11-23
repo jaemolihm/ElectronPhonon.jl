@@ -25,7 +25,7 @@ using Test
     # Test diagonal-only calculation for Berry connection method gives the same results with
     # the full velocity matrix calculation.
     # There is no special function for diagonal-only calculation using the direct method, so no test.
-    velocity_diag = zeros(Float64, 3, model.nw)
+    velocity_diag = zeros(3, model.nw)
     for ik in 1:kpts.n
         uk = get_u(els_berry[ik])
         xk = kpts.vectors[ik]

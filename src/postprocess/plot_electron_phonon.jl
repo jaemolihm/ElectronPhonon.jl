@@ -30,15 +30,15 @@ function plot_electron_phonon_deformation_potential(model, xk=Vec3(0., 0., 0.);
     kqpts = Kpoints(xkq)
     nq = qpts.n
 
-    deformation_potential = zeros(Float64, nmodes, nq)
-    e_ph = zeros(Float64, nmodes, nq)
+    deformation_potential = zeros(nmodes, nq)
+    e_ph = zeros(nmodes, nq)
 
     el_k_save = compute_electron_states(model, kpts, ["eigenvector"]; fourier_mode)
     el_kq_save = compute_electron_states(model, kqpts, ["eigenvector"]; fourier_mode)
     ph_save = compute_phonon_states(model, qpts, ["eigenvector", "eph_dipole_coeff"]; fourier_mode)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdata = ElPhData{Float64}(nw, nmodes)
+    epdata = ElPhData(nw, nmodes)
     epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
 
     ik = 1

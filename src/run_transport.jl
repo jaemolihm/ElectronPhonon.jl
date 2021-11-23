@@ -13,7 +13,7 @@ using HDF5
 - `qme_offdiag_cutoff`: Maximum interband energy difference to include the off-diagonal part. Used only if `run_for_qme`==true.
 """
 function run_transport(
-        model::ModelEPW,
+        model::ModelEPW{FT},
         k_input::Union{NTuple{3,Int}, AbstractKpoints},
         q_input::Union{NTuple{3,Int}, AbstractKpoints};
         mpi_comm_k=nothing,
@@ -30,8 +30,7 @@ function run_transport(
         qme_offdiag_cutoff=EPW.electron_degen_cutoff,
         symmetry = nothing,
         kwargs...
-    )
-    FT = Float64
+    ) where FT
     """
     The q point grid must be a multiple of the k point grid. If so, the k+q points lie on
     the same grid as the q points.
@@ -60,7 +59,7 @@ function run_transport(
         kgrid != qgrid && error("for run_for_qme==true, kgrid and qgrid must be the same (otherwise not implemented)")
         use_irr_k && model.el_sym === nothing && error("for run_for_qme=true and use_irr_k=true, model.el_sym must be set. (Pass load_symmetry_operators=true to load_model).")
         shift_q != (0, 0, 0) && error("for run_for_qme==true, shift_q not implemented")
-        all(window_k .≈ window_kq) || error("for run_for_qme==true, window_k and window_kq must be the same (otherwise not implemented")
+        # all(window_k .≈ window_kq) || error("for run_for_qme==true, window_k and window_kq must be the same (otherwise not implemented")
     end
 
     if use_irr_k && symmetry === nothing

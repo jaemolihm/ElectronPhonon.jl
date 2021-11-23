@@ -53,7 +53,7 @@ using LinearAlgebra
 
         bte_compute_μ!(transport_params, btmodel.el_i, do_print=false)
 
-        inv_τ = zeros(Float64, btmodel.el_i.n, length(transport_params.Tlist))
+        inv_τ = zeros(btmodel.el_i.n, length(transport_params.Tlist))
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
         σ = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
         σ = symmetrize_array(σ, model_el.symmetry, order=2)
@@ -126,7 +126,7 @@ using LinearAlgebra
 
         bte_compute_μ!(transport_params, btmodel.el_i, do_print=false)
 
-        inv_τ = zeros(Float64, btmodel.el_i.n, length(transport_params.Tlist))
+        inv_τ = zeros(btmodel.el_i.n, length(transport_params.Tlist))
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
         σ = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
         # σ = symmetrize_array(σ, model_el.symmetry, order=2)

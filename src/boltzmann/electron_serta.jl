@@ -333,9 +333,7 @@ end
 
 # Running SERTA mobility calculation
 # FIXME: remove recip_lattice argument (add it to transport_params?)
-function run_serta(filename, transport_params, symmetry, recip_lattice; do_print=false)
-    FT = Float64
-
+function run_serta(filename, transport_params, symmetry, recip_lattice, ::Type{FT}=Float64; do_print=false) where FT
     # Read btedata
     fid = h5open(filename, "r")
     el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{FT})
@@ -369,9 +367,7 @@ end
 
 # FIXME: qpts should be read from file
 # FIXME: remove recip_lattice argument (add it to transport_params?)
-function run_serta_subgrid(filename_original, filename_subgrid, transport_params, symmetry, qpts, recip_lattice; do_print=false)
-    FT = Float64
-
+function run_serta_subgrid(filename_original, filename_subgrid, transport_params, symmetry, qpts, recip_lattice, ::Type{FT}=Float64; do_print=false) where FT
     # Read original grid btedata
     fid = h5open(filename_original, "r")
     el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{FT})

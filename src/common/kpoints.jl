@@ -71,19 +71,19 @@ Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
 Return k points for global index in the given range.
 -`shift`: Shift for the grid in the crystal coordinates.
 """
-function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int}; shift=(0, 0, 0))
+function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int}, ::Type{FT}=Float64; shift=(0, 0, 0)) where FT
     # TODO: Type
     nk_grid = nk1 * nk2 * nk3
     @assert rng[1] >= 1
     @assert rng[end] <= nk_grid
-    kvecs = Vector{Vec3{Float64}}()
+    kvecs = Vec3{FT}[]
 
     for ik in rng
         # For (i, j, k), make k the fastest axis
         k = mod(ik-1, nk3)
         j = mod(div(ik-1 - k, nk3), nk2)
         i = mod(div(ik-1 - k - j*nk3, nk2*nk3), nk1)
-        push!(kvecs, Vec3{Float64}(i/nk1, j/nk2, k/nk3) .+ shift)
+        push!(kvecs, Vec3{FT}(i/nk1, j/nk2, k/nk3) .+ shift)
     end
     nk = length(kvecs)
     Kpoints(nk, kvecs, fill(1/nk_grid, (nk,)), (nk1, nk2, nk3))

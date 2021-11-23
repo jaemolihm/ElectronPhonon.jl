@@ -69,14 +69,14 @@ end
     @test symmetrize(1.0, symmetry, tr_odd=true, axial=true) == 0.0
 
     # Vector
-    v = Vec3{Float64}(1., 2., 3.)
+    v = Vec3(1., 2., 3.)
     @test symmetrize(v, symmetry) ≈ Vec3(2., 2., 2.)
     @test symmetrize(v, symmetry, tr_odd=true, axial=false) ≈ zero(v)
     @test symmetrize(v, symmetry, tr_odd=false, axial=true) ≈ zero(v)
     @test symmetrize(v, symmetry, tr_odd=true, axial=true) ≈ zero(v)
 
     # Matrix
-    m = Mat3{Float64}(rand(3, 3))
+    m = Mat3(rand(3, 3))
     m_sym = symmetrize(m, symmetry)
     for i = 1:3, j = 1:3
         if i == j
@@ -108,7 +108,7 @@ end
     # Axial vector
     Ss = [Mat3{Int}(I(3)), Mat3{Int}(-I(3))]
     symmetry = Symmetry(Ss, zeros(Vec3{Float64}, 2), true, lattice)
-    v = Vec3{Float64}(rand(3))
+    v = Vec3(rand(3))
     @test symmetrize(v, symmetry) ≈ zero(v)
     @test symmetrize(v, symmetry, axial=true) ≈ v
 end
