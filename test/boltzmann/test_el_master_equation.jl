@@ -66,7 +66,7 @@ using HDF5
         S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; symmetry)
+        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; symmetry, filename)
         _, mobility_qme_serta_SI = transport_print_mobility(out_qme.σ_serta, transport_params, do_print=false);
         _, mobility_qme_iter_SI = transport_print_mobility(out_qme.σ, transport_params, do_print=false);
 
@@ -174,7 +174,7 @@ using HDF5
         S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; symmetry)
+        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; symmetry, filename)
         _, mobility_qme_serta_SI = transport_print_mobility(out_qme.σ_serta, transport_params, do_print=false)
         _, mobility_qme_iter_SI = transport_print_mobility(out_qme.σ, transport_params, do_print=false);
 
@@ -248,7 +248,7 @@ end
         S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme_wo_symmetry = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in)
+        out_qme_wo_symmetry = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; filename)
 
         # Run with symmetry
         @time EPW.run_transport(
@@ -337,7 +337,7 @@ end
         S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme_wo_symmetry = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in)
+        out_qme_wo_symmetry = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; filename)
 
         # Run with symmetry
         @time EPW.run_transport(
@@ -382,4 +382,77 @@ end
         @test all(isapprox.(mobility_serta_w_sym, mobility_serta_wo_sym, atol=5.0))
         @test all(isapprox.(mobility_iter_w_sym, mobility_iter_wo_sym, atol=5.0))
     end
+end
+
+
+@testset "Transport electron QME gauge" begin
+    # Randomly perturb the gauge of eigenstates by setting the debugging flag
+    # DEBUG_random_gauge to true. And check that the result does not change.
+    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
+    model = load_model(folder, epmat_outer_momentum="el")
+
+    # temporary directory to store output data file
+    tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
+    mkpath(tmp_dir)
+
+    Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)
+    smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
+
+    energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+    window = (10.5, 11.0) .* unit_to_aru(:eV)
+    window_k  = window
+    window_kq = window
+
+    transport_params = ElectronTransportParams(
+        Tlist = Tlist,
+        n = -1.0e21 * model.volume / unit_to_aru(:cm)^3,
+        smearing = smearing,
+        nband_valence = 4,
+        volume = model.volume,
+        spin_degeneracy = 2
+    )
+
+    nklist = (12, 12, 12)
+    nqlist = (12, 12, 12)
+
+    symmetry = nothing
+
+    out_qme = Dict()
+
+    for random_gauge in [false, true]
+        # Calculate matrix elements
+        @time EPW.run_transport(
+            model, nklist, nqlist,
+            fourier_mode = "gridopt",
+            folder = tmp_dir,
+            window_k  = window_k,
+            window_kq = window_kq,
+            energy_conservation = energy_conservation,
+            use_irr_k = false,
+            average_degeneracy = false,
+            run_for_qme = true,
+            DEBUG_random_gauge = random_gauge,
+        )
+
+        filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
+        fid = h5open(filename, "r")
+        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
+        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
+        ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
+        close(fid)
+
+        # Compute chemical potential
+        bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
+        μlist_qme = copy(transport_params.μlist)
+
+        # Compute scattering matrix
+        S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+
+        # Solve QME and compute mobility
+        out_qme[random_gauge] = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; filename, symmetry)
+    end
+
+    @test out_qme[true].σ_serta ≈ out_qme[false].σ_serta
+    @test out_qme[true].σ ≈ out_qme[false].σ
 end

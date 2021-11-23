@@ -59,7 +59,11 @@ function run_transport(
         kgrid != qgrid && error("for run_for_qme==true, kgrid and qgrid must be the same (otherwise not implemented)")
         use_irr_k && model.el_sym === nothing && error("for run_for_qme=true and use_irr_k=true, model.el_sym must be set. (Pass load_symmetry_operators=true to load_model).")
         shift_q != (0, 0, 0) && error("for run_for_qme==true, shift_q not implemented")
-        # all(window_k .≈ window_kq) || error("for run_for_qme==true, window_k and window_kq must be the same (otherwise not implemented")
+        if use_irr_k
+            all(window_k .≈ window_kq) || error("for run_for_qme==true with use_irr_k=true, window_k and window_kq must be the same (otherwise not implemented")
+            model.el_sym.symmetry === nothing && error("model.el_sym must be set to use symmetry in QME. Set load_symmetry_operators = true in load_model.")
+            ! symmetry_is_subset(symmetry, model.el_sym.symmetry) && error("symmetry for QME must be a subset of model.el_sym.symmetry, not model.symmetry.")
+        end
     end
 
     if use_irr_k && symmetry === nothing

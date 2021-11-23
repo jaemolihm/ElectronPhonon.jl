@@ -280,7 +280,7 @@ Base.length(sym::Symmetry) = sym.nsym
 Base.keys(sym::Symmetry) = LinearIndices(1:sym.nsym)
 
 """Create symmetry object containing only identity"""
-function identity_symmetry(::Type{FT}) where FT
+function identity_symmetry(::Type{FT}=Float64) where FT
     Symmetry(1, [Mat3{Int}(I)], [zeros(Vec3{FT})], [Mat3{FT}(I)], [zeros(Vec3{FT})], [false], [false], false)
 end
 

@@ -240,10 +240,9 @@ end
 Solve quantum master equation for electrons.
 """
 function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
-        scat_mat_in=nothing; filename=nothing, symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
-    if symmetry !== nothing && filename === nothing
-        error("Symmetry is used. The name of the HDF5 file should be passed.")
-    end
+        scat_mat_in=nothing; filename, symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
+    isfile(filename) || error("filename = $filename is not a valid file.")
+
     σ_serta = zeros(FT, 3, 3, length(params.Tlist))
     σ = zeros(FT, 3, 3, length(params.Tlist))
     δρ_serta = zeros(Vec3{Complex{FT}}, el_i.n, length(params.Tlist))
@@ -254,12 +253,13 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
     δρ_iter_new = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter_tmp = zeros(Vec3{Complex{FT}}, el_i.n)
 
-    if symmetry === nothing
-        # FIXME: no symmetry but different grid
-        @assert el_i.n == el_f.n
-        map_i_to_f = I(el_i.n)
-    else
-        map_i_to_f = _qme_linear_response_unfold_map(el_i, el_f, filename)
+    # setup map_i_to_f. This is needed only when solving the linear equation iteratively.
+    if scat_mat_in !== nothing
+        if symmetry === nothing
+            map_i_to_f = _qme_linear_response_unfold_map_nosym(el_i, el_f, filename)
+        else
+            map_i_to_f = _qme_linear_response_unfold_map(el_i, el_f, filename)
+        end
     end
 
     for (iT, (T, μ)) in enumerate(zip(params.Tlist, params.μlist))
@@ -324,22 +324,21 @@ function _solve_qme_direct!(δρ::AbstractVector{Vec3{Complex{FT}}}, S, δρ0::A
     end
 end
 
+# TODO: check performance of unfold_map (adding to sparse matrix)
 function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
-    isfile(filename) || error("filename is not a valid file.")
-
     indmap_el_i = EPW.states_index_map(el_i);
     indmap_el_f = EPW.states_index_map(el_f);
 
     fid = h5open(filename, "r")
-    symmetry = load_BTData(open_group(fid, "symmetry/symmetry"), Symmetry{FT})
+    symmetry = load_BTData(open_group(fid, "gauge/symmetry"), Symmetry{FT})
 
     cnt_inds_f = zeros(Int, el_f.n);
-    unfold_map = spzeros(Mat3{ComplexF64}, el_f.n, el_i.n);
+    unfold_map = spzeros(Mat3{Complex{FT}}, el_f.n, el_i.n);
     for isym in 1:symmetry.nsym
         # Read symmetry gauge matrix elements
         Scart = symmetry[isym].Scart
-        group_sym = open_group(fid, "symmetry/isym$isym")
-        sym_gauge = read(group_sym, "sym_gauge")
+        group_sym = open_group(fid, "gauge/isym$isym")
+        sym_gauge = read(group_sym, "gauge_matrix")
         is_degenerate = read(group_sym, "is_degenerate")
 
         for ik in 1:el_i.kpts.n
@@ -372,5 +371,37 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
 
     inv_cnt_inds_f = 1 ./ cnt_inds_f
     unfold_map .*= inv_cnt_inds_f
+    unfold_map
+end
+
+
+function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
+    fid = h5open(filename, "r")
+    gauge = read(open_group(fid, "gauge"), "gauge_matrix")
+
+    # We assume that all el_i and el_f use the same grid and same shift.
+    δk = el_i.kpts.shift ≈ el_f.kpts.shift
+    @assert all(δk - round.(δk) .≈ 0)
+    @assert el_i.kpts.ngrid == el_f.kpts.ngrid
+
+    indmap_el_f = EPW.states_index_map(el_f);
+    unfold_map = spzeros(Complex{FT}, el_f.n, el_i.n);
+
+    for ind_el_i in 1:el_i.n
+        ik = el_i.ik[ind_el_i]
+        xk = el_i.kpts.vectors[ik]
+        ik_f = xk_to_ik(xk, el_f.kpts)
+        ik_f === nothing && continue
+
+        ib1 = el_i.ib1[ind_el_i]
+        ib2 = el_i.ib2[ind_el_i]
+        ind_el_f = get(indmap_el_f, EPW.CI(ib1, ib2, ik_f), -1)
+        ind_el_f == -1 && continue
+
+        # Set unfolding matrix
+        gauge_coeff = gauge[ib1, ib1, ik] * conj(gauge[ib2, ib2, ik])
+        unfold_map[ind_el_f, ind_el_i] += gauge_coeff
+    end
+    close(fid)
     unfold_map
 end

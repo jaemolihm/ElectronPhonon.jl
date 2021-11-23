@@ -286,7 +286,7 @@ end
 _hash_xk(xk, kpts::GridKpoints) = _hash_xk(xk, kpts.ngrid, kpts.shift)
 
 # Retern index of given xk vector
-xk_to_ik(xk, kpts) = kpts._xk_hash_to_ik[_hash_xk(xk, kpts)]
+xk_to_ik(xk, kpts) = get(kpts._xk_hash_to_ik, _hash_xk(xk, kpts), nothing)
 
 Base.sortperm(k::GridKpoints) = sortperm(map(xk -> round.(Int, (xk - k.shift) .* k.ngrid), k.vectors))
 

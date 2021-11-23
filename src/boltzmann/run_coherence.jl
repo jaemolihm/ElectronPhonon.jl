@@ -1,5 +1,9 @@
 using HDF5
 
+"""
+Debugging flags in `kwargs`
+- `DEBUG_random_gauge`: Multiply random phases to the eigenstates at k+q to change the eigenstate gauge. (Default: false)
+"""
 function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq, kpts,
         kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
         average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff;
@@ -31,10 +35,14 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         g = create_group(fid_btedata, "initialstate_electron")
         dump_BTData(g, el_k_boltzmann)
 
-        # NOTE: Currently, for coherence transport, the set of electron states at k and k+q
-        # are chosen to be identical to ensure consistent gauge
         # mpi_isroot() && println("Calculating electron states at k+q")
         el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity"], window_kq, nband, nband_ignore; fourier_mode)
+        # DEBUG: randomly change the eigenstate gauge at k+q so that the gauge is different from k
+        if get(kwargs, :DEBUG_random_gauge, false) == true
+            for el in el_kq_save, ib in 1:el.nband
+                get_u(el)[:, ib] .*= cispi(2*rand())
+            end
+        end
         el_kq_boltzmann, _ = electron_states_to_QMEStates(el_kq_save, kqpts, qme_offdiag_cutoff, nstates_base_kq)
         g = create_group(fid_btedata, "finalstate_electron")
         dump_BTData(g, el_kq_boltzmann)
@@ -47,54 +55,69 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         dump_BTData(g, ph_boltzmann)
     end
 
-    # Write gauge matrices for symmetry unfolding
+    # Write gauge matrices that map eigenstates in el_k_save to eigenstates in el_kq_save.
+    # When not using symmetry, compute <u_mk|u_nk> (i.e. q=0).
+    # When using symmetry, also compute <u_m,Sk|S|u_nk> for symmetry operations.
     # TODO: Optimize memory and disk usage by writing only nonzero matrix elements
+    # TODO: Merge two cases
+    mpi_isroot() && println("Calculating and writing gauge matrices")
     if symmetry !== nothing
-        mpi_isroot() && println("Calculating and writing symmetry gauge matrices")
-        if model.el_sym.symmetry === nothing
-            error("model.el_sym must be set to use symmetry in QME. Set load_symmetry_operators = true in load_model.")
-        end
-        if ! symmetry_is_subset(symmetry, model.el_sym.symmetry)
-            error("symmetry for QME must be a subset of model.el_sym.symmetry, not model.symmetry.")
-        end
-
         # Write symmetry object to file
-        g = create_group(fid_btedata, "symmetry/symmetry")
+        g = create_group(fid_btedata, "gauge/symmetry")
         dump_BTData(g, symmetry)
 
+        gauge = zeros(Complex{FT}, nband, nband, nk)
+        is_degenerate = zeros(Bool, nband, nband, nk) # FIXME: Cannot use BitVector because HDF5.jl does not support it.
         tmp_arr_full = zeros(Complex{FT}, nw, nw)
         sym_k = zeros(Complex{FT}, nw, nw)
-        sym_gauge = zeros(Complex{FT}, nband, nband, nk)
-        is_degenerate = zeros(Bool, nband, nband, nk) # FIXME: Cannot use BitVector because HDF5.jl does not support it.
         for isym = 1:symmetry.nsym
             # Find symmetry in model.el_sym
             isym_el = findfirst(s -> s ≈ symmetry[isym], model.el_sym.symmetry)
 
-            sym_gauge .= 0
+            gauge .= 0
             is_degenerate .= false
             @views for ik = 1:nk
                 xk = kpts.vectors[ik]
                 sxk = symmetry[isym].S * xk
                 isk = xk_to_ik(sxk, kqpts)
-                rng = el_k_save[ik].rng
-                e = el_k_save[ik].e
+                isk === nothing && continue # skip if Sk is not in kqpts
+
+                rng_k = el_k_save[ik].rng
+                rng_sk = el_kq_save[isk].rng
+                e_k = el_k_save[ik].e
+                e_sk = el_kq_save[isk].e
 
                 # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k)
                 get_fourier!(sym_k, model.el_sym.operators[isym_el], xk, mode=fourier_mode)
                 tmp_arr = view(tmp_arr_full, :, 1:el_k_save[ik].nband)
                 mul!(tmp_arr, sym_k, get_u(el_k_save[ik]))
-                mul!(sym_gauge[rng, rng, ik], get_u(el_kq_save[isk])', tmp_arr)
+                mul!(gauge[rng_sk, rng_k, ik], get_u(el_kq_save[isk])', tmp_arr)
 
                 # Set is_degenerate
-                for jb in rng, ib in rng
-                    is_degenerate[ib, jb, ik] = abs(e[ib] - e[jb]) < electron_degen_cutoff
+                for ib in rng_k, jb in rng_sk
+                    is_degenerate[jb, ib, ik] = abs(e_k[ib] - e_sk[jb]) < electron_degen_cutoff
                 end
             end
-            g = create_group(fid_btedata, "symmetry/isym$isym")
-            g["sym_gauge"] = sym_gauge
+            g = create_group(fid_btedata, "gauge/isym$isym")
+            g["gauge_matrix"] = gauge
             g["is_degenerate"] = is_degenerate
         end
+    else
+        gauge = zeros(Complex{FT}, nband, nband, nk)
+        @views for ik = 1:nk
+            xk = kpts.vectors[ik]
+            ik_kq = xk_to_ik(xk, kqpts)
+            ik_kq === nothing && continue # skip if xk is not in kqpts
+
+            rng_k = el_k_save[ik].rng
+            rng_kq = el_kq_save[ik_kq].rng
+            # Compute gauge matrix: S_H = U†(k) * U(k)
+            mul!(gauge[rng_kq, rng_k, ik], get_u(el_kq_save[ik_kq])', get_u(el_k_save[ik]))
+        end
+        g = create_group(fid_btedata, "gauge")
+        g["gauge_matrix"] = gauge
     end
+
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epdatas = [ElPhData{Float64}(nw, nmodes, nband, nband_ignore)]
