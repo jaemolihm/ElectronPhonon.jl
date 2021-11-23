@@ -183,7 +183,7 @@ function transport_print_mobility(σlist, params::ElectronTransportParams; do_pr
                 end
                 println()
             end
-        else
+        elseif params.type === :Metal
             println("======= Electrical conductivity =======")
             for iT in 1:length(params.Tlist)
                 println("T (K)  = $(params.Tlist[iT] / unit_to_aru(:K))")
@@ -194,6 +194,8 @@ function transport_print_mobility(σlist, params::ElectronTransportParams; do_pr
                 end
                 println()
             end
+        else
+            error("params.type = $(params.type) not identified")
         end
     end
     (;σ_SI, mobility_SI)
