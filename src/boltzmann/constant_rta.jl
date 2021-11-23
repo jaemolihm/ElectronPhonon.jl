@@ -31,8 +31,8 @@ function run_transport_constant_relaxation_time(model, k_input, transport_params
     transport_set_μ!(transport_params, energies, weights, nstates_base; do_print)
 
     # Calculate conductivity
-    σlist_vdiag = zeros(3, 3, length(transport_params.Tlist))
-    σlist_full_velocity = zeros(3, 3, length(transport_params.Tlist))
+    σ_vdiag = zeros(3, 3, length(transport_params.Tlist))
+    σ_full_velocity = zeros(3, 3, length(transport_params.Tlist))
     for iT in 1:length(transport_params.Tlist)
         T = transport_params.Tlist[iT]
         μ = transport_params.μlist[iT]
@@ -43,29 +43,29 @@ function run_transport_constant_relaxation_time(model, k_input, transport_params
 
                 # Use only diagonal velocity
                 vnk = el_k.vdiag[ib]
-                σlist_vdiag[:, :, iT] .+= (vnk * transpose(vnk)) .* (kpts.weights[ik] * dfocc * τ)
+                σ_vdiag[:, :, iT] .+= (vnk * transpose(vnk)) .* (kpts.weights[ik] * dfocc * τ)
 
                 # Use full velocity matrix for degenerate bands
                 ib_degen = el_k.rng[findall(abs.(el_k.e[el_k.rng] .- enk) .< electron_degen_cutoff)]
                 for ib2 in ib_degen, ib1 in ib_degen
                     vv = real(el_k.v[ib1, ib2] * transpose(el_k.v[ib2, ib1]))
-                    σlist_full_velocity[:, :, iT] .+= vv .* (kpts.weights[ik] * dfocc * τ / length(ib_degen))
+                    σ_full_velocity[:, :, iT] .+= vv .* (kpts.weights[ik] * dfocc * τ / length(ib_degen))
                 end
             end
         end
     end
-    σlist_vdiag .*= transport_params.spin_degeneracy / transport_params.volume
-    σlist_full_velocity .*= transport_params.spin_degeneracy / transport_params.volume
+    σ_vdiag .*= transport_params.spin_degeneracy / transport_params.volume
+    σ_full_velocity .*= transport_params.spin_degeneracy / transport_params.volume
 
     # Symmetrize conductivity (if using irreducible k points)
-    σlist_vdiag = symmetrize_array(σlist_vdiag, symmetry, order=2)
-    σlist_full_velocity = symmetrize_array(σlist_full_velocity, symmetry, order=2)
+    σ_vdiag = symmetrize_array(σ_vdiag, symmetry, order=2)
+    σ_full_velocity = symmetrize_array(σ_full_velocity, symmetry, order=2)
 
     # Calculate and print conductivity and mobility in SI units
     do_print && println("# Using only diagonal velocity")
-    σ_vdiag_SI, mobility_vdiag_SI = transport_print_mobility(σlist_vdiag, transport_params; do_print)
+    σ_vdiag_SI, mobility_vdiag_SI = transport_print_mobility(σ_vdiag, transport_params; do_print)
     do_print && println("# Using full velocity matrix for degenerate bands")
-    σ_full_velocity_SI, mobility_full_velocity_SI = transport_print_mobility(σlist_full_velocity, transport_params; do_print)
+    σ_full_velocity_SI, mobility_full_velocity_SI = transport_print_mobility(σ_full_velocity, transport_params; do_print)
 
-    (; σlist_vdiag, σ_vdiag_SI, mobility_vdiag_SI, σlist_full_velocity, σ_full_velocity_SI, mobility_full_velocity_SI)
+    (; σ_vdiag, σ_vdiag_SI, mobility_vdiag_SI, σ_full_velocity, σ_full_velocity_SI, mobility_full_velocity_SI)
 end

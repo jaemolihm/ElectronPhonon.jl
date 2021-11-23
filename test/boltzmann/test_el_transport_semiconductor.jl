@@ -55,9 +55,9 @@ using LinearAlgebra
 
         inv_τ = zeros(Float64, btmodel.el_i.n, length(transport_params.Tlist))
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
-        σlist = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
-        σlist = symmetrize_array(σlist, model_el.symmetry, order=2)
-        _, mobility = transport_print_mobility(σlist, transport_params, do_print=false)
+        σ = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
+        σ = symmetrize_array(σ, model_el.symmetry, order=2)
+        _, mobility = transport_print_mobility(σ, transport_params, do_print=false)
 
         # Comparison with SERTA transport module (the non-Boltzmann one)
         transport_params_serta = ElectronTransportParams{Float64}(
@@ -77,7 +77,7 @@ using LinearAlgebra
             transport_params=transport_params_serta,
         )
 
-        _, mobility_serta = transport_print_mobility(output["transport_σlist"], transport_params_serta, do_print=false)
+        _, mobility_serta = transport_print_mobility(output["transport_σ"], transport_params_serta, do_print=false)
         @test all(isapprox.(transport_params.μlist, transport_params_serta.μlist, atol=1e-7))
         @test all(isapprox.(mobility, mobility_serta, atol=2e-1))
 
@@ -87,7 +87,7 @@ using LinearAlgebra
             elist = range(minimum(el.e) - 3e-3, maximum(el.e) + 3e-3, length=1001)
             Σ_tdf = compute_transport_distribution_function(elist, tdf_smearing, el, inv_τ, transport_params, model_ph.symmetry)
             @test size(Σ_tdf) == (length(elist), 3, 3, length(transport_params.Tlist))
-            @test dropdims(sum(Σ_tdf, dims=1), dims=1) .* (elist[2] - elist[1]) ≈ σlist
+            @test dropdims(sum(Σ_tdf, dims=1), dims=1) .* (elist[2] - elist[1]) ≈ σ
         end
     end
 
@@ -128,9 +128,9 @@ using LinearAlgebra
 
         inv_τ = zeros(Float64, btmodel.el_i.n, length(transport_params.Tlist))
         EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
-        σlist = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
-        # σlist = symmetrize_array(σlist, model_el.symmetry, order=2)
-        _, mobility = transport_print_mobility(σlist, transport_params, do_print=false)
+        σ = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
+        # σ = symmetrize_array(σ, model_el.symmetry, order=2)
+        _, mobility = transport_print_mobility(σ, transport_params, do_print=false)
 
         # Comparison with SERTA transport module (the non-Boltzmann one)
         transport_params_serta = ElectronTransportParams{Float64}(
@@ -150,7 +150,7 @@ using LinearAlgebra
             transport_params=transport_params_serta,
         )
 
-        _, mobility_serta = transport_print_mobility(output["transport_σlist"], transport_params_serta, do_print=false)
+        _, mobility_serta = transport_print_mobility(output["transport_σ"], transport_params_serta, do_print=false)
         @test all(isapprox.(transport_params.μlist, transport_params_serta.μlist, atol=1e-7))
         @test all(isapprox.(mobility, mobility_serta, atol=2e-1))
     end

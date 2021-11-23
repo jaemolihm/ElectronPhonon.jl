@@ -81,6 +81,6 @@ using LinearAlgebra
         elist = range(minimum(el_i.e) - 3e-3, maximum(el_i.e) + 3e-3, length=1001)
         Σ_tdf = compute_transport_distribution_function(elist, tdf_smearing, el_i, output_serta.inv_τ, transport_params, model_el.symmetry)
         @test size(Σ_tdf) == (length(elist), 3, 3, length(transport_params.Tlist))
-        @test dropdims(sum(Σ_tdf, dims=1), dims=1) .* (elist[2] - elist[1]) ≈ output_serta.σlist
+        @test dropdims(sum(Σ_tdf, dims=1), dims=1) .* (elist[2] - elist[1]) ≈ output_serta.σ
     end
 end

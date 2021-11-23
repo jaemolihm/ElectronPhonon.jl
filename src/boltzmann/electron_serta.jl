@@ -129,7 +129,7 @@ end
 function compute_conductivity_serta!(params, inv_τ, el::BTStates{R}, ngrid, recip_lattice) where {R}
     @assert el.n == size(inv_τ, 1)
 
-    σlist = zeros(eltype(inv_τ), 3, 3, length(params.Tlist))
+    σ = zeros(eltype(inv_τ), 3, 3, length(params.Tlist))
 
     emax = maximum(el.e)
     emin = minimum(el.e)
@@ -163,13 +163,13 @@ function compute_conductivity_serta!(params, inv_τ, el::BTStates{R}, ngrid, rec
             τ = 1 / inv_τ[i, iT]
 
             for b=1:3, a=1:3
-                σlist[a, b, iT] += el.k_weight[i] * dfocc * τ * vnk[a] * vnk[b]
+                σ[a, b, iT] += el.k_weight[i] * dfocc * τ * vnk[a] * vnk[b]
             end
         end # i
         # @info "cnt = $cnt"
     end # temperatures
-    σlist .*= params.spin_degeneracy / params.volume
-    σlist
+    σ .*= params.spin_degeneracy / params.volume
+    σ
 end
 
 """
@@ -359,11 +359,11 @@ function run_serta(filename, transport_params, symmetry, recip_lattice; do_print
 
     close(fid)
 
-    σlist = compute_conductivity_serta!(transport_params, inv_τ, el_i, el_i.ngrid, recip_lattice)
-    σlist = symmetrize_array(σlist, symmetry, order=2)
-    σ_SI, mobility_SI = transport_print_mobility(σlist, transport_params; do_print)
+    σ = compute_conductivity_serta!(transport_params, inv_τ, el_i, el_i.ngrid, recip_lattice)
+    σ = symmetrize_array(σ, symmetry, order=2)
+    σ_SI, mobility_SI = transport_print_mobility(σ, transport_params; do_print)
 
-    (; inv_τ, σlist, σ_SI, mobility_SI, el_i)
+    (; inv_τ, σ, σ_SI, mobility_SI, el_i)
 end
 
 
@@ -430,9 +430,9 @@ function run_serta_subgrid(filename_original, filename_subgrid, transport_params
     close(fid)
     close(fid_sub)
 
-    σlist = compute_conductivity_serta!(transport_params, inv_τ, el_i, el_i.ngrid, recip_lattice)
-    σlist = symmetrize_array(σlist, symmetry, order=2)
-    σ_SI, mobility_SI = transport_print_mobility(σlist, transport_params; do_print)
+    σ = compute_conductivity_serta!(transport_params, inv_τ, el_i, el_i.ngrid, recip_lattice)
+    σ = symmetrize_array(σ, symmetry, order=2)
+    σ_SI, mobility_SI = transport_print_mobility(σ, transport_params; do_print)
 
-    (; inv_τ, σlist, σ_SI, mobility_SI, el_i, inv_τ_only_original)
+    (; inv_τ, σ, σ_SI, mobility_SI, el_i, inv_τ_only_original)
 end

@@ -127,7 +127,7 @@ function compute_conductivity_serta!(params::ElectronTransportParams{R}, inv_τ,
     nband, nk = size(inv_τ)
     @assert length(el_states) == nk
 
-    σlist = zeros(eltype(inv_τ), 3, 3, length(params.Tlist))
+    σ = zeros(eltype(inv_τ), 3, 3, length(params.Tlist))
 
     for iT in 1:length(params.Tlist)
         T = params.Tlist[iT]
@@ -150,24 +150,24 @@ function compute_conductivity_serta!(params::ElectronTransportParams{R}, inv_τ,
                 τ = 1 / inv_τ[iband, ik, iT]
 
                 for j=1:3, i=1:3
-                    σlist[i, j, iT] += weights[ik] * dfocc * τ * vnk[i] * vnk[j]
+                    σ[i, j, iT] += weights[ik] * dfocc * τ * vnk[i] * vnk[j]
                 end
             end # iband
         end # ik
     end # temperatures
-    σlist .*= params.spin_degeneracy / params.volume
-    return σlist
+    σ .*= params.spin_degeneracy / params.volume
+    return σ
 end
 
 """
-    transport_print_mobility(σlist, params::ElectronTransportParams; do_print=true)
+    transport_print_mobility(σ, params::ElectronTransportParams; do_print=true)
 Utility to calculate and print mobility in SI units.
 """
-function transport_print_mobility(σlist, params::ElectronTransportParams; do_print=true)
+function transport_print_mobility(σ, params::ElectronTransportParams; do_print=true)
     carrier_density_SI = params.n / params.volume * unit_to_aru(:cm)^3
     charge_density_SI = carrier_density_SI * units.e_SI
 
-    σ_SI = σlist .* (units.e_SI^2 * unit_to_aru(:ħ) * unit_to_aru(:cm))
+    σ_SI = σ .* (units.e_SI^2 * unit_to_aru(:ħ) * unit_to_aru(:cm))
     mobility_SI = σ_SI ./ abs(charge_density_SI)
 
     if do_print

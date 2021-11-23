@@ -8,7 +8,7 @@ using EPW
     μlist_ref = [11.127307, 11.232810, 11.343188] .* unit_to_aru(:eV)
 
     # Reference data created from Julia
-    transport_σlist_ref = reshape(hcat([
+    transport_σ_ref = reshape(hcat([
         [ 4.3974489149690065e-9   3.057704386673255e-10  1.0923224611721906e-10;
           3.0577043866732556e-10  4.26880659233148e-9    4.951802817855756e-10;
           1.0923224611721906e-10  4.951802817855756e-10  3.753969439659786e-9],
@@ -61,12 +61,12 @@ using EPW
         window=window,
         transport_params=transport_params,
     )
-    _, mobility = transport_print_mobility(output["transport_σlist"], transport_params; do_print=false)
+    _, mobility = transport_print_mobility(output["transport_σ"], transport_params; do_print=false)
 
     @test output["iband_min"] == 2
     @test output["iband_max"] == 4
     @test all(isapprox.(transport_params.μlist, μlist_ref, atol=3e-6 * unit_to_aru(:eV)))
-    @test output["transport_σlist"] ≈ transport_σlist_ref atol=1.e-10
+    @test output["transport_σ"] ≈ transport_σ_ref atol=1.e-10
     @test mobility ≈ mobility_ref rtol=2e-5
 end
 
@@ -75,7 +75,7 @@ end
     μlist_ref_epw = [11.449807639297191, 11.479920504373881, 11.513292262946232] .* unit_to_aru(:eV)
 
     # Reference data created from Julia
-    transport_σlist_ref = reshape(hcat([
+    transport_σ_ref = reshape(hcat([
         [2.1009148910410884     1.514425894002856e-8   1.3577962623538853e-7;
          1.5144258904349697e-8  2.100914882194067      2.7799404737957244e-7;
          1.3577962625322795e-7  2.77994047361733e-7    2.1009149651273433],
@@ -127,11 +127,11 @@ end
         window=window,
         transport_params=transport_params,
     )
-    _, mobility = transport_print_mobility(output["transport_σlist"], transport_params; do_print=false)
+    _, mobility = transport_print_mobility(output["transport_σ"], transport_params; do_print=false)
 
     @test output["iband_min"] == 2
     @test output["iband_max"] == 3
     @test all(isapprox.(transport_params.μlist, μlist_ref_epw, atol=2e-6 * unit_to_aru(:eV)))
-    @test output["transport_σlist"] ≈ transport_σlist_ref atol=1.e-10
+    @test output["transport_σ"] ≈ transport_σ_ref atol=1.e-10
     @test mobility ≈ mobility_ref
 end
