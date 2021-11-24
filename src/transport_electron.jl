@@ -13,7 +13,7 @@ export transport_print_mobility
     ElectronTransportParams{T <: Real}
 Parameters for electron transport calculation. Arguments:
 * `Tlist::Vector{T}`: list of temperatures
-* `n::T`: Number of carriers per unit cell, relative to the reference configuration where
+* `n::T`: Number of electrons per unit cell, relative to the reference configuration where
     `spin_degeneracy * nband_valence` bands are filled. Includes the spin degeneracy.
 * `nband_valence::Int`: Number of valence bands, excluding spin degeneracy (used only for semiconductors)
 * `volume::T`: Volume of the unit cell
@@ -185,10 +185,11 @@ function transport_print_mobility(σ, params::ElectronTransportParams; do_print=
             end
         elseif params.type === :Metal
             println("======= Electrical conductivity =======")
+            println("Carrier density (cm^-3) =  $carrier_density_SI")
             for iT in 1:length(params.Tlist)
                 println("T (K)  = $(params.Tlist[iT] / unit_to_aru(:K))")
                 @printf "μ (eV) = %.4f\n" params.μlist[iT] / unit_to_aru(:eV)
-                println("mobility (1/(Ω*cm)) = ")
+                println("conductivity (1/(Ω*cm)) = ")
                 for i in 1:3
                     @printf "%12.3f %12.3f %12.3f\n" σ_SI[:, i, iT]...
                 end
