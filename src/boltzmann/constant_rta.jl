@@ -20,9 +20,9 @@ function run_transport_constant_relaxation_time(model, k_input, transport_params
         inv_τ_constant = 8.0 * unit_to_aru(:meV),
         fourier_mode = "gridopt",
         window = (-Inf, Inf),
-        use_irr_k = true,
         mpi_comm_k = nothing,
-        do_print = true
+        do_print = true,
+        symmetry = model.symmetry,
     )
 
     mpi_comm_k !== nothing && error("mpi_comm_k not implemented")
@@ -31,7 +31,6 @@ function run_transport_constant_relaxation_time(model, k_input, transport_params
     τ = 1 / inv_τ_constant
 
     # Filter k points
-    symmetry = use_irr_k ? model.symmetry : nothing
     kpts, iband_min, iband_max, nstates_base = filter_kpoints(k_input, nw, model.el_ham, window, mpi_comm_k; symmetry)
 
     nband = iband_max - iband_min + 1

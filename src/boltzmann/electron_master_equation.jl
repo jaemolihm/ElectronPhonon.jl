@@ -238,6 +238,21 @@ end
     function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
         scat_mat_in=nothing; symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
 Solve quantum master equation for electrons.
+Linearized quantum master equation (stationary state case):
+```math
+0 = ∂ δρ / ∂t
+  = -i(e1[i] - e2[i]) * δρ[i] + drive_efield[i] + ∑_j (S_out + S_in * map_i_to_f)[i, j] * δρ[j],
+```
+where
+```math
+drive_efield[i] = - v[i] * (df/dε)_{ε=e1[i]}              : if e_mk  = e_nk
+                = - v[i] * (f_mk - f_nk) / (e_mk - e_nk)  : if e_mk /= e_nk
+```
+and ``i = (m, n, k)``, ``δρ_i = δρ_{mn;k}``, ``e1[i], e2[i] = e_mk, e_nk``, and ``v[i] = v_{mn;k}``.
+
+We need `map_i_to_f` because `S_in` maps states in `el_f` to `el_i` (i.e. has size `(el_i.n, el_f.n)`),
+while `δρ` is for states in `el_i`. `el_i` and `el_f` can differ due to use of irreducible grids,
+different windows, different grids, etc. So, we need to first map `δρ` to states `el_f` using `map_i_to_f`.
 """
 function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
         scat_mat_in=nothing; filename, symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
@@ -248,7 +263,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
     δρ_serta = zeros(Vec3{Complex{FT}}, el_i.n, length(params.Tlist))
     δρ = zeros(Vec3{Complex{FT}}, el_i.n, length(params.Tlist))
 
-    δρ_external = zeros(Vec3{Complex{FT}}, el_i.n)
+    drive_efield = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter_old = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter_new = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter_tmp = zeros(Vec3{Complex{FT}}, el_i.n)
@@ -263,16 +278,32 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
     end
 
     for (iT, (T, μ)) in enumerate(zip(params.Tlist, params.μlist))
-        @. δρ_external = el_i.v * -EPW.occ_fermion_derivative(el_i.e1 - μ, T);
-        S_out = scat_mat_out[iT]
-        S_out_factorize = factorize(S_out)
+        # Compute the E-field drive term
+        for i in 1:el_i.n
+            e1, e2 = el_i.e1[i], el_i.e2[i]
+            if abs(e1 - e2) < EPW.electron_degen_cutoff
+                drive_efield[i] = - el_i.v[i] * occ_fermion_derivative(e1 - μ, T)
+            else
+                drive_efield[i] = - el_i.v[i] * (occ_fermion(e1 - μ, T) - occ_fermion(e2 - μ, T)) / (e1 - e2)
+            end
+        end
 
-        # QME-SERTA: Solve S_out * δρ + δρ_external = 0
-        @views _solve_qme_direct!(δρ_serta[:, iT], S_out_factorize, .-δρ_external)
+        # Add the scattering-out term and the bare Hamiltonian term into S_serta
+        S_serta = copy(scat_mat_out[iT])
+        for i in 1:el_i.n
+            e1, e2 = el_i.e1[i], el_i.e2[i]
+            if abs(e1 - e2) >= EPW.electron_degen_cutoff
+                S_serta[i, i] += -im * (e1 - e2)
+            end
+        end
+        S_serta_factorize = factorize(S_serta)
+
+        # QME-SERTA: Solve S_out * δρ + drive_efield = 0
+        @views _solve_qme_direct!(δρ_serta[:, iT], S_serta_factorize, .-drive_efield)
         σ_serta[:, :, iT] .= symmetrize(occupation_to_conductivity(δρ_serta[:, iT], el_i, params), symmetry)
 
-        # QME-exact: Solve (S_out + S_in) * δρ + δρ_external = 0
-        # Solve iteratively the fixed point equation δρ = S_out^{-1} * (-S_in * δρ - δρ_external)
+        # QME-exact: Solve (S_out + S_in) * δρ + drive_efield = 0
+        # Solve iteratively the fixed point equation δρ = S_out^{-1} * (-S_in * δρ - drive_efield)
         if scat_mat_in !== nothing
             S_in = scat_mat_in[iT]
 
@@ -288,10 +319,10 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
                 # Unfold from el_i to el_f
                 δρ_iter_old_f = map_i_to_f * δρ_iter_old
 
-                # Compute δρ_iter_new = S_out^{-1} * (-S_in * δρ_iter_old - δρ_external)
+                # Compute δρ_iter_new = S_out^{-1} * (-S_in * δρ_iter_old - drive_efield)
                 #                     = - S_out^{-1} * S_in * δρ_iter_old + δρ_serta[:, iT]
                 mul!(δρ_iter_tmp, S_in, δρ_iter_old_f, -1, 0)
-                _solve_qme_direct!(δρ_iter_new, S_out_factorize, δρ_iter_tmp)
+                _solve_qme_direct!(δρ_iter_new, S_serta_factorize, δρ_iter_tmp)
                 @views δρ_iter_new .+= δρ_serta[:, iT]
                 σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
 
