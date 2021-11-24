@@ -54,21 +54,18 @@ using LinearAlgebra
 
         # Constant RTA calculation using SERTA function by manually setting inv_τ to constant
         inv_τ = fill(inv_τ_constant, (btmodel.el_i.n, length(transport_params.Tlist)))
-        σ = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
-        σ = symmetrize_array(σ, model_el.symmetry, order=2)
-        _, mobility_SI = transport_print_mobility(σ, transport_params, do_print=false)
+        σ_crta_by_serta = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
+        σ_crta_by_serta = symmetrize_array(σ_crta_by_serta, model_el.symmetry, order=2)
 
         # Constant RTA calculation
         transport_params.μlist .= NaN
         out_crta = run_transport_constant_relaxation_time(model_el, nklist, transport_params; inv_τ_constant, window=window_k, use_irr_k=true, do_print=false);
 
         @test btmodel.el_i.nband == 1
-        @test out_crta.σ_vdiag ≈ σ
-        @test out_crta.mobility_vdiag_SI ≈ mobility_SI
+        @test out_crta.σ_vdiag ≈ σ_crta_by_serta
 
         # Since all bands are nondegenerate (nband == 1), full_velocity is identical to vdiag
-        @test out_crta.σ_full_velocity ≈ σ
-        @test out_crta.mobility_full_velocity_SI ≈ mobility_SI
+        @test out_crta.σ_full_velocity ≈ σ_crta_by_serta
     end
 
     @testset "hole doping" begin
@@ -105,21 +102,18 @@ using LinearAlgebra
         bte_compute_μ!(transport_params, btmodel.el_i, do_print=false)
 
         inv_τ = fill(inv_τ_constant, (btmodel.el_i.n, length(transport_params.Tlist)))
-        σ = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
-        σ = symmetrize_array(σ, model_el.symmetry, order=2)
-        _, mobility_SI = transport_print_mobility(σ, transport_params, do_print=false)
+        σ_crta_by_serta = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
+        σ_crta_by_serta = symmetrize_array(σ_crta_by_serta, model_el.symmetry, order=2)
 
         # Constant RTA calculation
         transport_params.μlist .= NaN
         out_crta = run_transport_constant_relaxation_time(model_el, nklist, transport_params; inv_τ_constant, window=window_k, use_irr_k=true, do_print=false);
 
         @test btmodel.el_i.nband == 3
-        @test out_crta.σ_vdiag ≈ σ
-        @test out_crta.mobility_vdiag_SI ≈ mobility_SI
+        @test out_crta.σ_vdiag ≈ σ_crta_by_serta
 
         # full_velocity should not be identical to vdiag because there are degenerate bands
-        @test !(out_crta.σ_full_velocity ≈ σ)
-        @test !(out_crta.mobility_full_velocity_SI ≈ mobility_SI)
-        @test out_crta.mobility_full_velocity_SI ≈ cat(Ref(I(3)) .* [491.4008316455876, 350.18972508269235, 271.5598769595231]..., dims=3)
+        @test !(out_crta.σ_full_velocity ≈ σ_crta_by_serta)
+        @test out_crta.σ_full_velocity ≈ cat(Ref(I(3)) .* [1.7116019791183434, 1.2197484984126712, 0.9458722755851589]..., dims=3)
     end
 end

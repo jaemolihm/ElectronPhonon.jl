@@ -63,10 +63,12 @@ function run_transport_constant_relaxation_time(model, k_input, transport_params
     σ_full_velocity = symmetrize_array(σ_full_velocity, symmetry, order=2)
 
     # Calculate and print conductivity and mobility in SI units
-    do_print && println("# Using only diagonal velocity")
-    σ_vdiag_SI, mobility_vdiag_SI = transport_print_mobility(σ_vdiag, transport_params; do_print)
-    do_print && println("# Using full velocity matrix for degenerate bands")
-    σ_full_velocity_SI, mobility_full_velocity_SI = transport_print_mobility(σ_full_velocity, transport_params; do_print)
+    if do_print
+        println("# Using only diagonal velocity")
+        transport_print_mobility(σ_vdiag, transport_params)
+        println("# Using full velocity matrix for degenerate bands")
+        transport_print_mobility(σ_full_velocity, transport_params)
+    end
 
-    (; σ_vdiag, σ_vdiag_SI, mobility_vdiag_SI, σ_full_velocity, σ_full_velocity_SI, mobility_full_velocity_SI)
+    (; σ_vdiag, σ_full_velocity)
 end
