@@ -65,15 +65,16 @@ using LinearAlgebra
         @test out_crta.σ_vdiag ≈ σ_crta_by_serta
 
         # Since all bands are nondegenerate (nband == 1), full_velocity is identical to vdiag
-        @test out_crta.σ_full_velocity ≈ σ_crta_by_serta
+        @test out_crta.σ_intra_degen ≈ σ_crta_by_serta
+        @test out_crta.σ_full ≈ σ_crta_by_serta
     end
 
     @testset "hole doping" begin
         energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
-        window = (10.5, 11.0) .* unit_to_aru(:eV)
+        window = (8.0, 20.0) .* unit_to_aru(:eV)
         window_k  = window
         window_kq = window
-        inv_τ_constant = 10.0 * unit_to_aru(:meV)
+        inv_τ_constant = 2000.0 * unit_to_aru(:meV)
 
         nklist = (12, 12, 12)
         nqlist = (12, 12, 12)
@@ -109,11 +110,14 @@ using LinearAlgebra
         transport_params.μlist .= NaN
         out_crta = run_transport_constant_relaxation_time(model_el, nklist, transport_params; inv_τ_constant, window=window_k, use_irr_k=true, do_print=false);
 
-        @test btmodel.el_i.nband == 3
+        @test btmodel.el_i.nband == 6
         @test out_crta.σ_vdiag ≈ σ_crta_by_serta
 
         # full_velocity should not be identical to vdiag because there are degenerate bands
-        @test !(out_crta.σ_full_velocity ≈ σ_crta_by_serta)
-        @test out_crta.σ_full_velocity ≈ cat(Ref(I(3)) .* [1.7116019791183434, 1.2197484984126712, 0.9458722755851589]..., dims=3)
+        @test !(out_crta.σ_intra_degen ≈ σ_crta_by_serta)
+        @test !(out_crta.σ_full ≈ σ_crta_by_serta)
+        @test !(out_crta.σ_full ≈ out_crta.σ_intra_degen)
+        @test out_crta.σ_intra_degen ≈ cat(Ref(I(3)) .* [0.008557879364583812, 0.006098710261298616, 0.0047303846800104835]..., dims=3)
+        @test out_crta.σ_full ≈ cat(Ref(I(3)) .* [0.009107071626286102, 0.006649677470582548, 0.005283351010710945]..., dims=3)
     end
 end
