@@ -37,19 +37,20 @@ function run_transport_constant_relaxation_time(model, k_input, transport_params
         T = transport_params.Tlist[iT]
         μ = transport_params.μlist[iT]
         for (ik, el_k) in enumerate(el_k_save)
-            for ib in el_k.rng
-                enk = el_k.e[ib]
-                dfocc = -occ_fermion_derivative(enk - μ, T)
+            for m in el_k.rng
+                emk = el_k.e[m]
+                dfocc = -occ_fermion_derivative(emk - μ, T)
 
                 # Use only diagonal velocity
-                vnk = el_k.vdiag[ib]
-                σ_vdiag[:, :, iT] .+= (vnk * transpose(vnk)) .* (kpts.weights[ik] * dfocc * τ)
+                vmk = el_k.vdiag[m]
+                σ_vdiag[:, :, iT] .+= (vmk * transpose(vmk)) .* (kpts.weights[ik] * dfocc * τ)
 
                 # Use full velocity matrix for degenerate bands
-                ib_degen = el_k.rng[findall(abs.(el_k.e[el_k.rng] .- enk) .< electron_degen_cutoff)]
-                for ib2 in ib_degen, ib1 in ib_degen
-                    vv = real(el_k.v[ib1, ib2] * transpose(el_k.v[ib2, ib1]))
-                    σ_full_velocity[:, :, iT] .+= vv .* (kpts.weights[ik] * dfocc * τ / length(ib_degen))
+                for n in el_k.rng
+                    if abs(el_k.e[n] - emk) .< EPW.electron_degen_cutoff
+                        vv = real(el_k.v[m, n] * transpose(el_k.v[n, m]))
+                        σ_full_velocity[:, :, iT] .+= vv .* (kpts.weights[ik] * dfocc * τ)
+                    end
                 end
             end
         end
