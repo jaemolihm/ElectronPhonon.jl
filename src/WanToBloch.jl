@@ -378,28 +378,27 @@ Multithreading is not supported because of large buffer array size.
     nr_ep = length(epmat.irvec_next)
     nw, nband = size(uk)
     nmodes = div(epmat.ndata, nw^2 * nr_ep)
-    nband_bound = div(epobj_ekpR.ndata, nw * nmodes)
+    ndata = nw * nband * nmodes
     @assert epobj_ekpR.nr == nr_ep
-    @assert nband <= nband_bound
+    @assert size(epobj_ekpR.op_r, 1) >= ndata
     @assert Threads.threadid() == 1
 
     # FIXME: ep_kR2 is used to avoid passing non-contiguous view to update_op_r!. But
     # the downside is needing more memory... Can this be fixed?
     ep_kR = _get_buffer(_buffer_nothreads_eph_RR_to_kR, (nw, nw, nmodes, nr_ep))
-    ep_kR2 = _get_buffer(_buffer_nothreads_eph_RR_to_kR2, (nw, nband_bound, nmodes))
+    ep_kR2 = _get_buffer(_buffer_nothreads_eph_RR_to_kR2, (nw, nband, nmodes))
     ep_kR_tmp_full = _get_buffer(_buffer_nothreads_eph_RR_to_kR_tmp, (nw, nw))
     ep_kR_tmp = view(ep_kR_tmp_full, :, 1:nband)
 
     get_fourier!(ep_kR, epmat, xk, mode=fourier_mode)
 
     # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
-    ndata = nw * nband * nmodes
     for ir in 1:nr_ep
         @views @inbounds for imode in 1:nmodes
             mul!(ep_kR_tmp, ep_kR[:, :, imode, ir], uk)
-            ep_kR2[:, 1:nband, imode] .= ep_kR_tmp
+            ep_kR2[:, :, imode] .= ep_kR_tmp
         end
-        epobj_ekpR.op_r[1:ndata, ir] .= Base.ReshapedArray(ep_kR2[:, 1:nband, :], (ndata,), ())
+        epobj_ekpR.op_r[1:ndata, ir] .= Base.ReshapedArray(ep_kR2, (ndata,), ())
     end
     epobj_ekpR.ndata = ndata
     reset_gridopts_in_obj!(epobj_ekpR)
@@ -445,10 +444,12 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
     # to eigenstate basis. The electron at k is already in eigenstate basis.
     # ep_kq[ibkq, :, imode] = ukq'[ibkq, iw] * ep_kq_wan[iw, :, jmode] * u_ph[jmode, imode]
     ep_kq .= 0
-    @views @inbounds for jmode = 1:nmodes
-        mul!(tmp, ukq', ep_kq_wan[:, 1:nbandk, jmode])
-        for imode in 1:nmodes
-            ep_kq[:, :, imode] .+= tmp .* u_ph[jmode, imode]
+    @timing "rotate" begin
+        @views @inbounds for jmode = 1:nmodes
+            mul!(tmp, ukq', ep_kq_wan[:, :, jmode])
+            for imode in 1:nmodes
+                ep_kq[:, :, imode] .+= tmp .* u_ph[jmode, imode]
+            end
         end
     end
     nothing

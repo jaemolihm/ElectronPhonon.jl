@@ -142,7 +142,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epdatas = [ElPhData{Float64}(nw, nmodes, nband, nband_ignore)]
     Threads.resize_nthreads!(epdatas)
-    epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nband*nmodes, length(model.epmat.irvec_next))))
 
     # Setup for collecting scattering processes
     max_nscat = nkq * nmodes * nband^2
