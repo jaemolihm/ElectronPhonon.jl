@@ -211,12 +211,11 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
             end
-            epdata_set_g2!(epdata)
 
-            # Average g2 over degenerate electron bands
-            if average_degeneracy
-                epdata_g2_degenerate_average!(epdata)
-            end
+            # Skip calculation of g2 because g2 is not used.
+            # epdata_set_g2!(epdata)
+            # # Average g2 over degenerate electron bands
+            # average_degeneracy && epdata_g2_degenerate_average!(epdata)
 
             @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng
                 # Ignore negative-frequency mode

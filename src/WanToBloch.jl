@@ -402,7 +402,7 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
     """
     nbandkq, nbandk, nmodes = size(ep_kq)
     nw = size(ukq, 1)
-    nmodes = size(u_ph, 1)
+    @assert size(u_ph) == (nmodes, nmodes)
     @assert size(ukq, 2) == nbandkq
     @assert epobj_ekpR.ndata == nw * nbandk * nmodes
 
@@ -416,11 +416,14 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
     # ep_kq[ibkq, :, imode] = ukq'[ibkq, iw] * ep_kq_wan[iw, :, jmode] * u_ph[jmode, imode]
     ep_kq .= 0
     @timing "rotate" begin
-        @views @inbounds for jmode = 1:nmodes
-            mul!(tmp, ukq', ep_kq_wan[:, :, jmode])
-            for imode in 1:nmodes
+        for jmode = 1:nmodes
+            @views mul!(tmp, ukq', ep_kq_wan[:, :, jmode])
+            @views @inbounds for imode in 1:nmodes
                 ep_kq[:, :, imode] .+= tmp .* u_ph[jmode, imode]
             end
+            # The tullio version is slightly (~10%) faster. Not added now to avoid adding
+            # Tullio as dependency, but may added later.
+            # @tullio threads=false ep_kq[ib, jb, imode] += tmp[ib, jb] * u_ph[$jmode, imode]
         end
     end
     nothing
