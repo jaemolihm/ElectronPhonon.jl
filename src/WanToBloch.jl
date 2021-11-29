@@ -7,7 +7,7 @@ module WanToBloch
 using LinearAlgebra
 using EPW: @timing
 using EPW: AbstractWannierObject, WannierObject
-using EPW: get_fourier!, update_op_r!
+using EPW: get_fourier!, update_op_r!, reset_obj!
 using EPW: solve_eigen_el!, solve_eigen_el_valueonly!, solve_eigen_ph!, solve_eigen_ph_valueonly!
 using EPW: dynmat_dipole!
 
@@ -34,7 +34,7 @@ const _buffer_ph_eigen = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_nothreads_eph_RR_to_Rq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
 const _buffer_nothreads_eph_RR_to_Rq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_nothreads_eph_RR_to_kR = [Array{ComplexF64, 4}(undef, 0, 0, 0, 0)]
-const _buffer_nothreads_eph_RR_to_kR2 = [Array{ComplexF64, 4}(undef, 0, 0, 0, 0)]
+const _buffer_nothreads_eph_RR_to_kR2 = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
 const _buffer_nothreads_eph_RR_to_kR_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_eph_Rq_to_kq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
 const _buffer_eph_Rq_to_kq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
@@ -379,26 +379,29 @@ Multithreading is not supported because of large buffer array size.
     nw, nband = size(uk)
     nmodes = div(epmat.ndata, nw^2 * nr_ep)
     nband_bound = div(epobj_ekpR.ndata, nw * nmodes)
+    @assert epobj_ekpR.nr == nr_ep
     @assert nband <= nband_bound
     @assert Threads.threadid() == 1
 
     # FIXME: ep_kR2 is used to avoid passing non-contiguous view to update_op_r!. But
     # the downside is needing more memory... Can this be fixed?
     ep_kR = _get_buffer(_buffer_nothreads_eph_RR_to_kR, (nw, nw, nmodes, nr_ep))
-    ep_kR2 = _get_buffer(_buffer_nothreads_eph_RR_to_kR2, (nw, nband_bound, nmodes, nr_ep))
+    ep_kR2 = _get_buffer(_buffer_nothreads_eph_RR_to_kR2, (nw, nband_bound, nmodes))
     ep_kR_tmp_full = _get_buffer(_buffer_nothreads_eph_RR_to_kR_tmp, (nw, nw))
     ep_kR_tmp = view(ep_kR_tmp_full, :, 1:nband)
 
     get_fourier!(ep_kR, epmat, xk, mode=fourier_mode)
 
     # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
+    ndata = nw * nband_bound * nmodes
     for ir in 1:nr_ep
         @views @inbounds for imode in 1:nmodes
             mul!(ep_kR_tmp, ep_kR[:, :, imode, ir], uk)
-            ep_kR2[:, 1:nband, imode, ir] .= ep_kR_tmp
+            ep_kR2[:, 1:nband, imode] .= ep_kR_tmp
         end
+        epobj_ekpR.op_r[:, ir] .= Base.ReshapedArray(ep_kR2, (ndata,), ())
     end
-    update_op_r!(epobj_ekpR, ep_kR2)
+    reset_obj!(epobj_ekpR)
     nothing
 end
 

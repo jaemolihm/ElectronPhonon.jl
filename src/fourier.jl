@@ -28,7 +28,7 @@ function check_wannierobject(irvec::Vector{Vec3{Int}}, op_r)
 end
 
 "Data in coarse real-space grid for a single operator"
-Base.@kwdef struct WannierObject{T} <: AbstractWannierObject{T}
+Base.@kwdef mutable struct WannierObject{T} <: AbstractWannierObject{T}
     nr::Int
     irvec::Vector{Vec3{Int}}
     op_r::Array{Complex{T},2}
@@ -93,6 +93,10 @@ function update_op_r!(obj, op_r_new)
     @assert eltype(obj.op_r) == eltype(op_r_new)
     # Reshape and set obj.op_r .= op_r_new without allocation
     obj.op_r .= Base.ReshapedArray(op_r_new, size(obj.op_r), ())
+    reset_obj!(obj)
+end
+
+function reset_obj!(obj::AbstractWannierObject)
     for gridopt in obj.gridopts
         gridopt.k1 = NaN
         gridopt.k2 = NaN
