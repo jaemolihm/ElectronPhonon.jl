@@ -24,63 +24,27 @@ export get_eph_RR_to_kR!
 export get_eph_kR_to_kq!
 
 # TODO: Allow the type to change.
-# Preallocated buffers
-const _buffer_el_eigen = [Array{ComplexF64, 2}(undef, 0, 0)]
-const _buffer_el_velocity = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
-const _buffer_el_velocity_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
-const _buffer_ph_velocity = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
-const _buffer_ph_velocity_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
-const _buffer_ph_eigen = [Array{ComplexF64, 2}(undef, 0, 0)]
-const _buffer_nothreads_eph_RR_to_Rq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
-const _buffer_nothreads_eph_RR_to_Rq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
-const _buffer_nothreads_eph_RR_to_kR = [Array{ComplexF64, 4}(undef, 0, 0, 0, 0)]
-const _buffer_nothreads_eph_RR_to_kR2 = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
-const _buffer_nothreads_eph_RR_to_kR_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
-const _buffer_eph_Rq_to_kq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
-const _buffer_eph_Rq_to_kq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
-const _buffer_eph_kR_to_kq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
-const _buffer_eph_kR_to_kq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
-
+# Preallocated buffers for temporary arrays. Access via _get_buffer. When multiple arrays
+# are needed, use _buffer1 for the largest array, _buffer2 for the next largest, and so on.
+const _buffer_nothreads1 = [Vector{ComplexF64}(undef, 0)]
 const _buffer1 = [Vector{ComplexF64}(undef, 0)]
 const _buffer2 = [Vector{ComplexF64}(undef, 0)]
 
 function __init__()
-    Threads.resize_nthreads!(_buffer_el_eigen)
-    Threads.resize_nthreads!(_buffer_el_velocity)
-    Threads.resize_nthreads!(_buffer_el_velocity_tmp)
-    Threads.resize_nthreads!(_buffer_ph_velocity)
-    Threads.resize_nthreads!(_buffer_ph_velocity_tmp)
-    Threads.resize_nthreads!(_buffer_ph_eigen)
-    Threads.resize_nthreads!(_buffer_eph_Rq_to_kq)
-    Threads.resize_nthreads!(_buffer_eph_Rq_to_kq_tmp)
-    Threads.resize_nthreads!(_buffer_eph_kR_to_kq)
-    Threads.resize_nthreads!(_buffer_eph_kR_to_kq_tmp)
     Threads.resize_nthreads!(_buffer1)
     Threads.resize_nthreads!(_buffer2)
 end
 
 """
-    _get_buffer(buffer::Vector{Array{T, N}}, size_needed::NTuple{N, Int}) where {T, N}
-Get preallocated buffer in a thread-safe way.
-Resize buffer if the size is different from the needed size"""
-function _get_buffer(buffer::Vector{Array{T, N}}, size_needed::NTuple{N, Int}) where {T, N}
+    _get_buffer(buffer::Vector{Vector{T, N}}, dims::NTuple{N, Int}) where {T, N}
+Get preallocated buffer as a ReshapedArray in a thread-safe way.
+Resize buffer if the allocated size is smaller than the requested size"""
+function _get_buffer(buffer::Vector{Vector{T}}, dims::NTuple{N, Int}) where {T, N}
     tid = Threads.threadid()
-    if size(buffer[tid]) != size_needed
-        buffer[tid] = zeros(T, size_needed)
+    if length(buffer[tid]) < prod(dims)
+        resize!(buffer[tid], prod(dims))
     end
-    buffer[tid]
-end
-
-"""
-    _get_buffer(buffer::Vector{Vector{T, N}}, size::NTuple{N, Int}) where {T, N}
-Get preallocated buffer in a thread-safe way.
-Resize buffer if the size is different from the needed size"""
-function _get_buffer(buffer::Vector{Vector{T}}, size::NTuple{N, Int}) where {T, N}
-    tid = Threads.threadid()
-    if length(buffer[tid]) < prod(size)
-        resize!(buffer[tid], prod(size))
-    end
-    Base.ReshapedArray(buffer[tid], size, ())
+    Base.ReshapedArray(buffer[tid], dims, ())
 end
 
 # =============================================================================
@@ -94,8 +58,7 @@ Compute electron eigenenergy and eigenvector.
     @assert size(values) == (nw,)
     @assert size(vectors) == (nw, nw)
 
-    hk = _get_buffer(_buffer_el_eigen, (nw, nw))
-
+    hk = _get_buffer(_buffer1, (nw, nw))
     get_fourier!(hk, el_ham, xk, mode=fourier_mode)
     solve_eigen_el!(values, vectors, hk)
     nothing
@@ -108,8 +71,7 @@ end
     # FIXME: Names get_el_eigen_valueonly! and solve_eigen_el_valueonly! are confusing.
     @assert size(values) == (nw,)
 
-    hk = _get_buffer(_buffer_el_eigen, (nw, nw))
-
+    hk = _get_buffer(_buffer1, (nw, nw))
     get_fourier!(hk, el_ham, xk, mode=fourier_mode)
     solve_eigen_el_valueonly!(values, hk)
     nothing
@@ -129,9 +91,8 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
     nband = size(uk, 2)
     @assert size(velocity_diag) == (3, nband)
 
-    vk = _get_buffer(_buffer_el_velocity, (nw, nw, 3))
-    tmp_full = _get_buffer(_buffer_el_velocity_tmp, (nw, nw))
-    tmp = view(tmp_full, :, 1:nband)
+    vk = _get_buffer(_buffer1, (nw, nw, 3))
+    tmp = _get_buffer(_buffer2, (nw, nband))
 
     get_fourier!(vk, el_ham_R, xk, mode=fourier_mode)
 
@@ -159,9 +120,8 @@ Compute electron band velocity using the Berry connection formula:
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)
 
-    vk = _get_buffer(_buffer_el_velocity, (nw, nw, 3))
-    tmp_full = _get_buffer(_buffer_el_velocity_tmp, (nw, nw))
-    tmp = view(tmp_full, :, 1:nband)
+    vk = _get_buffer(_buffer1, (nw, nw, 3))
+    tmp = _get_buffer(_buffer2, (nw, nband))
 
     get_fourier!(vk, el_ham_R, xk, mode=fourier_mode)
 
@@ -199,9 +159,8 @@ TODO: Can we reduce code duplication with get_el_velocity_berry_connection?
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)
 
-    vk = _get_buffer(_buffer_el_velocity, (nw, nw, 3))
-    tmp_full = _get_buffer(_buffer_el_velocity_tmp, (nw, nw))
-    tmp = view(tmp_full, :, 1:nband)
+    vk = _get_buffer(_buffer1, (nw, nw, 3))
+    tmp = _get_buffer(_buffer2, (nw, nband))
 
     get_fourier!(vk, el_vel, xk, mode=fourier_mode)
 
@@ -252,7 +211,7 @@ end
     @assert size(mass) == (nmodes,)
     @assert ph_dyn.ndata == nmodes^2
 
-    dynq = _get_buffer(_buffer_ph_eigen, (nmodes, nmodes))
+    dynq = _get_buffer(_buffer1, (nmodes, nmodes))
 
     get_fourier!(dynq, ph_dyn, xq, mode=fourier_mode)
     if ! isnothing(polar)
@@ -281,8 +240,8 @@ Compute electron band velocity, only the band-diagonal part.
     @assert size(uk) == (nmodes, nmodes)
     @assert size(vel_diag) == (3, nmodes)
 
-    vk = _get_buffer(_buffer_ph_velocity, (nmodes, nmodes, 3))
-    tmp = _get_buffer(_buffer_ph_velocity_tmp, (nmodes, nmodes))
+    vk = _get_buffer(_buffer1, (nmodes, nmodes, 3))
+    tmp = _get_buffer(_buffer2, (nmodes, nmodes))
 
     get_fourier!(vk, ph_dyn_R, xk, mode=fourier_mode)
 
@@ -324,8 +283,8 @@ Multithreading is not supported because of large buffer array size.
     @assert epobj_eRpq.ndata == nbasis * nmodes
     @assert epmat.ndata == nbasis * nmodes * nr_el
 
-    ep_Rq = _get_buffer(_buffer_nothreads_eph_RR_to_Rq, (nbasis, nmodes, nr_el))
-    ep_Rq_tmp = _get_buffer(_buffer_nothreads_eph_RR_to_Rq_tmp, (nbasis, nmodes))
+    ep_Rq = _get_buffer(_buffer_nothreads1, (nbasis, nmodes, nr_el))
+    ep_Rq_tmp = _get_buffer(_buffer1, (nbasis, nmodes))
 
     get_fourier!(ep_Rq, epmat, xq, mode=fourier_mode)
 
@@ -356,9 +315,8 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
     @assert size(ukq, 2) == nbandkq
     @assert epobj_eRpq.ndata == size(ukq, 1) * size(uk, 1) * nmodes
 
-    ep_kq_wan = _get_buffer(_buffer_eph_Rq_to_kq, (size(ukq, 1), size(uk, 1), nmodes))
-    tmp_full = _get_buffer(_buffer_eph_Rq_to_kq_tmp, (size(ukq, 1), size(uk, 1)))
-    tmp = view(tmp_full, :, 1:nbandk)
+    ep_kq_wan = _get_buffer(_buffer1, (size(ukq, 1), size(uk, 1), nmodes))
+    tmp = _get_buffer(_buffer2, (size(ukq, 1), nbandk))
 
     get_fourier!(ep_kq_wan, epobj_eRpq, xk, mode=fourier_mode)
 
@@ -400,12 +358,9 @@ Multithreading is not supported because of large buffer array size.
     @assert size(epobj_ekpR.op_r, 1) >= ndata
     @assert Threads.threadid() == 1
 
-    # FIXME: ep_kR2 is used to avoid passing non-contiguous view to update_op_r!. But
-    # the downside is needing more memory... Can this be fixed?
-    ep_kR = _get_buffer(_buffer_nothreads_eph_RR_to_kR, (nw, nw, nmodes, nr_ep))
-    ep_kR2 = _get_buffer(_buffer_nothreads_eph_RR_to_kR2, (nw, nband, nmodes))
-    ep_kR_tmp_full = _get_buffer(_buffer_nothreads_eph_RR_to_kR_tmp, (nw, nw))
-    ep_kR_tmp = view(ep_kR_tmp_full, :, 1:nband)
+    ep_kR = _get_buffer(_buffer_nothreads1, (nw, nw, nmodes, nr_ep))
+    ep_kR2 = _get_buffer(_buffer1, (nw, nband, nmodes))
+    ep_kR_tmp = _get_buffer(_buffer2, (nw, nband))
 
     get_fourier!(ep_kR, epmat, xk, mode=fourier_mode)
 
