@@ -7,6 +7,8 @@ using Base.Threads
 "Real-space data with reduced dimensions for mode=gridopt in get_fourier"
 @with_kw mutable struct GridOpt{T<:Real}
     is_initialized::Bool = false
+    ndata::Int = 0 # Size of the Fourier-transformed data matrix
+
     # Data for (k1, R2, R3)
     k1::Float64 = NaN
     nr_23::Int = 0
@@ -55,25 +57,26 @@ function gridopt_initialize_irvec!(gridopt, irvec)
 
 end
 
-function gridopt_initialize!(gridopt::GridOpt{T}, irvec, op_r) where {T}
+function gridopt_initialize!(gridopt::GridOpt{T}, obj) where {T}
     # Here, we assume that irvec is sorted according to (r[3], r[2], r[1]).
 
-    gridopt_initialize_irvec!(gridopt, irvec)
+    gridopt_initialize_irvec!(gridopt, obj.irvec)
+    gridopt.ndata = obj.ndata
 
     # Initialize 23
-    gridopt.op_r_23 = zeros(Complex{T}, size(op_r, 1), gridopt.nr_23)
+    gridopt.op_r_23 = zeros(Complex{T}, size(obj.op_r, 1), gridopt.nr_23)
 
     # Initialize 3
-    gridopt.op_r_3 = zeros(Complex{T}, size(op_r, 1), gridopt.nr_3)
+    gridopt.op_r_3 = zeros(Complex{T}, size(obj.op_r, 1), gridopt.nr_3)
 
     # Initialize cache data
-    gridopt.phase = zeros(Complex{T}, length(irvec))
+    gridopt.phase = zeros(Complex{T}, length(obj.irvec))
     gridopt.phase_23 = zeros(Complex{T}, gridopt.nr_23)
     gridopt.phase_3 = zeros(Complex{T}, gridopt.nr_3)
     gridopt.rdotk_3 = zeros(T, gridopt.nr_3)
 
     @info "Initializing gridopt"
-    @info "nr=$(length(irvec)), nr_23=$(gridopt.nr_23), nr_3=$(gridopt.nr_3)"
+    @info "nr=$(length(obj.irvec)), nr_23=$(gridopt.nr_23), nr_3=$(gridopt.nr_3)"
 
     gridopt.is_initialized = true
 end
@@ -87,8 +90,9 @@ end
     for (ir, r) in enumerate(irvec)
         phase[ir] = cis(2pi * k * r[1])
     end
+    rng_data = 1:gridopt.ndata
     @views @inbounds for (ir_23, ir_rng) in enumerate(gridopt.irmap_rng_23)
-        mul!(gridopt.op_r_23[:, ir_23], op_r[:, ir_rng], phase[ir_rng])
+        mul!(gridopt.op_r_23[rng_data, ir_23], op_r[rng_data, ir_rng], phase[ir_rng])
     end
 end
 
@@ -100,8 +104,9 @@ end
     for (ir, r) in enumerate(gridopt.irvec_23)
         phase[ir] = cis(2pi * k * r[1])
     end
+    rng_data = 1:gridopt.ndata
     @views @inbounds for (ir_3, ir_rng) in enumerate(gridopt.irmap_rng_3)
-        mul!(gridopt.op_r_3[:, ir_3], gridopt.op_r_23[:, ir_rng], phase[ir_rng])
+        mul!(gridopt.op_r_3[rng_data, ir_3], gridopt.op_r_23[rng_data, ir_rng], phase[ir_rng])
     end
 end
 
@@ -111,6 +116,6 @@ end
     rdotk .= 2pi .* k .* gridopt.irvec_3
     phase .= cis.(rdotk)
 
-    mul!(op_k_1d, gridopt.op_r_3, phase)
+    @views mul!(op_k_1d, gridopt.op_r_3[1:gridopt.ndata, :], phase)
     return
 end

@@ -7,7 +7,7 @@ module WanToBloch
 using LinearAlgebra
 using EPW: @timing
 using EPW: AbstractWannierObject, WannierObject
-using EPW: get_fourier!, update_op_r!, reset_obj!
+using EPW: get_fourier!, update_op_r!, reset_gridopts_in_obj!
 using EPW: solve_eigen_el!, solve_eigen_el_valueonly!, solve_eigen_ph!, solve_eigen_ph_valueonly!
 using EPW: dynmat_dipole!
 
@@ -393,15 +393,16 @@ Multithreading is not supported because of large buffer array size.
     get_fourier!(ep_kR, epmat, xk, mode=fourier_mode)
 
     # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
-    ndata = nw * nband_bound * nmodes
+    ndata = nw * nband * nmodes
     for ir in 1:nr_ep
         @views @inbounds for imode in 1:nmodes
             mul!(ep_kR_tmp, ep_kR[:, :, imode, ir], uk)
             ep_kR2[:, 1:nband, imode] .= ep_kR_tmp
         end
-        epobj_ekpR.op_r[:, ir] .= Base.ReshapedArray(ep_kR2, (ndata,), ())
+        epobj_ekpR.op_r[1:ndata, ir] .= Base.ReshapedArray(ep_kR2[:, 1:nband, :], (ndata,), ())
     end
-    reset_obj!(epobj_ekpR)
+    epobj_ekpR.ndata = ndata
+    reset_gridopts_in_obj!(epobj_ekpR)
     nothing
 end
 
@@ -424,16 +425,17 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
     """
     size(ep_kq) = (nbandkq, nbandk, nmodes)
     size(epobj_ekpR.op_r) = (nw * nband_bound * nmodes, nr_ep)
+    epobj_ekpR.ndata = nw * nbandk * nmodes
     size(ukq) = (nw, nbandkq)
     size(u_ph) = (nmodes, nmodes)
     """
     nbandkq, nbandk, nmodes = size(ep_kq)
     nw = size(ukq, 1)
     nmodes = size(u_ph, 1)
-    nband_bound = div(epobj_ekpR.ndata, nw * nmodes)
     @assert size(ukq, 2) == nbandkq
+    @assert epobj_ekpR.ndata == nw * nbandk * nmodes
 
-    ep_kq_wan = _get_buffer(_buffer_eph_kR_to_kq, (nw, nband_bound, nmodes))
+    ep_kq_wan = _get_buffer(_buffer_eph_kR_to_kq, (nw, nbandk, nmodes))
     tmp_full = _get_buffer(_buffer_eph_kR_to_kq_tmp, (nw, nw))
     tmp = view(tmp_full, 1:nbandkq, 1:nbandk)
 

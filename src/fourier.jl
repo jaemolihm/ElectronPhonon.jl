@@ -32,7 +32,7 @@ Base.@kwdef mutable struct WannierObject{T} <: AbstractWannierObject{T}
     nr::Int
     irvec::Vector{Vec3{Int}}
     op_r::Array{Complex{T},2}
-    ndata::Int # First dimension of op_r
+    ndata::Int # Size of the Fourier-transformed data matrix
 
     # For gridopt Fourier transform
     gridopts::Vector{GridOpt{T}}
@@ -93,13 +93,14 @@ function update_op_r!(obj, op_r_new)
     @assert eltype(obj.op_r) == eltype(op_r_new)
     # Reshape and set obj.op_r .= op_r_new without allocation
     obj.op_r .= Base.ReshapedArray(op_r_new, size(obj.op_r), ())
-    reset_obj!(obj)
+    reset_gridopts_in_obj!(obj)
 end
 
-function reset_obj!(obj::AbstractWannierObject)
+function reset_gridopts_in_obj!(obj::AbstractWannierObject)
     for gridopt in obj.gridopts
         gridopt.k1 = NaN
         gridopt.k2 = NaN
+        gridopt.ndata = obj.ndata
     end
 end
 
@@ -145,7 +146,7 @@ end
 "Fourier transform real-space operator to momentum-space operator with a
 pre-computed phase factor"
 function _get_fourier_normal!(op_k_1d, obj::AbstractWannierObject{T}, xk, phase) where {T}
-    mul!(op_k_1d, obj.op_r, phase)
+    @views mul!(op_k_1d, obj.op_r[1:obj.ndata, :], phase)
     return
 end
 
@@ -155,7 +156,7 @@ function _get_fourier_gridopt!(op_k_1d, obj::AbstractWannierObject{T}, xk) where
     gridopt = obj.gridopts[tid]
 
     if ! gridopt.is_initialized
-        gridopt_initialize!(gridopt, obj.irvec, obj.op_r)
+        gridopt_initialize!(gridopt, obj)
     end
 
     if ! isapprox(xk[1], gridopt.k1, atol=1.e-9)
