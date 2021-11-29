@@ -86,13 +86,10 @@ function get_phase_expikr!(obj, xk, tid)
 end
 
 function update_op_r!(obj, op_r_new)
-    # Regarding the use of ReshapedArray, see
-    # https://discourse.julialang.org/t/passing-views-to-function-without-allocation/51992/12
-    # https://github.com/ITensor/NDTensors.jl/issues/32
     @assert length(obj.op_r) == length(op_r_new)
     @assert eltype(obj.op_r) == eltype(op_r_new)
     # Reshape and set obj.op_r .= op_r_new without allocation
-    obj.op_r .= Base.ReshapedArray(op_r_new, size(obj.op_r), ())
+    obj.op_r .= _reshape(op_r_new, size(obj.op_r))
     reset_gridopts_in_obj!(obj)
 end
 
@@ -106,14 +103,10 @@ end
 
 "Fourier transform real-space operator to momentum-space operator"
 @timing "get_fourier" function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk; mode="normal") where {T}
-    # Regarding the use of ReshapedArray, see
-    # https://discourse.julialang.org/t/passing-views-to-function-without-allocation/51992/12
-    # https://github.com/ITensor/NDTensors.jl/issues/32
-
     @assert eltype(op_k) == Complex{T}
     @assert length(op_k) == obj.ndata
 
-    op_k_1d = Base.ReshapedArray(op_k, (length(op_k),), ())
+    op_k_1d = _reshape(op_k, (length(op_k),))
 
     if mode == "normal"
         phase = get_phase_expikr!(obj, xk, threadid())
@@ -129,16 +122,12 @@ end
 "Fourier transform real-space operator to momentum-space operator using a
 pre-computed phase factor"
 @timing "get_fourier" function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk, phase; mode="normal") where {T}
-    # Regarding the use of ReshapedArray, see
-    # https://discourse.julialang.org/t/passing-views-to-function-without-allocation/51992/12
-    # https://github.com/ITensor/NDTensors.jl/issues/32
-
     @assert eltype(op_k) == Complex{T}
     @assert length(op_k) == obj.ndata
     @assert eltype(phase) == Complex{T}
     @assert length(phase) == obj.nr
 
-    op_k_1d = Base.ReshapedArray(op_k, (length(op_k),), ())
+    op_k_1d = _reshape(op_k, (length(op_k),))
 
     _get_fourier_normal!(op_k_1d, obj, xk, phase)
 end
