@@ -10,6 +10,7 @@ using Test
     include("test_hdf_io.jl")
     include("test_symmetry_operator.jl")
     include("test_velocity.jl")
+    include("test_epmat.jl")
     include("test_plot_bandstructure.jl")
 
     # Integration tests
