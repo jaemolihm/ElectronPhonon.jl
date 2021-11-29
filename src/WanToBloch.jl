@@ -41,6 +41,9 @@ const _buffer_eph_Rq_to_kq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
 const _buffer_eph_kR_to_kq = [Array{ComplexF64, 3}(undef, 0, 0, 0)]
 const _buffer_eph_kR_to_kq_tmp = [Array{ComplexF64, 2}(undef, 0, 0)]
 
+const _buffer1 = [Vector{ComplexF64}(undef, 0)]
+const _buffer2 = [Vector{ComplexF64}(undef, 0)]
+
 function __init__()
     Threads.resize_nthreads!(_buffer_el_eigen)
     Threads.resize_nthreads!(_buffer_el_velocity)
@@ -52,6 +55,8 @@ function __init__()
     Threads.resize_nthreads!(_buffer_eph_Rq_to_kq_tmp)
     Threads.resize_nthreads!(_buffer_eph_kR_to_kq)
     Threads.resize_nthreads!(_buffer_eph_kR_to_kq_tmp)
+    Threads.resize_nthreads!(_buffer1)
+    Threads.resize_nthreads!(_buffer2)
 end
 
 """
@@ -64,6 +69,18 @@ function _get_buffer(buffer::Vector{Array{T, N}}, size_needed::NTuple{N, Int}) w
         buffer[tid] = zeros(T, size_needed)
     end
     buffer[tid]
+end
+
+"""
+    _get_buffer(buffer::Vector{Vector{T, N}}, size::NTuple{N, Int}) where {T, N}
+Get preallocated buffer in a thread-safe way.
+Resize buffer if the size is different from the needed size"""
+function _get_buffer(buffer::Vector{Vector{T}}, size::NTuple{N, Int}) where {T, N}
+    tid = Threads.threadid()
+    if length(buffer[tid]) < prod(size)
+        resize!(buffer[tid], prod(size))
+    end
+    Base.ReshapedArray(buffer[tid], size, ())
 end
 
 # =============================================================================
@@ -434,9 +451,8 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
     @assert size(ukq, 2) == nbandkq
     @assert epobj_ekpR.ndata == nw * nbandk * nmodes
 
-    ep_kq_wan = _get_buffer(_buffer_eph_kR_to_kq, (nw, nbandk, nmodes))
-    tmp_full = _get_buffer(_buffer_eph_kR_to_kq_tmp, (nw, nw))
-    tmp = view(tmp_full, 1:nbandkq, 1:nbandk)
+    ep_kq_wan = _get_buffer(_buffer1, (nw, nbandk, nmodes))
+    tmp = _get_buffer(_buffer2, (nbandkq, nbandk))
 
     get_fourier!(ep_kq_wan, epobj_ekpR, xq, mode=fourier_mode)
 
