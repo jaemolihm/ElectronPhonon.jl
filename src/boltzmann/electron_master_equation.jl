@@ -37,7 +37,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     S_in = [zeros(Complex{FT}, el_i.n, el_f.n) for _ in 1:nT]
 
     for ik in 1:el_i.kpts.n
-        mpi_isroot() && mod(ik, 100) == 0 && println("Calculating scattering for group $ik")
+        mpi_isroot() && mod(ik, 10) == 0 && println("Calculating scattering for group $ik")
 
         @timing "read scat" scat = load_BTData(open_group(group_scattering, "ik$ik"), QMEElPhScatteringData{FT})
 

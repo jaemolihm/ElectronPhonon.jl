@@ -73,7 +73,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     gauge = zeros(Complex{FT}, nband, nband, nk)
     is_degenerate = zeros(Bool, nband, nband, nk) # FIXME: Cannot use BitVector because HDF5.jl does not support it.
 
-    if symmetry !== nothing
+    @timing "gauge" if symmetry !== nothing
         # Write symmetry object to file
         g = create_group(fid_btedata, "gauge/symmetry")
         dump_BTData(g, symmetry)
@@ -207,7 +207,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
             # Compute electron-phonon coupling
             get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
-            if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
+            @timing "dipole" if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
             end

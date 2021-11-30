@@ -12,7 +12,7 @@ using HDF5
     for semiclassical Boltzmann equation(default: false)
 - `qme_offdiag_cutoff`: Maximum interband energy difference to include the off-diagonal part. Used only if `run_for_qme`==true.
 """
-function run_transport(
+@timing "run_transport" function run_transport(
         model::ModelEPW{FT},
         k_input::Union{NTuple{3,Int}, AbstractKpoints},
         q_input::Union{NTuple{3,Int}, AbstractKpoints};
@@ -107,7 +107,7 @@ function run_transport(
 
     if run_for_qme
         btedata_prefix = joinpath(folder, "btedata_coherence")
-        compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq,
+        @timing "e-ph main" compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq,
             GridKpoints(kpts), GridKpoints(kqpts), qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
             average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff; kwargs...)
     else
