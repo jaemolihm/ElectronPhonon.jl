@@ -271,12 +271,11 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
     δρ = zeros(Vec3{Complex{FT}}, el_i.n, length(params.Tlist))
 
     drive_efield = zeros(Vec3{Complex{FT}}, el_i.n)
-    δρ_iter_old = zeros(Vec3{Complex{FT}}, el_i.n)
-    δρ_iter_new = zeros(Vec3{Complex{FT}}, el_i.n)
+    δρ_iter = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter_tmp = zeros(Vec3{Complex{FT}}, el_i.n)
 
     # setup map_i_to_f. This is needed only when solving the linear equation iteratively.
-    if scat_mat_in !== nothing
+    @timing "unfold map" if scat_mat_in !== nothing
         if symmetry === nothing
             map_i_to_f = _qme_linear_response_unfold_map_nosym(el_i, el_f, filename)
         else
@@ -286,7 +285,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
 
     for (iT, (T, μ)) in enumerate(zip(params.Tlist, params.μlist))
         # Compute the E-field drive term
-        for i in 1:el_i.n
+        @timing "drive_efield" for i in 1:el_i.n
             e1, e2 = el_i.e1[i], el_i.e2[i]
             if abs(e1 - e2) < EPW.electron_degen_cutoff
                 drive_efield[i] = - el_i.v[i] * occ_fermion_derivative(e1 - μ, T)
@@ -312,26 +311,23 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
         # QME-exact: Solve (S_out + S_in) * δρ + drive_efield = 0
         # Solve iteratively the fixed point equation δρ = S_out^{-1} * (-S_in * δρ - drive_efield)
         if scat_mat_in !== nothing
-            S_in = scat_mat_in[iT]
+            # Scattering matrix: first unfold to el_f and then apply scat_mat_in.
+            S_in = scat_mat_in[iT] * map_i_to_f
 
             # Initial guess: SERTA density matrix
-            @views δρ_iter_new .= δρ_serta[:, iT]
-            σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
+            @views δρ_iter .= δρ_serta[:, iT]
+            σ_new = symmetrize(occupation_to_conductivity(δρ_iter, el_i, params), symmetry)
 
             # Fixed-point iteration
             for iter in 1:max_iter
                 σ_old = σ_new
-                δρ_iter_old .= δρ_iter_new
 
-                # Unfold from el_i to el_f
-                δρ_iter_old_f = map_i_to_f * δρ_iter_old
-
-                # Compute δρ_iter_new = S_out^{-1} * (-S_in * δρ_iter_old - drive_efield)
-                #                     = - S_out^{-1} * S_in * δρ_iter_old + δρ_serta[:, iT]
-                mul!(δρ_iter_tmp, S_in, δρ_iter_old_f, -1, 0)
-                _solve_qme_direct!(δρ_iter_new, S_serta_factorize, δρ_iter_tmp)
-                @views δρ_iter_new .+= δρ_serta[:, iT]
-                σ_new = symmetrize(occupation_to_conductivity(δρ_iter_new, el_i, params), symmetry)
+                # Compute δρ_iter_next = S_out^{-1} * (-S_in * δρ_iter_prev - drive_efield)
+                #                      = - S_out^{-1} * S_in * δρ_iter_prev + δρ_serta[:, iT]
+                @timing "S_in" mul!(δρ_iter_tmp, S_in, δρ_iter, -1, 0)
+                _solve_qme_direct!(δρ_iter, S_serta_factorize, δρ_iter_tmp)
+                @views δρ_iter .+= δρ_serta[:, iT]
+                σ_new = symmetrize(occupation_to_conductivity(δρ_iter, el_i, params), symmetry)
 
                 # Check convergence
                 if norm(σ_new - σ_old) / norm(σ_new) < rtol
@@ -343,7 +339,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
             end
 
             σ[:, :, iT] .= σ_new
-            δρ[:, iT] .= δρ_iter_new
+            δρ[:, iT] .= δρ_iter
         else
             σ[:, :, iT] .= NaN
             # δρ[:, iT] .= NaN # FIXME
@@ -353,7 +349,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
 end
 
 # Solve S * δρ = δρ0 using left division.
-function _solve_qme_direct!(δρ::AbstractVector{Vec3{Complex{FT}}}, S, δρ0::AbstractVector{Vec3{Complex{FT}}}) where FT
+@timing "_solve_qme_direct!" function _solve_qme_direct!(δρ::AbstractVector{Vec3{Complex{FT}}}, S, δρ0::AbstractVector{Vec3{Complex{FT}}}) where FT
     # Here, we use \ although it allocates because non-allocating ldiv! not supported for
     # sparse matrix: https://github.com/JuliaLang/SuiteSparse.jl/issues/19
     @views for a in 1:3
