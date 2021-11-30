@@ -279,6 +279,8 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
     δρ_iter = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter_tmp = zeros(Vec3{Complex{FT}}, el_i.n)
 
+    inds_exclude = abs.(el_i.e1 .- el_i.e2) .> qme_offdiag_cutoff
+
     # setup map_i_to_f. This is needed only when solving the linear equation iteratively.
     @timing "unfold map" if scat_mat_in !== nothing
         if symmetry === nothing
@@ -298,6 +300,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
                 drive_efield[i] = - el_i.v[i] * (occ_fermion(e1 - μ, T) - occ_fermion(e2 - μ, T)) / (e1 - e2)
             end
         end
+        drive_efield[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))
 
         # Add the scattering-out term and the bare Hamiltonian term into S_serta
         S_serta = copy(scat_mat_out[iT])
@@ -311,6 +314,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
 
         # QME-SERTA: Solve S_out * δρ + drive_efield = 0
         @views _solve_qme_direct!(δρ_serta[:, iT], S_serta_factorize, .-drive_efield)
+        δρ_serta[inds_exclude, iT] .= Ref(zero(Vec3{Complex{FT}}))
         σ_serta[:, :, iT] .= symmetrize(occupation_to_conductivity(δρ_serta[:, iT], el_i, params), symmetry)
 
         # QME-exact: Solve (S_out + S_in) * δρ + drive_efield = 0
@@ -331,7 +335,9 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
                 # Compute δρ_iter_next = S_out^{-1} * (-S_in * δρ_iter_prev - drive_efield)
                 #                      = - S_out^{-1} * S_in * δρ_iter_prev + δρ_serta[:, iT]
                 @timing "S_in" mul!(δρ_iter_tmp, S_in, δρ_iter, -1, 0)
+                δρ_iter_tmp[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))
                 _solve_qme_direct!(δρ_iter, S_serta_factorize, δρ_iter_tmp)
+                δρ_iter[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))
                 @views δρ_iter .+= δρ_serta[:, iT]
                 σ_new = symmetrize(occupation_to_conductivity(δρ_iter, el_i, params), symmetry)
                 σ_iter[iter+1, :, :, iT] .= σ_new

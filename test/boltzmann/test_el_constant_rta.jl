@@ -179,9 +179,13 @@ using LinearAlgebra
 
         # Solve QME and compute mobility
         out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out; symmetry, filename);
-        @test out_crta.σ_full ≈ out_qme.σ_serta
-        @test !(out_crta.σ_intra_degen ≈ out_qme.σ_serta)
+        @test out_qme.σ_serta ≈ out_crta.σ_full
+        @test ! (out_qme.σ_serta ≈ out_crta.σ_intra_degen)
 
-        # TODO: Add test with qme_offdiag_cutoff set at the level of solve_electron_qme
+        # QME with qme_offdiag_cutoff set to include only degenerate bands. Should be equivalent
+        # to the σ_intra_degen case of CRTA.
+        out_qme_only_degen = solve_electron_qme(transport_params, el_i, el_f, S_out; symmetry, filename, qme_offdiag_cutoff=EPW.electron_degen_cutoff);
+        @test out_qme_only_degen.σ_serta ≈ out_crta.σ_intra_degen
+        @test ! (out_qme_only_degen.σ_serta ≈ out_crta.σ_full)
     end
 end
