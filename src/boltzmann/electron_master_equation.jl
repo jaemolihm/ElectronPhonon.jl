@@ -36,7 +36,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     for ik in 1:el_i.kpts.n
         mpi_isroot() && mod(ik, 100) == 0 && println("Calculating scattering for group $ik")
 
-        scat = load_BTData(open_group(group_scattering, "ik$ik"), QMEElPhScatteringData{FT})
+        @timing "read scat" scat = load_BTData(open_group(group_scattering, "ik$ik"), QMEElPhScatteringData{FT})
 
         # 1. Scattering-out term
         # P_{ib1, ib2} = sum_{ikq, imode, jb, ±} g*_{jb, ib1} * g_{jb, ib2}
@@ -45,7 +45,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
         #                (n_imode + 1 - f_jb)   (-)
         # dδρ_{ib1, ib2}/dt = - [P, δρ]_{ib1, ib2} / 2
 
-        for ib2 in 1:el_i.nband, ib1 in 1:el_i.nband
+        @timing "scat out" for ib2 in 1:el_i.nband, ib1 in 1:el_i.nband
             # Calculate P_{ib1, ib2} only if ∃ ib3 such that both (ib1, ib3) and (ib2, ib3)
             # or both (ib3, ib1) and (ib3, ib2) are in el_i.
             found = false
@@ -80,6 +80,9 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                 ind_ph_list = get(ind_ph_map, CI(xq_int...), nothing)
                 ind_ph_list === nothing && continue # skip if this xq is not in ph
 
+                scat_ikq = get(scat, ikq, nothing)
+                scat_ikq === nothing && continue
+
                 p_mel_ikq .= 0
 
                 for imode in 1:ph.nband
@@ -90,9 +93,9 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     ω_ph < EPW.omega_acoustic && continue
 
                     # Matrix element factor
-                    s1 = get(scat, CI(ik, ib1, ikq, jb, imode), nothing)
+                    s1 = get(scat_ikq, CI(ib1, jb, imode), nothing)
                     s1 === nothing && continue
-                    s2 = get(scat, CI(ik, ib2, ikq, jb, imode), nothing)
+                    s2 = get(scat_ikq, CI(ib2, jb, imode), nothing)
                     s2 === nothing && continue
                     gg = conj(s1.mel) * s2.mel
 
@@ -133,7 +136,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
         #                    * (n_imode +     (f_jb1 + f_jb2) / 2 )       (+)
         #                      (n_imode + 1 - (f_jb1 + f_jb2) / 2 )       (-)
 
-        for ib2 in 1:el_i.nband, ib1 in 1:el_i.nband
+        @timing "scat in" for ib2 in 1:el_i.nband, ib1 in 1:el_i.nband
             # Calculate only if (ib1, ib2, ik) ∈ el_i
             ind_el_i = get(indmap_el_i, CI(ib1, ib2, ik), nothing)
             ind_el_i === nothing && continue
@@ -153,6 +156,9 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                 ind_ph_list = get(ind_ph_map, CI(xq_int...), nothing)
                 ind_ph_list === nothing && continue # skip if this xq is not in ph
 
+                scat_ikq = get(scat, ikq, nothing)
+                scat_ikq === nothing && continue
+
                 s_mel_ikq .= 0
 
                 for imode in 1:ph.nband
@@ -163,9 +169,9 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     ω_ph < EPW.omega_acoustic && continue
 
                     # Matrix element factor
-                    s1 = get(scat, CI(ik, ib1, ikq, jb1, imode), nothing)
+                    s1 = get(scat_ikq, CI(ib1, jb1, imode), nothing)
                     s1 === nothing && continue
-                    s2 = get(scat, CI(ik, ib2, ikq, jb2, imode), nothing)
+                    s2 = get(scat_ikq, CI(ib2, jb2, imode), nothing)
                     s2 === nothing && continue
                     gg = conj(s1.mel) * s2.mel
 
