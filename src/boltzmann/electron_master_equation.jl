@@ -4,6 +4,9 @@ using SparseArrays
 
 # TODO: Modularize. Make QMEModel type.
 
+# TODO: Accessing scat[ikq][CI(ib, jb, imode)] is the bottleneck (takes half of the time in
+#       scat_in). Need to optimize.
+
 export compute_qme_scattering_matrix, solve_electron_qme
 
 """
@@ -75,13 +78,12 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                 e_f = el_f.e1[ind_el_f]
 
                 ikq = el_f.ik[ind_el_f]
+                ikq > length(scat) && continue # skip if this ikq is not in scat
+
                 xq = el_f.kpts.vectors[ikq] - el_i.kpts.vectors[ik]
                 xq_int = mod.(round.(Int, xq .* ph.ngrid), ph.ngrid)
                 ind_ph_list = get(ind_ph_map, CI(xq_int...), nothing)
                 ind_ph_list === nothing && continue # skip if this xq is not in ph
-
-                scat_ikq = get(scat, ikq, nothing)
-                scat_ikq === nothing && continue
 
                 p_mel_ikq .= 0
 
@@ -93,9 +95,9 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     ω_ph < EPW.omega_acoustic && continue
 
                     # Matrix element factor
-                    s1 = get(scat_ikq, CI(ib1, jb, imode), nothing)
+                    s1 = get(scat[ikq], CI(ib1, jb, imode), nothing)
                     s1 === nothing && continue
-                    s2 = get(scat_ikq, CI(ib2, jb, imode), nothing)
+                    s2 = get(scat[ikq], CI(ib2, jb, imode), nothing)
                     s2 === nothing && continue
                     gg = conj(s1.mel) * s2.mel
 
@@ -151,13 +153,12 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
 
                 # Find q point
                 ikq = el_f.ik[ind_el_f]
+                ikq > length(scat) && continue # skip if this ikq is not in scat
+
                 xq = el_f.kpts.vectors[ikq] - el_i.kpts.vectors[ik]
                 xq_int = mod.(round.(Int, xq .* ph.ngrid), ph.ngrid)
                 ind_ph_list = get(ind_ph_map, CI(xq_int...), nothing)
                 ind_ph_list === nothing && continue # skip if this xq is not in ph
-
-                scat_ikq = get(scat, ikq, nothing)
-                scat_ikq === nothing && continue
 
                 s_mel_ikq .= 0
 
@@ -169,9 +170,9 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     ω_ph < EPW.omega_acoustic && continue
 
                     # Matrix element factor
-                    s1 = get(scat_ikq, CI(ib1, jb1, imode), nothing)
+                    s1 = get(scat[ikq], CI(ib1, jb1, imode), nothing)
                     s1 === nothing && continue
-                    s2 = get(scat_ikq, CI(ib2, jb2, imode), nothing)
+                    s2 = get(scat[ikq], CI(ib2, jb2, imode), nothing)
                     s2 === nothing && continue
                     gg = conj(s1.mel) * s2.mel
 

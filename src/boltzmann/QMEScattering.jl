@@ -22,14 +22,14 @@ function load_BTData(f, ::Type{QMEElPhScatteringData{FT}}) where FT
     @assert all(ik .== ik[1])
 
     g(mel, econv_p, econv_m) = (;mel, econv_p, econv_m)
-    scat = Dictionary{Int, QMEElPhScatteringData3{FT}}()
+    scat = Vector{QMEElPhScatteringData{FT}}()
 
     cis = CartesianIndex.(ib, jb, imode)
     gs = g.(mel, econv_p, econv_m)
     inds = falses(length(ikq))
-    @views for i in unique(ikq)
-        inds .= ikq .== i
-        insert!(scat, i, Dictionary(cis[inds], gs[inds]))
+    @views for ikq_ in 1:maximum(ikq)
+        inds .= ikq .== ikq_
+        push!(scat, Dictionary(cis[inds], gs[inds]))
     end
     scat
 end
