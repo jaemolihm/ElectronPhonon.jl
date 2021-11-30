@@ -84,6 +84,7 @@ function solve_electron_bte(el_i::EPW.BTStates{FT}, el_f::EPW.BTStates{FT}, scat
               σ = zeros(FT, 3, 3, length(params.Tlist)),
               δf_i_serta = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
               δf_i = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
+              σ_iter = fill(FT(NaN), (max_iter+1, 3, 3, length(params.Tlist))),
     )
 
     map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
@@ -97,6 +98,7 @@ function solve_electron_bte(el_i::EPW.BTStates{FT}, el_f::EPW.BTStates{FT}, scat
         # Initial guess: SERTA occupations
         δf_i = copy(δf_i_serta)
         σ = σ_serta
+        output.σ_iter[1, :, :, iT] .= σ
 
         for iter in 1:max_iter
             σ_old = σ
@@ -108,6 +110,8 @@ function solve_electron_bte(el_i::EPW.BTStates{FT}, el_f::EPW.BTStates{FT}, scat
             # Multiply scattering matrix, and
             δf_i .= (scat_mat[iT] * δf_f) ./ inv_τ_i[:, iT] .+ δf_i_serta
             σ = symmetrize(occupation_to_conductivity(δf_i, el_i, params), symmetry)
+            output.σ_iter[iter+1, :, :, iT] .= σ
+
             if norm(σ - σ_old) / norm(σ) < rtol
                 @info "iT=$iT, converged at iteration $iter"
                 break

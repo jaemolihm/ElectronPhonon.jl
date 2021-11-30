@@ -269,6 +269,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
     σ = zeros(FT, 3, 3, length(params.Tlist))
     δρ_serta = zeros(Vec3{Complex{FT}}, el_i.n, length(params.Tlist))
     δρ = zeros(Vec3{Complex{FT}}, el_i.n, length(params.Tlist))
+    σ_iter = fill(FT(NaN), (max_iter+1, 3, 3, length(params.Tlist)))
 
     drive_efield = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter = zeros(Vec3{Complex{FT}}, el_i.n)
@@ -317,6 +318,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
             # Initial guess: SERTA density matrix
             @views δρ_iter .= δρ_serta[:, iT]
             σ_new = symmetrize(occupation_to_conductivity(δρ_iter, el_i, params), symmetry)
+            σ_iter[1, :, :, iT] .= σ_new
 
             # Fixed-point iteration
             for iter in 1:max_iter
@@ -328,6 +330,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
                 _solve_qme_direct!(δρ_iter, S_serta_factorize, δρ_iter_tmp)
                 @views δρ_iter .+= δρ_serta[:, iT]
                 σ_new = symmetrize(occupation_to_conductivity(δρ_iter, el_i, params), symmetry)
+                σ_iter[iter+1, :, :, iT] .= σ_new
 
                 # Check convergence
                 if norm(σ_new - σ_old) / norm(σ_new) < rtol
@@ -345,7 +348,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, sc
             # δρ[:, iT] .= NaN # FIXME
         end
     end
-    (;σ, σ_serta, δρ_serta, δρ)
+    (;σ, σ_serta, δρ_serta, δρ, σ_iter)
 end
 
 # Solve S * δρ = δρ0 using left division.
