@@ -13,7 +13,7 @@ export compute_qme_scattering_matrix, solve_electron_qme
     compute_qme_scattering_matrix(filename, params, el_i, el_f, ph)
 Compute the scattering matrix element for quantum master equation of electrons.
 """
-function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, ph) where {FT}
+function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, ph; compute_S_in=true) where {FT}
     nT = length(params.Tlist)
 
     indmap_el_i = states_index_map(el_i)
@@ -132,6 +132,10 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
             end
         end # ib1, ib2
 
+        if ! compute_S_in
+            continue
+        end
+
         # 2. Scattering-in term
         # dδρ_{ib1,ib2,k}/dt = sum_{ikq, imode, jb1, jb2, ±} g*_{jb1, ib1} * g_{jb2, ib2}
         #                    * δ^{1/2}(e_ib1 - e_jb1 ± ω_imode) * δ^{1/2}(e_ib2 - e_jb2 ± ω_imode)
@@ -243,7 +247,7 @@ end
 
 """
     function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
-        scat_mat_in=nothing; symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
+        scat_mat_in=nothing; symmetry=nothing, max_iter=100, rtol=1e-10, qme_offdiag_cutoff=Inf) where {FT}
 Solve quantum master equation for electrons.
 Linearized quantum master equation (stationary state case):
 ```math
@@ -262,7 +266,7 @@ while `δρ` is for states in `el_i`. `el_i` and `el_f` can differ due to use of
 different windows, different grids, etc. So, we need to first map `δρ` to states `el_f` using `map_i_to_f`.
 """
 function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
-        scat_mat_in=nothing; filename, symmetry=nothing, max_iter=100, rtol=1e-10) where {FT}
+        scat_mat_in=nothing; filename, symmetry=nothing, max_iter=100, rtol=1e-10, qme_offdiag_cutoff=Inf) where {FT}
     isfile(filename) || error("filename = $filename is not a valid file.")
 
     σ_serta = zeros(FT, 3, 3, length(params.Tlist))
@@ -370,13 +374,15 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
     symmetry = load_BTData(open_group(fid, "gauge/symmetry"), Symmetry{FT})
 
     cnt_inds_f = zeros(Int, el_f.n);
-    unfold_map = spzeros(Mat3{Complex{FT}}, el_f.n, el_i.n);
+    sp_inds_f = Int[]
+    sp_inds_i = Int[]
+    sp_vals = Mat3{Complex{FT}}[]
     for isym in 1:symmetry.nsym
         # Read symmetry gauge matrix elements
         Scart = symmetry[isym].Scart
         group_sym = open_group(fid, "gauge/isym$isym")
-        sym_gauge = read(group_sym, "gauge_matrix")
-        is_degenerate = read(group_sym, "is_degenerate")
+        sym_gauge = read(group_sym, "gauge_matrix")::Array{Complex{FT}, 3}
+        is_degenerate = read(group_sym, "is_degenerate")::Array{Bool, 3}
 
         for ik in 1:el_i.kpts.n
             xk = el_i.kpts.vectors[ik]
@@ -394,7 +400,9 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
                         is_degenerate[jb1, ib1, ik] || continue
                         ind_el_f = get(indmap_el_f, EPW.CI(jb1, jb2, isk), -1)
                         gauge_coeff = sym_gauge[jb1, ib1, ik] * conj(sym_gauge[jb2, ib2, ik])
-                        unfold_map[ind_el_f, ind_el_i] += Scart * gauge_coeff
+                        push!(sp_inds_f, ind_el_f)
+                        push!(sp_inds_i, ind_el_i)
+                        push!(sp_vals, Scart * gauge_coeff)
                         # Count number of k points that are mapped to this Sk point
                         if (ib1 == jb1) && (ib2 == jb2)
                             cnt_inds_f[ind_el_f] += 1
@@ -406,6 +414,8 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
     end
     close(fid)
 
+    unfold_map = sparse(sp_inds_f, sp_inds_i, sp_vals, el_f.n, el_i.n)
+
     inv_cnt_inds_f = 1 ./ cnt_inds_f
     inv_cnt_inds_f[cnt_inds_f .== 0] .= 0
     unfold_map .*= inv_cnt_inds_f
@@ -415,8 +425,8 @@ end
 
 function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
     fid = h5open(filename, "r")
-    gauge = read(open_group(fid, "gauge"), "gauge_matrix")
-    is_degenerate = read(open_group(fid, "gauge"), "is_degenerate")
+    gauge = read(open_group(fid, "gauge"), "gauge_matrix")::Array{Complex{FT}, 3}
+    is_degenerate = read(open_group(fid, "gauge"), "is_degenerate")::Array{Bool, 3}
 
     # We assume that all el_i and el_f use the same grid and same shift.
     δk = el_i.kpts.shift ≈ el_f.kpts.shift
@@ -424,7 +434,9 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
     @assert el_i.kpts.ngrid == el_f.kpts.ngrid
 
     indmap_el_f = EPW.states_index_map(el_f);
-    unfold_map = spzeros(Complex{FT}, el_f.n, el_i.n);
+    sp_inds_f = Int[]
+    sp_inds_i = Int[]
+    sp_vals = Complex{FT}[]
 
     for ind_el_i in 1:el_i.n
         ik = el_i.ik[ind_el_i]
@@ -445,10 +457,13 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
                 ind_el_f == -1 && continue
 
                 gauge_coeff = gauge[jb1, ib1, ik] * conj(gauge[jb2, ib2, ik])
-                unfold_map[ind_el_f, ind_el_i] = gauge_coeff
+                push!(sp_inds_f, ind_el_f)
+                push!(sp_inds_i, ind_el_i)
+                push!(sp_vals, gauge_coeff)
             end
         end
     end
     close(fid)
+    unfold_map = sparse(sp_inds_f, sp_inds_i, sp_vals, el_f.n, el_i.n)
     unfold_map
 end
