@@ -89,7 +89,7 @@ end
     val_asym = (m[1, 2] + m[2, 3] + m[3, 1] - m[2, 1] - m[3, 2] - m[1, 3]) / 6
     for i = 1:3, j = 1:3
         if i == j
-            @test m_sym[i, j] ≈ 0
+            @test m_sym[i, j] ≈ 0 atol=eps(1.0)
         elseif j == mod1(i + 1, 3)
             @test m_sym[i, j] ≈ val_asym
         else
