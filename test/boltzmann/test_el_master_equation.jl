@@ -382,6 +382,18 @@ end
         # break the symmetry. So we use a large error tolerance.
         @test all(isapprox.(mobility_serta_w_sym, mobility_serta_wo_sym, atol=5.0))
         @test all(isapprox.(mobility_iter_w_sym, mobility_iter_wo_sym, atol=5.0))
+
+        # Transport distribution function
+        @testset "TDF" begin
+            elist = range(minimum(el_i.e1) - 5e-3, maximum(el_i.e1) + 5e-3, length=101)
+            de = elist[2] - elist[1]
+            smearing = 10 * unit_to_aru(:meV)
+
+            Σ_tdf = EPW.compute_transport_distribution_function(out_qme_w_symmetry; elist, smearing, symmetry=model.el_sym.symmetry)
+
+            @test size(Σ_tdf) == (length(elist), 3, 3, length(transport_params.Tlist))
+            @test dropdims(sum(Σ_tdf, dims=1), dims=1) .* de ≈ out_qme_w_symmetry.σ
+        end
     end
 end
 

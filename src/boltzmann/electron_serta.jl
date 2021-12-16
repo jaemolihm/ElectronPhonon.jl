@@ -306,15 +306,15 @@ Compute the transport distribution function ``Σ^{a,b}(elist)``, where
 ``Σ^{a,b}(e)`` satisfies ``σ^{a,b} = ∫de (-df(e)/de) Σ^{a,b}(e)``.
 We use Gaussian smearing for the delta function using `smearing`.
 """
-function compute_transport_distribution_function(elist::AbstractVector{R}, smearing, el, inv_τ, params, symmetry=nothing) where {R}
+function compute_transport_distribution_function(elist, smearing, el, inv_τ, params, symmetry=nothing) where {R}
     Tlist = params.Tlist
     μlist = params.μlist
     e = el.e
     w = el.k_weight
     vv_nosym = collect(reshape(reinterpret(Float64, [v * v' for v in el.vdiag]), 3, 3, :))
     vv = symmetrize_array(vv_nosym, symmetry, order=2)
-    Σ_tdf = zeros(R, length(elist), 3, 3, length(Tlist))
-    σ_list = zeros(R, el.n)
+    Σ_tdf = zeros(eltype(elist), length(elist), 3, 3, length(Tlist))
+    σ_list = zeros(eltype(elist), el.n)
     for iT in 1:length(Tlist)
         T = Tlist[iT]
         μ = μlist[iT]
