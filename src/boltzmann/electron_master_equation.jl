@@ -405,6 +405,7 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
                     for jb1 in 1:el_f.nband
                         is_degenerate[jb1, ib1, ik] || continue
                         ind_el_f = get(indmap_el_f, EPW.CI(jb1, jb2, isk), -1)
+                        ind_el_f == -1 && continue
                         gauge_coeff = sym_gauge[jb1, ib1, ik] * conj(sym_gauge[jb2, ib2, ik])
                         push!(sp_inds_f, ind_el_f)
                         push!(sp_inds_i, ind_el_i)
