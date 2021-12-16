@@ -54,8 +54,6 @@ using LinearAlgebra
                 end
 
                 # Test symmetry of velocity matrices
-                # NOTE: Currently, Berry connection contribution to velocity is not implemented.
-                #       So, we only check velocity matrix elements between degenerate bands.
                 v_rotated = Ref(Scart) .* (sym_H * els[ik].v * sym_H')
                 if model.el_velocity_mode === :BerryConnection
                     for j in 1:nw, i in 1:nw
@@ -63,6 +61,9 @@ using LinearAlgebra
                             @test els[isk].v[i, j] ≈ v_rotated[i, j] atol=1e-2
                         end
                     end
+                    # For the BerryConnection case, the error in the off-diagonal element
+                    # between non-degenerate states is large. So we use a loose tolerance.
+                    @test all(norm.(els[isk].v - v_rotated) .< 0.8)
                 else
                     @test els[isk].v ≈ v_rotated atol=2e-5
                 end
