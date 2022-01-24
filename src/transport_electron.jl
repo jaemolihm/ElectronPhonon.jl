@@ -173,11 +173,11 @@ function transport_print_mobility(σ, params::ElectronTransportParams; do_print=
     if do_print
         if params.type === :Semiconductor
             println("======= Electrical mobility =======")
-            println("Carrier density (cm^-3) =  $carrier_density_SI")
+            println("Carrier density (cm⁻³) =  $carrier_density_SI")
             for iT in 1:length(params.Tlist)
                 println("T (K)  = $(params.Tlist[iT] / unit_to_aru(:K))")
                 @printf "μ (eV) = %.4f\n" params.μlist[iT] / unit_to_aru(:eV)
-                println("mobility (cm^2/Vs) = ")
+                println("mobility (cm²/Vs) = ")
                 for i in 1:3
                     @printf "%10.3f %10.3f %10.3f\n" mobility_SI[:, i, iT]...
                 end
@@ -185,7 +185,7 @@ function transport_print_mobility(σ, params::ElectronTransportParams; do_print=
             end
         elseif params.type === :Metal
             println("======= Electrical conductivity =======")
-            println("Carrier density (cm^-3) =  $carrier_density_SI")
+            println("Carrier density (cm⁻³) =  $carrier_density_SI")
             for iT in 1:length(params.Tlist)
                 println("T (K)  = $(params.Tlist[iT] / unit_to_aru(:K))")
                 @printf "μ (eV) = %.4f\n" params.μlist[iT] / unit_to_aru(:eV)
