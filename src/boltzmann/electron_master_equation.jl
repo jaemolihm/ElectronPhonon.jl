@@ -455,6 +455,7 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
         ib2 = el_i.ib2[ind_el_i]
 
         # continue only if ib1 and jb1 are degenerate, and ib2 and jb2 are degenerate.
+        # FIXME: 1:el_f.nband is not safe. One should use iband_min:iband_max.
         for jb2 in 1:el_f.nband
             is_degenerate[jb2, ib2, ik] || continue
             for jb1 in 1:el_f.nband

@@ -13,6 +13,9 @@ export set_eigen!
 export set_eigen_valueonly!
 export set_velocity_diag!
 
+# TODO: Remove nband_bound. nband >= length(rng) can hold. Create a function `trim(el::ElectronState)`
+#       (or even trim!) that reduces nband to length(rng).
+
 Base.@kwdef mutable struct ElectronState{T <: Real}
     nw::Int # Number of Wannier functions
     e_full::Vector{T} # Eigenvalues at all bands

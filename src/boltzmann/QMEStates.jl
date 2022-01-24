@@ -97,21 +97,17 @@ end
     ib2_list = Int[]
     ik_list = Int[]
     n = 0
-    iband_min = el_states[1].nw + 1
-    iband_max = -1
     for ik in 1:nk
         el = el_states[ik]
         if el.nband == 0
             continue
         end
-        iband_min = min(iband_min, el.rng_full[1])
-        iband_max = max(iband_max, el.rng_full[end])
         for ib2 in el.rng, ib1 in el.rng
             if abs(el.e[ib1] - el.e[ib2]) <= offdiag_cutoff
                 n += 1
                 push!(e1, el.e[ib1])
                 push!(e2, el.e[ib2])
-                # Here I do not add el.nband_ignore. This is inconsistent with BTStates.
+                # Here I do not add el.nband_ignore. This is different from what done in BTStates.
                 push!(ib1_list, ib1) #  + el.nband_ignore
                 push!(ib2_list, ib2) #  + el.nband_ignore
                 push!(ik_list, ik)
@@ -120,6 +116,8 @@ end
             end
         end
     end
+    iband_min = minimum(el.rng_full.start for el in el_states if length(el.nband) > 0)
+    iband_max = maximum(el.rng_full.stop for el in el_states if length(el.nband) > 0)
     nband = iband_max - iband_min + 1
     QMEStates(n, nband, e1, e2, v, ib1_list, ib2_list, ik_list, nstates_base, GridKpoints(kpts)), imap
 end
