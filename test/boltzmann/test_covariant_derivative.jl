@@ -67,13 +67,27 @@ using LinearAlgebra
 end
 
 @testset "covariant derivative bvec" begin
-    # TODO: Implement finite_difference_vectors, add test for different alat and different lattice.
-    alat = 0.9199392836280507
-    recip_lattice = alat * [-1 1 -1; -1 1 1; 1 1 -1]
+    alat = 0.8
+    recip_lattice = Mat3(alat * [-1 1 -1; -1 1 1; 1 1 -1])
     ngrid = 10
     bvecs, bvecs_cart, wbs = finite_difference_vectors(recip_lattice, ngrid)
     @test length(bvecs) == 8
     @test bvecs_cart ≈ Ref(recip_lattice) .* bvecs
     @test all(round.(Int, b .* ngrid) ≈ b .* ngrid for b in bvecs)
     @test sum([b_cart * b_cart' .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ I(3)
+
+    a = 2π
+    c = 0.3π
+    recip_lattice = Mat3([a 0 0; 0 a 0; 0 0 c])
+    ngrid = (4, 5, 2)
+    bvecs, bvecs_cart, wbs = finite_difference_vectors(recip_lattice, ngrid)
+    @test length(bvecs) == 10
+    @test bvecs_cart ≈ Ref(recip_lattice) .* bvecs
+    @test all(round.(Int, b .* ngrid) ≈ b .* ngrid for b in bvecs)
+    @test sum([b_cart * b_cart' .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ I(3)
+    # These values have been verified using Wannier90.
+    @test wbs ≈ vcat(fill.([0.6304429204412128, -0.0886560356870456, 0.2026423672846756], [2, 2, 6])...)
+    @test bvecs ≈ [[0.0, 0.0, -0.5], [0.0, 0.0, 0.5], [0.0, -0.2, 0.0], [0.0, 0.2, 0.0],
+                   [0.0, -0.2, -1.0], [0.0, 0.2, -1.0], [-0.25, 0.0, 0.0], [0.25, 0.0, 0.0],
+                   [0.0, -0.2, 1.0], [0.0, 0.2, 1.0]]
 end

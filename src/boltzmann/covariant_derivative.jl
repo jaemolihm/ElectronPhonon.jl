@@ -4,21 +4,97 @@ using SparseArrays
 export finite_difference_vectors
 
 """
-    finite_difference_vectors(recip_lattice, ngrid)
-Compute finite difference vectors and weights following the scheme of [1].
-[1] N. Marzari and D. Vanderbilt, PRB 56, 12847 (1997)]
+    finite_difference_vectors(recip_lattice, ngrid) => (; bvecs, bvecs_cart, wbs)
+Choose the b vectors and weights as defined in [1], following the scheme of [2].
+[1] N. Marzari and D. Vanderbilt, PRB 56, 12847 (1997)
+[2] A. A. Mostofi et al., . Phys. Commun. 178 685 (2008)
 Output `bvecs` is in crystal coordinates.
-TODO: Implement. (Currently hardcoded for fcc lattice)
+TODO: Higher-order method?
 """
-function finite_difference_vectors(recip_lattice, ngrid)
-    bvecs = [Vec3(x) ./ ngrid for x in [(0, 0, 1), (0, 1, 0), (1, 0, 0), (1, 1, 1), (0, 0, -1), (0, -1, 0), (-1, 0, 0), (-1, -1, -1)]]
-    wbs = [59.08152174582381 * (ngrid[1] / 20)^2 for b in bvecs]
+function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid) where {FT}
+    nsupcell = 5 # Include b vectors in the [-nsupcell, nsupcell] cell to the search.
+    kdist_tol = norm(recip_lattice) * sqrt(eps(FT)) # Difference below kdist_tol are regarded as equal.
+    q = [1, 0, 0, 1, 0, 1] # Lower triangular components of I(3)
+
+    # Generate list of b vectors and sort according to distance from origin
+    rng = -nsupcell:nsupcell
+    bvecs_all = vec([Vec3(i, j, k) ./ ngrid for i in rng, j in rng, k in rng])
+    bvecs_cart_all = Ref(recip_lattice) .* bvecs_all
+    dist_all = norm.(bvecs_cart_all)
+
+    inds = sortperm(dist_all)
+    bvecs_all = bvecs_all[inds]
+    bvecs_cart_all = bvecs_cart_all[inds]
+    dist_all = dist_all[inds]
+
+    # Group the b vectors by the distance
+    ishell_all = zeros(Int, length(bvecs_all))
+    for i in 2:length(bvecs_all)
+        if dist_all[i] - dist_all[i-1] > kdist_tol
+            ishell_all[i] = ishell_all[i-1] + 1
+        else
+            ishell_all[i] = ishell_all[i-1]
+        end
+    end
+    nshell = maximum(ishell_all)
+
+    found = false
+    nshell_used = 0
+    Amat = zeros(FT, 6, nshell)
+    wbs_shell = zeros(FT, nshell)
+    ishell_used = zeros(Bool, nshell)
+
+    # Loop over shells.
+    for ishell in 1:nshell
+        nshell_used += 1
+        Amat[:, nshell_used] .= @views _compute_A(bvecs_cart_all[findall(ishell_all .== ishell)])
+        @views A = Amat[:, 1:nshell_used]
+
+        # check whether the new shell is linearly dependent on existing ones
+        _, s, _ = svd(A)
+        if any(s .< 1e-5) # This shell will not be used.
+            nshell_used -= 1
+            continue
+        end
+        ishell_used[ishell] = true
+        @info "finite_difference_vectors: using shell $ishell"
+
+        # Try to solve Amat * w = q
+        w = A \ q
+
+        if A * w ≈ q
+            # b vectors are found. Exit loop.
+            found = true
+            wbs_shell[ishell_used] .= w
+            break
+        end
+    end
+
+    if ! found
+        error("b vector search failed. Maybe the lattice is very skewed.")
+    end
+
+    bvecs = empty(bvecs_all)
+    wbs = empty(wbs_shell)
+    for ishell in 1:nshell
+        if ishell_used[ishell]
+            bvecs_new = bvecs_all[findall(ishell_all .== ishell)]
+            append!(bvecs, bvecs_new)
+            append!(wbs, fill(wbs_shell[ishell], length(bvecs_new)))
+        end
+    end
     bvecs_cart = Ref(recip_lattice) .* bvecs
+
     # Test completeness relation (Eq. (B1) of Ref. [1])
     @assert sum([b_cart * b_cart' .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ I(3)
     (; bvecs, bvecs_cart, wbs)
 end
 
+# A[j] = ∑_b b^a b^b, j = (a, b) = (1, 1), (2, 1), (3, 1), (2, 2), (3, 2), (3, 3)
+function _compute_A(bvecs_cart)
+    A = sum(b * b' for b in bvecs_cart)
+    SVector(A[1, 1], A[2, 1], A[3, 1], A[2, 2], A[3, 2], A[3, 3])
+end
 
 """
 Construct a vector of sparse matrices `∇` that maps a quantity defined on `el` to its
