@@ -84,7 +84,7 @@ end
 - `offdiag_cutoff`: Maximum interband energy difference to include the off-diagonal part.
 """
 @timing "el_to_BTC" function electron_states_to_QMEStates(el_states::Vector{ElectronState{T}},
-        kpts::EPW.AbstractKpoints{T}, offdiag_cutoff, nstates_base=0) where {T <: Real}
+        kpts::EPW.AbstractKpoints{T}, offdiag_cutoff, nstates_base=zero(T)) where {T <: Real}
     @assert kpts.n == length(el_states)
     nk = length(el_states)
     max_nband_bound = maximum([el.nband_bound for el in el_states])

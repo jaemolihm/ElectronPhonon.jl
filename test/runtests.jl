@@ -21,6 +21,7 @@ using Test
 
     # Boltzmann routines
     include("boltzmann/test_hdf5.jl")
+    include("boltzmann/test_covariant_derivative.jl")
     include("boltzmann/test_el_constant_rta.jl")
     include("boltzmann/test_el_transport_semiconductor.jl")
     include("boltzmann/test_el_transport_metal.jl")
