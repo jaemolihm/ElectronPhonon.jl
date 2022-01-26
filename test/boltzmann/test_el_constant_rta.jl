@@ -1,6 +1,7 @@
 using Test
 using EPW
 using LinearAlgebra
+using HDF5
 
 @testset "Transport electron CRTA" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))

@@ -330,6 +330,8 @@ function compute_transport_distribution_function(elist, smearing, el, inv_τ, pa
     Σ_tdf
 end
 
+# TODO: Add utility plot_transport_distribution_function or so (or add automatic elist and smearing)
+
 
 # Running SERTA mobility calculation
 # FIXME: remove recip_lattice argument (add it to transport_params?)

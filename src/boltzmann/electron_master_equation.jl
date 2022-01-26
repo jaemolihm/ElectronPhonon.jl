@@ -233,16 +233,13 @@ function _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω
 end
 
 """
-    occupation_to_conductivity(δρ::Vector{Vec3{FT}}, el::QMEStates{FT}, params) where {FT}
+    occupation_to_conductivity(δρ, el::QMEStates, params)
 Compute electron conductivity using the density matrix `δρ`.
 """
-function occupation_to_conductivity(δρ::Vector{Vec3{Complex{FT}}}, el::QMEStates{FT}, params) where {FT}
+function occupation_to_conductivity(δρ, el::QMEStates, params)
     @assert length(δρ) == el.n
-    σ = zero(Mat3{FT})
-    @views for i in 1:el.n
-        σ += el.kpts.weights[el.ik[i]] * real.(δρ[i] * el.v[i]')
-    end
-    σ * params.spin_degeneracy / params.volume
+    σ = mapreduce(i -> el.kpts.weights[el.ik[i]] .* real.(δρ[i] * el.v[i]'), +, 1:el.n)
+    return σ * params.spin_degeneracy / params.volume
 end
 
 """
@@ -265,9 +262,12 @@ We need `map_i_to_f` because `S_in` maps states in `el_f` to `el_i` (i.e. has si
 while `δρ` is for states in `el_i`. `el_i` and `el_f` can differ due to use of irreducible grids,
 different windows, different grids, etc. So, we need to first map `δρ` to states `el_f` using `map_i_to_f`.
 """
-function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
-        scat_mat_in=nothing; filename, symmetry=nothing, max_iter=100, rtol=1e-10, qme_offdiag_cutoff=Inf) where {FT}
-    isfile(filename) || error("filename = $filename is not a valid file.")
+function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{FT},Nothing}, scat_mat_out,
+        scat_mat_in=nothing; filename="", symmetry=nothing, max_iter=100, rtol=1e-10, qme_offdiag_cutoff=Inf) where {FT}
+    if scat_mat_in !== nothing
+        ! isfile(filename) && error("filename = $filename is not a valid file.")
+        el_f === nothing && throw(ArgumentError("If scat_mat_in is used (exact LBTE), el_f must be provided."))
+    end
 
     σ_serta = zeros(FT, 3, 3, length(params.Tlist))
     σ = zeros(FT, 3, 3, length(params.Tlist))
@@ -476,13 +476,14 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
     unfold_map
 end
 
-function compute_transport_distribution_function(out_qme, el::EPW.QMEStates=out_qme.el; elist, smearing, symmetry=nothing)
+# TODO: Cleanup. Give SERTA and exact output at the same time.
+function compute_transport_distribution_function(out_qme, δρ=out_qme.δρ, el::EPW.QMEStates=out_qme.el; elist, smearing, symmetry=nothing)
     Σ_tdf = zeros(length(elist), 3, 3, length(out_qme.params.Tlist))
     e_gaussian = zero(elist)
     for iT in 1:length(out_qme.params.Tlist)
         @views for i in 1:el.n
             @. e_gaussian = gaussian((elist - el.e1[i]) / smearing) / smearing
-            σ_i = (el.kpts.weights[el.ik[i]] * real.(out_qme.δρ[i, iT] * el.v[i]'))
+            σ_i = (el.kpts.weights[el.ik[i]] * real.(δρ[i, iT] * el.v[i]'))
             for b in 1:3, a in 1:3
                 Σ_tdf[:, a, b, iT] .+= e_gaussian .* σ_i[a, b]
             end

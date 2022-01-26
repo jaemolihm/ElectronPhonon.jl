@@ -7,16 +7,13 @@ using Interpolations: WeightedArbIndex, coordslookup, value_weights, weightedind
 using Dictionaries
 
 """
-    occupation_to_conductivity(δf::Vector{Vec3{FT}}, el, params)
+    occupation_to_conductivity(δf, el::BTStates, params)
 Compute electron conductivity using the occupation `δf`.
 """
-function occupation_to_conductivity(δf::Vector{Vec3{FT}}, el, params) where {FT}
+function occupation_to_conductivity(δf, el::BTStates, params)
     @assert length(δf) == el.n
-    σ = zero(Mat3{FT})
-    @views for i in 1:el.n
-        σ += el.k_weight[i] * (δf[i] * el.vdiag[i]')
-    end
-    σ * params.spin_degeneracy / params.volume
+    σ = mapreduce(i -> el.k_weight[i] .* (δf[i] * el.vdiag[i]'), +, 1:el.n)
+    return σ * params.spin_degeneracy / params.volume
 end
 
 """

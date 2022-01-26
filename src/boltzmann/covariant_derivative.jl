@@ -102,6 +102,7 @@ covariant derivative:
 ``(∇ᵅ * f)[ik] = ∑_b wb * bᵅ * m[ib, ik]' * f[ikb] * m[ib, ik] - i[ξ[ik], f[ik]]``,
 where `ikb` is the index of `k + b` and `ξ` the position matrix in the eigenstate gauge.
 Note that `ξ` is not the Berry connection: it does not include the Hamiltonian derivative term.
+- ∇[1], ∇[2], ∇[3] correspond to Cartesian x, y, z directions.
 - `hdf_group`: If given, write data for the sparse matrix to file. If not given, return the
 sparse matrix itself.
 """
