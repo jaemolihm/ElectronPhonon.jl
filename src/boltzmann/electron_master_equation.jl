@@ -279,7 +279,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
     δρ_iter = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter_tmp = zeros(Vec3{Complex{FT}}, el_i.n)
 
-    inds_exclude = (el_i.ib1 .!= el_i.ib2) .&& (abs.(el_i.e1 .- el_i.e2) .> qme_offdiag_cutoff)
+    inds_exclude = @. (el_i.ib1 != el_i.ib2) && (abs(el_i.e1 - el_i.e2) > qme_offdiag_cutoff)
 
     # setup map_i_to_f. This is needed only when solving the linear equation iteratively.
     @timing "unfold map" if scat_mat_in !== nothing

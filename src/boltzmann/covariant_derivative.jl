@@ -110,7 +110,10 @@ function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group
     indmap = EPW.states_index_map(el)
     kpts = el.kpts
 
-    mmat = zeros(ComplexF64, el.nband, el.nband)
+    # FIXME: el.nband instead of rng_maxdoes not work because rng can be outside of 1:el.nband
+    # rng_max is a dirty fix...
+    rng_max = maximum(x -> x.rng[end], el_k_save)
+    mmat = zeros(ComplexF64, rng_max, rng_max)
 
     sp_i = Int[]
     sp_j = Int[]

@@ -3,11 +3,12 @@ using HDF5
 """
 Debugging flags in `kwargs`
 - `DEBUG_random_gauge`: Multiply random phases to the eigenstates at k+q to change the eigenstate gauge. (Default: false)
+- `compute_derivative`: Compute the covariant derivative operator and write to file.
 """
 function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq, kpts,
         kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
         average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff;
-        kwargs...)
+        compute_derivative=false, kwargs...)
     FT = Float64
 
     nw = model.nw
@@ -61,6 +62,13 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         ph_boltzmann, _ = phonon_states_to_BTStates(ph_save, qpts)
         g = create_group(fid_btedata, "phonon")
         dump_BTData(g, ph_boltzmann)
+    end
+
+    if compute_derivative
+        symmetry !== nothing && error("compute_covariant_derivative_matrix with symmetry not implemented")
+        bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid)
+        g = create_group(fid_btedata, "covariant_derivative")
+        compute_covariant_derivative_matrix(el_k_boltzmann, el_k_save, bvec_data, g)
     end
 
     # Write gauge matrices that map eigenstates in el_k_save to eigenstates in el_kq_save.
