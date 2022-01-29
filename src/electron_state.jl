@@ -187,6 +187,8 @@ function set_velocity_diag!(el::ElectronState{FT}, model, xk, fourier_mode="norm
         # zero for the diagonal part.
         @views velocity_diag = reshape(reinterpret(FT, el.vdiag[el.rng]), 3, el.nband)
         get_el_velocity_diag_berry_connection!(velocity_diag, el.nw, model.el_ham_R, xk, uk, fourier_mode)
+    else
+        throw(ArgumentError("model.el_velocity_mode must be :Direct or :BerryConnection, not $(model.el_velocity_mode)."))
     end
 end
 
@@ -202,5 +204,7 @@ function set_velocity!(el::ElectronState{FT}, model, xk, fourier_mode="normal") 
         get_el_velocity_direct!(velocity, el.nw, model.el_vel, xk, uk, fourier_mode)
     elseif model.el_velocity_mode === :BerryConnection
         get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, model.el_pos, el.e, xk, uk, fourier_mode)
+    else
+        throw(ArgumentError("model.el_velocity_mode must be :Direct or :BerryConnection, not $(model.el_velocity_mode)."))
     end
 end
