@@ -28,7 +28,9 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
-        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"], window_k, nband, nband_ignore; fourier_mode)
+        quantities = ["eigenvalue", "eigenvector", "velocity"]
+        compute_derivative && push!(quantities, "position")
+        el_k_save = compute_electron_states(model, kpts, quantities, window_k, nband, nband_ignore; fourier_mode)
         # for (el, xk) in zip(el_k_save, kpts.vectors)
         #     set_gauge_to_diagonalize_velocity_matrix!(el, xk, 1, model)
         # end

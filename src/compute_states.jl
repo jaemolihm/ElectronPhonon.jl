@@ -9,11 +9,14 @@ FIXME: Position matrix element contribution is not included in velocity
 """
 function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window, nband, nband_ignore; fourier_mode="normal") where FT
     # TODO: MPI, threading
-    allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity"]
+    allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
     for quantity in quantities
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
     end
     nw = model.nw
+
+    # if position (rbar) is calculated, it does not need to be recalculated in set_velocity!
+    skip_rbar = "position" ∈ quantities
 
     states = [ElectronState(nw, FT; nband_bound=nband, nband_ignore) for ik=1:kpts.n]
     if quantities == []
@@ -31,8 +34,11 @@ function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window, 
         else
             set_eigen!(el, model, xk, fourier_mode)
             set_window!(el, window)
+            if "position" ∈ quantities
+                set_position!(el, model, xk, fourier_mode)
+            end
             if "velocity" ∈ quantities
-                set_velocity!(el, model, xk, fourier_mode)
+                set_velocity!(el, model, xk, fourier_mode; skip_rbar)
                 for i in el.rng
                     el.vdiag[i] = real.(el.v[i, i])
                 end

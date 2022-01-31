@@ -12,6 +12,7 @@ export set_occupation!
 export set_eigen!
 export set_eigen_valueonly!
 export set_velocity_diag!
+export set_position!
 
 # TODO: Remove nband_bound. nband >= length(rng) can hold. Create a function `trim(el::ElectronState)`
 #       (or even trim!) that reduces nband to length(rng).
@@ -38,6 +39,7 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
     e::Vector{T} # Eigenvalues at bands inside the energy window
     vdiag::Vector{Vec3{T}} # Diagonal components of band velocity in Cartesian coordinates.
     v::Matrix{Vec3{Complex{T}}} # Velocity matrix in Cartesian coordinates.
+    rbar::Matrix{Vec3{Complex{T}}} # Position matrix in Cartesian coordinates (without the Hamiltonian derivative term).
     occupation::Vector{T} # Electron occupation number
 end
 
@@ -58,6 +60,7 @@ function ElectronState{T}(nw, nband_bound=nw, nband_ignore=0) where {T}
         e=zeros(T, nband_bound),
         vdiag=fill(zeros(Vec3{T}), (nband_bound,)),
         v=fill(zeros(Vec3{Complex{T}}), (nband_bound, nband_bound)),
+        rbar=fill(zeros(Vec3{Complex{T}}), (nband_bound, nband_bound)),
         occupation=zeros(T, nband_bound),
     )
 end
@@ -193,18 +196,31 @@ function set_velocity_diag!(el::ElectronState{FT}, model, xk, fourier_mode="norm
 end
 
 """
-    set_velocity(el::ElectronState, model, xk, fourier_mode="normal")
+    set_velocity(el::ElectronState, model, xk, fourier_mode="normal"; skip_rbar=false)
 Compute electron band velocity.
-FIXME: Position matrix element contribution is not included in get_el_velocity!
+- `skip_rbar`: If true, assume `el.rbar` is already calculated and skip `set_position!`.
 """
-function set_velocity!(el::ElectronState{FT}, model, xk, fourier_mode="normal") where {FT}
+function set_velocity!(el::ElectronState{FT}, model, xk, fourier_mode="normal"; skip_rbar=false) where {FT}
     uk = get_u(el)
     @views velocity = reshape(reinterpret(Complex{FT}, el.v[el.rng, el.rng]), 3, el.nband, el.nband)
     if model.el_velocity_mode === :Direct
         get_el_velocity_direct!(velocity, el.nw, model.el_vel, xk, uk, fourier_mode)
     elseif model.el_velocity_mode === :BerryConnection
-        get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, model.el_pos, el.e, xk, uk, fourier_mode)
+        # Need to set el.rbar first.
+        skip_rbar || set_position!(el, model, xk, fourier_mode)
+        @views rbar = el.rbar[el.rng, el.rng]
+        get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, el.e, xk, uk, rbar, fourier_mode)
     else
         throw(ArgumentError("model.el_velocity_mode must be :Direct or :BerryConnection, not $(model.el_velocity_mode)."))
     end
+end
+
+"""
+    set_position!(el::ElectronState, model, xk, fourier_mode="normal")
+Compute electron position matrix elements.
+"""
+function set_position!(el::ElectronState{FT}, model, xk, fourier_mode="normal") where {FT}
+    uk = get_u(el)
+    @views rbar = reshape(reinterpret(Complex{FT}, el.rbar[el.rng, el.rng]), 3, el.nband, el.nband)
+    get_el_velocity_direct!(rbar, el.nw, model.el_pos, xk, uk, fourier_mode)
 end

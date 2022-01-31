@@ -1,4 +1,5 @@
 using LinearAlgebra
+using StaticArrays
 using SparseArrays
 
 export finite_difference_vectors
@@ -151,7 +152,36 @@ function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group
         end
     end
 
-    # TODO: 2. position matrix term
+    # 2. position matrix term
+    # (∇ * f)[ib1, ib2] += - im * (ξ[ib1, ib3] * f[ib3, ib2] - f[ib1, ib3] * ξ[ib3, ib2])
+    for ik in 1:kpts.n
+        rng = el_k_save[ik].rng
+        rbar = el_k_save[ik].rbar
+
+        for ib1 in rng, ib2 in rng
+            ind_i = get(indmap, EPW.CI(ib1, ib2, ik), -1)
+            ind_i == -1 && continue
+            for ib3 in rng
+                ind_f = get(indmap, EPW.CI(ib3, ib2, ik), -1)
+                if ind_f != -1
+                    push!(sp_i, ind_i)
+                    push!(sp_j, ind_f)
+                    for idir in 1:3
+                        push!(sp_vals[idir], -im * rbar[ib1, ib3][idir])
+                    end
+                end
+
+                ind_f = get(indmap, EPW.CI(ib1, ib3, ik), -1)
+                if ind_f != -1
+                    push!(sp_i, ind_i)
+                    push!(sp_j, ind_f)
+                    for idir in 1:3
+                        push!(sp_vals[idir], im * rbar[ib3, ib2][idir])
+                    end
+                end
+            end
+        end
+    end
 
 
     if hdf_group === nothing

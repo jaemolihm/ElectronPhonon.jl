@@ -107,15 +107,16 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
 end
 
 """
-    get_el_velocity_berry_connection!(velocity, nw, el_ham_R, el_pos, ek, xk, uk, fourier_mode="normal")
+    get_el_velocity_berry_connection!(velocity, nw, el_ham_R, ek, xk, uk, rbar, fourier_mode="normal")
 Compute electron band velocity using the Berry connection formula:
-``v_{m,n} = (U^\\dagger dH^{(W)}(k) / dk U)_{m,n} + i * (e_m - e_n) * (U^\\dagger A U)_{m,n}``
+``v_{m,n} = (U^\\dagger dH^{(W)}(k) / dk U)_{m,n} + i * (e_m - e_n) * rbar_{m,n}``,
+where ``rbar = U^\\dagger A U``
 (Eq. (31) of X. Wang et al, PRB 74 195118 (2006)).
 
 - `velocity``: (3, `nband`, `nband`) matrix
 - `uk`: `nw` * `nband` matrix containing nband eigenvectors of ``H(k)``.
 """
-@timing "w2b_el_vel" function get_el_velocity_berry_connection!(velocity, nw, el_ham_R, el_pos, ek, xk, uk, fourier_mode="normal")
+@timing "w2b_el_vel" function get_el_velocity_berry_connection!(velocity, nw, el_ham_R, ek, xk, uk, rbar, fourier_mode="normal")
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)
@@ -132,14 +133,8 @@ Compute electron band velocity using the Berry connection formula:
     end
 
     # Add the Berry connection contribution
-    # vk = A^{(W)} (Berry connection in Wannier basis)
-    # tmp = vk * uk
-    get_fourier!(vk, el_pos, xk, mode=fourier_mode)
-    @views @inbounds for idir = 1:3
-        mul!(tmp, vk[:, :, idir], uk)
-        for jb = 1:nband, ib = 1:nband
-            velocity[idir, ib, jb] += im * (ek[ib] - ek[jb]) * dot(uk[:, ib], tmp[:, jb])
-        end
+    @inbounds for jb = 1:nband, ib = 1:nband
+        velocity[:, ib, jb] .+= im .* (ek[ib] - ek[jb]) .* rbar[ib, jb]
     end
 
     nothing

@@ -3,8 +3,6 @@ using EPW
 using HDF5
 using LinearAlgebra
 
-# TODO: Implement ξ term in compute_covariant_derivative_matrix and add test (see broken test below).
-
 @testset "covariant derivative" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
@@ -30,7 +28,7 @@ using LinearAlgebra
 
     qme_offdiag_cutoff = 5.0 * unit_to_aru(:eV)
 
-    el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"])
+    el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"])
     el, _ = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
 
     bvec_data = finite_difference_vectors(model.recip_lattice, el.kpts.ngrid)
@@ -63,7 +61,7 @@ using LinearAlgebra
         end
     end
     @test error_degen < 1e-3
-    @test_broken error_nondegen < 1e-3 # Broken because ξ term is not implemented
+    @test error_nondegen < 1e-3
 end
 
 @testset "covariant derivative bvec" begin
