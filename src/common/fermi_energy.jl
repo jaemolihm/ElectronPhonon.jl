@@ -26,13 +26,7 @@ function compute_ncarrier(μ, T, energy::AbstractArray{R, 2}, weights) where {R 
 end
 
 function compute_ncarrier(μ, T, energy::AbstractArray{R, 1}, weights) where {R <: Real}
-    n = length(energy)
-    @assert length(weights) == n
-    ncarrier = zero(R)
-    for i in 1:n
-        ncarrier += weights[i] * occ_fermion(energy[i] - μ, T)
-    end
-    ncarrier
+    mapreduce(x -> x[1] * occ_fermion(x[2] - μ, T), +, zip(weights, energy))
 end
 
 """
@@ -42,6 +36,7 @@ Find chemical potential for target carrier density using bisection.
 - `T`: temperature
 - `energy`: band energy
 - `weights`: k-point weights.
+FIXME: For hole hoped semiconductors, floating point error in compute_ncarrier is very large.
 """
 function find_chemical_potential(ncarrier, T, energy, weights)
     # FIXME: T=0 case
