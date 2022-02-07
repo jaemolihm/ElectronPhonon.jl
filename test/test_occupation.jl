@@ -50,8 +50,28 @@ end
         n_h = EPW.compute_ncarrier_hole(μ, T, energy_h, weights_h)
         @test n_e - n_h ≈ ncarrier
 
-        μ_s = EPW.find_chemical_potential_semiconductor(ncarrier, T, energy_e, weights_e,
-                                                        energy_h, weights_h)
+        μ_s = EPW.find_chemical_potential_semiconductor(ncarrier, T, energy_e, energy_h,
+                                                        weights_e, weights_h)
         @test μ_s ≈ μ
+    end
+
+    @testset "floating point error" begin
+        # Test floating point error by checking that chemical potential stays the same when energies
+        # are repeated N times.
+        ncarrier = 1e-12
+        T = 0.01
+        e_e = 0.5
+        e_h = -0.5
+        N = 10_000
+
+        # General method (metallic case): floating point error is large
+        μ_1 = EPW.find_chemical_potential(ncarrier + 1, T, [e_e, e_h], [1.0, 1.0])
+        μ_N = EPW.find_chemical_potential(ncarrier + 1, T, repeat([e_e, e_h], N), repeat([1 / N, 1 / N], N))
+        @test !(μ_1 ≈ μ_N)
+
+        # Semiconductor specific method: floating point error is small
+        μ_1 = EPW.find_chemical_potential_semiconductor(ncarrier, T, [e_e], [e_h], [1.0], [1.0])
+        μ_N = EPW.find_chemical_potential_semiconductor(ncarrier, T, fill(e_e, N), fill(e_h, N), fill(1 / N, N), fill(1 / N, N))
+        @test μ_1 ≈ μ_N
     end
 end

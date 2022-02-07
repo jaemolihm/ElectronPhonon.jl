@@ -26,7 +26,7 @@ function compute_ncarrier(μ, T, energy::AbstractMatrix, weights)
 end
 
 function compute_ncarrier(μ, T, energy::AbstractVector, weights)
-    mapreduce(x -> x[1] * occ_fermion(x[2] - μ, T), +, zip(weights, energy))
+    sum(@. weights * occ_fermion(energy - μ, T))
 end
 
 """
@@ -34,7 +34,7 @@ end
 Compute hole density.
 """
 function compute_ncarrier_hole(μ, T, energy::AbstractVector, weights)
-    mapreduce(x -> x[1] * (1 - occ_fermion(x[2] - μ, T)), +, zip(weights, energy))
+    sum(@. weights * (1 - occ_fermion(energy - μ, T)))
 end
 
 """
@@ -49,30 +49,22 @@ function find_chemical_potential(ncarrier, T, energy, weights)
     # FIXME: T=0 case
     # TODO: MPI
 
-    # Get rough bounds for μ
-    min_μ = minimum(energy) - 10
-    max_μ = maximum(energy) + 10
-
     # Solve func(μ) = ncarrier(μ) - ncarrier = 0
     func(μ) = compute_ncarrier(μ, T, energy, weights) - ncarrier
-    Roots.find_zero(func, (min_μ, max_μ), Roots.Bisection())
+    Roots.bisection(func, -Inf, Inf)
 end
 
 """
-    find_chemical_potential_semiconductor(ncarrier, T, energy_e, weights_e, energy_h, weights_h)
+    find_chemical_potential_semiconductor(ncarrier, T, energy_e, energy_h, weights_e, weights_h)
 Find chemical potential for target carrier density using bisection. Minimize floating point
 error by computing doped carrier density, not the total carrier density.
 """
-function find_chemical_potential_semiconductor(ncarrier, T, energy_e, weights_e, energy_h, weights_h)
+function find_chemical_potential_semiconductor(ncarrier, T, energy_e, energy_h, weights_e, weights_h)
     # FIXME: T=0 case
     # TODO: MPI
-
-    # Get rough bounds for μ
-    min_μ = minimum(energy_h) - 10
-    max_μ = maximum(energy_e) + 10
 
     # Solve func(μ) = ncarrier_electron(μ) - ncarrier_hole(μ) - ncarrier = 0
     func(μ) = (  compute_ncarrier(μ, T, energy_e, weights_e)
                - compute_ncarrier_hole(μ, T, energy_h, weights_h) - ncarrier)
-    Roots.find_zero(func, (min_μ, max_μ), Roots.Bisection())
+    Roots.bisection(func, -Inf, Inf)
 end
