@@ -53,7 +53,7 @@ function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid) where {FT}
 
         # check whether the new shell is linearly dependent on existing ones
         _, s, _ = svd(A)
-        if any(s .< 1e-5) # This shell will not be used.
+        if any(s .< sqrt(eps(FT))) # This shell will not be used.
             nshell_used -= 1
             continue
         end
