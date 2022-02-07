@@ -23,6 +23,8 @@ States for quantum master equation. Includes off-diagonal coherence between eige
     ib2::Vector{Int} = Int[]
     # Index of k points
     ik::Vector{Int} = Int[]
+    # Range of bands at each k point
+    ib_rng::Vector{UnitRange{Int}} = UnitRange{Int}[]
     # Number of occupied states per unit cell that are not explicitly included, e.g. because
     # they are below the window. Used only for electrons.
     nstates_base::T = 0
@@ -96,37 +98,36 @@ end
     ib1_list = Int[]
     ib2_list = Int[]
     ik_list = Int[]
+    ib_rng = UnitRange{Int}[]
     n = 0
     for ik in 1:nk
         el = el_states[ik]
-        if el.nband == 0
-            continue
-        end
+        el.nband == 0 && continue
         for ib2 in el.rng, ib1 in el.rng
             if abs(el.e[ib1] - el.e[ib2]) <= offdiag_cutoff
                 n += 1
                 push!(e1, el.e[ib1])
                 push!(e2, el.e[ib2])
-                # Here I do not add el.nband_ignore. This is different from what done in BTStates.
-                push!(ib1_list, ib1) #  + el.nband_ignore
-                push!(ib2_list, ib2) #  + el.nband_ignore
+                push!(ib1_list, ib1 + el.nband_ignore)
+                push!(ib2_list, ib2 + el.nband_ignore)
                 push!(ik_list, ik)
                 push!(v, el.v[ib1, ib2])
                 imap[ib1, ib2, ik] = n
             end
         end
+        push!(ib_rng, el.rng .+ el.nband_ignore)
     end
     iband_min = minimum(el.rng_full.start for el in el_states if length(el.nband) > 0)
     iband_max = maximum(el.rng_full.stop for el in el_states if length(el.nband) > 0)
     nband = iband_max - iband_min + 1
-    QMEStates(n, nband, e1, e2, v, ib1_list, ib2_list, ik_list, nstates_base, GridKpoints(kpts)), imap
+    QMEStates(n, nband, e1, e2, v, ib1_list, ib2_list, ik_list, ib_rng, nstates_base, GridKpoints(kpts)), imap
 end
 
 function BTStates(s::QMEStates)
     # Take only diagonal elements from QMEStates and create BTStates
     inds = s.ib1 .== s.ib2
     EPW.BTStates(sum(inds), s.kpts.n, s.nband, s.e1[inds], real.(s.v[inds]), s.kpts.weights[s.ik[inds]],
-                        s.kpts.vectors[s.ik[inds]], s.ib1[inds], s.kpts.ngrid, s.nstates_base)
+                 s.kpts.vectors[s.ik[inds]], s.ib1[inds], s.kpts.ngrid, s.nstates_base)
 end
 
 """

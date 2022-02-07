@@ -1,4 +1,5 @@
 using SparseArrays
+using OffsetArrays
 
 # Constructing and solving quantum master equation for electrons
 
@@ -48,12 +49,12 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
         #                (n_imode + 1 - f_jb)   (-)
         # dδρ_{ib1, ib2}/dt = - [P, δρ]_{ib1, ib2} / 2
 
-        @timing "scat out" for ib2 in 1:el_i.nband, ib1 in 1:el_i.nband
+        @timing "scat out" for ib2 in el_i.ib_rng[ik], ib1 in el_i.ib_rng[ik]
             # Calculate P_{ib1, ib2} only if ∃ ib3 such that both (ib1, ib3) and (ib2, ib3)
             # or both (ib3, ib1) and (ib3, ib2) are in el_i.
             found = false
             local ib3, e_i1, e_i2
-            for outer ib3 in 1:el_i.nband
+            for outer ib3 in el_i.ib_rng[ik]
                 if haskey(indmap_el_i, CI(ib1, ib3, ik)) && haskey(indmap_el_i, CI(ib2, ib3, ik))
                     found = true
                     e_i1 = el_i.e1[indmap_el_i[CI(ib1, ib3, ik)]]
@@ -114,7 +115,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
             # Calculate the scattering matrix. Contribution of P_{ib1, ib2} are:
             # S_out[(ib1,ib3), (ib2,ib3)] += - P_{ib1, ib2} / 2
             # S_out[(ib3,ib2), (ib3,ib1)] += - P_{ib1, ib2} / 2
-            for ib3 in 1:el_i.nband
+            for ib3 in el_i.ib_rng[ik]
                 if haskey(indmap_el_i, CI(ib1, ib3, ik)) && haskey(indmap_el_i, CI(ib2, ib3, ik))
                     i1 = indmap_el_i[CI(ib1, ib3, ik)]
                     i2 = indmap_el_i[CI(ib2, ib3, ik)]
@@ -142,7 +143,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
         #                    * (n_imode +     (f_jb1 + f_jb2) / 2 )       (+)
         #                      (n_imode + 1 - (f_jb1 + f_jb2) / 2 )       (-)
 
-        @timing "scat in" for ib2 in 1:el_i.nband, ib1 in 1:el_i.nband
+        @timing "scat in" for ib2 in el_i.ib_rng[ik], ib1 in el_i.ib_rng[ik]
             # Calculate only if (ib1, ib2, ik) ∈ el_i
             ind_el_i = get(indmap_el_i, CI(ib1, ib2, ik), nothing)
             ind_el_i === nothing && continue
@@ -387,8 +388,8 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
         # Read symmetry gauge matrix elements
         Scart = symmetry[isym].Scart
         group_sym = open_group(fid, "gauge/isym$isym")
-        sym_gauge = read(group_sym, "gauge_matrix")::Array{Complex{FT}, 3}
-        is_degenerate = read(group_sym, "is_degenerate")::Array{Bool, 3}
+        sym_gauge = load_BTData(open_group(group_sym, "gauge_matrix"), OffsetArray{Complex{FT}, 3, Array{Complex{FT}, 3}})
+        is_degenerate = load_BTData(open_group(group_sym, "is_degenerate"), OffsetArray{Bool, 3, Array{Bool, 3}})
 
         for ik in 1:el_i.kpts.n
             xk = el_i.kpts.vectors[ik]
@@ -396,13 +397,13 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
             isk = xk_to_ik(sxk, el_f.kpts)
 
             # Set unfolding matrix
-            for ib2 in 1:el_i.nband, ib1 in 1:el_i.nband
+            for ib2 in el_i.ib_rng[ik], ib1 in el_i.ib_rng[ik]
                 ind_el_i = get(indmap_el_i, EPW.CI(ib1, ib2, ik), -1)
                 ind_el_i == -1 && continue
                 # continue only if ib1 and jb1 are degenerate, and ib2 and jb2 are degenerate.
-                for jb2 in 1:el_f.nband
+                for jb2 in el_f.ib_rng[isk]
                     is_degenerate[jb2, ib2, ik] || continue
-                    for jb1 in 1:el_f.nband
+                    for jb1 in el_f.ib_rng[isk]
                         is_degenerate[jb1, ib1, ik] || continue
                         ind_el_f = get(indmap_el_f, EPW.CI(jb1, jb2, isk), -1)
                         ind_el_f == -1 && continue
@@ -432,8 +433,8 @@ end
 
 function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
     fid = h5open(filename, "r")
-    gauge = read(open_group(fid, "gauge"), "gauge_matrix")::Array{Complex{FT}, 3}
-    is_degenerate = read(open_group(fid, "gauge"), "is_degenerate")::Array{Bool, 3}
+    gauge = load_BTData(open_group(fid, "gauge/gauge_matrix"), OffsetArray{Complex{FT}, 3, Array{Complex{FT}, 3}})
+    is_degenerate = load_BTData(open_group(fid, "gauge/is_degenerate"), OffsetArray{Bool, 3, Array{Bool, 3}})
 
     # We assume that all el_i and el_f use the same grid and same shift.
     δk = el_i.kpts.shift ≈ el_f.kpts.shift
@@ -454,11 +455,10 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
         ib1 = el_i.ib1[ind_el_i]
         ib2 = el_i.ib2[ind_el_i]
 
-        # continue only if ib1 and jb1 are degenerate, and ib2 and jb2 are degenerate.
-        # FIXME: 1:el_f.nband is not safe. One should use iband_min:iband_max.
-        for jb2 in 1:el_f.nband
+        # continue only if ib1 and jb1 are degenerate and ib2 and jb2 are degenerate.
+        for jb2 in el_f.ib_rng[ik_f]
             is_degenerate[jb2, ib2, ik] || continue
-            for jb1 in 1:el_f.nband
+            for jb1 in el_f.ib_rng[ik_f]
                 is_degenerate[jb1, ib1, ik] || continue
 
                 ind_el_f = get(indmap_el_f, EPW.CI(jb1, jb2, ik_f), -1)

@@ -94,8 +94,8 @@ using HDF5
 
             # Test QME and BTE result is identical (because there is only one band)
             @test el_i.nband == 1
-            @test all(el_i.ib1 .== 1)
-            @test all(el_i.ib2 .== 1)
+            @test all(el_i.ib1 .== 5)
+            @test all(el_i.ib2 .== 5)
             @test μlist_qme ≈ transport_params.μlist
             @test out_qme.σ_serta ≈ output_serta.σ rtol=1e-6
             @test out_qme.σ_serta ≈ output_lbte.σ_serta rtol=1e-6
