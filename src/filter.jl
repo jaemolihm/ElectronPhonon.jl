@@ -100,7 +100,7 @@ end
 function _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode="normal")
     eigenvalues_ = [zeros(Float64, nw) for _ in 1:nthreads()]
     ik_keep_ = [zeros(Bool, kpoints.n) for _ in 1:nthreads()]
-    nelec_below_window_ = [zero(eltype(window)) for _ in 1:nthreads()]
+    nelec_below_window_ = zeros(eltype(window), kpoints.n)
     band_min_ = [nw for _ in 1:nthreads()]
     band_max_ = [1 for _ in 1:nthreads()]
 
@@ -109,7 +109,7 @@ function _filter_kpoints(nw, kpoints, el_ham, window, fourier_mode="normal")
         eigenvalues = eigenvalues_[threadid()]
         get_el_eigen_valueonly!(eigenvalues, nw, el_ham, xk, fourier_mode)
         bands_in_window = inside_window(eigenvalues, window...)
-        nelec_below_window_[threadid()] += (bands_in_window.start - 1) * kpoints.weights[ik]
+        nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
         if ! isempty(bands_in_window)
             ik_keep_[threadid()][ik] = true
             band_min_[threadid()] = min(bands_in_window[1], band_min_[threadid()])
