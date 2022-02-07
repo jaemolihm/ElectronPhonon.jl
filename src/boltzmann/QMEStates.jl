@@ -74,7 +74,7 @@ end
     T(data...)
 end
 
-function load_BTData(f, T::Type{GridKpoints{FT}}) where FT
+function load_BTData(f, ::Type{GridKpoints{FT}}) where FT
     kpts = load_BTData(f, Kpoints{FT})
     GridKpoints(kpts)
 end

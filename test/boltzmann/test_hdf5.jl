@@ -1,6 +1,7 @@
 using Test
 using Random
 using StaticArrays
+using OffsetArrays
 using HDF5
 using EPW
 using EPW: _data_julia_to_hdf5, _data_hdf5_to_julia
@@ -21,7 +22,8 @@ function test_hdf_io(data::T) where T
     data_read
 end
 
-@testset "BTData hdf5" begin
+@testset "hdf5 IO basic" begin
+    # Test HDF5 IO of basic types
     Random.seed!(123)
     # Test simple types
     for T in [Int64, Float64, Float32, ComplexF64]
@@ -54,13 +56,30 @@ end
         end
     end
     # Test UnitRange
-    for x in [4:10]
-        @inferred test_hdf_io(x)
-    end
+    x = 4:10
+    @inferred test_hdf_io(x)
+    @inferred test_hdf_io(fill(x, 2, 3))
 end
 
-# Symmetry object
-@testset "hdf5: symmetry" begin
+# TODO: Merge test_hdf_io and test_hdf_io_btdata
+function test_hdf_io_btdata(data::T) where T
+    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
+    mkpath(tmp_dir)
+
+    h5open(joinpath(tmp_dir, "tmp_data.h5"), "w") do f
+        dump_BTData(f, data)
+    end
+    data_read = h5open(joinpath(tmp_dir, "tmp_data.h5"), "r") do f
+        load_BTData(f, T)
+    end
+    @test data_read isa T
+    data_read
+end
+
+@testset "hdf5 IO BTData" begin
+    # Test HDF5 IO of composite types
+    Random.seed!(123)
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
     mkpath(tmp_dir)
@@ -69,19 +88,18 @@ end
                      [1 0 1.];
                      [1 1 0.]]
     atoms = ["B" => [ones(3)/8], "N" => [-ones(3)/8]]
+
+    # Symmetry
     symmetry = symmetry_operations(lattice, atoms)
-
-    f = h5open(joinpath(tmp_dir, "tmp_symmetry.h5"), "w")
-    dump_BTData(f, symmetry)
-    close(f)
-
-    f = h5open(joinpath(tmp_dir, "tmp_symmetry.h5"), "r")
-    symmetry_read = @inferred load_BTData(f, Symmetry{Float64})
-    close(f)
-
+    symmetry_read = @inferred test_hdf_io_btdata(symmetry)
     for name in fieldnames(typeof(symmetry_read))
         @test getfield(symmetry_read, name) ≈ getfield(symmetry, name)
     end
-end
 
-# TODO: Add test of dump_BTData
+    # OffsetArray
+    arr = OffsetArray(rand(2, 3, 4), 5:6, -1:1, 1:4)
+    arr_read = @inferred test_hdf_io_btdata(arr)
+    @test arr ≈ arr_read
+
+    # TODO: Kpoints, GridKpoints, ...
+end
