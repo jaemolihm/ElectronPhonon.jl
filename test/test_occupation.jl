@@ -23,22 +23,35 @@ end
     Random.seed!(123)
     nband = 4
     nk = 5
-    energy = zeros(nband, nk)
-    for ik = 1:nk
-        energy[1:2, ik] .= sort(rand(2)) # valence bands
-        energy[3:4, ik] .= sort(rand(2)) .+ 3.0 # condunction band
-    end
+    energy = rand(nband, nk)
+    energy[1:2, :] .-= 2.0 # Valence bands
+    energy[3:4, :] .+= 2.0 # Conduction bands
     weights = rand(nk)
     weights /= sum(weights)
 
-    T = 0.02
+    T = 0.25
     nband_valence = 2
 
     @test EPW.compute_ncarrier(Inf, T, energy, weights) ≈ nband
     @test EPW.compute_ncarrier(-Inf, T, energy, weights) ≈ 0
 
     for ncarrier in [1e-3, -1e-3]
+        # General function
         μ = EPW.find_chemical_potential(ncarrier + nband_valence, T, energy, weights)
         @test EPW.compute_ncarrier(μ, T, energy, weights) ≈ ncarrier + nband_valence
+
+        # Semiconductor-specific function
+        energy_e = vec(energy[3:4, :])
+        weights_e = repeat(weights, inner=2)
+        energy_h = vec(energy[1:2, :])
+        weights_h = repeat(weights, inner=2)
+
+        n_e = EPW.compute_ncarrier(μ, T, energy_e, weights_e)
+        n_h = EPW.compute_ncarrier_hole(μ, T, energy_h, weights_h)
+        @test n_e - n_h ≈ ncarrier
+
+        μ_s = EPW.find_chemical_potential_semiconductor(ncarrier, T, energy_e, weights_e,
+                                                        energy_h, weights_h)
+        @test μ_s ≈ μ
     end
 end

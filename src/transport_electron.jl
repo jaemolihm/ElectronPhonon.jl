@@ -22,7 +22,11 @@ Parameters for electron transport calculation. Arguments:
 * `spin_degeneracy::Int`: Spin degeneracy.
 * `μlist::Vector{T}`: Chemical potential.
 * `type::Symbol`: Type of the carrier. `:Metal` or `:Semiconductor`. Defaults to `:Metal` if
-    abs(n) >= 1 and to `:Semiconductor` otherwise. Used only for printing.
+    abs(n) >= 1 and to `:Semiconductor` otherwise.
+
+**NOTE**: If `type == :Semiconductor`, it is assumed that the maximum of the `nband_valence`-th band
+is below the minimum of the `nband_valence+1`-th band for the calculation of the chemical potential.
+If this condition does not hold, manually set `type = :Metal`.
 """
 Base.@kwdef struct ElectronTransportParams{T <: Real}
     Tlist::Vector{T}
