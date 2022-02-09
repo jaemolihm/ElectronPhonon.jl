@@ -5,14 +5,15 @@ using SparseArrays
 export finite_difference_vectors
 
 """
-    finite_difference_vectors(recip_lattice, ngrid) => (; bvecs, bvecs_cart, wbs)
+    finite_difference_vectors(recip_lattice, ngrid, order=1) => (; bvecs, bvecs_cart, wbs)
 Choose the b vectors and weights as defined in [1], following the scheme of [2].
 [1] N. Marzari and D. Vanderbilt, PRB 56, 12847 (1997)
-[2] A. A. Mostofi et al., . Phys. Commun. 178 685 (2008)
-Output `bvecs` is in crystal coordinates.
-TODO: Higher-order method?
+[2] A. A. Mostofi et al, Phys. Commun. 178 685 (2008)
+
+- `order`: Use higher-order formula with `order`-times more b vectors. Finite-difference error
+           scales as ``O(b^(2*order))``.
 """
-function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid) where {FT}
+function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid, order=1) where {FT}
     nsupcell = 5 # Include b vectors in the [-nsupcell, nsupcell] cell to the search.
     kdist_tol = norm(recip_lattice) * sqrt(eps(FT)) # Difference below kdist_tol are regarded as equal.
     q = [1, 0, 0, 1, 0, 1] # Lower triangular components of I(3)
@@ -84,6 +85,24 @@ function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid) where {FT}
             append!(wbs, fill(wbs_shell[ishell], length(bvecs_new)))
         end
     end
+
+    # Higher-order finite difference
+    if order == 1
+        # First-order: keep b and wbs (do nothing)
+    elseif order == 2
+        # Second-order: include b and 2b, with weights 4/3 and -1/12
+        # [1 0] / [1 1; 2^2 2^4]
+        bvecs = vcat(bvecs, 2. * bvecs)
+        wbs = vcat(wbs .* 4/3, wbs .* -1/12)
+    elseif order == 3
+        # Third-order: include b, 2b and 3b, with weights 3/2, -3/20, and 1/90
+        # [1 0 0] / [1 1 1; 2^2 2^4 2^6; 3^2 3^4 3^6]
+        bvecs = vcat(bvecs, 2. * bvecs, 3. * bvecs)
+        wbs = vcat(wbs .* 3/2, wbs .* -3/20, wbs .* 1/90)
+    else
+        error("Only order 1, 2 and 3 are implemented, but got $order.")
+    end
+
     bvecs_cart = Ref(recip_lattice) .* bvecs
 
     # Test completeness relation (Eq. (B1) of Ref. [1])

@@ -16,11 +16,14 @@ using LinearAlgebra
     # method.
     model.el_velocity_mode = :BerryConnection
 
+    # Maximum finite-difference order to test
+    max_order = 2
+
     # Setup k points: grid spacing 1/nk, centered at xk0, include +- 2 points.
     xk0 = Vec3(0.0, 0.2, 0.0)
     nk = 240
     kpts_list = Vec3{Float64}[]
-    for i in -2:2, j in -2:2, k in -2:2
+    for i in -max_order:max_order, j in -max_order:max_order, k in -max_order:max_order
         push!(kpts_list, xk0 .+ (i, j, k) ./ nk)
     end
     ik0 = findfirst(xk -> xk ≈ xk0, kpts_list)
@@ -31,37 +34,39 @@ using LinearAlgebra
     el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"])
     el, _ = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
 
-    bvec_data = finite_difference_vectors(model.recip_lattice, el.kpts.ngrid)
-    ∇ = EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data)
+    bvec_data_list = [finite_difference_vectors(model.recip_lattice, el.kpts.ngrid, order) for order in 1:max_order]
+    ∇_list = [EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data) for bvec_data in bvec_data_list]
 
     # Test IO
     h5open(joinpath(folder_tmp, "covariant_derivative.h5"), "w") do f
-        EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data, f)
+        EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data_list[1], f)
         ∇_from_file = EPW.load_covariant_derivative_matrix(f)
-        @test ∇ ≈ ∇_from_file
+        @test ∇_list[1] ≈ ∇_from_file
     end
 
     # Test covariant derivative of the Hamiltonian operator. Compare with the analytic
     # solution which is the velocity operator.
     f = zeros(el.n)
     @. f[el.ib1 == el.ib2] = el.e1[el.ib1 == el.ib2]
-    ∇f = ∇[1] * f
     ∇f_ik0_analytic = [x[1] for x in el_k_save[ik0].v]
 
     # Accumulate error for degenerate and nondegenerate pairs separately and check both.
-    error_degen = 0.0
-    error_nondegen = 0.0
-    for i in 1:el.n
-        if el.ik[i] == ik0
-            if abs(el.e1[i] - el.e2[i]) < EPW.electron_degen_cutoff
-                error_degen += abs(∇f[i] - ∇f_ik0_analytic[el.ib1[i], el.ib2[i]])
-            else
-                error_nondegen += abs(∇f[i] - ∇f_ik0_analytic[el.ib1[i], el.ib2[i]])
+    error_degen = fill(0.0, max_order)
+    error_nondegen = fill(0.0, max_order)
+    for order in 1:max_order
+        ∇f = ∇_list[order][1] * f
+        for i in 1:el.n
+            if el.ik[i] == ik0
+                if abs(el.e1[i] - el.e2[i]) < EPW.electron_degen_cutoff
+                    error_degen[order] += abs(∇f[i] - ∇f_ik0_analytic[el.ib1[i], el.ib2[i]])
+                else
+                    error_nondegen[order] += abs(∇f[i] - ∇f_ik0_analytic[el.ib1[i], el.ib2[i]])
+                end
             end
         end
     end
-    @test error_degen < 1e-3
-    @test error_nondegen < 1e-3
+    @test all(error_degen .< [1e-3, 1e-6])
+    @test all(error_nondegen .< [1e-3, 1e-6])
 end
 
 @testset "covariant derivative bvec" begin
@@ -73,6 +78,14 @@ end
     @test bvecs_cart ≈ Ref(recip_lattice) .* bvecs
     @test all(round.(Int, b .* ngrid) ≈ b .* ngrid for b in bvecs)
     @test sum([b_cart * b_cart' .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ I(3)
+
+    # Higher-order: test ∑_b wb b^(2*i) = 0 for i = 2, ..., order.
+    for order in 2:3
+        bvecs, bvecs_cart, wbs = finite_difference_vectors(recip_lattice, ngrid, order)
+        for i in 2:order
+            @test sum([b_cart[1]^(2i) .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ 0 atol=1e-13
+        end
+    end
 
     a = 2π
     c = 0.3π
@@ -88,4 +101,12 @@ end
     @test bvecs ≈ [[0.0, 0.0, -0.5], [0.0, 0.0, 0.5], [0.0, -0.2, 0.0], [0.0, 0.2, 0.0],
                    [0.0, -0.2, -1.0], [0.0, 0.2, -1.0], [-0.25, 0.0, 0.0], [0.25, 0.0, 0.0],
                    [0.0, -0.2, 1.0], [0.0, 0.2, 1.0]]
+
+    # Higher-order: test ∑_b wb b^(2*i) = 0 for i = 2, ..., order.
+    for order in 2:3
+        bvecs, bvecs_cart, wbs = finite_difference_vectors(recip_lattice, ngrid, order)
+        for i in 2:order
+            @test sum([b_cart[1]^(2i) .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ 0 atol=1e-13
+        end
+    end
 end
