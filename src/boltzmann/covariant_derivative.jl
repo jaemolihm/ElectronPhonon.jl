@@ -13,7 +13,7 @@ Choose the b vectors and weights as defined in [1], following the scheme of [2].
 - `order`: Use higher-order formula with `order`-times more b vectors. Finite-difference error
            scales as ``O(b^(2*order))``.
 """
-function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid, order=1) where {FT}
+function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1) where {FT}
     nsupcell = 5 # Include b vectors in the [-nsupcell, nsupcell] cell to the search.
     kdist_tol = norm(recip_lattice) * sqrt(eps(FT)) # Difference below kdist_tol are regarded as equal.
     q = [1, 0, 0, 1, 0, 1] # Lower triangular components of I(3)

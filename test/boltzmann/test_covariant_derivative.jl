@@ -34,7 +34,7 @@ using LinearAlgebra
     el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"])
     el, _ = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
 
-    bvec_data_list = [finite_difference_vectors(model.recip_lattice, el.kpts.ngrid, order) for order in 1:max_order]
+    bvec_data_list = [finite_difference_vectors(model.recip_lattice, el.kpts.ngrid; order) for order in 1:max_order]
     ∇_list = [EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data) for bvec_data in bvec_data_list]
 
     # Test IO
@@ -81,7 +81,7 @@ end
 
     # Higher-order: test ∑_b wb b^(2*i) = 0 for i = 2, ..., order.
     for order in 2:3
-        bvecs, bvecs_cart, wbs = finite_difference_vectors(recip_lattice, ngrid, order)
+        bvecs, bvecs_cart, wbs = finite_difference_vectors(recip_lattice, ngrid; order)
         for i in 2:order
             @test sum([b_cart[1]^(2i) .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ 0 atol=1e-13
         end
@@ -104,7 +104,7 @@ end
 
     # Higher-order: test ∑_b wb b^(2*i) = 0 for i = 2, ..., order.
     for order in 2:3
-        bvecs, bvecs_cart, wbs = finite_difference_vectors(recip_lattice, ngrid, order)
+        bvecs, bvecs_cart, wbs = finite_difference_vectors(recip_lattice, ngrid; order)
         for i in 2:order
             @test sum([b_cart[1]^(2i) .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ 0 atol=1e-13
         end
