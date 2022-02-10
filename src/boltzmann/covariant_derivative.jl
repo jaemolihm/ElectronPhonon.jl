@@ -140,15 +140,12 @@ function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group
     sp_vals = [ComplexF64[] for _ in 1:3]
 
     # 1. Derivative term
-    for ind_i in 1:el.n
-        ik = el.ik[ind_i]
-        ib1 = el.ib1[ind_i]
-        ib2 = el.ib2[ind_i]
+    for ik in 1:kpts.n
         xk = kpts.vectors[ik]
         rng_k = el_k_save[ik].rng
 
         for (b, b_cart, wb) in zip(bvec_data...)
-            xkb = xk .+ b
+            xkb = xk + b
             ikb = xk_to_ik(xkb, kpts)
             ikb === nothing && continue
             rng_kb = el_k_save[ikb].rng
@@ -157,15 +154,19 @@ function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group
             mmat_rng = @views mmat[rng_kb, rng_k]
             mul!(mmat_rng, get_u(el_k_save[ikb])', get_u(el_k_save[ik]))
 
-            for jb1 in rng_kb, jb2 in rng_kb
-                # ∇ᵅf[ik, ib1, ib2] += mkb'[ib1, jb1] * f[ikb, jb1, jb2] * mkb[jb2, ib2] * wb * bᵅ
-                ind_f = get(indmap, EPW.CI(jb1, jb2, ikb), -1)
-                ind_f == -1 && continue
-                push!(sp_i, ind_i)
-                push!(sp_j, ind_f)
-                coeff = mmat[jb1, ib1]' * mmat[jb2, ib2] * wb
-                for idir in 1:3
-                    push!(sp_vals[idir], coeff * b_cart[idir])
+            for ib2 in rng_k, ib1 in rng_k
+                ind_i = get(indmap, EPW.CI(ib1, ib2, ik), -1)
+                ind_i == -1 && continue
+                for jb2 in rng_kb, jb1 in rng_kb
+                    # ∇ᵅf[ik, ib1, ib2] += mkb'[ib1, jb1] * f[ikb, jb1, jb2] * mkb[jb2, ib2] * wb * bᵅ
+                    ind_f = get(indmap, EPW.CI(jb1, jb2, ikb), -1)
+                    ind_f == -1 && continue
+                    push!(sp_i, ind_i)
+                    push!(sp_j, ind_f)
+                    coeff = mmat[jb1, ib1]' * mmat[jb2, ib2] * wb
+                    for idir in 1:3
+                        push!(sp_vals[idir], coeff * b_cart[idir])
+                    end
                 end
             end
         end
@@ -201,7 +202,6 @@ function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group
             end
         end
     end
-
 
     if hdf_group === nothing
         # Construct and return ∇ as a sparse matrix

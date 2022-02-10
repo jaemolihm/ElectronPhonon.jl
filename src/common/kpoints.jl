@@ -280,7 +280,9 @@ Kpoints(k::GridKpoints{T}) where {T} = Kpoints{T}(k.n, k.vectors, k.weights, k.n
 GridKpoints(k::GridKpoints) = k
 
 function _hash_xk(xk, ngrid, shift)
-    xk_int = mod.(round.(Int, (xk - shift) .* ngrid), ngrid)
+    # xk_int = mod.(round.(Int, (xk - shift) .* ngrid), ngrid)
+    # FIXME: round.(Int, x) allocates, so I use the following temporary fix
+    xk_int = Vec3(mod.(round.(Int, (xk - shift).data .* ngrid), ngrid))
     (xk_int[1] * ngrid[2] + xk_int[2]) * ngrid[3] + xk_int[3]
 end
 _hash_xk(xk, kpts::GridKpoints) = _hash_xk(xk, kpts.ngrid, kpts.shift)
