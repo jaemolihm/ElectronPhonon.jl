@@ -70,6 +70,8 @@ using LinearAlgebra
 end
 
 @testset "covariant derivative bvec" begin
+    max_order = 4
+
     alat = 0.8
     recip_lattice = Mat3(alat * [-1 1 -1; -1 1 1; 1 1 -1])
     ngrid = 10
@@ -80,7 +82,7 @@ end
     @test sum([b_cart * b_cart' .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ I(3)
 
     # Higher-order: test ∑_b wb b^(2*i) = 0 for i = 2, ..., order.
-    for order in 2:3
+    for order in 2:max_order
         bvecs, bvecs_cart, wbs = finite_difference_vectors(recip_lattice, ngrid; order)
         for i in 2:order
             @test sum([b_cart[1]^(2i) .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ 0 atol=1e-13
@@ -103,7 +105,7 @@ end
                    [0.0, -0.2, 1.0], [0.0, 0.2, 1.0]]
 
     # Higher-order: test ∑_b wb b^(2*i) = 0 for i = 2, ..., order.
-    for order in 2:3
+    for order in 2:max_order
         bvecs, bvecs_cart, wbs = finite_difference_vectors(recip_lattice, ngrid; order)
         for i in 2:order
             @test sum([b_cart[1]^(2i) .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ 0 atol=1e-13

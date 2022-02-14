@@ -90,17 +90,19 @@ function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1) wher
     if order == 1
         # First-order: keep b and wbs (do nothing)
     elseif order == 2
-        # Second-order: include b and 2b, with weights 4/3 and -1/12
         # [1 0] / [1 1; 2^2 2^4]
         bvecs = vcat(bvecs, 2. * bvecs)
         wbs = vcat(wbs .* 4/3, wbs .* -1/12)
     elseif order == 3
-        # Third-order: include b, 2b and 3b, with weights 3/2, -3/20, and 1/90
         # [1 0 0] / [1 1 1; 2^2 2^4 2^6; 3^2 3^4 3^6]
         bvecs = vcat(bvecs, 2. * bvecs, 3. * bvecs)
         wbs = vcat(wbs .* 3/2, wbs .* -3/20, wbs .* 1/90)
+    elseif order == 4
+        # [1 0 0 0] / [1 1 1 1; 2^2 2^4 2^6 2^8; 3^2 3^4 3^6 3^8; 4^2 4^4 4^6 4^8]
+        bvecs = vcat(bvecs, 2. * bvecs, 3. * bvecs, 4. * bvecs)
+        wbs = vcat(wbs .* 8/5, wbs .* -1/5, wbs .* 8/315, wbs .* -1/560)
     else
-        error("Only order 1, 2 and 3 are implemented, but got $order.")
+        error("Only order 1 to 4 are implemented, but got $order.")
     end
 
     bvecs_cart = Ref(recip_lattice) .* bvecs
