@@ -290,7 +290,7 @@ _hash_xk(xk, kpts::GridKpoints) = _hash_xk(xk, kpts.ngrid, kpts.shift)
 # Retern index of given xk vector
 xk_to_ik(xk, kpts) = get(kpts._xk_hash_to_ik, _hash_xk(xk, kpts), nothing)
 
-Base.sortperm(k::GridKpoints) = sortperm(map(xk -> round.(Int, (xk - k.shift) .* k.ngrid), k.vectors))
+Base.sortperm(k::GridKpoints) = sortperm(map(xk -> round.(Int, (xk - k.shift).data .* k.ngrid), k.vectors))
 
 function Base.sort!(k::GridKpoints)
     inds = sortperm(k)
@@ -302,5 +302,66 @@ function Base.sort!(k::GridKpoints)
     k
 end
 
+Base.:(==)(k1::GridKpoints, k2::GridKpoints) = (k1.n ≈ k2.n
+    && k1.vectors ≈ k2.vectors
+    && k1.weights ≈ k2.weights
+    && k1.shift ≈ k2.shift
+    && k1.ngrid == k2.ngrid
+    && k1._xk_hash_to_ik == k2._xk_hash_to_ik
+)
+
 get_filtered_kpoints(k::GridKpoints, ik_keep) = GridKpoints(get_filtered_kpoints(Kpoints(k), ik_keep))
 kpoints_create_subgrid(k::GridKpoints, nsubgrid) = GridKpoints(kpoints_create_subgrid(Kpoints(k), nsubgrid))
+
+"""
+    unfold_kpoints(kpts::GridKpoints, symmetry)
+Unfold k points using symmetry to the full Brillouin zone.
+"""
+function unfold_kpoints(kpts::GridKpoints, symmetry)
+    # If symmetry is trivial, do nothing and return a copy of input kpts
+    if symmetry.nsym == 1
+        return deepcopy(kpts)
+    end
+
+    ngrid = kpts.ngrid
+    shift = kpts.shift
+
+    # For the unfolded kpts to be GridKpoints, all symmetry mapping of kpts.shift must be on the grid.
+    for symop in symmetry
+        s_shift = symop.is_tr ? -symop.S * shift : symop.S * shift
+        dk = s_shift - shift
+        if ! (dk ≈ Vec3(round.(Int, dk.data .* ngrid) ./ ngrid))
+            error("kpts.shift = $(kpts.shift) does not respect the symmetry $symop. Cannot unfold.")
+        end
+    end
+
+    # Unfold k points
+    sk_hash_dict = Dict{Int, Int}()
+    sk_vectors = empty(kpts.vectors)
+    sk_weights = empty(kpts.weights)
+    for ik in 1:kpts.n
+        xk = kpts.vectors[ik]
+        for symop in symmetry
+            sk = symop.is_tr ? -symop.S * xk : symop.S * xk
+            sk = EPW.normalize_kpoint_coordinate(sk)
+            sk_hash = EPW._hash_xk(sk, ngrid, shift)
+
+            isk = get(sk_hash_dict, sk_hash, nothing)
+            if isk === nothing
+                # new sk point
+                push!(sk_vectors, sk)
+                push!(sk_weights, kpts.weights[ik])
+                sk_hash_dict[sk_hash] = length(sk_vectors)
+            else
+                # sk point already found
+                sk_weights[isk] += kpts.weights[ik]
+            end
+        end
+    end
+    # Each k point is mapped to length(symmetry) sk points, so divide weights by length(symmetry).
+    sk_weights ./= length(symmetry)
+
+    kpts_unfold = GridKpoints(length(sk_vectors), sk_vectors, sk_weights, ngrid, shift, sk_hash_dict)
+    sort!(kpts_unfold)
+    return kpts_unfold
+end

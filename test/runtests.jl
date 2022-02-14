@@ -8,6 +8,7 @@ using Test
     include("test_fourier.jl")
     include("test_diagonalize.jl")
     include("test_symmetry_operator.jl")
+    include("test_unfold.jl")
     include("test_velocity.jl")
     include("test_epmat.jl")
     include("test_plot_bandstructure.jl")
