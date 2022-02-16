@@ -1,7 +1,7 @@
 abstract type AbstractQMEModel{FT} end
 
 Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
-    # Mandatory fields
+    # === Mandatory fields ===
 
     # Symmetry operation used to map the irreducible k grid to the full k grid.
     symmetry::Symmetry{FT}
@@ -15,7 +15,7 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
     # Transport parameters
     transport_params::ElectronTransportParams{FT}
 
-    # Optional fields
+    # === Optional fields ===
 
     # Covariant derivative operator (in Cartesian coordinates) that acts on el.
     ∇ = nothing
@@ -56,14 +56,14 @@ QME model defined on a full grid without any symmetry.
 `model.el_irr` returns `model.el`.
 """
 Base.@kwdef mutable struct QMEModel{FT} <: AbstractQMEModel{FT}
-    # Mandatory fields
+    # === Mandatory fields ===
 
     # Electron states in the full k grid.
     el::QMEStates{FT}
     # Transport parameters
     transport_params::ElectronTransportParams{FT}
 
-    # Optional fields
+    # === Optional fields ===
 
     # Covariant derivative operator (in Cartesian coordinates) that acts on el.
     ∇ = nothing
