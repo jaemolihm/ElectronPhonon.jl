@@ -48,6 +48,8 @@ include("boltzmann/BTScatterings.jl")
 # Quantum master equation transport
 include("boltzmann/QMEStates.jl")
 include("boltzmann/QMEScattering.jl")
+include("boltzmann/QMEVector.jl")
+include("boltzmann/QMEModel.jl")
 include("boltzmann/unfold.jl")
 include("boltzmann/covariant_derivative.jl")
 include("boltzmann/run_coherence.jl")
