@@ -1,3 +1,6 @@
+export QMEVector
+export data_ik
+
 """
 `data` represents a block-diagonal sparse matrix `f[(m, n, k)]`, where `m` and `n` are band indices
 and `k` is a k-point index. The matrix is diagonal in `k`, so there is only one `k` index.
@@ -68,6 +71,22 @@ Base.:+(x::QMEVector, a::Number) = QMEVector(x.state, x.data .+ a)
 Base.:-(x::QMEVector, a::Number) = QMEVector(x.state, x.data .- a)
 Base.:*(x::QMEVector, a::Number) = QMEVector(x.state, x.data .* a)
 Base.:/(x::QMEVector, a::Number) = QMEVector(x.state, x.data ./ a)
+
+"""
+    data_ik(x::QMEVector{ElType, FT}, ik) where {ElType, FT}
+Return the block corresponding to the k point `ik` of the data stored in `x.data` as a matrix.
+"""
+function data_ik(x::QMEVector{ElType, FT}, ik) where {ElType, FT}
+    rng = x.state.ib_rng[ik]
+    data_ik = zeros(ElType, rng.stop, rng.stop)
+    for i in 1:x.state.n
+        if x.state[i].ik == ik
+            (; ib1, ib2) = x.state[i]
+            data_ik[ib1, ib2] = x.data[i]
+        end
+    end
+    data_ik
+end
 
 get_velocity_as_QMEVector(state::QMEStates) = Vec3(QMEVector(state, [v[a] for v in state.v]) for a in 1:3)
 
