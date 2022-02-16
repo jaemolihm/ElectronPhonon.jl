@@ -63,6 +63,7 @@ include("boltzmann/gamma_adaptive.jl")
 include("boltzmann/electron_lbte.jl")
 include("run_transport.jl")
 include("run_transport_subgrid_q.jl")
+include("boltzmann/electron_hall_transport.jl")
 
 include("postprocess/plot_bandstructure.jl")
 include("postprocess/plot_electron_phonon.jl")

@@ -1,6 +1,8 @@
 export QMEVector
 export data_ik
 
+# TODO: Use AbstractVector? Broadcasting?
+
 """
 `data` represents a block-diagonal sparse matrix `f[(m, n, k)]`, where `m` and `n` are band indices
 and `k` is a k-point index. The matrix is diagonal in `k`, so there is only one `k` index.
