@@ -68,10 +68,13 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     end
 
     if compute_derivative
-        symmetry !== nothing && error("compute_covariant_derivative_matrix with symmetry not implemented")
-        bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid)
+        el_sym = symmetry !== nothing ? model.el_sym : nothing
         g = create_group(fid_btedata, "covariant_derivative")
-        compute_covariant_derivative_matrix(el_k_boltzmann, el_k_save, bvec_data, g)
+        bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid)
+        el_unfold, ik_to_ikirr_isym = compute_covariant_derivative_matrix(el_k_boltzmann,
+            el_k_save, bvec_data, el_sym, g; fourier_mode)
+        dump_BTData(create_group(fid_btedata, "initialstate_electron_unfolded"), el_unfold)
+        fid_btedata["ik_to_ikirr_isym"] = _data_julia_to_hdf5(ik_to_ikirr_isym)
     end
 
     # Write gauge matrices that map eigenstates in el_k_save to eigenstates in el_kq_save.

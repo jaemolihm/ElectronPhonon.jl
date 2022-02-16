@@ -124,18 +124,45 @@ covariant derivative:
 ``(∇ᵅ * f)[ik] = ∑_b wb * bᵅ * m[ib, ik]' * f[ikb] * m[ib, ik] - i[ξ[ik], f[ik]]``,
 where `ikb` is the index of `k + b` and `ξ` the position matrix in the eigenstate gauge.
 Note that `ξ` is not the Berry connection: it does not include the Hamiltonian derivative term.
+- If `el_sym` is set, first unfold `el_irr` to the full grid and calculate ∇ for the unfolded
+system. If `el_sym` is `nothing`, just compute `∇` for `el_irr`.
 - ∇[1], ∇[2], ∇[3] correspond to Cartesian x, y, z directions.
 - `hdf_group`: If given, write data for the sparse matrix to file. If not given, return the
 sparse matrix itself.
 """
-function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group=nothing)
+function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_states, bvec_data,
+        el_sym, hdf_group=nothing; fourier_mode="gridopt") where FT
+    nw = first(el_irr_states).nw
+
+    if el_sym !== nothing
+        # Using symmetry. el_irr is on the irreducible k grid.
+        # Unfold el to full k point grid
+        el, ik_to_ikirr_isym = EPW.unfold_QMEStates(el_irr, el_sym.symmetry);
+
+        # Compute symmetry gauge matrix. For Sk = S_isym * k, the eigenstate at Sk is
+        # U(Sk) = S_isym(k) * U(k). (Here, k is a point in the irreducible grid.)
+        smat_all = zeros(Complex{FT}, nw, nw, el.kpts.n)
+        @views for ik in 1:el.kpts.n
+            ikirr, isym = ik_to_ikirr_isym[ik]
+            # TODO: Optimize by skipping if symop is identity
+            get_fourier!(smat_all[:, :, ik], el_sym.operators[isym], el_irr.kpts.vectors[ikirr], mode=fourier_mode)
+        end
+    else
+        # Not using symmetry. el_irr is already on the full grid.
+        # Set el to el_irr and ik_to_ikirr_isym to (ikirr, isym) = (ik, 0).
+        el = el_irr
+        ik_to_ikirr_isym = [(ik, 0) for ik in 1:el.kpts.n]
+    end
+
     indmap = EPW.states_index_map(el)
     kpts = el.kpts
 
     # FIXME: el.nband instead of rng_maxdoes not work because rng can be outside of 1:el.nband
     # rng_max is a dirty fix...
-    rng_max = maximum(x -> x.rng[end], el_k_save)
+    rng_max = maximum(x -> x.rng[end], el_irr_states)
     mmat = zeros(ComplexF64, rng_max, rng_max)
+    u_k  = zeros(ComplexF64, nw, rng_max)
+    u_kb = zeros(ComplexF64, nw, rng_max)
 
     sp_i = Int[]
     sp_j = Int[]
@@ -144,17 +171,29 @@ function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group
     # 1. Derivative term
     for ik in 1:kpts.n
         xk = kpts.vectors[ik]
-        rng_k = el_k_save[ik].rng
+        ikirr = ik_to_ikirr_isym[ik][1]
+        rng_k = el_irr_states[ikirr].rng
+        if el_sym !== nothing
+            @views mul!(u_k[:, rng_k], smat_all[:, :, ik], get_u(el_irr_states[ikirr]))
+        else
+            u_k[:, rng_k] .= get_u(el_irr_states[ikirr])
+        end
 
         for (b, b_cart, wb) in zip(bvec_data...)
             xkb = xk + b
             ikb = xk_to_ik(xkb, kpts)
             ikb === nothing && continue
-            rng_kb = el_k_save[ikb].rng
+
+            ikbirr = ik_to_ikirr_isym[ikb][1]
+            rng_kb = el_irr_states[ikbirr].rng
+            if el_sym !== nothing
+                @views mul!(u_kb[:, rng_kb], smat_all[:, :, ikb], get_u(el_irr_states[ikbirr]))
+            else
+                u_kb[:, rng_kb] .= get_u(el_irr_states[ikbirr])
+            end
 
             # Compute overlap matrix: mmat = U(k+b)' * U(k)
-            mmat_rng = @views mmat[rng_kb, rng_k]
-            mul!(mmat_rng, get_u(el_k_save[ikb])', get_u(el_k_save[ik]))
+            @views mul!(mmat[rng_kb, rng_k], u_kb[:, rng_kb]', u_k[:, rng_k])
 
             for ib2 in rng_k, ib1 in rng_k
                 ind_i = get(indmap, EPW.CI(ib1, ib2, ik), -1)
@@ -177,8 +216,9 @@ function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group
     # 2. position matrix term
     # (∇ * f)[ib1, ib2] += - im * (ξ[ib1, ib3] * f[ib3, ib2] - f[ib1, ib3] * ξ[ib3, ib2])
     for ik in 1:kpts.n
-        rng = el_k_save[ik].rng
-        rbar = el_k_save[ik].rbar
+        ikirr, isym = ik_to_ikirr_isym[ik]
+        rng = el_irr_states[ikirr].rng
+        rbar = el_irr_states[ikirr].rbar
 
         for ib1 in rng, ib2 in rng
             ind_i = get(indmap, EPW.CI(ib1, ib2, ik), -1)
@@ -188,8 +228,14 @@ function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group
                 if ind_f != -1
                     push!(sp_i, ind_i)
                     push!(sp_j, ind_f)
+                    if el_sym === nothing
+                        rbar_mel = rbar[ib1, ib3]
+                    else
+                        rbar_mel = el_sym.symmetry[isym].Scart * rbar[ib1, ib3]
+                        rbar_mel = el_sym.symmetry[isym].is_tr ? conj(rbar_mel) : rbar_mel
+                    end
                     for idir in 1:3
-                        push!(sp_vals[idir], -im * rbar[ib1, ib3][idir])
+                        push!(sp_vals[idir], -im * rbar_mel[idir])
                     end
                 end
 
@@ -197,8 +243,14 @@ function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group
                 if ind_f != -1
                     push!(sp_i, ind_i)
                     push!(sp_j, ind_f)
+                    if el_sym === nothing
+                        rbar_mel = rbar[ib3, ib2]
+                    else
+                        rbar_mel = el_sym.symmetry[isym].Scart * rbar[ib3, ib2]
+                        rbar_mel = el_sym.symmetry[isym].is_tr ? conj(rbar_mel) : rbar_mel
+                    end
                     for idir in 1:3
-                        push!(sp_vals[idir], im * rbar[ib3, ib2][idir])
+                        push!(sp_vals[idir], im * rbar_mel[idir])
                     end
                 end
             end
@@ -207,8 +259,10 @@ function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group
 
     if hdf_group === nothing
         # Construct and return ∇ as a sparse matrix
-        ∇ = [dropzeros!(sparse(sp_i, sp_j, sp_val, el.n, el.n)) for sp_val in sp_vals]
-        return ∇
+        ∇ = [dropzeros!(sparse(sp_i, sp_j, sp_vals[1], el.n, el.n)),
+              dropzeros!(sparse(sp_i, sp_j, sp_vals[2], el.n, el.n)),
+              dropzeros!(sparse(sp_i, sp_j, sp_vals[3], el.n, el.n))]
+        return (; ∇, el, ik_to_ikirr_isym)
     else
         # Write data needed to construct ∇ to file
         hdf_group["n"] = el.n
@@ -217,7 +271,7 @@ function compute_covariant_derivative_matrix(el, el_k_save, bvec_data, hdf_group
         hdf_group["V1"] = sp_vals[1]
         hdf_group["V2"] = sp_vals[2]
         hdf_group["V3"] = sp_vals[3]
-        return
+        return (; el, ik_to_ikirr_isym)
     end
 end
 

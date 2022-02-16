@@ -60,6 +60,18 @@ function _data_hdf5_to_julia(x, ::Type{T}) where {T <: AbstractArray{ET}} where 
     return collect(reshape(reinterpret(eltype(T), vec(x)), array_size))::T
 end
 
+# AbstractArray of Tuples: convert to a higher dimensional Array
+function _data_julia_to_hdf5(x::AbstractArray{NTuple{N, ET}}) where {N, ET}
+    collect(reshape(reinterpret(ET, x), N, size(x)...))
+end
+function _data_hdf5_to_julia(x, ::Type{T}) where {T <: AbstractArray{NTuple{N, ET}}} where {N, ET}
+    if size(x)[1] != N
+        error("Size of x $(size(x)) not consistent with Type $T")
+    end
+    array_size = size(x)[2:end]
+    return collect(reshape(reinterpret(NTuple{N, ET}, vec(x)), array_size))::T
+end
+
 # UnitRange
 _data_julia_to_hdf5(x::UnitRange) = [x.start, x.stop]
 _data_hdf5_to_julia(x, ::Type{T}) where {T <: UnitRange} = (x[1]:x[2])::T
