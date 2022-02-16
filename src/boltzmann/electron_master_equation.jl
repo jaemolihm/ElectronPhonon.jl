@@ -368,8 +368,12 @@ end
     # sparse matrix: https://github.com/JuliaLang/SuiteSparse.jl/issues/19
     @views for a in 1:3
         b = reshape(reinterpret(Complex{FT}, δρ0), 3, :)[a, :]
-        reshape(reinterpret(Complex{FT}, δρ), 3, :)[a, :] .= S \ b;
+        reshape(reinterpret(Complex{FT}, δρ), 3, :)[a, :] .= S \ b
     end
+end
+
+@timing "_solve_qme_direct!" function _solve_qme_direct!(δρ::AbstractVector{Complex{FT}}, S, δρ0::AbstractVector{Complex{FT}}) where FT
+    δρ .= S \ δρ0
 end
 
 # TODO: check performance of unfold_map (adding to sparse matrix)

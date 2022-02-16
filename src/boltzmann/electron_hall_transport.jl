@@ -26,12 +26,13 @@ function compute_linear_hall_conductivity(out_linear, qme_model, ∇, S_out)
     @views for iT in 1:nT
         δᴱρ_irr = QMEVector(qme_model.el_irr, out_linear.δρ_serta[:, iT])
         δᴱρ = unfold_QMEVector(δᴱρ_irr, qme_model, true, false)
+        δᴱᴮρ = similar(δᴱρ)
 
         for c in 1:3
             c1, c2 = mod1(c + 1, 3), mod1(c + 2, 3)
             # Solve 0 = (S_out + S_in) * δᴱᴮρ - (v × ∇) δᴱρ
             v∇δᴱρ = v[c1] * (∇[c2] * δᴱρ) - v[c2] * (∇[c1] * δᴱρ);
-            δᴱᴮρ = S_out[iT] \ v∇δᴱρ
+            _solve_qme_direct!(δᴱᴮρ, S_out[iT], v∇δᴱρ)
 
             # Transpose because the index of occupation_to_conductivity is (current, E field),
             # but we want the index of σ_hall to be (E field, current).
@@ -57,3 +58,5 @@ function compute_hall_factor(σ, σ_hall)
     end
     r
 end
+
+_solve_qme_direct!(δρ::QMEVector, S, δρ0::QMEVector) = _solve_qme_direct!(δρ.data, S, δρ0.data)
