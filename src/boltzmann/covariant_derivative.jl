@@ -12,6 +12,8 @@ Choose the b vectors and weights as defined in [1], following the scheme of [2].
 
 - `order`: Use higher-order formula with `order`-times more b vectors. Finite-difference error
            scales as ``O(b^(2*order))``.
+
+TODO: Use gcd of ngrid to reduce ngrid.
 """
 function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1) where {FT}
     nsupcell = 5 # Include b vectors in the [-nsupcell, nsupcell] cell to the search.

@@ -51,3 +51,40 @@ function unfold_QMEStates(el::QMEStates, symmetry)
         nstates_base=el.nstates_base, kpts=kpts_unfold)
     el_unfold, isk_to_ik_isym
 end
+
+function unfold_scattering_out_matrix(S_out_irr, el_irr, el, ik_to_ikirr_isym)
+    # Assume that S_out_irr is diagonal in k.
+    sp_i = Int[]
+    sp_j = Int[]
+    sp_val = eltype(S_out_irr)[]
+    indmap = EPW.states_index_map(el)
+    indmap_irr = EPW.states_index_map(el_irr)
+    for i in 1:el.n
+        (; ik, ib1, ib2) = el[i]
+        ikirr, _ = ik_to_ikirr_isym[ik]
+        i_irr = get(indmap_irr, EPW.CI(ib1, ib2, ikirr), -1)
+        i_irr == -1 && continue
+        for ib3 in el.ib_rng[ik], ib4 in el.ib_rng[ik]
+            j = get(indmap, EPW.CI(ib3, ib4, ik), -1)
+            j == -1 && continue
+            j_irr = get(indmap_irr, EPW.CI(ib3, ib4, ikirr), -1)
+            j_irr == -1 && continue
+            val = S_out_irr[i_irr, j_irr]
+            if abs(val) > 0
+                push!(sp_i, i)
+                push!(sp_j, j)
+                push!(sp_val, val)
+            end
+        end
+    end
+    dropzeros!(sparse(sp_i, sp_j, sp_val, el.n, el.n))
+end
+
+function unfold_scattering_out_matrix!(qme_model::QMEIrreducibleKModel)
+    (; S_out_irr, el_irr, el, ik_to_ikirr_isym) = qme_model
+    qme_model.S_out = [unfold_scattering_out_matrix(first(S_out_irr), el_irr, el, ik_to_ikirr_isym)]
+    for iT in eachindex(S_out_irr)[2:end]
+        push!(qme_model.S_out, unfold_scattering_out_matrix(S_out_irr[iT], el_irr, el, ik_to_ikirr_isym))
+    end
+    qme_model.S_out
+end

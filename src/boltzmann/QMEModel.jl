@@ -19,7 +19,9 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
 
     # Covariant derivative operator (in Cartesian coordinates) that acts on el.
     ∇ = nothing
-    # Scattering-out matrix
+    # Scattering-out matrix for the irreducible k grid
+    S_out_irr = nothing
+    # Scattering-out matrix for the full k grid
     S_out = nothing
 end
 
@@ -53,7 +55,7 @@ end
 
 """
 QME model defined on a full grid without any symmetry.
-`model.el_irr` returns `model.el`.
+`model.X_irr` returns `model.X` for `X = el, S_out`.
 """
 Base.@kwdef mutable struct QMEModel{FT} <: AbstractQMEModel{FT}
     # === Mandatory fields ===
@@ -74,6 +76,8 @@ end
 function Base.getproperty(obj::QMEModel, sym::Symbol)
     if sym === :el_irr
         getfield(obj, :el)
+    elseif sym === :S_out_irr
+        getfield(obj, :S_out)
     else
         getfield(obj, sym)
     end
