@@ -5,11 +5,12 @@ using OffsetArrays
 Debugging flags in `kwargs`
 - `DEBUG_random_gauge`: Multiply random phases to the eigenstates at k+q to change the eigenstate gauge. (Default: false)
 - `compute_derivative`: Compute the covariant derivative operator and write to file.
+- `derivative_order`: Order of the finite-difference formula for the covariant derivative.
 """
 function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq, kpts,
         kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
         average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff;
-        compute_derivative=false, kwargs...)
+        compute_derivative=false, derivative_order=1, kwargs...)
     FT = Float64
 
     nw = model.nw
@@ -70,7 +71,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     if compute_derivative
         el_sym = symmetry !== nothing ? model.el_sym : nothing
         g = create_group(fid_btedata, "covariant_derivative")
-        bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid)
+        bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid, order=derivative_order)
         el_unfold, ik_to_ikirr_isym = compute_covariant_derivative_matrix(el_k_boltzmann,
             el_k_save, bvec_data, el_sym, g; fourier_mode)
         dump_BTData(create_group(fid_btedata, "initialstate_electron_unfolded"), el_unfold)
