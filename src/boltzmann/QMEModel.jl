@@ -1,3 +1,9 @@
+export load_QMEModel
+export bte_compute_μ!
+export solve_electron_qme
+export compute_qme_scattering_matrix!
+export set_constant_qme_scattering_matrix!
+
 abstract type AbstractQMEModel{FT} end
 
 Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
@@ -14,6 +20,12 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
     el::QMEStates{FT}
     # Transport parameters
     transport_params::ElectronTransportParams{FT}
+    # Electron final states
+    el_f::QMEStates{FT}
+    # Phonon states
+    ph::BTStates{Float64}
+    # File containing the data
+    filename::String
 
     # === Optional fields ===
 
@@ -26,34 +38,6 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
 end
 
 """
-    unfold_QMEVector(f_irr::QMEVector, model::QMEIrreducibleKModel, trodd, invodd)
-Unfold QMEVector defined on `model.el_irr` to `model.el`` using `model.symmetry`.
-TODO: Generalize ``symop.Scart * x[i]`` to work with any datatype (scalar, vector, tensor).
-"""
-function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKModel, trodd, invodd) where {ElType, FT}
-    @assert f_irr.state === model.el_irr
-    indmap_irr = EPW.states_index_map(model.el_irr)
-    f = QMEVector(model.el, ElType)
-    for i in 1:model.el.n
-        (; ik, ib1, ib2) = model.el[i]
-
-        ik_irr, isym = model.ik_to_ikirr_isym[ik]
-        symop = model.symmetry[isym]
-        i_irr = indmap_irr[EPW.CI(ib1, ib2, ik_irr)]
-
-        f[i] = symop.Scart * f_irr[i_irr]
-        if trodd && symop.is_tr
-            f[i] *= -1
-        end
-        if invodd && symop.is_inv
-            f[i] *= -1
-        end
-    end
-    f
-end
-
-
-"""
 QME model defined on a full grid without any symmetry.
 `model.X_irr` refers to `model.X` for `X = el, S_out`.
 """
@@ -64,6 +48,12 @@ Base.@kwdef mutable struct QMEModel{FT} <: AbstractQMEModel{FT}
     el::QMEStates{FT}
     # Transport parameters
     transport_params::ElectronTransportParams{FT}
+    # Electron final states
+    el_f::QMEStates{FT}
+    # Phonon states
+    ph::BTStates{Float64}
+    # File containing the data
+    filename::String
 
     # === Optional fields ===
 
@@ -93,13 +83,33 @@ function Base.setproperty!(obj::QMEModel, name::Symbol, x)
     end
 end
 
+"""
+    load_QMEModel(filename, symmetry, transport_params) => qme_model::AbstractQMEModel
+Read a QMEModel or QMEIrreducibleKModel from a hdf5 file containing the information.
+# TODO: Write symmetry to file, automatically detect usage of symmetry.
+"""
+function load_QMEModel(filename, symmetry, transport_params)
+    fid = h5open(filename, "r")
+    if symmetry !== nothing
+        el_i_irr = load_BTData(fid["initialstate_electron"], EPW.QMEStates{Float64})
+        el_i = load_BTData(fid["initialstate_electron_unfolded"], EPW.QMEStates{Float64})
+        ik_to_ikirr_isym = EPW._data_hdf5_to_julia(read(fid, "ik_to_ikirr_isym"), Vector{Tuple{Int, Int}})
+        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{Float64})
+        ph = load_BTData(fid["phonon"], EPW.BTStates{Float64})
+        ∇ = EPW.load_covariant_derivative_matrix(fid["covariant_derivative"])
 
-"""
-    unfold_QMEVector(f_irr::QMEVector, model::QMEModel, trodd, invodd)
-Since QMEModel does not use symmetry, unfolding is a do-nothing operation.
-"""
-function unfold_QMEVector(f_irr::QMEVector, model::QMEModel, trodd, invodd)
-    QMEVector(f_irr.state, copy(f_irr.data))
+        qme_model = EPW.QMEIrreducibleKModel(; symmetry, ik_to_ikirr_isym,
+            el_irr=el_i_irr, el=el_i, ∇=Vec3(∇), transport_params, el_f, ph, filename)
+    else
+        el_i = load_BTData(fid["initialstate_electron"], EPW.QMEStates{Float64})
+        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{Float64})
+        ph = load_BTData(fid["phonon"], EPW.BTStates{Float64})
+        ∇ = EPW.load_covariant_derivative_matrix(fid["covariant_derivative"])
+
+        qme_model = EPW.QMEModel(; el=el_i, ∇=Vec3(∇), transport_params, el_f, ph, filename)
+    end
+    close(fid)
+    qme_model
 end
 
 # Wrappers for transport-related functions
@@ -108,8 +118,23 @@ function bte_compute_μ!(model::AbstractQMEModel)
     bte_compute_μ!(model.transport_params, EPW.BTStates(model.el_irr))
 end
 
-function solve_electron_qme(model::AbstractQMEModel, el_f, filename)
-    (; transport_params, S_out_irr, symmetry) = model
+function solve_electron_qme(model::AbstractQMEModel)
+    (; transport_params, S_out_irr, symmetry, el_f, filename) = model
     el_i_irr = model.el_irr
     solve_electron_qme(transport_params, el_i_irr, el_f, S_out_irr; filename, symmetry)
+end
+
+function compute_qme_scattering_matrix!(model::AbstractQMEModel; compute_S_in=false)
+    if compute_S_in
+        error("compute_S_in = true not implemented for the AbstractQMEModel wrapper of compute_qme_scattering_matrix.")
+    end
+    (; filename, transport_params, el_f, ph) = model
+    el_irr = model.el_irr
+    model.S_out_irr, _ = compute_qme_scattering_matrix(filename, transport_params, el_irr, el_f, ph; compute_S_in)
+    unfold_scattering_out_matrix!(model)
+end
+
+function set_constant_qme_scattering_matrix!(model::AbstractQMEModel, inv_τ_constant)
+    model.S_out_irr = [I(model.el_irr.n) * (-inv_τ_constant + 0.0im) for _ in model.transport_params.Tlist]
+    unfold_scattering_out_matrix!(model)
 end

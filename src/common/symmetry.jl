@@ -514,3 +514,6 @@ function symmetrize_array(arr::AbstractArray{T}, symmetry; order, tr_odd=false, 
 end
 
 symmetrize_array(arr::AbstractArray, symmetry::Nothing; order) = arr
+
+# TODO: use == instead of isapprox for symop?
+# TODO: Implement == (or isapprox) for Symmetry, and use it in test_hdf.jl

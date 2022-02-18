@@ -61,30 +61,7 @@ using HDF5
         )
         filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
 
-        if use_symmetry
-            fid = h5open(filename, "r")
-            el_i_irr = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
-            el_i = load_BTData(open_group(fid, "initialstate_electron_unfolded"), EPW.QMEStates{Float64})
-            el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
-            ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
-            ∇ = EPW.load_covariant_derivative_matrix(fid["covariant_derivative"])
-            ik_to_ikirr_isym = EPW._data_hdf5_to_julia(read(fid, "ik_to_ikirr_isym"), Vector{Tuple{Int, Int}})
-            close(fid)
-
-            # Set QMEModel
-            qme_model = EPW.QMEIrreducibleKModel(; el_irr=el_i_irr, el=el_i, symmetry, ∇=Vec3(∇),
-                                                ik_to_ikirr_isym, transport_params)
-        else
-            fid = h5open(filename, "r")
-            el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
-            el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
-            ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
-            ∇ = EPW.load_covariant_derivative_matrix(fid["covariant_derivative"])
-            close(fid)
-
-            # Set QMEModel
-            qme_model = EPW.QMEModel(; el=el_i, ∇=Vec3(∇), transport_params)
-        end
+        qme_model = load_QMEModel(filename, symmetry, transport_params)
 
         # Compute chemical potential
         bte_compute_μ!(qme_model)
@@ -93,18 +70,16 @@ using HDF5
         for method in [:CRTA, :SERTA]
             # Calculate scattering matrix
             if method === :CRTA
-                qme_model.S_out_irr = [I(qme_model.el_irr.n) * (-inv_τ_constant + 0.0im) for _ in transport_params.Tlist]
+                set_constant_qme_scattering_matrix!(qme_model, inv_τ_constant)
             elseif method === :SERTA
-                qme_model.S_out_irr, _ = compute_qme_scattering_matrix(filename,
-                    qme_model.transport_params, qme_model.el_irr, el_f, ph, compute_S_in=false)
+                compute_qme_scattering_matrix!(qme_model)
             end
-            EPW.unfold_scattering_out_matrix!(qme_model)
 
             # For CRTA, test whether unfolded scattering matrix is also proportional to identity.
             method === :CRTA && @test all(qme_model.S_out .≈ Ref(I(qme_model.el.n) * -inv_τ_constant))
 
             # Solve linear electrical conductivity
-            out_linear = solve_electron_qme(qme_model, el_f, filename)
+            out_linear = solve_electron_qme(qme_model)
 
             # Solve linear Hall conductivity
             out_hall = compute_linear_hall_conductivity(out_linear, qme_model)
