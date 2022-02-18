@@ -376,7 +376,6 @@ end
     δρ .= S \ δρ0
 end
 
-# TODO: check performance of unfold_map (adding to sparse matrix)
 function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
     indmap_el_i = EPW.states_index_map(el_i);
     indmap_el_f = EPW.states_index_map(el_f);

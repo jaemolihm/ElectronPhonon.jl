@@ -119,7 +119,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 rng_k = el_k.rng
                 rng_sk = el_sk.rng
 
-                # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k)
+                # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k) = <u(Sk)|S|u(k)>
                 get_fourier!(sym_k, model.el_sym.operators[isym_el], xk, mode=fourier_mode)
                 tmp_arr = view(tmp_arr_full, :, rng_k)
                 tmp_arr2 = view(tmp_arr2_full, rng_sk, rng_k)

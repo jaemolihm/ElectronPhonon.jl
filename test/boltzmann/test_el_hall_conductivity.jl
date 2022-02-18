@@ -72,7 +72,7 @@ using HDF5
             if method === :CRTA
                 set_constant_qme_scattering_matrix!(qme_model, inv_τ_constant)
             elseif method === :SERTA
-                compute_qme_scattering_matrix!(qme_model)
+                compute_qme_scattering_matrix!(qme_model, compute_S_in=false)
             end
 
             # For CRTA, test whether unfolded scattering matrix is also proportional to identity.

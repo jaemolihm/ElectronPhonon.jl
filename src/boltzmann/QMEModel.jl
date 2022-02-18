@@ -35,6 +35,10 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
     S_out_irr = nothing
     # Scattering-out matrix for the full k grid
     S_out = nothing
+    # Scattering-in matrix for the irreducible k grid (Scattering-in matrix for full k grid
+    # is not stored to reduce memory usage.)
+    # TODO: Document way to apply S_in to objects on the full k grid.
+    S_in_irr = nothing
 end
 
 """
@@ -61,6 +65,8 @@ Base.@kwdef mutable struct QMEModel{FT} <: AbstractQMEModel{FT}
     ∇ = nothing
     # Scattering-out matrix
     S_out = nothing
+    # Scattering-in matrix
+    S_in = nothing
 end
 
 function Base.getproperty(obj::QMEModel, name::Symbol)
@@ -68,6 +74,8 @@ function Base.getproperty(obj::QMEModel, name::Symbol)
         getfield(obj, :el)
     elseif name === :S_out_irr
         getfield(obj, :S_out)
+    elseif name === :S_in_irr
+        getfield(obj, :S_in)
     elseif name === :symmetry
         nothing
     else
@@ -78,6 +86,8 @@ end
 function Base.setproperty!(obj::QMEModel, name::Symbol, x)
     if name === :S_out_irr
         setfield!(obj, :S_out, x)
+    elseif name === :S_in_irr
+        setfield!(obj, :S_in, x)
     else
         setfield!(obj, name, x)
     end
@@ -119,23 +129,20 @@ function bte_compute_μ!(model::AbstractQMEModel)
     bte_compute_μ!(model.transport_params, EPW.BTStates(model.el_irr))
 end
 
-function solve_electron_qme(model::AbstractQMEModel)
-    (; transport_params, S_out_irr, symmetry, el_f, filename) = model
-    el_i_irr = model.el_irr
-    solve_electron_qme(transport_params, el_i_irr, el_f, S_out_irr; filename, symmetry)
-end
-
-function compute_qme_scattering_matrix!(model::AbstractQMEModel; compute_S_in=false)
-    if compute_S_in
-        error("compute_S_in = true not implemented for the AbstractQMEModel wrapper of compute_qme_scattering_matrix.")
-    end
-    (; filename, transport_params, el_f, ph) = model
-    el_irr = model.el_irr
-    model.S_out_irr, _ = compute_qme_scattering_matrix(filename, transport_params, el_irr, el_f, ph; compute_S_in)
+function compute_qme_scattering_matrix!(model::AbstractQMEModel; compute_S_in=true)
+    (; filename, transport_params, el_irr, el_f, ph) = model
+    model.S_out_irr, model.S_in_irr = compute_qme_scattering_matrix(filename, transport_params,
+                                                                    el_irr, el_f, ph; compute_S_in)
     unfold_scattering_out_matrix!(model)
 end
 
 function set_constant_qme_scattering_matrix!(model::AbstractQMEModel, inv_τ_constant)
     model.S_out_irr = [I(model.el_irr.n) * (-inv_τ_constant + 0.0im) for _ in model.transport_params.Tlist]
     unfold_scattering_out_matrix!(model)
+end
+
+function solve_electron_qme(model::AbstractQMEModel; kwargs...)
+    (; transport_params, S_out_irr, S_in_irr, symmetry, el_f, filename) = model
+    el_i_irr = model.el_irr
+    solve_electron_qme(transport_params, el_i_irr, el_f, S_out_irr, S_in_irr; filename, symmetry, kwargs...)
 end
