@@ -66,6 +66,11 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         ph_boltzmann, _ = phonon_states_to_BTStates(ph_save, qpts)
         g = create_group(fid_btedata, "phonon")
         dump_BTData(g, ph_boltzmann)
+
+        # Write symmetry information to HDF5 file if used
+        if symmetry !== nothing
+            dump_BTData(create_group(fid_btedata, "symmetry"), symmetry)
+        end
     end
 
     if compute_derivative

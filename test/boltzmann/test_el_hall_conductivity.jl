@@ -61,7 +61,7 @@ using HDF5
         )
         filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
 
-        qme_model = load_QMEModel(filename, symmetry, transport_params)
+        qme_model = load_QMEModel(filename, transport_params)
 
         # Compute chemical potential
         bte_compute_μ!(qme_model)

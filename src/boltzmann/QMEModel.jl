@@ -88,22 +88,23 @@ end
 Read a QMEModel or QMEIrreducibleKModel from a hdf5 file containing the information.
 # TODO: Write symmetry to file, automatically detect usage of symmetry.
 """
-function load_QMEModel(filename, symmetry, transport_params)
+function load_QMEModel(filename, transport_params, ::Type{FT}=Float64) where FT
     fid = h5open(filename, "r")
-    if symmetry !== nothing
-        el_i_irr = load_BTData(fid["initialstate_electron"], EPW.QMEStates{Float64})
-        el_i = load_BTData(fid["initialstate_electron_unfolded"], EPW.QMEStates{Float64})
+    if haskey(fid, "symmetry")
+        symmetry = load_BTData(fid["symmetry"], Symmetry{FT})
+        el_i_irr = load_BTData(fid["initialstate_electron"], EPW.QMEStates{FT})
+        el_i = load_BTData(fid["initialstate_electron_unfolded"], EPW.QMEStates{FT})
         ik_to_ikirr_isym = EPW._data_hdf5_to_julia(read(fid, "ik_to_ikirr_isym"), Vector{Tuple{Int, Int}})
-        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{Float64})
-        ph = load_BTData(fid["phonon"], EPW.BTStates{Float64})
+        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{FT})
+        ph = load_BTData(fid["phonon"], EPW.BTStates{FT})
         ∇ = EPW.load_covariant_derivative_matrix(fid["covariant_derivative"])
 
         qme_model = EPW.QMEIrreducibleKModel(; symmetry, ik_to_ikirr_isym,
             el_irr=el_i_irr, el=el_i, ∇=Vec3(∇), transport_params, el_f, ph, filename)
     else
-        el_i = load_BTData(fid["initialstate_electron"], EPW.QMEStates{Float64})
-        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{Float64})
-        ph = load_BTData(fid["phonon"], EPW.BTStates{Float64})
+        el_i = load_BTData(fid["initialstate_electron"], EPW.QMEStates{FT})
+        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{FT})
+        ph = load_BTData(fid["phonon"], EPW.BTStates{FT})
         ∇ = EPW.load_covariant_derivative_matrix(fid["covariant_derivative"])
 
         qme_model = EPW.QMEModel(; el=el_i, ∇=Vec3(∇), transport_params, el_f, ph, filename)
