@@ -67,6 +67,9 @@ function unfold_scattering_out_matrix!(qme_model::QMEIrreducibleKModel)
     qme_model.S_out
 end
 
+# Do nothing for a `QMEModel`.
+unfold_scattering_out_matrix!(qme_model::QMEModel) = qme_model.S_out
+
 function unfold_scattering_out_matrix(S_out_irr, el_irr, el, ik_to_ikirr_isym)
     # Assume that S_out_irr is diagonal in k.
     sp_i = Int[]

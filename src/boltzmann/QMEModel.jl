@@ -55,7 +55,7 @@ end
 
 """
 QME model defined on a full grid without any symmetry.
-`model.X_irr` returns `model.X` for `X = el, S_out`.
+`model.X_irr` refers to `model.X` for `X = el, S_out`.
 """
 Base.@kwdef mutable struct QMEModel{FT} <: AbstractQMEModel{FT}
     # === Mandatory fields ===
@@ -73,17 +73,26 @@ Base.@kwdef mutable struct QMEModel{FT} <: AbstractQMEModel{FT}
     S_out = nothing
 end
 
-function Base.getproperty(obj::QMEModel, sym::Symbol)
-    if sym === :el_irr
+function Base.getproperty(obj::QMEModel, name::Symbol)
+    if name === :el_irr
         getfield(obj, :el)
-    elseif sym === :S_out_irr
+    elseif name === :S_out_irr
         getfield(obj, :S_out)
-    elseif sym === :symmetry
+    elseif name === :symmetry
         nothing
     else
-        getfield(obj, sym)
+        getfield(obj, name)
     end
 end
+
+function Base.setproperty!(obj::QMEModel, name::Symbol, x)
+    if name === :S_out_irr
+        setfield!(obj, :S_out, x)
+    else
+        setfield!(obj, name, x)
+    end
+end
+
 
 """
     unfold_QMEVector(f_irr::QMEVector, model::QMEModel, trodd, invodd)
@@ -91,4 +100,16 @@ Since QMEModel does not use symmetry, unfolding is a do-nothing operation.
 """
 function unfold_QMEVector(f_irr::QMEVector, model::QMEModel, trodd, invodd)
     QMEVector(f_irr.state, copy(f_irr.data))
+end
+
+# Wrappers for transport-related functions
+
+function bte_compute_μ!(model::AbstractQMEModel)
+    bte_compute_μ!(model.transport_params, EPW.BTStates(model.el_irr))
+end
+
+function solve_electron_qme(model::AbstractQMEModel, el_f, filename)
+    (; transport_params, S_out_irr, symmetry) = model
+    el_i_irr = model.el_irr
+    solve_electron_qme(transport_params, el_i_irr, el_f, S_out_irr; filename, symmetry)
 end
