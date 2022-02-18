@@ -31,9 +31,8 @@ using LinearAlgebra
         for ik in 1:kpts.n
             xk = kpts.vectors[ik]
             get_fourier!(hk, model.el_ham, xk)
-            for isym in 1:model.el_sym.symmetry.nsym
-                Scart = model.el_sym.symmetry[isym].Scart
-                sxk = model.el_sym.symmetry[isym].S * xk
+            for (isym, symop) in enumerate(model.el_sym.symmetry)
+                sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
                 isk = xk_to_ik(sxk, kpts)
                 get_fourier!(sym_k, model.el_sym.operators[isym], xk)
                 @test norm(sym_k' * sym_k - I(nw)) < 3e-6
@@ -54,7 +53,10 @@ using LinearAlgebra
                 end
 
                 # Test symmetry of velocity matrices
-                v_rotated = Ref(Scart) .* (sym_H * els[ik].v * sym_H')
+                v_rotated = Ref(symop.Scart) .* (sym_H * els[ik].v * sym_H')
+                if symop.is_tr
+                    v_rotated .*= -1
+                end
                 if model.el_velocity_mode === :BerryConnection
                     for j in 1:nw, i in 1:nw
                         if abs(e[i] - e[j]) < EPW.electron_degen_cutoff
