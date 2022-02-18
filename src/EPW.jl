@@ -68,5 +68,6 @@ include("boltzmann/electron_hall_transport.jl")
 include("postprocess/plot_bandstructure.jl")
 include("postprocess/plot_electron_phonon.jl")
 include("postprocess/plot_decay.jl")
+include("postprocess/check_model_symmetry.jl")
 
 end
