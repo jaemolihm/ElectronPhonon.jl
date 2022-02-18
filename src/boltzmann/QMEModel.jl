@@ -78,6 +78,8 @@ function Base.getproperty(obj::QMEModel, sym::Symbol)
         getfield(obj, :el)
     elseif sym === :S_out_irr
         getfield(obj, :S_out)
+    elseif sym === :symmetry
+        nothing
     else
         getfield(obj, sym)
     end

@@ -52,6 +52,21 @@ function unfold_QMEStates(el::QMEStates, symmetry)
     el_unfold, isk_to_ik_isym
 end
 
+"""
+    unfold_scattering_out_matrix!(qme_model::QMEIrreducibleKModel)
+Unfold the scattering-out matrix on the irreducible k grid to the one defined on the full
+k grid. The input is `qme_model.S_out_irr`, which must be set before calling this function.
+The output is stored in `qme_model.S_out`.
+"""
+function unfold_scattering_out_matrix!(qme_model::QMEIrreducibleKModel)
+    (; S_out_irr, el_irr, el, ik_to_ikirr_isym) = qme_model
+    qme_model.S_out = [unfold_scattering_out_matrix(first(S_out_irr), el_irr, el, ik_to_ikirr_isym)]
+    for iT in eachindex(S_out_irr)[2:end]
+        push!(qme_model.S_out, unfold_scattering_out_matrix(S_out_irr[iT], el_irr, el, ik_to_ikirr_isym))
+    end
+    qme_model.S_out
+end
+
 function unfold_scattering_out_matrix(S_out_irr, el_irr, el, ik_to_ikirr_isym)
     # Assume that S_out_irr is diagonal in k.
     sp_i = Int[]
@@ -78,13 +93,4 @@ function unfold_scattering_out_matrix(S_out_irr, el_irr, el, ik_to_ikirr_isym)
         end
     end
     dropzeros!(sparse(sp_i, sp_j, sp_val, el.n, el.n))
-end
-
-function unfold_scattering_out_matrix!(qme_model::QMEIrreducibleKModel)
-    (; S_out_irr, el_irr, el, ik_to_ikirr_isym) = qme_model
-    qme_model.S_out = [unfold_scattering_out_matrix(first(S_out_irr), el_irr, el, ik_to_ikirr_isym)]
-    for iT in eachindex(S_out_irr)[2:end]
-        push!(qme_model.S_out, unfold_scattering_out_matrix(S_out_irr[iT], el_irr, el, ik_to_ikirr_isym))
-    end
-    qme_model.S_out
 end
