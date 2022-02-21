@@ -1,6 +1,13 @@
 
 using FortranFiles
 
+# Symmetry convention of EPW.jl and Quantum ESPRESSO
+# In QE, the symmetry operation is r -> r * S_QE - τ_QE.
+# In our convention (we follow DFTK), we have r -> W * r + w, so W = S_QE^T, w = -τ_QE.
+# Then, we store symmetries in reciprocal space, so we have
+# S = W' = S_QE
+# τ = -W^-1 * w = S_QE^T^-1 * τ_QE.
+
 export load_model
 
 # TODO: Implement Base.show(model::ModelEPW)
@@ -135,8 +142,9 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     symmetry_S = Int.(read(f, (Int32, 3, 3, nsym)))
     symmetry_τ = read(f, (Float64, 3, nsym))
     time_reversal = fortran_read_bool(f)
+    # Symmetry conversion: see comment in the header.
     Ss = [Mat3(symmetry_S[:, :, i]) for i in 1:nsym]
-    τs = [Vec3(symmetry_τ[:, i]) for i in 1:nsym]
+    τs = [Ss[i]' \ Vec3(symmetry_τ[:, i]) for i in 1:nsym]
     symmetry = Symmetry(Ss, τs, time_reversal, lattice)
 
     # Wannier parameters
@@ -346,8 +354,9 @@ function load_symmetry_operators_from_epw(folder)
     symmetry_τ = read(f, (Float64, 3, nsym))
     time_reversal = EPW.fortran_read_bool(f)
 
+    # Symmetry conversion: see comment in the header.
     Ss = [Mat3(symmetry_S[:, :, i]) for i in 1:nsym]
-    τs = [Vec3(symmetry_τ[:, i]) for i in 1:nsym]
+    τs = [Ss[i]' \ Vec3(symmetry_τ[:, i]) for i in 1:nsym]
 
     # We do not use time reversal for symmetry matrices because off-diagonal elements in QME
     # breaks the time-reversal symmetry even for the linear response.

@@ -1,6 +1,11 @@
 # Adapted from DFTK.jl external/spglib.jl and symmetry.jl
 # TODO: Time-reversal symmetry
 
+# We follow the DFTK convention.
+# The symmetry operations (S, τ) are reciprocal-space operations.
+# The corresponding real-space operation r -> W * r + w satisfies S = W' and τ = -W^-1 w.
+# See https://juliamolsim.github.io/DFTK.jl/stable/advanced/symmetries for details.
+
 using spglib_jll
 using Spglib
 using StaticArrays
@@ -219,6 +224,20 @@ function Base.isapprox(s1::SymOp, s2::SymOp)
     s1.is_tr == s2.is_tr || return false
     return true
 end
+Base.one(::Type{SymOp{FT}}) where FT = SymOp(Mat3{Int}(I), zeros(Vec3{FT}), Mat3{FT}(I), zeros(Vec3{FT}), false, false)
+Base.one(::T) where {T <: SymOp} = one(T)
+Base.isone(s::T) where {T <: SymOp} = isapprox(s, one(T))
+
+function Base.:*(op1::SymOp, op2::SymOp)
+    S = op1.S * op2.S
+    τ = op1.τ + op1.S' \ op2.τ
+    Scart = op1.Scart * op2.Scart
+    τcart = op1.τcart + op1.Scart' \ op2.τcart
+    is_inv = xor(op1.is_inv, op2.is_inv)
+    is_tr = xor(op1.is_tr, op2.is_tr)
+    SymOp(S, τ, Scart, τcart, is_inv, is_tr)
+end
+Base.inv(op) = SymOp(Int.(inv(op.S)), -op.S'*op.τ, inv(op.Scart), -op.Scart'*op.τcart, op.is_inv, op.is_tr)
 
 """Symmetry operations"""
 struct Symmetry{FT}
@@ -293,6 +312,22 @@ function symmetry_is_subset(sym1, sym2)
     return true
 end
 
+function check_group(symops)
+    is_approx_in_symops(s1) = any(s -> isapprox(s, s1), symops)
+    is_approx_in_symops(one(symops[1])) || error("check_group: no identity element")
+    for s in symops
+        if !is_approx_in_symops(inv(s))
+            error("check_group: symop $s with inverse $(inv(s)) is not in the group")
+        end
+        for s2 in symops
+            if !is_approx_in_symops(s*s2) || !is_approx_in_symops(s2*s)
+                error("check_group: product is not stable")
+            end
+        end
+    end
+    symops
+end
+
 """
     symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1e-5)
 Compute the spatial symmetry operations of the system by calling spglib.
@@ -305,12 +340,12 @@ function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1
     Ss = Vector{Mat3{Int}}()
     τs = Vector{Vec3{Float64}}()
     # Get symmetries from spglib
-    Stildes, τtildes = spglib_get_symmetry(lattice, atoms, magnetic_moments;
+    Ws, ws = spglib_get_symmetry(lattice, atoms, magnetic_moments;
                                            tol_symmetry=tol_symmetry)
 
-    for isym = 1:length(Stildes)
-        S = Stildes[isym]'                  # in fractional reciprocal coordinates
-        τ = -Stildes[isym] \ τtildes[isym]  # in fractional real-space coordinates
+    for isym = 1:length(Ws)
+        S = Ws[isym]'             # in fractional reciprocal coordinates
+        τ = -Ws[isym] \ ws[isym]  # in fractional real-space coordinates
         τ = τ .- floor.(τ)
         @assert all(0 .≤ τ .< 1)
         push!(Ss, S)
