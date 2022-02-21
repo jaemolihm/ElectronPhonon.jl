@@ -419,3 +419,5 @@ function fold_kpoints(kpts::GridKpoints, symmetry)
     sort!(kpts_irr)
     return kpts_irr, ik_to_ikirr_isym
 end
+
+fold_kpoints(kpts::GridKpoints, symmetry::Nothing) = kpts, [(ik, 1) for ik = 1:kpts.n]

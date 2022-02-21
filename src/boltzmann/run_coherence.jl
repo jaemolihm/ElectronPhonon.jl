@@ -37,35 +37,38 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         #     set_gauge_to_diagonalize_velocity_matrix!(el, xk, 1, model)
         # end
         el_k_boltzmann, _ = electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff, nstates_base_k)
-        g = create_group(fid_btedata, "initialstate_electron")
-        dump_BTData(g, el_k_boltzmann)
+        dump_BTData(create_group(fid_btedata, "initialstate_electron"), el_k_boltzmann)
 
         # mpi_isroot() && println("Calculating electron states at k+q")
-        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector"], window_kq, nband, nband_ignore; fourier_mode)
+        # To ensure gauge consistency between symmetry-equivalent k points, we explicitly compute
+        # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
+        kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
+        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector"], window_kq, nband, nband_ignore; fourier_mode)
         # DEBUG: randomly change the eigenstate gauge at k+q so that the gauge is different from k
         if get(kwargs, :DEBUG_random_gauge, false) == true
             # Multiply random phase factor
-            for el in el_kq_save, ib in 1:el.nband
+            for el in el_kq_save_irr, ib in 1:el.nband
                 get_u(el)[:, ib] .*= cispi(2*rand())
             end
             # Swap degenerate eigenvectors
-            for el in el_kq_save, ib in 1:el.nband-1
+            for el in el_kq_save_irr, ib in 1:el.nband-1
                 if abs(el.e[el.rng[ib]] - el.e[el.rng[ib+1]]) < EPW.electron_degen_cutoff && rand() > 0.5
                     u = get_u(el)
                     u[:, ib], u[:, ib+1] = u[:, ib+1], u[:, ib]
                 end
             end
         end
+        el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
+        el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr) # This object is not used anymore.
         el_kq_boltzmann, _ = electron_states_to_QMEStates(el_kq_save, kqpts, qme_offdiag_cutoff, nstates_base_kq)
-        g = create_group(fid_btedata, "finalstate_electron")
-        dump_BTData(g, el_kq_boltzmann)
+        dump_BTData(create_group(fid_btedata, "finalstate_electron"), el_kq_boltzmann)
+        # fid_btedata["finalstate_ik_to_ikirr_isym"] = _data_julia_to_hdf5(ik_to_ikirr_isym_kq)
 
         # Write phonon states to HDF5 file
         mpi_isroot() && println("Calculating phonon states")
         ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
         ph_boltzmann, _ = phonon_states_to_BTStates(ph_save, qpts)
-        g = create_group(fid_btedata, "phonon")
-        dump_BTData(g, ph_boltzmann)
+        dump_BTData(create_group(fid_btedata, "phonon"), ph_boltzmann)
 
         # Write symmetry information to HDF5 file if used
         if symmetry !== nothing
@@ -88,6 +91,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # When using symmetry, also compute <u_m,Sk|S|u_nk> for symmetry operations.
     # TODO: Optimize memory and disk usage by writing only nonzero matrix elements
     # TODO: Merge two cases
+    # TODO: Use unfolding of el_kq to simplify this part.
     mpi_isroot() && println("Calculating and writing gauge matrices")
 
     rng_global = nband_ignore+1:nband_ignore+nband

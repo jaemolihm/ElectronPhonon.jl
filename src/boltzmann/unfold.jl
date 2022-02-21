@@ -7,8 +7,16 @@ listed in `quantities`.
 - `quantities`: Quantities to unfold. Can contain "velocity_diagonal", "velocity", "position".
 """
 function unfold_ElectronStates(model, states_irr::AbstractVector{ElectronState{FT}}, kpts_irr, kpts, ik_to_ikirr_isym, symmetry; quantities=[], fourier_mode="gridopt") where FT
+    # FIXME: Add test
+    # If symmetry is trivial, do nothing and return the original states.
+    if symmetry === nothing || symmetry.nsym == 1
+        return states_irr
+    end
+
     states = ElectronState{FT}[]
-    sym_k = zeros(Complex{FT}, nw, nw)
+
+    sym_k = zeros(Complex{FT}, model.nw, model.nw)
+
     for ik = 1:kpts.n
         xk = kpts.vectors[ik]
         ikirr, isym = ik_to_ikirr_isym[ik]
@@ -17,6 +25,7 @@ function unfold_ElectronStates(model, states_irr::AbstractVector{ElectronState{F
 
         # Energy eigenvalues and ranges are automatically unfolded by copying.
         push!(states, deepcopy(states_irr[ikirr]))
+        el = states[ik]
 
         # Skip if symmetry is trivial.
         # FIXME: Change to isone(symop)
@@ -31,28 +40,28 @@ function unfold_ElectronStates(model, states_irr::AbstractVector{ElectronState{F
         # Apply SVD to make sym_k unitary.
         u, s, v = svd(sym_k)
         mul!(sym_k, u, v')
-        mul!(states[ik].u_full, sym_k, states_irr[ikirr].u_full)
+        mul!(el.u_full, sym_k, states_irr[ikirr].u_full)
+
+        if "position" ∈ quantities
+            # Symmetry operation of position matrix element involves derivative of the symmetry
+            # matrix. So, we just recalculate it using the new eigenvector.
+            set_position!(el, model, xk, fourier_mode)
+        end
 
         if "velocity_diagonal" ∈ quantities
             if symop.is_tr
-                states[ik].vdiag .= .-Ref(symop.Scart) .* states_irr[ikirr].vdiag
+                el.vdiag .= .-Ref(symop.Scart) .* states_irr[ikirr].vdiag
             else
-                states[ik].vdiag .= Ref(symop.Scart) .* states_irr[ikirr].vdiag
+                el.vdiag .= Ref(symop.Scart) .* states_irr[ikirr].vdiag
             end
         end
 
         if "velocity" ∈ quantities
             if symop.is_tr
-                states[ik].v .= .-Ref(symop.Scart) .* states_irr[ikirr].v
+                el.v .= .-Ref(symop.Scart) .* states_irr[ikirr].v
             else
-                states[ik].v .= Ref(symop.Scart) .* states_irr[ikirr].v
+                el.v .= Ref(symop.Scart) .* states_irr[ikirr].v
             end
-        end
-
-        if "position" ∈ quantities
-            # Symmetry operation of position matrix element involves derivative of the symmetry
-            # matrix. So, we just recalculate it using the new eigenvector.
-            set_position!(states[ik], model, xk, fourier_mode)
         end
     end
     states
