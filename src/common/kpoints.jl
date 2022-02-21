@@ -365,3 +365,57 @@ function unfold_kpoints(kpts::GridKpoints, symmetry)
     sort!(kpts_unfold)
     return kpts_unfold
 end
+
+"""
+    fold_kpoints(kpts, symmetry) => kpts_irr, ik_to_ikirr_isym
+Inverse of `unfold_kpoints`. Reduce `kpts` to the irreducible BZ using `symmetry`.
+Output ik_to_ikirr_isym gives a map ik => (ikirr, isym) such that ``xk[ik] = S[isym](xkirr[ikirr])``.
+"""
+function fold_kpoints(kpts::GridKpoints, symmetry)
+    if symmetry.nsym == 1
+        return deepcopy(kpts), [(ik, 1) for ik = 1:kpts.n]
+    end
+
+    ngrid = kpts.ngrid
+    shift = kpts.shift
+
+    hash_dict_irr = Dict{Int, Int}()
+    vectors_irr = empty(kpts.vectors)
+    weights_irr = empty(kpts.weights)
+    ik_to_ikirr_isym = Tuple{Int, Int}[]
+
+    for ik = 1:kpts.n
+        xk = kpts.vectors[ik]
+
+        irr_found = false
+        for (isym, symop) in enumerate(symmetry)
+            # We want the mapping xk = S * xkirr, so we compute sk = inv(S) * xk.
+            # FIXME: Optimize by finding inv(S) in symop.
+            sk = symop.is_tr ? -inv(symop.S) * xk : inv(symop.S) * xk
+            sk = EPW.normalize_kpoint_coordinate(sk)
+            sk_hash = EPW._hash_xk(sk, ngrid, shift)
+
+            ikirr = get(hash_dict_irr, sk_hash, nothing)
+            if ikirr !== nothing
+                # xk maps to an existing irreducible k point
+                irr_found = true
+                weights_irr[ikirr] += kpts.weights[ik]
+                push!(ik_to_ikirr_isym, (ikirr, isym))
+                break
+            end
+        end
+
+        # xk is a new irredicuble k point
+        if ! irr_found
+            push!(vectors_irr, xk)
+            push!(weights_irr, kpts.weights[ik])
+            push!(ik_to_ikirr_isym, (length(vectors_irr), 1))
+            xk_hash = EPW._hash_xk(xk, ngrid, shift)
+            hash_dict_irr[xk_hash] = length(vectors_irr)
+        end
+    end
+
+    kpts_irr = GridKpoints(length(vectors_irr), vectors_irr, weights_irr, ngrid, shift, hash_dict_irr)
+    sort!(kpts_irr)
+    return kpts_irr, ik_to_ikirr_isym
+end

@@ -5,7 +5,6 @@ export compute_phonon_states
     compute_electron_states(model, kpts, quantities, window, nband, nband_ignore)
 Compute the quantities listed in `quantities` and return a vector of ElectronState.
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "velocity"
-FIXME: Position matrix element contribution is not included in velocity
 """
 function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window, nband, nband_ignore; fourier_mode="normal") where FT
     # TODO: MPI, threading

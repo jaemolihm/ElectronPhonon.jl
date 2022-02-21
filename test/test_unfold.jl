@@ -23,6 +23,19 @@ using EPW
             nothing, symmetry=nothing)[1])
         kpts_unfold = EPW.unfold_kpoints(kpts, model.symmetry);
         @test kpts_unfold == kpts_unfold_ref
+
+        # Test folding of kpoints (inverse of unfolding)
+        kpts_by_folding, ik_to_ikirr_isym = EPW.fold_kpoints(kpts_unfold, model.symmetry)
+        @test kpts_by_folding.n == kpts.n
+        for ik = 1:kpts_unfold.n
+            ikirr, isym = ik_to_ikirr_isym[ik]
+            symop = model.symmetry[isym]
+            xk = kpts_unfold.vectors[ik]
+            xkirr = kpts_by_folding.vectors[ikirr]
+            skirr = symop.is_tr ? -symop.S * xkirr : symop.S * xkirr
+            skirr = EPW.normalize_kpoint_coordinate(skirr)
+            @test xk ≈ skirr
+        end
     end
 
     @testset "QMEStates" begin
