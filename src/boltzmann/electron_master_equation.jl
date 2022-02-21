@@ -35,10 +35,14 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     # Scattering-out and scattering-in matrices
     # S_out is sparse (block diagonal) while S_in is not sparse in general.
     S_out = [spzeros(Complex{FT}, el_i.n, el_i.n) for _ in 1:nT]
-    S_in = [zeros(Complex{FT}, el_i.n, el_f.n) for _ in 1:nT]
+    if compute_S_in
+        S_in = [zeros(Complex{FT}, el_i.n, el_f.n) for _ in 1:nT]
+    else
+        S_in = nothing
+    end
 
     for ik in 1:el_i.kpts.n
-        mpi_isroot() && mod(ik, 10) == 0 && println("Calculating scattering for group $ik")
+        mpi_isroot() && mod(ik, 50) == 0 && println("Calculating scattering for group $ik")
 
         @timing "read scat" scat = load_BTData(open_group(group_scattering, "ik$ik"), QMEElPhScatteringData{FT})
 
