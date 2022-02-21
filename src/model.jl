@@ -86,6 +86,11 @@ function load_model(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing;
     else
         model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators)
     end
+
+    # Check symmetry of model
+    if model.el_sym !== nothing
+        check_electron_symmetry_of_model(model, (5, 5, 5))
+    end
     model
 end
 

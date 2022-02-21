@@ -17,8 +17,6 @@ operators in the Wannier basis only for the former.
 Note: the symmetry of position or H * R matrices cannot be directly tested because
 symmetry operation involves translation and shift of Wannier functions. So we use the velocity
 matrix computed using the Berry curvature method as an indirect check of position matrix.
-
-TODO: Add reasonable bound for each items and warn if error is above the bound.
 """
 function check_electron_symmetry_of_model(model::EPW.ModelEPW{FT}, ngrid; fourier_mode="gridopt") where FT
     model.el_sym === nothing && error("model.el_sym must be set. Pass load_symmetry_operators=true in load_model.")
@@ -26,6 +24,18 @@ function check_electron_symmetry_of_model(model::EPW.ModelEPW{FT}, ngrid; fourie
     error_keys = [:Energy, :SymMatrixUnitarity, :Hamiltonian, :Velocity_Direct, :Velocity_BerryConnection]
     max_errors = Dict(key => 0.0 for key in error_keys)
     rms_errors = Dict(key => 0.0 for key in error_keys)
+
+    # Reasonable bounds for each error item.
+    # The error for Velocity_BerryConnection is larger than Velocity_Direct because of
+    # finite-difference error in the position matrix elements.
+    # TODO: Check whether this bound is reasonable.
+    rms_error_bounds = Dict(
+        :Energy => EPW.electron_degen_cutoff,
+        :SymMatrixUnitarity => 1e-3,
+        :Hamiltonian => 1.0 * unit_to_aru(:meV),
+        :Velocity_Direct => 1.0 * unit_to_aru(:meV) * unit_to_aru(:Å),
+        :Velocity_BerryConnection => 1e3 * unit_to_aru(:meV) * unit_to_aru(:Å),
+    )
 
     kpts = GridKpoints(generate_kvec_grid(ngrid...))
     nw = model.nw
@@ -107,5 +117,14 @@ function check_electron_symmetry_of_model(model::EPW.ModelEPW{FT}, ngrid; fourie
     for key in error_keys
         @printf "%25s %12.3e %12.3e\n" key rms_errors[key] max_errors[key]
     end
+
+    # Warn if RMS error is larger than the bounds
+    for key in keys(rms_error_bounds)
+        if rms_errors[key] > rms_error_bounds[key]
+            @warn ("Symmetry warning for $key: RMS error $(rms_errors[key]) is larger than " *
+                   "the bound $(rms_error_bounds[key])")
+        end
+    end
+
     (; rms_errors, max_errors)
 end
