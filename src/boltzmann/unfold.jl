@@ -172,7 +172,7 @@ end
 Unfold QMEVector defined on `model.el_irr` to `model.el`` using `model.symmetry`.
 TODO: Generalize ``symop.Scart * x[i]`` to work with any datatype (scalar, vector, tensor).
 """
-function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKModel, trodd, invodd) where {ElType, FT}
+function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKModel, trodd, invodd) where {ElType <: Vec3, FT}
     @assert f_irr.state === model.el_irr
     indmap_irr = states_index_map(model.el_irr)
     f = QMEVector(model.el, ElType)
@@ -194,7 +194,149 @@ function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKMo
     f
 end
 
+function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKModel, trodd, invodd) where {ElType <: Number, FT}
+    @assert f_irr.state === model.el_irr
+    indmap_irr = states_index_map(model.el_irr)
+    f = QMEVector(model.el, ElType)
+    for i in 1:model.el.n
+        (; ik, ib1, ib2) = model.el[i]
+
+        ik_irr, isym = model.ik_to_ikirr_isym[ik]
+        symop = model.symmetry[isym]
+        i_irr = indmap_irr[CI(ib1, ib2, ik_irr)]
+
+        f[i] = f_irr[i_irr]
+        if trodd && symop.is_tr
+            f[i] *= -1
+        end
+        if invodd && symop.is_inv
+            f[i] *= -1
+        end
+    end
+    f
+end
+
+
 # Since QMEModel does not use symmetry, unfolding is a do-nothing operation.
 function unfold_QMEVector(f_irr::QMEVector, model::QMEModel, trodd, invodd)
     QMEVector(f_irr.state, copy(f_irr.data))
+end
+
+"""
+    symmetrize_QMEVector(x::QMEVector{ElType, FT}, qme_model::QMEIrreducibleKModel,
+    trodd, invodd) where {ElType <: Vec3, FT}
+Symmetrize a QMEVector defined on the irreducible BZ. Symmetrization acts only to the
+high-symmetry k points which have nontrivial symmetry operation that maps k to itself.
+FIXME: Make this work for general data (not only Vec3).
+"""
+function symmetrize_QMEVector(x::QMEVector{ElType, FT}, qme_model::QMEIrreducibleKModel,
+        trodd, invodd) where {ElType <: Vec3, FT}
+    @assert x.state === qme_model.el_irr
+    indmap = states_index_map(x.state)
+    f = h5open(qme_model.filename, "r")
+    g = open_group(f, "gauge_self")
+    ik_list = read(g, "ik_list")::Vector{Int}
+
+    x_symmetrized = copy(x)
+
+    # Count number of symmetry operations that map k to itself. 1 by default because of identity.
+    cnt_symm = fill(1, x.state.n)
+
+    for ik in ik_list
+        g_ik = open_group(g, "ik$ik")
+        isym_list = read(g_ik, "isym")::Vector{Int}
+        sym_gauge = load_BTData(open_group(g_ik, "gauge_matrix"), OffsetArray{Complex{FT}, 3, Array{Complex{FT}, 3}})
+        is_degenerate = load_BTData(open_group(g_ik, "is_degenerate"), OffsetArray{Bool, 2, Array{Bool, 2}})
+        for ind = 1:x.state.n
+            x.state.ik[ind] == ik || continue
+            (; ib1, ib2) = x.state[ind]
+
+            # <u_{jb1,k}|S|u_{ib1,k}> * x_{ib1, ib2, k} * <u_{ib2, k}|S|u_{jb2, k}>
+            for jb2 in x.state.ib_rng[ik]
+                is_degenerate[jb2, ib2] || continue
+                for jb1 in x.state.ib_rng[ik]
+                    is_degenerate[jb1, ib1] || continue
+                    ind_symm = get(indmap, CI(jb1, jb2, ik), nothing)
+                    ind_symm === nothing && continue
+
+                    for (ind_isym, isym) in enumerate(isym_list)
+                        symop = qme_model.symmetry[isym]
+                        gauge_coeff = sym_gauge[jb1, ib1, ind_isym] * sym_gauge[jb2, ib2, ind_isym]'
+                        data_new = (symop.Scart * x.data[ind]) * gauge_coeff
+                        if symop.is_tr && trodd
+                            data_new *= -1
+                        end
+                        if symop.is_inv && invodd
+                            data_new *= -1
+                        end
+                        x_symmetrized.data[ind_symm] += data_new
+                    end
+                end
+            end
+            cnt_symm[ind] += length(isym_list)
+        end
+    end
+    close(f)
+    x_symmetrized.data ./= cnt_symm
+    x_symmetrized
+end
+
+symmetrize_QMEVector(x::QMEVector, qme_model::QMEModel, trodd, invodd) = copy(x)
+
+"""
+Rotate a `QMEVector` data defined on `el` by S to `el_f` using symmetry `S = qme_model.symmetry[isym]`.
+``y_{m',n',k'} = ∑_{m, n} <u^(f)_{m'k'}|S|u^(i)_{mk}> x_{m,n,k} <u^(i)_{nk}|S^{-1}|u^(f)_{n'k'}>``
+where ``k' = S * k``.
+"""
+function rotate_QMEVector_to_el_f(x::QMEVector, qme_model::QMEIrreducibleKModel{FT}, isym) where FT
+    x.state === qme_model.el || error("x.state must be qme_model.el")
+    (; el, el_f, symmetry) = qme_model
+
+    symop = symmetry[isym]
+
+    # Read gauge information from file
+    # TODO: Reading gauge information is the bottleneck.
+    sym_gauge_list = OffsetArray{Complex{FT}, 3, Array{Complex{FT}, 3}}[]
+    is_degenerate_list = OffsetArray{Bool, 3, Array{Bool, 3}}[]
+    fid = h5open(qme_model.filename, "r")
+    for isym = 1:symmetry.nsym
+        group_sym = open_group(fid, "gauge/isym$isym")
+        push!(sym_gauge_list, load_BTData(open_group(group_sym, "gauge_matrix"),
+                                          OffsetArray{Complex{FT}, 3, Array{Complex{FT}, 3}}))
+        push!(is_degenerate_list, load_BTData(open_group(group_sym, "is_degenerate"),
+                                              OffsetArray{Bool, 3, Array{Bool, 3}}))
+    end
+    close(fid)
+
+    indmap_f = states_index_map(el_f)
+    y = QMEVector(qme_model.el_f, eltype(x))
+    for ind_i = 1:el.n
+        (; ib1, ib2, ik) = el[ind_i]
+        xk = el.kpts.vectors[ik]
+        sk = symop.is_tr ? -symop.S * xk : symop.S * xk
+        isk = xk_to_ik(sk, el_f.kpts)
+        isk === nothing && continue
+
+        # We know <u^(f)_Sk|S|u^(i)_k> only for irreducible k points. To compute the gauge
+        # for general k points, we use k = S_irr * k_irr and
+        # <u^(f)_{m'k'}|S|u^(i)_{mk}> = <u^(f)_{m'k'}|S * S_irr|u^(i)_{m,k_irr}>.
+        ik_irr, isym_irr = qme_model.ik_to_ikirr_isym[ik]
+        symop_prod = symop * symmetry[isym_irr]
+        isym_prod = findfirst(s -> s ≈ symop_prod, symmetry)
+
+        is_degenerate = is_degenerate_list[isym_prod]
+        sym_gauge = sym_gauge_list[isym_prod]
+
+        for jb2 in el_f.ib_rng[isk]
+            is_degenerate[jb2, ib2, ik_irr] || continue
+            for jb1 in el_f.ib_rng[isk]
+                is_degenerate[jb1, ib1, ik_irr] || continue
+                ind_f = get(indmap_f, CI(jb1, jb2, isk), -1)
+                ind_f == -1 && continue
+                gauge_coeff = sym_gauge[jb1, ib1, ik_irr] * sym_gauge[jb2, ib2, ik_irr]'
+                y[ind_f] += x[ind_i] * gauge_coeff
+            end
+        end
+    end
+    y
 end

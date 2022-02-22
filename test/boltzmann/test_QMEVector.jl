@@ -6,9 +6,6 @@ using LinearAlgebra
 @testset "QMEVector" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    folder_tmp = joinpath(folder, "tmp")
-    mkpath(folder_tmp)
-
     model = load_model(folder)
 
     # Setup QMEVector
@@ -47,4 +44,57 @@ using LinearAlgebra
         @test v[i].state === el
         @test v[i].data ≈ [v[i] for v in el.v]
     end
+end
+
+
+@testset "QMEVector symmetry" begin
+    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
+    folder_tmp = joinpath(folder, "tmp")
+    mkpath(folder_tmp)
+
+    model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
+
+    nk = 20
+    nq = 20
+
+    @time output = EPW.run_transport(
+        model, (nk, nk, nk), (nq, nq, nq),
+        fourier_mode = "gridopt",
+        folder = folder_tmp,
+        window_k  = window_k,
+        window_kq = window_kq,
+        energy_conservation = energy_conservation,
+        average_degeneracy = false,
+        run_for_qme = true,
+        compute_derivative = true,
+        use_irr_k = true,
+    );
+
+    transport_params = ElectronTransportParams{Float64}(
+        Tlist = [300.0] .* unit_to_aru(:K),
+        n = -1.0e16 * model.volume / unit_to_aru(:cm)^3,
+        smearing = (:Gaussian, 50.0 * unit_to_aru(:meV)),
+        volume = model.volume,
+        nband_valence = 3,
+        spin_degeneracy = 2
+    )
+
+    filename = joinpath(folder_tmp, "btedata_coherence.rank0.h5")
+    qme_model = load_QMEModel(filename, transport_params)
+    (; el_irr, el_f) = qme_model
+    bte_compute_μ!(qme_model)
+
+    # Test that symmetrization applied twice is equivalent to symmetrization applied once.
+    x_irr = QMEVector(el_irr, copy(el_irr.v))
+    x_irr_symm = EPW.symmetrize_QMEVector(x_irr, qme_model, true, false)
+    x_irr_symm2 = EPW.symmetrize_QMEVector(x_irr_symm, qme_model, true, false)
+    @test norm(x_irr_symm2.data .- x_irr_symm.data) < norm(x_irr.data) * 1e-7
+
+    # Test map from el_irr to el_f is the same with unfolding and rotation to el_f.
+    unfold_map = EPW._qme_linear_response_unfold_map(el_irr, el_f, qme_model.filename);
+    y1 = QMEVector(el_f, unfold_map * x_irr_symm.data)
+    x_symm = EPW.unfold_QMEVector(x_irr_symm, qme_model, true, false)
+    y2 = EPW.rotate_QMEVector_to_el_f(x_symm, qme_model, 1)
+    @test norm(y1.data .- y2.data) < norm(y1.data) * 1e-7
 end

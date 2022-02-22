@@ -26,6 +26,8 @@ Base.IndexStyle(::Type{QMEVector}) = IndexLinear()
 Base.similar(A::QMEVector) = QMEVector(A.state, similar(A.data))
 Base.similar(A::QMEVector, ::Type{S}) where S = QMEVector(A.state, similar(A.data, S))
 
+Base.copy(x::QMEVector) = QMEVector(x.state, copy(x.data))
+
 Base.:*(A::AbstractMatrix, v::QMEVector) = QMEVector(v.state, A * v.data)
 Base.:\(A::AbstractMatrix, v::QMEVector) = QMEVector(v.state, A \ v.data)
 

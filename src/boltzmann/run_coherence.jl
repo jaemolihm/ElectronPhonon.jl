@@ -92,6 +92,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # TODO: Optimize memory and disk usage by writing only nonzero matrix elements
     # TODO: Merge two cases
     # TODO: Use unfolding of el_kq to simplify this part.
+    # TODO: Cleanup gauge and gauge_self.
     mpi_isroot() && println("Calculating and writing gauge matrices")
 
     rng_global = nband_ignore+1:nband_ignore+nband
@@ -144,6 +145,70 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             dump_BTData(create_group(g, "gauge_matrix"), gauge)
             dump_BTData(create_group(g, "is_degenerate"), is_degenerate)
         end
+
+        # Symmetry matrix elements for symmetry that maps k to itself: Sk = k.
+        # Needed for symmetrization of quantities defined on the irreducible grid.
+        is_degenerate_self = OffsetArray(zeros(Bool, nband, nband), rng_global, rng_global)
+        ik_list = Int[]
+        for ik = 1:nk
+            xk = kpts.vectors[ik]
+            el_k = el_k_save[ik]
+            rng_k = el_k.rng
+
+            # First, count the number of symops that satisfy Sk = k and S /= I.
+            count_total = 0
+            for symop in symmetry
+                isone(symop) && continue # Skip identity
+                sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
+                if normalize_kpoint_coordinate(xk) ≈ normalize_kpoint_coordinate(sxk)
+                    count_total += 1
+                end
+            end
+
+            # Skip this k point if no S other than identity maps k to itself.
+            count_total == 0 && continue
+            push!(ik_list, ik)
+
+            isym_list = zeros(Int, count_total)
+            gauge_list = OffsetArray(zeros(Complex{FT}, nband, nband, count_total),
+                                    rng_global, rng_global, 1:count_total)
+
+            icount = 0
+            for isym = 1:symmetry.nsym
+                symop = symmetry[isym]
+                isone(symop) && continue # Skip identity
+                # Find symmetry in model.el_sym
+                isym_el = findfirst(s -> s ≈ symop, model.el_sym.symmetry)
+
+                sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
+                normalize_kpoint_coordinate(xk) ≈ normalize_kpoint_coordinate(sxk) || continue
+
+                icount += 1
+                isym_list[icount] = isym
+
+                # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k) = <u(k)|S|u(k)>
+                get_fourier!(sym_k, model.el_sym.operators[isym_el], xk; mode=fourier_mode)
+                tmp_arr = view(tmp_arr_full, :, rng_k)
+                tmp_arr2 = view(tmp_arr2_full, rng_k, rng_k)
+                mul!(tmp_arr, sym_k, get_u(el_k))
+                mul!(tmp_arr2, get_u(el_k)', tmp_arr)
+                gauge_list[el_k.rng_full, el_k.rng_full, icount] .= tmp_arr2
+                # FIXME: Perform SVD to make gauge completely unitary
+            end
+
+            # Set is_degenerate_self. Use more loose tolerance because symmetry can be slightly
+            # broken at the Hamiltonian level.
+            for ib in rng_k, jb in rng_k
+                ib_full = ib + el_k.nband_ignore
+                jb_full = jb + el_k.nband_ignore
+                is_degenerate_self[jb_full, ib_full] = abs(el_k.e[ib] - el_k.e[jb]) < 10 * unit_to_aru(:meV)
+            end
+            g = create_group(fid_btedata, "gauge_self/ik$ik")
+            g["isym"] = isym_list
+            dump_BTData(create_group(g, "gauge_matrix"), gauge_list)
+            dump_BTData(create_group(g, "is_degenerate"), is_degenerate_self)
+        end
+        fid_btedata["gauge_self/ik_list"] = ik_list
     else
         tmp_arr_full = zeros(Complex{FT}, nw, nw)
         @views for ik = 1:nk
