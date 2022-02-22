@@ -284,15 +284,13 @@ end
 symmetrize_QMEVector(x::QMEVector, qme_model::QMEModel, trodd, invodd) = copy(x)
 
 """
-Rotate a `QMEVector` data defined on `el` by S to `el_f` using symmetry `S = qme_model.symmetry[isym]`.
+Compute a map that maps a `QMEVector` data defined on `el` by S to `el_f` using symmetry
+`S = qme_model.symmetry[isym]`.
 ``y_{m',n',k'} = ∑_{m, n} <u^(f)_{m'k'}|S|u^(i)_{mk}> x_{m,n,k} <u^(i)_{nk}|S^{-1}|u^(f)_{n'k'}>``
 where ``k' = S * k``.
 """
-function rotate_QMEVector_to_el_f(x::QMEVector, qme_model::QMEIrreducibleKModel{FT}, isym) where FT
-    x.state === qme_model.el || error("x.state must be qme_model.el")
+function _el_to_el_f_symmetry_maps(qme_model::QMEIrreducibleKModel{FT}) where FT
     (; el, el_f, symmetry) = qme_model
-
-    symop = symmetry[isym]
 
     # Read gauge information from file
     # TODO: Reading gauge information is the bottleneck.
@@ -309,34 +307,44 @@ function rotate_QMEVector_to_el_f(x::QMEVector, qme_model::QMEIrreducibleKModel{
     close(fid)
 
     indmap_f = states_index_map(el_f)
-    y = QMEVector(qme_model.el_f, eltype(x))
-    for ind_i = 1:el.n
-        (; ib1, ib2, ik) = el[ind_i]
-        xk = el.kpts.vectors[ik]
-        sk = symop.is_tr ? -symop.S * xk : symop.S * xk
-        isk = xk_to_ik(sk, el_f.kpts)
-        isk === nothing && continue
 
-        # We know <u^(f)_Sk|S|u^(i)_k> only for irreducible k points. To compute the gauge
-        # for general k points, we use k = S_irr * k_irr and
-        # <u^(f)_{m'k'}|S|u^(i)_{mk}> = <u^(f)_{m'k'}|S * S_irr|u^(i)_{m,k_irr}>.
-        ik_irr, isym_irr = qme_model.ik_to_ikirr_isym[ik]
-        symop_prod = symop * symmetry[isym_irr]
-        isym_prod = findfirst(s -> s ≈ symop_prod, symmetry)
+    i_to_f_maps = SparseMatrixCSC{Complex{FT}, Int}[]
 
-        is_degenerate = is_degenerate_list[isym_prod]
-        sym_gauge = sym_gauge_list[isym_prod]
+    for symop in symmetry
+        sp_ind_f = Int[]
+        sp_ind_i = Int[]
+        sp_val = Complex{FT}[]
+        for ind_i = 1:el.n
+            (; ib1, ib2, ik) = el[ind_i]
+            xk = el.kpts.vectors[ik]
+            sk = symop.is_tr ? -symop.S * xk : symop.S * xk
+            isk = xk_to_ik(sk, el_f.kpts)
+            isk === nothing && continue
 
-        for jb2 in el_f.ib_rng[isk]
-            is_degenerate[jb2, ib2, ik_irr] || continue
-            for jb1 in el_f.ib_rng[isk]
-                is_degenerate[jb1, ib1, ik_irr] || continue
-                ind_f = get(indmap_f, CI(jb1, jb2, isk), -1)
-                ind_f == -1 && continue
-                gauge_coeff = sym_gauge[jb1, ib1, ik_irr] * sym_gauge[jb2, ib2, ik_irr]'
-                y[ind_f] += x[ind_i] * gauge_coeff
+            # We know <u^(f)_Sk|S|u^(i)_k> only for irreducible k points. To compute the gauge
+            # for general k points, we use k = S_irr * k_irr and
+            # <u^(f)_{m'k'}|S|u^(i)_{mk}> = <u^(f)_{m'k'}|S * S_irr|u^(i)_{m,k_irr}>.
+            ik_irr, isym_irr = qme_model.ik_to_ikirr_isym[ik]
+            symop_prod = symop * symmetry[isym_irr]
+            isym_prod = findfirst(s -> s ≈ symop_prod, symmetry)
+
+            is_degenerate = is_degenerate_list[isym_prod]
+            sym_gauge = sym_gauge_list[isym_prod]
+
+            for jb2 in el_f.ib_rng[isk]
+                is_degenerate[jb2, ib2, ik_irr] || continue
+                for jb1 in el_f.ib_rng[isk]
+                    is_degenerate[jb1, ib1, ik_irr] || continue
+                    ind_f = get(indmap_f, CI(jb1, jb2, isk), -1)
+                    ind_f == -1 && continue
+                    gauge_coeff = sym_gauge[jb1, ib1, ik_irr] * sym_gauge[jb2, ib2, ik_irr]'
+                    push!(sp_ind_f, ind_f)
+                    push!(sp_ind_i, ind_i)
+                    push!(sp_val, gauge_coeff)
+                end
             end
         end
+        push!(i_to_f_maps, dropzeros!(sparse(sp_ind_f, sp_ind_i, sp_val, el_f.n, el.n)))
     end
-    y
+    i_to_f_maps
 end

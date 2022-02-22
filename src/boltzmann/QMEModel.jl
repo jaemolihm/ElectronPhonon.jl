@@ -39,6 +39,9 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
     # is not stored to reduce memory usage.)
     # TODO: Document way to apply S_in to objects on the full k grid.
     S_in_irr = nothing
+    # Map from el to el_f by each symmetry operator. Needed in multiply_S_in.
+    # (storage size ~ N_sym^2 * N_kirr * N_band)
+    el_to_el_f_sym_maps = nothing
 end
 
 """
@@ -111,6 +114,7 @@ function load_QMEModel(filename, transport_params, ::Type{FT}=Float64) where FT
 
         qme_model = EPW.QMEIrreducibleKModel(; symmetry, ik_to_ikirr_isym,
             el_irr=el_i_irr, el=el_i, ∇=Vec3(∇), transport_params, el_f, ph, filename)
+        qme_model.el_to_el_f_sym_maps = EPW._el_to_el_f_symmetry_maps(qme_model)
     else
         el_i = load_BTData(fid["initialstate_electron"], EPW.QMEStates{FT})
         el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{FT})

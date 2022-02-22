@@ -57,6 +57,8 @@ end
 
     nk = 20
     nq = 20
+    window_k  = (10.5, 11.0) .* unit_to_aru(:eV)
+    window_kq = (10.4, 11.0) .* unit_to_aru(:eV)
 
     @time output = EPW.run_transport(
         model, (nk, nk, nk), (nq, nq, nq),
@@ -64,7 +66,6 @@ end
         folder = folder_tmp,
         window_k  = window_k,
         window_kq = window_kq,
-        energy_conservation = energy_conservation,
         average_degeneracy = false,
         run_for_qme = true,
         compute_derivative = true,
@@ -76,14 +77,14 @@ end
         n = -1.0e16 * model.volume / unit_to_aru(:cm)^3,
         smearing = (:Gaussian, 50.0 * unit_to_aru(:meV)),
         volume = model.volume,
-        nband_valence = 3,
+        nband_valence = 4,
         spin_degeneracy = 2
     )
 
     filename = joinpath(folder_tmp, "btedata_coherence.rank0.h5")
     qme_model = load_QMEModel(filename, transport_params)
-    (; el_irr, el_f) = qme_model
     bte_compute_μ!(qme_model)
+    (; el_irr, el_f) = qme_model
 
     # Test that symmetrization applied twice is equivalent to symmetrization applied once.
     x_irr = QMEVector(el_irr, copy(el_irr.v))
@@ -95,6 +96,6 @@ end
     unfold_map = EPW._qme_linear_response_unfold_map(el_irr, el_f, qme_model.filename);
     y1 = QMEVector(el_f, unfold_map * x_irr_symm.data)
     x_symm = EPW.unfold_QMEVector(x_irr_symm, qme_model, true, false)
-    y2 = EPW.rotate_QMEVector_to_el_f(x_symm, qme_model, 1)
+    y2 = QMEVector(el_f, qme_model.el_to_el_f_sym_maps[1] * x_symm.data)
     @test norm(y1.data .- y2.data) < norm(y1.data) * 1e-7
 end
