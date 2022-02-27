@@ -36,7 +36,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # for (el, xk) in zip(el_k_save, kpts.vectors)
         #     set_gauge_to_diagonalize_velocity_matrix!(el, xk, 1, model)
         # end
-        el_k_boltzmann, _ = electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff, nstates_base_k)
+        el_k_boltzmann = electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff, nstates_base_k)
         dump_BTData(create_group(fid_btedata, "initialstate_electron"), el_k_boltzmann)
 
         # mpi_isroot() && println("Calculating electron states at k+q")
@@ -60,7 +60,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         end
         el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
         el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr) # This object is not used anymore.
-        el_kq_boltzmann, _ = electron_states_to_QMEStates(el_kq_save, kqpts, qme_offdiag_cutoff, nstates_base_kq)
+        el_kq_boltzmann = electron_states_to_QMEStates(el_kq_save, kqpts, qme_offdiag_cutoff, nstates_base_kq)
         dump_BTData(create_group(fid_btedata, "finalstate_electron"), el_kq_boltzmann)
         # fid_btedata["finalstate_ik_to_ikirr_isym"] = _data_julia_to_hdf5(ik_to_ikirr_isym_kq)
 

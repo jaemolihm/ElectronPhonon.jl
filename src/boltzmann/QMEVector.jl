@@ -40,7 +40,7 @@ end
 function Base.:*(x::QMEVector, y::QMEVector)
     check_state_identity(x, y)
     state = x.state
-    indmap = EPW.states_index_map(state)
+    indmap = state.indmap
     z = zeros(typeof(x.data[1] * y.data[1]), length(x.data))
     for ind_z in 1:state.n
         m = state.ib1[ind_z]

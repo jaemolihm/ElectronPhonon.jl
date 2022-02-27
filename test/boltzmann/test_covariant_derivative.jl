@@ -32,7 +32,7 @@ using LinearAlgebra
     qme_offdiag_cutoff = 5.0 * unit_to_aru(:eV)
 
     el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"])
-    el, _ = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
+    el = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
 
     bvec_data_list = [finite_difference_vectors(model.recip_lattice, el.kpts.ngrid; order) for order in 1:max_order]
     ∇_list = [EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data, nothing).∇ for bvec_data in bvec_data_list]

@@ -17,7 +17,7 @@ Compute the scattering matrix element for quantum master equation of electrons.
 function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, ph; compute_S_in=true) where {FT}
     nT = length(params.Tlist)
 
-    indmap_el_i = states_index_map(el_i)
+    indmap_el_i = el_i.indmap
     ind_ph_map = states_index_map(ph)
 
     fid = h5open(filename, "r")
@@ -381,8 +381,8 @@ end
 end
 
 function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
-    indmap_el_i = EPW.states_index_map(el_i);
-    indmap_el_f = EPW.states_index_map(el_f);
+    indmap_el_i = el_i.indmap
+    indmap_el_f = el_f.indmap
 
     # FIXME: Do not write symmetry twice. Use qme_model.
     fid = h5open(filename, "r")
@@ -449,7 +449,7 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
     @assert all(δk - round.(δk) .≈ 0)
     @assert el_i.kpts.ngrid == el_f.kpts.ngrid
 
-    indmap_el_f = EPW.states_index_map(el_f);
+    indmap_el_f = el_f.indmap
     sp_inds_f = Int[]
     sp_inds_i = Int[]
     sp_vals = Complex{FT}[]

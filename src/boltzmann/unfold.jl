@@ -143,8 +143,8 @@ function unfold_scattering_out_matrix(S_out_irr, el_irr, el, ik_to_ikirr_isym)
     sp_i = Int[]
     sp_j = Int[]
     sp_val = eltype(S_out_irr)[]
-    indmap = states_index_map(el)
-    indmap_irr = states_index_map(el_irr)
+    indmap = el.indmap
+    indmap_irr = el_irr.indmap
     for i in 1:el.n
         (; ik, ib1, ib2) = el[i]
         ikirr, _ = ik_to_ikirr_isym[ik]
@@ -174,7 +174,7 @@ TODO: Generalize ``symop.Scart * x[i]`` to work with any datatype (scalar, vecto
 """
 function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKModel, trodd, invodd) where {ElType <: Vec3, FT}
     @assert f_irr.state === model.el_irr
-    indmap_irr = states_index_map(model.el_irr)
+    indmap_irr = model.el_irr.indmap
     f = QMEVector(model.el, ElType)
     for i in 1:model.el.n
         (; ik, ib1, ib2) = model.el[i]
@@ -196,7 +196,7 @@ end
 
 function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKModel, trodd, invodd) where {ElType <: Number, FT}
     @assert f_irr.state === model.el_irr
-    indmap_irr = states_index_map(model.el_irr)
+    indmap_irr = model.el_irr.indmap
     f = QMEVector(model.el, ElType)
     for i in 1:model.el.n
         (; ik, ib1, ib2) = model.el[i]
@@ -232,7 +232,7 @@ FIXME: Make this work for general data (not only Vec3).
 function symmetrize_QMEVector(x::QMEVector{ElType, FT}, qme_model::QMEIrreducibleKModel,
         trodd, invodd) where {ElType <: Vec3, FT}
     @assert x.state === qme_model.el_irr
-    indmap = states_index_map(x.state)
+    indmap = x.state.indmap
     f = h5open(qme_model.filename, "r")
     g = open_group(f, "gauge_self")
     ik_list = read(g, "ik_list")::Vector{Int}
@@ -306,7 +306,7 @@ function _el_to_el_f_symmetry_maps(qme_model::QMEIrreducibleKModel{FT}) where FT
     end
     close(fid)
 
-    indmap_f = states_index_map(el_f)
+    indmap_f = el_f.indmap
 
     i_to_f_maps = SparseMatrixCSC{Complex{FT}, Int}[]
 
@@ -354,7 +354,7 @@ end
 # function symmetrize_scattering_out_matrix(S_out_irr, qme_model::EPW.QMEIrreducibleKModel{FT}) where FT
 #     (; el_irr) = qme_model
 #     @assert size(S_out_irr) == (el_irr.n, el_irr.n)
-#     indmap = EPW.states_index_map(el_irr)
+#     indmap = el_irr.indmap
 #     f = h5open(qme_model.filename, "r")
 #     g = open_group(f, "gauge_self")
 #     ik_list = read(g, "ik_list")::Vector{Int}

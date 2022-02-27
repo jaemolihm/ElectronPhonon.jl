@@ -156,7 +156,7 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
         ik_to_ikirr_isym = [(ik, 0) for ik in 1:el.kpts.n]
     end
 
-    indmap = EPW.states_index_map(el)
+    indmap = el.indmap
     kpts = el.kpts
 
     # FIXME: el.nband instead of rng_maxdoes not work because rng can be outside of 1:el.nband

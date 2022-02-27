@@ -140,7 +140,7 @@ where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)
     @assert x.state === qme_model.el
     Sin_x = similar(x)
     (; el, el_irr, symmetry, ik_to_ikirr_isym, el_to_el_f_sym_maps) = qme_model
-    indmap_el_irr = states_index_map(el_irr)
+    indmap_el_irr = el_irr.indmap
 
     Sin_x_irr = QMEVector(el_irr, eltype(x))
     for (isym, symop) in enumerate(symmetry)

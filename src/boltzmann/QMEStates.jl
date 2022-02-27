@@ -1,6 +1,7 @@
 # Struct for quantum kinetic equation including interband coherence
 
 using Parameters: @with_kw
+using Dictionaries
 
 """
     QMEStates{T <: Real} <: AbstractBTData{T}
@@ -30,6 +31,8 @@ States for quantum master equation. Includes off-diagonal coherence between eige
     nstates_base::T = 0
     # k points
     kpts::GridKpoints{T}
+    # index map
+    indmap::Dictionaries.Dictionary{CartesianIndex{3}, Int} = states_index_map(n, ib1, ib2, ik)
 end
 
 # Indexing
@@ -50,6 +53,8 @@ Base.lastindex(s::QMEStates) = s.n
         if name === :kpts
             g = create_group(f, String(name))
             dump_BTData(g, getfield(obj, name))
+        elseif name === :indmap
+            continue
         else
             f[String(name)] = _data_julia_to_hdf5(getfield(obj, name))
         end
@@ -68,12 +73,14 @@ end
     data = []
     for (i, name) in enumerate(fieldnames(T))
         if name === :kpts
-            push!(data, load_BTData(f[String(name)], T.types[i]))
+            push!(data, (name => load_BTData(f[String(name)], T.types[i])))
+        elseif name === :indmap
+            continue
         else
-            push!(data, _data_hdf5_to_julia(read(f, String(name)), T.types[i]))
+            push!(data, (name => _data_hdf5_to_julia(read(f, String(name)), T.types[i])))
         end
     end
-    T(data...)
+    QMEStates(; data...)
 end
 
 function load_BTData(f, ::Type{GridKpoints{FT}}) where FT
@@ -89,8 +96,6 @@ end
         kpts::EPW.AbstractKpoints{T}, offdiag_cutoff, nstates_base=zero(T)) where {T <: Real}
     @assert kpts.n == length(el_states)
     nk = length(el_states)
-    max_nband_bound = maximum([el.nband_bound for el in el_states])
-    imap = zeros(Int, max_nband_bound, max_nband_bound, nk)
 
     e1 = T[]
     e2 = T[]
@@ -112,7 +117,6 @@ end
                 push!(ib2_list, ib2 + el.nband_ignore)
                 push!(ik_list, ik)
                 push!(v, el.v[ib1, ib2])
-                imap[ib1, ib2, ik] = n
             end
         end
         push!(ib_rng, el.rng .+ el.nband_ignore)
@@ -120,7 +124,7 @@ end
     iband_min = minimum(el.rng_full.start for el in el_states if length(el.nband) > 0)
     iband_max = maximum(el.rng_full.stop for el in el_states if length(el.nband) > 0)
     nband = iband_max - iband_min + 1
-    QMEStates(n, nband, e1, e2, v, ib1_list, ib2_list, ik_list, ib_rng, nstates_base, GridKpoints(kpts)), imap
+    QMEStates(; n, nband, e1, e2, v, ib1=ib1_list, ib2=ib2_list, ik=ik_list, ib_rng, nstates_base, kpts=GridKpoints(kpts))
 end
 
 function BTStates(s::QMEStates)
@@ -135,9 +139,14 @@ end
 Create a map (ib1, ib2, ik) => i
 """
 function states_index_map(states::QMEStates)
+    @warn "DEPRECATED"
+    states_index_map(states.n, states.ib1, states.ib2, states.ik)
+end
+
+function states_index_map(n, ib1, ib2, ik)
     index_map = Dictionary{CI{3}, Int}()
-    for i in 1:states.n
-        insert!(index_map, CI(states.ib1[i], states.ib2[i], states.ik[i]), i)
+    for i in 1:n
+        insert!(index_map, CI(ib1[i], ib2[i], ik[i]), i)
     end
     index_map
 end

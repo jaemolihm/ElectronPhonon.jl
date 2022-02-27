@@ -12,7 +12,7 @@ using LinearAlgebra
     qme_offdiag_cutoff = 1.0 .* unit_to_aru(:eV)
     kpts = generate_kvec_grid(3, 3, 3)
     el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "velocity"]);
-    el, _ = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff, 0.)
+    el = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff, 0.)
 
     # Test basic operations
     x = QMEVector(el, rand(el.n))
