@@ -4,6 +4,8 @@ export solve_electron_qme
 export compute_qme_scattering_matrix!
 export set_constant_qme_scattering_matrix!
 
+using SparseArrays
+
 abstract type AbstractQMEModel{FT} end
 
 Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
@@ -41,7 +43,7 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
     S_in_irr = nothing
     # Map from el to el_f by each symmetry operator. Needed in multiply_S_in.
     # (storage size ~ N_sym^2 * N_kirr * N_band)
-    el_to_el_f_sym_maps = nothing
+    el_to_el_f_sym_maps::Union{Nothing, Vector{SparseMatrixCSC{Complex{FT}, Int}}} = nothing
 end
 
 """
@@ -101,36 +103,71 @@ end
 Read a QMEModel or QMEIrreducibleKModel from a hdf5 file containing the information.
 # TODO: Write symmetry to file, automatically detect usage of symmetry.
 """
-function load_QMEModel(filename, transport_params, ::Type{FT}=Float64) where FT
+function load_QMEModel(filename, transport_params, ::Type{FT}=Float64; derivative_order=nothing) where FT
     fid = h5open(filename, "r")
+    el_f = load_BTData(fid["finalstate_electron"], QMEStates{FT})
+    ph = load_BTData(fid["phonon"], BTStates{FT})
+    if derivative_order === nothing
+        ∇ = load_covariant_derivative_matrix(fid["covariant_derivative"])
+    else
+        ∇ = load_covariant_derivative_matrix(fid["covariant_derivative_order$derivative_order"])
+    end
     if haskey(fid, "symmetry")
         symmetry = load_BTData(fid["symmetry"], Symmetry{FT})
-        el_i_irr = load_BTData(fid["initialstate_electron"], EPW.QMEStates{FT})
-        el_i = load_BTData(fid["initialstate_electron_unfolded"], EPW.QMEStates{FT})
-        ik_to_ikirr_isym = EPW._data_hdf5_to_julia(read(fid, "ik_to_ikirr_isym"), Vector{Tuple{Int, Int}})
-        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{FT})
-        ph = load_BTData(fid["phonon"], EPW.BTStates{FT})
-        ∇ = EPW.load_covariant_derivative_matrix(fid["covariant_derivative"])
-
-        qme_model = EPW.QMEIrreducibleKModel(; symmetry, ik_to_ikirr_isym,
+        el_i_irr = load_BTData(fid["initialstate_electron"], QMEStates{FT})
+        el_i = load_BTData(fid["initialstate_electron_unfolded"], QMEStates{FT})
+        ik_to_ikirr_isym = _data_hdf5_to_julia(read(fid, "ik_to_ikirr_isym"), Vector{Tuple{Int, Int}})
+        qme_model = QMEIrreducibleKModel(; symmetry, ik_to_ikirr_isym,
             el_irr=el_i_irr, el=el_i, ∇=Vec3(∇), transport_params, el_f, ph, filename)
-        qme_model.el_to_el_f_sym_maps = EPW._el_to_el_f_symmetry_maps(qme_model)
+        qme_model.el_to_el_f_sym_maps = _el_to_el_f_symmetry_maps(qme_model)
     else
-        el_i = load_BTData(fid["initialstate_electron"], EPW.QMEStates{FT})
-        el_f = load_BTData(fid["finalstate_electron"], EPW.QMEStates{FT})
-        ph = load_BTData(fid["phonon"], EPW.BTStates{FT})
-        ∇ = EPW.load_covariant_derivative_matrix(fid["covariant_derivative"])
-
-        qme_model = EPW.QMEModel(; el=el_i, ∇=Vec3(∇), transport_params, el_f, ph, filename)
+        el_i = load_BTData(fid["initialstate_electron"], QMEStates{FT})
+        qme_model = QMEModel(; el=el_i, ∇=Vec3(∇), transport_params, el_f, ph, filename)
     end
     close(fid)
     qme_model
 end
 
+"""
+    multiply_S_in_irr(x::QMEVector, S_in_irr, qme_model)
+Multiply `S_in` to a QMEVector `x` defined on the full grid.
+This takes O(N_k^2) operation but uses O(N_k^2 / N_sym) storage (i.e. S_in is stored only for
+the irreducible BZ, not the full BZ).
+For each `k`, ``Sx_{m,n,k} = ∑_{k'} S_in_irr_{m,n,kirr <- m',n',k'} x'(S^-1)_{m',n',k'}``
+where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)`.
+"""
+@timing "S_in" function multiply_S_in(x::QMEVector, S_in_irr, qme_model::QMEIrreducibleKModel)
+    @assert x.state === qme_model.el
+    Sin_x = similar(x)
+    (; el, el_irr, symmetry, ik_to_ikirr_isym, el_to_el_f_sym_maps) = qme_model
+    indmap_el_irr = states_index_map(el_irr)
+
+    Sin_x_irr = QMEVector(el_irr, eltype(x))
+    for (isym, symop) in enumerate(symmetry)
+        isym_inv = findfirst(s -> s ≈ inv(symop), symmetry)
+        Sinv_x = el_to_el_f_sym_maps[isym_inv] * x.data
+        mul!(Sin_x_irr.data, S_in_irr, Sinv_x)
+        for i = 1:el.n
+            (; ib1, ib2, ik) = el[i]
+            ikirr, isym_ = ik_to_ikirr_isym[ik]
+            if isym_ == isym
+                ind_irr = indmap_el_irr[CI(ib1, ib2, ikirr)]
+                Sin_x[i] = Sin_x_irr[ind_irr]
+            end
+        end
+    end
+    Sin_x
+end
+
+function multiply_S_in(x::QMEVector, S_in_irr, qme_model::QMEModel)
+    map_i_to_f = _qme_linear_response_unfold_map_nosym(qme_model.el, qme_model.el_f, qme_model.filename)
+    QMEVector(x.state, S_in_irr * (map_i_to_f * x.data))
+end
+
 # Wrappers for transport-related functions
 
 function bte_compute_μ!(model::AbstractQMEModel)
-    bte_compute_μ!(model.transport_params, EPW.BTStates(model.el_irr))
+    bte_compute_μ!(model.transport_params, BTStates(model.el_irr))
 end
 
 function compute_qme_scattering_matrix!(model::AbstractQMEModel; compute_S_in=true)

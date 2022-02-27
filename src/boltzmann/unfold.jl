@@ -348,3 +348,77 @@ function _el_to_el_f_symmetry_maps(qme_model::QMEIrreducibleKModel{FT}) where FT
     end
     i_to_f_maps
 end
+
+
+
+# function symmetrize_scattering_out_matrix(S_out_irr, qme_model::EPW.QMEIrreducibleKModel{FT}) where FT
+#     (; el_irr) = qme_model
+#     @assert size(S_out_irr) == (el_irr.n, el_irr.n)
+#     indmap = EPW.states_index_map(el_irr)
+#     f = h5open(qme_model.filename, "r")
+#     g = open_group(f, "gauge_self")
+#     ik_list = read(g, "ik_list")::Vector{Int}
+
+#     is = Int[]
+#     js = Int[]
+#     vals = eltype(S_out_irr)[]
+
+#     # Count number of symmetry operations that map k to itself. 1 by default because of identity.
+#     cnt_symm = fill(1, el_irr.n)
+
+#     for ik in ik_list
+#         g_ik = open_group(g, "ik$ik")
+#         isym_list = read(g_ik, "isym")::Vector{Int}
+#         sym_gauge = load_BTData(open_group(g_ik, "gauge_matrix"), OffsetArray{Complex{FT}, 3, Array{Complex{FT}, 3}})
+#         is_degenerate = load_BTData(open_group(g_ik, "is_degenerate"), OffsetArray{Bool, 2, Array{Bool, 2}})
+#         for j = 1:el_irr.n
+#             el_irr.ik[j] == ik || continue
+#             cnt_symm[j] += length(isym_list)
+#             jb1, jb2 = el_irr.ib1[j], el_irr.ib2[j]
+#             for i = 1:el_irr.n
+#                 el_irr.ik[i] == ik || continue
+#                 ib1, ib2 = el_irr.ib1[i], el_irr.ib2[i]
+
+#                 abs(S_out_irr[i, j]) > 0 || continue
+
+#                 # S_{pb1, pb2, k <- qb1, qb2, k} <-- (symmetry) -- S_{ib1, ib2, k <- jb1, jb2, k}
+#                 # gauge_coeff = S[pb1, ib1] * S[pb2, ib2]' * S[qb1, jb1]' * S[qb2, jb2]
+#                 # where S[i, j] = <u_{pb1,k}|S|u_{ib1,k}>.
+#                 for qb2 in el_irr.ib_rng[ik]
+#                     is_degenerate[qb2, jb2] || continue
+#                     for qb1 in el_irr.ib_rng[ik]
+#                         is_degenerate[qb1, jb1] || continue
+
+#                         q = get(indmap, CI(qb1, qb2, ik), nothing)
+#                         q === nothing && continue
+
+#                         for pb2 in el_irr.ib_rng[ik]
+#                             is_degenerate[pb2, ib2] || continue
+#                             for pb1 in el_irr.ib_rng[ik]
+#                                 is_degenerate[pb1, ib1] || continue
+
+#                                 p = get(indmap, CI(pb1, pb2, ik), nothing)
+#                                 p === nothing && continue
+
+#                                 gauge_coeff = 0.0im
+#                                 for indsym = 1:size(sym_gauge, 3)
+#                                     gauge_coeff += (  sym_gauge[pb1, ib1, indsym]  * sym_gauge[pb2, ib2, indsym]'
+#                                                     * sym_gauge[qb1, jb1, indsym]' * sym_gauge[qb2, jb2, indsym])
+#                                     # FIXME: Time reversal, Inversion (now assumed to be all even)
+#                                 end
+#                                 push!(is, p)
+#                                 push!(js, q)
+#                                 push!(vals, S_out_irr[i, j] * gauge_coeff)
+#                             end
+#                         end
+#                     end
+#                 end
+#             end
+#         end
+#     end
+#     close(f)
+#     S_out_irr_symmetrized = sparse(is, js, vals, size(S_out_irr)...) + S_out_irr
+#     S_out_irr_symmetrized ./= cnt_symm
+#     dropzeros!(S_out_irr_symmetrized)
+#     S_out_irr_symmetrized
+# end

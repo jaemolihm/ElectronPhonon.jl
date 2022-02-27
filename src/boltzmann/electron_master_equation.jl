@@ -384,6 +384,7 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
     indmap_el_i = EPW.states_index_map(el_i);
     indmap_el_f = EPW.states_index_map(el_f);
 
+    # FIXME: Do not write symmetry twice. Use qme_model.
     fid = h5open(filename, "r")
     symmetry = load_BTData(open_group(fid, "gauge/symmetry"), Symmetry{FT})
 
@@ -414,7 +415,7 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
                         is_degenerate[jb1, ib1, ik] || continue
                         ind_el_f = get(indmap_el_f, EPW.CI(jb1, jb2, isk), -1)
                         ind_el_f == -1 && continue
-                        gauge_coeff = sym_gauge[jb1, ib1, ik] * conj(sym_gauge[jb2, ib2, ik])
+                        gauge_coeff = sym_gauge[jb1, ib1, ik] * sym_gauge[jb2, ib2, ik]'
                         push!(sp_inds_f, ind_el_f)
                         push!(sp_inds_i, ind_el_i)
                         push!(sp_vals, Scart * gauge_coeff)
