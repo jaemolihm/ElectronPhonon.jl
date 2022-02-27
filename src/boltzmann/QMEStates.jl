@@ -31,8 +31,10 @@ States for quantum master equation. Includes off-diagonal coherence between eige
     nstates_base::T = 0
     # k points
     kpts::GridKpoints{T}
+    # Number of bands ignored (below the window)
+    nband_ignore::Int = min(minimum(ib1), minimum(ib2)) - 1
     # index map
-    indmap::Dictionaries.Dictionary{CartesianIndex{3}, Int} = states_index_map(n, ib1, ib2, ik)
+    indmap::Vector{Int} = states_index_map(n, nband, nband_ignore, ib1, ib2, ik)
 end
 
 # Indexing
@@ -134,20 +136,10 @@ function BTStates(s::QMEStates)
                  s.kpts.vectors[s.ik[inds]], s.ib1[inds], s.kpts.ngrid, s.nstates_base)
 end
 
-"""
-    states_index_map(states)
-Create a map (ib1, ib2, ik) => i
-"""
-function states_index_map(states::QMEStates)
-    @warn "DEPRECATED"
-    states_index_map(states.n, states.ib1, states.ib2, states.ik)
-end
-
-function states_index_map(n, ib1, ib2, ik)
-    index_map = Dictionary{CI{3}, Int}()
-    for i in 1:n
-        insert!(index_map, CI(ib1[i], ib2[i], ik[i]), i)
-    end
+function states_index_map(n, nband, nband_ignore, ib1, ib2, ik)
+    inds = _1d_index.(ib1, ib2, ik, nband, nband_ignore)
+    index_map = zeros(Int, maximum(inds))
+    index_map[inds] .= 1:n
     index_map
 end
 
@@ -157,9 +149,20 @@ Return the 1d index of the state `(ib1, ib2, ik)` in `states`. Return 0 if such 
 exist in `states`.
 """
 @inline function get_1d_index(states::QMEStates, ib1, ib2, ik)
-    get(states.indmap, CI(ib1, ib2, ik), 0)
+    (; nband_ignore, nband) = states
+    if (nband_ignore + 1 <= ib1 <= nband_ignore + nband &&
+        nband_ignore + 1 <= ib2 <= nband_ignore + nband)
+        i = _1d_index(ib1, ib2, ik, nband, nband_ignore)
+        return 1 <= i <= length(states.indmap) ? states.indmap[i] : 0
+    else
+        return 0
+    end
 end
 
 @inline function hasstate(states::QMEStates, ib1, ib2, ik)
-    haskey(states.indmap, CI(ib1, ib2, ik))
+    get_1d_index(states, ib1, ib2, ik) != 0
+end
+
+@inline function _1d_index(ib1, ib2, ik, nband, nband_ignore)
+    ib1 - nband_ignore + nband * (ib2 - nband_ignore - 1) + nband^2 * (ik - 1)
 end
