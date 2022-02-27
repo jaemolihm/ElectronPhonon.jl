@@ -36,12 +36,12 @@ using HDF5
     r_hall_ref_123 = Dict(
         (false, :CRTA)  => [-0.11847158752557092,  -0.14823502018049978,  -0.15333964481975168],
         (false, :SERTA) => [-0.011250559739887816, -0.028690945110432325, -0.051159534325475216],
+        (false,  :IBTE) => [-0.016789770700366354, -0.03675213167771814, -0.05996174005041628],
         (true,  :CRTA)  => [-0.1295862763932781,   -0.16238798092792733,  -0.16831395498549015],
         (true,  :SERTA) => [-0.01410358935362333,  -0.03482766355056225,  -0.060641233049638275],
+        (true,  :IBTE) => [-0.02077601625505137, -0.04440090772474895, -0.07103304929477755],
     )
     μlist_ref = [0.789819320790235, 0.7904155994597073, 0.7910192438436332]
-
-    # Without symmetry
 
     for use_symmetry in [false, true]
         symmetry = use_symmetry ? model.el_sym.symmetry : nothing
@@ -67,12 +67,14 @@ using HDF5
         bte_compute_μ!(qme_model)
         @test qme_model.transport_params.μlist ≈ μlist_ref
 
-        for method in [:CRTA, :SERTA]
+        for method in [:CRTA, :SERTA, :IBTE]
             # Calculate scattering matrix
             if method === :CRTA
                 set_constant_qme_scattering_matrix!(qme_model, inv_τ_constant)
             elseif method === :SERTA
                 compute_qme_scattering_matrix!(qme_model, compute_S_in=false)
+            elseif method === :IBTE
+                compute_qme_scattering_matrix!(qme_model, compute_S_in=true)
             end
 
             # For CRTA, test whether unfolded scattering matrix is also proportional to identity.
@@ -83,7 +85,13 @@ using HDF5
 
             # Solve linear Hall conductivity
             out_hall = compute_linear_hall_conductivity(out_linear, qme_model)
-            @test out_hall.r_hall[1, 2, 3, :] ≈ r_hall_ref_123[(use_symmetry, method)] atol=1e-5
+            if method === :CRTA || method === :SERTA
+                @test out_hall.r_hall_serta[1, 2, 3, :] ≈ r_hall_ref_123[(use_symmetry, method)] atol=1e-5
+                @test all(isnan.(out_hall.r_hall))
+            elseif method === :IBTE
+                @test out_hall.r_hall_serta[1, 2, 3, :] ≈ r_hall_ref_123[(use_symmetry, :SERTA)] atol=1e-5
+                @test out_hall.r_hall[1, 2, 3, :] ≈ r_hall_ref_123[(use_symmetry, method)] atol=1e-5
+            end
         end
     end
 end
