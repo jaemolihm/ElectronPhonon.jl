@@ -143,18 +143,16 @@ function unfold_scattering_out_matrix(S_out_irr, el_irr, el, ik_to_ikirr_isym)
     sp_i = Int[]
     sp_j = Int[]
     sp_val = eltype(S_out_irr)[]
-    indmap = el.indmap
-    indmap_irr = el_irr.indmap
     for i in 1:el.n
         (; ik, ib1, ib2) = el[i]
         ikirr, _ = ik_to_ikirr_isym[ik]
-        i_irr = get(indmap_irr, CI(ib1, ib2, ikirr), -1)
-        i_irr == -1 && continue
+        i_irr = get_1d_index(el_irr, ib1, ib2, ikirr)
+        i_irr == 0 && continue
         for ib3 in el.ib_rng[ik], ib4 in el.ib_rng[ik]
-            j = get(indmap, CI(ib3, ib4, ik), -1)
-            j == -1 && continue
-            j_irr = get(indmap_irr, CI(ib3, ib4, ikirr), -1)
-            j_irr == -1 && continue
+            j = get_1d_index(el, ib3, ib4, ik)
+            j == 0 && continue
+            j_irr = get_1d_index(el_irr, ib3, ib4, ikirr)
+            j_irr == 0 && continue
             val = S_out_irr[i_irr, j_irr]
             if abs(val) > 0
                 push!(sp_i, i)
@@ -174,14 +172,13 @@ TODO: Generalize ``symop.Scart * x[i]`` to work with any datatype (scalar, vecto
 """
 function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKModel, trodd, invodd) where {ElType <: Vec3, FT}
     @assert f_irr.state === model.el_irr
-    indmap_irr = model.el_irr.indmap
     f = QMEVector(model.el, ElType)
     for i in 1:model.el.n
         (; ik, ib1, ib2) = model.el[i]
 
         ik_irr, isym = model.ik_to_ikirr_isym[ik]
         symop = model.symmetry[isym]
-        i_irr = indmap_irr[CI(ib1, ib2, ik_irr)]
+        i_irr = get_1d_index(model.el_irr, ib1, ib2, ik_irr)
 
         f[i] = symop.Scart * f_irr[i_irr]
         if trodd && symop.is_tr
@@ -196,14 +193,13 @@ end
 
 function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKModel, trodd, invodd) where {ElType <: Number, FT}
     @assert f_irr.state === model.el_irr
-    indmap_irr = model.el_irr.indmap
     f = QMEVector(model.el, ElType)
     for i in 1:model.el.n
         (; ik, ib1, ib2) = model.el[i]
 
         ik_irr, isym = model.ik_to_ikirr_isym[ik]
         symop = model.symmetry[isym]
-        i_irr = indmap_irr[CI(ib1, ib2, ik_irr)]
+        i_irr = get_1d_index(model.el_irr, ib1, ib2, ik_irr)
 
         f[i] = f_irr[i_irr]
         if trodd && symop.is_tr
@@ -232,7 +228,6 @@ FIXME: Make this work for general data (not only Vec3).
 function symmetrize_QMEVector(x::QMEVector{ElType, FT}, qme_model::QMEIrreducibleKModel,
         trodd, invodd) where {ElType <: Vec3, FT}
     @assert x.state === qme_model.el_irr
-    indmap = x.state.indmap
     f = h5open(qme_model.filename, "r")
     g = open_group(f, "gauge_self")
     ik_list = read(g, "ik_list")::Vector{Int}
@@ -256,8 +251,8 @@ function symmetrize_QMEVector(x::QMEVector{ElType, FT}, qme_model::QMEIrreducibl
                 is_degenerate[jb2, ib2] || continue
                 for jb1 in x.state.ib_rng[ik]
                     is_degenerate[jb1, ib1] || continue
-                    ind_symm = get(indmap, CI(jb1, jb2, ik), nothing)
-                    ind_symm === nothing && continue
+                    ind_symm = get_1d_index(x.state, jb1, jb2, ik)
+                    ind_symm == 0 && continue
 
                     for (ind_isym, isym) in enumerate(isym_list)
                         symop = qme_model.symmetry[isym]
@@ -306,8 +301,6 @@ function _el_to_el_f_symmetry_maps(qme_model::QMEIrreducibleKModel{FT}) where FT
     end
     close(fid)
 
-    indmap_f = el_f.indmap
-
     i_to_f_maps = SparseMatrixCSC{Complex{FT}, Int}[]
 
     for symop in symmetry
@@ -335,8 +328,8 @@ function _el_to_el_f_symmetry_maps(qme_model::QMEIrreducibleKModel{FT}) where FT
                 is_degenerate[jb2, ib2, ik_irr] || continue
                 for jb1 in el_f.ib_rng[isk]
                     is_degenerate[jb1, ib1, ik_irr] || continue
-                    ind_f = get(indmap_f, CI(jb1, jb2, isk), -1)
-                    ind_f == -1 && continue
+                    ind_f = get_1d_index(el_f, jb1, jb2, isk)
+                    ind_f == 0 && continue
                     gauge_coeff = sym_gauge[jb1, ib1, ik_irr] * sym_gauge[jb2, ib2, ik_irr]'
                     push!(sp_ind_f, ind_f)
                     push!(sp_ind_i, ind_i)
@@ -354,7 +347,6 @@ end
 # function symmetrize_scattering_out_matrix(S_out_irr, qme_model::EPW.QMEIrreducibleKModel{FT}) where FT
 #     (; el_irr) = qme_model
 #     @assert size(S_out_irr) == (el_irr.n, el_irr.n)
-#     indmap = el_irr.indmap
 #     f = h5open(qme_model.filename, "r")
 #     g = open_group(f, "gauge_self")
 #     ik_list = read(g, "ik_list")::Vector{Int}
@@ -389,16 +381,16 @@ end
 #                     for qb1 in el_irr.ib_rng[ik]
 #                         is_degenerate[qb1, jb1] || continue
 
-#                         q = get(indmap, CI(qb1, qb2, ik), nothing)
-#                         q === nothing && continue
+#                         q = get_1d_index(el_irr, qb1, qb2, ik)
+#                         q == 0 && continue
 
 #                         for pb2 in el_irr.ib_rng[ik]
 #                             is_degenerate[pb2, ib2] || continue
 #                             for pb1 in el_irr.ib_rng[ik]
 #                                 is_degenerate[pb1, ib1] || continue
 
-#                                 p = get(indmap, CI(pb1, pb2, ik), nothing)
-#                                 p === nothing && continue
+#                                 q = get_1d_index(el_irr, pb1, pb2, ik)
+#                                 p == 0 && continue
 
 #                                 gauge_coeff = 0.0im
 #                                 for indsym = 1:size(sym_gauge, 3)

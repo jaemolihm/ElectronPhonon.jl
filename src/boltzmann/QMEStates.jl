@@ -150,3 +150,16 @@ function states_index_map(n, ib1, ib2, ik)
     end
     index_map
 end
+
+"""
+    get_1d_index(states, ib1, ib2, ik)
+Return the 1d index of the state `(ib1, ib2, ik)` in `states`. Return 0 if such state does not
+exist in `states`.
+"""
+@inline function get_1d_index(states::QMEStates, ib1, ib2, ik)
+    get(states.indmap, CI(ib1, ib2, ik), 0)
+end
+
+@inline function hasstate(states::QMEStates, ib1, ib2, ik)
+    haskey(states.indmap, CI(ib1, ib2, ik))
+end

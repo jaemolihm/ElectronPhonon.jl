@@ -17,7 +17,6 @@ Compute the scattering matrix element for quantum master equation of electrons.
 function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, ph; compute_S_in=true) where {FT}
     nT = length(params.Tlist)
 
-    indmap_el_i = el_i.indmap
     ind_ph_map = states_index_map(ph)
 
     fid = h5open(filename, "r")
@@ -59,16 +58,16 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
             found = false
             local ib3, e_i1, e_i2
             for outer ib3 in el_i.ib_rng[ik]
-                if haskey(indmap_el_i, CI(ib1, ib3, ik)) && haskey(indmap_el_i, CI(ib2, ib3, ik))
+                if hasstate(el_i, ib1, ib3, ik) && hasstate(el_i, ib2, ib3, ik)
                     found = true
-                    e_i1 = el_i.e1[indmap_el_i[CI(ib1, ib3, ik)]]
-                    e_i2 = el_i.e1[indmap_el_i[CI(ib2, ib3, ik)]]
+                    e_i1 = el_i.e1[get_1d_index(el_i, ib1, ib3, ik)]
+                    e_i2 = el_i.e1[get_1d_index(el_i, ib2, ib3, ik)]
                     break
                 end
-                if haskey(indmap_el_i, CI(ib1, ib3, ik)) && haskey(indmap_el_i, CI(ib2, ib3, ik))
+                if hasstate(el_i, ib3, ib1, ik) && hasstate(el_i, ib3, ib2, ik)
                     found = true
-                    e_i1 = el_i.e2[indmap_el_i[CI(ib3, ib1, ik)]]
-                    e_i2 = el_i.e2[indmap_el_i[CI(ib3, ib2, ik)]]
+                    e_i1 = el_i.e2[get_1d_index(el_i, ib3, ib1, ik)]
+                    e_i2 = el_i.e2[get_1d_index(el_i, ib3, ib2, ik)]
                     break
                 end
             end
@@ -83,7 +82,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                 e_f = el_f.e1[ind_el_f]
 
                 ikq = el_f.ik[ind_el_f]
-                ikq > length(scat) && continue # skip if this ikq is not in scat
+                # ikq > length(scat) && continue # skip if this ikq is not in scat
 
                 xq = el_f.kpts.vectors[ikq] - el_i.kpts.vectors[ik]
                 xq_int = mod.(round.(Int, xq .* ph.ngrid), ph.ngrid)
@@ -120,16 +119,16 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
             # S_out[(ib1,ib3), (ib2,ib3)] += - P_{ib1, ib2} / 2
             # S_out[(ib3,ib2), (ib3,ib1)] += - P_{ib1, ib2} / 2
             for ib3 in el_i.ib_rng[ik]
-                if haskey(indmap_el_i, CI(ib1, ib3, ik)) && haskey(indmap_el_i, CI(ib2, ib3, ik))
-                    i1 = indmap_el_i[CI(ib1, ib3, ik)]
-                    i2 = indmap_el_i[CI(ib2, ib3, ik)]
+                if hasstate(el_i, ib1, ib3, ik) && hasstate(el_i, ib2, ib3, ik)
+                    i1 = get_1d_index(el_i, ib1, ib3, ik)
+                    i2 = get_1d_index(el_i, ib2, ib3, ik)
                     for iT in 1:nT
                         S_out[iT][i1, i2] += -p_mel[iT] / 2
                     end
                 end
-                if haskey(indmap_el_i, CI(ib3, ib1, ik)) && haskey(indmap_el_i, CI(ib3, ib2, ik))
-                    i1 = indmap_el_i[CI(ib3, ib2, ik)]
-                    i2 = indmap_el_i[CI(ib3, ib1, ik)]
+                if hasstate(el_i, ib3, ib1, ik) && hasstate(el_i, ib3, ib2, ik)
+                    i1 = get_1d_index(el_i, ib3, ib2, ik)
+                    i2 = get_1d_index(el_i, ib3, ib1, ik)
                     for iT in 1:nT
                         S_out[iT][i1, i2] += -p_mel[iT] / 2
                     end
@@ -149,8 +148,8 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
 
         @timing "scat in" for ib2 in el_i.ib_rng[ik], ib1 in el_i.ib_rng[ik]
             # Calculate only if (ib1, ib2, ik) ∈ el_i
-            ind_el_i = get(indmap_el_i, CI(ib1, ib2, ik), nothing)
-            ind_el_i === nothing && continue
+            ind_el_i = get_1d_index(el_i, ib1, ib2, ik)
+            ind_el_i == 0 && continue
             e_i1 = el_i.e1[ind_el_i]
             e_i2 = el_i.e2[ind_el_i]
 
@@ -381,9 +380,6 @@ end
 end
 
 function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
-    indmap_el_i = el_i.indmap
-    indmap_el_f = el_f.indmap
-
     # FIXME: Do not write symmetry twice. Use qme_model.
     fid = h5open(filename, "r")
     symmetry = load_BTData(open_group(fid, "gauge/symmetry"), Symmetry{FT})
@@ -406,15 +402,15 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
 
             # Set unfolding matrix
             for ib2 in el_i.ib_rng[ik], ib1 in el_i.ib_rng[ik]
-                ind_el_i = get(indmap_el_i, EPW.CI(ib1, ib2, ik), -1)
-                ind_el_i == -1 && continue
+                ind_el_i = get_1d_index(el_i, ib1, ib2, ik)
+                ind_el_i == 0 && continue
                 # continue only if ib1 and jb1 are degenerate, and ib2 and jb2 are degenerate.
                 for jb2 in el_f.ib_rng[isk]
                     is_degenerate[jb2, ib2, ik] || continue
                     for jb1 in el_f.ib_rng[isk]
                         is_degenerate[jb1, ib1, ik] || continue
-                        ind_el_f = get(indmap_el_f, EPW.CI(jb1, jb2, isk), -1)
-                        ind_el_f == -1 && continue
+                        ind_el_f = get_1d_index(el_f, jb1, jb2, isk)
+                        ind_el_f == 0 && continue
                         gauge_coeff = sym_gauge[jb1, ib1, ik] * sym_gauge[jb2, ib2, ik]'
                         push!(sp_inds_f, ind_el_f)
                         push!(sp_inds_i, ind_el_i)
@@ -449,7 +445,6 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
     @assert all(δk - round.(δk) .≈ 0)
     @assert el_i.kpts.ngrid == el_f.kpts.ngrid
 
-    indmap_el_f = el_f.indmap
     sp_inds_f = Int[]
     sp_inds_i = Int[]
     sp_vals = Complex{FT}[]
@@ -469,8 +464,8 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
             for jb1 in el_f.ib_rng[ik_f]
                 is_degenerate[jb1, ib1, ik] || continue
 
-                ind_el_f = get(indmap_el_f, EPW.CI(jb1, jb2, ik_f), -1)
-                ind_el_f == -1 && continue
+                ind_el_f = get_1d_index(el_f, jb1, jb2, ik_f)
+                ind_el_f == 0 && continue
 
                 gauge_coeff = gauge[jb1, ib1, ik] * conj(gauge[jb2, ib2, ik])
                 push!(sp_inds_f, ind_el_f)

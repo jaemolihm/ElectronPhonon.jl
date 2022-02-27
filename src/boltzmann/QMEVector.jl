@@ -40,17 +40,16 @@ end
 function Base.:*(x::QMEVector, y::QMEVector)
     check_state_identity(x, y)
     state = x.state
-    indmap = state.indmap
     z = zeros(typeof(x.data[1] * y.data[1]), length(x.data))
     for ind_z in 1:state.n
         m = state.ib1[ind_z]
         n = state.ib2[ind_z]
         ik = state.ik[ind_z]
         for p in state.ib_rng[ik]
-            ind_x = get(indmap, EPW.CI(m, p, ik), -1)
-            ind_x == -1 && continue
-            ind_y = get(indmap, EPW.CI(p, n, ik), -1)
-            ind_y == -1 && continue
+            ind_x = get_1d_index(state, m, p, ik)
+            ind_x == 0 && continue
+            ind_y = get_1d_index(state, p, n, ik)
+            ind_y == 0 && continue
             z[ind_z] += x.data[ind_x] * y.data[ind_y]
         end
     end

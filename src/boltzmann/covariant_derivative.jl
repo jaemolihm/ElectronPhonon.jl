@@ -156,7 +156,6 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
         ik_to_ikirr_isym = [(ik, 0) for ik in 1:el.kpts.n]
     end
 
-    indmap = el.indmap
     kpts = el.kpts
 
     # FIXME: el.nband instead of rng_maxdoes not work because rng can be outside of 1:el.nband
@@ -198,12 +197,12 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
             @views mul!(mmat[rng_kb, rng_k], u_kb[:, rng_kb]', u_k[:, rng_k])
 
             for ib2 in rng_k, ib1 in rng_k
-                ind_i = get(indmap, EPW.CI(ib1, ib2, ik), -1)
-                ind_i == -1 && continue
+                ind_i = get_1d_index(el, ib1, ib2, ik)
+                ind_i == 0 && continue
                 for jb2 in rng_kb, jb1 in rng_kb
                     # ∇ᵅf[ik, ib1, ib2] += mkb'[ib1, jb1] * f[ikb, jb1, jb2] * mkb[jb2, ib2] * wb * bᵅ
-                    ind_f = get(indmap, EPW.CI(jb1, jb2, ikb), -1)
-                    ind_f == -1 && continue
+                    ind_f = get_1d_index(el, jb1, jb2, ikb)
+                    ind_f == 0 && continue
                     push!(sp_i, ind_i)
                     push!(sp_j, ind_f)
                     coeff = mmat[jb1, ib1]' * mmat[jb2, ib2] * wb
@@ -223,11 +222,11 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
         rbar = el_irr_states[ikirr].rbar
 
         for ib1 in rng, ib2 in rng
-            ind_i = get(indmap, EPW.CI(ib1, ib2, ik), -1)
-            ind_i == -1 && continue
+            ind_i = get_1d_index(el, ib1, ib2, ik)
+            ind_i == 0 && continue
             for ib3 in rng
-                ind_f = get(indmap, EPW.CI(ib3, ib2, ik), -1)
-                if ind_f != -1
+                ind_f = get_1d_index(el, ib3, ib2, ik)
+                if ind_f != 0
                     push!(sp_i, ind_i)
                     push!(sp_j, ind_f)
                     if el_sym === nothing
@@ -241,8 +240,8 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
                     end
                 end
 
-                ind_f = get(indmap, EPW.CI(ib1, ib3, ik), -1)
-                if ind_f != -1
+                ind_f = get_1d_index(el, ib1, ib3, ik)
+                if ind_f != 0
                     push!(sp_i, ind_i)
                     push!(sp_j, ind_f)
                     if el_sym === nothing
