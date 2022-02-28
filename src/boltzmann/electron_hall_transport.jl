@@ -47,7 +47,7 @@ function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEMode
             σ_hall_serta[:, :, c, iT] .= occupation_to_conductivity(δᴱᴮρ_serta, transport_params)'
 
             if S_in_irr !== nothing
-                # IBTE: Solve iteratively δᴱᴮρ = - S_out⁻¹ S_in δᴱᴮρ - δᴱᴮρ_serta
+                # IBTE: Solve iteratively δᴱᴮρ = - S_out⁻¹ S_in δᴱᴮρ + δᴱᴮρ_serta
                 # Initial guess: δᴱᴮρ_serta. Use IBTE solution from out_linear.
                 v∇δᴱρ = v[c1] * (∇[c2] * δᴱρ) - v[c2] * (∇[c1] * δᴱρ);
                 _solve_qme_direct!(δᴱᴮρ_serta, S_out[iT], v∇δᴱρ)
@@ -61,7 +61,7 @@ function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEMode
                 for iter in 1:max_iter
                     σ_old = σ_new
 
-                    # δᴱᴮρ(next) = - S_out⁻¹ S_in δᴱᴮρ(prev) - δᴱᴮρ_serta
+                    # δᴱᴮρ(next) = - S_out⁻¹ S_in δᴱᴮρ(prev) + δᴱᴮρ_serta
                     Sin_δᴱᴮρ = EPW.multiply_S_in(δᴱᴮρ, S_in_irr[iT], qme_model);
                     EPW._solve_qme_direct!(Sout⁻¹_Sin_δρ, S_out[iT], Sin_δᴱᴮρ);
                     @. δᴱᴮρ.data = - Sout⁻¹_Sin_δρ.data + δᴱᴮρ_serta.data;
