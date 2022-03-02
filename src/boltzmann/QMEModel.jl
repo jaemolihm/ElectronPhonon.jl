@@ -173,7 +173,7 @@ where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)
 end
 
 function multiply_S_in(x::QMEVector{Vec3{FT}}, S_in_irr, qme_model::QMEIrreducibleKModel) where FT
-    @warn "Can be very inefficient compared to QMEVector{ComplexF64}."
+    # @warn "Can be very inefficient compared to QMEVector{ComplexF64}."
     if x.state === qme_model.el_irr
         multiply_S_in(x, S_in_irr, qme_model)
     elseif x.state === qme_model.el

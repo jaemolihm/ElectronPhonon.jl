@@ -1,11 +1,12 @@
 # Calculation of electron linear Hall mobility
 
-# TODO: Beyond SERTA
+using IterativeSolvers
 
 export compute_linear_hall_conductivity
 
 """
     compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEModel)
+Use GMRES itertive solver for IBTE.
 # Inputs:
 - `out_linear`: Output of linear electrical conductivity calculation.
 - `qme_model::AbstractQMEModel`
@@ -17,76 +18,81 @@ function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEMode
 end
 
 function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEModel{FT}, ∇,
-        S_out, S_in_irr=nothing; max_iter=100, rtol=1e-6,) where FT
+        S_out, S_in_irr=nothing; maxiter=100, rtol=1e-3, atol=0, verbose=false) where FT
     transport_params = qme_model.transport_params
     nT = length(transport_params.Tlist)
-    σ_hall_iter = fill(FT(NaN), (max_iter+1, 3, 3, 3, nT))
     σ_hall = fill(FT(NaN), (3, 3, 3, nT))
     σ_hall_serta = fill(FT(NaN), (3, 3, 3, nT))
     r_hall = fill(FT(NaN), (3, 3, 3, nT))
     r_hall_serta = fill(FT(NaN), (3, 3, 3, nT))
 
     v = get_velocity_as_QMEVector(qme_model.el)
+    δᴱρ = Tuple(QMEVector(qme_model.el, Complex{FT}) for i in 1:3)
+    δᴱᴮρ_serta = similar(δᴱρ[1])
+    δᴱᴮρ = similar(δᴱρ[1])
+
     @views for iT in 1:nT
-        δᴱρ_irr_serta = QMEVector(qme_model.el_irr, out_linear.δρ_serta[:, iT])
-        δᴱρ_serta = unfold_QMEVector(δᴱρ_irr_serta, qme_model, true, false)
-        if S_in_irr !== nothing
-            δᴱρ_irr = QMEVector(qme_model.el_irr, out_linear.δρ[:, iT])
-            δᴱρ = unfold_QMEVector(δᴱρ_irr, qme_model, true, false)
-        end
-        δᴱᴮρ_serta = similar(δᴱρ_serta)
+        @info "iT = $iT"
 
-        for c in 1:3
+        # SERTA: Solve δᴱᴮρ_serta = S_out⁻¹ (v × ∇) δᴱρ_serta
+        # First take δᴱρ on el_irr as QMEVector{Vec3}, unfold them to el, and make QMEVector{Number}
+        # Note that we use out_linear.δρ_serta, which is computed from SERTA.
+        δᴱρ_irr_all = QMEVector(qme_model.el_irr, out_linear.δρ_serta[:, iT])
+        δᴱρ_all = unfold_QMEVector(δᴱρ_irr_all, qme_model, true, false)
+        for i in 1:3
+            δᴱρ[i].data .= [x[i] for x in δᴱρ_all.data]
+        end
+
+        for b = 1:3, c = 1:3
             c1, c2 = mod1(c + 1, 3), mod1(c + 2, 3)
-            # SERTA: Solve δᴱᴮρ_serta = S_out⁻¹ (v × ∇) δᴱρ_serta
-            v∇δᴱρ = v[c1] * (∇[c2] * δᴱρ_serta) - v[c2] * (∇[c1] * δᴱρ_serta);
+            v∇δᴱρ = v[c1] * (∇[c2] * δᴱρ[b]) - v[c2] * (∇[c1] * δᴱρ[b])
             _solve_qme_direct!(δᴱᴮρ_serta, S_out[iT], v∇δᴱρ)
-
-            # Transpose because the index of occupation_to_conductivity is (current, E field),
-            # but we want the index of σ_hall to be (E field, current).
-            σ_hall_serta[:, :, c, iT] .= occupation_to_conductivity(δᴱᴮρ_serta, transport_params)'
-
-            if S_in_irr !== nothing
-                # IBTE: Solve iteratively δᴱᴮρ = - S_out⁻¹ S_in δᴱᴮρ + δᴱᴮρ_serta
-                # Initial guess: δᴱᴮρ_serta. Use IBTE solution from out_linear.
-                v∇δᴱρ = v[c1] * (∇[c2] * δᴱρ) - v[c2] * (∇[c1] * δᴱρ);
-                _solve_qme_direct!(δᴱᴮρ_serta, S_out[iT], v∇δᴱρ)
-                σ_new = occupation_to_conductivity(δᴱᴮρ_serta, transport_params)'
-                σ_hall_iter[1, :, :, c, iT] .= σ_new
-
-                δᴱᴮρ = copy(δᴱᴮρ_serta)
-                Sout⁻¹_Sin_δρ = similar(δᴱᴮρ)
-
-                # Fixed point iteration
-                for iter in 1:max_iter
-                    σ_old = σ_new
-
-                    # δᴱᴮρ(next) = - S_out⁻¹ S_in δᴱᴮρ(prev) + δᴱᴮρ_serta
-                    Sin_δᴱᴮρ = EPW.multiply_S_in(δᴱᴮρ, S_in_irr[iT], qme_model);
-                    EPW._solve_qme_direct!(Sout⁻¹_Sin_δρ, S_out[iT], Sin_δᴱᴮρ);
-                    @. δᴱᴮρ.data = - Sout⁻¹_Sin_δρ.data + δᴱᴮρ_serta.data;
-
-                    σ_new = occupation_to_conductivity(δᴱᴮρ, transport_params)'
-                    σ_hall_iter[iter+1, :, :, c, iT] .= σ_new
-                    # Check convergence
-                    if norm(σ_new - σ_old) / norm(σ_new) < rtol
-                        @info "iT=$iT, converged at iteration $iter"
-                        break
-                    elseif iter == max_iter
-                        @info "iT=$iT, convergence not reached at maximum iteration $max_iter"
-                    end
-                end
-                σ_hall[:, :, c, iT] .= σ_new
-            end
+            σ_hall_serta[:, b, c, iT] .= vec(occupation_to_conductivity(δᴱᴮρ_serta, transport_params))
         end
+
         @views r_hall_serta[:, :, :, iT] = compute_hall_factor(out_linear.σ_serta[:, :, iT],
             σ_hall_serta[:, :, :, iT]) .* transport_params.n ./ transport_params.volume
+
         if S_in_irr !== nothing
+            # IBTE: Solve scatmap * δᴱᴮρ = (I + Sₒ⁻¹ Sᵢ δᴱᴮρ) = δᴱᴮρ_serta using GMRES
+            # Equivalent to solving (Sₒ + Sᵢ)x = b with preconditioner P = Sₒ.
+            # Note that we use out_linear.δρ, which is computed from IBTE.
+            δᴱρ_irr_all = QMEVector(qme_model.el_irr, out_linear.δρ[:, iT])
+            δᴱρ_all = unfold_QMEVector(δᴱρ_irr_all, qme_model, true, false)
+            for i in 1:3
+                δᴱρ[i].data .= [x[i] for x in δᴱρ_all.data]
+            end
+
+            # Define scattering map and GMRES iterable solver
+            scatmap = QMEScatteringMap(qme_model, S_in_irr[iT], S_out[iT])
+            g = IterativeSolvers.gmres_iterable!(δᴱᴮρ.data, scatmap, δᴱᴮρ_serta.data; maxiter)
+
+            for b = 1:3, c = 1:3
+                c1, c2 = mod1(c + 1, 3), mod1(c + 2, 3)
+                v∇δᴱρ = v[c1] * (∇[c2] * δᴱρ[b]) - v[c2] * (∇[c1] * δᴱρ[b])
+
+                # Compute the SERTA solution
+                _solve_qme_direct!(δᴱᴮρ_serta, S_out[iT], v∇δᴱρ)
+
+                # Set and run GMRES solver. Initial guess is δᴱᴮρ = δᴱᴮρ_serta.
+                EPW.reset_gmres_iterable!(g, δᴱᴮρ_serta.data, δᴱᴮρ_serta.data; reltol=rtol, abstol=atol)
+                cnt = 0
+                for (iteration, residual) in enumerate(g)
+                    cnt += 1
+                    verbose && @printf("%3d\t%1.2e\n", iteration, residual)
+                end
+                @info "b = $b, c = $c: converged in $cnt iterations"
+
+                # Converged result is stored at g.x === δᴱᴮρ.data.
+                σ_hall[:, b, c, iT] .= vec(occupation_to_conductivity(δᴱᴮρ, transport_params))
+            end
+            @info "Total $(g.mv_products) matrix-vector products used"
+
             @views r_hall[:, :, :, iT] = compute_hall_factor(out_linear.σ[:, :, iT],
                 σ_hall[:, :, :, iT]) .* transport_params.n ./ transport_params.volume
         end
     end
-    (; σ_hall_serta, r_hall_serta, σ_hall, r_hall, σ_hall_iter)
+    (; σ_hall_serta, r_hall_serta, σ_hall, r_hall)
 end
 
 """
