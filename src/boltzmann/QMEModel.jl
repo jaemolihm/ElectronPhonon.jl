@@ -44,6 +44,12 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
     # Map from el to el_f by each symmetry operator. Needed in multiply_S_in.
     # (storage size ~ N_sym^2 * N_kirr * N_band)
     el_to_el_f_sym_maps::Union{Nothing, Vector{SparseMatrixCSC{Complex{FT}, Int}}} = nothing
+
+    # === Buffers ===
+    # Costs memory ~ N_k_irr * N_sym^2.
+    _buffer_el::Vector{Complex{FT}} = zeros(Complex{eltype(el.e1)}, el.n)
+    _buffer_el_f_sym::Matrix{Complex{FT}} = zeros(Complex{eltype(el.e1)}, el_f.n, symmetry.nsym)
+    _buffer_el_irr_sym::Matrix{Complex{FT}} = zeros(Complex{eltype(el.e1)}, el_irr.n, symmetry.nsym)
 end
 
 """
@@ -143,11 +149,12 @@ where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)
         map_i_to_f = _qme_linear_response_unfold_map_nosym(qme_model.el, qme_model.el_f, qme_model.filename)
         QMEVector(x.state, S_in_irr * (map_i_to_f * x.data))
     elseif x.state === qme_model.el
+        # This block is called only when qme_model is a QMEIrreducibleKModel.
         Sin_x = similar(x)
-        (; el, el_irr, el_f, symmetry, ik_to_ikirr_isym, el_to_el_f_sym_maps) = qme_model
+        (; el, el_irr, symmetry, ik_to_ikirr_isym, el_to_el_f_sym_maps) = qme_model
 
-        x_f = similar(x.data, (el_f.n, symmetry.nsym))
-        Sx_irr = similar(x.data, (el_irr.n, symmetry.nsym))
+        x_f = qme_model._buffer_el_f_sym
+        Sx_irr = qme_model._buffer_el_irr_sym
         @views for (isym, symop) in enumerate(symmetry)
             isym_inv = findfirst(s -> s ≈ inv(symop), symmetry)
             mul!(x_f[:, isym], el_to_el_f_sym_maps[isym_inv], x.data)
@@ -160,6 +167,22 @@ where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)
             Sin_x[i] = Sx_irr[ind_irr, isym]
         end
         Sin_x
+    else
+        error("x.state must be qme_model.el or qme_model.el_irr.")
+    end
+end
+
+function multiply_S_in(x::QMEVector{Vec3{FT}}, S_in_irr, qme_model::QMEIrreducibleKModel) where FT
+    @warn "Can be very inefficient compared to QMEVector{ComplexF64}."
+    if x.state === qme_model.el_irr
+        multiply_S_in(x, S_in_irr, qme_model)
+    elseif x.state === qme_model.el
+        Sx = zeros(FT, 3, size(x)...)
+        @views for i in 1:3
+            x_i = QMEVector(x.state, [v[i] for v in x.data])
+            Sx[i, :] .= multiply_S_in(x_i, S_in_irr, qme_model).data
+        end
+        QMEVector(x.state, Vec3.(eachcol(Sx)))
     else
         error("x.state must be qme_model.el or qme_model.el_irr.")
     end
