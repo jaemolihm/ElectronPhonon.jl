@@ -1,7 +1,6 @@
 using Test
 using EPW
 using LinearAlgebra
-using HDF5
 
 @testset "QME transport Hall" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))

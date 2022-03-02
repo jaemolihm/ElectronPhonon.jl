@@ -129,38 +129,42 @@ function load_QMEModel(filename, transport_params, ::Type{FT}=Float64; derivativ
 end
 
 """
-    multiply_S_in_irr(x::QMEVector, S_in_irr, qme_model)
-Multiply `S_in` to a QMEVector `x` defined on the full grid.
-This takes O(N_k^2) operation but uses O(N_k^2 / N_sym) storage (i.e. S_in is stored only for
-the irreducible BZ, not the full BZ).
+    multiply_S_in(x::QMEVector, S_in_irr, qme_model)
+Multiply `S_in` to a QMEVector `x` defined on the irreducible or full grid.
+For the irredubiel grid, requires O(N_k^2 / N_sym) operations.
+For the full grid case, requires O(N_k^2) operations but O(N_k^2 / N_sym) storage
+(i.e. S_in is stored only for the irreducible BZ, not the full BZ).
 For each `k`, ``Sx_{m,n,k} = ∑_{k'} S_in_irr_{m,n,kirr <- m',n',k'} x'(S^-1)_{m',n',k'}``
 where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)`.
 """
-@timing "S_in" function multiply_S_in(x::QMEVector, S_in_irr, qme_model::QMEIrreducibleKModel)
-    @assert x.state === qme_model.el
-    Sin_x = similar(x)
-    (; el, el_irr, symmetry, ik_to_ikirr_isym, el_to_el_f_sym_maps) = qme_model
+@timing "S_in" function multiply_S_in(x::QMEVector, S_in_irr, qme_model::AbstractQMEModel)
+    if x.state === qme_model.el_irr
+        # TODO: Store map_i_to_f
+        map_i_to_f = _qme_linear_response_unfold_map_nosym(qme_model.el, qme_model.el_f, qme_model.filename)
+        QMEVector(x.state, S_in_irr * (map_i_to_f * x.data))
+    elseif x.state === qme_model.el
+        Sin_x = similar(x)
+        (; el, el_irr, symmetry, ik_to_ikirr_isym, el_to_el_f_sym_maps) = qme_model
 
-    Sin_x_irr = QMEVector(el_irr, eltype(x))
-    for (isym, symop) in enumerate(symmetry)
-        isym_inv = findfirst(s -> s ≈ inv(symop), symmetry)
-        Sinv_x = el_to_el_f_sym_maps[isym_inv] * x.data
-        mul!(Sin_x_irr.data, S_in_irr, Sinv_x)
-        for i = 1:el.n
-            (; ib1, ib2, ik) = el[i]
-            ikirr, isym_ = ik_to_ikirr_isym[ik]
-            if isym_ == isym
-                ind_irr = get_1d_index(el_irr, ib1, ib2, ikirr)
-                Sin_x[i] = Sin_x_irr[ind_irr]
+        Sin_x_irr = QMEVector(el_irr, eltype(x))
+        x_f = zeros(eltype(x), qme_model.el_f.n)
+        for (isym, symop) in enumerate(symmetry)
+            isym_inv = findfirst(s -> s ≈ inv(symop), symmetry)
+            mul!(x_f, el_to_el_f_sym_maps[isym_inv], x.data)
+            mul!(Sin_x_irr.data, S_in_irr, x_f)
+            for i = 1:el.n
+                (; ib1, ib2, ik) = el[i]
+                ikirr, isym_ = ik_to_ikirr_isym[ik]
+                if isym_ == isym
+                    ind_irr = get_1d_index(el_irr, ib1, ib2, ikirr)
+                    Sin_x[i] = Sin_x_irr[ind_irr]
+                end
             end
         end
+        Sin_x
+    else
+        error("x.state must be qme_model.el or qme_model.el_irr.")
     end
-    Sin_x
-end
-
-function multiply_S_in(x::QMEVector, S_in_irr, qme_model::QMEModel)
-    map_i_to_f = _qme_linear_response_unfold_map_nosym(qme_model.el, qme_model.el_f, qme_model.filename)
-    QMEVector(x.state, S_in_irr * (map_i_to_f * x.data))
 end
 
 # Wrappers for transport-related functions
