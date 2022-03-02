@@ -14,7 +14,7 @@ export compute_qme_scattering_matrix, solve_electron_qme
     compute_qme_scattering_matrix(filename, params, el_i, el_f, ph)
 Compute the scattering matrix element for quantum master equation of electrons.
 """
-function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, ph; compute_S_in=true) where {FT}
+function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, ph; compute_Sᵢ=true) where {FT}
     nT = length(params.Tlist)
 
     ind_ph_map = states_index_map(ph)
@@ -32,12 +32,12 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     s_mel_ikq = zeros(Complex{FT}, nT)
 
     # Scattering-out and scattering-in matrices
-    # S_out is sparse (block diagonal) while S_in is not sparse in general.
-    S_out = [spzeros(Complex{FT}, el_i.n, el_i.n) for _ in 1:nT]
-    if compute_S_in
-        S_in = [zeros(Complex{FT}, el_i.n, el_f.n) for _ in 1:nT]
+    # Sₒ is sparse (block diagonal) while Sᵢ is not sparse in general.
+    Sₒ = [spzeros(Complex{FT}, el_i.n, el_i.n) for _ in 1:nT]
+    if compute_Sᵢ
+        Sᵢ = [zeros(Complex{FT}, el_i.n, el_f.n) for _ in 1:nT]
     else
-        S_in = nothing
+        Sᵢ = nothing
     end
 
     for ik in 1:el_i.kpts.n
@@ -116,27 +116,27 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
             end # ikq
 
             # Calculate the scattering matrix. Contribution of P_{ib1, ib2} are:
-            # S_out[(ib1,ib3), (ib2,ib3)] += - P_{ib1, ib2} / 2
-            # S_out[(ib3,ib2), (ib3,ib1)] += - P_{ib1, ib2} / 2
+            # Sₒ[(ib1,ib3), (ib2,ib3)] += - P_{ib1, ib2} / 2
+            # Sₒ[(ib3,ib2), (ib3,ib1)] += - P_{ib1, ib2} / 2
             for ib3 in el_i.ib_rng[ik]
                 if hasstate(el_i, ib1, ib3, ik) && hasstate(el_i, ib2, ib3, ik)
                     i1 = get_1d_index(el_i, ib1, ib3, ik)
                     i2 = get_1d_index(el_i, ib2, ib3, ik)
                     for iT in 1:nT
-                        S_out[iT][i1, i2] += -p_mel[iT] / 2
+                        Sₒ[iT][i1, i2] += -p_mel[iT] / 2
                     end
                 end
                 if hasstate(el_i, ib3, ib1, ik) && hasstate(el_i, ib3, ib2, ik)
                     i1 = get_1d_index(el_i, ib3, ib2, ik)
                     i2 = get_1d_index(el_i, ib3, ib1, ik)
                     for iT in 1:nT
-                        S_out[iT][i1, i2] += -p_mel[iT] / 2
+                        Sₒ[iT][i1, i2] += -p_mel[iT] / 2
                     end
                 end
             end
         end # ib1, ib2
 
-        if ! compute_S_in
+        if ! compute_Sᵢ
             continue
         end
 
@@ -194,14 +194,14 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                 s_mel_ikq .*= 2FT(π) * el_f.kpts.weights[ikq]
 
                 for iT in 1:nT
-                    S_in[iT][ind_el_i, ind_el_f] += s_mel_ikq[iT]
+                    Sᵢ[iT][ind_el_i, ind_el_f] += s_mel_ikq[iT]
                 end
             end
         end
 
     end # ik
     close(fid)
-    S_out, S_in
+    Sₒ, Sᵢ
 end
 
 function _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_ph, inv_η, Tlist, μlist)
@@ -253,7 +253,7 @@ Solve quantum master equation for electrons.
 Linearized quantum master equation (stationary state case):
 ```math
 0 = ∂ δρ / ∂t
-  = -i(e1[i] - e2[i]) * δρ[i] + drive_efield[i] + ∑_j (S_out + S_in * map_i_to_f)[i, j] * δρ[j],
+  = -i(e1[i] - e2[i]) * δρ[i] + drive_efield[i] + ∑_j (Sₒ + Sᵢ * map_i_to_f)[i, j] * δρ[j],
 ```
 where
 ```math
@@ -262,7 +262,7 @@ drive_efield[i] = - v[i] * (df/dε)_{ε=e1[i]}              : if e_mk  = e_nk
 ```
 and ``i = (m, n, k)``, ``δρ_i = δρ_{mn;k}``, ``e1[i], e2[i] = e_mk, e_nk``, and ``v[i] = v_{mn;k}``.
 
-We need `map_i_to_f` because `S_in` maps states in `el_f` to `el_i` (i.e. has size `(el_i.n, el_f.n)`),
+We need `map_i_to_f` because `Sᵢ` maps states in `el_f` to `el_i` (i.e. has size `(el_i.n, el_f.n)`),
 while `δρ` is for states in `el_i`. `el_i` and `el_f` can differ due to use of irreducible grids,
 different windows, different grids, etc. So, we need to first map `δρ` to states `el_f` using `map_i_to_f`.
 """
@@ -316,16 +316,16 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
         end
         S_serta_factorize = factorize(S_serta)
 
-        # QME-SERTA: Solve S_out * δρ + drive_efield = 0
+        # QME-SERTA: Solve Sₒ * δρ + drive_efield = 0
         @views _solve_qme_direct!(δρ_serta[:, iT], S_serta_factorize, .-drive_efield)
         δρ_serta[inds_exclude, iT] .= Ref(zero(Vec3{Complex{FT}}))
         σ_serta[:, :, iT] .= symmetrize(occupation_to_conductivity(δρ_serta[:, iT], el_i, params), symmetry)
 
-        # QME-exact: Solve (S_out + S_in) * δρ + drive_efield = 0
-        # Solve iteratively the fixed point equation δρ = S_out^{-1} * (-S_in * δρ - drive_efield)
+        # QME-exact: Solve (Sₒ + Sᵢ) * δρ + drive_efield = 0
+        # Solve iteratively the fixed point equation δρ = Sₒ^{-1} * (-Sᵢ * δρ - drive_efield)
         if scat_mat_in !== nothing
             # Scattering matrix: first unfold to el_f and then apply scat_mat_in.
-            S_in = scat_mat_in[iT] * map_i_to_f
+            Sᵢ = scat_mat_in[iT] * map_i_to_f
 
             # Initial guess: SERTA density matrix
             @views δρ_iter .= δρ_serta[:, iT]
@@ -336,9 +336,9 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
             for iter in 1:max_iter
                 σ_old = σ_new
 
-                # Compute δρ_iter_next = S_out^{-1} * (-S_in * δρ_iter_prev - drive_efield)
-                #                      = - S_out^{-1} * S_in * δρ_iter_prev + δρ_serta[:, iT]
-                @timing "S_in" mul!(δρ_iter_tmp, S_in, δρ_iter, -1, 0)
+                # Compute δρ_iter_next = Sₒ^{-1} * (-Sᵢ * δρ_iter_prev - drive_efield)
+                #                      = - Sₒ^{-1} * Sᵢ * δρ_iter_prev + δρ_serta[:, iT]
+                @timing "Sᵢ" mul!(δρ_iter_tmp, Sᵢ, δρ_iter, -1, 0)
                 δρ_iter_tmp[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))
                 _solve_qme_direct!(δρ_iter, S_serta_factorize, δρ_iter_tmp)
                 δρ_iter[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))

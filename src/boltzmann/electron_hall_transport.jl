@@ -13,12 +13,12 @@ Use GMRES itertive solver for IBTE.
 """
 function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEModel; kwargs...)
     # Function barrier because some fields of qme_model are not typed
-    (; ∇, S_out, S_in_irr) = qme_model
-    compute_linear_hall_conductivity(out_linear, qme_model, ∇, S_out, S_in_irr; kwargs...)
+    (; ∇, Sₒ, Sᵢ_irr) = qme_model
+    compute_linear_hall_conductivity(out_linear, qme_model, ∇, Sₒ, Sᵢ_irr; kwargs...)
 end
 
 function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEModel{FT}, ∇,
-        S_out, S_in_irr=nothing; maxiter=100, rtol=1e-3, atol=0, verbose=false) where FT
+        Sₒ, Sᵢ_irr=nothing; maxiter=100, rtol=1e-3, atol=0, verbose=false) where FT
     transport_params = qme_model.transport_params
     nT = length(transport_params.Tlist)
     σ_hall = fill(FT(NaN), (3, 3, 3, nT))
@@ -34,7 +34,7 @@ function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEMode
     @views for iT in 1:nT
         @info "iT = $iT"
 
-        # SERTA: Solve δᴱᴮρ_serta = S_out⁻¹ (v × ∇) δᴱρ_serta
+        # SERTA: Solve δᴱᴮρ_serta = Sₒ⁻¹ (v × ∇) δᴱρ_serta
         # First take δᴱρ on el_irr as QMEVector{Vec3}, unfold them to el, and make QMEVector{Number}
         # Note that we use out_linear.δρ_serta, which is computed from SERTA.
         δᴱρ_irr_all = QMEVector(qme_model.el_irr, out_linear.δρ_serta[:, iT])
@@ -46,14 +46,14 @@ function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEMode
         for b = 1:3, c = 1:3
             c1, c2 = mod1(c + 1, 3), mod1(c + 2, 3)
             v∇δᴱρ = v[c1] * (∇[c2] * δᴱρ[b]) - v[c2] * (∇[c1] * δᴱρ[b])
-            _solve_qme_direct!(δᴱᴮρ_serta, S_out[iT], v∇δᴱρ)
+            _solve_qme_direct!(δᴱᴮρ_serta, Sₒ[iT], v∇δᴱρ)
             σ_hall_serta[:, b, c, iT] .= vec(occupation_to_conductivity(δᴱᴮρ_serta, transport_params))
         end
 
         @views r_hall_serta[:, :, :, iT] = compute_hall_factor(out_linear.σ_serta[:, :, iT],
             σ_hall_serta[:, :, :, iT]) .* transport_params.n ./ transport_params.volume
 
-        if S_in_irr !== nothing
+        if Sᵢ_irr !== nothing
             # IBTE: Solve scatmap * δᴱᴮρ = (I + Sₒ⁻¹ Sᵢ δᴱᴮρ) = δᴱᴮρ_serta using GMRES
             # Equivalent to solving (Sₒ + Sᵢ)x = b with preconditioner P = Sₒ.
             # Note that we use out_linear.δρ, which is computed from IBTE.
@@ -64,7 +64,7 @@ function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEMode
             end
 
             # Define scattering map and GMRES iterable solver
-            scatmap = QMEScatteringMap(qme_model, S_in_irr[iT], S_out[iT])
+            scatmap = QMEScatteringMap(qme_model, Sᵢ_irr[iT], Sₒ[iT])
             g = IterativeSolvers.gmres_iterable!(δᴱᴮρ.data, scatmap, δᴱᴮρ_serta.data; maxiter)
 
             for b = 1:3, c = 1:3
@@ -72,7 +72,7 @@ function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEMode
                 v∇δᴱρ = v[c1] * (∇[c2] * δᴱρ[b]) - v[c2] * (∇[c1] * δᴱρ[b])
 
                 # Compute the SERTA solution
-                _solve_qme_direct!(δᴱᴮρ_serta, S_out[iT], v∇δᴱρ)
+                _solve_qme_direct!(δᴱᴮρ_serta, Sₒ[iT], v∇δᴱρ)
 
                 # Set and run GMRES solver. Initial guess is δᴱᴮρ = δᴱᴮρ_serta.
                 EPW.reset_gmres_iterable!(g, δᴱᴮρ_serta.data, δᴱᴮρ_serta.data; reltol=rtol, abstol=atol)

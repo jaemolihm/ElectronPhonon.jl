@@ -34,14 +34,14 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
     # Covariant derivative operator (in Cartesian coordinates) that acts on el.
     ∇ = nothing
     # Scattering-out matrix for the irreducible k grid
-    S_out_irr = nothing
-    # Scattering-out matrix for the full k grid
-    S_out = nothing
+    Sₒ_irr = nothing
+    # Scattering-out matrix for the full k grid1
+    Sₒ = nothing
     # Scattering-in matrix for the irreducible k grid (Scattering-in matrix for full k grid
     # is not stored to reduce memory usage.)
-    # TODO: Document way to apply S_in to objects on the full k grid.
-    S_in_irr = nothing
-    # Map from el to el_f by each symmetry operator. Needed in multiply_S_in.
+    # TODO: Document way to apply Sᵢ to objects on the full k grid.
+    Sᵢ_irr = nothing
+    # Map from el to el_f by each symmetry operator. Needed in multiply_Sᵢ.
     # (storage size ~ N_sym^2 * N_kirr * N_band)
     el_to_el_f_sym_maps::Union{Nothing, Vector{SparseMatrixCSC{Complex{FT}, Int}}} = nothing
 
@@ -54,7 +54,7 @@ end
 
 """
 QME model defined on a full grid without any symmetry.
-`model.X_irr` refers to `model.X` for `X = el, S_out`.
+`model.X_irr` refers to `model.X` for `X = el, Sₒ`.
 """
 Base.@kwdef mutable struct QMEModel{FT} <: AbstractQMEModel{FT}
     # === Mandatory fields ===
@@ -75,18 +75,18 @@ Base.@kwdef mutable struct QMEModel{FT} <: AbstractQMEModel{FT}
     # Covariant derivative operator (in Cartesian coordinates) that acts on el.
     ∇ = nothing
     # Scattering-out matrix
-    S_out = nothing
+    Sₒ = nothing
     # Scattering-in matrix
-    S_in = nothing
+    Sᵢ = nothing
 end
 
 function Base.getproperty(obj::QMEModel, name::Symbol)
     if name === :el_irr
         getfield(obj, :el)
-    elseif name === :S_out_irr
-        getfield(obj, :S_out)
-    elseif name === :S_in_irr
-        getfield(obj, :S_in)
+    elseif name === :Sₒ_irr
+        getfield(obj, :Sₒ)
+    elseif name === :Sᵢ_irr
+        getfield(obj, :Sᵢ)
     elseif name === :symmetry
         nothing
     else
@@ -95,10 +95,10 @@ function Base.getproperty(obj::QMEModel, name::Symbol)
 end
 
 function Base.setproperty!(obj::QMEModel, name::Symbol, x)
-    if name === :S_out_irr
-        setfield!(obj, :S_out, x)
-    elseif name === :S_in_irr
-        setfield!(obj, :S_in, x)
+    if name === :Sₒ_irr
+        setfield!(obj, :Sₒ, x)
+    elseif name === :Sᵢ_irr
+        setfield!(obj, :Sᵢ, x)
     else
         setfield!(obj, name, x)
     end
@@ -135,19 +135,19 @@ function load_QMEModel(filename, transport_params, ::Type{FT}=Float64; derivativ
 end
 
 """
-    multiply_S_in(x::QMEVector, S_in_irr, qme_model)
-Multiply `S_in` to a QMEVector `x` defined on the irreducible or full grid.
+    multiply_Sᵢ(x::QMEVector, Sᵢ_irr, qme_model)
+Multiply `Sᵢ` to a QMEVector `x` defined on the irreducible or full grid.
 For the irredubiel grid, requires O(N_k^2 / N_sym) operations.
 For the full grid case, requires O(N_k^2) operations but O(N_k^2 / N_sym) storage
-(i.e. S_in is stored only for the irreducible BZ, not the full BZ).
-For each `k`, ``Sx_{m,n,k} = ∑_{k'} S_in_irr_{m,n,kirr <- m',n',k'} x'(S^-1)_{m',n',k'}``
+(i.e. Sᵢ is stored only for the irreducible BZ, not the full BZ).
+For each `k`, ``Sx_{m,n,k} = ∑_{k'} Sᵢ_irr_{m,n,kirr <- m',n',k'} x'(S^-1)_{m',n',k'}``
 where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)`.
 """
-@timing "S_in" function multiply_S_in(x::QMEVector, S_in_irr, qme_model::AbstractQMEModel)
+@timing "Sᵢ" function multiply_Sᵢ(x::QMEVector, Sᵢ_irr, qme_model::AbstractQMEModel)
     if x.state === qme_model.el_irr
         # TODO: Store map_i_to_f
         map_i_to_f = _qme_linear_response_unfold_map_nosym(qme_model.el, qme_model.el_f, qme_model.filename)
-        QMEVector(x.state, S_in_irr * (map_i_to_f * x.data))
+        QMEVector(x.state, Sᵢ_irr * (map_i_to_f * x.data))
     elseif x.state === qme_model.el
         # This block is called only when qme_model is a QMEIrreducibleKModel.
         Sin_x = similar(x)
@@ -159,7 +159,7 @@ where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)
             isym_inv = findfirst(s -> s ≈ inv(symop), symmetry)
             mul!(x_f[:, isym], el_to_el_f_sym_maps[isym_inv], x.data)
         end
-        mul!(Sx_irr, S_in_irr, x_f)
+        mul!(Sx_irr, Sᵢ_irr, x_f)
         for i = 1:el.n
             (; ib1, ib2, ik) = el[i]
             ikirr, isym = ik_to_ikirr_isym[ik]
@@ -172,15 +172,15 @@ where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)
     end
 end
 
-function multiply_S_in(x::QMEVector{Vec3{FT}}, S_in_irr, qme_model::QMEIrreducibleKModel) where FT
+function multiply_Sᵢ(x::QMEVector{Vec3{FT}}, Sᵢ_irr, qme_model::QMEIrreducibleKModel) where FT
     # @warn "Can be very inefficient compared to QMEVector{ComplexF64}."
     if x.state === qme_model.el_irr
-        multiply_S_in(x, S_in_irr, qme_model)
+        multiply_Sᵢ(x, Sᵢ_irr, qme_model)
     elseif x.state === qme_model.el
         Sx = zeros(FT, 3, size(x)...)
         @views for i in 1:3
             x_i = QMEVector(x.state, [v[i] for v in x.data])
-            Sx[i, :] .= multiply_S_in(x_i, S_in_irr, qme_model).data
+            Sx[i, :] .= multiply_Sᵢ(x_i, Sᵢ_irr, qme_model).data
         end
         QMEVector(x.state, Vec3.(eachcol(Sx)))
     else
@@ -194,20 +194,20 @@ function bte_compute_μ!(model::AbstractQMEModel)
     bte_compute_μ!(model.transport_params, BTStates(model.el_irr))
 end
 
-function compute_qme_scattering_matrix!(model::AbstractQMEModel; compute_S_in=true)
+function compute_qme_scattering_matrix!(model::AbstractQMEModel; compute_Sᵢ=true)
     (; filename, transport_params, el_irr, el_f, ph) = model
-    model.S_out_irr, model.S_in_irr = compute_qme_scattering_matrix(filename, transport_params,
-                                                                    el_irr, el_f, ph; compute_S_in)
+    model.Sₒ_irr, model.Sᵢ_irr = compute_qme_scattering_matrix(filename, transport_params,
+                                                                    el_irr, el_f, ph; compute_Sᵢ)
     unfold_scattering_out_matrix!(model)
 end
 
 function set_constant_qme_scattering_matrix!(model::AbstractQMEModel, inv_τ_constant)
-    model.S_out_irr = [I(model.el_irr.n) * (-inv_τ_constant + 0.0im) for _ in model.transport_params.Tlist]
+    model.Sₒ_irr = [I(model.el_irr.n) * (-inv_τ_constant + 0.0im) for _ in model.transport_params.Tlist]
     unfold_scattering_out_matrix!(model)
 end
 
 function solve_electron_qme(model::AbstractQMEModel; kwargs...)
-    (; transport_params, S_out_irr, S_in_irr, symmetry, el_f, filename) = model
+    (; transport_params, Sₒ_irr, Sᵢ_irr, symmetry, el_f, filename) = model
     el_i_irr = model.el_irr
-    solve_electron_qme(transport_params, el_i_irr, el_f, S_out_irr, S_in_irr; filename, symmetry, kwargs...)
+    solve_electron_qme(transport_params, el_i_irr, el_f, Sₒ_irr, Sᵢ_irr; filename, symmetry, kwargs...)
 end

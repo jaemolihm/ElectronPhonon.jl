@@ -71,13 +71,13 @@ using LinearAlgebra
             if method === :CRTA
                 set_constant_qme_scattering_matrix!(qme_model, inv_τ_constant)
             elseif method === :SERTA
-                compute_qme_scattering_matrix!(qme_model, compute_S_in=false)
+                compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=false)
             elseif method === :IBTE
-                compute_qme_scattering_matrix!(qme_model, compute_S_in=true)
+                compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
             end
 
             # For CRTA, test whether unfolded scattering matrix is also proportional to identity.
-            method === :CRTA && @test all(qme_model.S_out .≈ Ref(I(qme_model.el.n) * -inv_τ_constant))
+            method === :CRTA && @test all(qme_model.Sₒ .≈ Ref(I(qme_model.el.n) * -inv_τ_constant))
 
             # Solve linear electrical conductivity
             out_linear = solve_electron_qme(qme_model)

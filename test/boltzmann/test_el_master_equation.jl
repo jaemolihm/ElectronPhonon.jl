@@ -66,10 +66,10 @@ using HDF5
             μlist_qme = copy(transport_params.μlist)
 
             # Compute scattering matrix
-            S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+            Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
             # Solve QME and compute mobility
-            out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; symmetry, filename)
+            out_qme = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ; symmetry, filename)
 
             # For electron-doped BN, there is only 1 band, so the result is identical to BTE
             # Calculate matrix elements
@@ -172,10 +172,10 @@ using HDF5
         μlist_qme = copy(transport_params.μlist)
 
         # Compute scattering matrix
-        S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; symmetry, filename)
+        out_qme = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ; symmetry, filename)
         _, mobility_qme_serta_SI = transport_print_mobility(out_qme.σ_serta, transport_params, do_print=false)
         _, mobility_qme_iter_SI = transport_print_mobility(out_qme.σ, transport_params, do_print=false);
 
@@ -246,10 +246,10 @@ end
         μlist_qme = copy(transport_params.μlist)
 
         # Compute scattering matrix
-        S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme_wo_symmetry = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; filename)
+        out_qme_wo_symmetry = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ; filename)
 
         # Run with symmetry
         @time EPW.run_transport(
@@ -277,10 +277,10 @@ end
         μlist_qme = copy(transport_params.μlist)
 
         # Compute scattering matrix
-        S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme_w_symmetry = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in,
+        out_qme_w_symmetry = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ,
                                                 symmetry=model.el_sym.symmetry; filename)
 
         _, mobility_serta_wo_sym = transport_print_mobility(out_qme_wo_symmetry.σ_serta, transport_params, do_print=false)
@@ -335,10 +335,10 @@ end
         μlist_qme = copy(transport_params.μlist)
 
         # Compute scattering matrix
-        S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme_wo_symmetry = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; filename)
+        out_qme_wo_symmetry = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ; filename)
 
         # Run with symmetry
         @time EPW.run_transport(
@@ -366,10 +366,10 @@ end
         μlist_qme = copy(transport_params.μlist)
 
         # Compute scattering matrix
-        S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
         # Solve QME and compute mobility
-        out_qme_w_symmetry = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in,
+        out_qme_w_symmetry = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ,
                                                 symmetry=model.el_sym.symmetry; filename)
 
 
@@ -460,10 +460,10 @@ end
             μlist_qme = copy(transport_params.μlist)
 
             # Compute scattering matrix
-            S_out, S_in = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+            Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
 
             # Solve QME and compute mobility
-            out_qme[random_gauge] = solve_electron_qme(transport_params, el_i, el_f, S_out, S_in; filename, symmetry)
+            out_qme[random_gauge] = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ; filename, symmetry)
         end
 
         @test out_qme[true].σ_serta ≈ out_qme[false].σ_serta

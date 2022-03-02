@@ -123,26 +123,26 @@ end
 """
     unfold_scattering_out_matrix!(qme_model::QMEIrreducibleKModel)
 Unfold the scattering-out matrix on the irreducible k grid to the one defined on the full
-k grid. The input is `qme_model.S_out_irr`, which must be set before calling this function.
-The output is stored in `qme_model.S_out`.
+k grid. The input is `qme_model.Sₒ_irr`, which must be set before calling this function.
+The output is stored in `qme_model.Sₒ`.
 """
 function unfold_scattering_out_matrix!(qme_model::QMEIrreducibleKModel)
-    (; S_out_irr, el_irr, el, ik_to_ikirr_isym) = qme_model
-    qme_model.S_out = [unfold_scattering_out_matrix(first(S_out_irr), el_irr, el, ik_to_ikirr_isym)]
-    for iT in eachindex(S_out_irr)[2:end]
-        push!(qme_model.S_out, unfold_scattering_out_matrix(S_out_irr[iT], el_irr, el, ik_to_ikirr_isym))
+    (; Sₒ_irr, el_irr, el, ik_to_ikirr_isym) = qme_model
+    qme_model.Sₒ = [unfold_scattering_out_matrix(first(Sₒ_irr), el_irr, el, ik_to_ikirr_isym)]
+    for iT in eachindex(Sₒ_irr)[2:end]
+        push!(qme_model.Sₒ, unfold_scattering_out_matrix(Sₒ_irr[iT], el_irr, el, ik_to_ikirr_isym))
     end
-    qme_model.S_out
+    qme_model.Sₒ
 end
 
 # Do nothing for a `QMEModel`.
-unfold_scattering_out_matrix!(qme_model::QMEModel) = qme_model.S_out
+unfold_scattering_out_matrix!(qme_model::QMEModel) = qme_model.Sₒ
 
-function unfold_scattering_out_matrix(S_out_irr, el_irr, el, ik_to_ikirr_isym)
-    # Assume that S_out_irr is diagonal in k.
+function unfold_scattering_out_matrix(Sₒ_irr, el_irr, el, ik_to_ikirr_isym)
+    # Assume that Sₒ_irr is diagonal in k.
     sp_i = Int[]
     sp_j = Int[]
-    sp_val = eltype(S_out_irr)[]
+    sp_val = eltype(Sₒ_irr)[]
     for i in 1:el.n
         (; ik, ib1, ib2) = el[i]
         ikirr, _ = ik_to_ikirr_isym[ik]
@@ -153,7 +153,7 @@ function unfold_scattering_out_matrix(S_out_irr, el_irr, el, ik_to_ikirr_isym)
             j == 0 && continue
             j_irr = get_1d_index(el_irr, ib3, ib4, ikirr)
             j_irr == 0 && continue
-            val = S_out_irr[i_irr, j_irr]
+            val = Sₒ_irr[i_irr, j_irr]
             if abs(val) > 0
                 push!(sp_i, i)
                 push!(sp_j, j)
@@ -344,16 +344,16 @@ end
 
 
 
-# function symmetrize_scattering_out_matrix(S_out_irr, qme_model::EPW.QMEIrreducibleKModel{FT}) where FT
+# function symmetrize_scattering_out_matrix(Sₒ_irr, qme_model::EPW.QMEIrreducibleKModel{FT}) where FT
 #     (; el_irr) = qme_model
-#     @assert size(S_out_irr) == (el_irr.n, el_irr.n)
+#     @assert size(Sₒ_irr) == (el_irr.n, el_irr.n)
 #     f = h5open(qme_model.filename, "r")
 #     g = open_group(f, "gauge_self")
 #     ik_list = read(g, "ik_list")::Vector{Int}
 
 #     is = Int[]
 #     js = Int[]
-#     vals = eltype(S_out_irr)[]
+#     vals = eltype(Sₒ_irr)[]
 
 #     # Count number of symmetry operations that map k to itself. 1 by default because of identity.
 #     cnt_symm = fill(1, el_irr.n)
@@ -371,7 +371,7 @@ end
 #                 el_irr.ik[i] == ik || continue
 #                 ib1, ib2 = el_irr.ib1[i], el_irr.ib2[i]
 
-#                 abs(S_out_irr[i, j]) > 0 || continue
+#                 abs(Sₒ_irr[i, j]) > 0 || continue
 
 #                 # S_{pb1, pb2, k <- qb1, qb2, k} <-- (symmetry) -- S_{ib1, ib2, k <- jb1, jb2, k}
 #                 # gauge_coeff = S[pb1, ib1] * S[pb2, ib2]' * S[qb1, jb1]' * S[qb2, jb2]
@@ -400,7 +400,7 @@ end
 #                                 end
 #                                 push!(is, p)
 #                                 push!(js, q)
-#                                 push!(vals, S_out_irr[i, j] * gauge_coeff)
+#                                 push!(vals, Sₒ_irr[i, j] * gauge_coeff)
 #                             end
 #                         end
 #                     end
@@ -409,8 +409,8 @@ end
 #         end
 #     end
 #     close(f)
-#     S_out_irr_symmetrized = sparse(is, js, vals, size(S_out_irr)...) + S_out_irr
-#     S_out_irr_symmetrized ./= cnt_symm
-#     dropzeros!(S_out_irr_symmetrized)
-#     S_out_irr_symmetrized
+#     Sₒ_irr_symmetrized = sparse(is, js, vals, size(Sₒ_irr)...) + Sₒ_irr
+#     Sₒ_irr_symmetrized ./= cnt_symm
+#     dropzeros!(Sₒ_irr_symmetrized)
+#     Sₒ_irr_symmetrized
 # end

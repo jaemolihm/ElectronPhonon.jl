@@ -146,10 +146,10 @@ using HDF5
         bte_compute_μ!(transport_params, EPW.BTStates(el_i));
 
         # Set scattering matrix with constant relaxation time
-        S_out = [I(el_i.n) * (-inv_τ_constant + 0.0im) for _ in 1:length(transport_params.Tlist)]
+        Sₒ = [I(el_i.n) * (-inv_τ_constant + 0.0im) for _ in 1:length(transport_params.Tlist)]
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out; symmetry, filename);
+        out_qme = solve_electron_qme(transport_params, el_i, el_f, Sₒ; symmetry, filename);
         @test out_crta.σ_intra_degen ≈ out_qme.σ_serta
         @test !(out_crta.σ_full ≈ out_qme.σ_serta)
 
@@ -176,16 +176,16 @@ using HDF5
         bte_compute_μ!(transport_params, EPW.BTStates(el_i));
 
         # Set scattering matrix with constant relaxation time
-        S_out = [I(el_i.n) * (-inv_τ_constant + 0.0im) for _ in 1:length(transport_params.Tlist)]
+        Sₒ = [I(el_i.n) * (-inv_τ_constant + 0.0im) for _ in 1:length(transport_params.Tlist)]
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(transport_params, el_i, el_f, S_out; symmetry, filename);
+        out_qme = solve_electron_qme(transport_params, el_i, el_f, Sₒ; symmetry, filename);
         @test out_qme.σ_serta ≈ out_crta.σ_full
         @test ! (out_qme.σ_serta ≈ out_crta.σ_intra_degen)
 
         # QME with qme_offdiag_cutoff set to include only degenerate bands. Should be equivalent
         # to the σ_intra_degen case of CRTA.
-        out_qme_only_degen = solve_electron_qme(transport_params, el_i, el_f, S_out; symmetry, filename, qme_offdiag_cutoff=EPW.electron_degen_cutoff);
+        out_qme_only_degen = solve_electron_qme(transport_params, el_i, el_f, Sₒ; symmetry, filename, qme_offdiag_cutoff=EPW.electron_degen_cutoff);
         @test out_qme_only_degen.σ_serta ≈ out_crta.σ_intra_degen
         @test ! (out_qme_only_degen.σ_serta ≈ out_crta.σ_full)
     end
