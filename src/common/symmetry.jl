@@ -216,7 +216,9 @@ end
 
 function Base.isapprox(s1::SymOp, s2::SymOp)
     s1.S == s2.S || return false
-    all((s1.τ - s2.τ) - round.(Int, s1.τ - s2.τ) .≈ 0) || return false
+    for (τ1, τ2) in zip(s1.τ, s2.τ)
+        τ1 - τ2 ≈ round.(Int, τ1 - τ2) || return false
+    end
     s1.Scart ≈ s2.Scart || return false
     # τcart cannot be checked because it can differ by a lattice vector.
     # But we check τ so the result should be fine.
