@@ -144,22 +144,20 @@ where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)
         QMEVector(x.state, S_in_irr * (map_i_to_f * x.data))
     elseif x.state === qme_model.el
         Sin_x = similar(x)
-        (; el, el_irr, symmetry, ik_to_ikirr_isym, el_to_el_f_sym_maps) = qme_model
+        (; el, el_irr, el_f, symmetry, ik_to_ikirr_isym, el_to_el_f_sym_maps) = qme_model
 
-        Sin_x_irr = QMEVector(el_irr, eltype(x))
-        x_f = zeros(eltype(x), qme_model.el_f.n)
-        for (isym, symop) in enumerate(symmetry)
+        x_f = similar(x.data, (el_f.n, symmetry.nsym))
+        Sx_irr = similar(x.data, (el_irr.n, symmetry.nsym))
+        @views for (isym, symop) in enumerate(symmetry)
             isym_inv = findfirst(s -> s ≈ inv(symop), symmetry)
-            mul!(x_f, el_to_el_f_sym_maps[isym_inv], x.data)
-            mul!(Sin_x_irr.data, S_in_irr, x_f)
-            for i = 1:el.n
-                (; ib1, ib2, ik) = el[i]
-                ikirr, isym_ = ik_to_ikirr_isym[ik]
-                if isym_ == isym
-                    ind_irr = get_1d_index(el_irr, ib1, ib2, ikirr)
-                    Sin_x[i] = Sin_x_irr[ind_irr]
-                end
-            end
+            mul!(x_f[:, isym], el_to_el_f_sym_maps[isym_inv], x.data)
+        end
+        mul!(Sx_irr, S_in_irr, x_f)
+        for i = 1:el.n
+            (; ib1, ib2, ik) = el[i]
+            ikirr, isym = ik_to_ikirr_isym[ik]
+            ind_irr = get_1d_index(el_irr, ib1, ib2, ikirr)
+            Sin_x[i] = Sx_irr[ind_irr, isym]
         end
         Sin_x
     else
