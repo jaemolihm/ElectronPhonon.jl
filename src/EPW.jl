@@ -21,6 +21,8 @@ include("common/symmetry.jl")
 include("common/fermi_energy.jl")
 include("common/AllocatedLAPACK.jl")
 
+include("external/iterativesolvers.jl")
+
 include("gridopt.jl")
 include("fourier.jl")
 include("fourier_disk.jl")

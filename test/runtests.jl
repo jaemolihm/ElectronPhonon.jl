@@ -7,6 +7,7 @@ using Test
     include("test_symmetry.jl")
     include("test_fourier.jl")
     include("test_diagonalize.jl")
+    include("test_iterativesolvers.jl")
     include("test_symmetry_operator.jl")
     include("test_unfold.jl")
     include("test_velocity.jl")
