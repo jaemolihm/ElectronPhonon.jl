@@ -7,24 +7,26 @@ struct ElPhVertexElement{FT}
 end
 Base.zero(::Type{<:ElPhVertexElement}) = nothing
 
+"""
+Electron-phonon vertex dataset for given ik point.
+Access via dset[ikq, iband, jband, imode]`, where `iband` and `jband` are band indices at
+`k` and `k+q`, respectively.
+"""
 struct ElPhVertexDataset{FT}
-    # FIXME: different nband for ib and jb
     data::SparseMatrixCSC{ElPhVertexElement{FT}, Int}
-    nband::Int
-    nband_ignore::Int
+    nband_i::Int
+    nband_j::Int
+    nband_ignore_i::Int
+    nband_ignore_j::Int
     nmodes::Int
 end
 
 function Base.getindex(d::ElPhVertexDataset, ikq, ib, jb, imode)
-    (; nband_ignore, nband, nmodes) = d
-    @boundscheck begin
-        1 <= imode <= nmodes || throw(BoundsError())
-        nband_ignore + 1 <= ib <= nband_ignore + nband || throw(BoundsError())
-        nband_ignore + 1 <= jb <= nband_ignore + nband || throw(BoundsError())
-    end
-    # i = ib - nband_ignore + (jb - nband_ignore - 1) * nband + (imode - 1) * nband^2
-    # j = ikq
-    i = ib - nband_ignore + (jb - nband_ignore - 1) * nband
+    (; nband_i, nband_j, nband_ignore_i, nband_ignore_j, nmodes) = d
+    @boundscheck 1 <= imode <= nmodes || throw(BoundsError())
+    nband_ignore_i + 1 <= ib <= nband_ignore_i + nband_i || return nothing
+    nband_ignore_j + 1 <= jb <= nband_ignore_j + nband_j || return nothing
+    i = ib - nband_ignore_i + (jb - nband_ignore_j - 1) * nband_i
     j = imode + (ikq - 1) * nmodes
     d.data[i, j]
 end
@@ -41,14 +43,16 @@ function load_BTData(f, ::Type{ElPhVertexDataset{FT}}) where FT
 
     @assert all(ik .== ik[1])
 
-    nband_ignore = min(minimum(ib), minimum(jb)) - 1
-    nband = max(maximum(ib), maximum(jb)) - nband_ignore
+    nband_ignore_i = minimum(ib) - 1
+    nband_ignore_j = minimum(jb) - 1
+    nband_i = maximum(ib) - nband_ignore_i
+    nband_j = maximum(jb) - nband_ignore_j
     nmodes = maximum(imode)
 
-    Is = @. ib - nband_ignore + (jb - nband_ignore - 1) * nband
+    Is = @. ib - nband_ignore_i + (jb - nband_ignore_j - 1) * nband_i
     Js = @. imode + (ikq - 1) * nmodes
     Vs = ElPhVertexElement.(mel, econv_p, econv_m)
     data = sparse(Is, Js, Vs)
 
-    ElPhVertexDataset(data, nband, nband_ignore, nmodes)
+    ElPhVertexDataset(data, nband_i, nband_j, nband_ignore_i, nband_ignore_j, nmodes)
 end
