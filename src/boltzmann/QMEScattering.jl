@@ -1,35 +1,20 @@
-using Dictionaries
+# Define QME scattering operators as a LinearMap.
 
-# Matrix element and energy conservation for a scattering process
-const ElPhScatteringElement{T} = NamedTuple{(:mel, :econv_p, :econv_m), Tuple{Complex{T}, Bool, Bool}}
+using LinearMaps
 
-# Map (ikq, ib, jb, imode) to a ElPhScatteringElement. Works only if ik is constant over the dataset.
-const QMEElPhScatteringData{T} = Dictionary{CartesianIndex{3}, ElPhScatteringElement{T}}
+"""Applies I + Sₒ⁻¹ Sᵢ, acts on qme_model.el"""
+struct QMEScatteringMap{MT, FT, SₒType} <: LinearMap{Complex{FT}}
+    qme_model::MT
+    Sᵢ_irr::Matrix{Complex{FT}} # Scattering-in matrix (for the irreducible grid)
+    S₀⁻¹::SₒType # Inverse scattering-out matrix (for the full grid)
+end
+Base.size(A::QMEScatteringMap) = (A.qme_model.el.n, A.qme_model.el.n)
 
-"""
-For a dataset at a given constant ik, create a map scat[ikq][CI(ib, jb, imode)] = (;mel, econv_p, econv_m).
-"""
-function load_BTData(f, ::Type{QMEElPhScatteringData{FT}}) where FT
-    mel = _data_hdf5_to_julia(read(f, "mel"), Vector{Complex{FT}})
-    econv_p = _data_hdf5_to_julia(read(f, "econv_p"), BitVector)
-    econv_m = _data_hdf5_to_julia(read(f, "econv_m"), BitVector)
-    ib = _data_hdf5_to_julia(read(f, "ib"), Vector{Int16})
-    jb = _data_hdf5_to_julia(read(f, "jb"), Vector{Int16})
-    imode = _data_hdf5_to_julia(read(f, "imode"), Vector{Int16})
-    ik = _data_hdf5_to_julia(read(f, "ik"), Vector{Int})
-    ikq = _data_hdf5_to_julia(read(f, "ikq"), Vector{Int})
-
-    @assert all(ik .== ik[1])
-
-    g(mel, econv_p, econv_m) = (;mel, econv_p, econv_m)
-    scat = Vector{QMEElPhScatteringData{FT}}()
-
-    cis = CartesianIndex.(ib, jb, imode)
-    gs = g.(mel, econv_p, econv_m)
-    inds = falses(length(ikq))
-    @views for ikq_ in 1:maximum(ikq)
-        inds .= ikq .== ikq_
-        push!(scat, Dictionary(cis[inds], gs[inds]))
-    end
-    scat
+function LinearAlgebra.mul!(y::AbstractVecOrMat, A::QMEScatteringMap, x::AbstractVector)
+    # y = (I + Sₒ⁻¹ Sᵢ) * x
+    x_QME = QMEVector(A.qme_model.el, x)
+    Sᵢx = EPW.multiply_Sᵢ(x_QME, A.Sᵢ_irr, A.qme_model)
+    mul!(y, A.S₀⁻¹, Sᵢx.data)
+    y .+= x
+    y
 end

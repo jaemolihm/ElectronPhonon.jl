@@ -40,10 +40,20 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
         Sᵢ = nothing
     end
 
+    cnt = 0
+
+    # Compute occupation factors
+    focc_el_i_all = compute_occupations_electron(el_i, params.Tlist, params.μlist)
+    focc_el_f_all = compute_occupations_electron(el_f, params.Tlist, params.μlist)
+    nocc_ph_all = zeros(nT, ph.n)
+    for i in 1:ph.n
+        @. nocc_ph_all[:, i] = occ_boson(ph.e[i], params.Tlist)
+    end
+
     for ik in 1:el_i.kpts.n
         mpi_isroot() && mod(ik, 50) == 0 && println("Calculating scattering for group $ik")
 
-        @timing "read scat" scat = load_BTData(open_group(group_scattering, "ik$ik"), QMEElPhScatteringData{FT})
+        @timing "read scat" scat = load_BTData(open_group(group_scattering, "ik$ik"), ElPhVertexDataset{FT})
 
         # 1. Scattering-out term
         # P_{ib1, ib2} = sum_{ikq, imode, jb, ±} g*_{jb, ib1} * g_{jb, ib2}
@@ -80,12 +90,11 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                 jb1 != jb2 && continue # Only diagonal part contributes to the scattering-out term
                 jb = jb1
                 e_f = el_f.e1[ind_el_f]
-
                 ikq = el_f.ik[ind_el_f]
-                # ikq > length(scat) && continue # skip if this ikq is not in scat
+                focc_f = @view focc_el_f_all[:, jb1, ikq]
 
                 xq = el_f.kpts.vectors[ikq] - el_i.kpts.vectors[ik]
-                xq_int = mod.(round.(Int, xq .* ph.ngrid), ph.ngrid)
+                xq_int = mod.(round.(Int, xq.data .* ph.ngrid), ph.ngrid)
                 ind_ph_list = get(ind_ph_map, CI(xq_int...), nothing)
                 ind_ph_list === nothing && continue # skip if this xq is not in ph
 
@@ -97,19 +106,20 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     ω_ph = ph.e[ind_ph]
                     # Skip if phonon frequency is too close to 0 (acoustic phonon at q=0)
                     ω_ph < EPW.omega_acoustic && continue
+                    nocc_ph = @view nocc_ph_all[:, ind_ph]
 
                     # Matrix element factor
-                    s1 = get(scat[ikq], CI(ib1, jb, imode), nothing)
+                    s1 = scat[ikq, ib1, jb, imode]
                     s1 === nothing && continue
-                    s2 = get(scat[ikq], CI(ib2, jb, imode), nothing)
+                    s2 = scat[ikq, ib2, jb, imode]
                     s2 === nothing && continue
                     gg = conj(s1.mel) * s2.mel
 
                     if s1.econv_p && s2.econv_p
-                        _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, +1, inv_η, params.Tlist, params.μlist)
+                        _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, +1, inv_η, focc_f, nocc_ph)
                     end
                     if s1.econv_m && s1.econv_m
-                        _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, -1, inv_η, params.Tlist, params.μlist)
+                        _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, -1, inv_η, focc_f, nocc_ph)
                     end
                 end
                 p_mel .+= p_mel_ikq .* 2FT(π) .* el_f.kpts.weights[ikq]
@@ -152,6 +162,8 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
             ind_el_i == 0 && continue
             e_i1 = el_i.e1[ind_el_i]
             e_i2 = el_i.e2[ind_el_i]
+            focc_i1 = @view focc_el_i_all[:, ib1, ik]
+            focc_i2 = @view focc_el_i_all[:, ib2, ik]
 
             for ind_el_f in 1:el_f.n
                 jb1 = el_f.ib1[ind_el_f]
@@ -161,34 +173,41 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
 
                 # Find q point
                 ikq = el_f.ik[ind_el_f]
-                ikq > length(scat) && continue # skip if this ikq is not in scat
+                # ikq > length(scat) && continue # skip if this ikq is not in scat
 
+                # DEBUG: 0.2 sec
                 xq = el_f.kpts.vectors[ikq] - el_i.kpts.vectors[ik]
-                xq_int = mod.(round.(Int, xq .* ph.ngrid), ph.ngrid)
+                xq_int = mod.(round.(Int, xq.data .* ph.ngrid), ph.ngrid)
                 ind_ph_list = get(ind_ph_map, CI(xq_int...), nothing)
                 ind_ph_list === nothing && continue # skip if this xq is not in ph
 
                 s_mel_ikq .= 0
 
                 for imode in 1:ph.nband
+                    # DEBUG: 0.2 sec
                     ind_ph = ind_ph_list[imode]
                     ind_ph == 0 && continue # skip if this imode is not in ph
                     ω_ph = ph.e[ind_ph]
                     # Skip if phonon frequency is too close to 0 (acoustic phonon at q=0)
                     ω_ph < EPW.omega_acoustic && continue
+                    nocc_ph = @view nocc_ph_all[:, ind_ph]
 
+                    # DEBUG: 0.3 sec
                     # Matrix element factor
-                    s1 = get(scat[ikq], CI(ib1, jb1, imode), nothing)
+                    s1 = scat[ikq, ib1, jb1, imode]
+                    cnt += 1
                     s1 === nothing && continue
-                    s2 = get(scat[ikq], CI(ib2, jb2, imode), nothing)
+                    s2 = scat[ikq, ib2, jb2, imode]
+                    cnt += 1
                     s2 === nothing && continue
-                    gg = conj(s1.mel) * s2.mel
+                    gg = s1.mel' * s2.mel
 
+                    # DEBUG: 1.2 sec -> 0.9 sec
                     if s1.econv_p && s2.econv_p
-                        _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, +1, inv_η, params.Tlist, params.μlist)
+                        _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, +1, inv_η, focc_i1, focc_i2, nocc_ph)
                     end
                     if s1.econv_m && s1.econv_m
-                        _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, -1, inv_η, params.Tlist, params.μlist)
+                        _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, -1, inv_η, focc_i1, focc_i2, nocc_ph)
                     end
                 end
                 s_mel_ikq .*= 2FT(π) * el_f.kpts.weights[ikq]
@@ -200,37 +219,33 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
         end
 
     end # ik
+    @info cnt
     close(fid)
     Sₒ, Sᵢ
 end
 
-function _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_ph, inv_η, Tlist, μlist)
+function _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_ph, inv_η, f_kq, n_ph)
     # energy conservation factor
     delta1 = gaussian((e_i1 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
     delta2 = gaussian((e_i2 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
     delta = sqrt(delta1 * delta2)
-    for (iT, (T, μ)) in enumerate(zip(Tlist, μlist))
+    for iT in 1:length(p_mel_ikq)
         # occupation factor
-        n_ph = occ_boson(ω_ph, T)
-        f_kq = occ_fermion(e_f - μ, T)
-        n = sign_ph == 1 ? n_ph + 1 - f_kq : n_ph + f_kq
+        n = sign_ph == 1 ? n_ph[iT] + 1 - f_kq[iT] : n_ph[iT] + f_kq[iT]
         # P matrix element
         p_mel_ikq[iT] += gg * delta * n
     end
 end
 
-function _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, sign_ph, inv_η, Tlist, μlist)
+function _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, sign_ph, inv_η, f_kq1, f_kq2, n_ph)
     # energy conservation factor
     delta1 = gaussian((e_i1 - e_f1 - sign_ph * ω_ph) * inv_η) * inv_η
     delta2 = gaussian((e_i2 - e_f2 - sign_ph * ω_ph) * inv_η) * inv_η
     delta = sqrt(delta1 * delta2)
-    for (iT, (T, μ)) in enumerate(zip(Tlist, μlist))
+    for iT in 1:length(s_mel_ikq)
         # occupation factor
-        n_ph = occ_boson(ω_ph, T)
-        f_kq1 = occ_fermion(e_i1 - μ, T)
-        f_kq2 = occ_fermion(e_i2 - μ, T)
-        favg = (f_kq1 + f_kq2) / 2
-        n = sign_ph == 1 ? n_ph + favg : n_ph + 1 - favg
+        favg = (f_kq1[iT] + f_kq2[iT]) / 2
+        n = sign_ph == 1 ? n_ph[iT] + favg : n_ph[iT] + 1 - favg
         # scattering matrix element
         s_mel_ikq[iT] += gg * delta * n
     end

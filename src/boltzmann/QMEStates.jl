@@ -2,6 +2,7 @@
 
 using Parameters: @with_kw
 using Dictionaries
+using OffsetArrays
 
 """
     QMEStates{T <: Real} <: AbstractBTData{T}
@@ -165,4 +166,25 @@ end
 
 @inline function _1d_index(ib1, ib2, ik, nband, nband_ignore)
     ib1 - nband_ignore + nband * (ib2 - nband_ignore - 1) + nband^2 * (ik - 1)
+end
+
+"""
+    compute_occupations_electron(el::QMEStates, Tlist, μlist) => f
+Compute electron occupation number for all states in `el`:
+``f[iT, iband, ik] = f_Fermi-Dirac(ε[iband, ik] - μ[iT], T[iT])``
+"""
+function compute_occupations_electron(el::QMEStates, Tlist, μlist)
+    @assert length(Tlist) == length(μlist)
+    nT = length(Tlist)
+    f_data = zeros(nT, el.nband, el.kpts.n)
+    band_rng = (el.nband_ignore + 1):(el.nband_ignore + el.nband)
+    f = OffsetArray(f_data, 1:nT, band_rng, 1:el.kpts.n)
+    for i in 1:el.n
+        (; ib1, ib2, ik, e1, e2) = el[i]
+        for iT in 1:nT
+            f[iT, ib1, ik] = occ_fermion(e1 - μlist[iT], Tlist[iT])
+            f[iT, ib2, ik] = occ_fermion(e2 - μlist[iT], Tlist[iT])
+        end
+    end
+    f
 end
