@@ -19,13 +19,15 @@ struct ElPhVertexDataset{FT}
     nband_ignore_i::Int
     nband_ignore_j::Int
     nmodes::Int
+    nkq::Int
 end
 
 function Base.getindex(d::ElPhVertexDataset, ikq, ib, jb, imode)
-    (; nband_i, nband_j, nband_ignore_i, nband_ignore_j, nmodes) = d
+    (; nband_i, nband_j, nband_ignore_i, nband_ignore_j, nmodes, nkq) = d
     @boundscheck 1 <= imode <= nmodes || throw(BoundsError())
     nband_ignore_i + 1 <= ib <= nband_ignore_i + nband_i || return nothing
     nband_ignore_j + 1 <= jb <= nband_ignore_j + nband_j || return nothing
+    1 <= ikq <= nkq || return nothing
     i = ib - nband_ignore_i + (jb - nband_ignore_j - 1) * nband_i
     j = imode + (ikq - 1) * nmodes
     d.data[i, j]
@@ -48,11 +50,12 @@ function load_BTData(f, ::Type{ElPhVertexDataset{FT}}) where FT
     nband_i = maximum(ib) - nband_ignore_i
     nband_j = maximum(jb) - nband_ignore_j
     nmodes = maximum(imode)
+    nkq = maximum(ikq)
 
     Is = @. ib - nband_ignore_i + (jb - nband_ignore_j - 1) * nband_i
     Js = @. imode + (ikq - 1) * nmodes
     Vs = ElPhVertexElement.(mel, econv_p, econv_m)
     data = sparse(Is, Js, Vs)
 
-    ElPhVertexDataset(data, nband_i, nband_j, nband_ignore_i, nband_ignore_j, nmodes)
+    ElPhVertexDataset(data, nband_i, nband_j, nband_ignore_i, nband_ignore_j, nmodes, nkq)
 end
