@@ -237,6 +237,59 @@ function _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω
 end
 
 """
+Invert Sₒ, which is a matrix that is block-diagonal in k. The output is returned as a
+sparse matrix, keeping the block diagonality.
+"""
+function invert_scattering_out_matrix(Sₒ, el)
+    @assert size(first(Sₒ)) == (el.n, el.n)
+    ElType = eltype(first(Sₒ))
+    Sₒ⁻¹ = SparseMatrixCSC{ElType, Int}[]
+
+    ind_block_to_el = zeros(Int, el.nband^2)
+    Sₒ_block = zeros(ElType, el.nband^2, el.nband^2)
+
+    # Take the ik block of Sₒ and invert it.
+    for iS in 1:length(Sₒ)
+        Is = Int[]
+        Js = Int[]
+        Values = ElType[]
+        for ik in 1:el.kpts.n
+            nstates = 0
+            ind_block_to_el .= 0
+            Sₒ_block .= 0
+
+            # Find the indices for ik.
+            for ib2 in el.ib_rng[ik], ib1 in el.ib_rng[ik]
+                i = get_1d_index(el, ib1, ib2, ik)
+                if i != 0
+                    nstates += 1
+                    ind_block_to_el[nstates] = i
+                end
+            end
+
+            # Extract the ik-th block from Sₒ
+            for block_j = 1:nstates, block_i = 1:nstates
+                i, j = ind_block_to_el[block_i], ind_block_to_el[block_j]
+                Sₒ_block[block_i, block_j] = Sₒ[iS][i, j]
+            end
+            inv_Sₒ_block = inv(Sₒ_block[1:nstates, 1:nstates])
+
+            # Append nonzero elements of inv_Sₒ_block to the list
+            for block_j = 1:nstates, block_i = 1:nstates
+                if abs(inv_Sₒ_block[block_i, block_j]) > 0
+                    push!(Is, ind_block_to_el[block_i])
+                    push!(Js, ind_block_to_el[block_j])
+                    push!(Values, inv_Sₒ_block[block_i, block_j])
+                end
+            end
+        end
+        push!(Sₒ⁻¹, dropzeros!(sparse(Is, Js, Values, el.n, el.n)))
+    end
+    Sₒ⁻¹
+end
+
+
+"""
     occupation_to_conductivity(δρ, el::QMEStates, params)
 Compute electron conductivity using the density matrix `δρ`.
 """
