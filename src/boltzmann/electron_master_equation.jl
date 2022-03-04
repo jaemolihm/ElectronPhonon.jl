@@ -3,7 +3,7 @@ using OffsetArrays
 
 # Constructing and solving quantum master equation for electrons
 
-export compute_qme_scattering_matrix, solve_electron_qme
+export compute_qme_scattering_matrix
 
 """
     compute_qme_scattering_matrix(filename, params, el_i, el_f, ph)
@@ -291,129 +291,6 @@ function invert_scattering_out_matrix(Sₒ, el)
     Sₒ⁻¹
 end
 
-
-"""
-    occupation_to_conductivity(δρ, el::QMEStates, params)
-Compute electron conductivity using the density matrix `δρ`.
-"""
-function occupation_to_conductivity(δρ, el::QMEStates, params)
-    @assert length(δρ) == el.n
-    σ = mapreduce(i -> el.kpts.weights[el.ik[i]] .* real.(δρ[i] * el.v[i]'), +, 1:el.n)
-    return σ * params.spin_degeneracy / params.volume
-end
-
-"""
-    function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, Sₒ,
-        Sᵢ=nothing; symmetry=nothing, max_iter=100, rtol=1e-10, qme_offdiag_cutoff=Inf) where {FT}
-Solve quantum master equation for electrons.
-Linearized quantum master equation (stationary state case):
-```math
-0 = ∂ δρ / ∂t
-  = -i(e1[i] - e2[i]) * δρ[i] + drive_efield[i] + ∑_j (Sₒ + Sᵢ * map_i_to_f)[i, j] * δρ[j],
-```
-where
-```math
-drive_efield[i] = - v[i] * (df/dε)_{ε=e1[i]}              : if e_mk  = e_nk
-                = - v[i] * (f_mk - f_nk) / (e_mk - e_nk)  : if e_mk /= e_nk
-```
-and ``i = (m, n, k)``, ``δρ_i = δρ_{mn;k}``, ``e1[i], e2[i] = e_mk, e_nk``, and ``v[i] = v_{mn;k}``.
-
-We need `map_i_to_f` because `Sᵢ` maps states in `el_f` to `el_i` (i.e. has size `(el_i.n, el_f.n)`),
-while `δρ` is for states in `el_i`. `el_i` and `el_f` can differ due to use of irreducible grids,
-different windows, different grids, etc. So, we need to first map `δρ` to states `el_f` using `map_i_to_f`.
-"""
-function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{FT},Nothing}, Sₒ,
-        Sᵢ=nothing; filename="", symmetry=nothing, max_iter=100, rtol=1e-10, qme_offdiag_cutoff=Inf) where {FT}
-    if Sᵢ !== nothing
-        ! isfile(filename) && error("filename = $filename is not a valid file.")
-        el_f === nothing && throw(ArgumentError("If Sᵢ is used (exact LBTE), el_f must be provided."))
-    end
-
-    nT = length(params.Tlist)
-    σ_serta = zeros(FT, 3, 3, nT)
-    δρ_serta = zeros(Vec3{Complex{FT}}, el_i.n, nT)
-    σ = fill(FT(NaN), 3, 3, nT)
-    δρ = fill(Vec3(fill(Complex(FT(NaN)), 3)), el_i.n, nT)
-
-    drive_efield = zeros(Vec3{Complex{FT}}, el_i.n)
-    δρ_iter = zeros(Vec3{Complex{FT}}, el_i.n)
-    δρ_iter_tmp = zeros(Vec3{Complex{FT}}, el_i.n)
-
-    inds_exclude = @. (el_i.ib1 != el_i.ib2) && (abs(el_i.e1 - el_i.e2) > qme_offdiag_cutoff)
-
-    # setup map_i_to_f. This is needed only when solving the linear equation iteratively.
-    @timing "unfold map" if Sᵢ !== nothing
-        if symmetry === nothing
-            map_i_to_f = _qme_linear_response_unfold_map_nosym(el_i, el_f, filename)
-        else
-            map_i_to_f = _qme_linear_response_unfold_map(el_i, el_f, filename)
-        end
-    end
-
-    for (iT, (T, μ)) in enumerate(zip(params.Tlist, params.μlist))
-        # Compute the E-field drive term
-        for i in 1:el_i.n
-            e1, e2 = el_i.e1[i], el_i.e2[i]
-            if abs(e1 - e2) < EPW.electron_degen_cutoff
-                drive_efield[i] = - el_i.v[i] * occ_fermion_derivative(e1 - μ, T)
-            else
-                drive_efield[i] = - el_i.v[i] * (occ_fermion(e1 - μ, T) - occ_fermion(e2 - μ, T)) / (e1 - e2)
-            end
-        end
-        drive_efield[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))
-
-        # Add the scattering-out term and the bare Hamiltonian term into S_serta
-        Sₒ_iT = copy(Sₒ[iT])
-        for i in 1:el_i.n
-            (; e1, e2) = el_i[i]
-            if abs(e1 - e2) >= EPW.electron_degen_cutoff
-                Sₒ_iT[i, i] += -im * (e1 - e2)
-            end
-        end
-        Sₒ⁻¹_iT = invert_scattering_out_matrix(Sₒ_iT, el_i)
-        Sₒ⁻¹_iT[inds_exclude, :] .= 0
-        Sₒ⁻¹_iT[:, inds_exclude] .= 0
-
-        # QME-SERTA: Solve Sₒ * δρ + drive_efield = 0
-        @views mul!(δρ_serta[:, iT], Sₒ⁻¹_iT, .-drive_efield)
-        σ_serta[:, :, iT] .= symmetrize(occupation_to_conductivity(δρ_serta[:, iT], el_i, params), symmetry)
-
-        # QME-exact: Solve (Sₒ + Sᵢ) * δρ + drive_efield = 0
-        # Solve iteratively the fixed point equation δρ = Sₒ^{-1} * (-Sᵢ * δρ - drive_efield)
-        if Sᵢ !== nothing
-            # Scattering matrix: first unfold to el_f and then apply Sᵢ.
-            Sᵢ_iT = Sᵢ[iT] * map_i_to_f
-
-            # Initial guess: SERTA density matrix
-            @views δρ_iter .= δρ_serta[:, iT]
-            σ_new = symmetrize(occupation_to_conductivity(δρ_iter, el_i, params), symmetry)
-
-            # Fixed-point iteration
-            for iter in 1:max_iter
-                σ_old = σ_new
-
-                # Compute δρ_iter_next = Sₒ^{-1} * (-Sᵢ * δρ_iter_prev - drive_efield)
-                #                      = - Sₒ^{-1} * Sᵢ * δρ_iter_prev + δρ_serta[:, iT]
-                @timing "Sᵢ" mul!(δρ_iter_tmp, Sᵢ_iT, δρ_iter, -1, 0)
-                mul!(δρ_iter, Sₒ⁻¹_iT, δρ_iter_tmp)
-                @views δρ_iter .+= δρ_serta[:, iT]
-                σ_new = symmetrize(occupation_to_conductivity(δρ_iter, el_i, params), symmetry)
-
-                # Check convergence
-                if norm(σ_new - σ_old) / norm(σ_new) < rtol
-                    @info "iT=$iT, converged at iteration $iter"
-                    break
-                elseif iter == max_iter
-                    @info "iT=$iT, convergence not reached at maximum iteration $max_iter"
-                end
-            end
-            σ[:, :, iT] .= σ_new
-            δρ[:, iT] .= δρ_iter
-        end
-    end
-    (; σ, σ_serta, δρ_serta, δρ, el=el_i, params)
-end
-
 function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
     # FIXME: Do not write symmetry twice. Use qme_model.
     fid = h5open(filename, "r")
@@ -434,6 +311,7 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
             xk = el_i.kpts.vectors[ik]
             sxk = symmetry[isym].S * xk
             isk = xk_to_ik(sxk, el_f.kpts)
+            isk === nothing && continue
 
             # Set unfolding matrix
             for ib2 in el_i.ib_rng[ik], ib1 in el_i.ib_rng[ik]

@@ -1,7 +1,6 @@
 using Test
 using EPW
 using LinearAlgebra
-using HDF5
 
 @testset "Transport electron CRTA" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
@@ -135,21 +134,18 @@ using HDF5
             qme_offdiag_cutoff = EPW.electron_degen_cutoff,
         );
 
-        filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5");
-        fid = h5open(filename, "r");
-        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64});
-        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64});
-        close(fid);
+        filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
+        qme_model = load_QMEModel(filename, transport_params)
 
         # Compute chemical potential
-        transport_params.μlist .= NaN
-        bte_compute_μ!(transport_params, EPW.BTStates(el_i));
+        qme_model.transport_params.μlist .= NaN
+        bte_compute_μ!(qme_model)
 
         # Set scattering matrix with constant relaxation time
-        Sₒ = [I(el_i.n) * (-inv_τ_constant + 0.0im) for _ in 1:length(transport_params.Tlist)]
+        set_constant_qme_scattering_matrix!(qme_model, inv_τ_constant)
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(transport_params, el_i, el_f, Sₒ; symmetry, filename);
+        out_qme = solve_electron_linear_conductivity(qme_model)
         @test out_crta.σ_intra_degen ≈ out_qme.σ_serta
         @test !(out_crta.σ_full ≈ out_qme.σ_serta)
 
@@ -165,27 +161,24 @@ using HDF5
             qme_offdiag_cutoff = Inf,
         );
 
-        filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5");
-        fid = h5open(filename, "r");
-        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64});
-        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64});
-        close(fid);
+        filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
+        qme_model = load_QMEModel(filename, transport_params)
 
         # Compute chemical potential
         transport_params.μlist .= NaN
-        bte_compute_μ!(transport_params, EPW.BTStates(el_i));
+        bte_compute_μ!(qme_model)
 
         # Set scattering matrix with constant relaxation time
-        Sₒ = [I(el_i.n) * (-inv_τ_constant + 0.0im) for _ in 1:length(transport_params.Tlist)]
+        set_constant_qme_scattering_matrix!(qme_model, inv_τ_constant)
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(transport_params, el_i, el_f, Sₒ; symmetry, filename);
+        out_qme = solve_electron_linear_conductivity(qme_model)
         @test out_qme.σ_serta ≈ out_crta.σ_full
         @test ! (out_qme.σ_serta ≈ out_crta.σ_intra_degen)
 
         # QME with qme_offdiag_cutoff set to include only degenerate bands. Should be equivalent
         # to the σ_intra_degen case of CRTA.
-        out_qme_only_degen = solve_electron_qme(transport_params, el_i, el_f, Sₒ; symmetry, filename, qme_offdiag_cutoff=EPW.electron_degen_cutoff);
+        out_qme_only_degen = solve_electron_linear_conductivity(qme_model, qme_offdiag_cutoff=EPW.electron_degen_cutoff)
         @test out_qme_only_degen.σ_serta ≈ out_crta.σ_intra_degen
         @test ! (out_qme_only_degen.σ_serta ≈ out_crta.σ_full)
     end

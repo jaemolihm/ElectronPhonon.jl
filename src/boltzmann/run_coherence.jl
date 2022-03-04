@@ -76,6 +76,18 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         end
     end
 
+    # FIXME: Split covariant derivative and unfolding, do unfolding always.
+    # OR, add option in load_QMEModel no_el_unfold.
+    el_sym = symmetry !== nothing ? model.el_sym : nothing
+    g = create_group(fid_btedata, "covariant_derivative")
+    bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid)
+    # FIXME: Split unfolding and covariant derivative
+    # FIXME: Allow multiple orders
+    el_unfold, ik_to_ikirr_isym = compute_covariant_derivative_matrix(el_k_boltzmann,
+        el_k_save, bvec_data, el_sym, g; fourier_mode)
+    dump_BTData(create_group(fid_btedata, "initialstate_electron_unfolded"), el_unfold)
+    fid_btedata["ik_to_ikirr_isym"] = _data_julia_to_hdf5(ik_to_ikirr_isym)
+
     if compute_derivative
         el_sym = symmetry !== nothing ? model.el_sym : nothing
         g = create_group(fid_btedata, "covariant_derivative")

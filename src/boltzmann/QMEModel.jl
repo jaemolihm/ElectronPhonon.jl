@@ -1,6 +1,5 @@
 export load_QMEModel
 export bte_compute_μ!
-export solve_electron_qme
 export compute_qme_scattering_matrix!
 export set_constant_qme_scattering_matrix!
 
@@ -41,6 +40,8 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
     # is not stored to reduce memory usage.)
     # To multiply Sᵢ to a QMEVector, use `multiply_Sᵢ(x::QMEVector, Sᵢ_irr, qme_model::AbstractQMEModel)`.
     Sᵢ_irr = nothing
+    # Map from el_irr to el_f, assuming time-reversal odd, vector elements.
+    map_i_to_f_vector::SparseMatrixCSC{Mat3{Complex{FT}}, Int}
     # Map from el to el_f by each symmetry operator. Needed in multiply_Sᵢ.
     # (storage size ~ N_sym^2 * N_kirr * N_band)
     el_to_el_f_sym_maps::Union{Nothing, Vector{SparseMatrixCSC{Complex{FT}, Int}}} = nothing
@@ -79,6 +80,8 @@ Base.@kwdef mutable struct QMEModel{FT} <: AbstractQMEModel{FT}
     # Scattering-in matrix
     # To multiply Sᵢ to a QMEVector, use `multiply_Sᵢ(x::QMEVector, Sᵢ_irr, qme_model::AbstractQMEModel)`.
     Sᵢ = nothing
+    # Map from el_irr to el_f, assuming time-reversal odd, vector elements.
+    map_i_to_f_vector::SparseMatrixCSC{Complex{FT}, Int}
 end
 
 function Base.getproperty(obj::QMEModel, name::Symbol)
@@ -90,6 +93,8 @@ function Base.getproperty(obj::QMEModel, name::Symbol)
         getfield(obj, :Sᵢ)
     elseif name === :symmetry
         nothing
+    elseif name === :map_i_to_f
+        getfield(obj, :map_i_to_f_vector)
     else
         getfield(obj, name)
     end
@@ -114,22 +119,38 @@ function load_QMEModel(filename, transport_params, ::Type{FT}=Float64; derivativ
     fid = h5open(filename, "r")
     el_f = load_BTData(fid["finalstate_electron"], QMEStates{FT})
     ph = load_BTData(fid["phonon"], BTStates{FT})
-    if derivative_order === nothing
-        ∇ = load_covariant_derivative_matrix(fid["covariant_derivative"])
+
+    if haskey(fid, "covariant_derivative")
+        if derivative_order === nothing
+            ∇ = Vec3(load_covariant_derivative_matrix(fid["covariant_derivative"]))
+        else
+            ∇ = Vec3(load_covariant_derivative_matrix(fid["covariant_derivative_order$derivative_order"]))
+        end
     else
-        ∇ = load_covariant_derivative_matrix(fid["covariant_derivative_order$derivative_order"])
+        ∇ = nothing
     end
+
     if haskey(fid, "symmetry")
         symmetry = load_BTData(fid["symmetry"], Symmetry{FT})
         el_i_irr = load_BTData(fid["initialstate_electron"], QMEStates{FT})
-        el_i = load_BTData(fid["initialstate_electron_unfolded"], QMEStates{FT})
-        ik_to_ikirr_isym = _data_hdf5_to_julia(read(fid, "ik_to_ikirr_isym"), Vector{Tuple{Int, Int}})
-        qme_model = QMEIrreducibleKModel(; symmetry, ik_to_ikirr_isym,
-            el_irr=el_i_irr, el=el_i, ∇=Vec3(∇), transport_params, el_f, ph, filename)
+        if haskey(fid, "initialstate_electron_unfolded")
+            el_i = load_BTData(fid["initialstate_electron_unfolded"], QMEStates{FT})
+            ik_to_ikirr_isym = _data_hdf5_to_julia(read(fid, "ik_to_ikirr_isym"), Vector{Tuple{Int, Int}})
+        else
+            # FIXME: Always compute initialstate_electron_unfolded?
+            ik_to_ikirr_isym = Tuple{Int, Int}[]
+            el_i = el_i_irr
+        end
+        map_i_to_f_vector = _qme_linear_response_unfold_map(el_i_irr, el_f, filename)
+        qme_model = QMEIrreducibleKModel(; symmetry, ik_to_ikirr_isym, el_irr=el_i_irr,
+                                           el=el_i, ∇, transport_params, el_f, ph,
+                                           filename, map_i_to_f_vector)
         qme_model.el_to_el_f_sym_maps = _el_to_el_f_symmetry_maps(qme_model)
     else
         el_i = load_BTData(fid["initialstate_electron"], QMEStates{FT})
-        qme_model = QMEModel(; el=el_i, ∇=Vec3(∇), transport_params, el_f, ph, filename)
+        map_i_to_f_vector = _qme_linear_response_unfold_map_nosym(el_i, el_f, filename)
+        qme_model = QMEModel(; el=el_i, ∇, transport_params, el_f, ph, filename,
+                               map_i_to_f_vector)
     end
     close(fid)
     qme_model
@@ -144,11 +165,9 @@ For the full grid case, requires O(N_k^2) operations but O(N_k^2 / N_sym) storag
 For each `k`, ``Sx_{m,n,k} = ∑_{k'} Sᵢ_irr_{m,n,kirr <- m',n',k'} x'(S^-1)_{m',n',k'}``
 where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)`.
 """
-@timing "Sᵢ" function multiply_Sᵢ(x::QMEVector, Sᵢ_irr, qme_model::AbstractQMEModel)
-    if x.state === qme_model.el_irr
-        # TODO: Store map_i_to_f
-        map_i_to_f = _qme_linear_response_unfold_map_nosym(qme_model.el, qme_model.el_f, qme_model.filename)
-        QMEVector(x.state, Sᵢ_irr * (map_i_to_f * x.data))
+@timing "Sᵢ" function multiply_Sᵢ(x::QMEVector{<:Number}, Sᵢ_irr, qme_model::AbstractQMEModel)
+    if qme_model isa QMEModel && x.state === qme_model.el_irr
+        QMEVector(x.state, Sᵢ_irr * (qme_model.map_i_to_f * x.data))
     elseif x.state === qme_model.el
         # This block is called only when qme_model is a QMEIrreducibleKModel.
         Sin_x = similar(x)
@@ -168,16 +187,28 @@ where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)
             Sin_x[i] = Sx_irr[ind_irr, isym]
         end
         Sin_x
+    elseif qme_model isa QMEIrreducibleKModel && x.state === qme_model.el_irr
+        # To use this, one needs to define unfolding (map_i_to_f) of a scalar-element QMEVector.
+        # But usually the elements of x is a vector (e.g. δᴱρ has three components for the
+        # three E field directions), so this will function not be used anyway.
+        error("multiply_Sᵢ for QMEVector with scalar elements not implemented")
     else
         error("x.state must be qme_model.el or qme_model.el_irr.")
     end
 end
 
-function multiply_Sᵢ(x::QMEVector{Vec3{FT}}, Sᵢ_irr, qme_model::QMEIrreducibleKModel) where FT
-    # @warn "Can be very inefficient compared to QMEVector{ComplexF64}."
+function multiply_Sᵢ(x::QMEVector{Vec3{FT}}, Sᵢ_irr, qme_model::AbstractQMEModel) where FT
     if x.state === qme_model.el_irr
-        multiply_Sᵢ(x, Sᵢ_irr, qme_model)
+        # We need `map_i_to_f` because `Sᵢ` maps states in `el_f` to `el_i` (i.e. has size
+        # `(el_i.n, el_f.n)`), while `δρ` is for states in `el_i`. `el_i` and `el_f` can
+        # differ due to use of irreducible grids, different windows, different grids, etc.
+        # So, we need to first map `δρ` to states `el_f` using `map_i_to_f`.
+
+        # Can be optimized if Sᵢ_irr * qme_model.map_i_to_f_vector is computed and stored,
+        # because we are doing (Nk_irr, Nk) * (Nk, Nk_irr) * (Nk_irr,) multiplication.
+        QMEVector(x.state, Sᵢ_irr * (qme_model.map_i_to_f_vector * x.data))
     elseif x.state === qme_model.el
+        # @warn "Can be very inefficient compared to QMEVector{ComplexF64}."
         Sx = zeros(FT, 3, size(x)...)
         @views for i in 1:3
             x_i = QMEVector(x.state, [v[i] for v in x.data])
@@ -205,10 +236,4 @@ end
 function set_constant_qme_scattering_matrix!(model::AbstractQMEModel, inv_τ_constant)
     model.Sₒ_irr = [I(model.el_irr.n) * (-inv_τ_constant + 0.0im) for _ in model.transport_params.Tlist]
     unfold_scattering_out_matrix!(model)
-end
-
-function solve_electron_qme(model::AbstractQMEModel; kwargs...)
-    (; transport_params, Sₒ_irr, Sᵢ_irr, symmetry, el_f, filename) = model
-    el_i_irr = model.el_irr
-    solve_electron_qme(transport_params, el_i_irr, el_f, Sₒ_irr, Sᵢ_irr; filename, symmetry, kwargs...)
 end

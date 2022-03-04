@@ -1,7 +1,6 @@
 using Test
 using EPW
 using LinearAlgebra
-using HDF5
 
 @testset "Transport electron QME" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
@@ -52,24 +51,20 @@ using HDF5
             )
 
             filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
-            fid = h5open(filename, "r")
-            el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
-            el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
-            ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
-            close(fid)
+            qme_model = load_QMEModel(filename, transport_params)
 
             # Check that all bands are non-degenerate
-            @test all(el_i.ib1 .== el_i.ib2)
+            @test all(qme_model.el.ib1 .== qme_model.el.ib2)
 
             # Compute chemical potential
-            bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
-            μlist_qme = copy(transport_params.μlist)
+            bte_compute_μ!(qme_model)
+            μlist_qme = copy(qme_model.transport_params.μlist)
 
             # Compute scattering matrix
-            Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+            compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
 
             # Solve QME and compute mobility
-            out_qme = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ; symmetry, filename)
+            out_qme = solve_electron_linear_conductivity(qme_model)
 
             # For electron-doped BN, there is only 1 band, so the result is identical to BTE
             # Calculate matrix elements
@@ -93,9 +88,9 @@ using HDF5
             output_lbte = EPW.solve_electron_bte(el_i_bte, el_f_bte, bte_scat_mat, inv_τ, transport_params, symmetry)
 
             # Test QME and BTE result is identical (because there is only one band)
-            @test el_i.nband == 1
-            @test all(el_i.ib1 .== 5)
-            @test all(el_i.ib2 .== 5)
+            @test qme_model.el.nband == 1
+            @test all(qme_model.el.ib1 .== 5)
+            @test all(qme_model.el.ib2 .== 5)
             @test μlist_qme ≈ transport_params.μlist
             @test out_qme.σ_serta ≈ output_serta.σ rtol=1e-6
             @test out_qme.σ_serta ≈ output_lbte.σ_serta rtol=1e-6
@@ -161,21 +156,16 @@ using HDF5
         )
 
         filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
-        fid = h5open(filename, "r")
-        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
-        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
-        ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
-        close(fid)
+        qme_model = load_QMEModel(filename, transport_params)
 
         # Compute chemical potential
-        bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
-        μlist_qme = copy(transport_params.μlist)
+        bte_compute_μ!(qme_model)
 
         # Compute scattering matrix
-        Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
 
         # Solve QME and compute mobility
-        out_qme = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ; symmetry, filename)
+        out_qme = solve_electron_linear_conductivity(qme_model)
         _, mobility_qme_serta_SI = transport_print_mobility(out_qme.σ_serta, transport_params, do_print=false)
         _, mobility_qme_iter_SI = transport_print_mobility(out_qme.σ, transport_params, do_print=false);
 
@@ -235,21 +225,16 @@ end
         )
 
         filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
-        fid = h5open(filename, "r")
-        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
-        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
-        ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
-        close(fid)
+        qme_model = load_QMEModel(filename, transport_params)
 
         # Compute chemical potential
-        bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
-        μlist_qme = copy(transport_params.μlist)
+        bte_compute_μ!(qme_model)
 
         # Compute scattering matrix
-        Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
 
         # Solve QME and compute mobility
-        out_qme_wo_symmetry = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ; filename)
+        out_qme_wo_symmetry = solve_electron_linear_conductivity(qme_model)
 
         # Run with symmetry
         @time EPW.run_transport(
@@ -266,22 +251,16 @@ end
         )
 
         filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
-        fid = h5open(filename, "r")
-        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
-        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
-        ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
-        close(fid)
+        qme_model = load_QMEModel(filename, transport_params)
 
         # Compute chemical potential
-        bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
-        μlist_qme = copy(transport_params.μlist)
+        bte_compute_μ!(qme_model)
 
         # Compute scattering matrix
-        Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
 
         # Solve QME and compute mobility
-        out_qme_w_symmetry = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ,
-                                                symmetry=model.el_sym.symmetry; filename)
+        out_qme_w_symmetry = solve_electron_linear_conductivity(qme_model)
 
         _, mobility_serta_wo_sym = transport_print_mobility(out_qme_wo_symmetry.σ_serta, transport_params, do_print=false)
         _, mobility_serta_w_sym = transport_print_mobility(out_qme_w_symmetry.σ_serta, transport_params, do_print=false)
@@ -324,21 +303,16 @@ end
         )
 
         filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
-        fid = h5open(filename, "r")
-        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
-        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
-        ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
-        close(fid)
+        qme_model = load_QMEModel(filename, transport_params)
 
         # Compute chemical potential
-        bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
-        μlist_qme = copy(transport_params.μlist)
+        bte_compute_μ!(qme_model)
 
         # Compute scattering matrix
-        Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
 
         # Solve QME and compute mobility
-        out_qme_wo_symmetry = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ; filename)
+        out_qme_wo_symmetry = solve_electron_linear_conductivity(qme_model)
 
         # Run with symmetry
         @time EPW.run_transport(
@@ -355,23 +329,16 @@ end
         )
 
         filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
-        fid = h5open(filename, "r")
-        el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
-        el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
-        ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
-        close(fid)
+        qme_model = load_QMEModel(filename, transport_params)
 
         # Compute chemical potential
-        bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
-        μlist_qme = copy(transport_params.μlist)
+        bte_compute_μ!(qme_model)
 
         # Compute scattering matrix
-        Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+        compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
 
         # Solve QME and compute mobility
-        out_qme_w_symmetry = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ,
-                                                symmetry=model.el_sym.symmetry; filename)
-
+        out_qme_w_symmetry = solve_electron_linear_conductivity(qme_model)
 
         _, mobility_serta_wo_sym = transport_print_mobility(out_qme_wo_symmetry.σ_serta, transport_params, do_print=false)
         _, mobility_serta_w_sym = transport_print_mobility(out_qme_w_symmetry.σ_serta, transport_params, do_print=false)
@@ -385,7 +352,8 @@ end
 
         # Transport distribution function
         @testset "TDF" begin
-            elist = range(minimum(el_i.e1) - 5e-3, maximum(el_i.e1) + 5e-3, length=101)
+            el = qme_model.el
+            elist = range(minimum(el.e1) - 5e-3, maximum(el.e1) + 5e-3, length=101)
             de = elist[2] - elist[1]
             smearing = 10 * unit_to_aru(:meV)
 
@@ -449,21 +417,16 @@ end
             )
 
             filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
-            fid = h5open(filename, "r")
-            el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.QMEStates{Float64})
-            el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.QMEStates{Float64})
-            ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{Float64})
-            close(fid)
+            qme_model = load_QMEModel(filename, transport_params)
 
             # Compute chemical potential
-            bte_compute_μ!(transport_params, EPW.BTStates(el_i), do_print=false)
-            μlist_qme = copy(transport_params.μlist)
+            bte_compute_μ!(qme_model)
 
             # Compute scattering matrix
-            Sₒ, Sᵢ = compute_qme_scattering_matrix(filename, transport_params, el_i, el_f, ph)
+            compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
 
             # Solve QME and compute mobility
-            out_qme[random_gauge] = solve_electron_qme(transport_params, el_i, el_f, Sₒ, Sᵢ; filename, symmetry)
+            out_qme[random_gauge] = solve_electron_linear_conductivity(qme_model)
         end
 
         @test out_qme[true].σ_serta ≈ out_qme[false].σ_serta

@@ -80,10 +80,10 @@ using LinearAlgebra
             method === :CRTA && @test all(qme_model.Sₒ .≈ Ref(I(qme_model.el.n) * -inv_τ_constant))
 
             # Solve linear electrical conductivity
-            out_linear = solve_electron_qme(qme_model)
+            out_linear = solve_electron_linear_conductivity(qme_model)
 
             # Solve linear Hall conductivity
-            out_hall = compute_linear_hall_conductivity(out_linear, qme_model)
+            out_hall = solve_electron_hall_conductivity(out_linear, qme_model)
             if method === :CRTA || method === :SERTA
                 @test out_hall.r_hall_serta[1, 2, 3, :] ≈ r_hall_ref_123[(use_symmetry, method)] atol=1e-5
                 @test all(isnan.(out_hall.r_hall))

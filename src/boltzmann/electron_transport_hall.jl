@@ -2,10 +2,10 @@
 
 using IterativeSolvers
 
-export compute_linear_hall_conductivity
+export solve_electron_hall_conductivity
 
 """
-    compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEModel)
+    solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEModel)
 Use GMRES itertive solver for IBTE.
 # Inputs:
 - `out_linear`: Output of linear electrical conductivity calculation.
@@ -13,13 +13,13 @@ Use GMRES itertive solver for IBTE.
 
 FIXME: Currently assumes that only degenerate bands are included.
 """
-function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEModel; kwargs...)
+function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEModel; kwargs...)
     # Function barrier because some fields of qme_model are not typed
     (; ∇, Sₒ, Sᵢ_irr) = qme_model
-    compute_linear_hall_conductivity(out_linear, qme_model, ∇, Sₒ, Sᵢ_irr; kwargs...)
+    solve_electron_hall_conductivity(out_linear, qme_model, ∇, Sₒ, Sᵢ_irr; kwargs...)
 end
 
-function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEModel{FT}, ∇,
+function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEModel{FT}, ∇,
         Sₒ, Sᵢ_irr=nothing; maxiter=100, rtol=1e-3, atol=0, verbose=false) where FT
     transport_params = qme_model.transport_params
     nT = length(transport_params.Tlist)
@@ -69,7 +69,7 @@ function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEMode
             end
 
             # Define scattering map and GMRES iterable solver
-            scatmap = QMEScatteringMap(qme_model, Sᵢ_irr[iT], Sₒ⁻¹)
+            scatmap = QMEScatteringMap(qme_model, qme_model.el, Sᵢ_irr[iT], Sₒ⁻¹)
             g = IterativeSolvers.gmres_iterable!(δᴱᴮρ.data, scatmap, δᴱᴮρ_serta.data; maxiter)
 
             for b = 1:3, c = 1:3
