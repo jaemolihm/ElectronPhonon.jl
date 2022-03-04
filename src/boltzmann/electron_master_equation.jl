@@ -3,11 +3,6 @@ using OffsetArrays
 
 # Constructing and solving quantum master equation for electrons
 
-# TODO: Modularize. Make QMEModel type.
-
-# TODO: Accessing scat[ikq][CI(ib, jb, imode)] is the bottleneck (takes half of the time in
-#       scat_in). Need to optimize.
-
 export compute_qme_scattering_matrix, solve_electron_qme
 
 """
@@ -334,11 +329,12 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
         el_f === nothing && throw(ArgumentError("If scat_mat_in is used (exact LBTE), el_f must be provided."))
     end
 
-    σ_serta = zeros(FT, 3, 3, length(params.Tlist))
-    σ = zeros(FT, 3, 3, length(params.Tlist))
-    δρ_serta = zeros(Vec3{Complex{FT}}, el_i.n, length(params.Tlist))
-    δρ = zeros(Vec3{Complex{FT}}, el_i.n, length(params.Tlist))
-    σ_iter = fill(FT(NaN), (max_iter+1, 3, 3, length(params.Tlist)))
+    nT = length(params.Tlist)
+    σ_serta = zeros(FT, 3, 3, nT)
+    δρ_serta = zeros(Vec3{Complex{FT}}, el_i.n, nT)
+    σ = fill(FT(NaN), 3, 3, nT)
+    δρ = fill(Vec3(fill(Complex(FT(NaN)), 3)), el_i.n, nT)
+    σ_iter = fill(FT(NaN), (max_iter+1, 3, 3, nT))
 
     drive_efield = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter = zeros(Vec3{Complex{FT}}, el_i.n)
@@ -357,7 +353,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
 
     for (iT, (T, μ)) in enumerate(zip(params.Tlist, params.μlist))
         # Compute the E-field drive term
-        @timing "drive_efield" for i in 1:el_i.n
+        for i in 1:el_i.n
             e1, e2 = el_i.e1[i], el_i.e2[i]
             if abs(e1 - e2) < EPW.electron_degen_cutoff
                 drive_efield[i] = - el_i.v[i] * occ_fermion_derivative(e1 - μ, T)
@@ -368,17 +364,17 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
         drive_efield[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))
 
         # Add the scattering-out term and the bare Hamiltonian term into S_serta
-        S_serta = copy(scat_mat_out[iT])
+        Sₒ = copy(scat_mat_out[iT])
         for i in 1:el_i.n
-            e1, e2 = el_i.e1[i], el_i.e2[i]
+            (; e1, e2) = el_i[i]
             if abs(e1 - e2) >= EPW.electron_degen_cutoff
-                S_serta[i, i] += -im * (e1 - e2)
+                Sₒ[i, i] += -im * (e1 - e2)
             end
         end
-        S_serta_factorize = factorize(S_serta)
+        Sₒ⁻¹ = invert_scattering_out_matrix(Sₒ, el_i)
 
         # QME-SERTA: Solve Sₒ * δρ + drive_efield = 0
-        @views _solve_qme_direct!(δρ_serta[:, iT], S_serta_factorize, .-drive_efield)
+        @views mul!(δρ_serta[:, iT], Sₒ⁻¹, .-drive_efield)
         δρ_serta[inds_exclude, iT] .= Ref(zero(Vec3{Complex{FT}}))
         σ_serta[:, :, iT] .= symmetrize(occupation_to_conductivity(δρ_serta[:, iT], el_i, params), symmetry)
 
@@ -401,7 +397,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
                 #                      = - Sₒ^{-1} * Sᵢ * δρ_iter_prev + δρ_serta[:, iT]
                 @timing "Sᵢ" mul!(δρ_iter_tmp, Sᵢ, δρ_iter, -1, 0)
                 δρ_iter_tmp[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))
-                _solve_qme_direct!(δρ_iter, S_serta_factorize, δρ_iter_tmp)
+                mul!(δρ_iter, Sₒ⁻¹, δρ_iter_tmp)
                 δρ_iter[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))
                 @views δρ_iter .+= δρ_serta[:, iT]
                 σ_new = symmetrize(occupation_to_conductivity(δρ_iter, el_i, params), symmetry)
@@ -424,20 +420,6 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
         end
     end
     (;σ, σ_serta, δρ_serta, δρ, σ_iter, el=el_i, params)
-end
-
-# Solve S * δρ = δρ0 using left division.
-@timing "_solve_qme_direct!" function _solve_qme_direct!(δρ::AbstractVector{Vec3{Complex{FT}}}, S, δρ0::AbstractVector{Vec3{Complex{FT}}}) where FT
-    # Here, we use \ although it allocates because non-allocating ldiv! not supported for
-    # sparse matrix: https://github.com/JuliaLang/SuiteSparse.jl/issues/19
-    @views for a in 1:3
-        b = reshape(reinterpret(Complex{FT}, δρ0), 3, :)[a, :]
-        reshape(reinterpret(Complex{FT}, δρ), 3, :)[a, :] .= S \ b
-    end
-end
-
-@timing "_solve_qme_direct!" function _solve_qme_direct!(δρ::AbstractVector{Complex{FT}}, S, δρ0::AbstractVector{Complex{FT}}) where FT
-    δρ .= S \ δρ0
 end
 
 function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
