@@ -40,8 +40,6 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
         Sᵢ = nothing
     end
 
-    cnt = 0
-
     # Compute occupation factors
     focc_el_i_all = compute_occupations_electron(el_i, params.Tlist, params.μlist)
     focc_el_f_all = compute_occupations_electron(el_f, params.Tlist, params.μlist)
@@ -195,10 +193,8 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     # DEBUG: 0.3 sec
                     # Matrix element factor
                     s1 = scat[ikq, ib1, jb1, imode]
-                    cnt += 1
                     s1 === nothing && continue
                     s2 = scat[ikq, ib2, jb2, imode]
-                    cnt += 1
                     s2 === nothing && continue
                     gg = s1.mel' * s2.mel
 
@@ -219,7 +215,6 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
         end
 
     end # ik
-    @info cnt
     close(fid)
     Sₒ, Sᵢ
 end
@@ -256,50 +251,48 @@ Invert Sₒ, which is a matrix that is block-diagonal in k. The output is return
 sparse matrix, keeping the block diagonality.
 """
 function invert_scattering_out_matrix(Sₒ, el)
-    @assert size(first(Sₒ)) == (el.n, el.n)
-    ElType = eltype(first(Sₒ))
+    @assert size(Sₒ) == (el.n, el.n)
+    ElType = eltype(Sₒ)
     Sₒ⁻¹ = SparseMatrixCSC{ElType, Int}[]
 
     ind_block_to_el = zeros(Int, el.nband^2)
     Sₒ_block = zeros(ElType, el.nband^2, el.nband^2)
 
     # Take the ik block of Sₒ and invert it.
-    for iS in 1:length(Sₒ)
-        Is = Int[]
-        Js = Int[]
-        Values = ElType[]
-        for ik in 1:el.kpts.n
-            nstates = 0
-            ind_block_to_el .= 0
-            Sₒ_block .= 0
+    Is = Int[]
+    Js = Int[]
+    Values = ElType[]
+    for ik in 1:el.kpts.n
+        nstates = 0
+        ind_block_to_el .= 0
+        Sₒ_block .= 0
 
-            # Find the indices for ik.
-            for ib2 in el.ib_rng[ik], ib1 in el.ib_rng[ik]
-                i = get_1d_index(el, ib1, ib2, ik)
-                if i != 0
-                    nstates += 1
-                    ind_block_to_el[nstates] = i
-                end
-            end
-
-            # Extract the ik-th block from Sₒ
-            for block_j = 1:nstates, block_i = 1:nstates
-                i, j = ind_block_to_el[block_i], ind_block_to_el[block_j]
-                Sₒ_block[block_i, block_j] = Sₒ[iS][i, j]
-            end
-            inv_Sₒ_block = inv(Sₒ_block[1:nstates, 1:nstates])
-
-            # Append nonzero elements of inv_Sₒ_block to the list
-            for block_j = 1:nstates, block_i = 1:nstates
-                if abs(inv_Sₒ_block[block_i, block_j]) > 0
-                    push!(Is, ind_block_to_el[block_i])
-                    push!(Js, ind_block_to_el[block_j])
-                    push!(Values, inv_Sₒ_block[block_i, block_j])
-                end
+        # Find the indices for ik.
+        for ib2 in el.ib_rng[ik], ib1 in el.ib_rng[ik]
+            i = get_1d_index(el, ib1, ib2, ik)
+            if i != 0
+                nstates += 1
+                ind_block_to_el[nstates] = i
             end
         end
-        push!(Sₒ⁻¹, dropzeros!(sparse(Is, Js, Values, el.n, el.n)))
+
+        # Extract the ik-th block from Sₒ
+        for block_j = 1:nstates, block_i = 1:nstates
+            i, j = ind_block_to_el[block_i], ind_block_to_el[block_j]
+            Sₒ_block[block_i, block_j] = Sₒ[i, j]
+        end
+        inv_Sₒ_block = inv(Sₒ_block[1:nstates, 1:nstates])
+
+        # Append nonzero elements of inv_Sₒ_block to the list
+        for block_j = 1:nstates, block_i = 1:nstates
+            if abs(inv_Sₒ_block[block_i, block_j]) > 0
+                push!(Is, ind_block_to_el[block_i])
+                push!(Js, ind_block_to_el[block_j])
+                push!(Values, inv_Sₒ_block[block_i, block_j])
+            end
+        end
     end
+    Sₒ⁻¹ = dropzeros!(sparse(Is, Js, Values, el.n, el.n))
     Sₒ⁻¹
 end
 

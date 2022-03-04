@@ -37,10 +37,6 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
     Sₒ_irr = nothing
     # Scattering-out matrix for the full k grid
     Sₒ = nothing
-    # Inverted scattering-out matrix for the irreducible k grid
-    Sₒ⁻¹_irr = nothing
-    # Inverted scattering-out matrix for the full k grid
-    Sₒ⁻¹ = nothing
     # Scattering-in matrix for the irreducible k grid (Scattering-in matrix for full k grid
     # is not stored to reduce memory usage.)
     # To multiply Sᵢ to a QMEVector, use `multiply_Sᵢ(x::QMEVector, Sᵢ_irr, qme_model::AbstractQMEModel)`.
@@ -80,8 +76,6 @@ Base.@kwdef mutable struct QMEModel{FT} <: AbstractQMEModel{FT}
     ∇ = nothing
     # Scattering-out matrix
     Sₒ = nothing
-    # Inverted scattering-out matrix
-    Sₒ⁻¹ = nothing
     # Scattering-in matrix
     # To multiply Sᵢ to a QMEVector, use `multiply_Sᵢ(x::QMEVector, Sᵢ_irr, qme_model::AbstractQMEModel)`.
     Sᵢ = nothing
@@ -92,8 +86,6 @@ function Base.getproperty(obj::QMEModel, name::Symbol)
         getfield(obj, :el)
     elseif name === :Sₒ_irr
         getfield(obj, :Sₒ)
-    elseif name === :Sₒ⁻¹_irr
-        getfield(obj, :Sₒ⁻¹)
     elseif name === :Sᵢ_irr
         getfield(obj, :Sᵢ)
     elseif name === :symmetry
@@ -106,8 +98,6 @@ end
 function Base.setproperty!(obj::QMEModel, name::Symbol, x)
     if name === :Sₒ_irr
         setfield!(obj, :Sₒ, x)
-    elseif name === :Sₒ⁻¹_irr
-            setfield!(obj, :Sₒ⁻¹, x)
     elseif name === :Sᵢ_irr
         setfield!(obj, :Sᵢ, x)
     else
@@ -210,19 +200,11 @@ function compute_qme_scattering_matrix!(model::AbstractQMEModel; compute_Sᵢ=tr
     model.Sₒ_irr, model.Sᵢ_irr = compute_qme_scattering_matrix(filename, transport_params,
                                                                el_irr, el_f, ph; compute_Sᵢ)
     unfold_scattering_out_matrix!(model)
-    model.Sₒ⁻¹_irr = invert_scattering_out_matrix(model.Sₒ_irr, model.el_irr)
-    if model isa QMEIrreducibleKModel
-        model.Sₒ⁻¹ = invert_scattering_out_matrix(model.Sₒ, model.el)
-    end
 end
 
 function set_constant_qme_scattering_matrix!(model::AbstractQMEModel, inv_τ_constant)
     model.Sₒ_irr = [I(model.el_irr.n) * (-inv_τ_constant + 0.0im) for _ in model.transport_params.Tlist]
     unfold_scattering_out_matrix!(model)
-    model.Sₒ⁻¹_irr = [inv(x) for x in model.Sₒ_irr]
-    if model isa QMEIrreducibleKModel
-        model.Sₒ⁻¹ = invert_scattering_out_matrix(model.Sₒ, model.el)
-    end
 end
 
 function solve_electron_qme(model::AbstractQMEModel; kwargs...)

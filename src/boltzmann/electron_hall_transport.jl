@@ -10,15 +10,17 @@ Use GMRES itertive solver for IBTE.
 # Inputs:
 - `out_linear`: Output of linear electrical conductivity calculation.
 - `qme_model::AbstractQMEModel`
+
+FIXME: Currently assumes that only degenerate bands are included.
 """
 function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEModel; kwargs...)
     # Function barrier because some fields of qme_model are not typed
-    (; ∇, Sₒ⁻¹, Sᵢ_irr) = qme_model
-    compute_linear_hall_conductivity(out_linear, qme_model, ∇, Sₒ⁻¹, Sᵢ_irr; kwargs...)
+    (; ∇, Sₒ, Sᵢ_irr) = qme_model
+    compute_linear_hall_conductivity(out_linear, qme_model, ∇, Sₒ, Sᵢ_irr; kwargs...)
 end
 
 function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEModel{FT}, ∇,
-        Sₒ⁻¹, Sᵢ_irr=nothing; maxiter=100, rtol=1e-3, atol=0, verbose=false) where FT
+        Sₒ, Sᵢ_irr=nothing; maxiter=100, rtol=1e-3, atol=0, verbose=false) where FT
     transport_params = qme_model.transport_params
     nT = length(transport_params.Tlist)
     σ_hall = fill(FT(NaN), (3, 3, 3, nT))
@@ -43,10 +45,13 @@ function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEMode
             δᴱρ[i].data .= [x[i] for x in δᴱρ_all.data]
         end
 
+        # FIXME: Add (e2 - e1) contribution
+        Sₒ⁻¹ = invert_scattering_out_matrix(Sₒ[iT], qme_model.el)
+
         for b = 1:3, c = 1:3
             c1, c2 = mod1(c + 1, 3), mod1(c + 2, 3)
             v∇δᴱρ = v[c1] * (∇[c2] * δᴱρ[b]) - v[c2] * (∇[c1] * δᴱρ[b])
-            mul!(δᴱᴮρ_serta.data, Sₒ⁻¹[iT], v∇δᴱρ.data)
+            mul!(δᴱᴮρ_serta.data, Sₒ⁻¹, v∇δᴱρ.data)
             σ_hall_serta[:, b, c, iT] .= vec(occupation_to_conductivity(δᴱᴮρ_serta, transport_params))
         end
 
@@ -64,7 +69,7 @@ function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEMode
             end
 
             # Define scattering map and GMRES iterable solver
-            scatmap = QMEScatteringMap(qme_model, Sᵢ_irr[iT], Sₒ⁻¹[iT])
+            scatmap = QMEScatteringMap(qme_model, Sᵢ_irr[iT], Sₒ⁻¹)
             g = IterativeSolvers.gmres_iterable!(δᴱᴮρ.data, scatmap, δᴱᴮρ_serta.data; maxiter)
 
             for b = 1:3, c = 1:3
@@ -72,7 +77,7 @@ function compute_linear_hall_conductivity(out_linear, qme_model::AbstractQMEMode
                 v∇δᴱρ = v[c1] * (∇[c2] * δᴱρ[b]) - v[c2] * (∇[c1] * δᴱρ[b])
 
                 # Compute the SERTA solution
-                mul!(δᴱᴮρ_serta.data, Sₒ⁻¹[iT], v∇δᴱρ.data)
+                mul!(δᴱᴮρ_serta.data, Sₒ⁻¹, v∇δᴱρ.data)
 
                 # Set and run GMRES solver. Initial guess is δᴱᴮρ = δᴱᴮρ_serta.
                 EPW.reset_gmres_iterable!(g, δᴱᴮρ_serta.data, δᴱᴮρ_serta.data; reltol=rtol, abstol=atol)
