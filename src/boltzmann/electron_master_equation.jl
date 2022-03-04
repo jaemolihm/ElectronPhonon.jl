@@ -303,8 +303,8 @@ function occupation_to_conductivity(δρ, el::QMEStates, params)
 end
 
 """
-    function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, scat_mat_out,
-        scat_mat_in=nothing; symmetry=nothing, max_iter=100, rtol=1e-10, qme_offdiag_cutoff=Inf) where {FT}
+    function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, Sₒ,
+        Sᵢ=nothing; symmetry=nothing, max_iter=100, rtol=1e-10, qme_offdiag_cutoff=Inf) where {FT}
 Solve quantum master equation for electrons.
 Linearized quantum master equation (stationary state case):
 ```math
@@ -322,11 +322,11 @@ We need `map_i_to_f` because `Sᵢ` maps states in `el_f` to `el_i` (i.e. has si
 while `δρ` is for states in `el_i`. `el_i` and `el_f` can differ due to use of irreducible grids,
 different windows, different grids, etc. So, we need to first map `δρ` to states `el_f` using `map_i_to_f`.
 """
-function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{FT},Nothing}, scat_mat_out,
-        scat_mat_in=nothing; filename="", symmetry=nothing, max_iter=100, rtol=1e-10, qme_offdiag_cutoff=Inf) where {FT}
-    if scat_mat_in !== nothing
+function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{FT},Nothing}, Sₒ,
+        Sᵢ=nothing; filename="", symmetry=nothing, max_iter=100, rtol=1e-10, qme_offdiag_cutoff=Inf) where {FT}
+    if Sᵢ !== nothing
         ! isfile(filename) && error("filename = $filename is not a valid file.")
-        el_f === nothing && throw(ArgumentError("If scat_mat_in is used (exact LBTE), el_f must be provided."))
+        el_f === nothing && throw(ArgumentError("If Sᵢ is used (exact LBTE), el_f must be provided."))
     end
 
     nT = length(params.Tlist)
@@ -334,7 +334,6 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
     δρ_serta = zeros(Vec3{Complex{FT}}, el_i.n, nT)
     σ = fill(FT(NaN), 3, 3, nT)
     δρ = fill(Vec3(fill(Complex(FT(NaN)), 3)), el_i.n, nT)
-    σ_iter = fill(FT(NaN), (max_iter+1, 3, 3, nT))
 
     drive_efield = zeros(Vec3{Complex{FT}}, el_i.n)
     δρ_iter = zeros(Vec3{Complex{FT}}, el_i.n)
@@ -343,7 +342,7 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
     inds_exclude = @. (el_i.ib1 != el_i.ib2) && (abs(el_i.e1 - el_i.e2) > qme_offdiag_cutoff)
 
     # setup map_i_to_f. This is needed only when solving the linear equation iteratively.
-    @timing "unfold map" if scat_mat_in !== nothing
+    @timing "unfold map" if Sᵢ !== nothing
         if symmetry === nothing
             map_i_to_f = _qme_linear_response_unfold_map_nosym(el_i, el_f, filename)
         else
@@ -364,30 +363,30 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
         drive_efield[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))
 
         # Add the scattering-out term and the bare Hamiltonian term into S_serta
-        Sₒ = copy(scat_mat_out[iT])
+        Sₒ_iT = copy(Sₒ[iT])
         for i in 1:el_i.n
             (; e1, e2) = el_i[i]
             if abs(e1 - e2) >= EPW.electron_degen_cutoff
-                Sₒ[i, i] += -im * (e1 - e2)
+                Sₒ_iT[i, i] += -im * (e1 - e2)
             end
         end
-        Sₒ⁻¹ = invert_scattering_out_matrix(Sₒ, el_i)
+        Sₒ⁻¹_iT = invert_scattering_out_matrix(Sₒ_iT, el_i)
+        Sₒ⁻¹_iT[inds_exclude, :] .= 0
+        Sₒ⁻¹_iT[:, inds_exclude] .= 0
 
         # QME-SERTA: Solve Sₒ * δρ + drive_efield = 0
-        @views mul!(δρ_serta[:, iT], Sₒ⁻¹, .-drive_efield)
-        δρ_serta[inds_exclude, iT] .= Ref(zero(Vec3{Complex{FT}}))
+        @views mul!(δρ_serta[:, iT], Sₒ⁻¹_iT, .-drive_efield)
         σ_serta[:, :, iT] .= symmetrize(occupation_to_conductivity(δρ_serta[:, iT], el_i, params), symmetry)
 
         # QME-exact: Solve (Sₒ + Sᵢ) * δρ + drive_efield = 0
         # Solve iteratively the fixed point equation δρ = Sₒ^{-1} * (-Sᵢ * δρ - drive_efield)
-        if scat_mat_in !== nothing
-            # Scattering matrix: first unfold to el_f and then apply scat_mat_in.
-            Sᵢ = scat_mat_in[iT] * map_i_to_f
+        if Sᵢ !== nothing
+            # Scattering matrix: first unfold to el_f and then apply Sᵢ.
+            Sᵢ_iT = Sᵢ[iT] * map_i_to_f
 
             # Initial guess: SERTA density matrix
             @views δρ_iter .= δρ_serta[:, iT]
             σ_new = symmetrize(occupation_to_conductivity(δρ_iter, el_i, params), symmetry)
-            σ_iter[1, :, :, iT] .= σ_new
 
             # Fixed-point iteration
             for iter in 1:max_iter
@@ -395,13 +394,10 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
 
                 # Compute δρ_iter_next = Sₒ^{-1} * (-Sᵢ * δρ_iter_prev - drive_efield)
                 #                      = - Sₒ^{-1} * Sᵢ * δρ_iter_prev + δρ_serta[:, iT]
-                @timing "Sᵢ" mul!(δρ_iter_tmp, Sᵢ, δρ_iter, -1, 0)
-                δρ_iter_tmp[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))
-                mul!(δρ_iter, Sₒ⁻¹, δρ_iter_tmp)
-                δρ_iter[inds_exclude] .= Ref(zero(Vec3{Complex{FT}}))
+                @timing "Sᵢ" mul!(δρ_iter_tmp, Sᵢ_iT, δρ_iter, -1, 0)
+                mul!(δρ_iter, Sₒ⁻¹_iT, δρ_iter_tmp)
                 @views δρ_iter .+= δρ_serta[:, iT]
                 σ_new = symmetrize(occupation_to_conductivity(δρ_iter, el_i, params), symmetry)
-                σ_iter[iter+1, :, :, iT] .= σ_new
 
                 # Check convergence
                 if norm(σ_new - σ_old) / norm(σ_new) < rtol
@@ -411,15 +407,11 @@ function solve_electron_qme(params, el_i::QMEStates{FT}, el_f::Union{QMEStates{F
                     @info "iT=$iT, convergence not reached at maximum iteration $max_iter"
                 end
             end
-
             σ[:, :, iT] .= σ_new
             δρ[:, iT] .= δρ_iter
-        else
-            σ[:, :, iT] .= NaN
-            # δρ[:, iT] .= NaN # FIXME
         end
     end
-    (;σ, σ_serta, δρ_serta, δρ, σ_iter, el=el_i, params)
+    (; σ, σ_serta, δρ_serta, δρ, el=el_i, params)
 end
 
 function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
