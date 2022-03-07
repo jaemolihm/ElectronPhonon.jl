@@ -115,32 +115,27 @@ end
 Read a QMEModel or QMEIrreducibleKModel from a hdf5 file containing the information.
 # TODO: Write symmetry to file, automatically detect usage of symmetry.
 """
-function load_QMEModel(filename, transport_params, ::Type{FT}=Float64; derivative_order=nothing) where FT
+function load_QMEModel(filename, transport_params, ::Type{FT}=Float64; derivative_order=1) where FT
     fid = h5open(filename, "r")
     el_f = load_BTData(fid["finalstate_electron"], QMEStates{FT})
     ph = load_BTData(fid["phonon"], BTStates{FT})
 
-    if haskey(fid, "covariant_derivative")
-        if derivative_order === nothing
-            ∇ = Vec3(load_covariant_derivative_matrix(fid["covariant_derivative"]))
-        else
-            ∇ = Vec3(load_covariant_derivative_matrix(fid["covariant_derivative_order$derivative_order"]))
-        end
+    if haskey(fid, "covariant_derivative_order$derivative_order")
+        ∇ = Vec3(load_covariant_derivative_matrix(fid["covariant_derivative_order$derivative_order"]))
     else
+        if derivative_order != 1
+            # derivative_order was explicitly set but was not found in the file.
+            error("Covariant derivative at order $derivative_order not found")
+        end
+        @info "Covariant derivative not found"
         ∇ = nothing
     end
 
     if haskey(fid, "symmetry")
         symmetry = load_BTData(fid["symmetry"], Symmetry{FT})
         el_i_irr = load_BTData(fid["initialstate_electron"], QMEStates{FT})
-        if haskey(fid, "initialstate_electron_unfolded")
-            el_i = load_BTData(fid["initialstate_electron_unfolded"], QMEStates{FT})
-            ik_to_ikirr_isym = _data_hdf5_to_julia(read(fid, "ik_to_ikirr_isym"), Vector{Tuple{Int, Int}})
-        else
-            # FIXME: Always compute initialstate_electron_unfolded?
-            ik_to_ikirr_isym = Tuple{Int, Int}[]
-            el_i = el_i_irr
-        end
+        el_i = load_BTData(fid["initialstate_electron_unfolded"], QMEStates{FT})
+        ik_to_ikirr_isym = _data_hdf5_to_julia(read(fid, "ik_to_ikirr_isym"), Vector{Tuple{Int, Int}})
         map_i_to_f_vector = _qme_linear_response_unfold_map(el_i_irr, el_f, filename)
         qme_model = QMEIrreducibleKModel(; symmetry, ik_to_ikirr_isym, el_irr=el_i_irr,
                                            el=el_i, ∇, transport_params, el_f, ph,

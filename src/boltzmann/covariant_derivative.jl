@@ -126,20 +126,24 @@ covariant derivative:
 ``(∇ᵅ * f)[ik] = ∑_b wb * bᵅ * m[ib, ik]' * f[ikb] * m[ib, ik] - i[ξ[ik], f[ik]]``,
 where `ikb` is the index of `k + b` and `ξ` the position matrix in the eigenstate gauge.
 Note that `ξ` is not the Berry connection: it does not include the Hamiltonian derivative term.
-- If `el_sym` is set, first unfold `el_irr` to the full grid and calculate ∇ for the unfolded
-system. If `el_sym` is `nothing`, just compute `∇` for `el_irr`.
+If using symmetry (`el_sym !== nothing`), ∇ is calculated for `el`, which is on the full k grid,
+not `el_irr`, which is on the irreducible k grid.
+
+- `el`: QMEStates for the unfolded (full) k point grid.
+- `ik_to_ikirr_isym`: Mapping from ik on the full k grid to (ikirr, isym).
 - ∇[1], ∇[2], ∇[3] correspond to Cartesian x, y, z directions.
 - `hdf_group`: If given, write data for the sparse matrix to file. If not given, return the
 sparse matrix itself.
 """
 function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_states, bvec_data,
-        el_sym, hdf_group=nothing; fourier_mode="gridopt") where FT
+        el_sym, el, ik_to_ikirr_isym; hdf_group=nothing, fourier_mode="gridopt") where FT
+
     nw = first(el_irr_states).nw
 
     if el_sym !== nothing
-        # Using symmetry. el_irr is on the irreducible k grid.
-        # Unfold el to full k point grid
-        el, ik_to_ikirr_isym = EPW.unfold_QMEStates(el_irr, el_sym.symmetry);
+        # Using symmetry. el_irr and el_irr_states are on the irreducible k grid, while el
+        # is on the full k grid. ik_to_ikirr_isym is the mapping from the full grid to the
+        # irreducible grid.
 
         # Compute symmetry gauge matrix. For Sk = S_isym * k, the eigenstate at Sk is
         # U(Sk) = S_isym(k) * U(k). (Here, k is a point in the irreducible grid.)
@@ -149,11 +153,6 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
             # TODO: Optimize by skipping if symop is identity
             get_fourier!(smat_all[:, :, ik], el_sym.operators[isym], el_irr.kpts.vectors[ikirr], mode=fourier_mode)
         end
-    else
-        # Not using symmetry. el_irr is already on the full grid.
-        # Set el to el_irr and ik_to_ikirr_isym to (ikirr, isym) = (ik, 0).
-        el = el_irr
-        ik_to_ikirr_isym = [(ik, 0) for ik in 1:el.kpts.n]
     end
 
     kpts = el.kpts
@@ -161,13 +160,13 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
     # FIXME: el.nband instead of rng_maxdoes not work because rng can be outside of 1:el.nband
     # rng_max is a dirty fix...
     rng_max = maximum(x -> x.rng[end], el_irr_states)
-    mmat = zeros(ComplexF64, rng_max, rng_max)
-    u_k  = zeros(ComplexF64, nw, rng_max)
-    u_kb = zeros(ComplexF64, nw, rng_max)
+    mmat = zeros(Complex{FT}, rng_max, rng_max)
+    u_k  = zeros(Complex{FT}, nw, rng_max)
+    u_kb = zeros(Complex{FT}, nw, rng_max)
 
     sp_i = Int[]
     sp_j = Int[]
-    sp_vals = [ComplexF64[] for _ in 1:3]
+    sp_vals = [Complex{FT}[] for _ in 1:3]
 
     # 1. Derivative term
     for ik in 1:kpts.n
@@ -263,7 +262,7 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
         ∇ = [dropzeros!(sparse(sp_i, sp_j, sp_vals[1], el.n, el.n)),
               dropzeros!(sparse(sp_i, sp_j, sp_vals[2], el.n, el.n)),
               dropzeros!(sparse(sp_i, sp_j, sp_vals[3], el.n, el.n))]
-        return (; ∇, el, ik_to_ikirr_isym)
+        return ∇
     else
         # Write data needed to construct ∇ to file
         hdf_group["n"] = el.n
@@ -272,15 +271,28 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
         hdf_group["V1"] = sp_vals[1]
         hdf_group["V2"] = sp_vals[2]
         hdf_group["V3"] = sp_vals[3]
-        return (; el, ik_to_ikirr_isym)
+        return [sparse([], [], Complex{FT}[])] # dummy output for return type stability
     end
 end
 
-function load_covariant_derivative_matrix(f)
+"""
+    compute_covariant_derivative_matrix(el_irr::EPW.QMEStates, el_irr_states, bvec_data; kwargs...)
+Run without any symmetry.
+"""
+function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates, el_irr_states, bvec_data;
+                                             kwargs...)
+    # Without symmetry
+    el = el_irr
+    ik_to_ikirr_isym = [(ik, 0) for ik in 1:el.kpts.n]
+    compute_covariant_derivative_matrix(el_irr, el_irr_states, bvec_data, nothing, el,
+                                        ik_to_ikirr_isym; kwargs...)
+end
+
+function load_covariant_derivative_matrix(f, ::Type{FT}=Float64) where FT
     n = read(f, "n")::Int
     sp_i = read(f, "I")::Vector{Int}
     sp_j = read(f, "J")::Vector{Int}
-    sp_vals = [read(f, "V$i")::Vector{ComplexF64} for i in 1:3]
+    sp_vals = [read(f, "V$i")::Vector{Complex{FT}} for i in 1:3]
     ∇ = [dropzeros!(sparse(sp_i, sp_j, sp_val, n, n)) for sp_val in sp_vals]
     ∇
 end

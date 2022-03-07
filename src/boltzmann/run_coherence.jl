@@ -5,12 +5,13 @@ using OffsetArrays
 Debugging flags in `kwargs`
 - `DEBUG_random_gauge`: Multiply random phases to the eigenstates at k+q to change the eigenstate gauge. (Default: false)
 - `compute_derivative`: Compute the covariant derivative operator and write to file.
-- `derivative_order`: Order of the finite-difference formula for the covariant derivative.
+- `max_derivative_order`: Maximum order of the finite-difference formula for the covariant derivative.
+    All orders from 1 to `max_derivative_order` are computed.
 """
 function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq, kpts,
         kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
         average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff;
-        compute_derivative=false, derivative_order=1, kwargs...)
+        compute_derivative=false, max_derivative_order=1, kwargs...)
     FT = Float64
 
     nw = model.nw
@@ -76,33 +77,26 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         end
     end
 
-    # FIXME: Split covariant derivative and unfolding, do unfolding always.
-    # OR, add option in load_QMEModel no_el_unfold.
-    el_sym = symmetry !== nothing ? model.el_sym : nothing
-    g = create_group(fid_btedata, "covariant_derivative")
-    bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid)
-    # FIXME: Split unfolding and covariant derivative
-    # FIXME: Allow multiple orders
-    el_unfold, ik_to_ikirr_isym = compute_covariant_derivative_matrix(el_k_boltzmann,
-        el_k_save, bvec_data, el_sym, g; fourier_mode)
-    dump_BTData(create_group(fid_btedata, "initialstate_electron_unfolded"), el_unfold)
-    fid_btedata["ik_to_ikirr_isym"] = _data_julia_to_hdf5(ik_to_ikirr_isym)
+    # If using symmetry, unfold el to full k point grid, write to file.
+    if symmetry !== nothing
+        el_unfold, ik_to_ikirr_isym = unfold_QMEStates(el_k_boltzmann, model.el_sym.symmetry)
+        dump_BTData(create_group(fid_btedata, "initialstate_electron_unfolded"), el_unfold)
+        fid_btedata["ik_to_ikirr_isym"] = _data_julia_to_hdf5(ik_to_ikirr_isym)
+    end
 
     if compute_derivative
         el_sym = symmetry !== nothing ? model.el_sym : nothing
-        g = create_group(fid_btedata, "covariant_derivative")
-        bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid, order=derivative_order)
-        # FIXME: Split unfolding and covariant derivative
-        # FIXME: Allow multiple orders
-        el_unfold, ik_to_ikirr_isym = compute_covariant_derivative_matrix(el_k_boltzmann,
-            el_k_save, bvec_data, el_sym, g; fourier_mode)
-        dump_BTData(create_group(fid_btedata, "initialstate_electron_unfolded"), el_unfold)
-        fid_btedata["ik_to_ikirr_isym"] = _data_julia_to_hdf5(ik_to_ikirr_isym)
-
-        for _tmp_order in 1:(derivative_order-1)
-            g = create_group(fid_btedata, "covariant_derivative_order$_tmp_order")
-            _bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid, order=_tmp_order)
-            compute_covariant_derivative_matrix(el_k_boltzmann, el_k_save, _bvec_data, el_sym, g; fourier_mode)
+        for order in 1:max_derivative_order
+            g = create_group(fid_btedata, "covariant_derivative_order$order")
+            bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid; order)
+            if symmetry !== nothing
+                compute_covariant_derivative_matrix(el_k_boltzmann, el_k_save, bvec_data, el_sym,
+                                                    el_unfold, ik_to_ikirr_isym; hdf_group=g,
+                                                    fourier_mode)
+            else
+                compute_covariant_derivative_matrix(el_k_boltzmann, el_k_save, bvec_data;
+                                                    hdf_group=g, fourier_mode)
+            end
         end
     end
 

@@ -3,6 +3,8 @@ using EPW
 using HDF5
 using LinearAlgebra
 
+# TODO: Add test with symmetry
+
 @testset "covariant derivative" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
@@ -35,11 +37,11 @@ using LinearAlgebra
     el = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
 
     bvec_data_list = [finite_difference_vectors(model.recip_lattice, el.kpts.ngrid; order) for order in 1:max_order]
-    ∇_list = [EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data, nothing).∇ for bvec_data in bvec_data_list]
+    ∇_list = [EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data) for bvec_data in bvec_data_list]
 
     # Test IO
     h5open(joinpath(folder_tmp, "covariant_derivative.h5"), "w") do f
-        EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data_list[1], nothing, f)
+        EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data_list[1]; hdf_group=f)
         ∇_from_file = EPW.load_covariant_derivative_matrix(f)
         @test ∇_list[1] ≈ ∇_from_file
     end

@@ -16,6 +16,7 @@ FIXME: Currently assumes that only degenerate bands are included.
 function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEModel; kwargs...)
     # Function barrier because some fields of qme_model are not typed
     (; ∇, Sₒ, Sᵢ_irr) = qme_model
+    ∇ === nothing && error("qme_model.∇ must be set to compute Hall conductivity")
     solve_electron_hall_conductivity(out_linear, qme_model, ∇, Sₒ, Sᵢ_irr; kwargs...)
 end
 
