@@ -55,7 +55,7 @@ using EPW
             else
                 epobj_ekpR = WannierObject(model.epmat.irvec_next,
                             zeros(ComplexF64, (nw*epdata.nband*nmodes, length(model.epmat.irvec_next))))
-                @time EPW.get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, EPW.get_u(epdata.el_k), fourier_mode)
+                @time EPW.get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, epdata.el_k.u, fourier_mode)
                 EPW.get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
             end
 

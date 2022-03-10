@@ -27,7 +27,7 @@ using Test
     # There is no special function for diagonal-only calculation using the direct method, so no test.
     velocity_diag = zeros(3, model.nw)
     for ik in 1:kpts.n
-        uk = get_u(els_berry[ik])
+        uk = els_berry[ik].u
         xk = kpts.vectors[ik]
         EPW.get_el_velocity_diag_berry_connection!(velocity_diag, model.nw, model.el_ham_R, xk, uk)
         @test velocity_diag ≈ reshape(reinterpret(Float64, els_berry[ik].vdiag), 3, model.nw)

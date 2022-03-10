@@ -174,9 +174,9 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
         ikirr = ik_to_ikirr_isym[ik][1]
         rng_k = el_irr_states[ikirr].rng
         if el_sym !== nothing
-            @views mul!(u_k[:, rng_k], smat_all[:, :, ik], get_u(el_irr_states[ikirr]))
+            @views mul!(u_k[:, rng_k], smat_all[:, :, ik], el_irr_states[ikirr].u)
         else
-            u_k[:, rng_k] .= get_u(el_irr_states[ikirr])
+            u_k[:, rng_k] .= el_irr_states[ikirr].u
         end
 
         for (b, b_cart, wb) in zip(bvec_data...)
@@ -187,9 +187,9 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
             ikbirr = ik_to_ikirr_isym[ikb][1]
             rng_kb = el_irr_states[ikbirr].rng
             if el_sym !== nothing
-                @views mul!(u_kb[:, rng_kb], smat_all[:, :, ikb], get_u(el_irr_states[ikbirr]))
+                @views mul!(u_kb[:, rng_kb], smat_all[:, :, ikb], el_irr_states[ikbirr].u)
             else
-                u_kb[:, rng_kb] .= get_u(el_irr_states[ikbirr])
+                u_kb[:, rng_kb] .= el_irr_states[ikbirr].u
             end
 
             # Compute overlap matrix: mmat = U(k+b)' * U(k)

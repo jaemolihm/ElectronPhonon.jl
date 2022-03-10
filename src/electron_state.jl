@@ -67,12 +67,14 @@ end
 
 ElectronState(nw, ::Type{FT}=Float64; nband_bound=nw, nband_ignore=0) where FT = ElectronState{FT}(nw, nband_bound, nband_ignore)
 
-""" get_u(el)
-Return eigenvector for bands inside the window."""
-get_u(el) = view(el.u_full, :, el.rng_full)
-
-# This defines el.u, but it is type unstable
-# Base.getproperty(el::ElectronState, v::Symbol) = v === :u ? view(el.u_full, :, el.rng_full) : getfield(el, v)
+function Base.getproperty(el::ElectronState, name::Symbol)
+    if name === :u
+        # Return eigenvector for bands inside the window.
+        view(getfield(el, :u_full), :, getfield(el, :rng_full))
+    else
+        getfield(el, name)
+    end
+end
 
 function Base.copyto!(dest::ElectronState, src::ElectronState)
     if dest.nband_bound < src.nband_bound
@@ -176,12 +178,11 @@ end
 Compute electron band velocity, only the band-diagonal part.
 """
 function set_velocity_diag!(el::ElectronState{FT}, model, xk, fourier_mode="normal") where {FT}
-    uk = get_u(el)
     if model.el_velocity_mode === :Direct
         # For direct Wannier interpolation, there is no faster way to calculate only the diagonal part.
         # So we just calculate the full velocity matrix and set take the diagonal part.
         @views velocity = reshape(reinterpret(Complex{FT}, el.v[el.rng, el.rng]), 3, el.nband, el.nband)
-        get_el_velocity_direct!(velocity, el.nw, model.el_vel, xk, uk, fourier_mode)
+        get_el_velocity_direct!(velocity, el.nw, model.el_vel, xk, el.u, fourier_mode)
         for i in el.rng
             el.vdiag[i] = real.(el.v[i, i])
         end
@@ -189,7 +190,7 @@ function set_velocity_diag!(el::ElectronState{FT}, model, xk, fourier_mode="norm
         # For Berry connection method, we ignore the Berry connection contribution which is
         # zero for the diagonal part.
         @views velocity_diag = reshape(reinterpret(FT, el.vdiag[el.rng]), 3, el.nband)
-        get_el_velocity_diag_berry_connection!(velocity_diag, el.nw, model.el_ham_R, xk, uk, fourier_mode)
+        get_el_velocity_diag_berry_connection!(velocity_diag, el.nw, model.el_ham_R, xk, el.u, fourier_mode)
     else
         throw(ArgumentError("model.el_velocity_mode must be :Direct or :BerryConnection, not $(model.el_velocity_mode)."))
     end
@@ -201,15 +202,14 @@ Compute electron band velocity.
 - `skip_rbar`: If true, assume `el.rbar` is already calculated and skip `set_position!`.
 """
 function set_velocity!(el::ElectronState{FT}, model, xk, fourier_mode="normal"; skip_rbar=false) where {FT}
-    uk = get_u(el)
     @views velocity = reshape(reinterpret(Complex{FT}, el.v[el.rng, el.rng]), 3, el.nband, el.nband)
     if model.el_velocity_mode === :Direct
-        get_el_velocity_direct!(velocity, el.nw, model.el_vel, xk, uk, fourier_mode)
+        get_el_velocity_direct!(velocity, el.nw, model.el_vel, xk, el.u, fourier_mode)
     elseif model.el_velocity_mode === :BerryConnection
         # Need to set el.rbar first.
         skip_rbar || set_position!(el, model, xk, fourier_mode)
         @views rbar = el.rbar[el.rng, el.rng]
-        get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, el.e, xk, uk, rbar, fourier_mode)
+        get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, el.e, xk, el.u, rbar, fourier_mode)
     else
         throw(ArgumentError("model.el_velocity_mode must be :Direct or :BerryConnection, not $(model.el_velocity_mode)."))
     end
@@ -220,7 +220,6 @@ end
 Compute electron position matrix elements.
 """
 function set_position!(el::ElectronState{FT}, model, xk, fourier_mode="normal") where {FT}
-    uk = get_u(el)
     @views rbar = reshape(reinterpret(Complex{FT}, el.rbar[el.rng, el.rng]), 3, el.nband, el.nband)
-    get_el_velocity_direct!(rbar, el.nw, model.el_pos, xk, uk, fourier_mode)
+    get_el_velocity_direct!(rbar, el.nw, model.el_pos, xk, el.u, fourier_mode)
 end

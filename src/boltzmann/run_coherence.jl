@@ -49,13 +49,12 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         if get(kwargs, :DEBUG_random_gauge, false) == true
             # Multiply random phase factor
             for el in el_kq_save_irr, ib in 1:el.nband
-                get_u(el)[:, ib] .*= cispi(2*rand())
+                el.u[:, ib] .*= cispi(2*rand())
             end
             # Swap degenerate eigenvectors
             for el in el_kq_save_irr, ib in 1:el.nband-1
                 if abs(el.e[el.rng[ib]] - el.e[el.rng[ib+1]]) < EPW.electron_degen_cutoff && rand() > 0.5
-                    u = get_u(el)
-                    u[:, ib], u[:, ib+1] = u[:, ib+1], u[:, ib]
+                    el.u[:, ib], el.u[:, ib+1] = el.u[:, ib+1], el.u[:, ib]
                 end
             end
         end
@@ -142,8 +141,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 get_fourier!(sym_k, model.el_sym.operators[isym_el], xk, mode=fourier_mode)
                 tmp_arr = view(tmp_arr_full, :, rng_k)
                 tmp_arr2 = view(tmp_arr2_full, rng_sk, rng_k)
-                mul!(tmp_arr, sym_k, get_u(el_k))
-                mul!(tmp_arr2, get_u(el_sk)', tmp_arr)
+                mul!(tmp_arr, sym_k, el_k.u)
+                mul!(tmp_arr2, el_sk.u', tmp_arr)
                 gauge[el_sk.rng_full, el_k.rng_full, ik] .= tmp_arr2
                 # FIXME: Perform SVD to make gauge completely unitary
 
@@ -204,8 +203,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 get_fourier!(sym_k, model.el_sym.operators[isym_el], xk; mode=fourier_mode)
                 tmp_arr = view(tmp_arr_full, :, rng_k)
                 tmp_arr2 = view(tmp_arr2_full, rng_k, rng_k)
-                mul!(tmp_arr, sym_k, get_u(el_k))
-                mul!(tmp_arr2, get_u(el_k)', tmp_arr)
+                mul!(tmp_arr, sym_k, el_k.u)
+                mul!(tmp_arr2, el_k.u', tmp_arr)
                 gauge_list[el_k.rng_full, el_k.rng_full, icount] .= tmp_arr2
                 # FIXME: Perform SVD to make gauge completely unitary
             end
@@ -237,7 +236,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
             # Compute gauge matrix: gauge = U†(k) * U(k)
             tmp_arr = view(tmp_arr_full, rng_kq, rng_k)
-            mul!(tmp_arr, get_u(el_kq)', get_u(el_k))
+            mul!(tmp_arr, el_kq.u', el_k.u)
             gauge[el_kq.rng_full, el_k.rng_full, ik] .= tmp_arr
 
             # Set is_degenerate
@@ -291,7 +290,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             copyto!(epdata.el_k, el_k)
         end
 
-        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, get_u(el_k), fourier_mode)
+        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, el_k.u, fourier_mode)
 
         bt_nscat = 0
 

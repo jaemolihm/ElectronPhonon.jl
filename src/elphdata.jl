@@ -6,7 +6,6 @@ import EPW.WanToBloch: get_eph_Rq_to_kq!, get_eph_kR_to_kq!
 
 export ElPhData
 # export apply_gauge_matrix!
-export get_u
 export epdata_set_g2!
 export epdata_set_mmat!
 export epdata_compute_eph_dipole!
@@ -117,10 +116,8 @@ end
 @timing "setmmat" function epdata_set_mmat!(epdata)
     rngk = epdata.el_k.rng
     rngkq = epdata.el_kq.rng
-    uk = get_u(epdata.el_k)
-    ukq = get_u(epdata.el_kq)
     epdata.mmat .= 0
-    @views mul!(epdata.mmat[rngkq, rngk], ukq', uk)
+    @views mul!(epdata.mmat[rngkq, rngk], epdata.el_kq.u', epdata.el_k.u)
 end
 
 # Define wrappers of WanToBloch functions
@@ -130,10 +127,8 @@ end
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
 function get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk, fourier_mode="normal")
-    uk = get_u(epdata.el_k)
-    ukq = get_u(epdata.el_kq)
     @views ep_kq = epdata.ep[epdata.el_kq.rng, epdata.el_k.rng, :]
-    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq, fourier_mode)
+    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, epdata.el_k.u, epdata.el_kq.u, fourier_mode)
 end
 
 """
@@ -141,9 +136,8 @@ end
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
 function get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq, fourier_mode="normal")
-    ukq = get_u(epdata.el_kq)
     @views ep_kq = epdata.ep[epdata.el_kq.rng, epdata.el_k.rng, :]
-    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epdata.ph.u, ukq, fourier_mode)
+    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epdata.ph.u, epdata.el_kq.u, fourier_mode)
 end
 
 """
