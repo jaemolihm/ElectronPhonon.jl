@@ -87,7 +87,11 @@ function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEMode
                     cnt += 1
                     verbose && @printf("%3d\t%1.2e\n", iteration, residual)
                 end
-                @info "b = $b, c = $c: converged in $cnt iterations"
+                if IterativeSolvers.converged(g)
+                    @info "b = $b, c = $c: converged in $cnt iterations"
+                else
+                    @info "b = $b, c = $c: convergence not reached in $cnt iterations"
+                end
 
                 # Converged result is stored at g.x === δᴱᴮρ.data.
                 σ_hall[:, b, c, iT] .= vec(occupation_to_conductivity(δᴱᴮρ, transport_params))
