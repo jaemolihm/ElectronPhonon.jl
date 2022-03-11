@@ -33,6 +33,20 @@ using LinearAlgebra
 
     qme_offdiag_cutoff = 5.0 * unit_to_aru(:eV)
 
+    @testset "window" begin
+        # Test whether compute_covariant_derivative_matrix works with window
+        window = (15.0, Inf) .* unit_to_aru(:eV)
+        nband = 4
+        nband_ignore = 4
+        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window, nband, nband_ignore)
+        el = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
+
+        bvec_data = finite_difference_vectors(model.recip_lattice, el.kpts.ngrid)
+        ∇ = EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data)
+        @test size(∇[1]) == (2000, 2000)
+        @test nnz(∇[1]) == 199868
+    end
+
     el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"])
     el = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
 
