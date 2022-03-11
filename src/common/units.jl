@@ -20,6 +20,8 @@ module units
     const K  = 3.166810508e-6 * 2  # Kelvin -> Rydberg
     const ħ  = 1 / 1.054571800E-34 # J*s -> Rydberg units
 
+    const s = 1 / (4.8377687 * 1e-17) # second -> Rydberg units
+
     const e_SI = 1.602176634e-19 # e in SI units
 end
 
