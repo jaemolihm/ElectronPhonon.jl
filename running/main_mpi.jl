@@ -39,7 +39,7 @@ addprocs(manager)
 
             # v1: Using phase argument: good if phase is reused for many operators
             @inbounds for (ir, r) in enumerate(model.el_ham.irvec)
-                phase[ir] = cis(dot(r, 2pi*xk))
+                phase[ir] = cispi(2 * dot(r, xk))
             end
             get_fourier!(hk, model.el_ham, xk, phase, mode=fourier_mode)
 

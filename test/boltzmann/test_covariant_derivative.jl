@@ -2,6 +2,7 @@ using Test
 using EPW
 using HDF5
 using LinearAlgebra
+using SparseArrays
 
 # TODO: Add test with symmetry
 

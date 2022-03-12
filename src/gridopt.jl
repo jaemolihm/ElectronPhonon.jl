@@ -88,7 +88,7 @@ end
     gridopt.op_r_23 .= 0
     phase = gridopt.phase
     for (ir, r) in enumerate(irvec)
-        phase[ir] = cis(2pi * k * r[1])
+        phase[ir] = cispi(2 * k * r[1])
     end
     rng_data = 1:gridopt.ndata
     @views @inbounds for (ir_23, ir_rng) in enumerate(gridopt.irmap_rng_23)
@@ -102,7 +102,7 @@ end
     gridopt.op_r_3 .= 0
     phase = gridopt.phase_23
     for (ir, r) in enumerate(gridopt.irvec_23)
-        phase[ir] = cis(2pi * k * r[1])
+        phase[ir] = cispi(2 * k * r[1])
     end
     rng_data = 1:gridopt.ndata
     @views @inbounds for (ir_3, ir_rng) in enumerate(gridopt.irmap_rng_3)
@@ -113,8 +113,8 @@ end
 @timing "g3" function gridopt_get3!(op_k_1d, gridopt::GridOpt{T}, k) where {T}
     rdotk = gridopt.rdotk_3
     phase = gridopt.phase_3
-    rdotk .= 2pi .* k .* gridopt.irvec_3
-    phase .= cis.(rdotk)
+    rdotk .= k .* gridopt.irvec_3
+    phase .= cispi.(2 .* rdotk)
 
     @views mul!(op_k_1d, gridopt.op_r_3[1:gridopt.ndata, :], phase)
     return

@@ -147,7 +147,7 @@ end
     gridopt.k2 = NaN
     phase = gridopt.phase
     for (ir, r) in enumerate(obj.irvec)
-        phase[ir] = cis(2pi * k * r[1])
+        phase[ir] = cispi(2 * k * r[1])
     end
 
     # Remove filename_23 if exists
@@ -187,7 +187,7 @@ end
     gridopt.k2 = k
     phase = gridopt.phase_23
     for (ir, r) in enumerate(gridopt.irvec_23)
-        phase[ir] = cis(2pi * k * r[1])
+        phase[ir] = cispi(2 * k * r[1])
     end
 
     # Remove filename_3 if exists
@@ -225,8 +225,8 @@ end
 @timing "disk_g3" function gridopt_get3!(op_k_1d, gridopt::DiskGridOpt{T}, k, obj) where {T}
     rdotk = gridopt.rdotk_3
     phase = gridopt.phase_3
-    rdotk .= 2pi .* k .* gridopt.irvec_3
-    phase .= cis.(rdotk)
+    rdotk .= k .* gridopt.irvec_3
+    phase .= cispi.(2 .* rdotk)
 
     op_k_1d .= 0
     @threads for irng in axes(obj.ranges, 1)

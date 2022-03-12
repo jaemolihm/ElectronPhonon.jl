@@ -79,9 +79,9 @@ function get_phase_expikr!(obj, xk, tid)
     rdotk = obj.rdotks[tid]
     phase = obj.phases[tid]
     for (ir, r) in enumerate(obj.irvec)
-        rdotk[ir] = dot(r, 2pi*xk)
+        rdotk[ir] = dot(r, xk)
     end
-    phase .= cis.(rdotk)
+    phase .= cispi.(2 * rdotk)
     phase
 end
 

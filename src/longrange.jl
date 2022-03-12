@@ -138,7 +138,7 @@ Polar{T}(::Nothing) where {T} = Polar{T}(use=false, alat=0, volume=0, nmodes=0, 
             GZj = G' * polar.Z[jatom]
             for iatom = 1:natom
                 GZi = G' * polar.Z[iatom]
-                phasefac = cis(2T(π) * G' * (atom_pos[iatom] - atom_pos[jatom]))
+                phasefac = cispi(2 * G' * (atom_pos[iatom] - atom_pos[jatom]))
 
                 dyn_tmp = (fac2 * phasefac) .* (GZi' * GZj)
                 for j in 1:3

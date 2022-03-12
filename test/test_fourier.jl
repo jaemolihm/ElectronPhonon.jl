@@ -32,7 +32,7 @@ using Random
     @test obj.gridopts[1].nr_23 == 4
     @test obj.gridopts[1].nr_3 == 3
 
-    phase = [cis(2π * sum(r .* xk1)) for r in irvec]
+    phase = [cispi(2 * dot(r, xk1)) for r in irvec]
     get_fourier!(op_k_normal_2, obj, xk1, phase, mode="normal")
     @test op_k_normal ≈ op_k_normal_2
 
