@@ -68,6 +68,7 @@ include("run_transport.jl")
 include("run_transport_subgrid_q.jl")
 include("boltzmann/electron_transport_linear.jl")
 include("boltzmann/electron_transport_hall.jl")
+include("boltzmann/electron_transport_finite_efield.jl")
 
 include("postprocess/plot_bandstructure.jl")
 include("postprocess/plot_electron_phonon.jl")
