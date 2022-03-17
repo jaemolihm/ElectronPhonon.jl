@@ -87,7 +87,7 @@ using SparseArrays
 end
 
 @testset "covariant derivative bvec" begin
-    max_order = 4
+    max_order = 5
 
     alat = 0.8
     recip_lattice = Mat3(alat * [-1 1 -1; -1 1 1; 1 1 -1])
@@ -125,7 +125,7 @@ end
     for order in 2:max_order
         bvecs, bvecs_cart, wbs = finite_difference_vectors(recip_lattice, ngrid; order)
         for i in 2:order
-            @test sum([b_cart[1]^(2i) .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ 0 atol=1e-13
+            @test sum([b_cart[1]^(2i) .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ 0 atol=1e-10
         end
     end
 end

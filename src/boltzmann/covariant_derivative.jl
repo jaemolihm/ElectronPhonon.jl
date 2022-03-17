@@ -104,7 +104,13 @@ function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1) wher
         bvecs = vcat(bvecs, 2. * bvecs, 3. * bvecs, 4. * bvecs)
         wbs = vcat(wbs .* 8/5, wbs .* -1/5, wbs .* 8/315, wbs .* -1/560)
     else
-        error("Only order 1 to 4 are implemented, but got $order.")
+        # Create Vandermonde matrix and compute [1 0 ...] / V.
+        V = hcat([(1:order).^(2*n) for n in 1:order]...)
+        x = zeros(1, order)
+        x[1] = 1
+        coeffs = x / V
+        bvecs = vcat([bvecs .* n for n in 1:order]...)
+        wbs = vcat([wbs .* c for c in coeffs]...)
     end
 
     bvecs_cart = Ref(recip_lattice) .* bvecs
