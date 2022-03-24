@@ -217,8 +217,8 @@ end
 
 # Wrappers for transport-related functions
 
-function bte_compute_μ!(model::AbstractQMEModel)
-    bte_compute_μ!(model.transport_params, BTStates(model.el_irr))
+function bte_compute_μ!(model::AbstractQMEModel; kwargs...)
+    bte_compute_μ!(model.transport_params, BTStates(model.el_irr); kwargs...)
 end
 
 function compute_qme_scattering_matrix!(model::AbstractQMEModel; compute_Sᵢ=true)
