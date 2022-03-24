@@ -46,7 +46,7 @@ using LinearAlgebra
 
     transport_params = ElectronTransportParams(
         Tlist = Tlist,
-        n = 4.,
+        nlist = fill(4., length(Tlist)),
         smearing = (:Gaussian, 50.0 * unit_to_aru(:meV)),
         nband_valence = 0,
         volume = model_el.volume,
@@ -107,7 +107,7 @@ end
 
     transport_params = ElectronTransportParams(
         Tlist = Tlist,
-        n = 4.,
+        nlist = fill(4., length(Tlist)),
         smearing = (:Gaussian, 50.0 * unit_to_aru(:meV)),
         nband_valence = 0,
         volume = model.volume,

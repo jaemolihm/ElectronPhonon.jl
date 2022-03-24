@@ -21,7 +21,7 @@ using LinearAlgebra
 
     transport_params = ElectronTransportParams(
         Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K),
-        n = -1.0e21 * model.volume / unit_to_aru(:cm)^3,
+        nlist = fill(-1.0e21 * model.volume / unit_to_aru(:cm)^3, 3),
         smearing = smearing,
         nband_valence = 4,
         volume = model.volume,

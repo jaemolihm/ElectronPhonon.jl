@@ -23,11 +23,11 @@ function bte_compute_μ!(params, el::BTStates{R}; do_print=true) where {R <: Rea
         # nband_valence should be added for the real target ncarrier.
         # Also, el.nstates_base is the contribution to the ncarrier from occupied states
         # outside the window (i.e. not included in `energy`). So it is subtracted.
-        ncarrier_target = params.n / params.spin_degeneracy + params.nband_valence - el.nstates_base
+        ncarrier_target = @. params.nlist / params.spin_degeneracy + params.nband_valence - el.nstates_base
     elseif params.type == :Semiconductor
         # For semiconductors, compute the doped carrier density instead to minimize floating
         # point error.
-        ncarrier_target = params.n / params.spin_degeneracy
+        ncarrier_target = @. params.nlist / params.spin_degeneracy
         e_e = el.e[el.iband .>  params.nband_valence]
         e_h = el.e[el.iband .<= params.nband_valence]
         w_e = el.k_weight[el.iband .>  params.nband_valence]
@@ -36,16 +36,17 @@ function bte_compute_μ!(params, el::BTStates{R}; do_print=true) where {R <: Rea
         throw(DomainError("Invalid params.type $(params.type)"))
     end
 
-    do_print && mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (params.volume/unit_to_aru(:cm)^3)
-
-    for (iT, T) in enumerate(params.Tlist)
+    for i in axes(params.Tlist, 1)
+        T = params.Tlist[i]
         if params.type == :Metal
-            μ = find_chemical_potential(ncarrier_target, T, el.e, el.k_weight)
+            μ = find_chemical_potential(ncarrier_target[i], T, el.e, el.k_weight)
         elseif params.type == :Semiconductor
-            μ = find_chemical_potential_semiconductor(ncarrier_target, T, e_e, e_h, w_e, w_h)
+            μ = find_chemical_potential_semiconductor(ncarrier_target[i], T, e_e, e_h, w_e, w_h)
         end
-        params.μlist[iT] = μ
-        do_print && mpi_isroot() && @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
+        params.μlist[i] = μ
+        if do_print && mpi_isroot()
+            @info @sprintf "n = %.1e cm^-3 , T = %.1f K , μ = %.4f eV" params.nlist[i] / (params.volume/unit_to_aru(:cm)^3) T/unit_to_aru(:K) μ/unit_to_aru(:eV)
+        end
     end
     params.μlist
 end

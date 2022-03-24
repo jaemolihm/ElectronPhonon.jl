@@ -40,7 +40,7 @@ using LinearAlgebra
 
         transport_params = ElectronTransportParams(
             Tlist = Tlist,
-            n = 1.0e20 * model.volume / unit_to_aru(:cm)^3,
+            nlist = fill(1.0e20 * model.volume / unit_to_aru(:cm)^3, length(Tlist)),
             volume = model.volume,
             smearing = smearing,
             nband_valence = 4,
@@ -79,7 +79,7 @@ using LinearAlgebra
 
         transport_params = ElectronTransportParams(
             Tlist = Tlist,
-            n = -1.0e21 * model.volume / unit_to_aru(:cm)^3,
+            nlist = fill(-1.0e21 * model.volume / unit_to_aru(:cm)^3, length(Tlist)),
             smearing = smearing,
             nband_valence = 4,
             volume = model.volume,

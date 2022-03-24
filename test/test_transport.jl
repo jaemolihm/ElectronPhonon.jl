@@ -46,7 +46,7 @@ using EPW
 
     transport_params = ElectronTransportParams(
         Tlist = Tlist,
-        n = -1.0e15 * model.volume / unit_to_aru(:cm)^3,
+        nlist = fill(-1.0e15 * model.volume / unit_to_aru(:cm)^3, length(Tlist)),
         volume = model.volume,
         smearing = (:Gaussian, smearing),
         nband_valence = 4,
@@ -113,7 +113,7 @@ end
 
     transport_params = ElectronTransportParams(
         Tlist = Tlist,
-        n = 4.0,
+        nlist = fill(4.0, length(Tlist)),
         volume = model.volume,
         smearing = (:Gaussian, smearing),
         nband_valence = 0,

@@ -57,7 +57,7 @@ function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEMode
         end
 
         @views r_hall_serta[:, :, :, iT] = compute_hall_factor(out_linear.σ_serta[:, :, iT],
-            σ_hall_serta[:, :, :, iT]) .* transport_params.n ./ transport_params.volume
+            σ_hall_serta[:, :, :, iT]) .* transport_params.nlist[iT] ./ transport_params.volume
 
         if Sᵢ_irr !== nothing
             # IBTE: Solve scatmap * δᴱᴮρ = (I + Sₒ⁻¹ Sᵢ) δᴱᴮρ = δᴱᴮρ_serta using GMRES
@@ -99,7 +99,7 @@ function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEMode
             @info "Total $(g.mv_products) matrix-vector products used"
 
             @views r_hall[:, :, :, iT] = compute_hall_factor(out_linear.σ[:, :, iT],
-                σ_hall[:, :, :, iT]) .* transport_params.n ./ transport_params.volume
+                σ_hall[:, :, :, iT]) .* transport_params.nlist[iT] ./ transport_params.volume
         end
     end
     (; σ_hall_serta, r_hall_serta, σ_hall, r_hall)

@@ -30,13 +30,15 @@ If this condition does not hold, manually set `type = :Metal`.
 """
 Base.@kwdef struct ElectronTransportParams{T <: Real}
     Tlist::Vector{T}
-    n::T
+    nlist::Vector{T}
     nband_valence::Int = 0
     volume::T
     smearing::Tuple{Symbol, T}
     spin_degeneracy::Int
     μlist::Vector{T} = fill(convert(eltype(Tlist), NaN), length(Tlist))
-    type::Symbol = abs(n) >= 1 ? :Metal : :Semiconductor
+    type::Symbol = maximum(abs.(nlist)) >= 1 ? :Metal : :Semiconductor
+    # FIXME: Check length of Tlist and nlist is equal
+    # TODO: Simple constructor with single T or n
 end
 
 # Data and buffers for SERTA (self-energy relaxation-time approximation) conductivity
@@ -58,18 +60,21 @@ end
     degeneracy factor not multiplied.
 """
 function transport_set_μ!(params, energy, weights, nelec_below_window=0; do_print=true)
-    # Since params.n is the difference of number of electrons per cell from nband_valence,
-    # nband_valence should be added for the real target ncarrier.
-    # Also, nelec_below_window is the contribution to the ncarrier from occupied states
-    # outside the window (i.e. not included in `energy`). So it is subtracted.
-    ncarrier_target = params.n / params.spin_degeneracy + params.nband_valence - nelec_below_window
+    for i in axes(params.Tlist, 1)
+        n = params.nlist[i]
+        T = params.Tlist[i]
+        # Since n is the difference of number of electrons per cell from nband_valence,
+        # nband_valence should be added for the real target ncarrier.
+        # Also, nelec_below_window is the contribution to the ncarrier from occupied states
+        # outside the window (i.e. not included in `energy`). So it is subtracted.
+        ncarrier_target = n / params.spin_degeneracy + params.nband_valence - nelec_below_window
 
-    do_print && mpi_isroot() && @info @sprintf "n = %.1e cm^-3" params.n / (params.volume/unit_to_aru(:cm)^3)
-
-    for (iT, T) in enumerate(params.Tlist)
         μ = find_chemical_potential(ncarrier_target, T, energy, weights)
-        params.μlist[iT] = μ
-        do_print && mpi_isroot() && @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
+        params.μlist[i] = μ
+        if do_print && mpi_isroot()
+            @info @sprintf "n = %.1e cm^-3" n / (params.volume/unit_to_aru(:cm)^3)
+            @info @sprintf "T = %.1f K , μ = %.4f eV" T/unit_to_aru(:K) μ/unit_to_aru(:eV)
+        end
     end
     nothing
 end
@@ -170,34 +175,34 @@ TODO: Allow printing if σ is not 3*3.
 FIXME: Is abs(charge_density_SI) correct?
 """
 function transport_print_mobility(σ, params::ElectronTransportParams; do_print=true)
-    carrier_density_SI = params.n / params.volume * unit_to_aru(:cm)^3
-    charge_density_SI = carrier_density_SI * units.e_SI
+    carrier_density_SI = params.nlist ./ params.volume .* unit_to_aru(:cm)^3
+    charge_density_SI = carrier_density_SI .* units.e_SI
 
     σ_SI = σ .* (units.e_SI^2 * unit_to_aru(:ħ) * unit_to_aru(:cm))
-    mobility_SI = σ_SI ./ abs(charge_density_SI)
+    mobility_SI = σ_SI ./ reshape(abs.(charge_density_SI), 1, 1, :)
 
     if do_print
         if params.type === :Semiconductor
             println("======= Electrical mobility =======")
-            println("Carrier density (cm⁻³) =  $carrier_density_SI")
-            for iT in 1:length(params.Tlist)
-                println("T (K)  = $(params.Tlist[iT] / unit_to_aru(:K))")
-                @printf "μ (eV) = %.4f\n" params.μlist[iT] / unit_to_aru(:eV)
+            for i in axes(params.Tlist, 1)
+                println("Carrier density (cm⁻³) =  $(carrier_density_SI[i])")
+                println("T (K)  = $(params.Tlist[i] / unit_to_aru(:K))")
+                @printf "μ (eV) = %.4f\n" params.μlist[i] / unit_to_aru(:eV)
                 println("mobility (cm²/Vs) = ")
-                for i in 1:3
-                    @printf "%10.3f %10.3f %10.3f\n" mobility_SI[:, i, iT]...
+                for a in 1:3
+                    @printf "%10.3f %10.3f %10.3f\n" mobility_SI[:, a, i]...
                 end
                 println()
             end
         elseif params.type === :Metal
             println("======= Electrical conductivity =======")
-            println("Carrier density (cm⁻³) =  $carrier_density_SI")
-            for iT in 1:length(params.Tlist)
-                println("T (K)  = $(params.Tlist[iT] / unit_to_aru(:K))")
-                @printf "μ (eV) = %.4f\n" params.μlist[iT] / unit_to_aru(:eV)
+            for i in axes(params.Tlist, 1)
+                println("Carrier density (cm⁻³) =  $(carrier_density_SI[i])")
+                println("T (K)  = $(params.Tlist[i] / unit_to_aru(:K))")
+                @printf "μ (eV) = %.4f\n" params.μlist[i] / unit_to_aru(:eV)
                 println("conductivity (1/(Ω*cm)) = ")
-                for i in 1:3
-                    @printf "%12.3f %12.3f %12.3f\n" σ_SI[:, i, iT]...
+                for a in 1:3
+                    @printf "%12.3f %12.3f %12.3f\n" σ_SI[:, a, i]...
                 end
                 println()
             end

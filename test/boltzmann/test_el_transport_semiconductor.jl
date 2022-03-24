@@ -44,7 +44,7 @@ using LinearAlgebra
 
         transport_params = ElectronTransportParams(
             Tlist = Tlist,
-            n = 1.0e20 * model_el.volume / unit_to_aru(:cm)^3,
+            nlist = fill(1.0e20 * model_el.volume / unit_to_aru(:cm)^3, length(Tlist)),
             volume = model_el.volume,
             smearing = smearing,
             nband_valence = 4,
@@ -64,7 +64,7 @@ using LinearAlgebra
         # Comparison with SERTA transport module (the non-Boltzmann one)
         transport_params_serta = ElectronTransportParams(
             Tlist = transport_params.Tlist,
-            n = transport_params.n,
+            nlist = transport_params.nlist,
             smearing = (:Gaussian, transport_params.smearing[2]),
             nband_valence = 4,
             volume = model_el.volume,
@@ -117,7 +117,7 @@ using LinearAlgebra
 
         transport_params = ElectronTransportParams(
             Tlist = Tlist,
-            n = -1.0e21 * model_el.volume / unit_to_aru(:cm)^3,
+            nlist = fill(-1.0e21 * model_el.volume / unit_to_aru(:cm)^3, length(Tlist)),
             smearing = smearing,
             nband_valence = 4,
             volume = model_el.volume,
@@ -137,7 +137,7 @@ using LinearAlgebra
         # Comparison with SERTA transport module (the non-Boltzmann one)
         transport_params_serta = ElectronTransportParams(
             Tlist = transport_params.Tlist,
-            n = transport_params.n,
+            nlist = transport_params.nlist,
             smearing = (:Gaussian, transport_params.smearing[2]),
             nband_valence = 4,
             volume = model_el.volume,
@@ -167,7 +167,7 @@ using LinearAlgebra
 
         transport_params = ElectronTransportParams(
             Tlist = Tlist,
-            n = 1.0e20 * model_el.volume / unit_to_aru(:cm)^3,
+            nlist = fill(1.0e20 * model_el.volume / unit_to_aru(:cm)^3, length(Tlist)),
             volume = model_el.volume,
             smearing = smearing,
             nband_valence = 4,
@@ -264,7 +264,7 @@ end
 
         transport_params = ElectronTransportParams(
             Tlist = Tlist,
-            n = 1.0e20 * model.volume / unit_to_aru(:cm)^3,
+            nlist = fill(1.0e20 * model.volume / unit_to_aru(:cm)^3, length(Tlist)),
             volume = model.volume,
             smearing = smearing,
             nband_valence = 4,
@@ -357,7 +357,7 @@ end
 
         transport_params = ElectronTransportParams(
             Tlist = Tlist,
-            n = -1.0e15 * model.volume / unit_to_aru(:cm)^3,
+            nlist = fill(-1.0e15 * model.volume / unit_to_aru(:cm)^3, length(Tlist)),
             smearing = smearing,
             nband_valence = 4,
             volume = model.volume,

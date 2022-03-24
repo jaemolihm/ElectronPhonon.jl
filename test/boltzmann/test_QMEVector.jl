@@ -96,7 +96,7 @@ end
 
     transport_params = ElectronTransportParams{Float64}(
         Tlist = [300.0] .* unit_to_aru(:K),
-        n = -1.0e16 * model.volume / unit_to_aru(:cm)^3,
+        nlist = [-1.0e16 * model.volume / unit_to_aru(:cm)^3],
         smearing = (:Gaussian, 50.0 * unit_to_aru(:meV)),
         volume = model.volume,
         nband_valence = 4,
