@@ -22,68 +22,71 @@ using SparseArrays
     # Maximum finite-difference order to test
     max_order = 2
 
-    # Setup k points: grid spacing 1/nk, centered at xk0, include +- 2 points.
-    xk0 = Vec3(0.0, 0.2, 0.0)
-    nk = 240
-    kpts_list = Vec3{Float64}[]
-    for i in -max_order:max_order, j in -max_order:max_order, k in -max_order:max_order
-        push!(kpts_list, xk0 .+ (i, j, k) ./ nk)
-    end
-    ik0 = findfirst(xk -> xk ≈ xk0, kpts_list)
-    kpts = GridKpoints(Kpoints(length(kpts_list), kpts_list, ones(length(kpts_list)), (nk, nk, nk)))
-
     qme_offdiag_cutoff = 5.0 * unit_to_aru(:eV)
 
     @testset "window" begin
         # Test whether compute_covariant_derivative_matrix works with window
-        window = (15.0, Inf) .* unit_to_aru(:eV)
-        nband = 4
-        nband_ignore = 4
+        window = (5.0, 22.0) .* unit_to_aru(:eV)
+        kpts = generate_kvec_grid(5, 5, 5)
+        nband = 7
+        nband_ignore = 0
         el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window, nband, nband_ignore)
         el = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
 
         bvec_data = finite_difference_vectors(model.recip_lattice, el.kpts.ngrid)
         ∇ = EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data)
-        @test size(∇[1]) == (2000, 2000)
-        @test nnz(∇[1]) == 199868
+        @test size(∇[1]) == (el.n, el.n)
+        @test nnz(∇[1]) == 51910
     end
 
-    el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"])
-    el = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
+    @testset "accuracy" begin
+        # Setup k points: grid spacing 1/nk, centered at xk0, include +- 2 points.
+        xk0 = Vec3(0.0, 0.2, 0.0)
+        nk = 240
+        kpts_list = Vec3{Float64}[]
+        for i in -max_order:max_order, j in -max_order:max_order, k in -max_order:max_order
+            push!(kpts_list, xk0 .+ (i, j, k) ./ nk)
+        end
+        ik0 = findfirst(xk -> xk ≈ xk0, kpts_list)
+        kpts = GridKpoints(Kpoints(length(kpts_list), kpts_list, ones(length(kpts_list)), (nk, nk, nk)))
 
-    bvec_data_list = [finite_difference_vectors(model.recip_lattice, el.kpts.ngrid; order) for order in 1:max_order]
-    ∇_list = [EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data) for bvec_data in bvec_data_list]
+        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"])
+        el = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
 
-    # Test IO
-    h5open(joinpath(folder_tmp, "covariant_derivative.h5"), "w") do f
-        EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data_list[1]; hdf_group=f)
-        ∇_from_file = EPW.load_covariant_derivative_matrix(f)
-        @test ∇_list[1] ≈ ∇_from_file
-    end
+        bvec_data_list = [finite_difference_vectors(model.recip_lattice, el.kpts.ngrid; order) for order in 1:max_order]
+        ∇_list = [EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data) for bvec_data in bvec_data_list]
 
-    # Test covariant derivative of the Hamiltonian operator. Compare with the analytic
-    # solution which is the velocity operator.
-    f = zeros(el.n)
-    @. f[el.ib1 == el.ib2] = el.e1[el.ib1 == el.ib2]
-    ∇f_ik0_analytic = [x[1] for x in el_k_save[ik0].v]
+        # Test IO
+        h5open(joinpath(folder_tmp, "covariant_derivative.h5"), "w") do f
+            EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data_list[1]; hdf_group=f)
+            ∇_from_file = EPW.load_covariant_derivative_matrix(f)
+            @test ∇_list[1] ≈ ∇_from_file
+        end
 
-    # Accumulate error for degenerate and nondegenerate pairs separately and check both.
-    error_degen = fill(0.0, max_order)
-    error_nondegen = fill(0.0, max_order)
-    for order in 1:max_order
-        ∇f = ∇_list[order][1] * f
-        for i in 1:el.n
-            if el.ik[i] == ik0
-                if abs(el.e1[i] - el.e2[i]) < EPW.electron_degen_cutoff
-                    error_degen[order] += abs(∇f[i] - ∇f_ik0_analytic[el.ib1[i], el.ib2[i]])
-                else
-                    error_nondegen[order] += abs(∇f[i] - ∇f_ik0_analytic[el.ib1[i], el.ib2[i]])
+        # Test covariant derivative of the Hamiltonian operator. Compare with the analytic
+        # solution which is the velocity operator.
+        f = zeros(el.n)
+        @. f[el.ib1 == el.ib2] = el.e1[el.ib1 == el.ib2]
+        ∇f_ik0_analytic = [x[1] for x in el_k_save[ik0].v]
+
+        # Accumulate error for degenerate and nondegenerate pairs separately and check both.
+        error_degen = fill(0.0, max_order)
+        error_nondegen = fill(0.0, max_order)
+        for order in 1:max_order
+            ∇f = ∇_list[order][1] * f
+            for i in 1:el.n
+                if el.ik[i] == ik0
+                    if abs(el.e1[i] - el.e2[i]) < EPW.electron_degen_cutoff
+                        error_degen[order] += abs(∇f[i] - ∇f_ik0_analytic[el.ib1[i], el.ib2[i]])
+                    else
+                        error_nondegen[order] += abs(∇f[i] - ∇f_ik0_analytic[el.ib1[i], el.ib2[i]])
+                    end
                 end
             end
         end
+        @test all(error_degen .< [1e-3, 1e-6])
+        @test all(error_nondegen .< [1e-3, 1e-6])
     end
-    @test all(error_degen .< [1e-3, 1e-6])
-    @test all(error_nondegen .< [1e-3, 1e-6])
 end
 
 @testset "covariant derivative bvec" begin
