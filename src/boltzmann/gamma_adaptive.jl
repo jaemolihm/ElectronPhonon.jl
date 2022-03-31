@@ -155,7 +155,7 @@ function gamma_adaptive_compute_g_gamma(model, kpts, el_k_save, nband, nband_ign
     epobj_eRpq = WannierObject(model.epmat.irvec_next, zeros(Complex{FT}, (nw*nw*nmodes, length(model.epmat.irvec_next))))
     get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq_gamma, ph_gamma.u, fourier_mode)
 
-    epdata = ElPhData{Float64}(nw, nmodes, nband, nband_ignore)
+    epdata = ElPhData{Float64}(nw, nmodes, nband)
     epdata.ph = ph_gamma
 
     g_gamma_save = zeros(Complex{FT}, nband, nband, nmodes, nk)

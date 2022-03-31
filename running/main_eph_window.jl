@@ -39,7 +39,7 @@ addprocs(manager)
         nq = qpoints.n
         nband = iband_max - iband_min + 1
 
-        elself = ElectronSelfEnergy(Float64, nband, nmodes, nk)
+        elself = ElectronSelfEnergy(Float64, iband_min:iband_max, nmodes, nk)
         phselfs = [PhononSelfEnergy(Float64, nband, nmodes, nq) for i=1:nthreads()]
 
         epdatas = [ElPhData(nw, nmodes; nband) for i=1:nthreads()]

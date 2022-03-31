@@ -92,7 +92,7 @@ using LinearAlgebra
         out_crta = run_transport_constant_relaxation_time(model, nklist, transport_params;
             inv_τ_constant, symmetry, window=window_k, do_print=false);
         @test out_crta.σ_intra_degen ≈ cat(Ref(I(3)) .* [0.008557878321123907, 0.006098709949803376, 0.004730384577746854]..., dims=3)
-        @test out_crta.σ_full ≈ cat(Ref(I(3)) .* [0.010577697892226491, 0.008118177514709826, 0.006751119653947763]..., dims=3)
+        @test out_crta.σ_full ≈ cat(Ref(I(3)) .* [0.010403204637123844, 0.007943684266301154, 0.00657662658187597]..., dims=3)
 
         # Compare with BTE
         @time EPW.run_transport(

@@ -167,7 +167,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
     end
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData{Float64}(nw, nmodes, nband, nband_ignore)]
+    epdatas = [ElPhData{Float64}(nw, nmodes, nband)]
     Threads.resize_nthreads!(epdatas)
     epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nband*nmodes, length(model.epmat.irvec_next))))
 
@@ -195,7 +195,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
         el_k = el_k_save[ik]
 
         for epdata in epdatas
-            copyto!(epdata.el_k, el_k)
+            epdata.el_k = el_k
         end
 
         get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, el_k.u, fourier_mode)
@@ -217,8 +217,8 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             xq = qpts.vectors[iq]
 
             # Copy saved electron and phonon states to epdata
-            copyto!(epdata.ph, ph_save[iq])
-            copyto!(epdata.el_kq, el_kq_save[ikq])
+            epdata.ph = ph_save[iq]
+            epdata.el_kq = el_kq_save[ikq]
 
             el_kq = epdata.el_kq
             ph = epdata.ph

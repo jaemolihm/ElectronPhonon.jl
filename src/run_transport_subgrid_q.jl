@@ -128,7 +128,7 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
     end
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData(nw, nmodes, FT; nband, nband_ignore)]
+    epdatas = [ElPhData{FT}(nw, nmodes, nband)]
     Threads.resize_nthreads!(epdatas)
     epobj_eRpq = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
 
@@ -156,7 +156,7 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
         ph = ph_save[iq]
 
         for epdata in epdatas
-            copyto!(epdata.ph, ph)
+            epdata.ph = ph
         end
 
         get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u, fourier_mode)
@@ -177,8 +177,8 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
             ikq = xk_to_ik(xk + xq, kqpts)
 
             # Copy saved electron and phonon states to epdata
-            copyto!(epdata.el_k, el_k_save[ik])
-            copyto!(epdata.el_kq, el_kq_save[ikq])
+            epdata.el_k = el_k_save[ik]
+            epdata.el_kq = el_kq_save[ikq]
 
             el_k = epdata.el_k
             el_kq = epdata.el_kq
@@ -268,7 +268,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
     end
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData{Float64}(nw, nmodes, nband, nband_ignore)]
+    epdatas = [ElPhData{Float64}(nw, nmodes, nband)]
     Threads.resize_nthreads!(epdatas)
     epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
 
@@ -296,7 +296,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
         el_k = el_k_save[ik]
 
         for epdata in epdatas
-            copyto!(epdata.el_k, el_k)
+            epdata.el_k = el_k
         end
         get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, el_k.u, fourier_mode)
 
@@ -316,8 +316,8 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
             ikq = xk_to_ik(xk + xq, kqpts)
 
             # Copy saved electron and phonon states to epdata
-            copyto!(epdata.ph, ph_save[iq])
-            copyto!(epdata.el_kq, el_kq_save[ikq])
+            epdata.ph = ph_save[iq]
+            epdata.el_kq = el_kq_save[ikq]
 
             el_k = epdata.el_k
             el_kq = epdata.el_kq

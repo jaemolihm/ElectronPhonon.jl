@@ -72,17 +72,18 @@ end
 
 "Average data for degenerate states using energy. Non allocating version."
 function average_degeneracy!(data_averaged, data, energy, degeneracy_cutoff=1.e-6)
-    @assert size(data) == size(energy)
+    # TODO: Use EPW.electron_degen_cutoff
     @assert size(data) == size(data_averaged)
-    nbnd, nk = size(data)
+    @assert axes(data) == axes(data_averaged)
 
-    iblist_degen = zeros(Bool, nbnd)
+    iblist_degen = zeros(Bool, axes(data, 1))
 
     # This is fast enough, so no need for threading.
-    # Threads.@threads :static for ik in 1:nk
-    for ik in 1:nk
-        for ib in 1:nbnd
-            iblist_degen .= abs.(energy[:, ik] .- energy[ib, ik]) .< degeneracy_cutoff
+    for ik in axes(data, 2)
+        for ib in axes(data, 1)
+            for jb in axes(data, 1)
+                iblist_degen[jb] = abs(energy[jb, ik] - energy[ib, ik]) < degeneracy_cutoff
+            end
             data_averaged[ib, ik] = mean(data[iblist_degen, ik])
         end # ib
     end # ik

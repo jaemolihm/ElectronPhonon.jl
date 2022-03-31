@@ -1,5 +1,6 @@
 
 using Base.Threads
+using OffsetArrays
 
 # TODO: Make the buffers module const ?
 
@@ -14,15 +15,16 @@ Base.@kwdef struct ElectronSelfEnergyParams{T <: Real}
 end
 
 # Data and buffers for self-energy of electron
-Base.@kwdef struct ElectronSelfEnergy{T <: Real}
-    imsigma::Array{T, 3}
+Base.@kwdef struct ElectronSelfEnergy{T}
+    imsigma::T
 end
 
-function ElectronSelfEnergy(T, nband::Int, nmodes::Int, nk::Int, ntemperatures::Int)
-    data = ElectronSelfEnergy{T}(
-        imsigma=zeros(T, nband, nk, ntemperatures),
+function ElectronSelfEnergy(FT, rng_band, nmodes::Int, nk::Int, ntemps::Int)
+    # TODO: Remove nmodes
+    nband = length(rng_band)
+    ElectronSelfEnergy(
+        imsigma=OffsetArray(zeros(FT, nband, nk, ntemps), rng_band, 1:nk, 1:ntemps)
     )
-    data
 end
 
 """
@@ -56,8 +58,10 @@ end
                 delta2 = gaussian(delta_e2 * inv_smear) * inv_smear
                 fcoeff1 = ph_occ[imode] + el_kq_occ[jb]
                 fcoeff2 = ph_occ[imode] + 1.0 - el_kq_occ[jb]
-                elself.imsigma[ib, ik, iT] += (epdata.g2[jb, ib, imode] * epdata.wtq
-                    * π * (fcoeff1 * delta1 + fcoeff2 * delta2))
+                elself.imsigma[ib + epdata.el_k.nband_ignore, ik, iT] += (
+                    epdata.g2[jb, ib, imode] * epdata.wtq
+                    * π * (fcoeff1 * delta1 + fcoeff2 * delta2)
+                )
             end
         end
     end

@@ -81,10 +81,6 @@ function Base.copyto!(dest::ElectronState, src::ElectronState)
         throw(ArgumentError("src.nband_bound ($(src.nband_bound)) cannot be greater " *
             "than dest.nband_bound ($(dest.nband_bound))"))
     end
-    if dest.nband_ignore != src.nband_ignore
-        throw(ArgumentError("src.nband_ignore ($(src.nband_ignore)) must be " *
-            "equal to dest.nband_ignore ($(dest.nband_ignore))"))
-    end
     if dest.nw != src.nw
         throw(ArgumentError("src.nw ($(src.nw)) must be " *
             "equal to dest.nw ($(dest.nw))"))
@@ -100,6 +96,7 @@ function Base.copyto!(dest::ElectronState, src::ElectronState)
         dest.vdiag[ib] = src.vdiag[ib]
         for jb in src.rng
             dest.v[jb, ib] = src.v[jb, ib]
+            dest.rbar[jb, ib] = src.rbar[jb, ib]
         end
     end
     dest
@@ -120,16 +117,13 @@ function set_window!(el::ElectronState, window=(-Inf,Inf))
         el.rng_full = 1:0
         return el
     end
-    if ibands[1] <= el.nband_ignore
-        throw(ArgumentError("Selected bands ($(ibands[1]):$(ibands[end])) must not include " *
-            "bands 1 to nband_ignore ($(el.nband_ignore))."))
-    end
     if ibands[end] - ibands[1] + 1 > el.nband_bound
         throw(ArgumentError("Number of selected bands ($(ibands[end] - ibands[1] + 1)) " *
             "cannot exceed nband_bound ($(el.nband_bound))."))
     end
 
     el.rng_full = ibands[1]:ibands[end]
+    el.nband_ignore = ibands[1] - 1
     el.rng = el.rng_full .- el.nband_ignore
     el.nband = length(el.rng)
     @views el.e[el.rng] .= el.e_full[el.rng_full]
@@ -152,11 +146,10 @@ Compute electron eigenenergy and eigenvector and save them in el.
 function set_eigen!(el::ElectronState, model, xk, fourier_mode="normal")
     get_el_eigen!(el.e_full, el.u_full, el.nw, model.el_ham, xk, fourier_mode)
 
-    # Set window to the default value: [nband_ignore+1, nband_ignore+nband_bound].
-    el.rng_full = el.nband_ignore+1:el.nband_ignore+el.nband_bound
-    el.rng = el.rng_full .- el.nband_ignore
-    el.nband = el.nband_bound
-    @views el.e[el.rng] .= el.e_full[el.rng_full]
+    # Reset window to a dummy value
+    el.nband = 0
+    el.rng_full = 1:0
+    el.rng = 1:0
 end
 
 """
@@ -166,11 +159,10 @@ Compute electron eigenenergy and save them in el.
 function set_eigen_valueonly!(el::ElectronState, model, xk, fourier_mode="normal")
     get_el_eigen_valueonly!(el.e_full, el.nw, model.el_ham, xk, fourier_mode)
 
-    # Set window to the default value: [nband_ignore+1, nband_ignore+nband_bound].
-    el.rng_full = el.nband_ignore+1:el.nband_ignore+el.nband_bound
-    el.rng = el.rng_full .- el.nband_ignore
-    el.nband = el.nband_bound
-    @views el.e[el.rng] .= el.e_full[el.rng_full]
+    # Reset window to a dummy value
+    el.nband = 0
+    el.rng_full = 1:0
+    el.rng = 1:0
 end
 
 """
@@ -209,7 +201,7 @@ function set_velocity!(el::ElectronState{FT}, model, xk, fourier_mode="normal"; 
         # Need to set el.rbar first.
         skip_rbar || set_position!(el, model, xk, fourier_mode)
         @views rbar = el.rbar[el.rng, el.rng]
-        get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, el.e, xk, el.u, rbar, fourier_mode)
+        @views get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, el.e[el.rng], xk, el.u, rbar, fourier_mode)
     else
         throw(ArgumentError("model.el_velocity_mode must be :Direct or :BerryConnection, not $(model.el_velocity_mode)."))
     end

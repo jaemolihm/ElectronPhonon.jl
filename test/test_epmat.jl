@@ -41,10 +41,10 @@ using EPW
     for fourier_mode in ["normal", "gridopt"]
         for model in [model_ph, model_ph_disk, model_el, model_el_disk]
             i += 1
-            epdata = ElPhData(nw, nmodes; nband, nband_ignore)
-            EPW.copyto!(epdata.ph, ph)
-            EPW.copyto!(epdata.el_k, el_k)
-            EPW.copyto!(epdata.el_kq, el_kq)
+            epdata = ElPhData(nw, nmodes; nband)
+            epdata.ph = ph
+            epdata.el_k = el_k
+            epdata.el_kq = el_kq
 
             @info "$(typeof(model)), epmat_outer_momentum = $(model.epmat_outer_momentum), $fourier_mode"
             if model.epmat_outer_momentum == "ph"

@@ -19,7 +19,6 @@ export epdata_compute_eph_dipole!
     nband::Int # Maximum number of bands inside the window
     wtk::T # Weight of the k point
     wtq::T # Weight of the q point
-    mmat::Matrix{Complex{T}} # U(k+q)' * U(k)
 
     # Electron states
     el_k::ElectronState{T} # electron state at k
@@ -28,36 +27,31 @@ export epdata_compute_eph_dipole!
     # Phonon state
     ph::PhononState{T} # phonon state at q
 
+    # U(k+q)' * U(k)
+    mmat::Matrix{Complex{T}} = zeros(Complex{T}, nband, nband)
+
     # Electron-phonon coupling
-    ep::Array{Complex{T}, 3}
-    g2::Array{T, 3}
+    ep::Array{Complex{T}, 3} = zeros(Complex{T}, nband, nband, nmodes)
+    g2::Array{T, 3} = zeros(T, nband, nband, nmodes)
 
     # Preallocated buffers
-    buffer::Matrix{Complex{T}}
+    buffer::Matrix{Complex{T}} = zeros(Complex{T}, nw, nw)
     buffer2::Array{T, 3} = zeros(T, nband, nband, nmodes)
-
-    # Electron energy window.
-    nband_ignore::Int
 end
 
-function ElPhData{T}(nw, nmodes, nband=nw, nband_ignore=0) where {T}
+function ElPhData{T}(nw, nmodes, nband=nw) where {T}
+    @assert nw > 0
+    @assert nmodes > 0
     @assert nband > 0
-    @assert nband_ignore >= 0
-    @assert nband + nband_ignore <= nw
 
     ElPhData{T}(nw=nw, nmodes=nmodes, nband=nband, wtk=T(0), wtq=T(0),
-        el_k=ElectronState(nw, T; nband_bound=nband, nband_ignore),
-        el_kq=ElectronState(nw, T; nband_bound=nband, nband_ignore),
+        el_k=ElectronState(nw, T; nband_bound=nband),
+        el_kq=ElectronState(nw, T; nband_bound=nband),
         ph=PhononState(nmodes, T),
-        mmat=Matrix{Complex{T}}(undef, nband, nband),
-        ep=Array{Complex{T}, 3}(undef, nband, nband, nmodes),
-        g2=Array{T, 3}(undef, nband, nband, nmodes),
-        buffer=Matrix{Complex{T}}(undef, nw, nw),
-        nband_ignore=nband_ignore,
     )
 end
 
-ElPhData(nw, nmodes, ::Type{FT}=Float64; nband=nw, nband_ignore=0) where FT = ElPhData{FT}(nw, nmodes, nband, nband_ignore)
+ElPhData(nw, nmodes, ::Type{FT}=Float64; nband=nw) where FT = ElPhData{FT}(nw, nmodes, nband)
 
 # """
 #     apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)

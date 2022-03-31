@@ -80,11 +80,11 @@ function run_eph_outer_loop_q(
     nband = iband_max - iband_min + 1
     nband_ignore = iband_min - 1
 
-    epdatas = [ElPhData(nw, nmodes, FT; nband, nband_ignore) for i=1:Threads.nthreads()]
+    epdatas = [ElPhData{FT}(nw, nmodes, nband) for i=1:Threads.nthreads()]
 
     # Initialize data structs
     if compute_elself
-        elself = ElectronSelfEnergy(FT, nband, nmodes, nk, length(elself_params.Tlist))
+        elself = ElectronSelfEnergy(FT, iband_min:iband_max, nmodes, nk, length(elself_params.Tlist))
     end
     if compute_phself
         phselfs = [PhononSelfEnergy(FT, nband, nmodes, nq,
@@ -144,7 +144,7 @@ function run_eph_outer_loop_q(
         omega_save[:, iq] .= ph.e
 
         for epdata in epdatas
-            copyto!(epdata.ph, ph)
+            epdata.ph = ph
         end
 
         get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u, fourier_mode)
@@ -163,7 +163,7 @@ function run_eph_outer_loop_q(
             epdata.wtq = qpoints.weights[iq]
 
             # Use saved data for electron state at k.
-            copyto!(epdata.el_k, el_k_save[ik])
+            epdata.el_k = el_k_save[ik]
 
             # Compute electron state at k+q.
             set_eigen!(epdata.el_kq, model, xkq, fourier_mode)
@@ -210,9 +210,8 @@ function run_eph_outer_loop_q(
         EPW.mpi_sum!(elself.imsigma, mpi_comm_q)
         # Average over degenerate states
         el_imsigma_avg = similar(elself.imsigma)
-        ek_partial = view(ek_full_save, iband_min:iband_max, :)
         @views for iT in 1:size(elself.imsigma, 3)
-            average_degeneracy!(el_imsigma_avg[:,:,iT], elself.imsigma[:,:,iT], ek_partial)
+            average_degeneracy!(el_imsigma_avg[:,:,iT], elself.imsigma[:,:,iT], ek_full_save)
         end
 
         output["elself_imsigma"] = el_imsigma_avg

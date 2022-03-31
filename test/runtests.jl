@@ -12,6 +12,7 @@ using Test
     include("test_unfold.jl")
     include("test_velocity.jl")
     include("test_epmat.jl")
+    include("test_ElectronState.jl")
     include("test_plot_bandstructure.jl")
     include("test_check_model_symmetry.jl")
 

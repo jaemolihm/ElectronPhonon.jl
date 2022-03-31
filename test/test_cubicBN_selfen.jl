@@ -73,7 +73,7 @@ using NPZ
         # So, we test only states is far from the window boundary.
         inds = vec((abs.(ek_ref .- window_min) .> smearing * 10)
                 .& (abs.(ek_ref .- window_max) .> smearing * 10))
-        errors = abs.(el_imsigma_ref - output["elself_imsigma"])
+        errors = abs.(el_imsigma_ref - output["elself_imsigma"].parent)
         @test maximum(reshape(errors, :, length(Tlist))[inds, :]) < 1.e-8
     end
 
@@ -92,7 +92,7 @@ using NPZ
         # So, we test only states is far from the window boundary.
         inds = vec((abs.(ek_ref .- window_min) .> smearing * 10)
                 .& (abs.(ek_ref .- window_max) .> smearing * 10))
-        errors = abs.(el_imsigma_ref - output_disk["elself_imsigma"])
+        errors = abs.(el_imsigma_ref - output_disk["elself_imsigma"].parent)
         @test maximum(reshape(errors, :, length(Tlist))[inds, :]) < 1.e-8
     end
 end
