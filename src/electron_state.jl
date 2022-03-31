@@ -118,7 +118,7 @@ function set_window!(el::ElectronState, window=(-Inf,Inf))
         el.nband = 0
         el.rng = 1:0
         el.rng_full = 1:0
-        return true
+        return el
     end
     if ibands[1] <= el.nband_ignore
         throw(ArgumentError("Selected bands ($(ibands[1]):$(ibands[end])) must not include " *
@@ -132,9 +132,9 @@ function set_window!(el::ElectronState, window=(-Inf,Inf))
     el.rng_full = ibands[1]:ibands[end]
     el.rng = el.rng_full .- el.nband_ignore
     el.nband = length(el.rng)
-
     @views el.e[el.rng] .= el.e_full[el.rng_full]
-    false
+
+    return el
 end
 
 function set_occupation!(el::ElectronState, μ, T)

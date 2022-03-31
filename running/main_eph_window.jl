@@ -58,7 +58,7 @@ addprocs(manager)
             xk = kpoints.vectors[ik]
 
             get_el_eigen!(epdata, "k", model.el_ham, xk, fourier_mode)
-            skip_k = epdata_set_window!(epdata, "k", window)
+            epdata_set_window!(epdata, "k", window)
             get_el_velocity_diag!(epdata, "k", model.el_ham_R, xk, fourier_mode)
 
             # Save matrix elements at k for reusing
@@ -109,11 +109,10 @@ addprocs(manager)
                 get_el_eigen!(epdata, "k+q", model.el_ham, xkq, fourier_mode)
 
                 # Set energy window, skip if no state is inside the window
-                skip_k = epdata_set_window!(epdata, "k", window)
-                skip_kq = epdata_set_window!(epdata, "k+q", window)
-                if skip_k || skip_kq
-                    continue
-                end
+                epdata_set_window!(c, "k", window)
+                epdata_set_window!(epdata, "k+q", window)
+                length(epdata.el_k.rng) == 0 && continue
+                length(epdata.el_kq.rng) == 0 && continue
 
                 get_el_velocity_diag!(epdata, "k+q", model.el_ham_R, xkq, fourier_mode)
                 get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)

@@ -169,10 +169,8 @@ function run_eph_outer_loop_q(
             set_eigen!(epdata.el_kq, model, xkq, fourier_mode)
 
             # Set energy window, skip if no state is inside the window
-            skip_kq = set_window!(epdata.el_kq, window)
-            if skip_kq
-                continue
-            end
+            set_window!(epdata.el_kq, window)
+            length(epdata.el_kq.rng) == 0 && continue
 
             set_velocity_diag!(epdata.el_kq, model, xkq, fourier_mode)
             get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
