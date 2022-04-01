@@ -108,9 +108,11 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # TODO: Cleanup gauge and gauge_self.
     mpi_isroot() && println("Calculating and writing gauge matrices")
 
-    rng_global = mapreduce(el -> el.rng_full.start, min, el_k_save):mapreduce(el -> el.rng_full.stop, max, el_k_save)
-    gauge = OffsetArray(zeros(Complex{FT}, nband, nband, nk), rng_global, rng_global, 1:nk)
-    is_degenerate = OffsetArray(zeros(Bool, nband, nband, nk), rng_global, rng_global, 1:nk)
+    iband_min = minimum(el.rng.start for el in el_k_save if el.nband > 0)
+    iband_max = maximum(el.rng.stop  for el in el_k_save if el.nband > 0)
+    rng_max = iband_min:iband_max
+    gauge = OffsetArray(zeros(Complex{FT}, nband, nband, nk), rng_max, rng_max, :)
+    is_degenerate = OffsetArray(zeros(Bool, nband, nband, nk), rng_max, rng_max, :)
 
     @timing "gauge" if symmetry !== nothing
         # Write symmetry object to file
@@ -161,7 +163,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
         # Symmetry matrix elements for symmetry that maps k to itself: Sk = k.
         # Needed for symmetrization of quantities defined on the irreducible grid.
-        is_degenerate_self = OffsetArray(zeros(Bool, nband, nband), rng_global, rng_global)
+        is_degenerate_self = OffsetArray(zeros(Bool, nband, nband), rng_max, rng_max)
         ik_list = Int[]
         for ik = 1:nk
             xk = kpts.vectors[ik]
@@ -184,7 +186,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
             isym_list = zeros(Int, count_total)
             gauge_list = OffsetArray(zeros(Complex{FT}, nband, nband, count_total),
-                                    rng_global, rng_global, 1:count_total)
+                                    rng_max, rng_max, 1:count_total)
 
             icount = 0
             for isym = 1:symmetry.nsym

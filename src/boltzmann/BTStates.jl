@@ -54,8 +54,8 @@ Transform Vector of ElectronState to a BTState.
     nk = length(el_states)
     n = sum([el.nband for el in el_states])
     ngrid = kpts.ngrid
-    iband_min = minimum(x -> x.rng.start, el_states)
-    iband_max = maximum(x -> x.rng.stop, el_states)
+    iband_min = minimum(el.rng.start for el in el_states if el.nband > 0)
+    iband_max = maximum(el.rng.stop  for el in el_states if el.nband > 0)
     nband = iband_max - iband_min + 1
     imap = OffsetArray(zeros(Int, nband, nk), iband_min:iband_max, :)
 

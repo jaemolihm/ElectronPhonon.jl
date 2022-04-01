@@ -47,7 +47,7 @@ end
 function TransportSERTA{FT}(rng_band, nk::Int, ntemps::Int) where FT
     nband = length(rng_band)
     TransportSERTA(
-        inv_τ = OffsetArray(zeros(FT, nband, nk, ntemps), rng_band, 1:nk, 1:ntemps)
+        inv_τ = OffsetArray(zeros(FT, nband, nk, ntemps), rng_band, :, :)
     )
 end
 

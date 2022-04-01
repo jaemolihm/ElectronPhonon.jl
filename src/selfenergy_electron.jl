@@ -23,7 +23,7 @@ function ElectronSelfEnergy{FT}(rng_band, nk::Int, ntemps::Int) where FT
     # TODO: Remove nmodes
     nband = length(rng_band)
     ElectronSelfEnergy(
-        imsigma = OffsetArray(zeros(FT, nband, nk, ntemps), rng_band, 1:nk, 1:ntemps)
+        imsigma = OffsetArray(zeros(FT, nband, nk, ntemps), rng_band, :, :)
     )
 end
 

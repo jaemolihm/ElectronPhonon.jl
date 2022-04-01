@@ -124,8 +124,8 @@ end
         end
         push!(ib_rng, el.rng .+ el.nband_ignore)
     end
-    iband_min = minimum(el.rng_full.start for el in el_states if length(el.nband) > 0)
-    iband_max = maximum(el.rng_full.stop for el in el_states if length(el.nband) > 0)
+    iband_min = minimum(el.rng_full.start for el in el_states if el.nband > 0)
+    iband_max = maximum(el.rng_full.stop  for el in el_states if el.nband > 0)
     nband = iband_max - iband_min + 1
     QMEStates(; n, nband, e1, e2, v, ib1=ib1_list, ib2=ib2_list, ik=ik_list, ib_rng, nstates_base, kpts=GridKpoints(kpts))
 end
@@ -178,7 +178,7 @@ function compute_occupations_electron(el::QMEStates, Tlist, μlist)
     nT = length(Tlist)
     f_data = zeros(nT, el.nband, el.kpts.n)
     band_rng = (el.nband_ignore + 1):(el.nband_ignore + el.nband)
-    f = OffsetArray(f_data, 1:nT, band_rng, 1:el.kpts.n)
+    f = OffsetArray(f_data, :, band_rng, :)
     for i in 1:el.n
         (; ib1, ib2, ik, e1, e2) = el[i]
         for iT in 1:nT
