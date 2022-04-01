@@ -65,7 +65,7 @@ using LinearAlgebra
         transport_params_serta = ElectronTransportParams(
             Tlist = transport_params.Tlist,
             nlist = transport_params.nlist,
-            smearing = (:Gaussian, transport_params.smearing[2]),
+            smearing = transport_params.smearing,
             nband_valence = 4,
             volume = model_el.volume,
             spin_degeneracy = 2
@@ -82,6 +82,13 @@ using LinearAlgebra
         _, mobility_serta = transport_print_mobility(output["transport_σ"], transport_params_serta, do_print=false)
         @test all(isapprox.(transport_params.μlist, transport_params_serta.μlist, atol=1e-7))
         @test all(isapprox.(mobility, mobility_serta, atol=2e-1))
+
+        kpts = GridKpoints(output["kpts"])
+        for i in 1:btmodel.el_i.n
+            (; iband, xks) = btmodel.el_i[i]
+            ik = xk_to_ik(xks, kpts)
+            @test inv_τ[i, :] ≈ output["transport_inv_τ"][iband, ik, :] atol=1e-9
+        end
 
         @testset "TDF" begin
             el = btmodel.el_i
@@ -155,6 +162,14 @@ using LinearAlgebra
         _, mobility_serta = transport_print_mobility(output["transport_σ"], transport_params_serta, do_print=false)
         @test all(isapprox.(transport_params.μlist, transport_params_serta.μlist, atol=1e-7))
         @test all(isapprox.(mobility, mobility_serta, atol=2e-1))
+
+        kpts = GridKpoints(output["kpts"])
+        for i in 1:btmodel.el_i.n
+            (; iband, xks) = btmodel.el_i[i]
+            ik = xk_to_ik(xks, kpts)
+            @test inv_τ[i, :] ≈ output["transport_inv_τ"][iband, ik, :] atol=1e-9
+            @info norm(inv_τ[i, :] - output["transport_inv_τ"][iband, ik, :])
+        end
     end
 
     @testset "subgrid q" begin

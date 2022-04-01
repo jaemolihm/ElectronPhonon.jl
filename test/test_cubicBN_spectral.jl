@@ -66,12 +66,14 @@ using NPZ
 
     @testset "WannierObject, gridopt" begin
         for key in keys(output)
+            key == "kpts" && continue
             @test output_gridopt[key] ≈ output[key]
         end
     end
 
     @testset "DiskWannierObject, gridopt" begin
         for key in keys(output)
+            key == "kpts" && continue
             @test output_disk_gridopt[key] ≈ output[key]
         end
     end

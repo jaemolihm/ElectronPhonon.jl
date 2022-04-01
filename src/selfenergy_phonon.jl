@@ -17,9 +17,9 @@ Base.@kwdef struct PhononSelfEnergy{T <: Real}
     imsigma::Array{T, 3}
 end
 
-function PhononSelfEnergy(T, nband::Int, nmodes::Int, nq::Int, ntemperatures::Int)
-    PhononSelfEnergy{T}(
-        imsigma=zeros(T, nmodes, nq, ntemperatures),
+function PhononSelfEnergy{FT}(nmodes::Int, nq::Int, ntemperatures::Int) where FT
+    PhononSelfEnergy{FT}(
+        imsigma = zeros(FT, nmodes, nq, ntemperatures),
     )
 end
 

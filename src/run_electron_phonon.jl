@@ -83,18 +83,16 @@ function run_eph_outer_loop_q(
 
     # Initialize data structs
     if compute_elself
-        elself = ElectronSelfEnergy(FT, iband_min:iband_max, nmodes, nk, length(elself_params.Tlist))
+        elself = ElectronSelfEnergy{FT}(iband_min:iband_max, nk, length(elself_params.Tlist))
     end
     if compute_phself
-        phselfs = [PhononSelfEnergy(FT, nband, nmodes, nq,
-            length(phself_params.Tlist)) for i=1:Threads.nthreads()]
+        phselfs = [PhononSelfEnergy{FT}(nmodes, nq, length(phself_params.Tlist)) for i=1:Threads.nthreads()]
     end
     if compute_phspec
         phspecs = [PhononSpectralData(phspec_params, nmodes, nq) for i=1:Threads.nthreads()]
     end
     if compute_transport
-        transport_serta = TransportSERTA(FT, nband, nmodes, nk,
-            length(transport_params.Tlist))
+        transport_serta = TransportSERTA{FT}(iband_min:iband_max, nk, length(transport_params.Tlist))
     end
 
     # Compute and save electron state at k
@@ -199,6 +197,7 @@ function run_eph_outer_loop_q(
 
     output = Dict()
 
+    output["kpts"] = kpoints
     output["ek"] = ek_full_save
     output["iband_min"] = iband_min
     output["iband_max"] = iband_max
@@ -247,7 +246,7 @@ function run_eph_outer_loop_q(
         σ = compute_conductivity_serta!(transport_params, transport_serta.inv_τ,
             el_k_save, kpoints.weights, window)
         output["transport_σ"] = σ
-        # output["transport_inv_τ"] = transport_serta.inv_τ
+        output["transport_inv_τ"] = transport_serta.inv_τ
     end
 
     output

@@ -7,13 +7,11 @@ export ElectronTransportParams
 export compute_conductivity_serta!
 export transport_print_mobility
 
-# TODO: Allow multiple carrier density
-
 """
     ElectronTransportParams{T <: Real}
 Parameters for electron transport calculation. Arguments:
 * `Tlist::Vector{T}`: list of temperatures
-* `n::T`: Number of electrons per unit cell, relative to the reference configuration where
+* `nlist::Vector{T}`: Number of electrons per unit cell, relative to the reference configuration where
     `spin_degeneracy * nband_valence` bands are filled. Includes the spin degeneracy.
 * `nband_valence::Int`: Number of valence bands, excluding spin degeneracy (used only for semiconductors)
 * `volume::T`: Volume of the unit cell
@@ -42,15 +40,15 @@ Base.@kwdef struct ElectronTransportParams{T <: Real}
 end
 
 # Data and buffers for SERTA (self-energy relaxation-time approximation) conductivity
-Base.@kwdef struct TransportSERTA{T <: Real}
-    inv_τ::Array{T, 3}
+Base.@kwdef struct TransportSERTA{T}
+    inv_τ::T
 end
 
-function TransportSERTA(T, nband::Int, nmodes::Int, nk::Int, ntemperatures::Int)
-    data = TransportSERTA{T}(
-        inv_τ=zeros(T, nband, nk, ntemperatures),
+function TransportSERTA{FT}(rng_band, nk::Int, ntemps::Int) where FT
+    nband = length(rng_band)
+    TransportSERTA(
+        inv_τ = OffsetArray(zeros(FT, nband, nk, ntemps), rng_band, 1:nk, 1:ntemps)
     )
-    data
 end
 
 # TODO: Add unit test for electron and hole case
@@ -117,8 +115,8 @@ Compute electron inverse lifetime for given k and q point data in epdata
                 fcoeff1 = ph_occ[imode] + el_kq_occ[jb]
                 fcoeff2 = ph_occ[imode] + 1.0 - el_kq_occ[jb]
 
-                transdata.inv_τ[ib, ik, iT] += (2π * epdata.wtq
-                    * epdata.g2[jb, ib, imode]
+                transdata.inv_τ[ib + epdata.el_k.nband_ignore, ik, iT] += (
+                    2π * epdata.wtq * epdata.g2[jb, ib, imode]
                     * (fcoeff1 * delta1 + fcoeff2 * delta2))
             end
         end # modes
@@ -146,6 +144,7 @@ function compute_conductivity_serta!(params::ElectronTransportParams{R}, inv_τ,
             el = el_states[ik]
 
             for iband in el.rng
+                iband_full = iband + el.nband_ignore
                 enk = el.e[iband]
                 vnk = el.vdiag[iband]
 
@@ -156,7 +155,7 @@ function compute_conductivity_serta!(params::ElectronTransportParams{R}, inv_τ,
                 end
 
                 dfocc = -occ_fermion_derivative(enk - μ, T)
-                τ = 1 / inv_τ[iband, ik, iT]
+                τ = 1 / inv_τ[iband_full, ik, iT]
 
                 for j=1:3, i=1:3
                     σ[i, j, iT] += weights[ik] * dfocc * τ * vnk[i] * vnk[j]
