@@ -1,6 +1,9 @@
 
 # Electron eigenvalue and eigenvector at a single k point
 
+using OffsetArrays
+using OffsetArrays: no_offset_view
+
 using EPW.AllocatedLAPACK: epw_syev!
 using EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag_berry_connection!,
                       get_el_velocity_berry_connection!, get_el_velocity_direct!
@@ -76,8 +79,10 @@ function Base.getproperty(el::ElectronState, name::Symbol)
         view(getfield(el, :e_full), getfield(el, :rng_full))
     elseif name === :vdiag
         view(getfield(el, :vdiag), getfield(el, :rng))
-    elseif name === :rbar || name === :v
+    elseif name === :v
         view(getfield(el, name), getfield(el, :rng), getfield(el, :rng))
+    elseif name === :rbar
+        OffsetArray(view(getfield(el, name), getfield(el, :rng), getfield(el, :rng)), getfield(el, :rng_full), getfield(el, :rng_full))
     else
         getfield(el, name)
     end
@@ -210,7 +215,8 @@ function set_velocity!(el::ElectronState{FT}, model, xk, fourier_mode="normal"; 
     elseif model.el_velocity_mode === :BerryConnection
         # Need to set el.rbar first.
         skip_rbar || set_position!(el, model, xk, fourier_mode)
-        get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, el.e, xk, el.u, el.rbar, fourier_mode)
+        get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, el.e, xk, el.u,
+            no_offset_view(el.rbar), fourier_mode)
     else
         throw(ArgumentError("model.el_velocity_mode must be :Direct or :BerryConnection, not $(model.el_velocity_mode)."))
     end
@@ -221,6 +227,6 @@ end
 Compute electron position matrix elements.
 """
 function set_position!(el::ElectronState{FT}, model, xk, fourier_mode="normal") where {FT}
-    @views rbar = reshape(reinterpret(Complex{FT}, el.rbar), 3, el.nband, el.nband)
+    rbar = reshape(reinterpret(Complex{FT}, no_offset_view(el.rbar)), 3, el.nband, el.nband)
     get_el_velocity_direct!(rbar, el.nw, model.el_pos, xk, el.u, fourier_mode)
 end

@@ -225,15 +225,14 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
     # (∇ * f)[ib1, ib2] += - im * (ξ[ib1, ib3] * f[ib3, ib2] - f[ib1, ib3] * ξ[ib3, ib2])
     for ik in 1:kpts.n
         ikirr, isym = ik_to_ikirr_isym[ik]
-        rng = el_irr_states[ikirr].rng
-        nb0_k = el_irr_states[ikirr].nband_ignore
+        rng_full = el_irr_states[ikirr].rng_full
         rbar = el_irr_states[ikirr].rbar
 
-        for ib1 in rng, ib2 in rng
-            ind_i = get_1d_index(el, ib1 + nb0_k, ib2 + nb0_k, ik)
+        for ib1 in rng_full, ib2 in rng_full
+            ind_i = get_1d_index(el, ib1, ib2, ik)
             ind_i == 0 && continue
-            for ib3 in rng
-                ind_f = get_1d_index(el, ib3 + nb0_k, ib2 + nb0_k, ik)
+            for ib3 in rng_full
+                ind_f = get_1d_index(el, ib3, ib2, ik)
                 if ind_f != 0
                     push!(sp_i, ind_i)
                     push!(sp_j, ind_f)
@@ -248,7 +247,7 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
                     end
                 end
 
-                ind_f = get_1d_index(el, ib1 + nb0_k, ib3 + nb0_k, ik)
+                ind_f = get_1d_index(el, ib1, ib3, ik)
                 if ind_f != 0
                     push!(sp_i, ind_i)
                     push!(sp_j, ind_f)
