@@ -96,18 +96,8 @@ function run_eph_outer_loop_q(
     end
 
     # Compute and save electron state at k
-    el_k_save = [ElectronState{FT}(nw, nband) for ik=1:nk]
-    ek_full_save = zeros(FT, nw, nk)
-
-    Threads.@threads :static for ik in 1:nk
-        xk = kpoints.vectors[ik]
-        el_k = el_k_save[ik]
-
-        set_eigen!(el_k, model, xk, "gridopt")
-        set_window!(el_k, window)
-        set_velocity_diag!(el_k, model, xk, "gridopt")
-        ek_full_save[:, ik] .= el_k.e_full
-    end # ik
+    el_k_save = compute_electron_states(model, kpoints, ["eigenvalue", "eigenvector", "velocity_diagonal"], window, nband; fourier_mode)
+    ek_full_save = mapreduce(el -> el.e_full, hcat, el_k_save)
 
     # Compute chemical potential
     if compute_transport
