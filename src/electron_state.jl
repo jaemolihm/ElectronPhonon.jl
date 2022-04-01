@@ -65,8 +65,11 @@ ElectronState(nw, ::Type{FT}=Float64; nband_bound=nw) where FT = ElectronState{F
 
 function Base.getproperty(el::ElectronState, name::Symbol)
     if name === :u
-        # Return eigenvector for bands inside the window.
+        # Return eigenvectors for bands inside the window.
         view(getfield(el, :u_full), :, getfield(el, :rng_full))
+    elseif name === :e
+        # Return eigenvalues for bands inside the window.
+        view(getfield(el, :e_full), getfield(el, :rng_full))
     else
         getfield(el, name)
     end
@@ -88,7 +91,6 @@ function Base.copyto!(dest::ElectronState, src::ElectronState)
     dest.rng_full = src.rng_full
     dest.rng = src.rng
     for ib in src.rng
-        dest.e[ib] = src.e[ib]
         dest.vdiag[ib] = src.vdiag[ib]
         for jb in src.rng
             dest.v[jb, ib] = src.v[jb, ib]
@@ -121,7 +123,6 @@ function set_window!(el::ElectronState, window=(-Inf, Inf))
     el.nband_ignore = ibands[1] - 1
     el.nband = length(el.rng_full)
     el.rng = 1:el.nband
-    @views el.e[el.rng] .= el.e_full[el.rng_full]
 
     return el
 end
