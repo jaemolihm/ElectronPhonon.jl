@@ -1,7 +1,10 @@
 
 # For computing electron-phonon coupling at fine a k and q point
 
-import Base.@kwdef
+using Base: @kwdef
+using OffsetArrays
+using OffsetArrays: no_offset_view
+
 import EPW.WanToBloch: get_eph_Rq_to_kq!, get_eph_kR_to_kq!
 
 export ElPhData
@@ -53,25 +56,32 @@ end
 
 ElPhData(nw, nmodes, ::Type{FT}=Float64; nband=nw) where FT = ElPhData{FT}(nw, nmodes, nband)
 
+@inline function Base.getproperty(epdata::ElPhData, name::Symbol)
+    if name === :mmat
+        OffsetArray(view(getfield(epdata, name), 1:getfield(epdata, :el_kq).nband, 1:getfield(epdata, :el_k).nband),
+            getfield(epdata, :el_kq).rng_full, getfield(epdata, :el_k).rng_full)
+    elseif name === :ep || name === :g2 || name === :buffer2
+        OffsetArray(view(getfield(epdata, name), 1:getfield(epdata, :el_kq).nband, 1:getfield(epdata, :el_k).nband, :),
+            getfield(epdata, :el_kq).rng_full, getfield(epdata, :el_k).rng_full, :)
+    else
+        getfield(epdata, name)
+    end
+end
+
 " Set epdata.g2[:, :, imode] = |epdata.ep[:, :, imode]|^2 / (2 omega)"
 function epdata_set_g2!(epdata)
-    rngk = epdata.el_k.rng
-    rngkq = epdata.el_kq.rng
     for imode in 1:epdata.nmodes
         # The lower bound for phonon frequency is not set here. If ω is close to 0, g2 may
         # be very large. This should be handled when calculating physical quantities.
         ω = epdata.ph.e[imode]
         inv_2ω = 1 / (2 * ω)
-        @views epdata.g2[rngkq, rngk, imode] .= (abs2.(epdata.ep[rngkq, rngk, imode]) .* inv_2ω)
+        @views epdata.g2[:, :, imode] .= (abs2.(epdata.ep[:, :, imode]) .* inv_2ω)
     end
 end
 
 "Set mmat = ukq' * uk"
 @timing "setmmat" function epdata_set_mmat!(epdata)
-    rngk = epdata.el_k.rng
-    rngkq = epdata.el_kq.rng
-    epdata.mmat .= 0
-    @views mul!(epdata.mmat[rngkq, rngk], epdata.el_kq.u', epdata.el_k.u)
+    @views mul!(no_offset_view(epdata.mmat), no_offset_view(epdata.el_kq.u)', no_offset_view(epdata.el_k.u))
 end
 
 # Define wrappers of WanToBloch functions
@@ -81,8 +91,8 @@ end
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
 function get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk, fourier_mode="normal")
-    @views ep_kq = epdata.ep[epdata.el_kq.rng, epdata.el_k.rng, :]
-    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, epdata.el_k.u, epdata.el_kq.u, fourier_mode)
+    ep_kq = no_offset_view(epdata.ep)
+    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, no_offset_view(epdata.el_k.u), no_offset_view(epdata.el_kq.u), fourier_mode)
 end
 
 """
@@ -90,8 +100,8 @@ end
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
 function get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq, fourier_mode="normal")
-    @views ep_kq = epdata.ep[epdata.el_kq.rng, epdata.el_k.rng, :]
-    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epdata.ph.u, epdata.el_kq.u, fourier_mode)
+    ep_kq = no_offset_view(epdata.ep)
+    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epdata.ph.u, no_offset_view(epdata.el_kq.u), fourier_mode)
 end
 
 """

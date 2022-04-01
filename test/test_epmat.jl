@@ -1,5 +1,6 @@
 using Test
 using EPW
+using OffsetArrays: no_offset_view
 
 @testset "cubicBN epmat" begin
     # Test fourier transform of electron-phonon matrix elements
@@ -34,7 +35,7 @@ using EPW
     set_eigen!(ph, model_ph, xq)
     rngk = el_k.rng
     rngkq = el_kq.rng
-    ep_ref = zeros(ComplexF64, (nband, nband, nmodes))
+    ep_ref = zeros(ComplexF64, (el_kq.nband, el_k.nband, nmodes))
 
     i = 0
     for fourier_mode in ["normal", "gridopt"]
@@ -54,14 +55,15 @@ using EPW
             else
                 epobj_ekpR = WannierObject(model.epmat.irvec_next,
                             zeros(ComplexF64, (nw*epdata.nband*nmodes, length(model.epmat.irvec_next))))
-                @time EPW.get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, epdata.el_k.u, fourier_mode)
+                @time EPW.get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(epdata.el_k.u), fourier_mode)
                 EPW.get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
             end
 
+            @test axes(epdata.ep) == (el_kq.rng, el_k.rng, 1:ph.nmodes)
             if i == 1
-                ep_ref .= epdata.ep
+                ep_ref .= no_offset_view(epdata.ep)
             else
-                @test epdata.ep[rngkq, rngk, :] ≈ ep_ref[rngkq, rngk, :]
+                @test no_offset_view(epdata.ep) ≈ ep_ref
             end
         end
     end

@@ -297,7 +297,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
         for epdata in epdatas
             epdata.el_k = el_k
         end
-        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, el_k.u, fourier_mode)
+        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u), fourier_mode)
 
         bt_nscat = 0
 

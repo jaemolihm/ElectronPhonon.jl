@@ -45,7 +45,7 @@ function plot_electron_phonon_deformation_potential(model, xk=Vec3(0., 0., 0.);
     xk = kpts.vectors[ik]
     el_k = el_k_save[ik]
     epdata.el_k = el_k
-    get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, el_k.u, fourier_mode)
+    get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u), fourier_mode)
 
     # Calculate electron-phonon coupling matrix elements
     for iq in 1:nq

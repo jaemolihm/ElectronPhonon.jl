@@ -2,6 +2,7 @@
 
 using Parameters: @with_kw
 using Dictionaries
+using OffsetArrays
 
 """
     @with_kw struct BTStates{T <: Real} <: AbstractBTData{T}
@@ -53,8 +54,10 @@ Transform Vector of ElectronState to a BTState.
     nk = length(el_states)
     n = sum([el.nband for el in el_states])
     ngrid = kpts.ngrid
-    max_nband_bound = maximum([el.nband_bound for el in el_states])
-    imap = zeros(Int, max_nband_bound, nk)
+    iband_min = minimum(x -> x.rng.start, el_states)
+    iband_max = maximum(x -> x.rng.stop, el_states)
+    nband = iband_max - iband_min + 1
+    imap = OffsetArray(zeros(Int, nband, nk), iband_min:iband_max, :)
 
     e = zeros(T, n)
     vdiag = zeros(Vec3{T}, n)
@@ -62,15 +65,11 @@ Transform Vector of ElectronState to a BTState.
     xks = zeros(Vec3{T}, n)
     iband = zeros(Int, n)
     istate = 0
-    iband_min = el_states[1].nw + 1
-    iband_max = -1
     for ik in 1:nk
         el = el_states[ik]
         if el.nband == 0
             continue
         end
-        iband_min = min(iband_min, el.rng_full[1])
-        iband_max = max(iband_max, el.rng_full[end])
         for ib in el.rng
             istate += 1
             e[istate] = el.e[ib]
@@ -81,7 +80,6 @@ Transform Vector of ElectronState to a BTState.
             imap[ib, ik] = istate
         end
     end
-    nband = iband_max - iband_min + 1
     BTStates{T}(n, nk, nband, e, vdiag, k_weight, xks, iband, ngrid, nstates_base), imap
 end
 

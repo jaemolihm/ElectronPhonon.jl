@@ -1,6 +1,8 @@
 using LinearAlgebra
 using StaticArrays
 using SparseArrays
+using OffsetArrays
+using OffsetArrays: no_offset_view
 
 export finite_difference_vectors
 
@@ -163,12 +165,10 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
 
     kpts = el.kpts
 
-    # FIXME: el.nband instead of rng_maxdoes not work because rng can be outside of 1:el.nband
-    # rng_max is a dirty fix...
-    rng_max = maximum(x -> x.rng[end], el_irr_states)
-    mmat = zeros(Complex{FT}, rng_max, rng_max)
-    u_k  = zeros(Complex{FT}, nw, rng_max)
-    u_kb = zeros(Complex{FT}, nw, rng_max)
+    nband_max = maximum(x -> x.nband, el_irr_states)
+    mmat_ = zeros(Complex{FT}, nband_max, nband_max)
+    u_k  = zeros(Complex{FT}, nw, nband_max)
+    u_kb = zeros(Complex{FT}, nw, nband_max)
 
     sp_i = Int[]
     sp_j = Int[]
@@ -178,12 +178,13 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
     for ik in 1:kpts.n
         xk = kpts.vectors[ik]
         ikirr = ik_to_ikirr_isym[ik][1]
-        rng_k = el_irr_states[ikirr].rng
-        nb0_k = el_irr_states[ikirr].nband_ignore
+        el_k = el_irr_states[ikirr]
+        rng_k = el_k.rng
+        nb0_k = el_k.nband_ignore
         if el_sym !== nothing
-            @views mul!(u_k[:, rng_k], smat_all[:, :, ik], el_irr_states[ikirr].u)
+            @views mul!(u_k[:, 1:el_k.nband], smat_all[:, :, ik], no_offset_view(el_k.u))
         else
-            u_k[:, rng_k] .= el_irr_states[ikirr].u
+            u_k[:, 1:el_k.nband] .= no_offset_view(el_k.u)
         end
 
         for (b, b_cart, wb) in zip(bvec_data...)
@@ -192,16 +193,19 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
             ikb === nothing && continue
 
             ikbirr = ik_to_ikirr_isym[ikb][1]
-            rng_kb = el_irr_states[ikbirr].rng
-            nb0_kb = el_irr_states[ikbirr].nband_ignore
+            el_kb = el_irr_states[ikbirr]
+            rng_kb = el_kb.rng
+            nb0_kb = el_kb.nband_ignore
             if el_sym !== nothing
-                @views mul!(u_kb[:, rng_kb], smat_all[:, :, ikb], el_irr_states[ikbirr].u)
+                @views mul!(u_kb[:, 1:el_kb.nband], smat_all[:, :, ikb], no_offset_view(el_kb.u))
             else
-                u_kb[:, rng_kb] .= el_irr_states[ikbirr].u
+                u_kb[:, 1:el_kb.nband] .= no_offset_view(el_kb.u)
             end
 
+            mmat = OffsetArray(view(mmat_, 1:el_kb.nband, 1:el_k.nband), el_kb.rng, el_k.rng)
+
             # Compute overlap matrix: mmat = U(k+b)' * U(k)
-            @views mul!(mmat[rng_kb, rng_k], u_kb[:, rng_kb]', u_k[:, rng_k])
+            @views mul!(no_offset_view(mmat), u_kb[:, 1:el_kb.nband]', u_k[:, 1:el_k.nband])
 
             for ib2 in rng_k, ib1 in rng_k
                 ind_i = get_1d_index(el, ib1 + nb0_k, ib2 + nb0_k, ik)
@@ -225,8 +229,9 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
     # (∇ * f)[ib1, ib2] += - im * (ξ[ib1, ib3] * f[ib3, ib2] - f[ib1, ib3] * ξ[ib3, ib2])
     for ik in 1:kpts.n
         ikirr, isym = ik_to_ikirr_isym[ik]
-        rng_full = el_irr_states[ikirr].rng_full
-        rbar = el_irr_states[ikirr].rbar
+        el_k = el_irr_states[ikirr]
+        rng_full = el_k.rng_full
+        rbar = el_k.rbar
 
         for ib1 in rng_full, ib2 in rng_full
             ind_i = get_1d_index(el, ib1, ib2, ik)

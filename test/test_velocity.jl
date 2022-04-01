@@ -1,5 +1,6 @@
 using EPW
 using Test
+using OffsetArrays: no_offset_view
 
 @testset "velocity" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
@@ -9,11 +10,11 @@ using Test
 
     model.el_velocity_mode = :Direct
     els_direct = compute_electron_states(model, kpts, ["velocity"], fourier_mode="normal")
-    v_direct = reshape(reinterpret(ComplexF64, cat((el.v for el in els_direct)..., dims=3)), 3, model.nw, model.nw, kpts.n)
+    v_direct = reshape(reinterpret(ComplexF64, cat((no_offset_view(el.v) for el in els_direct)..., dims=3)), 3, model.nw, model.nw, kpts.n)
 
     model.el_velocity_mode = :BerryConnection
     els_berry = compute_electron_states(model, kpts, ["velocity"], fourier_mode="normal")
-    v_berry = reshape(reinterpret(ComplexF64, cat((el.v for el in els_berry)..., dims=3)), 3, model.nw, model.nw, kpts.n)
+    v_berry = reshape(reinterpret(ComplexF64, cat((no_offset_view(el.v) for el in els_berry)..., dims=3)), 3, model.nw, model.nw, kpts.n)
 
     # Test whether the full velocity matrix calculated with el_velocity_mode = :Direct and :BerryConnection
     # are similar enough. Use coarse k grid points to reduce interpolation error.
@@ -27,7 +28,7 @@ using Test
     # There is no special function for diagonal-only calculation using the direct method, so no test.
     velocity_diag = zeros(3, model.nw)
     for ik in 1:kpts.n
-        uk = els_berry[ik].u
+        uk = no_offset_view(els_berry[ik].u)
         xk = kpts.vectors[ik]
         EPW.get_el_velocity_diag_berry_connection!(velocity_diag, model.nw, model.el_ham_R, xk, uk)
         @test velocity_diag ≈ reshape(reinterpret(Float64, els_berry[ik].vdiag), 3, model.nw)

@@ -62,10 +62,10 @@ using OffsetArrays: no_offset_view
                 el1 = compute_electron_states(model, kpts, quantities, window)[1];
                 el2 = compute_electron_states(model, kpts, quantities)[1];
 
-                @test el1.e[el1.rng] ≈ el2.e[el1.rng_full]
-                @test no_offset_view(el1.rbar) ≈ el2.rbar[el1.rng_full, el1.rng_full]
-                @test el1.vdiag ≈ el2.vdiag[el1.rng_full]
-                @test el1.v ≈ el2.v[el1.rng_full, el1.rng_full]
+                @test el1.e[el1.rng_full] ≈ el2.e[el1.rng_full]
+                @test el1.vdiag[el1.rng_full] ≈ el2.vdiag[el1.rng_full]
+                @test el1.v[el1.rng_full, el1.rng_full] ≈ el2.v[el1.rng_full, el1.rng_full]
+                @test el1.rbar[el1.rng_full, el1.rng_full] ≈ el2.rbar[el1.rng_full, el1.rng_full]
             end
         end
     end
