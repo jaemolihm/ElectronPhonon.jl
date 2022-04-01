@@ -9,7 +9,7 @@ Debugging flags in `kwargs`
     All orders from 1 to `max_derivative_order` are computed.
 """
 function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq, kpts,
-        kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
+        kqpts, qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
         average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff;
         compute_derivative=false, max_derivative_order=1, kwargs...)
     FT = Float64
@@ -108,7 +108,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # TODO: Cleanup gauge and gauge_self.
     mpi_isroot() && println("Calculating and writing gauge matrices")
 
-    rng_global = nband_ignore+1:nband_ignore+nband
+    rng_global = mapreduce(el -> el.rng_full.start, min, el_k_save):mapreduce(el -> el.rng_full.stop, max, el_k_save)
     gauge = OffsetArray(zeros(Complex{FT}, nband, nband, nk), rng_global, rng_global, 1:nk)
     is_degenerate = OffsetArray(zeros(Bool, nband, nband, nk), rng_global, rng_global, 1:nk)
 

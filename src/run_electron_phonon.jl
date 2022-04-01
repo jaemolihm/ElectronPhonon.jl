@@ -78,7 +78,6 @@ function run_eph_outer_loop_q(
     nk = kpoints.n
     nq = qpoints.n
     nband = iband_max - iband_min + 1
-    nband_ignore = iband_min - 1
 
     epdatas = [ElPhData{FT}(nw, nmodes, nband) for i=1:Threads.nthreads()]
 

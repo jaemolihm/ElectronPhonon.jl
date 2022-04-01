@@ -22,7 +22,6 @@ using EPW
     nw = model_ph.nw
     nmodes = model_ph.nmodes
     nband = 7
-    nband_ignore = 1
 
     # setup electron and phonon states
     ph = PhononState(nmodes)

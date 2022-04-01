@@ -197,7 +197,7 @@ using LinearAlgebra
 
         for model in [model_ph, model_el]
             @time output_subgrid = run_transport_subgrid_q(
-                model, output.kpts, output.qpts, output.nband, output.nband_ignore, subgrid_q_max, subgrid_scale;
+                model, output.kpts, output.qpts, output.nband, subgrid_q_max, subgrid_scale;
                 fourier_mode = "gridopt",
                 window_k = window_k,
                 window_kq = window_kq,
@@ -210,7 +210,6 @@ using LinearAlgebra
             @test output_subgrid.kqpts.n == 216
             @test output_subgrid.qpts.n == 104
             @test output_subgrid.nband == output.nband
-            @test output_subgrid.nband_ignore == output.nband_ignore
 
             # Calculate mobility
             output_serta_subgrid = EPW.run_serta_subgrid(filename_original, filename_subgrid, transport_params, model.symmetry, output.qpts, model.recip_lattice, do_print=false);

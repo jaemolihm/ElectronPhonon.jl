@@ -8,11 +8,11 @@ export run_gamma_adaptive
 
 """
     run_gamma_adaptive(kpts::GridKpoints{FT}, qpts_original::GridKpoints{FT}, model, params,
-    inv_τ_original, window_k, window_kq, nband, nband_ignore, adaptive_subgrid, adaptive_max_iter,
+    inv_τ_original, window_k, window_kq, nband, adaptive_subgrid, adaptive_max_iter,
     adaptive_rtol; fourier_mode="gridopt") where {FT}
 """
 function run_gamma_adaptive(kpts::GridKpoints{FT}, qpts_original::GridKpoints{FT}, model,
-    params, inv_τ_original, window_k, window_kq, nband, nband_ignore, adaptive_subgrid,
+    params, inv_τ_original, window_k, window_kq, nband, adaptive_subgrid,
     adaptive_max_iter, adaptive_rtol; fourier_mode="gridopt") where {FT}
 
     model.epmat_outer_momentum != "ph" && error("model.epmat_outer_momentum must be ph")
@@ -26,10 +26,10 @@ function run_gamma_adaptive(kpts::GridKpoints{FT}, qpts_original::GridKpoints{FT
     mpi_isroot() && println("Computing electron states at k")
     el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband; fourier_mode)
     el_i, imap_el_k = electron_states_to_BTStates(el_k_save, kpts)
-    g_gamma_save = gamma_adaptive_compute_g_gamma(model, kpts, el_k_save, nband, nband_ignore; fourier_mode)
+    g_gamma_save = gamma_adaptive_compute_g_gamma(model, kpts, el_k_save, nband; fourier_mode)
 
     # 2. Compute lifetime for original q
-    @time inv_τ_subgrid_old = gamma_adaptive_compute_lifetime(kpts, qpts_original, model, el_i, g_gamma_save, params, window_kq, nband, nband_ignore);
+    @time inv_τ_subgrid_old = gamma_adaptive_compute_lifetime(kpts, qpts_original, model, el_i, g_gamma_save, params, window_kq, nband);
 
     inv_τ_total = copy(inv_τ_original);
     inv_τ_total_save = zeros(size(inv_τ_total)..., adaptive_max_iter+1);
@@ -43,7 +43,7 @@ function run_gamma_adaptive(kpts::GridKpoints{FT}, qpts_original::GridKpoints{FT
         iq_subgrid_to_grid = repeat(1:qpts_original.n, inner=prod(adaptive_subgrid))[indmap]
 
         # 4. Compute lifetime for subgrid q, map to original q
-        inv_τ_subgrid = gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, params, window_kq, nband, nband_ignore);
+        inv_τ_subgrid = gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, params, window_kq, nband);
 
         inv_τ_subgrid_new = zero(inv_τ_subgrid_old);
         @views for iq in 1:qpts.n
@@ -81,7 +81,7 @@ end
 
 # Internals
 
-function gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, params, window_kq, nband, nband_ignore; do_print=false)
+function gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, params, window_kq, nband; do_print=false)
     # Map k and q points to k+q points
     mpi_isroot() && println("Finding the list of k+q points")
     kqpts = add_two_kpoint_grids(kpts, qpts, +, qpts.ngrid)
@@ -95,7 +95,7 @@ function gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, 
     ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"], "gridopt");
 
     mpi_isroot() && println("Computing electron states at k+q")
-    el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore, fourier_mode="gridopt");
+    el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, fourier_mode="gridopt");
 
     el_f, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts)
     ph, imap_ph = phonon_states_to_BTStates(ph_save, qpts)
@@ -141,7 +141,7 @@ function gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, 
     inv_τ_q
 end
 
-function gamma_adaptive_compute_g_gamma(model, kpts, el_k_save, nband, nband_ignore; fourier_mode="gridopt")
+function gamma_adaptive_compute_g_gamma(model, kpts, el_k_save, nband; fourier_mode="gridopt")
     model.epmat_outer_momentum != "ph" && error("model.epmat_outer_momentum must be ph")
     FT = Float64 # FIXME
 

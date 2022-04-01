@@ -14,7 +14,7 @@ The q point grid must be a multiple of the k point grid.
 - `subgrid_q_max`: maximum |q_cart| for subdividing. In (2π / model.alat) units.
 FIXME: |q_cart| < subgrid_q_max or all(abs.(q) < subgrid_q_max)? Crystal vs cartesian?
 TODO:
-- Cleanup input parameters nband and nband_ignore
+- Cleanup input parameters nband
 - Implement mpi_comm_k
 - Implement mpi_comm_q
 """
@@ -23,7 +23,6 @@ function run_transport_subgrid_q(
         kpts::AbstractKpoints,
         qpts_original::AbstractKpoints,
         nband,
-        nband_ignore,
         subgrid_q_max,
         subgrid_scale;
         mpi_comm_k=nothing,
@@ -70,18 +69,18 @@ function run_transport_subgrid_q(
     else
         compute_electron_phonon_bte_data_outer_k
     end
-    compute_func(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+    compute_func(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, nband, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
 
     fid_btedata = h5open("$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5", "cw")
     fid_btedata["iq_subgrid_to_grid"] = iq_subgrid_to_grid
     close(fid_btedata)
 
-    (kpts=kpts, qpts=qpts, kqpts=kqpts, nband=nband, nband_ignore=nband_ignore)
+    (kpts=kpts, qpts=qpts, kqpts=kqpts, nband=nband)
 end
 
 
 function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_prefix, window_k, window_kq,
-    kpts, kqpts, qpts, nband, nband_ignore, energy_conservation,
+    kpts, kqpts, qpts, nband, energy_conservation,
     mpi_comm_k, mpi_comm_q, fourier_mode) where FT
 
     if model.epmat_outer_momentum != "ph"
@@ -222,7 +221,7 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
 end
 
 function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_k, window_kq, kpts,
-    kqpts, qpts, nband, nband_ignore, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+    kqpts, qpts, nband, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
 
     if model.epmat_outer_momentum != "el"
         error("model.epmat_outer_momentum must be el")

@@ -97,7 +97,6 @@ using HDF5
     iband_max = max(iband_max_k, iband_max_kq)
 
     nband = iband_max - iband_min + 1
-    nband_ignore = iband_min - 1
 
     qpts = add_two_kpoint_grids(kqpts, kpts, -, kqpts.ngrid)
 
@@ -108,20 +107,20 @@ using HDF5
     if run_for_qme
         btedata_prefix = joinpath(folder, "btedata_coherence")
         @timing "e-ph main" compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq,
-            GridKpoints(kpts), GridKpoints(kqpts), qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
+            GridKpoints(kpts), GridKpoints(kqpts), qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
             average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff; kwargs...)
     else
         btedata_prefix = joinpath(folder, "btedata")
         compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq,
-            kpts, kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
+            kpts, kqpts, qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
             average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode; kwargs...)
     end
 
-    (;nband, nband_ignore, kpts, qpts, kqpts)
+    (;nband, kpts, qpts, kqpts)
 end
 
 function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts,
-    kqpts, qpts, nband, nband_ignore, nstates_base_k, nstates_base_kq, energy_conservation,
+    kqpts, qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
     average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode; kwargs...)
 
     nw = model.nw

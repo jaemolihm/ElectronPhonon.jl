@@ -53,46 +53,6 @@ end
 
 ElPhData(nw, nmodes, ::Type{FT}=Float64; nband=nw) where FT = ElPhData{FT}(nw, nmodes, nband)
 
-# """
-#     apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
-
-# Compute op_h = uleft' * op_w * uright
-# left, right are "k" or "k+q".
-
-# ndim: Optional. Third dimension of op_h and op_w. Loop over i=1:ndim.
-# """
-# @timing "gauge" function apply_gauge_matrix!(op_h, op_w, epdata, left, right, ndim=1)
-#     @warn "apply_gauge_matrix! is deprecated"
-#     @assert size(op_h, 3) == ndim
-#     @assert size(op_w, 3) == ndim
-#     offset = epdata.nband_ignore
-
-#     # TODO: Implement range
-#     if left != "k" && left != "k+q"
-#         error("left must be k or k+q, not $left")
-#     end
-#     if right != "k" && right != "k+q"
-#         error("right must be k or k+q, not $right")
-#     end
-#     rngleft = (left == "k") ? epdata.el_k.rng : epdata.el_kq.rng
-#     rngright = (right == "k") ? epdata.el_k.rng : epdata.el_kq.rng
-#     uleft = (left == "k") ? epdata.uk_full : epdata.ukq_full
-#     uright = (right == "k") ? epdata.uk_full : epdata.ukq_full
-#     @views uleft_adj = uleft[:, rngleft .+ offset]'
-#     @views uright = uright[:, rngright .+ offset]
-#     @views tmp = epdata.buffer[:, rngright]
-
-#     if length(size(op_w)) == 2
-#         @views mul!(tmp, op_w, uright)
-#         @views mul!(op_h[rngleft, rngright], uleft_adj, tmp)
-#     elseif length(size(op_w)) == 3
-#         @views @inbounds for i = 1:ndim
-#             mul!(tmp, op_w[:,:,i], uright)
-#             mul!(op_h[rngleft, rngright, i], uleft_adj, tmp)
-#         end
-#     end
-# end
-
 " Set epdata.g2[:, :, imode] = |epdata.ep[:, :, imode]|^2 / (2 omega)"
 function epdata_set_g2!(epdata)
     rngk = epdata.el_k.rng

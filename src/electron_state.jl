@@ -23,16 +23,14 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
     u_full::Matrix{Complex{T}} # Electron eigenvectors
 
     # Variables related to the energy window.
-    # The bands inside the window must be included in the range
-    # nband_ignore+1:nband_ignore+nband_bound.
     # Indexing a full array: arr_full[rng_full]
     # Indexing a filtered array: arr[rng]
     # rng_full = rng .+ nband_ignore
-    # nband = length(rng)
+    # rng = 1:nband
     nband_bound::Int # Upper bound of possible nband
     nband_ignore::Int # Number of low-lying ignored bands
     nband::Int # Number of bands inside the energy window
-    rng_full::UnitRange{Int} # Index of bands inside the energy window for the full index
+    rng_full::UnitRange{Int} # Index of bands inside the energy window for the full (physical) index
     rng::UnitRange{Int} # Index of bands inside the energy window for the offset index
 
     # These arrays are defined only for bands inside the window
