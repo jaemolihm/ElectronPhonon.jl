@@ -2,11 +2,11 @@ export compute_electron_states
 export compute_phonon_states
 
 """
-    compute_electron_states(model, kpts, quantities, window, nband)
+    compute_electron_states(model, kpts, quantities, window=(-Inf, Inf); fourier_mode="normal")
 Compute the quantities listed in `quantities` and return a vector of ElectronState.
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "velocity"
 """
-function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window, nband; fourier_mode="normal") where FT
+function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window=(-Inf, Inf); fourier_mode="normal") where FT
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
     for quantity in quantities
@@ -17,7 +17,7 @@ function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window, 
     # if position (rbar) is calculated, it does not need to be recalculated in set_velocity!
     skip_rbar = "position" ∈ quantities
 
-    states = [ElectronState{FT}(nw, nband) for ik=1:kpts.n]
+    states = [ElectronState{FT}(nw, 0) for ik=1:kpts.n]
     if quantities == []
         return states
     end
@@ -48,11 +48,6 @@ function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window, 
     end # ik
     states
 end
-
-function compute_electron_states(model, kpts, quantities; fourier_mode="normal")
-    compute_electron_states(model, kpts, quantities, (-Inf, Inf), model.nw; fourier_mode)
-end
-
 
 """
     compute_phonon_states(model, kpts, quantities; fourier_mode="normal")

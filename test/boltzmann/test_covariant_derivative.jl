@@ -29,7 +29,7 @@ using SparseArrays
         window = (5.0, 22.0) .* unit_to_aru(:eV)
         kpts = generate_kvec_grid(5, 5, 5)
         nband = 7
-        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window, nband)
+        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window)
         el = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
 
         bvec_data = finite_difference_vectors(model.recip_lattice, el.kpts.ngrid)

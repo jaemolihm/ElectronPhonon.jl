@@ -15,12 +15,12 @@ using EPW
     nband = 5
 
     # setup electron and phonon states
-    el1 = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"], window, nband)[1]
+    el1 = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"], window)[1]
 
     el2 = ElectronState(model.nw)
     copyto!(el2, el1)
 
-    @test el1.nband_bound == 5
+    @test el1.nband_bound == el1.nband
     @test el2.nband_bound == 8 # model.nw
 
     @test el2.e_full ≈ el1.e_full
@@ -30,7 +30,7 @@ using EPW
     @test el2.rng_full == el1.rng_full
     @test el2.rng == el1.rng
 
-    @test el2.e[el2.rng] ≈ el1.e[el1.rng]
+    @test el2.e ≈ el1.e
     @test el2.vdiag[el2.rng] ≈ el1.vdiag[el1.rng]
     @test el2.v[el2.rng, el2.rng] ≈ el1.v[el1.rng, el1.rng]
     @test el2.rbar[el2.rng, el2.rng] ≈ el1.rbar[el1.rng, el1.rng]
@@ -54,7 +54,7 @@ end
         @testset "$el_velocity_mode" begin
             model.el_velocity_mode = el_velocity_mode
 
-            el1 = compute_electron_states(model, kpts, quantities, window, nband)[1];
+            el1 = compute_electron_states(model, kpts, quantities, window)[1];
             el2 = compute_electron_states(model, kpts, quantities)[1];
 
             @test el1.e[el1.rng] ≈ el2.e[el1.rng_full]

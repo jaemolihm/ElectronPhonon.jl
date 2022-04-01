@@ -107,13 +107,13 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
-        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband; fourier_mode)
+        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k; fourier_mode)
         el_k_boltzmann, imap_el_k = electron_states_to_BTStates(el_k_save, kpts)
         g = create_group(fid_btedata, "initialstate_electron")
         dump_BTData(g, el_k_boltzmann)
 
         mpi_isroot() && println("Calculating electron states at k+q")
-        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband; fourier_mode)
+        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq; fourier_mode)
         el_kq_boltzmann, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts)
         g = create_group(fid_btedata, "finalstate_electron")
         dump_BTData(g, el_kq_boltzmann)
@@ -247,13 +247,13 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
-        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband; fourier_mode)
+        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k; fourier_mode)
         el_k_boltzmann, imap_el_k = electron_states_to_BTStates(el_k_save, kpts)
         g = create_group(fid_btedata, "initialstate_electron")
         dump_BTData(g, el_k_boltzmann)
 
         mpi_isroot() && println("Calculating electron states at k+q")
-        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband; fourier_mode)
+        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq; fourier_mode)
         el_kq_boltzmann, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts)
         g = create_group(fid_btedata, "finalstate_electron")
         dump_BTData(g, el_kq_boltzmann)

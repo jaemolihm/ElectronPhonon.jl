@@ -168,7 +168,6 @@ using LinearAlgebra
             (; iband, xks) = btmodel.el_i[i]
             ik = xk_to_ik(xks, kpts)
             @test inv_τ[i, :] ≈ output["transport_inv_τ"][iband, ik, :] atol=1e-9
-            @info norm(inv_τ[i, :] - output["transport_inv_τ"][iband, ik, :])
         end
     end
 

@@ -34,7 +34,6 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
     rng::UnitRange{Int} # Index of bands inside the energy window for the offset index
 
     # These arrays are defined only for bands inside the window
-    e::Vector{T} # Eigenvalues at bands inside the energy window
     vdiag::Vector{Vec3{T}} # Diagonal components of band velocity in Cartesian coordinates.
     v::Matrix{Vec3{Complex{T}}} # Velocity matrix in Cartesian coordinates.
     rbar::Matrix{Vec3{Complex{T}}} # Position matrix in Cartesian coordinates (without the Hamiltonian derivative term).
@@ -42,8 +41,6 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
 end
 
 function ElectronState{T}(nw, nband_bound=nw) where {T}
-    @assert nband_bound > 0
-
     ElectronState{T}(
         nw=nw,
         e_full=zeros(T, nw),
@@ -53,7 +50,6 @@ function ElectronState{T}(nw, nband_bound=nw) where {T}
         nband=0,
         rng_full=1:0,
         rng=1:0,
-        e=zeros(T, nband_bound),
         vdiag=fill(zeros(Vec3{T}), (nband_bound,)),
         v=fill(zeros(Vec3{Complex{T}}), (nband_bound, nband_bound)),
         rbar=fill(zeros(Vec3{Complex{T}}), (nband_bound, nband_bound)),
@@ -101,6 +97,18 @@ function Base.copyto!(dest::ElectronState, src::ElectronState)
 end
 
 """
+    Base.resize!(el::ElectronState{FT}, nband_bound=el.nband) where FT
+Resize `el` so that the arrays have size `nband_bound`. Data except `e_full` and `u_full` are deleted.
+"""
+function Base.resize!(el::ElectronState{FT}, nband_bound=el.nband) where FT
+    el.nband_bound = nband_bound
+    el.vdiag = zeros(Vec3{FT}, nband_bound)
+    el.v = zeros(Vec3{Complex{FT}}, nband_bound, nband_bound)
+    el.rbar = zeros(Vec3{Complex{FT}}, nband_bound, nband_bound)
+    el.occupation = zeros(FT, nband_bound)
+end
+
+"""
     set_window!(el::ElectronState, window=(-Inf, Inf))
 Find out the bands inside the window and set el.nband, el.rng and el.rng_full.
 """
@@ -112,18 +120,16 @@ function set_window!(el::ElectronState, window=(-Inf, Inf))
         el.nband = 0
         el.rng = 1:0
         el.rng_full = 1:0
-        return el
+    else
+        el.rng_full = ibands[1]:ibands[end]
+        el.nband_ignore = ibands[1] - 1
+        el.nband = length(el.rng_full)
+        el.rng = 1:el.nband
+        if el.nband > el.nband_bound
+            # If el.nband is greater than nband_bound, resize the arrays.
+            resize!(el)
+        end
     end
-    if ibands[end] - ibands[1] + 1 > el.nband_bound
-        throw(ArgumentError("Number of selected bands ($(ibands[end] - ibands[1] + 1)) " *
-            "cannot exceed nband_bound ($(el.nband_bound))."))
-    end
-
-    el.rng_full = ibands[1]:ibands[end]
-    el.nband_ignore = ibands[1] - 1
-    el.nband = length(el.rng_full)
-    el.rng = 1:el.nband
-
     return el
 end
 
@@ -197,7 +203,7 @@ function set_velocity!(el::ElectronState{FT}, model, xk, fourier_mode="normal"; 
         # Need to set el.rbar first.
         skip_rbar || set_position!(el, model, xk, fourier_mode)
         @views rbar = el.rbar[el.rng, el.rng]
-        @views get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, el.e[el.rng], xk, el.u, rbar, fourier_mode)
+        get_el_velocity_berry_connection!(velocity, el.nw, model.el_ham_R, el.e, xk, el.u, rbar, fourier_mode)
     else
         throw(ArgumentError("model.el_velocity_mode must be :Direct or :BerryConnection, not $(model.el_velocity_mode)."))
     end

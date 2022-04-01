@@ -96,7 +96,7 @@ function run_eph_outer_loop_q(
     end
 
     # Compute and save electron state at k
-    el_k_save = compute_electron_states(model, kpoints, ["eigenvalue", "eigenvector", "velocity_diagonal"], window, nband; fourier_mode)
+    el_k_save = compute_electron_states(model, kpoints, ["eigenvalue", "eigenvector", "velocity_diagonal"], window; fourier_mode)
     ek_full_save = mapreduce(el -> el.e_full, hcat, el_k_save)
 
     # Compute chemical potential
