@@ -31,9 +31,9 @@ using EPW
     @test el2.rng == el1.rng
 
     @test el2.e ≈ el1.e
-    @test el2.vdiag[el2.rng] ≈ el1.vdiag[el1.rng]
-    @test el2.v[el2.rng, el2.rng] ≈ el1.v[el1.rng, el1.rng]
-    @test el2.rbar[el2.rng, el2.rng] ≈ el1.rbar[el1.rng, el1.rng]
+    @test el2.vdiag ≈ el1.vdiag
+    @test el2.v ≈ el1.v
+    @test el2.rbar ≈ el1.rbar
 
     @test el2.u ≈ el1.u
 end
@@ -58,9 +58,9 @@ end
             el2 = compute_electron_states(model, kpts, quantities)[1];
 
             @test el1.e[el1.rng] ≈ el2.e[el1.rng_full]
-            @test el1.rbar[el1.rng, el1.rng] ≈ el2.rbar[el1.rng_full, el1.rng_full]
-            @test el1.vdiag[el1.rng] ≈ el2.vdiag[el1.rng_full]
-            @test el1.v[el1.rng, el1.rng] ≈ el2.v[el1.rng_full, el1.rng_full]
+            @test el1.rbar ≈ el2.rbar[el1.rng_full, el1.rng_full]
+            @test el1.vdiag ≈ el2.vdiag[el1.rng_full]
+            @test el1.v ≈ el2.v[el1.rng_full, el1.rng_full]
         end
     end
 end
