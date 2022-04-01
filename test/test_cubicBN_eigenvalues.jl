@@ -13,7 +13,7 @@ using EPW
     kpts = generate_kvec_grid(3, 3, 3)
 
     # electron
-    el_states = compute_electron_states(model, kpts, ["eigenvalue"], (-Inf, Inf), model.nw, 0, fourier_mode="gridopt")
+    el_states = compute_electron_states(model, kpts, ["eigenvalue"], fourier_mode="gridopt")
     el_e = compute_eigenvalues_el(model, kpts)
     @test hcat([el.e_full for el in el_states]...) ≈ el_e
 

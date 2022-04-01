@@ -43,17 +43,15 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
     occupation::Vector{T} # Electron occupation number
 end
 
-function ElectronState{T}(nw, nband_bound=nw, nband_ignore=0) where {T}
+function ElectronState{T}(nw, nband_bound=nw) where {T}
     @assert nband_bound > 0
-    @assert nband_ignore >= 0
-    @assert nband_bound + nband_ignore <= nw
 
     ElectronState{T}(
         nw=nw,
         e_full=zeros(T, nw),
         u_full=zeros(Complex{T}, nw, nw),
         nband_bound=nband_bound,
-        nband_ignore=nband_ignore,
+        nband_ignore=0,
         nband=0,
         rng_full=1:0,
         rng=1:0,
@@ -65,7 +63,7 @@ function ElectronState{T}(nw, nband_bound=nw, nband_ignore=0) where {T}
     )
 end
 
-ElectronState(nw, ::Type{FT}=Float64; nband_bound=nw, nband_ignore=0) where FT = ElectronState{FT}(nw, nband_bound, nband_ignore)
+ElectronState(nw, ::Type{FT}=Float64; nband_bound=nw) where FT = ElectronState{FT}(nw, nband_bound)
 
 function Base.getproperty(el::ElectronState, name::Symbol)
     if name === :u
@@ -103,15 +101,14 @@ function Base.copyto!(dest::ElectronState, src::ElectronState)
 end
 
 """
-    set_window!(el::ElectronState, window=(-Inf,Inf))
+    set_window!(el::ElectronState, window=(-Inf, Inf))
 Find out the bands inside the window and set el.nband, el.rng and el.rng_full.
-Return true if no bands are selected.
-FIXME: return false if no bands are selected..
 """
-function set_window!(el::ElectronState, window=(-Inf,Inf))
+function set_window!(el::ElectronState, window=(-Inf, Inf))
     ibands = EPW.inside_window(el.e_full, window...)
     # If no bands are selected, return true.
     if isempty(ibands)
+        el.nband_ignore = 0
         el.nband = 0
         el.rng = 1:0
         el.rng_full = 1:0
@@ -124,8 +121,8 @@ function set_window!(el::ElectronState, window=(-Inf,Inf))
 
     el.rng_full = ibands[1]:ibands[end]
     el.nband_ignore = ibands[1] - 1
-    el.rng = el.rng_full .- el.nband_ignore
-    el.nband = length(el.rng)
+    el.nband = length(el.rng_full)
+    el.rng = 1:el.nband
     @views el.e[el.rng] .= el.e_full[el.rng_full]
 
     return el

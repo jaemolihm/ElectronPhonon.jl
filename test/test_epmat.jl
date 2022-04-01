@@ -26,8 +26,8 @@ using EPW
 
     # setup electron and phonon states
     ph = PhononState(nmodes)
-    el_k = ElectronState(nw; nband_bound=nband, nband_ignore)
-    el_kq = ElectronState(nw; nband_bound=nband, nband_ignore)
+    el_k = ElectronState(nw; nband_bound=nband)
+    el_kq = ElectronState(nw; nband_bound=nband)
     set_eigen!(el_k, model_ph, xk)
     set_window!(el_k, window)  # el_k.nband  = 6
     set_eigen!(el_kq, model_ph, xkq)

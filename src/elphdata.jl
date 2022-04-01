@@ -45,8 +45,8 @@ function ElPhData{T}(nw, nmodes, nband=nw) where {T}
     @assert nband > 0
 
     ElPhData{T}(nw=nw, nmodes=nmodes, nband=nband, wtk=T(0), wtq=T(0),
-        el_k=ElectronState(nw, T; nband_bound=nband),
-        el_kq=ElectronState(nw, T; nband_bound=nband),
+        el_k=ElectronState{T}(nw, nband),
+        el_kq=ElectronState{T}(nw, nband),
         ph=PhononState(nmodes, T),
     )
 end

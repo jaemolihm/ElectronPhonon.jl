@@ -147,13 +147,13 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
-        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband, nband_ignore; fourier_mode)
+        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband; fourier_mode)
         el_k_boltzmann, imap_el_k = electron_states_to_BTStates(el_k_save, kpts, nstates_base_k)
         g = create_group(fid_btedata, "initialstate_electron")
         dump_BTData(g, el_k_boltzmann)
 
         mpi_isroot() && println("Calculating electron states at k+q")
-        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband, nband_ignore; fourier_mode)
+        el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, nband; fourier_mode)
         el_kq_boltzmann, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts, nstates_base_kq)
         g = create_group(fid_btedata, "finalstate_electron")
         dump_BTData(g, el_kq_boltzmann)

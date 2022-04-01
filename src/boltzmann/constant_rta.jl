@@ -34,10 +34,9 @@ function run_transport_constant_relaxation_time(model, k_input, transport_params
     kpts, iband_min, iband_max, nstates_base = filter_kpoints(k_input, nw, model.el_ham, window, mpi_comm_k; symmetry)
 
     nband = iband_max - iband_min + 1
-    nband_ignore = iband_min - 1
 
     # Calculate electron states
-    el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"], window, nband, nband_ignore; fourier_mode);
+    el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"], window, nband; fourier_mode);
 
     # Calculate chemical potential
     energies = vcat([el.e[el.rng] for el in el_k_save]...)

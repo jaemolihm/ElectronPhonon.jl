@@ -33,7 +33,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         mpi_isroot() && println("Calculating electron states at k")
         quantities = ["eigenvalue", "eigenvector", "velocity"]
         compute_derivative && push!(quantities, "position")
-        el_k_save = compute_electron_states(model, kpts, quantities, window_k, nband, nband_ignore; fourier_mode)
+        el_k_save = compute_electron_states(model, kpts, quantities, window_k, nband; fourier_mode)
         # for (el, xk) in zip(el_k_save, kpts.vectors)
         #     set_gauge_to_diagonalize_velocity_matrix!(el, xk, 1, model)
         # end
@@ -44,7 +44,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # To ensure gauge consistency between symmetry-equivalent k points, we explicitly compute
         # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
         kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
-        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector"], window_kq, nband, nband_ignore; fourier_mode)
+        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector"], window_kq, nband; fourier_mode)
         # DEBUG: randomly change the eigenstate gauge at k+q so that the gauge is different from k
         if get(kwargs, :DEBUG_random_gauge, false) == true
             # Multiply random phase factor

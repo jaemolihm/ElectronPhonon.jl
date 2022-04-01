@@ -13,10 +13,9 @@ using EPW
 
     kpts = Kpoints([0.1, -0.4, 0.7])
     nband = 5
-    nband_ignore = 1
 
     # setup electron and phonon states
-    el1 = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"], window, nband, nband_ignore)[1]
+    el1 = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"], window, nband)[1]
 
     el2 = ElectronState(model.nw)
     copyto!(el2, el1)
@@ -50,13 +49,12 @@ end
     kpts = Kpoints([0., 0., 1/6])
     window = (8.0, 20.0) .* unit_to_aru(:eV)
     nband = 6
-    nband_ignore = 1
 
     for el_velocity_mode in [:BerryConnection, :Direct]
         @testset "$el_velocity_mode" begin
             model.el_velocity_mode = el_velocity_mode
 
-            el1 = compute_electron_states(model, kpts, quantities, window, nband, nband_ignore)[1];
+            el1 = compute_electron_states(model, kpts, quantities, window, nband)[1];
             el2 = compute_electron_states(model, kpts, quantities)[1];
 
             @test el1.e[el1.rng] ≈ el2.e[el1.rng_full]

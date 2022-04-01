@@ -24,7 +24,7 @@ function run_gamma_adaptive(kpts::GridKpoints{FT}, qpts_original::GridKpoints{FT
 
     # 1. Compute electron states and matrix elements at k.
     mpi_isroot() && println("Computing electron states at k")
-    el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband, nband_ignore; fourier_mode)
+    el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_k, nband; fourier_mode)
     el_i, imap_el_k = electron_states_to_BTStates(el_k_save, kpts)
     g_gamma_save = gamma_adaptive_compute_g_gamma(model, kpts, el_k_save, nband, nband_ignore; fourier_mode)
 

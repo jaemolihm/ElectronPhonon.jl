@@ -2,11 +2,11 @@ export compute_electron_states
 export compute_phonon_states
 
 """
-    compute_electron_states(model, kpts, quantities, window, nband, nband_ignore)
+    compute_electron_states(model, kpts, quantities, window, nband)
 Compute the quantities listed in `quantities` and return a vector of ElectronState.
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "velocity"
 """
-function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window, nband, nband_ignore; fourier_mode="normal") where FT
+function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window, nband; fourier_mode="normal") where FT
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
     for quantity in quantities
@@ -17,7 +17,7 @@ function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window, 
     # if position (rbar) is calculated, it does not need to be recalculated in set_velocity!
     skip_rbar = "position" ∈ quantities
 
-    states = [ElectronState(nw, FT; nband_bound=nband, nband_ignore) for ik=1:kpts.n]
+    states = [ElectronState{FT}(nw, nband) for ik=1:kpts.n]
     if quantities == []
         return states
     end
@@ -50,12 +50,12 @@ function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window, 
 end
 
 function compute_electron_states(model, kpts, quantities; fourier_mode="normal")
-    compute_electron_states(model, kpts, quantities, (-Inf, Inf), model.nw, 0; fourier_mode)
+    compute_electron_states(model, kpts, quantities, (-Inf, Inf), model.nw; fourier_mode)
 end
 
 
 """
-    compute_phonon_states(model, kpts, quantities, window, nband, nband_ignore)
+    compute_phonon_states(model, kpts, quantities; fourier_mode="normal")
 Compute the quantities listed in `quantities` and return a vector of PhononState.
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"
 TODO: Implement quantities "velocity"

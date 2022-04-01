@@ -49,15 +49,15 @@ using EPW
         kpts, iband_min, iband_max, nstates_base = filter_kpoints((nk, nk, nk), model.nw, model.el_ham,
             window, nothing, symmetry=symmetry);
         nband = iband_max - iband_min + 1
-        nband_ignore = iband_min - 1
+
         kpts = GridKpoints(kpts)
-        el_k_save = compute_electron_states(model, kpts, quantities, window, nband, nband_ignore; fourier_mode);
+        el_k_save = compute_electron_states(model, kpts, quantities, window, nband; fourier_mode);
         el = EPW.electron_states_to_QMEStates(el_k_save, kpts, EPW.electron_degen_cutoff, nstates_base);
 
         kpts_unfold_ref = GridKpoints(filter_kpoints((nk, nk, nk), model.nw, model.el_ham, window,
             nothing, symmetry=nothing)[1]);
         el_k_save_unfold = compute_electron_states(model, kpts_unfold_ref, quantities, window,
-            nband, nband_ignore; fourier_mode);
+            nband; fourier_mode);
         el_unfold_ref = EPW.electron_states_to_QMEStates(el_k_save_unfold, kpts_unfold_ref,
             EPW.electron_degen_cutoff, nstates_base);
 

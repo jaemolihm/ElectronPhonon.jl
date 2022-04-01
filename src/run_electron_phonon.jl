@@ -99,7 +99,7 @@ function run_eph_outer_loop_q(
     end
 
     # Compute and save electron state at k
-    el_k_save = [ElectronState(nw, FT; nband_bound=nband, nband_ignore) for ik=1:nk]
+    el_k_save = [ElectronState{FT}(nw, nband) for ik=1:nk]
     ek_full_save = zeros(FT, nw, nk)
 
     Threads.@threads :static for ik in 1:nk
