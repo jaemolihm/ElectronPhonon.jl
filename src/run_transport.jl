@@ -93,11 +93,6 @@ using HDF5
         end
     end
 
-    iband_min = min(iband_min_k, iband_min_kq)
-    iband_max = max(iband_max_k, iband_max_kq)
-
-    nband = iband_max - iband_min + 1
-
     qpts = add_two_kpoint_grids(kqpts, kpts, -, kqpts.ngrid)
 
     # Move xq inside [-0.5, 0.5]^3. This doesn't change the Fourier transform but
@@ -107,21 +102,21 @@ using HDF5
     if run_for_qme
         btedata_prefix = joinpath(folder, "btedata_coherence")
         @timing "e-ph main" compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq,
-            GridKpoints(kpts), GridKpoints(kqpts), qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
+            GridKpoints(kpts), GridKpoints(kqpts), qpts, nstates_base_k, nstates_base_kq, energy_conservation,
             average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, qme_offdiag_cutoff;
             fourier_mode, kwargs...)
     else
         btedata_prefix = joinpath(folder, "btedata")
         compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq,
-            kpts, kqpts, qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
+            kpts, kqpts, qpts, nstates_base_k, nstates_base_kq, energy_conservation,
             average_degeneracy, mpi_comm_k, mpi_comm_q; fourier_mode, kwargs...)
     end
 
-    (;nband, kpts, qpts, kqpts)
+    (;kpts, qpts, kqpts)
 end
 
 function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts,
-    kqpts, qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
+    kqpts, qpts, nstates_base_k, nstates_base_kq, energy_conservation,
     average_degeneracy, mpi_comm_k, mpi_comm_q; fourier_mode, kwargs...)
 
     nw = model.nw
@@ -138,12 +133,6 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
         filename = "$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5"
         rm(filename, force=true)
         fid_btedata = h5open(filename, "w")
-        #     # Write some attributes to file
-        #     g = create_group(fid_btedata, "electron")
-        #     write_attribute(fid_btedata["electron"], "nk", nk)
-        #     write_attribute(fid_btedata["electron"], "nbandk_max", nband)
-        #     fid_btedata["electron/weights"] = kpts.weights
-        #     write_attribute(fid_btedata["electron"], "nelec_below_window", nelec_below_window)
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
@@ -166,14 +155,17 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
         dump_BTData(g, ph_boltzmann)
     end
 
+    nband_max = max(maximum(el.nband for el in el_k_save),
+                    maximum(el.nband for el in el_kq_save))
+
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData{Float64}(nw, nmodes, nband)]
+    epdatas = [ElPhData{Float64}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
-    epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nband*nmodes, length(model.epmat.irvec_next))))
+    epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nband_max*nmodes, length(model.epmat.irvec_next))))
 
     # Setup for collecting scattering processes
     @timing "bt init" begin
-        max_nscat = nkq * nmodes * nband^2 * 2
+        max_nscat = nkq * nmodes * nband_max^2 * 2
         bt_scat = ElPhScatteringData{Float64}(max_nscat)
     end
 

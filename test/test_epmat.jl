@@ -26,8 +26,8 @@ using OffsetArrays: no_offset_view
 
     # setup electron and phonon states
     ph = PhononState(nmodes)
-    el_k = ElectronState(nw; nband_bound=nband)
-    el_kq = ElectronState(nw; nband_bound=nband)
+    el_k = ElectronState(nw, nband)
+    el_kq = ElectronState(nw, nband)
     set_eigen!(el_k, model_ph, xk)
     set_window!(el_k, window)  # el_k.nband  = 6
     set_eigen!(el_kq, model_ph, xkq)
@@ -41,7 +41,7 @@ using OffsetArrays: no_offset_view
     for fourier_mode in ["normal", "gridopt"]
         for model in [model_ph, model_ph_disk, model_el, model_el_disk]
             i += 1
-            epdata = ElPhData(nw, nmodes; nband)
+            epdata = ElPhData(nw, nmodes, nband)
             epdata.ph = ph
             epdata.el_k = el_k
             epdata.el_kq = el_kq
@@ -54,7 +54,7 @@ using OffsetArrays: no_offset_view
                 EPW.get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk; fourier_mode)
             else
                 epobj_ekpR = WannierObject(model.epmat.irvec_next,
-                            zeros(ComplexF64, (nw*epdata.nband*nmodes, length(model.epmat.irvec_next))))
+                            zeros(ComplexF64, (nw*epdata.nband_bound*nmodes, length(model.epmat.irvec_next))))
                 @time EPW.get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(epdata.el_k.u); fourier_mode)
                 EPW.get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
             end

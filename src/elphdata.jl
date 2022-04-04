@@ -19,7 +19,7 @@ export epdata_compute_eph_dipole!
 @kwdef mutable struct ElPhData{T <: Real}
     nw::Int # Number of Wannier functions
     nmodes::Int # Number of modes
-    nband::Int # Maximum number of bands inside the window
+    nband_bound::Int # Maximum allowed number of bands inside the window
     wtk::T # Weight of the k point
     wtq::T # Weight of the q point
 
@@ -31,30 +31,30 @@ export epdata_compute_eph_dipole!
     ph::PhononState{T} # phonon state at q
 
     # U(k+q)' * U(k)
-    mmat::Matrix{Complex{T}} = zeros(Complex{T}, nband, nband)
+    mmat::Matrix{Complex{T}} = zeros(Complex{T}, nband_bound, nband_bound)
 
     # Electron-phonon coupling
-    ep::Array{Complex{T}, 3} = zeros(Complex{T}, nband, nband, nmodes)
-    g2::Array{T, 3} = zeros(T, nband, nband, nmodes)
+    ep::Array{Complex{T}, 3} = zeros(Complex{T}, nband_bound, nband_bound, nmodes)
+    g2::Array{T, 3} = zeros(T, nband_bound, nband_bound, nmodes)
 
     # Preallocated buffers
     buffer::Matrix{Complex{T}} = zeros(Complex{T}, nw, nw)
-    buffer2::Array{T, 3} = zeros(T, nband, nband, nmodes)
+    buffer2::Array{T, 3} = zeros(T, nband_bound, nband_bound, nmodes)
 end
 
-function ElPhData{T}(nw, nmodes, nband=nw) where {T}
+function ElPhData{T}(nw, nmodes, nband_bound=nw) where {T}
     @assert nw > 0
     @assert nmodes > 0
-    @assert nband > 0
+    @assert nband_bound > 0
 
-    ElPhData{T}(nw=nw, nmodes=nmodes, nband=nband, wtk=T(0), wtq=T(0),
-        el_k=ElectronState{T}(nw, nband),
-        el_kq=ElectronState{T}(nw, nband),
+    ElPhData{T}(nw=nw, nmodes=nmodes, nband_bound=nband_bound, wtk=T(0), wtq=T(0),
+        el_k=ElectronState{T}(nw),
+        el_kq=ElectronState{T}(nw),
         ph=PhononState(nmodes, T),
     )
 end
 
-ElPhData(nw, nmodes, ::Type{FT}=Float64; nband=nw) where FT = ElPhData{FT}(nw, nmodes, nband)
+ElPhData(nw, nmodes, nband_bound=nw) = ElPhData{Float64}(nw, nmodes, nband_bound)
 
 @inline function Base.getproperty(epdata::ElPhData, name::Symbol)
     if name === :mmat

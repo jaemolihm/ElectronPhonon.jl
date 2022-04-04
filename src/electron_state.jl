@@ -44,7 +44,7 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
     occupation::Vector{T} # Electron occupation number
 end
 
-function ElectronState{T}(nw, nband_bound=nw) where {T}
+function ElectronState{T}(nw, nband_bound=0) where {T}
     ElectronState{T}(
         nw=nw,
         e_full=zeros(T, nw),
@@ -59,7 +59,7 @@ function ElectronState{T}(nw, nband_bound=nw) where {T}
     )
 end
 
-ElectronState(nw, ::Type{FT}=Float64; nband_bound=nw) where FT = ElectronState{FT}(nw, nband_bound)
+ElectronState(nw, nband_bound=0) = ElectronState{Float64}(nw, nband_bound)
 
 function Base.getproperty(el::ElectronState, name::Symbol)
     if name === :u

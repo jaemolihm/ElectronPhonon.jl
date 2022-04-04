@@ -9,7 +9,7 @@ Debugging flags in `kwargs`
     All orders from 1 to `max_derivative_order` are computed.
 """
 function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq, kpts,
-        kqpts, qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
+        kqpts, qpts, nstates_base_k, nstates_base_kq, energy_conservation,
         average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, qme_offdiag_cutoff;
         fourier_mode, compute_derivative=false, max_derivative_order=1, kwargs...)
     FT = Float64
@@ -111,8 +111,9 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     iband_min = minimum(el.rng.start for el in el_k_save if el.nband > 0)
     iband_max = maximum(el.rng.stop  for el in el_k_save if el.nband > 0)
     rng_max = iband_min:iband_max
-    gauge = OffsetArray(zeros(Complex{FT}, nband, nband, nk), rng_max, rng_max, :)
-    is_degenerate = OffsetArray(zeros(Bool, nband, nband, nk), rng_max, rng_max, :)
+    nband_max = length(rng_max)
+    gauge = OffsetArray(zeros(Complex{FT}, nband_max, nband_max, nk), rng_max, rng_max, :)
+    is_degenerate = OffsetArray(zeros(Bool, nband_max, nband_max, nk), rng_max, rng_max, :)
 
     @timing "gauge" if symmetry !== nothing
         # Write symmetry object to file
@@ -161,7 +162,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
         # Symmetry matrix elements for symmetry that maps k to itself: Sk = k.
         # Needed for symmetrization of quantities defined on the irreducible grid.
-        is_degenerate_self = OffsetArray(zeros(Bool, nband, nband), rng_max, rng_max)
+        is_degenerate_self = OffsetArray(zeros(Bool, nband_max, nband_max), rng_max, rng_max)
         ik_list = Int[]
         for ik = 1:nk
             xk = kpts.vectors[ik]
@@ -183,7 +184,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             push!(ik_list, ik)
 
             isym_list = zeros(Int, count_total)
-            gauge_list = OffsetArray(zeros(Complex{FT}, nband, nband, count_total),
+            gauge_list = OffsetArray(zeros(Complex{FT}, nband_max, nband_max, count_total),
                                     rng_max, rng_max, 1:count_total)
 
             icount = 0
@@ -249,12 +250,12 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData{Float64}(nw, nmodes, nband)]
+    epdatas = [ElPhData{Float64}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
-    epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nband*nmodes, length(model.epmat.irvec_next))))
+    epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nband_max*nmodes, length(model.epmat.irvec_next))))
 
     # Setup for collecting scattering processes
-    max_nscat = nkq * nmodes * nband^2
+    max_nscat = nkq * nmodes * nband_max^2
     bt_mel = zeros(Complex{FT}, max_nscat)
     bt_econv_p = zeros(Bool, max_nscat)
     bt_econv_m = zeros(Bool, max_nscat) # FIXME: Cannot use BitVector because HDF5.jl does not support it.

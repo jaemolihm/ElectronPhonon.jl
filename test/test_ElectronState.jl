@@ -26,7 +26,7 @@ using OffsetArrays: no_offset_view
         # setup electron and phonon states
         el1 = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"], window)[1]
 
-        el2 = ElectronState(model.nw)
+        el2 = ElectronState(model.nw, model.nw)
         copyto!(el2, el1)
 
         @test el1.nband_bound == el1.nband

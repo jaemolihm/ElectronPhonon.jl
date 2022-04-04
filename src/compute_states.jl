@@ -17,7 +17,7 @@ function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window=(
     # if position (rbar) is calculated, it does not need to be recalculated in set_velocity!
     skip_rbar = "position" ∈ quantities
 
-    states = [ElectronState{FT}(nw, 0) for ik=1:kpts.n]
+    states = [ElectronState{FT}(nw) for ik=1:kpts.n]
     if quantities == []
         return states
     end

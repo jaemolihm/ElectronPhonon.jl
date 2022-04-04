@@ -14,7 +14,6 @@ The q point grid must be a multiple of the k point grid.
 - `subgrid_q_max`: maximum |q_cart| for subdividing. In (2π / model.alat) units.
 FIXME: |q_cart| < subgrid_q_max or all(abs.(q) < subgrid_q_max)? Crystal vs cartesian?
 TODO:
-- Cleanup input parameters nband
 - Implement mpi_comm_k
 - Implement mpi_comm_q
 """
@@ -22,7 +21,6 @@ function run_transport_subgrid_q(
         model::ModelEPW{FT},
         kpts::AbstractKpoints,
         qpts_original::AbstractKpoints,
-        nband,
         subgrid_q_max,
         subgrid_scale;
         mpi_comm_k=nothing,
@@ -69,19 +67,19 @@ function run_transport_subgrid_q(
     else
         compute_electron_phonon_bte_data_outer_k
     end
-    compute_func(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, nband, energy_conservation, mpi_comm_k, mpi_comm_q; fourier_mode)
+    compute_func(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts,
+                 energy_conservation, mpi_comm_k, mpi_comm_q; fourier_mode)
 
     fid_btedata = h5open("$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5", "cw")
     fid_btedata["iq_subgrid_to_grid"] = iq_subgrid_to_grid
     close(fid_btedata)
 
-    (kpts=kpts, qpts=qpts, kqpts=kqpts, nband=nband)
+    (; kpts, qpts, kqpts)
 end
 
 
-function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_prefix, window_k, window_kq,
-    kpts, kqpts, qpts, nband, energy_conservation,
-    mpi_comm_k, mpi_comm_q; fourier_mode) where FT
+function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_prefix, window_k,
+    window_kq, kpts, kqpts, qpts, energy_conservation, mpi_comm_k, mpi_comm_q; fourier_mode) where FT
 
     if model.epmat_outer_momentum != "ph"
         throw(ArgumentError("model.epmat_outer_momentum must be ph"))
@@ -98,12 +96,6 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
     @timing "hdf init" begin
         # Open HDF5 file for writing BTEdata
         fid_btedata = h5open("$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5", "w")
-        #     # Write some attributes to file
-        #     g = create_group(fid_btedata, "electron")
-        #     write_attribute(fid_btedata["electron"], "nk", nk)
-        #     write_attribute(fid_btedata["electron"], "nbandk_max", nband)
-        #     fid_btedata["electron/weights"] = kpts.weights
-        #     write_attribute(fid_btedata["electron"], "nelec_below_window", nelec_below_window)
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
@@ -126,14 +118,17 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
         dump_BTData(g, ph_boltzmann)
     end
 
+    nband_max = max(maximum(el.nband for el in el_k_save),
+                    maximum(el.nband for el in el_kq_save))
+
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData{FT}(nw, nmodes, nband)]
+    epdatas = [ElPhData{FT}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
     epobj_eRpq = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
 
     # Setup for collecting scattering processes
     @timing "bt init" begin
-        max_nscat = nk * nmodes * nband^2 * 2
+        max_nscat = nk * nmodes * nband_max^2 * 2
         bt_scat = ElPhScatteringData{FT}(max_nscat)
     end
 
@@ -221,7 +216,7 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
 end
 
 function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_k, window_kq, kpts,
-    kqpts, qpts, nband, energy_conservation, mpi_comm_k, mpi_comm_q; fourier_mode)
+    kqpts, qpts, energy_conservation, mpi_comm_k, mpi_comm_q; fourier_mode)
 
     if model.epmat_outer_momentum != "el"
         error("model.epmat_outer_momentum must be el")
@@ -238,12 +233,6 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
     @timing "hdf init" begin
         # Open HDF5 file for writing BTEdata
         fid_btedata = h5open("$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5", "w")
-        #     # Write some attributes to file
-        #     g = create_group(fid_btedata, "electron")
-        #     write_attribute(fid_btedata["electron"], "nk", nk)
-        #     write_attribute(fid_btedata["electron"], "nbandk_max", nband)
-        #     fid_btedata["electron/weights"] = kpts.weights
-        #     write_attribute(fid_btedata["electron"], "nelec_below_window", nelec_below_window)
 
         # Calculate initial (k) and final (k+q) electron states, write to HDF5 file
         mpi_isroot() && println("Calculating electron states at k")
@@ -266,14 +255,17 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
         dump_BTData(g, ph_boltzmann)
     end
 
+    nband_max = max(maximum(el.nband for el in el_k_save),
+                    maximum(el.nband for el in el_kq_save))
+
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData{Float64}(nw, nmodes, nband)]
+    epdatas = [ElPhData{Float64}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
     epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
 
     # Setup for collecting scattering processes
     @timing "bt init" begin
-        max_nscat = nq * nmodes * nband^2 * 2
+        max_nscat = nq * nmodes * nband_max^2 * 2
         bt_scat = ElPhScatteringData{Float64}(max_nscat)
     end
 
