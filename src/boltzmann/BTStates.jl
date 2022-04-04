@@ -76,7 +76,7 @@ Transform Vector of ElectronState to a BTState.
             vdiag[istate] = el.vdiag[ib]
             k_weight[istate] = kpts.weights[ik]
             xks[istate] = kpts.vectors[ik]
-            iband[istate] = ib + el.nband_ignore
+            iband[istate] = ib
             imap[ib, ik] = istate
         end
     end

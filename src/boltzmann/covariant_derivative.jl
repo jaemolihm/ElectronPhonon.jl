@@ -180,7 +180,6 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
         ikirr = ik_to_ikirr_isym[ik][1]
         el_k = el_irr_states[ikirr]
         rng_k = el_k.rng
-        nb0_k = el_k.nband_ignore
         if el_sym !== nothing
             @views mul!(u_k[:, 1:el_k.nband], smat_all[:, :, ik], no_offset_view(el_k.u))
         else
@@ -195,7 +194,6 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
             ikbirr = ik_to_ikirr_isym[ikb][1]
             el_kb = el_irr_states[ikbirr]
             rng_kb = el_kb.rng
-            nb0_kb = el_kb.nband_ignore
             if el_sym !== nothing
                 @views mul!(u_kb[:, 1:el_kb.nband], smat_all[:, :, ikb], no_offset_view(el_kb.u))
             else
@@ -208,11 +206,11 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
             @views mul!(no_offset_view(mmat), u_kb[:, 1:el_kb.nband]', u_k[:, 1:el_k.nband])
 
             for ib2 in rng_k, ib1 in rng_k
-                ind_i = get_1d_index(el, ib1 + nb0_k, ib2 + nb0_k, ik)
+                ind_i = get_1d_index(el, ib1, ib2, ik)
                 ind_i == 0 && continue
                 for jb2 in rng_kb, jb1 in rng_kb
                     # ∇ᵅf[ik, ib1, ib2] += mkb'[ib1, jb1] * f[ikb, jb1, jb2] * mkb[jb2, ib2] * wb * bᵅ
-                    ind_f = get_1d_index(el, jb1 + nb0_kb, jb2 + nb0_kb, ikb)
+                    ind_f = get_1d_index(el, jb1, jb2, ikb)
                     ind_f == 0 && continue
                     push!(sp_i, ind_i)
                     push!(sp_j, ind_f)
@@ -230,13 +228,13 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
     for ik in 1:kpts.n
         ikirr, isym = ik_to_ikirr_isym[ik]
         el_k = el_irr_states[ikirr]
-        rng_full = el_k.rng_full
+        rng = el_k.rng
         rbar = el_k.rbar
 
-        for ib1 in rng_full, ib2 in rng_full
+        for ib1 in rng, ib2 in rng
             ind_i = get_1d_index(el, ib1, ib2, ik)
             ind_i == 0 && continue
-            for ib3 in rng_full
+            for ib3 in rng
                 ind_f = get_1d_index(el, ib3, ib2, ik)
                 if ind_f != 0
                     push!(sp_i, ind_i)

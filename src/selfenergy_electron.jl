@@ -58,8 +58,7 @@ end
                 delta2 = gaussian(delta_e2 * inv_smear) * inv_smear
                 fcoeff1 = ph_occ[imode] + el_kq_occ[jb]
                 fcoeff2 = ph_occ[imode] + 1.0 - el_kq_occ[jb]
-                elself.imsigma[ib + epdata.el_k.nband_ignore, ik, iT] += (
-                    epdata.g2[jb, ib, imode] * epdata.wtq
+                elself.imsigma[ib, ik, iT] += (epdata.g2[jb, ib, imode] * epdata.wtq
                     * π * (fcoeff1 * delta1 + fcoeff2 * delta2)
                 )
             end

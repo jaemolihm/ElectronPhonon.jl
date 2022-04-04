@@ -14,10 +14,10 @@ using OffsetArrays: no_offset_view
     @testset "basic" begin
         kpts = Kpoints([0.1, -0.4, 0.7])
         el = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"], window)[1]
-        @test el.rng_full == 5:6
-        @test el.nband == length(el.rng_full)
+        @test el.rng == 5:6
+        @test el.nband == length(el.rng)
         @test size(el.rbar) == (el.nband, el.nband)
-        @test axes(el.rbar) == (el.rng_full, el.rng_full)
+        @test axes(el.rbar) == (el.rng, el.rng)
     end
 
     @testset "copyto!" begin
@@ -34,9 +34,7 @@ using OffsetArrays: no_offset_view
 
         @test el2.e_full ≈ el1.e_full
         @test el2.u_full ≈ el1.u_full
-        @test el2.nband_ignore == el1.nband_ignore
         @test el2.nband == el1.nband
-        @test el2.rng_full == el1.rng_full
         @test el2.rng == el1.rng
 
         @test el2.e ≈ el1.e
@@ -62,10 +60,10 @@ using OffsetArrays: no_offset_view
                 el1 = compute_electron_states(model, kpts, quantities, window)[1];
                 el2 = compute_electron_states(model, kpts, quantities)[1];
 
-                @test el1.e[el1.rng_full] ≈ el2.e[el1.rng_full]
-                @test el1.vdiag[el1.rng_full] ≈ el2.vdiag[el1.rng_full]
-                @test el1.v[el1.rng_full, el1.rng_full] ≈ el2.v[el1.rng_full, el1.rng_full]
-                @test el1.rbar[el1.rng_full, el1.rng_full] ≈ el2.rbar[el1.rng_full, el1.rng_full]
+                @test el1.e[el1.rng] ≈ el2.e[el1.rng]
+                @test el1.vdiag[el1.rng] ≈ el2.vdiag[el1.rng]
+                @test el1.v[el1.rng, el1.rng] ≈ el2.v[el1.rng, el1.rng]
+                @test el1.rbar[el1.rng, el1.rng] ≈ el2.rbar[el1.rng, el1.rng]
             end
         end
     end

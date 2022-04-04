@@ -59,10 +59,10 @@ ElPhData(nw, nmodes, ::Type{FT}=Float64; nband=nw) where FT = ElPhData{FT}(nw, n
 @inline function Base.getproperty(epdata::ElPhData, name::Symbol)
     if name === :mmat
         OffsetArray(view(getfield(epdata, name), 1:getfield(epdata, :el_kq).nband, 1:getfield(epdata, :el_k).nband),
-            getfield(epdata, :el_kq).rng_full, getfield(epdata, :el_k).rng_full)
+            getfield(epdata, :el_kq).rng, getfield(epdata, :el_k).rng)
     elseif name === :ep || name === :g2 || name === :buffer2
         OffsetArray(view(getfield(epdata, name), 1:getfield(epdata, :el_kq).nband, 1:getfield(epdata, :el_k).nband, :),
-            getfield(epdata, :el_kq).rng_full, getfield(epdata, :el_k).rng_full, :)
+            getfield(epdata, :el_kq).rng, getfield(epdata, :el_k).rng, :)
     else
         getfield(epdata, name)
     end

@@ -145,15 +145,13 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 tmp_arr2 = view(tmp_arr2_full, rng_sk, rng_k)
                 mul!(tmp_arr, sym_k, no_offset_view(el_k.u))
                 mul!(tmp_arr2, no_offset_view(el_sk.u)', tmp_arr)
-                gauge[el_sk.rng_full, el_k.rng_full, ik] .= tmp_arr2
+                gauge[el_sk.rng, el_k.rng, ik] .= tmp_arr2
                 # FIXME: Perform SVD to make gauge completely unitary
 
                 # Set is_degenerate. Use more loose tolerance because symmetry can be slightly
                 # broken at the Hamiltonian level.
                 for ib in rng_k, jb in rng_sk
-                    ib_full = ib + el_k.nband_ignore
-                    jb_full = jb + el_sk.nband_ignore
-                    is_degenerate[jb_full, ib_full, ik] = abs(el_k.e[ib] - el_sk.e[jb]) < 10 * unit_to_aru(:meV)
+                    is_degenerate[jb, ib, ik] = abs(el_k.e[ib] - el_sk.e[jb]) < 10 * unit_to_aru(:meV)
                 end
             end
             g = create_group(fid_btedata, "gauge/isym$isym")
@@ -207,16 +205,14 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 tmp_arr2 = view(tmp_arr2_full, rng_k, rng_k)
                 mul!(tmp_arr, sym_k, no_offset_view(el_k.u))
                 mul!(tmp_arr2, no_offset_view(el_k.u)', tmp_arr)
-                gauge_list[el_k.rng_full, el_k.rng_full, icount] .= tmp_arr2
+                gauge_list[el_k.rng, el_k.rng, icount] .= tmp_arr2
                 # FIXME: Perform SVD to make gauge completely unitary
             end
 
             # Set is_degenerate_self. Use more loose tolerance because symmetry can be slightly
             # broken at the Hamiltonian level.
             for ib in rng_k, jb in rng_k
-                ib_full = ib + el_k.nband_ignore
-                jb_full = jb + el_k.nband_ignore
-                is_degenerate_self[jb_full, ib_full] = abs(el_k.e[ib] - el_k.e[jb]) < 10 * unit_to_aru(:meV)
+                is_degenerate_self[jb, ib] = abs(el_k.e[ib] - el_k.e[jb]) < 10 * unit_to_aru(:meV)
             end
             g = create_group(fid_btedata, "gauge_self/ik$ik")
             g["isym"] = isym_list
@@ -239,13 +235,11 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             # Compute gauge matrix: gauge = U†(k) * U(k)
             tmp_arr = view(tmp_arr_full, rng_kq, rng_k)
             mul!(tmp_arr, no_offset_view(el_kq.u)', no_offset_view(el_k.u))
-            gauge[el_kq.rng_full, el_k.rng_full, ik] .= tmp_arr
+            gauge[el_kq.rng, el_k.rng, ik] .= tmp_arr
 
             # Set is_degenerate
             for ib in rng_k, jb in rng_kq
-                ib_full = ib + el_k.nband_ignore
-                jb_full = jb + el_kq.nband_ignore
-                is_degenerate[jb_full, ib_full, ik] = abs(el_k.e[ib] - el_kq.e[jb]) < electron_degen_cutoff
+                is_degenerate[jb, ib, ik] = abs(el_k.e[ib] - el_kq.e[jb]) < electron_degen_cutoff
             end
         end
         g = create_group(fid_btedata, "gauge")
@@ -344,8 +338,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                     bt_mel[bt_nscat] = epdata.ep[jb, ib, imode] / sqrt(2ω)
                     bt_econv_p[bt_nscat] = econv_p
                     bt_econv_m[bt_nscat] = econv_m
-                    bt_ib[bt_nscat] = ib + el_k.nband_ignore
-                    bt_jb[bt_nscat] = jb + el_kq.nband_ignore
+                    bt_ib[bt_nscat] = ib
+                    bt_jb[bt_nscat] = jb
                     bt_imode[bt_nscat] = imode
                     bt_ik[bt_nscat] = ik
                     bt_ikq[bt_nscat] = ikq

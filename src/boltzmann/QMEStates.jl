@@ -116,16 +116,16 @@ end
                 n += 1
                 push!(e1, el.e[ib1])
                 push!(e2, el.e[ib2])
-                push!(ib1_list, ib1 + el.nband_ignore)
-                push!(ib2_list, ib2 + el.nband_ignore)
+                push!(ib1_list, ib1)
+                push!(ib2_list, ib2)
                 push!(ik_list, ik)
                 push!(v, el.v[ib1, ib2])
             end
         end
-        push!(ib_rng, el.rng .+ el.nband_ignore)
+        push!(ib_rng, el.rng)
     end
-    iband_min = minimum(el.rng_full.start for el in el_states if el.nband > 0)
-    iband_max = maximum(el.rng_full.stop  for el in el_states if el.nband > 0)
+    iband_min = minimum(el.rng.start for el in el_states if el.nband > 0)
+    iband_max = maximum(el.rng.stop  for el in el_states if el.nband > 0)
     nband = iband_max - iband_min + 1
     QMEStates(; n, nband, e1, e2, v, ib1=ib1_list, ib2=ib2_list, ik=ik_list, ib_rng, nstates_base, kpts=GridKpoints(kpts))
 end

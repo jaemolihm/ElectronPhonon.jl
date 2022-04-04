@@ -115,8 +115,7 @@ Compute electron inverse lifetime for given k and q point data in epdata
                 fcoeff1 = ph_occ[imode] + el_kq_occ[jb]
                 fcoeff2 = ph_occ[imode] + 1.0 - el_kq_occ[jb]
 
-                transdata.inv_τ[ib + epdata.el_k.nband_ignore, ik, iT] += (
-                    2π * epdata.wtq * epdata.g2[jb, ib, imode]
+                transdata.inv_τ[ib, ik, iT] += (2π * epdata.wtq * epdata.g2[jb, ib, imode]
                     * (fcoeff1 * delta1 + fcoeff2 * delta2))
             end
         end # modes
@@ -144,7 +143,6 @@ function compute_conductivity_serta!(params::ElectronTransportParams{R}, inv_τ,
             el = el_states[ik]
 
             for iband in el.rng
-                iband_full = iband + el.nband_ignore
                 enk = el.e[iband]
                 vnk = el.vdiag[iband]
 
@@ -155,7 +153,7 @@ function compute_conductivity_serta!(params::ElectronTransportParams{R}, inv_τ,
                 end
 
                 dfocc = -occ_fermion_derivative(enk - μ, T)
-                τ = 1 / inv_τ[iband_full, ik, iT]
+                τ = 1 / inv_τ[iband, ik, iT]
 
                 for j=1:3, i=1:3
                     σ[i, j, iT] += weights[ik] * dfocc * τ * vnk[i] * vnk[j]

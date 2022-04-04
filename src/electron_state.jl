@@ -21,11 +21,10 @@ export set_position!
 #       (or even trim!) that reduces nband to length(rng).
 
 """
-TODO: Implement the following.
 For `e_full` and `u_full`, values for all bands are stored.
 When accessing fields without the `_full` postfix (`e`, `u`, `v`, `vdiag`, `rbar`, `occupation`),
 an OffsetArray is returned. These OffsetArrays are indiced by the physical band indices, which
-are listed in `rng_full`.
+are listed in `rng`.
 To get an array with 1-based indexing, use `OffsetArrays.no_offset_view`.
 """
 Base.@kwdef mutable struct ElectronState{T <: Real}
@@ -34,15 +33,9 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
     u_full::Matrix{Complex{T}} # Electron eigenvectors
 
     # Variables related to the energy window.
-    # Indexing a full array: arr_full[rng_full]
-    # Indexing a filtered array: arr[rng]
-    # rng_full = rng .+ nband_ignore
-    # rng = 1:nband
     nband_bound::Int # Upper bound of possible nband
-    nband_ignore::Int # Number of low-lying ignored bands
     nband::Int # Number of bands inside the energy window
-    rng_full::UnitRange{Int} # Index of bands inside the energy window for the full (physical) index
-    rng::UnitRange{Int} # Index of bands inside the energy window for the offset index
+    rng::UnitRange{Int} # Physical band indices of bands inside the energy window
 
     # These arrays are defined only for bands inside the window
     vdiag::Vector{Vec3{T}} # Diagonal components of band velocity in Cartesian coordinates.
@@ -57,9 +50,7 @@ function ElectronState{T}(nw, nband_bound=nw) where {T}
         e_full=zeros(T, nw),
         u_full=zeros(Complex{T}, nw, nw),
         nband_bound=nband_bound,
-        nband_ignore=0,
         nband=0,
-        rng_full=1:0,
         rng=1:0,
         vdiag=fill(zeros(Vec3{T}), (nband_bound,)),
         v=fill(zeros(Vec3{Complex{T}}), (nband_bound, nband_bound)),
@@ -72,14 +63,14 @@ ElectronState(nw, ::Type{FT}=Float64; nband_bound=nw) where FT = ElectronState{F
 
 function Base.getproperty(el::ElectronState, name::Symbol)
     if name === :u
-        OffsetArray(view(getfield(el, :u_full), :, getfield(el, :rng_full)), :, getfield(el, :rng_full))
+        OffsetArray(view(getfield(el, :u_full), :, getfield(el, :rng)), :, getfield(el, :rng))
     elseif name === :e
-        OffsetArray(view(getfield(el, :e_full), getfield(el, :rng_full)), getfield(el, :rng_full))
+        OffsetArray(view(getfield(el, :e_full), getfield(el, :rng)), getfield(el, :rng))
     elseif name === :vdiag || name === :occupation
-        OffsetArray(view(getfield(el, name), 1:getfield(el, :nband)), getfield(el, :rng_full))
+        OffsetArray(view(getfield(el, name), 1:getfield(el, :nband)), getfield(el, :rng))
     elseif name === :v || name === :rbar
         OffsetArray(view(getfield(el, name), 1:getfield(el, :nband), 1:getfield(el, :nband)),
-                    getfield(el, :rng_full), getfield(el, :rng_full))
+                    getfield(el, :rng), getfield(el, :rng))
     else
         getfield(el, name)
     end
@@ -94,11 +85,9 @@ function Base.copyto!(dest::ElectronState, src::ElectronState)
         throw(ArgumentError("src.nw ($(src.nw)) must be " *
             "equal to dest.nw ($(dest.nw))"))
     end
-    dest.nband_ignore = src.nband_ignore
     dest.nband = src.nband
     dest.e_full .= src.e_full
     dest.u_full .= src.u_full
-    dest.rng_full = src.rng_full
     dest.rng = src.rng
     dest.vdiag .= src.vdiag
     dest.v .= src.v
@@ -120,21 +109,17 @@ end
 
 """
     set_window!(el::ElectronState, window=(-Inf, Inf))
-Find out the bands inside the window and set el.nband, el.rng and el.rng_full.
+Find out the bands inside the window and set el.nband and el.rng.
 """
 function set_window!(el::ElectronState, window=(-Inf, Inf))
     ibands = EPW.inside_window(el.e_full, window...)
     # If no bands are selected, return true.
     if isempty(ibands)
-        el.nband_ignore = 0
         el.nband = 0
         el.rng = 1:0
-        el.rng_full = 1:0
     else
-        el.rng_full = ibands[1]:ibands[end]
-        el.nband_ignore = 0
-        el.nband = length(el.rng_full)
         el.rng = ibands[1]:ibands[end]
+        el.nband = length(el.rng)
         if el.nband > el.nband_bound
             # If el.nband is greater than nband_bound, resize the arrays.
             resize!(el)
@@ -160,7 +145,6 @@ function set_eigen!(el::ElectronState, model, xk, fourier_mode="normal")
 
     # Reset window to a dummy value
     el.nband = 0
-    el.rng_full = 1:0
     el.rng = 1:0
 end
 
@@ -173,7 +157,6 @@ function set_eigen_valueonly!(el::ElectronState, model, xk, fourier_mode="normal
 
     # Reset window to a dummy value
     el.nband = 0
-    el.rng_full = 1:0
     el.rng = 1:0
 end
 
@@ -187,7 +170,7 @@ function set_velocity_diag!(el::ElectronState{FT}, model, xk, fourier_mode="norm
         # So we just calculate the full velocity matrix and set take the diagonal part.
         velocity = reshape(reinterpret(Complex{FT}, no_offset_view(el.v)), 3, el.nband, el.nband)
         get_el_velocity_direct!(velocity, el.nw, model.el_vel, xk, no_offset_view(el.u), fourier_mode)
-        for i in el.rng_full
+        for i in el.rng
             el.vdiag[i] = real.(el.v[i, i])
         end
     elseif model.el_velocity_mode === :BerryConnection
