@@ -28,21 +28,21 @@ function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window=(
         el = states[ik]
 
         if quantities == ["eigenvalue"]
-            set_eigen_valueonly!(el, model, xk, fourier_mode)
+            set_eigen_valueonly!(el, model, xk; fourier_mode)
             set_window!(el, window)
         else
-            set_eigen!(el, model, xk, fourier_mode)
+            set_eigen!(el, model, xk; fourier_mode)
             set_window!(el, window)
             if "position" ∈ quantities
-                set_position!(el, model, xk, fourier_mode)
+                set_position!(el, model, xk; fourier_mode)
             end
             if "velocity" ∈ quantities
-                set_velocity!(el, model, xk, fourier_mode; skip_rbar)
+                set_velocity!(el, model, xk; fourier_mode, skip_rbar)
                 for i in el.rng
                     el.vdiag[i] = real.(el.v[i, i])
                 end
             elseif "velocity_diagonal" ∈ quantities
-                set_velocity_diag!(el, model, xk, fourier_mode)
+                set_velocity_diag!(el, model, xk; fourier_mode)
             end
         end
     end # ik
@@ -75,14 +75,14 @@ function compute_phonon_states(model::ModelEPW{FT}, kpts, quantities; fourier_mo
         ph = states[ik]
 
         if quantities == ["eigenvalue"]
-            set_eigen_valueonly!(ph, model, xk, fourier_mode)
+            set_eigen_valueonly!(ph, model, xk; fourier_mode)
         else
-            set_eigen!(ph, model, xk, fourier_mode)
+            set_eigen!(ph, model, xk; fourier_mode)
             if "velocity" ∈ quantities
                 # not implemented
                 error("velocity not implemented")
             elseif "velocity_diagonal" ∈ quantities
-                set_velocity_diag!(ph, model, xk, fourier_mode)
+                set_velocity_diag!(ph, model, xk; fourier_mode)
             end
             if "eph_dipole_coeff" ∈ quantities
                 set_eph_dipole_coeff!(ph, model, xk)

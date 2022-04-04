@@ -69,7 +69,7 @@ function run_transport_subgrid_q(
     else
         compute_electron_phonon_bte_data_outer_k
     end
-    compute_func(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, nband, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+    compute_func(model, btedata_prefix, window_k, window_kq, kpts, kqpts, qpts, nband, energy_conservation, mpi_comm_k, mpi_comm_q; fourier_mode)
 
     fid_btedata = h5open("$btedata_prefix.rank$(mpi_myrank(mpi_comm_k)).h5", "cw")
     fid_btedata["iq_subgrid_to_grid"] = iq_subgrid_to_grid
@@ -81,7 +81,7 @@ end
 
 function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_prefix, window_k, window_kq,
     kpts, kqpts, qpts, nband, energy_conservation,
-    mpi_comm_k, mpi_comm_q, fourier_mode) where FT
+    mpi_comm_k, mpi_comm_q; fourier_mode) where FT
 
     if model.epmat_outer_momentum != "ph"
         throw(ArgumentError("model.epmat_outer_momentum must be ph"))
@@ -158,7 +158,7 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
             epdata.ph = ph
         end
 
-        get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u, fourier_mode)
+        get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u; fourier_mode)
 
         bt_nscat = 0
 
@@ -187,7 +187,7 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
             check_energy_conservation_all(epdata, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
+            get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk; fourier_mode)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
@@ -221,7 +221,7 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
 end
 
 function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_k, window_kq, kpts,
-    kqpts, qpts, nband, energy_conservation, mpi_comm_k, mpi_comm_q, fourier_mode)
+    kqpts, qpts, nband, energy_conservation, mpi_comm_k, mpi_comm_q; fourier_mode)
 
     if model.epmat_outer_momentum != "el"
         error("model.epmat_outer_momentum must be el")
@@ -297,7 +297,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
         for epdata in epdatas
             epdata.el_k = el_k
         end
-        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u), fourier_mode)
+        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u); fourier_mode)
 
         bt_nscat = 0
 
@@ -326,7 +326,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
             check_energy_conservation_all(epdata, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
+            get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)

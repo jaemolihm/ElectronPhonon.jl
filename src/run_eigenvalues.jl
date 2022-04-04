@@ -9,7 +9,7 @@ function compute_eigenvalues_el(model::ModelEPW{FT}, kpts; fourier_mode="gridopt
     el = ElectronState{FT}(model.nw)
     e = zeros(model.nw, kpts.n)
     for ik in 1:kpts.n
-        set_eigen_valueonly!(el, model, kpts.vectors[ik], fourier_mode)
+        set_eigen_valueonly!(el, model, kpts.vectors[ik]; fourier_mode)
         e[:, ik] .= el.e_full
     end # ik
     e
@@ -19,7 +19,7 @@ function compute_eigenvalues_ph(model::ModelEPW{FT}, kpts; fourier_mode="gridopt
     ph = PhononState(model.nmodes, FT)
     e = zeros(model.nmodes, kpts.n)
     for ik in 1:kpts.n
-        set_eigen!(ph, model, kpts.vectors[ik], fourier_mode)
+        set_eigen!(ph, model, kpts.vectors[ik]; fourier_mode)
         e[:, ik] .= ph.e
     end # ik
     e

@@ -124,7 +124,7 @@ function run_eph_outer_loop_q(
         xq = qpoints.vectors[iq]
 
         # Phonon eigenvalues
-        set_eigen!(ph, model, xq, fourier_mode)
+        set_eigen!(ph, model, xq; fourier_mode)
         if model.use_polar_dipole
             set_eph_dipole_coeff!(ph, model, xq)
         end
@@ -134,7 +134,7 @@ function run_eph_outer_loop_q(
             epdata.ph = ph
         end
 
-        get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u, fourier_mode)
+        get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u; fourier_mode)
 
         Threads.@threads :static for ik in 1:nk
         # for ik in 1:nk
@@ -153,14 +153,14 @@ function run_eph_outer_loop_q(
             epdata.el_k = el_k_save[ik]
 
             # Compute electron state at k+q.
-            set_eigen!(epdata.el_kq, model, xkq, fourier_mode)
+            set_eigen!(epdata.el_kq, model, xkq; fourier_mode)
 
             # Set energy window, skip if no state is inside the window
             set_window!(epdata.el_kq, window)
             length(epdata.el_kq.rng) == 0 && continue
 
-            set_velocity_diag!(epdata.el_kq, model, xkq, fourier_mode)
-            get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
+            set_velocity_diag!(epdata.el_kq, model, xkq; fourier_mode)
+            get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk; fourier_mode)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)

@@ -10,8 +10,8 @@ Debugging flags in `kwargs`
 """
 function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq, kpts,
         kqpts, qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
-        average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff;
-        compute_derivative=false, max_derivative_order=1, kwargs...)
+        average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, qme_offdiag_cutoff;
+        fourier_mode, compute_derivative=false, max_derivative_order=1, kwargs...)
     FT = Float64
 
     nw = model.nw
@@ -140,7 +140,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 rng_sk = el_sk.rng
 
                 # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k) = <u(Sk)|S|u(k)>
-                get_fourier!(sym_k, model.el_sym.operators[isym_el], xk, mode=fourier_mode)
+                get_fourier!(sym_k, model.el_sym.operators[isym_el], xk; fourier_mode)
                 tmp_arr = view(tmp_arr_full, :, rng_k)
                 tmp_arr2 = view(tmp_arr2_full, rng_sk, rng_k)
                 mul!(tmp_arr, sym_k, no_offset_view(el_k.u))
@@ -200,7 +200,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 isym_list[icount] = isym
 
                 # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k) = <u(k)|S|u(k)>
-                get_fourier!(sym_k, model.el_sym.operators[isym_el], xk; mode=fourier_mode)
+                get_fourier!(sym_k, model.el_sym.operators[isym_el], xk; fourier_mode)
                 tmp_arr = view(tmp_arr_full, :, rng_k)
                 tmp_arr2 = view(tmp_arr2_full, rng_k, rng_k)
                 mul!(tmp_arr, sym_k, no_offset_view(el_k.u))
@@ -286,7 +286,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             epdata.el_k = el_k
         end
 
-        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u), fourier_mode)
+        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u); fourier_mode)
 
         bt_nscat = 0
 
@@ -315,7 +315,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             check_energy_conservation_all(epdata, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
+            get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
             @timing "dipole" if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)

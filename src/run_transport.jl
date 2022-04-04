@@ -108,12 +108,13 @@ using HDF5
         btedata_prefix = joinpath(folder, "btedata_coherence")
         @timing "e-ph main" compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq,
             GridKpoints(kpts), GridKpoints(kqpts), qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
-            average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, fourier_mode, qme_offdiag_cutoff; kwargs...)
+            average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, qme_offdiag_cutoff;
+            fourier_mode, kwargs...)
     else
         btedata_prefix = joinpath(folder, "btedata")
         compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq,
             kpts, kqpts, qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
-            average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode; kwargs...)
+            average_degeneracy, mpi_comm_k, mpi_comm_q; fourier_mode, kwargs...)
     end
 
     (;nband, kpts, qpts, kqpts)
@@ -121,7 +122,7 @@ end
 
 function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts,
     kqpts, qpts, nband, nstates_base_k, nstates_base_kq, energy_conservation,
-    average_degeneracy, mpi_comm_k, mpi_comm_q, fourier_mode; kwargs...)
+    average_degeneracy, mpi_comm_k, mpi_comm_q; fourier_mode, kwargs...)
 
     nw = model.nw
     nmodes = model.nmodes
@@ -197,7 +198,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             epdata.el_k = el_k
         end
 
-        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u), fourier_mode)
+        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u); fourier_mode)
 
         bt_nscat = 0
 
@@ -226,7 +227,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             check_energy_conservation_all(epdata, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
+            get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)

@@ -101,26 +101,27 @@ function reset_gridopts_in_obj!(obj::AbstractWannierObject)
 end
 
 "Fourier transform real-space operator to momentum-space operator"
-@timing "get_fourier" function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk; mode="normal") where {T}
+@timing "get_fourier" function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk; fourier_mode="normal") where {T}
     @assert eltype(op_k) == Complex{T}
     @assert length(op_k) == obj.ndata
 
     op_k_1d = _reshape(op_k, (length(op_k),))
 
-    if mode == "normal"
+    if fourier_mode == "normal"
         phase = get_phase_expikr!(obj, xk, threadid())
         _get_fourier_normal!(op_k_1d, obj, xk, phase)
-    elseif mode == "gridopt"
+    elseif fourier_mode == "gridopt"
         _get_fourier_gridopt!(op_k_1d, obj, xk)
     else
-        error("mode must be normal or gridopt")
+        error("fourier_mode must be normal or gridopt")
     end
     return
 end
 
 "Fourier transform real-space operator to momentum-space operator using a
 pre-computed phase factor"
-@timing "get_fourier" function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk, phase; mode="normal") where {T}
+@timing "get_fourier" function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk, phase) where {T}
+    Base.depwarn("get_fourier! with pre-computed phase factor is deprecated.", :get_fourier!, force=true)
     @assert eltype(op_k) == Complex{T}
     @assert length(op_k) == obj.ndata
     @assert eltype(phase) == Complex{T}

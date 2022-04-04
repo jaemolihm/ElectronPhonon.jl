@@ -51,34 +51,34 @@ end
 #  Electrons
 
 """
-    get_el_eigen!(values, vectors, nw, el_ham, xk, fourier_mode="normal")
+    get_el_eigen!(values, vectors, nw, el_ham, xk; fourier_mode="normal")
 Compute electron eigenenergy and eigenvector.
 """
-@timing "w2b_el_eig" function get_el_eigen!(values, vectors, nw, el_ham, xk, fourier_mode="normal")
+@timing "w2b_el_eig" function get_el_eigen!(values, vectors, nw, el_ham, xk; fourier_mode="normal")
     @assert size(values) == (nw,)
     @assert size(vectors) == (nw, nw)
 
     hk = _get_buffer(_buffer1, (nw, nw))
-    get_fourier!(hk, el_ham, xk, mode=fourier_mode)
+    get_fourier!(hk, el_ham, xk; fourier_mode)
     solve_eigen_el!(values, vectors, hk)
     nothing
 end
 
 """
-    get_el_eigen_valueonly!(values, nw, el_ham, xk, fourier_mode="normal")
+    get_el_eigen_valueonly!(values, nw, el_ham, xk; fourier_mode="normal")
 """
-@timing "w2b_el_eigval" function get_el_eigen_valueonly!(values, nw, el_ham, xk, fourier_mode="normal")
+@timing "w2b_el_eigval" function get_el_eigen_valueonly!(values, nw, el_ham, xk; fourier_mode="normal")
     # FIXME: Names get_el_eigen_valueonly! and solve_eigen_el_valueonly! are confusing.
     @assert size(values) == (nw,)
 
     hk = _get_buffer(_buffer1, (nw, nw))
-    get_fourier!(hk, el_ham, xk, mode=fourier_mode)
+    get_fourier!(hk, el_ham, xk; fourier_mode)
     solve_eigen_el_valueonly!(values, hk)
     nothing
 end
 
 """
-    get_el_velocity_diag_berry_connection!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
+    get_el_velocity_diag_berry_connection!(velocity_diag, nw, el_ham_R, xk, uk; fourier_mode="normal")
 Compute the diagoanl part of electron band velocity using the Berry connection formula. See
 docstring for get_el_velocity_berry_connection! for details.
 For the diagonal part, the Berry connection contribution is zero.
@@ -86,7 +86,7 @@ For the diagonal part, the Berry connection contribution is zero.
 velocity_diag: nband-dimensional vector.
 uk: nw * nband matrix containing nband eigenvectors of H(k).
 """
-@timing "w2b_el_vel" function get_el_velocity_diag_berry_connection!(velocity_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
+@timing "w2b_el_vel" function get_el_velocity_diag_berry_connection!(velocity_diag, nw, el_ham_R, xk, uk; fourier_mode="normal")
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity_diag) == (3, nband)
@@ -94,7 +94,7 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
     vk = _get_buffer(_buffer1, (nw, nw, 3))
     tmp = _get_buffer(_buffer2, (nw, nband))
 
-    get_fourier!(vk, el_ham_R, xk, mode=fourier_mode)
+    get_fourier!(vk, el_ham_R, xk; fourier_mode)
 
     # velocity_diag[idir, iband] = uk'[iband, :] * vk[:, :, idir] * uk[:, iband]
     @views @inbounds for idir = 1:3
@@ -107,7 +107,7 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
 end
 
 """
-    get_el_velocity_berry_connection!(velocity, nw, el_ham_R, ek, xk, uk, rbar, fourier_mode="normal")
+    get_el_velocity_berry_connection!(velocity, nw, el_ham_R, ek, xk, uk, rbar; fourier_mode="normal")
 Compute electron band velocity using the Berry connection formula:
 ``v_{m,n} = (U^\\dagger dH^{(W)}(k) / dk U)_{m,n} + i * (e_m - e_n) * rbar_{m,n}``,
 where ``rbar = U^\\dagger A U``
@@ -116,7 +116,7 @@ where ``rbar = U^\\dagger A U``
 - `velocity``: (3, `nband`, `nband`) matrix
 - `uk`: `nw` * `nband` matrix containing nband eigenvectors of ``H(k)``.
 """
-@timing "w2b_el_vel" function get_el_velocity_berry_connection!(velocity, nw, el_ham_R, ek, xk, uk, rbar, fourier_mode="normal")
+@timing "w2b_el_vel" function get_el_velocity_berry_connection!(velocity, nw, el_ham_R, ek, xk, uk, rbar; fourier_mode="normal")
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)
@@ -124,7 +124,7 @@ where ``rbar = U^\\dagger A U``
     vk = _get_buffer(_buffer1, (nw, nw, 3))
     tmp = _get_buffer(_buffer2, (nw, nband))
 
-    get_fourier!(vk, el_ham_R, xk, mode=fourier_mode)
+    get_fourier!(vk, el_ham_R, xk; fourier_mode)
 
     # velocity[idir, :, :] = uk' * vk[:, :, idir] * uk
     @views @inbounds for idir = 1:3
@@ -141,7 +141,7 @@ where ``rbar = U^\\dagger A U``
 end
 
 """
-    get_el_velocity_direct!(velocity, nw, el_vel, xk, uk, fourier_mode="normal")
+    get_el_velocity_direct!(velocity, nw, el_vel, xk, uk; fourier_mode="normal")
 Compute electron band velocity by direct Wannier interpolation of ``dH/dk`` matrix elements.
 - `el_vel`: a `WannierObject`, containing matrix elements of ``dH/dk`` in real-space Wannier basis.
 - `velocity``: (3, `nband`, `nband`) matrix
@@ -149,7 +149,7 @@ Compute electron band velocity by direct Wannier interpolation of ``dH/dk`` matr
 
 TODO: Can we reduce code duplication with get_el_velocity_berry_connection?
 """
-@timing "w2b_el_vel" function get_el_velocity_direct!(velocity, nw, el_vel, xk, uk, fourier_mode="normal")
+@timing "w2b_el_vel" function get_el_velocity_direct!(velocity, nw, el_vel, xk, uk; fourier_mode="normal")
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)
@@ -157,7 +157,7 @@ TODO: Can we reduce code duplication with get_el_velocity_berry_connection?
     vk = _get_buffer(_buffer1, (nw, nw, 3))
     tmp = _get_buffer(_buffer2, (nw, nband))
 
-    get_fourier!(vk, el_vel, xk, mode=fourier_mode)
+    get_fourier!(vk, el_vel, xk; fourier_mode)
 
     # velocity[idir, :, :] = uk' * vk[:, :, idir] * uk
     @views @inbounds for idir = 1:3
@@ -186,7 +186,7 @@ Compute electron eigenenergy and eigenvector.
     # Use vectors as a temporary storage for the dynamical matrix
     dynq = vectors
 
-    get_fourier!(dynq, ph_dyn, xq, mode=fourier_mode)
+    get_fourier!(dynq, ph_dyn, xq; fourier_mode)
     if ! isnothing(polar)
         dynmat_dipole!(dynq, xq, polar, 1)
     end
@@ -199,16 +199,16 @@ Compute electron eigenenergy and eigenvector.
 end
 
 """
-    get_el_eigen_valueonly!(values, nw, el_ham, xk, fourier_mode="normal")
+    get_el_eigen_valueonly!(values, nw, el_ham, xk; fourier_mode="normal")
 """
-@timing "w2b_ph_eigval" function get_ph_eigen_valueonly!(values, ph_dyn, mass, xq, polar=nothing, fourier_mode="normal")
+@timing "w2b_ph_eigval" function get_ph_eigen_valueonly!(values, ph_dyn, mass, xq, polar=nothing; fourier_mode="normal")
     nmodes = length(values)
     @assert size(mass) == (nmodes,)
     @assert ph_dyn.ndata == nmodes^2
 
     dynq = _get_buffer(_buffer1, (nmodes, nmodes))
 
-    get_fourier!(dynq, ph_dyn, xq, mode=fourier_mode)
+    get_fourier!(dynq, ph_dyn, xq; fourier_mode)
     if ! isnothing(polar)
         dynmat_dipole!(dynq, xq, polar, 1)
     end
@@ -222,14 +222,14 @@ end
 
 
 """
-    get_ph_velocity_diag!(vel_diag, nw, el_ham_R, xk, uk, fourier_mode="normal")
+    get_ph_velocity_diag!(vel_diag, nw, el_ham_R, xk, uk; fourier_mode="normal")
 Compute electron band velocity, only the band-diagonal part.
 # Outputs
 - `vel_diag`: (3, nmodes) array, contains diagonal band velocity.
 # Inputs
 - `uk`: nmodes * nmodes matrix containing phonon eigenvectors.
 """
-@timing "w2b_ph_vel" function get_ph_velocity_diag!(vel_diag, ph_dyn_R, xk, uk, fourier_mode="normal")
+@timing "w2b_ph_vel" function get_ph_velocity_diag!(vel_diag, ph_dyn_R, xk, uk; fourier_mode="normal")
     # FIXME: Polar is not implemented.
     nmodes = size(uk, 1)
     @assert size(uk) == (nmodes, nmodes)
@@ -238,7 +238,7 @@ Compute electron band velocity, only the band-diagonal part.
     vk = _get_buffer(_buffer1, (nmodes, nmodes, 3))
     tmp = _get_buffer(_buffer2, (nmodes, nmodes))
 
-    get_fourier!(vk, ph_dyn_R, xk, mode=fourier_mode)
+    get_fourier!(vk, ph_dyn_R, xk; fourier_mode)
 
     # vel_diag[idir, i] = uk'[i, :] * vk[:, :, idir] * uk[:, i]
     @views @inbounds for idir = 1:3
@@ -256,7 +256,7 @@ end
 
 """
 `get_eph_RR_to_Rq!(epobj_eRpq::WannierObject{T}, epmat::AbstractWannierObject{T},
-xq, u_ph, fourier_mode="normal") where {T}`
+xq, u_ph; fourier_mode="normal") where {T}`
 
 Compute electron-phonon coupling matrix in electron Wannier, phonon Bloch basis.
 Multithreading is not supported because of large buffer array size.
@@ -269,7 +269,7 @@ Multithreading is not supported because of large buffer array size.
 - `u_ph`: Input. nmodes * nmodes matrix containing phonon eigenvectors.
 """
 @timing "w2b_eph_RRtoRq" function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject{T},
-        epmat::AbstractWannierObject{T}, xq, u_ph, fourier_mode="normal") where {T}
+        epmat::AbstractWannierObject{T}, xq, u_ph; fourier_mode="normal") where {T}
     nr_el = epobj_eRpq.nr
     nmodes = size(u_ph, 1)
     nbasis = div(epobj_eRpq.ndata, nmodes) # Number of electron basis squared.
@@ -281,7 +281,7 @@ Multithreading is not supported because of large buffer array size.
     ep_Rq = _get_buffer(_buffer_nothreads1, (nbasis, nmodes, nr_el))
     ep_Rq_tmp = _get_buffer(_buffer1, (nbasis, nmodes))
 
-    get_fourier!(ep_Rq, epmat, xq, mode=fourier_mode)
+    get_fourier!(ep_Rq, epmat, xq; fourier_mode)
 
     # Transform from phonon Cartesian to eigenmode basis, one ir_el at a time.
     for ir in 1:nr_el
@@ -294,7 +294,7 @@ Multithreading is not supported because of large buffer array size.
 end
 
 """
-    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq, fourier_mode="normal")
+    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq; fourier_mode="normal")
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 
 # Arguments
@@ -304,7 +304,7 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 - `xk`: Input. k point vector.
 - `uk`, `ukq`: Input. Electron eigenstate at k and k+q, respectively.
 """
-@timing "w2b_eph_Rqtokq" function get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq, fourier_mode="normal")
+@timing "w2b_eph_Rqtokq" function get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq; fourier_mode="normal")
     nbandkq, nbandk, nmodes = size(ep_kq)
     @assert size(uk, 2) == nbandk
     @assert size(ukq, 2) == nbandkq
@@ -313,7 +313,7 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
     ep_kq_wan = _get_buffer(_buffer1, (size(ukq, 1), size(uk, 1), nmodes))
     tmp = _get_buffer(_buffer2, (size(ukq, 1), nbandk))
 
-    get_fourier!(ep_kq_wan, epobj_eRpq, xk, mode=fourier_mode)
+    get_fourier!(ep_kq_wan, epobj_eRpq, xk; fourier_mode)
 
     # Rotate e-ph matrix from electron Wannier to eigenstate basis
     # ep_kq[ibkq, ibk, imode] = ukq'[ibkq, :] * ep_kq_wan[:, :, imode] * uk[:, ibk]
@@ -326,7 +326,7 @@ end
 
 """
 `get_eph_RR_to_kR!(epobj_eRpq::WannierObject{T}, epmat::AbstractWannierObject{T},
-    xk, uk, fourier_mode="normal") where {T}`
+    xk, uk; fourier_mode="normal") where {T}`
 
 Compute electron-phonon coupling matrix in electron Bloch, phonon Wannier basis.
 Multithreading is not supported because of large buffer array size.
@@ -339,7 +339,7 @@ Multithreading is not supported because of large buffer array size.
 - `uk`: Input. nw * nw matrix containing electron eigenvectors at k.
 """
 @timing "w2b_eph_RRtokR" function get_eph_RR_to_kR!(epobj_ekpR::WannierObject{T},
-        epmat::AbstractWannierObject{T}, xk, uk, fourier_mode="normal") where {T}
+        epmat::AbstractWannierObject{T}, xk, uk; fourier_mode="normal") where {T}
     """
     size(uk) = (nw, nband)
     size(epobj_ekpR.op_r) = (nw * nband_bound * nmodes, nr_ep)
@@ -357,7 +357,7 @@ Multithreading is not supported because of large buffer array size.
     ep_kR2 = _get_buffer(_buffer1, (nw, nband, nmodes))
     ep_kR_tmp = _get_buffer(_buffer2, (nw, nband))
 
-    get_fourier!(ep_kR, epmat, xk, mode=fourier_mode)
+    get_fourier!(ep_kR, epmat, xk; fourier_mode)
 
     # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
     for ir in 1:nr_ep
@@ -373,7 +373,7 @@ Multithreading is not supported because of large buffer array size.
 end
 
 """
-    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xk, u_ph, ukq, fourier_mode="normal")
+    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xk, u_ph, ukq; fourier_mode="normal")
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 The electron state at k should be already in the eigenstate basis in epobj_ekpR.
 
@@ -386,7 +386,7 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
 - `ukq`: Input. Electron eigenstate at k+q.
 - `rngk`, `rngkq`: Input. Range of electron states inside the window.
 """
-@timing "w2b_eph_kRtokq" function get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, u_ph, ukq,
+@timing "w2b_eph_kRtokq" function get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, u_ph, ukq;
         fourier_mode="normal")
     """
     size(ep_kq) = (nbandkq, nbandk, nmodes)
@@ -404,7 +404,7 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
     ep_kq_wan = _get_buffer(_buffer1, (nw, nbandk, nmodes))
     tmp = _get_buffer(_buffer2, (nbandkq, nbandk))
 
-    get_fourier!(ep_kq_wan, epobj_ekpR, xq, mode=fourier_mode)
+    get_fourier!(ep_kq_wan, epobj_ekpR, xq; fourier_mode)
 
     # Transform from phonon Cartesian to eigenmode basis and from electron Wannier at k+q
     # to eigenstate basis. The electron at k is already in eigenstate basis.

@@ -12,8 +12,9 @@ function plot_bandstructure(model; kline_density=40, close_fig=true, εF=nothing
     kpts, plot_xdata = high_symmetry_kpath(model; kline_density)
 
     # Calculate eigenvalues
-    e_el = compute_eigenvalues_el(model, kpts, fourier_mode="normal")
-    e_ph = compute_eigenvalues_ph(model, kpts, fourier_mode="normal")
+    # Since we use a band path, gridopt is not useful.
+    e_el = compute_eigenvalues_el(model, kpts; fourier_mode="normal")
+    e_ph = compute_eigenvalues_ph(model, kpts; fourier_mode="normal")
 
     # Plot band structure
     fig, plotaxes = PyPlot.subplots(1, 2, figsize=(8, 3))

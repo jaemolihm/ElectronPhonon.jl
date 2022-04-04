@@ -50,13 +50,13 @@ using OffsetArrays: no_offset_view
             if model.epmat_outer_momentum == "ph"
                 epobj_eRpq = WannierObject(model.epmat.irvec_next,
                             zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
-                @time EPW.get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u, fourier_mode)
-                EPW.get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
+                @time EPW.get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u; fourier_mode)
+                EPW.get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk; fourier_mode)
             else
                 epobj_ekpR = WannierObject(model.epmat.irvec_next,
                             zeros(ComplexF64, (nw*epdata.nband*nmodes, length(model.epmat.irvec_next))))
-                @time EPW.get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(epdata.el_k.u), fourier_mode)
-                EPW.get_eph_kR_to_kq!(epdata, epobj_ekpR, xq, fourier_mode)
+                @time EPW.get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(epdata.el_k.u); fourier_mode)
+                EPW.get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
             end
 
             @test axes(epdata.ep) == (el_kq.rng, el_k.rng, 1:ph.nmodes)

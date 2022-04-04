@@ -26,21 +26,21 @@ using Random
     op_k_normal_2 = Array{ComplexF64,2}(undef, 2, 3)
     op_k_gridopt = Array{ComplexF64,2}(undef, 2, 3)
 
-    get_fourier!(op_k_normal, obj, xk1, mode="normal")
-    get_fourier!(op_k_gridopt, obj, xk1, mode="gridopt")
+    get_fourier!(op_k_normal, obj, xk1, fourier_mode="normal")
+    get_fourier!(op_k_gridopt, obj, xk1, fourier_mode="gridopt")
     @test op_k_normal ≈ op_k_gridopt
     @test obj.gridopts[1].nr_23 == 4
     @test obj.gridopts[1].nr_3 == 3
 
     phase = [cispi(2 * dot(r, xk1)) for r in irvec]
-    get_fourier!(op_k_normal_2, obj, xk1, phase, mode="normal")
+    get_fourier!(op_k_normal_2, obj, xk1, phase)
     @test op_k_normal ≈ op_k_normal_2
 
-    get_fourier!(op_k_1d, obj, xk1, mode="gridopt")
+    get_fourier!(op_k_1d, obj, xk1, fourier_mode="gridopt")
     @test vec(op_k_normal) ≈ op_k_1d
 
-    get_fourier!(op_k_normal, obj, xk2, mode="normal")
-    get_fourier!(op_k_gridopt, obj, xk2, mode="gridopt")
+    get_fourier!(op_k_normal, obj, xk2, fourier_mode="normal")
+    get_fourier!(op_k_gridopt, obj, xk2, fourier_mode="gridopt")
     @test op_k_normal ≈ op_k_gridopt
 
     # Update op_r
@@ -48,9 +48,9 @@ using Random
     obj_new = WannierObject(irvec, op_r_new)
     update_op_r!(obj, op_r_new)
 
-    get_fourier!(op_k_normal, obj, xk1, mode="normal")
-    get_fourier!(op_k_gridopt, obj, xk1, mode="gridopt")
-    get_fourier!(op_k_normal_2, obj_new, xk1, mode="normal")
+    get_fourier!(op_k_normal, obj, xk1, fourier_mode="normal")
+    get_fourier!(op_k_gridopt, obj, xk1, fourier_mode="gridopt")
+    get_fourier!(op_k_normal_2, obj_new, xk1, fourier_mode="normal")
     @test op_k_normal ≈ op_k_gridopt
     @test op_k_normal ≈ op_k_normal_2
 

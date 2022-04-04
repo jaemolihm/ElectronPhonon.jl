@@ -5,7 +5,7 @@ using Base.Threads
 
 export DiskWannierObject
 
-"Real-space data with reduced dimensions for mode=gridopt in get_fourier
+"Real-space data with reduced dimensions for fourier_mode=gridopt in get_fourier
 with reading writing op_r to disk."
 @with_kw mutable struct DiskGridOpt{T<:Real}
     is_initialized::Bool = false

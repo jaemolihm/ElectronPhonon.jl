@@ -159,7 +159,7 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
         @views for ik in 1:el.kpts.n
             ikirr, isym = ik_to_ikirr_isym[ik]
             # TODO: Optimize by skipping if symop is identity
-            get_fourier!(smat_all[:, :, ik], el_sym.operators[isym], el_irr.kpts.vectors[ikirr], mode=fourier_mode)
+            get_fourier!(smat_all[:, :, ik], el_sym.operators[isym], el_irr.kpts.vectors[ikirr]; fourier_mode)
         end
     end
 

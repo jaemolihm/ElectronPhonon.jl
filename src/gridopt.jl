@@ -3,7 +3,7 @@ using Parameters
 using LinearAlgebra
 using Base.Threads
 
-"Real-space data with reduced dimensions for mode=gridopt in get_fourier"
+"Real-space data with reduced dimensions for fourier_mode=gridopt in get_fourier"
 @with_kw mutable struct GridOpt{T<:Real}
     is_initialized::Bool = false
     ndata::Int = 0 # Size of the Fourier-transformed data matrix

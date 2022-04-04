@@ -53,8 +53,8 @@ function check_electron_symmetry_of_model(model::EPW.ModelEPW{FT}, ngrid; fourie
     op_vk_berry = [zeros(Complex{FT}, nw, nw, 3) for _ in 1:kpts.n]
     for ik in 1:kpts.n
         xk = kpts.vectors[ik]
-        get_fourier!(op_Hk[ik], model.el_ham, xk; mode=fourier_mode)
-        get_fourier!(op_vk_direct[ik], model.el_vel, xk; mode=fourier_mode)
+        get_fourier!(op_Hk[ik], model.el_ham, xk; fourier_mode)
+        get_fourier!(op_vk_direct[ik], model.el_vel, xk; fourier_mode)
         v_bc = el_states[ik].u_full * el_states[ik].v * el_states[ik].u_full'
         for i in 1:3, jw in 1:nw, iw in 1:nw
             op_vk_berry[ik][iw, jw, i] = v_bc[iw, jw][i]
@@ -74,7 +74,7 @@ function check_electron_symmetry_of_model(model::EPW.ModelEPW{FT}, ngrid; fourie
             end
 
             # SymMatrixUnitarity: Check unitarity of symmetry operators in Wannier basis
-            get_fourier!(sym_k, model.el_sym.operators[isym], xk; mode=fourier_mode)
+            get_fourier!(sym_k, model.el_sym.operators[isym], xk; fourier_mode)
             sym_k_error = sqrt(norm(sym_k' * sym_k - I(nw)))
             max_errors[:SymMatrixUnitarity] = max(max_errors[:SymMatrixUnitarity], sym_k_error)
             rms_errors[:SymMatrixUnitarity] += sum(sym_k_error^2)

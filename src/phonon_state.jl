@@ -59,26 +59,25 @@ end
     set_eigen!(ph::PhononState, model, xk, polar=nothing; fourier_mode="normal")
 Compute electron eigenenergy and eigenvector and save them in el.
 """
-function set_eigen!(ph::PhononState, model, xk, fourier_mode="normal")
-    get_ph_eigen!(ph.e, ph.u, model.ph_dyn, model.mass, xk,
-        model.polar_phonon, fourier_mode=fourier_mode)
+function set_eigen!(ph::PhononState, model, xk; fourier_mode="normal")
+    get_ph_eigen!(ph.e, ph.u, model.ph_dyn, model.mass, xk, model.polar_phonon; fourier_mode)
 end
 
 """
-    set_eigen_valueonly!(ph::PhononState, model, xk, fourier_mode="normal")
+    set_eigen_valueonly!(ph::PhononState, model, xk; fourier_mode="normal")
 Compute electron eigenenergy and save them in el.
 """
-function set_eigen_valueonly!(ph::PhononState, model, xk, fourier_mode="normal")
-    get_ph_eigen_valueonly!(ph.e, model.ph_dyn, model.mass, xk, model.polar_phonon, fourier_mode)
+function set_eigen_valueonly!(ph::PhononState, model, xk; fourier_mode="normal")
+    get_ph_eigen_valueonly!(ph.e, model.ph_dyn, model.mass, xk, model.polar_phonon; fourier_mode)
 end
 
 """
-    set_velocity_diag!(ph::PhononState, ph_dyn_R, xk, fourier_mode="normal")
+    set_velocity_diag!(ph::PhononState, ph_dyn_R, xk; fourier_mode="normal")
 Compute electron band velocity, only the band-diagonal part.
 """
-function set_velocity_diag!(ph::PhononState{T}, model, xk, fourier_mode="normal") where {T}
+function set_velocity_diag!(ph::PhononState{T}, model, xk; fourier_mode="normal") where {T}
     @views vdiag = reshape(reinterpret(T, ph.vdiag), 3, ph.nmodes)
-    get_ph_velocity_diag!(vdiag, model.ph_dyn_R, xk, ph.u, fourier_mode)
+    get_ph_velocity_diag!(vdiag, model.ph_dyn_R, xk, ph.u; fourier_mode)
     # get_ph_velocity_diag! calculates the derivative of the dynamical matrix, but the
     # phonon frequency is sqrt of the eigenvalue of the dynamical matrix.
     # We use dw/dk = (d(w^2)/dk) / (2 * w).

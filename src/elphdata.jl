@@ -87,21 +87,21 @@ end
 # Define wrappers of WanToBloch functions
 
 """
-    get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk, fourier_mode="normal")
+    get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk; fourier_mode="normal")
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
-function get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk, fourier_mode="normal")
+function get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk; fourier_mode="normal")
     ep_kq = no_offset_view(epdata.ep)
-    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, no_offset_view(epdata.el_k.u), no_offset_view(epdata.el_kq.u), fourier_mode)
+    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, no_offset_view(epdata.el_k.u), no_offset_view(epdata.el_kq.u); fourier_mode)
 end
 
 """
-    get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq, fourier_mode="normal")
+    get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq; fourier_mode="normal")
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
-function get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq, fourier_mode="normal")
+function get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq; fourier_mode="normal")
     ep_kq = no_offset_view(epdata.ep)
-    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epdata.ph.u, no_offset_view(epdata.el_kq.u), fourier_mode)
+    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epdata.ph.u, no_offset_view(epdata.el_kq.u); fourier_mode)
 end
 
 """

@@ -36,7 +36,7 @@ function unfold_ElectronStates(model, states_irr::AbstractVector{ElectronState{F
         isym_op = findfirst(s -> s ≈ symop, model.el_sym.symmetry)
         isym_op === nothing && error("Symmetry $isym not found in model.el_sym.symmetry.")
         # Compute symmetry operator in Wannier k basis and multiply it to u_full.
-        get_fourier!(sym_k, model.el_sym.operators[isym_op], xkirr; mode=fourier_mode)
+        get_fourier!(sym_k, model.el_sym.operators[isym_op], xkirr; fourier_mode)
         # Apply SVD to make sym_k unitary.
         u, s, v = svd(sym_k)
         mul!(sym_k, u, v')
@@ -45,7 +45,7 @@ function unfold_ElectronStates(model, states_irr::AbstractVector{ElectronState{F
         if "position" ∈ quantities
             # Symmetry operation of position matrix element involves derivative of the symmetry
             # matrix. So, we just recalculate it using the new eigenvector.
-            set_position!(el, model, xk, fourier_mode)
+            set_position!(el, model, xk; fourier_mode)
         end
 
         if "velocity_diagonal" ∈ quantities

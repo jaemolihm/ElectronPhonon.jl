@@ -95,7 +95,7 @@ function gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, 
     ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"], "gridopt");
 
     mpi_isroot() && println("Computing electron states at k+q")
-    el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq, fourier_mode="gridopt");
+    el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity_diagonal"], window_kq; fourier_mode="gridopt");
 
     el_f, imap_el_kq = electron_states_to_BTStates(el_kq_save, kqpts)
     ph, imap_ph = phonon_states_to_BTStates(ph_save, qpts)
@@ -153,7 +153,7 @@ function gamma_adaptive_compute_g_gamma(model, kpts, el_k_save, nband; fourier_m
     ph_gamma = compute_phonon_states(model, Kpoints(xq_gamma), ["eigenvalue", "eigenvector"], "gridopt")[1]
 
     epobj_eRpq = WannierObject(model.epmat.irvec_next, zeros(Complex{FT}, (nw*nw*nmodes, length(model.epmat.irvec_next))))
-    get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq_gamma, ph_gamma.u, fourier_mode)
+    get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq_gamma, ph_gamma.u; fourier_mode)
 
     epdata = ElPhData{Float64}(nw, nmodes, nband)
     epdata.ph = ph_gamma
@@ -165,7 +165,7 @@ function gamma_adaptive_compute_g_gamma(model, kpts, el_k_save, nband; fourier_m
         epdata.el_k = el_k
         epdata.el_kq = el_k
         xk = kpts.vectors[ik]
-        get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk, fourier_mode)
+        get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk; fourier_mode)
         g_gamma_save[:, :, :, ik] .= epdata.ep
     end
     g_gamma_save
