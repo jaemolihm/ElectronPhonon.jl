@@ -82,8 +82,7 @@ function Base.copyto!(dest::ElectronState, src::ElectronState)
             "than dest.nband_bound ($(dest.nband_bound))"))
     end
     if dest.nw != src.nw
-        throw(ArgumentError("src.nw ($(src.nw)) must be " *
-            "equal to dest.nw ($(dest.nw))"))
+        throw(ArgumentError("src.nw ($(src.nw)) must be equal to dest.nw ($(dest.nw))"))
     end
     dest.nband = src.nband
     dest.e_full .= src.e_full
@@ -113,7 +112,6 @@ Find out the bands inside the window and set el.nband and el.rng.
 """
 function set_window!(el::ElectronState, window=(-Inf, Inf))
     ibands = EPW.inside_window(el.e_full, window...)
-    # If no bands are selected, return true.
     if isempty(ibands)
         el.nband = 0
         el.rng = 1:0
