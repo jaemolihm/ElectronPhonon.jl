@@ -18,7 +18,6 @@ addprocs(manager)
 
 @everywhere begin
     using LinearAlgebra
-    using SharedArrays
     using Base.Threads
     using Revise
     push!(LOAD_PATH, "/home/jmlim/julia_epw/EPW.jl")

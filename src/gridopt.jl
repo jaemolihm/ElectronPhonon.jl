@@ -1,6 +1,5 @@
 
 using Parameters
-using SharedArrays
 using LinearAlgebra
 using Base.Threads
 
