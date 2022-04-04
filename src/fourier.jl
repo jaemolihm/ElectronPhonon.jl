@@ -118,20 +118,6 @@ end
     return
 end
 
-"Fourier transform real-space operator to momentum-space operator using a
-pre-computed phase factor"
-@timing "get_fourier" function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk, phase) where {T}
-    Base.depwarn("get_fourier! with pre-computed phase factor is deprecated.", :get_fourier!, force=true)
-    @assert eltype(op_k) == Complex{T}
-    @assert length(op_k) == obj.ndata
-    @assert eltype(phase) == Complex{T}
-    @assert length(phase) == obj.nr
-
-    op_k_1d = _reshape(op_k, (length(op_k),))
-
-    _get_fourier_normal!(op_k_1d, obj, xk, phase)
-end
-
 "Fourier transform real-space operator to momentum-space operator with a
 pre-computed phase factor"
 function _get_fourier_normal!(op_k_1d, obj::AbstractWannierObject{T}, xk, phase) where {T}
