@@ -80,7 +80,7 @@ function get_phase_expikr!(obj, xk, tid)
     for (ir, r) in enumerate(obj.irvec)
         rdotk[ir] = dot(r, xk)
     end
-    phase .= cispi.(2 * rdotk)
+    @. phase = cispi(2 * rdotk)
     phase
 end
 
@@ -115,7 +115,7 @@ end
     else
         error("fourier_mode must be normal or gridopt")
     end
-    return
+    op_k
 end
 
 "Fourier transform real-space operator to momentum-space operator with a
