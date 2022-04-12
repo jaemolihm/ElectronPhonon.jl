@@ -46,7 +46,8 @@ function Base.getindex(s::QMEStates, i::Int)
 end
 Base.firstindex(s::QMEStates) = 1
 Base.lastindex(s::QMEStates) = s.n
-
+Base.length(s::QMEStates) = s.n
+Base.iterate(s::QMEStates, state=1) = state > s.n ? nothing : (s[state], state+1)
 
 # HDF IO
 # TODO: Move kpoints IO to kpoints.jl. Rename load_BTData -> load_from_hdf(?)
