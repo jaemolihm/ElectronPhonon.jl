@@ -22,6 +22,7 @@ export get_eph_RR_to_Rq!
 export get_eph_Rq_to_kq!
 export get_eph_RR_to_kR!
 export get_eph_kR_to_kq!
+export get_symmetry_representation_wannier!
 
 # TODO: Allow the type to change.
 # Preallocated buffers for temporary arrays. Access via _get_buffer. When multiple arrays
@@ -29,10 +30,12 @@ export get_eph_kR_to_kq!
 const _buffer_nothreads1 = [Vector{ComplexF64}(undef, 0)]
 const _buffer1 = [Vector{ComplexF64}(undef, 0)]
 const _buffer2 = [Vector{ComplexF64}(undef, 0)]
+const _buffer3 = [Vector{ComplexF64}(undef, 0)]
 
 function __init__()
     Threads.resize_nthreads!(_buffer1)
     Threads.resize_nthreads!(_buffer2)
+    Threads.resize_nthreads!(_buffer3)
 end
 
 """
@@ -167,6 +170,40 @@ TODO: Can we reduce code duplication with get_el_velocity_berry_connection?
     nothing
 end
 
+"""Compute the symmetry representation in the Bloch Wannier basis."""
+function get_symmetry_representation_wannier!(sym_W, el_sym_op::AbstractWannierObject{FT},
+    xk, is_tr; fourier_mode="normal") where FT
+    @assert length(sym_W) == el_sym_op.ndata
+    # For time reversal, the complex conjugation part acts on the Fourier factor so one needs -xk
+    (is_tr ? get_fourier!(sym_W, el_sym_op, -xk; fourier_mode)
+           : get_fourier!(sym_W, el_sym_op, xk; fourier_mode))
+end
+
+"""Compute the symmetry representation in the eigenstate basis."""
+function get_symmetry_representation_eigen!(sym_H, el_sym_op::AbstractWannierObject{FT},
+    xk, uk, usk, is_tr; fourier_mode="normal") where FT
+    nw, nband_k = size(uk)
+    nband_sk = size(usk, 2)
+    @assert size(sym_H) == (nband_sk, nband_k)
+
+    sym_W = _get_buffer(_buffer1, (nw, nw))
+    tmp = _get_buffer(_buffer2, (nw, nband_k))
+    u_tmp = _get_buffer(_buffer3, (nw, nband_k))
+
+    # Compute matrix in Wannier basis
+    get_symmetry_representation_wannier!(sym_W, el_sym_op, xk, is_tr; fourier_mode)
+
+    # Apply gauge to transform to the eigenstate basis
+    if is_tr
+        # Due to complex conjugation in time-reversal operation, one needs to use conj(uk).
+        u_tmp .= conj.(uk)
+    else
+        u_tmp .= uk
+    end
+    mul!(tmp, sym_W, u_tmp)
+    mul!(sym_H, usk', tmp)
+    sym_H
+end
 
 # =============================================================================
 #  Phonons

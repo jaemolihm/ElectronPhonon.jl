@@ -1,3 +1,5 @@
+using EPW.WanToBloch: get_symmetry_representation_wannier!
+
 export unfold_QMEStates
 
 """
@@ -15,7 +17,7 @@ function unfold_ElectronStates(model, states_irr::AbstractVector{ElectronState{F
 
     states = ElectronState{FT}[]
 
-    sym_k = zeros(Complex{FT}, model.nw, model.nw)
+    sym_W = zeros(Complex{FT}, model.nw, model.nw)
 
     for ik = 1:kpts.n
         xk = kpts.vectors[ik]
@@ -36,11 +38,15 @@ function unfold_ElectronStates(model, states_irr::AbstractVector{ElectronState{F
         isym_op = findfirst(s -> s ≈ symop, model.el_sym.symmetry)
         isym_op === nothing && error("Symmetry $isym not found in model.el_sym.symmetry.")
         # Compute symmetry operator in Wannier k basis and multiply it to u_full.
-        get_fourier!(sym_k, model.el_sym.operators[isym_op], xkirr; fourier_mode)
+        get_symmetry_representation_wannier!(sym_W, model.el_sym.operators[isym], xkirr, symop.is_tr)
         # Apply SVD to make sym_k unitary.
-        u, s, v = svd(sym_k)
-        mul!(sym_k, u, v')
-        mul!(el.u_full, sym_k, states_irr[ikirr].u_full)
+        u, s, v = svd(sym_W)
+        mul!(sym_W, u, v')
+        if symop.is_tr
+            mul!(el.u_full, sym_W, conj.(states_irr[ikirr].u_full))
+        else
+            mul!(el.u_full, sym_W, states_irr[ikirr].u_full)
+        end
 
         if "position" ∈ quantities
             # Symmetry operation of position matrix element involves derivative of the symmetry
@@ -50,6 +56,7 @@ function unfold_ElectronStates(model, states_irr::AbstractVector{ElectronState{F
 
         if "velocity_diagonal" ∈ quantities
             if symop.is_tr
+                # No complex conjugate because vdiag is real-valued.
                 el.vdiag .= .-Ref(symop.Scart) .* states_irr[ikirr].vdiag
             else
                 el.vdiag .= Ref(symop.Scart) .* states_irr[ikirr].vdiag
@@ -58,7 +65,7 @@ function unfold_ElectronStates(model, states_irr::AbstractVector{ElectronState{F
 
         if "velocity" ∈ quantities
             if symop.is_tr
-                el.v .= .-Ref(symop.Scart) .* states_irr[ikirr].v
+                el.v .= .-Ref(symop.Scart) .* conj.(states_irr[ikirr].v)
             else
                 el.v .= Ref(symop.Scart) .* states_irr[ikirr].v
             end
@@ -127,25 +134,24 @@ k grid. The input is `qme_model.Sₒ_irr`, which must be set before calling this
 The output is stored in `qme_model.Sₒ`.
 """
 function unfold_scattering_out_matrix!(qme_model::QMEIrreducibleKModel)
-    (; Sₒ_irr, el_irr, el, ik_to_ikirr_isym) = qme_model
-    qme_model.Sₒ = [unfold_scattering_out_matrix(first(Sₒ_irr), el_irr, el, ik_to_ikirr_isym)]
-    for iT in eachindex(Sₒ_irr)[2:end]
-        push!(qme_model.Sₒ, unfold_scattering_out_matrix(Sₒ_irr[iT], el_irr, el, ik_to_ikirr_isym))
-    end
-    qme_model.Sₒ
+    (; Sₒ_irr, el_irr, el, ik_to_ikirr_isym, symmetry) = qme_model
+    qme_model.Sₒ = [
+        unfold_scattering_out_matrix(Sₒ_irr_iT, el_irr, el, ik_to_ikirr_isym, symmetry)
+        for Sₒ_irr_iT in Sₒ_irr
+    ]
 end
 
 # Do nothing for a `QMEModel`.
 unfold_scattering_out_matrix!(qme_model::QMEModel) = qme_model.Sₒ
 
-function unfold_scattering_out_matrix(Sₒ_irr, el_irr, el, ik_to_ikirr_isym)
+function unfold_scattering_out_matrix(Sₒ_irr, el_irr, el, ik_to_ikirr_isym, symmetry)
     # Assume that Sₒ_irr is diagonal in k.
     sp_i = Int[]
     sp_j = Int[]
     sp_val = eltype(Sₒ_irr)[]
     for i in 1:el.n
         (; ik, ib1, ib2) = el[i]
-        ikirr, _ = ik_to_ikirr_isym[ik]
+        ikirr, isym = ik_to_ikirr_isym[ik]
         i_irr = get_1d_index(el_irr, ib1, ib2, ikirr)
         i_irr == 0 && continue
         for ib3 in el.ib_rng[ik], ib4 in el.ib_rng[ik]
@@ -153,7 +159,11 @@ function unfold_scattering_out_matrix(Sₒ_irr, el_irr, el, ik_to_ikirr_isym)
             j == 0 && continue
             j_irr = get_1d_index(el_irr, ib3, ib4, ikirr)
             j_irr == 0 && continue
-            val = Sₒ_irr[i_irr, j_irr]
+            if symmetry[isym].is_tr
+                val = conj(Sₒ_irr[i_irr, j_irr])
+            else
+                val = Sₒ_irr[i_irr, j_irr]
+            end
             if abs(val) > 0
                 push!(sp_i, i)
                 push!(sp_j, j)
@@ -181,6 +191,9 @@ function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKMo
         i_irr = get_1d_index(model.el_irr, ib1, ib2, ik_irr)
 
         f[i] = symop.Scart * f_irr[i_irr]
+        if symop.is_tr
+            f[i] = conj(f[i])
+        end
         if trodd && symop.is_tr
             f[i] *= -1
         end
@@ -202,6 +215,9 @@ function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKMo
         i_irr = get_1d_index(model.el_irr, ib1, ib2, ik_irr)
 
         f[i] = f_irr[i_irr]
+        if symop.is_tr
+            f[i] = conj(f[i])
+        end
         if trodd && symop.is_tr
             f[i] *= -1
         end
@@ -257,7 +273,11 @@ function symmetrize_QMEVector(x::QMEVector{ElType, FT}, qme_model::QMEIrreducibl
                     for (ind_isym, isym) in enumerate(isym_list)
                         symop = qme_model.symmetry[isym]
                         gauge_coeff = sym_gauge[jb1, ib1, ind_isym] * sym_gauge[jb2, ib2, ind_isym]'
-                        data_new = (symop.Scart * x.data[ind]) * gauge_coeff
+                        if symop.is_tr
+                            data_new = (symop.Scart * conj(x.data[ind])) * gauge_coeff
+                        else
+                            data_new = (symop.Scart * x.data[ind]) * gauge_coeff
+                        end
                         if symop.is_tr && trodd
                             data_new *= -1
                         end

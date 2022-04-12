@@ -4,7 +4,7 @@ using EPW
 @testset "unfold" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model(folder)
+    model = load_model(folder, load_symmetry_operators=true)
 
     @testset "kpoints" begin
         # Unfolding of irreducible BZ to full BZ
@@ -35,6 +35,40 @@ using EPW
             skirr = symop.is_tr ? -symop.S * xkirr : symop.S * xkirr
             skirr = EPW.normalize_kpoint_coordinate(skirr)
             @test xk ≈ skirr
+        end
+    end
+
+    @testset "ElectronStates" begin
+        symmetry = model.el_sym.symmetry
+        nk = 5
+        kpts_full = GridKpoints(generate_kvec_grid(nk, nk, nk))
+        kpts_irr, ik_to_ikirr_isym = EPW.fold_kpoints(kpts_full, symmetry)
+        el_irr = compute_electron_states(model, kpts_irr, ["eigenvector", "velocity", "position"])
+        el_full = compute_electron_states(model, kpts_full, ["eigenvector", "velocity", "position"])
+        el_full_unfold = EPW.unfold_ElectronStates(model, el_irr, kpts_irr, kpts_full, ik_to_ikirr_isym,
+            symmetry; quantities=["velocity_diagonal", "velocity", "position"])
+
+        hk = zeros(ComplexF64, model.nw, model.nw)
+        for ik = 1:kpts_full.n
+            el1 = el_full_unfold[ik]
+            el2 = el_full[ik]
+
+            # Check eigenvectors in el is correct: U' * H(Sk) * U = Diagonal(e(Sk))
+            get_fourier!(hk, model.el_ham, kpts_full.vectors[ik]);
+            @test el1.u' * hk * el1.u ≈ Diagonal(el2.e) atol=1e-6
+
+            # Check velocity matrix is correct by converting to Wannier basis
+            v1 = el1.u * el1.v * el1.u'
+            v2 = el2.u * el2.v * el2.u'
+            @test v1 ≈ v2 atol=1e-4
+
+            # Check vdiag = diag(v)
+            @test diag(el1.v) ≈ el1.vdiag atol=1e-10
+
+            # Check position matrix is correct by converting to Wannier basis
+            r1 = el1.u * el1.rbar * el1.u'
+            r2 = el2.u * el2.rbar * el2.u'
+            @test r1 ≈ r2 atol=1e-4
         end
     end
 

@@ -6,7 +6,8 @@ using OffsetArrays: no_offset_view
 
 using EPW.AllocatedLAPACK: epw_syev!
 using EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag_berry_connection!,
-                      get_el_velocity_berry_connection!, get_el_velocity_direct!
+                      get_el_velocity_berry_connection!, get_el_velocity_direct!,
+                      get_symmetry_representation_eigen!
 
 export ElectronState
 export copyto!
@@ -16,6 +17,7 @@ export set_eigen!
 export set_eigen_valueonly!
 export set_velocity_diag!
 export set_position!
+export compute_symmetry_representation!
 
 # TODO: Remove nband_bound. nband >= length(rng) can hold. Create a function `trim(el::ElectronState)`
 #       (or even trim!) that reduces nband to length(rng).
@@ -207,4 +209,34 @@ Compute electron position matrix elements.
 function set_position!(el::ElectronState{FT}, model, xk; fourier_mode="normal") where {FT}
     rbar = reshape(reinterpret(Complex{FT}, no_offset_view(el.rbar)), 3, el.nband, el.nband)
     get_el_velocity_direct!(rbar, el.nw, model.el_pos, xk, no_offset_view(el.u); fourier_mode)
+end
+
+"""
+    compute_symmetry_representation!(sym_H, el_k::ElectronState{FT}, el_sk::ElectronState{FT},
+    xk, el_sym_op, is_tr) where FT
+
+Compute the unitary matrix that represents the symmetry operation in the basis of electron
+eigenstates.
+
+# Time reversal symmetry
+For symmetry operations with time reversal, the computed unitary matrix is the unitary part
+``U`` of the anti-unitary representation ``S = UK``, where ``K`` denotes complex conjugation.
+Correspondingly, different formula must be used for the basis transformation and matrix
+element transfomation. Especially, when applying the symmetry operator to a matrix, one needs
+to take the complex conjugate of the matrix.
+
+For example, the velocity matrix transform as follows:
+```jldoctest
+if is_tr
+    v_rotated = - Ref(Scart) .* (sym_H * conj.(el.v) * sym_H')
+else
+    v_rotated = Ref(Scart) .* (sym_H * els[ik].v * sym_H')
+end
+```
+"""
+function compute_symmetry_representation!(sym_H, el_k::ElectronState{FT}, el_sk::ElectronState{FT},
+    xk, el_sym_op, is_tr; fourier_mode="normal") where FT
+    uk = no_offset_view(el_k.u)
+    usk = no_offset_view(el_sk.u)
+    get_symmetry_representation_eigen!(sym_H, el_sym_op, xk, uk, usk, is_tr; fourier_mode)
 end

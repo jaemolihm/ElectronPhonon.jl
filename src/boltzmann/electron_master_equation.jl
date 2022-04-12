@@ -291,6 +291,11 @@ function invert_scattering_out_matrix(Sₒ, el)
     Sₒ⁻¹
 end
 
+"""
+If symmetry involves time reversal, complex conjuate must be taken before applying the unfold
+map. So, we return `unfold_map` and `unfold_map_tr`. For the latter, one must apply complex
+conjugate and then multiply the map.
+"""
 function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT}, filename) where FT
     # FIXME: Do not write symmetry twice. Use qme_model.
     fid = h5open(filename, "r")
@@ -300,16 +305,20 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
     sp_inds_f = Int[]
     sp_inds_i = Int[]
     sp_vals = Mat3{Complex{FT}}[]
-    for isym in 1:symmetry.nsym
+
+    sp_inds_f_tr = Int[]
+    sp_inds_i_tr = Int[]
+    sp_vals_tr = Mat3{Complex{FT}}[]
+
+    for (isym, symop) in enumerate(symmetry)
         # Read symmetry gauge matrix elements
-        Scart = symmetry[isym].Scart
         group_sym = open_group(fid, "gauge/isym$isym")
         sym_gauge = load_BTData(open_group(group_sym, "gauge_matrix"), OffsetArray{Complex{FT}, 3, Array{Complex{FT}, 3}})
         is_degenerate = load_BTData(open_group(group_sym, "is_degenerate"), OffsetArray{Bool, 3, Array{Bool, 3}})
 
         for ik in 1:el_i.kpts.n
             xk = el_i.kpts.vectors[ik]
-            sxk = symmetry[isym].S * xk
+            sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
             isk = xk_to_ik(sxk, el_f.kpts)
             isk === nothing && continue
 
@@ -325,9 +334,15 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
                         ind_el_f = get_1d_index(el_f, jb1, jb2, isk)
                         ind_el_f == 0 && continue
                         gauge_coeff = sym_gauge[jb1, ib1, ik] * sym_gauge[jb2, ib2, ik]'
-                        push!(sp_inds_f, ind_el_f)
-                        push!(sp_inds_i, ind_el_i)
-                        push!(sp_vals, Scart * gauge_coeff)
+                        if symop.is_tr
+                            push!(sp_inds_f_tr, ind_el_f)
+                            push!(sp_inds_i_tr, ind_el_i)
+                            push!(sp_vals_tr, -symop.Scart * gauge_coeff)
+                        else
+                            push!(sp_inds_f, ind_el_f)
+                            push!(sp_inds_i, ind_el_i)
+                            push!(sp_vals, symop.Scart * gauge_coeff)
+                        end
                         # Count number of k points that are mapped to this Sk point
                         if (ib1 == jb1) && (ib2 == jb2)
                             cnt_inds_f[ind_el_f] += 1
@@ -340,11 +355,14 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
     close(fid)
 
     unfold_map = sparse(sp_inds_f, sp_inds_i, sp_vals, el_f.n, el_i.n)
+    unfold_map_tr = sparse(sp_inds_f_tr, sp_inds_i_tr, sp_vals_tr, el_f.n, el_i.n)
 
     inv_cnt_inds_f = 1 ./ cnt_inds_f
     inv_cnt_inds_f[cnt_inds_f .== 0] .= 0
     unfold_map .*= inv_cnt_inds_f
-    unfold_map
+    unfold_map_tr .*= inv_cnt_inds_f
+
+    unfold_map, unfold_map_tr
 end
 
 

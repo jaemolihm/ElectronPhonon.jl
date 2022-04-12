@@ -1,6 +1,7 @@
 using Test
 using EPW
 using LinearAlgebra
+using EPW.WanToBloch: get_symmetry_representation_wannier!
 
 # Test symmetry operator that acts on the electron Wannier functions
 
@@ -11,8 +12,9 @@ using LinearAlgebra
     model = load_model(folder, load_symmetry_operators=true)
 
     # Read symmetry operators from file
-    @test model.el_sym.symmetry.nsym == 24
-    @test all(model.el_sym.symmetry.is_tr .== false)
+    @test model.el_sym.symmetry.nsym == 48
+    @test all(model.el_sym.symmetry.is_tr[1:24] .== false)
+    @test all(model.el_sym.symmetry.is_tr[25:48] .== true)
     @test length(model.el_sym.operators) == model.el_sym.symmetry.nsym
 
     for el_velocity_mode in [:Direct, :BerryConnection]
@@ -24,7 +26,8 @@ using LinearAlgebra
         els = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"]; fourier_mode="gridopt");
 
         nw = model.nw
-        sym_k = zeros(ComplexF64, nw, nw)
+        sym_W = zeros(ComplexF64, nw, nw)
+        sym_H = zeros(ComplexF64, nw, nw)
         hk = zeros(ComplexF64, nw, nw)
         hsk = zeros(ComplexF64, nw, nw)
 
@@ -34,15 +37,21 @@ using LinearAlgebra
             for (isym, symop) in enumerate(model.el_sym.symmetry)
                 sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
                 isk = xk_to_ik(sxk, kpts)
-                get_fourier!(sym_k, model.el_sym.operators[isym], xk)
-                @test norm(sym_k' * sym_k - I(nw)) < 3e-6
+
+                get_symmetry_representation_wannier!(sym_W, model.el_sym.operators[isym], xk, symop.is_tr)
+                compute_symmetry_representation!(sym_H, els[ik], els[isk], xk, model.el_sym.operators[isym], symop.is_tr)
+
+                @test norm(sym_W' * sym_W - I(nw)) < 3e-6
 
                 # Test symmetry of Hamiltonian in Wannier basis
                 get_fourier!(hsk, model.el_ham, sxk)
-                @test norm(hsk - sym_k * hk * sym_k') < 1e-2
+                if symop.is_tr
+                    @test norm(hsk - sym_W * conj.(hk) * sym_W') < 1e-2
+                else
+                    @test norm(hsk - sym_W * hk * sym_W') < 1e-2
+                end
 
                 # Test symmetry of eigenstates
-                sym_H = els[isk].u_full' * sym_k * els[ik].u_full
                 @test norm(sym_H' * sym_H - I(nw)) < 3e-6
                 e = els[ik].e_full
                 # sym_H[i, j] must be zero if the energies of bands i and j are different.
@@ -52,10 +61,19 @@ using LinearAlgebra
                     end
                 end
 
-                # Test symmetry of velocity matrices
-                v_rotated = Ref(symop.Scart) .* (sym_H * els[ik].v * sym_H')
+                # Test sym_W * u(k) gives eigenvectors of u(Sk)
                 if symop.is_tr
-                    v_rotated .*= -1
+                    usk = sym_W * conj.(els[ik].u_full)
+                else
+                    usk = sym_W * els[ik].u_full
+                end
+                @test usk' * hsk * usk ≈ Diagonal(els[isk].e_full) atol=1e-6
+
+                # Test symmetry of velocity matrices
+                if symop.is_tr
+                    v_rotated = .- Ref(symop.Scart) .* (sym_H * conj.(els[ik].v) * sym_H')
+                else
+                    v_rotated = Ref(symop.Scart) .* (sym_H * els[ik].v * sym_H')
                 end
                 if model.el_velocity_mode === :BerryConnection
                     for j in 1:nw, i in 1:nw

@@ -115,8 +115,8 @@ end
     @test norm(x_irr_symm2.data .- x_irr_symm.data) < norm(x_irr.data) * 1e-7
 
     # Test map from el_irr to el_f is the same with unfolding and rotation to el_f.
-    unfold_map = EPW._qme_linear_response_unfold_map(el_irr, el_f, qme_model.filename);
-    y1 = QMEVector(el_f, unfold_map * x_irr_symm.data)
+    unfold_map, unfold_map_tr = EPW._qme_linear_response_unfold_map(el_irr, el_f, qme_model.filename);
+    y1 = QMEVector(el_f, unfold_map * x_irr_symm.data) + QMEVector(el_f, unfold_map_tr * conj.(x_irr_symm.data))
     x_symm = EPW.unfold_QMEVector(x_irr_symm, qme_model, true, false)
     y2 = QMEVector(el_f, qme_model.el_to_el_f_sym_maps[1] * x_symm.data)
     @test norm(y1.data .- y2.data) < norm(y1.data) * 1e-7

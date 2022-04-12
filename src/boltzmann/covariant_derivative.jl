@@ -158,8 +158,10 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
         smat_all = zeros(Complex{FT}, nw, nw, el.kpts.n)
         @views for ik in 1:el.kpts.n
             ikirr, isym = ik_to_ikirr_isym[ik]
+            xk = el_irr.kpts.vectors[ikirr]
+            is_tr = el_sym.symmetry[isym].is_tr
             # TODO: Optimize by skipping if symop is identity
-            get_fourier!(smat_all[:, :, ik], el_sym.operators[isym], el_irr.kpts.vectors[ikirr]; fourier_mode)
+            get_symmetry_representation_wannier!(smat_all[:, :, ik], el_sym.operators[isym], xk, is_tr; fourier_mode)
         end
     end
 
@@ -177,11 +179,16 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
     # 1. Derivative term
     for ik in 1:kpts.n
         xk = kpts.vectors[ik]
-        ikirr = ik_to_ikirr_isym[ik][1]
+        ikirr, isym_k = ik_to_ikirr_isym[ik]
         el_k = el_irr_states[ikirr]
         rng_k = el_k.rng
         if el_sym !== nothing
-            @views mul!(u_k[:, 1:el_k.nband], smat_all[:, :, ik], no_offset_view(el_k.u))
+            # Convert from irreducible grid (el_irr_states, el_k) to full grid (el, u_k)
+            @views if el_sym.symmetry[isym_k].is_tr
+                mul!(u_k[:, 1:el_k.nband], smat_all[:, :, ik], conj.(no_offset_view(el_k.u)))
+            else
+                mul!(u_k[:, 1:el_k.nband], smat_all[:, :, ik], no_offset_view(el_k.u))
+            end
         else
             u_k[:, 1:el_k.nband] .= no_offset_view(el_k.u)
         end
@@ -191,11 +198,16 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
             ikb = xk_to_ik(xkb, kpts)
             ikb === nothing && continue
 
-            ikbirr = ik_to_ikirr_isym[ikb][1]
+            ikbirr, isym_kb = ik_to_ikirr_isym[ikb]
             el_kb = el_irr_states[ikbirr]
             rng_kb = el_kb.rng
             if el_sym !== nothing
-                @views mul!(u_kb[:, 1:el_kb.nband], smat_all[:, :, ikb], no_offset_view(el_kb.u))
+                # Convert from irreducible grid (el_irr_states, el_kb) to full grid (el, u_kb)
+                @views if el_sym.symmetry[isym_kb].is_tr
+                    mul!(u_kb[:, 1:el_kb.nband], smat_all[:, :, ikb], conj.(no_offset_view(el_kb.u)))
+                else
+                    mul!(u_kb[:, 1:el_kb.nband], smat_all[:, :, ikb], no_offset_view(el_kb.u))
+                end
             else
                 u_kb[:, 1:el_kb.nband] .= no_offset_view(el_kb.u)
             end
@@ -243,7 +255,9 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
                         rbar_mel = rbar[ib1, ib3]
                     else
                         rbar_mel = el_sym.symmetry[isym].Scart * rbar[ib1, ib3]
-                        rbar_mel = el_sym.symmetry[isym].is_tr ? conj(rbar_mel) : rbar_mel
+                        if el_sym.symmetry[isym].is_tr
+                            rbar_mel = conj(rbar_mel)
+                        end
                     end
                     for idir in 1:3
                         push!(sp_vals[idir], -im * rbar_mel[idir])
@@ -258,7 +272,9 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
                         rbar_mel = rbar[ib3, ib2]
                     else
                         rbar_mel = el_sym.symmetry[isym].Scart * rbar[ib3, ib2]
-                        rbar_mel = el_sym.symmetry[isym].is_tr ? conj(rbar_mel) : rbar_mel
+                        if el_sym.symmetry[isym].is_tr
+                            rbar_mel = conj(rbar_mel)
+                        end
                     end
                     for idir in 1:3
                         push!(sp_vals[idir], im * rbar_mel[idir])

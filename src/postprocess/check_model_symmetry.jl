@@ -1,4 +1,5 @@
 using Printf
+using EPW.WanToBloch: get_symmetry_representation_wannier!
 
 export check_electron_symmetry_of_model
 
@@ -61,7 +62,7 @@ function check_electron_symmetry_of_model(model::EPW.ModelEPW{FT}, ngrid; fourie
         end
     end
 
-    sym_k = zeros(Complex{FT}, nw, nw)
+    sym_W = zeros(Complex{FT}, nw, nw)
     S_vk = [zeros(Complex{FT}, nw, nw) for _ in 1:3]
 
     for (isym, symop) in enumerate(symmetry)
@@ -74,17 +75,21 @@ function check_electron_symmetry_of_model(model::EPW.ModelEPW{FT}, ngrid; fourie
             end
 
             # SymMatrixUnitarity: Check unitarity of symmetry operators in Wannier basis
-            get_fourier!(sym_k, model.el_sym.operators[isym], xk; fourier_mode)
-            sym_k_error = sqrt(norm(sym_k' * sym_k - I(nw)))
-            max_errors[:SymMatrixUnitarity] = max(max_errors[:SymMatrixUnitarity], sym_k_error)
-            rms_errors[:SymMatrixUnitarity] += sum(sym_k_error^2)
+            get_symmetry_representation_wannier!(sym_W, model.el_sym.operators[isym], xk, symop.is_tr; fourier_mode)
+            sym_W_error = sqrt(norm(sym_W' * sym_W - I(nw)))
+            max_errors[:SymMatrixUnitarity] = max(max_errors[:SymMatrixUnitarity], sym_W_error)
+            rms_errors[:SymMatrixUnitarity] += sum(sym_W_error^2)
 
             # Energy: check e_{m,Sk} = e_{m,k}
             max_errors[:Energy] = max(max_errors[:Energy], maximum(abs.(el_states[ik].e .- el_states[isk].e)))
             rms_errors[:Energy] += sum((el_states[ik].e .- el_states[isk].e).^2) / nw
 
             # Hamiltonian: check H_W(Sk) = S_W(k) * H_W(k) * S_W(k)'
-            H_error = norm(sym_k * op_Hk[ik] * sym_k' - op_Hk[isk])
+            if symop.is_tr
+                H_error = norm(sym_W * conj.(op_Hk[ik]) * sym_W' - op_Hk[isk])
+            else
+                H_error = norm(sym_W * op_Hk[ik] * sym_W' - op_Hk[isk])
+            end
             max_errors[:Hamiltonian] = max(max_errors[:Hamiltonian], H_error)
             rms_errors[:Hamiltonian] += sum(H_error^2)
 
@@ -92,7 +97,11 @@ function check_electron_symmetry_of_model(model::EPW.ModelEPW{FT}, ngrid; fourie
             # Outermost S indicates a rotation and time reversal operation.
             @views for (op_vk, key) in [(op_vk_direct, :Velocity_Direct), (op_vk_berry, :Velocity_BerryConnection)]
                 for i in 1:3
-                    S_vk[i] .= sym_k * op_vk[ik][:, :, i] * sym_k'
+                    if symop.is_tr
+                        S_vk[i] .= sym_W * conj.(op_vk[ik][:, :, i]) * sym_W'
+                    else
+                        S_vk[i] .= sym_W * op_vk[ik][:, :, i] * sym_W'
+                    end
                 end
                 # Rotate S_vk along the last dimension
                 S_vk .= symop.Scart * S_vk

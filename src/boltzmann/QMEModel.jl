@@ -42,6 +42,9 @@ Base.@kwdef mutable struct QMEIrreducibleKModel{FT} <: AbstractQMEModel{FT}
     Sᵢ_irr = nothing
     # Map from el_irr to el_f, assuming time-reversal odd, vector elements.
     map_i_to_f_vector::SparseMatrixCSC{Mat3{Complex{FT}}, Int}
+    # Map from el_irr to el_f, assuming time-reversal odd, vector elements for symmetries
+    # involving time reversal operation.
+    map_i_to_f_vector_tr::SparseMatrixCSC{Mat3{Complex{FT}}, Int}
     # Map from el to el_f by each symmetry operator. Needed in multiply_Sᵢ.
     # (storage size ~ N_sym^2 * N_kirr * N_band)
     el_to_el_f_sym_maps::Union{Nothing, Vector{SparseMatrixCSC{Complex{FT}, Int}}} = nothing
@@ -94,6 +97,7 @@ function Base.getproperty(obj::QMEModel, name::Symbol)
     elseif name === :symmetry
         nothing
     elseif name === :map_i_to_f
+        # FIXME: The field name should be map_i_to_f.
         getfield(obj, :map_i_to_f_vector)
     else
         getfield(obj, name)
@@ -136,10 +140,10 @@ function load_QMEModel(filename, transport_params, ::Type{FT}=Float64; derivativ
         el_i_irr = load_BTData(fid["initialstate_electron"], QMEStates{FT})
         el_i = load_BTData(fid["initialstate_electron_unfolded"], QMEStates{FT})
         ik_to_ikirr_isym = _data_hdf5_to_julia(read(fid, "ik_to_ikirr_isym"), Vector{Tuple{Int, Int}})
-        map_i_to_f_vector = _qme_linear_response_unfold_map(el_i_irr, el_f, filename)
+        map_i_to_f_vector, map_i_to_f_vector_tr = _qme_linear_response_unfold_map(el_i_irr, el_f, filename)
         qme_model = QMEIrreducibleKModel(; symmetry, ik_to_ikirr_isym, el_irr=el_i_irr,
                                            el=el_i, ∇, transport_params, el_f, ph,
-                                           filename, map_i_to_f_vector)
+                                           filename, map_i_to_f_vector, map_i_to_f_vector_tr)
         qme_model.el_to_el_f_sym_maps = _el_to_el_f_symmetry_maps(qme_model)
     else
         el_i = load_BTData(fid["initialstate_electron"], QMEStates{FT})
@@ -172,14 +176,22 @@ where ``k = S * k_irr` and `x'(S) = rotate_QMEVector_to_el_f(x, qme_model, isym)
         Sx_irr = qme_model._buffer_el_irr_sym
         @views for (isym, symop) in enumerate(symmetry)
             isym_inv = findfirst(s -> s ≈ inv(symop), symmetry)
-            mul!(x_f[:, isym], el_to_el_f_sym_maps[isym_inv], x.data)
+            if symop.is_tr
+                mul!(x_f[:, isym], el_to_el_f_sym_maps[isym_inv], conj.(x.data))
+            else
+                mul!(x_f[:, isym], el_to_el_f_sym_maps[isym_inv], x.data)
+            end
         end
         mul!(Sx_irr, Sᵢ_irr, x_f)
         for i = 1:el.n
             (; ib1, ib2, ik) = el[i]
             ikirr, isym = ik_to_ikirr_isym[ik]
             ind_irr = get_1d_index(el_irr, ib1, ib2, ikirr)
-            Sin_x[i] = Sx_irr[ind_irr, isym]
+            if symmetry[isym].is_tr
+                Sin_x[i] = conj(Sx_irr[ind_irr, isym])
+            else
+                Sin_x[i] = Sx_irr[ind_irr, isym]
+            end
         end
         Sin_x
     elseif qme_model isa QMEIrreducibleKModel && x.state === qme_model.el_irr
@@ -201,7 +213,16 @@ function multiply_Sᵢ(x::QMEVector{Vec3{FT}}, Sᵢ_irr, qme_model::AbstractQMEM
 
         # Can be optimized if Sᵢ_irr * qme_model.map_i_to_f_vector is computed and stored,
         # because we are doing (Nk_irr, Nk) * (Nk, Nk_irr) * (Nk_irr,) multiplication.
-        QMEVector(x.state, Sᵢ_irr * (qme_model.map_i_to_f_vector * x.data))
+        if qme_model isa QMEModel
+            QMEVector(x.state, Sᵢ_irr * (qme_model.map_i_to_f_vector * x.data))
+        elseif qme_model isa QMEIrreducibleKModel
+            # Here, x must be a time-reversal odd and inversion even vector
+            # because qme_model.map_i_to_f_vector is calculated with such assumptions.
+            ( QMEVector(x.state, Sᵢ_irr * (qme_model.map_i_to_f_vector * x.data))
+            + QMEVector(x.state, Sᵢ_irr * (qme_model.map_i_to_f_vector_tr * conj.(x.data))) )
+        else
+            throw(ArgumentError("invalid qme_model type $(typeof(qme_model))"))
+        end
     elseif x.state === qme_model.el
         # @warn "Can be very inefficient compared to QMEVector{ComplexF64}."
         Sx = zeros(FT, 3, size(x)...)

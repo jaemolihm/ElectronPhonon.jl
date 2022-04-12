@@ -120,18 +120,15 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         g = create_group(fid_btedata, "gauge/symmetry")
         dump_BTData(g, symmetry)
 
-        tmp_arr_full = zeros(Complex{FT}, nw, nw)
-        tmp_arr2_full = zeros(Complex{FT}, nw, nw)
-        sym_k = zeros(Complex{FT}, nw, nw)
-        for isym = 1:symmetry.nsym
+        for (isym, symop) in enumerate(symmetry)
             # Find symmetry in model.el_sym
-            isym_el = findfirst(s -> s ≈ symmetry[isym], model.el_sym.symmetry)
+            isym_el = findfirst(s -> s ≈ symop, model.el_sym.symmetry)
 
             gauge .= 0
             is_degenerate .= false
             @views for ik = 1:nk
                 xk = kpts.vectors[ik]
-                sxk = symmetry[isym].S * xk
+                sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
                 isk = xk_to_ik(sxk, kqpts)
                 isk === nothing && continue # skip if Sk is not in kqpts
 
@@ -141,12 +138,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 rng_sk = el_sk.rng
 
                 # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k) = <u(Sk)|S|u(k)>
-                get_fourier!(sym_k, model.el_sym.operators[isym_el], xk; fourier_mode)
-                tmp_arr = view(tmp_arr_full, :, rng_k)
-                tmp_arr2 = view(tmp_arr2_full, rng_sk, rng_k)
-                mul!(tmp_arr, sym_k, no_offset_view(el_k.u))
-                mul!(tmp_arr2, no_offset_view(el_sk.u)', tmp_arr)
-                gauge[el_sk.rng, el_k.rng, ik] .= tmp_arr2
+                compute_symmetry_representation!(gauge[el_sk.rng, el_k.rng, ik], el_k, el_sk,
+                xk, model.el_sym.operators[isym_el], symop.is_tr; fourier_mode)
                 # FIXME: Perform SVD to make gauge completely unitary
 
                 # Set is_degenerate. Use more loose tolerance because symmetry can be slightly
@@ -188,7 +181,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                                     rng_max, rng_max, 1:count_total)
 
             icount = 0
-            for isym = 1:symmetry.nsym
+            @views for isym = 1:symmetry.nsym
                 symop = symmetry[isym]
                 isone(symop) && continue # Skip identity
                 # Find symmetry in model.el_sym
@@ -201,12 +194,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 isym_list[icount] = isym
 
                 # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k) = <u(k)|S|u(k)>
-                get_fourier!(sym_k, model.el_sym.operators[isym_el], xk; fourier_mode)
-                tmp_arr = view(tmp_arr_full, :, rng_k)
-                tmp_arr2 = view(tmp_arr2_full, rng_k, rng_k)
-                mul!(tmp_arr, sym_k, no_offset_view(el_k.u))
-                mul!(tmp_arr2, no_offset_view(el_k.u)', tmp_arr)
-                gauge_list[el_k.rng, el_k.rng, icount] .= tmp_arr2
+                compute_symmetry_representation!(gauge_list[el_k.rng, el_k.rng, icount], el_k, el_k,
+                    xk, model.el_sym.operators[isym_el], symop.is_tr; fourier_mode)
                 # FIXME: Perform SVD to make gauge completely unitary
             end
 
@@ -222,7 +211,6 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         end
         fid_btedata["gauge_self/ik_list"] = ik_list
     else
-        tmp_arr_full = zeros(Complex{FT}, nw, nw)
         @views for ik = 1:nk
             xk = kpts.vectors[ik]
             ik_kq = xk_to_ik(xk, kqpts)
@@ -234,9 +222,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             rng_kq = el_kq.rng
 
             # Compute gauge matrix: gauge = U†(k) * U(k)
-            tmp_arr = view(tmp_arr_full, rng_kq, rng_k)
-            mul!(tmp_arr, no_offset_view(el_kq.u)', no_offset_view(el_k.u))
-            gauge[el_kq.rng, el_k.rng, ik] .= tmp_arr
+            mul!(gauge[el_kq.rng, el_k.rng, ik], no_offset_view(el_kq.u)', no_offset_view(el_k.u))
 
             # Set is_degenerate
             for ib in rng_k, jb in rng_kq

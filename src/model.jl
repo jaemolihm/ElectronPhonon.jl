@@ -358,9 +358,7 @@ function load_symmetry_operators_from_epw(folder)
     Ss = [Mat3(symmetry_S[:, :, i]) for i in 1:nsym]
     τs = [Ss[i]' \ Vec3(symmetry_τ[:, i]) for i in 1:nsym]
 
-    # We do not use time reversal for symmetry matrices because off-diagonal elements in QME
-    # breaks the time-reversal symmetry even for the linear response.
-    symmetry = Symmetry(Ss, τs, false, lattice)
+    symmetry = Symmetry(Ss, τs, time_reversal, lattice)
 
     nw = Int(read(f, Int32))
     nrr = Int(read(f, Int32))
@@ -370,7 +368,7 @@ function load_symmetry_operators_from_epw(folder)
     irvec = irvec[ind_el]
 
     operators = Vector{WannierObject{Float64}}()
-    @views for isym in 1:nsym
+    @views for isym = 1:symmetry.nsym
         symmetry_mel = read(f, (ComplexF64, nw, nw, nrr))
         symmetry_mel .= symmetry_mel[:, :, ind_el]
         push!(operators, WannierObject(irvec, reshape(symmetry_mel, (nw*nw, nrr))))
