@@ -551,7 +551,7 @@ function symmetrize_array(arr::AbstractArray{T}, symmetry; order, tr_odd=false, 
     arr_sym
 end
 
-symmetrize_array(arr::AbstractArray, symmetry::Nothing; order) = arr
+symmetrize_array(arr::AbstractArray, symmetry::Nothing; kwargs...) = arr
 
 function symmetrize_array!(arr::AbstractArray, symmetry; kwargs...)
     arr_sym = symmetrize_array(arr, symmetry; kwargs...)
