@@ -84,7 +84,7 @@ Base.@kwdef mutable struct QMEModel{FT} <: AbstractQMEModel{FT}
     # To multiply Sᵢ to a QMEVector, use `multiply_Sᵢ(x::QMEVector, Sᵢ_irr, qme_model::AbstractQMEModel)`.
     Sᵢ = nothing
     # Map from el_irr to el_f, assuming time-reversal odd, vector elements.
-    map_i_to_f_vector::SparseMatrixCSC{Complex{FT}, Int}
+    map_i_to_f::SparseMatrixCSC{Complex{FT}, Int}
 end
 
 function Base.getproperty(obj::QMEModel, name::Symbol)
@@ -96,9 +96,8 @@ function Base.getproperty(obj::QMEModel, name::Symbol)
         getfield(obj, :Sᵢ)
     elseif name === :symmetry
         nothing
-    elseif name === :map_i_to_f
-        # FIXME: The field name should be map_i_to_f.
-        getfield(obj, :map_i_to_f_vector)
+    elseif name === :map_i_to_f_vector
+        getfield(obj, :map_i_to_f)
     else
         getfield(obj, name)
     end
@@ -147,9 +146,8 @@ function load_QMEModel(filename, transport_params, ::Type{FT}=Float64; derivativ
         qme_model.el_to_el_f_sym_maps = _el_to_el_f_symmetry_maps(qme_model)
     else
         el_i = load_BTData(fid["initialstate_electron"], QMEStates{FT})
-        map_i_to_f_vector = _qme_linear_response_unfold_map_nosym(el_i, el_f, filename)
-        qme_model = QMEModel(; el=el_i, ∇, transport_params, el_f, ph, filename,
-                               map_i_to_f_vector)
+        map_i_to_f = _qme_linear_response_unfold_map_nosym(el_i, el_f, filename)
+        qme_model = QMEModel(; el=el_i, ∇, transport_params, el_f, ph, filename, map_i_to_f)
     end
     close(fid)
     qme_model
