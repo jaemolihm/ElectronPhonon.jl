@@ -113,7 +113,7 @@ end
         el = el_states[ik]
         el.nband == 0 && continue
         for ib2 in el.rng, ib1 in el.rng
-            if abs(el.e[ib1] - el.e[ib2]) <= offdiag_cutoff
+            if ib1 == ib2 || abs(el.e[ib1] - el.e[ib2]) <= offdiag_cutoff
                 n += 1
                 push!(e1, el.e[ib1])
                 push!(e2, el.e[ib2])
