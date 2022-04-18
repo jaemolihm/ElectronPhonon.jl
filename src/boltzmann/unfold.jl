@@ -180,58 +180,64 @@ end
 Unfold QMEVector defined on `model.el_irr` to `model.el`` using `model.symmetry`.
 TODO: Generalize ``symop.Scart * x[i]`` to work with any datatype (scalar, vector, tensor).
 """
-function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKModel, trodd, invodd) where {ElType <: Vec3, FT}
-    @assert f_irr.state === model.el_irr
-    f = QMEVector(model.el, ElType)
-    for i in 1:model.el.n
-        (; ik, ib1, ib2) = model.el[i]
+function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::AbstractQMEModel, trodd, invodd) where {ElType <: Vec3, FT}
+    if f_irr.state === model.el
+        # `f_irr` is already on the full grid. Just return a copy.
+        copy(f_irr)
+    elseif f_irr.state === model.el_irr
+        f = QMEVector(model.el, ElType)
+        for i in 1:model.el.n
+            (; ik, ib1, ib2) = model.el[i]
 
-        ik_irr, isym = model.ik_to_ikirr_isym[ik]
-        symop = model.symmetry[isym]
-        i_irr = get_1d_index(model.el_irr, ib1, ib2, ik_irr)
+            ik_irr, isym = model.ik_to_ikirr_isym[ik]
+            symop = model.symmetry[isym]
+            i_irr = get_1d_index(model.el_irr, ib1, ib2, ik_irr)
 
-        f[i] = symop.Scart * f_irr[i_irr]
-        if symop.is_tr
-            f[i] = conj(f[i])
+            f[i] = symop.Scart * f_irr[i_irr]
+            if symop.is_tr
+                f[i] = conj(f[i])
+            end
+            if trodd && symop.is_tr
+                f[i] *= -1
+            end
+            if invodd && symop.is_inv
+                f[i] *= -1
+            end
         end
-        if trodd && symop.is_tr
-            f[i] *= -1
-        end
-        if invodd && symop.is_inv
-            f[i] *= -1
-        end
+        f
+    else
+        throw(ArgumentError("f_irr.state must be model.el_irr or model.el"))
     end
-    f
 end
 
-function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::QMEIrreducibleKModel, trodd, invodd) where {ElType <: Number, FT}
-    @assert f_irr.state === model.el_irr
-    f = QMEVector(model.el, ElType)
-    for i in 1:model.el.n
-        (; ik, ib1, ib2) = model.el[i]
+function unfold_QMEVector(f_irr::QMEVector{ElType, FT}, model::AbstractQMEModel, trodd, invodd) where {ElType <: Number, FT}
+    if f_irr.state === model.el
+        # `f_irr` is already on the full grid. Just return a copy.
+        copy(f_irr)
+    elseif f_irr.state === model.el_irr
+        f = QMEVector(model.el, ElType)
+        for i in 1:model.el.n
+            (; ik, ib1, ib2) = model.el[i]
 
-        ik_irr, isym = model.ik_to_ikirr_isym[ik]
-        symop = model.symmetry[isym]
-        i_irr = get_1d_index(model.el_irr, ib1, ib2, ik_irr)
+            ik_irr, isym = model.ik_to_ikirr_isym[ik]
+            symop = model.symmetry[isym]
+            i_irr = get_1d_index(model.el_irr, ib1, ib2, ik_irr)
 
-        f[i] = f_irr[i_irr]
-        if symop.is_tr
-            f[i] = conj(f[i])
+            f[i] = f_irr[i_irr]
+            if symop.is_tr
+                f[i] = conj(f[i])
+            end
+            if trodd && symop.is_tr
+                f[i] *= -1
+            end
+            if invodd && symop.is_inv
+                f[i] *= -1
+            end
         end
-        if trodd && symop.is_tr
-            f[i] *= -1
-        end
-        if invodd && symop.is_inv
-            f[i] *= -1
-        end
+        f
+    else
+        throw(ArgumentError("f_irr.state must be model.el_irr or model.el"))
     end
-    f
-end
-
-
-# Since QMEModel does not use symmetry, unfolding is a do-nothing operation.
-function unfold_QMEVector(f_irr::QMEVector, model::QMEModel, trodd, invodd)
-    QMEVector(f_irr.state, copy(f_irr.data))
 end
 
 """

@@ -155,4 +155,8 @@ end
     x_symm = EPW.unfold_QMEVector(x_irr_symm, qme_model, true, false)
     y2 = QMEVector(el_f, qme_model.el_to_el_f_sym_maps[1] * x_symm.data)
     @test norm(y1.data .- y2.data) < norm(y1.data) * 1e-7
+
+    # Test unfold_QMEVector is a copy if x.state === qme_model.el
+    x = QMEVector(qme_model.el, rand(ComplexF64, qme_model.el.n))
+    @test EPW.unfold_QMEVector(x, qme_model, true, false).data ≈ x.data
 end
