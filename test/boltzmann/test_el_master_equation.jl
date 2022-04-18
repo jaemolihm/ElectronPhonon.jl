@@ -402,36 +402,57 @@ end
     for use_irr_k in [false, true]
         symmetry = use_irr_k ? model.el_sym.symmetry : nothing
 
+        out_bte = Dict()
         out_qme = Dict()
-        for random_gauge in [false, true]
-            # Calculate matrix elements
-            @time EPW.run_transport(
-                model, nklist, nqlist,
-                fourier_mode = "gridopt",
-                folder = tmp_dir,
-                window_k  = window_k,
-                window_kq = window_kq,
-                energy_conservation = energy_conservation,
-                use_irr_k = use_irr_k,
-                average_degeneracy = false,
-                run_for_qme = true,
-                DEBUG_random_gauge = random_gauge,
-            )
+        for qme_offdiag_cutoff in [-1, EPW.electron_degen_cutoff]
+            for random_gauge in [false, true]
+                # Calculate matrix elements
+                @time EPW.run_transport(
+                    model, nklist, nqlist,
+                    fourier_mode = "gridopt",
+                    folder = tmp_dir,
+                    window_k  = window_k,
+                    window_kq = window_kq,
+                    energy_conservation = energy_conservation,
+                    use_irr_k = use_irr_k,
+                    average_degeneracy = false,
+                    run_for_qme = true,
+                    DEBUG_random_gauge = random_gauge,
+                    qme_offdiag_cutoff = qme_offdiag_cutoff,
+                )
 
-            filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
-            qme_model = load_QMEModel(filename, transport_params)
+                filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
+                qme_model = load_QMEModel(filename, transport_params)
 
-            # Compute chemical potential
-            bte_compute_μ!(qme_model)
+                # Compute chemical potential
+                bte_compute_μ!(qme_model, do_print=false)
 
-            # Compute scattering matrix
-            compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
+                # Compute scattering matrix
+                compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
 
-            # Solve QME and compute mobility
-            out_qme[random_gauge] = solve_electron_linear_conductivity(qme_model)
+                # Compute mobility
+                if qme_offdiag_cutoff < 0
+                    out_bte[random_gauge] = solve_electron_linear_conductivity(qme_model)
+                else
+                    out_qme[random_gauge] = solve_electron_linear_conductivity(qme_model)
+                end
+            end
         end
 
-        @test out_qme[true].σ_serta ≈ out_qme[false].σ_serta
-        @test out_qme[true].σ ≈ out_qme[false].σ
+        # For QME (including coherence between degenerate bands), the random gauge
+        # should not affect the conductivity.
+        @test out_qme[true].σ_serta ≈ out_qme[false].σ_serta atol=1e-6
+        @test out_qme[true].σ ≈ out_qme[false].σ atol=1e-6
+
+        # For BTE (with qme_offdiag_cutoff < 0, only diagonal states), the random gauge
+        # does affect the conductivity.
+        if use_irr_k != true
+            # When using symmetry, the conductivity matrix is symmetrized so the effect of the
+            # random gauge is not seen when comparing BTE w/ and w/o random gauge.
+            @test norm(out_bte[true].σ - out_bte[false].σ) > 5e-4
+            @test norm(out_bte[true].σ - out_bte[false].σ) > 5e-4
+        end
+        @test norm(out_qme[true].σ_serta - out_bte[false].σ_serta) > 0.1
+        @test norm(out_qme[true].σ - out_bte[false].σ) > 0.1
     end
 end

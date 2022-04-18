@@ -37,6 +37,29 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # for (el, xk) in zip(el_k_save, kpts.vectors)
         #     set_gauge_to_diagonalize_velocity_matrix!(el, xk, 1, model)
         # end
+        if get(kwargs, :DEBUG_random_gauge, false) == true
+            # Randomly change the eigenstate gauge at k
+            # Multiply random phase factor
+            for el in el_k_save, ib in el.rng
+                el.u[:, ib] .*= cispi(2*rand())
+            end
+            # Linearly combine degenerate eigenvectors
+            for el in el_k_save, ib in el.rng[1:end-1]
+                if abs(el.e[ib] - el.e[ib+1]) < EPW.electron_degen_cutoff && rand() > 0.5
+                    v1, v2 = copy(el.u[:, ib]), copy(el.u[:, ib+1])
+                    a = rand()
+                    @. el.u[:, ib]   =    sqrt(a) * v1 + sqrt(1-a) * v2
+                    @. el.u[:, ib+1] = -sqrt(1-a) * v1 +   sqrt(a) * v2
+                end
+            end
+            # compute quantities using the new eigenbasis
+            for (el, xk) in zip(el_k_save, kpts.vectors)
+                set_velocity!(el, model, xk; fourier_mode)
+                for i in el.rng
+                    el.vdiag[i] = real.(el.v[i, i])
+                end
+            end # ik
+        end
         el_k_boltzmann = electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff, nstates_base_k)
         dump_BTData(create_group(fid_btedata, "initialstate_electron"), el_k_boltzmann)
 
@@ -45,16 +68,19 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
         kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
         el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector"], window_kq; fourier_mode)
-        # DEBUG: randomly change the eigenstate gauge at k+q so that the gauge is different from k
         if get(kwargs, :DEBUG_random_gauge, false) == true
+            # Randomly change the eigenstate gauge at k+q so that the gauge is different from k
             # Multiply random phase factor
             for el in el_kq_save_irr, ib in el.rng
                 el.u[:, ib] .*= cispi(2*rand())
             end
-            # Swap degenerate eigenvectors
+            # Linearly combine degenerate eigenvectors
             for el in el_kq_save_irr, ib in el.rng[1:end-1]
                 if abs(el.e[ib] - el.e[ib+1]) < EPW.electron_degen_cutoff && rand() > 0.5
-                    el.u[:, ib], el.u[:, ib+1] = el.u[:, ib+1], el.u[:, ib]
+                    v1, v2 = copy(el.u[:, ib]), copy(el.u[:, ib+1])
+                    a = rand()
+                    @. el.u[:, ib]   =    sqrt(a) * v1 + sqrt(1-a) * v2
+                    @. el.u[:, ib+1] = -sqrt(1-a) * v1 +   sqrt(a) * v2
                 end
             end
         end
