@@ -21,7 +21,7 @@ end
 function LinearAlgebra.mul!(y::QMEVector, A::QMEScatteringMap, x::QMEVector)
     # y = (I + Sₒ⁻¹ (Sᵢ + A)) * x
     Sᵢx = multiply_Sᵢ(x, A.Sᵢ_irr, A.qme_model)
-    A.A !== nothing && mul!(Sᵢx.data, A.A, x.data)
+    A.A !== nothing && mul!(Sᵢx.data, A.A, x.data, true, true)
     mul!(y.data, A.S₀⁻¹, Sᵢx.data)
     y .+= x
     y

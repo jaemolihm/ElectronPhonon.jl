@@ -60,16 +60,10 @@ function solve_electron_finite_efield(qme_model::AbstractQMEModel{FT}, out_linea
         current_serta[:, iT] .= vec(occupation_to_conductivity(δρ_serta, transport_params))
 
         if Sᵢ_irr !== nothing
-            # IBTE
-            # Compute δᴱρ
-            δᴱρ_irr_all = QMEVector(qme_model.el_irr, out_linear.δρ[:, iT])
-            δᴱρ_all = unfold_QMEVector(δᴱρ_irr_all, qme_model, true, false)
-            δᴱρ = QMEVector(δᴱρ_all.state, dot.(Ref(E), δᴱρ_all.data))
-
-            # Solve (I + Sₒ⁻¹ * (Sᵢ + E∇)) * δρ = δᴱρ
+            # IBTE: Solve (I + Sₒ⁻¹ * (Sᵢ + E∇)) * δρ = δᴱρ_serta
             scatmap = QMEScatteringMap(qme_model, qme_model.el, Sᵢ_irr[iT], Sₒ⁻¹_iT, E∇)
-            δρ .= δᴱρ
-            _, history = IterativeSolvers.gmres!(δρ, scatmap, δᴱρ; verbose, reltol=rtol, maxiter, log=true)
+            δρ .= δᴱρ_serta
+            _, history = IterativeSolvers.gmres!(δρ, scatmap, δᴱρ_serta; verbose, reltol=rtol, maxiter, log=true)
             @info history
             current[:, iT] .= vec(occupation_to_conductivity(δρ, transport_params))
         end
