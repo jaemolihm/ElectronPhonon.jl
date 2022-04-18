@@ -67,7 +67,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # To ensure gauge consistency between symmetry-equivalent k points, we explicitly compute
         # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
         kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
-        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector"], window_kq; fourier_mode)
+        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity"], window_kq; fourier_mode)
         if get(kwargs, :DEBUG_random_gauge, false) == true
             # Randomly change the eigenstate gauge at k+q so that the gauge is different from k
             # Multiply random phase factor
@@ -81,6 +81,13 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                     a = rand()
                     @. el.u[:, ib]   =    sqrt(a) * v1 + sqrt(1-a) * v2
                     @. el.u[:, ib+1] = -sqrt(1-a) * v1 +   sqrt(a) * v2
+                end
+            end
+            # compute quantities using the new eigenbasis
+            for (el, xk) in zip(el_kq_save_irr, kqpts_irr.vectors)
+                set_velocity!(el, model, xk; fourier_mode)
+                for i in el.rng
+                    el.vdiag[i] = real.(el.v[i, i])
                 end
             end
         end

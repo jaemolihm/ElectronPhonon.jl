@@ -95,6 +95,18 @@ using LinearAlgebra
             @test out_qme.σ_serta ≈ output_serta.σ rtol=1e-6
             @test out_qme.σ_serta ≈ output_lbte.σ_serta rtol=1e-6
             @test out_qme.σ ≈ output_lbte.σ rtol=1e-6
+
+            # Test MRTA
+            filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
+            qme_model_mrta = load_QMEModel(filename, transport_params)
+            bte_compute_μ!(qme_model_mrta)
+            compute_qme_scattering_matrix!(qme_model_mrta, use_mrta=true, compute_Sᵢ=false)
+
+            # Solve QME and compute mobility
+            out_qme_mrta = solve_electron_linear_conductivity(qme_model_mrta)
+
+            # Reference results from Julia
+            @test real(out_qme.σ_serta[1, 1, 1]) ≈ 0.16875742960005255 atol=1e-8
         end
     end
 

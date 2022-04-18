@@ -8,8 +8,18 @@ export compute_qme_scattering_matrix
 """
     compute_qme_scattering_matrix(filename, params, el_i, el_f, ph)
 Compute the scattering matrix element for quantum master equation of electrons.
+
+# Input
+- `use_mrta`: If true, compute Sₒ using MRTA (momentum relaxation time approximation). See
+    Eq. (49) of Ponce et al, Rep. Prog. Phys. (2020). Since the MRTA is an approximate way to
+    describe the scattering-in term, one must set `compute_Sᵢ = false` when using MRTA.
+- `compute_Sᵢ`: If true, compute the scattering-in term.
 """
-function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, ph; compute_Sᵢ=true) where {FT}
+function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, ph;
+        compute_Sᵢ=true, use_mrta=false) where {FT}
+    if compute_Sᵢ && use_mrta
+        throw(ArgumentError("compute_Sᵢ = true and use_mrta = true is not compatible."))
+    end
     nT = length(params.Tlist)
 
     ind_ph_map = states_index_map(ph)
@@ -59,22 +69,26 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
             # Calculate P_{ib1, ib2} only if ∃ ib3 such that both (ib1, ib3) and (ib2, ib3)
             # or both (ib3, ib1) and (ib3, ib2) are in el_i.
             found = false
-            local ib3, e_i1, e_i2
-            for outer ib3 in el_i.ib_rng[ik]
+            local ind_el_i1, ind_el_i2
+            for ib3 in el_i.ib_rng[ik]
                 if hasstate(el_i, ib1, ib3, ik) && hasstate(el_i, ib2, ib3, ik)
                     found = true
-                    e_i1 = el_i.e1[get_1d_index(el_i, ib1, ib3, ik)]
-                    e_i2 = el_i.e1[get_1d_index(el_i, ib2, ib3, ik)]
+                    ind_el_i1 = get_1d_index(el_i, ib1, ib3, ik)
+                    ind_el_i2 = get_1d_index(el_i, ib2, ib3, ik)
                     break
                 end
                 if hasstate(el_i, ib3, ib1, ik) && hasstate(el_i, ib3, ib2, ik)
                     found = true
-                    e_i1 = el_i.e2[get_1d_index(el_i, ib3, ib1, ik)]
-                    e_i2 = el_i.e2[get_1d_index(el_i, ib3, ib2, ik)]
+                    ind_el_i1 = get_1d_index(el_i, ib1, ib3, ik)
+                    ind_el_i2 = get_1d_index(el_i, ib2, ib3, ik)
                     break
                 end
             end
             found || continue
+            e_i1 = el_i.e1[ind_el_i1]
+            e_i2 = el_i.e1[ind_el_i2]
+            v_i1 = el_i.v[ind_el_i1]
+            v_i2 = el_i.v[ind_el_i2]
             p_mel .= 0
 
             for ind_el_f in 1:el_f.n
@@ -84,6 +98,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                 jb = jb1
                 e_f = el_f.e1[ind_el_f]
                 ikq = el_f.ik[ind_el_f]
+                v_f = el_f.v[ind_el_f]
                 focc_f = @view focc_el_f_all[:, jb1, ikq]
 
                 xq = el_f.kpts.vectors[ikq] - el_i.kpts.vectors[ik]
@@ -109,10 +124,18 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     gg = conj(s1.mel) * s2.mel
 
                     if s1.econv_p && s2.econv_p
-                        _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, +1, inv_η, focc_f, nocc_ph)
+                        if use_mrta == true
+                            _compute_p_matrix_element_mrta!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, +1, inv_η, focc_f, nocc_ph, v_i1, v_f)
+                        else
+                            _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, +1, inv_η, focc_f, nocc_ph)
+                        end
                     end
                     if s1.econv_m && s1.econv_m
-                        _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, -1, inv_η, focc_f, nocc_ph)
+                        if use_mrta == true
+                            _compute_p_matrix_element_mrta!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, -1, inv_η, focc_f, nocc_ph, v_i1, v_f)
+                        else
+                            _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, -1, inv_η, focc_f, nocc_ph)
+                        end
                     end
                 end
                 p_mel .+= p_mel_ikq .* 2FT(π) .* el_f.kpts.weights[ikq]
@@ -224,6 +247,22 @@ function _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_
         n = sign_ph == 1 ? n_ph[iT] + 1 - f_kq[iT] : n_ph[iT] + f_kq[iT]
         # P matrix element
         p_mel_ikq[iT] += gg * delta * n
+    end
+end
+
+function _compute_p_matrix_element_mrta!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_ph, inv_η, f_kq, n_ph, v_i1, v_f)
+    # Momentum relaxation time approximation: See Eq. (49) of Ponce et al, Rep. Prog. Phys. (2020).
+    # energy conservation factor
+    delta1 = gaussian((e_i1 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
+    delta2 = gaussian((e_i2 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
+    delta = sqrt(delta1 * delta2)
+    vfac = 1 - dot(v_i1, v_f) / dot(v_i1, v_i1) # Original Eq. (49)
+    # vfac = 1 - dot(v_i1, v_f) / norm(v_i1) / norm(v_f) # Modified form to make 0 <= vfac <= 1
+    for iT in 1:length(p_mel_ikq)
+        # occupation factor
+        n = sign_ph == 1 ? n_ph[iT] + 1 - f_kq[iT] : n_ph[iT] + f_kq[iT]
+        # P matrix element
+        p_mel_ikq[iT] += gg * delta * n * vfac
     end
 end
 
