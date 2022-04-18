@@ -39,6 +39,7 @@ using LinearAlgebra
         using OffsetArrays
         T = ComplexF64
         for v in (rand(T, el.n), view(rand(T, el.n+1), 2:el.n+1), OffsetArray(rand(T, el.n), :))
+            @test QMEVector(el, v) isa AbstractVector
             @test QMEVector(el, v) isa QMEVector{T, Float64, typeof(v)}
         end
         @test_throws ArgumentError QMEVector(el, rand(T, el.n+1))
@@ -51,12 +52,13 @@ using LinearAlgebra
         y = QMEVector(el, rand(ComplexF64, el.n))
         @test eltype(x) === eltype(x.data)
         @test eltype(y) === eltype(y.data)
-        @test size(x) == el.n
+        @test size(x) == (el.n,)
         @test x[3] == x.data[3]
         # @test x[10:20] == x.data[10:20] # This does not currently work
 
         # Test basic arithmetic operations
         z = 2 * x - y / 3 + x * 0.5
+        @test z isa QMEVector
         @test z.state === el
         @test z.data ≈ @. 2 * x.data - y.data / 3 + 0.5 * x.data
         @test length(z.data) == el.n
@@ -65,8 +67,24 @@ using LinearAlgebra
         @test (A * y).data ≈ A * y.data
         @test (A \ y).data ≈ inv(A) * y.data
 
+        # Test broadcasting
+        w = QMEVector(el, ComplexF64)
+        @. w = x * y / 5 - 2 * x / y
+        @test w isa QMEVector
+        @test w.data ≈ @. x.data * y.data / 5 - 2 * x.data / y.data
+
         # Test x * y as matrix multiplication
-        @test data_ik(x * y, 1) ≈ data_ik(x, 1) * data_ik(y, 1)
+        for ik in unique(el.ik)
+            @test data_ik(x * y, ik) ≈ data_ik(x, ik) * data_ik(y, ik)
+        end
+
+        # Test QMEVector with view
+        vdata = rand(el.n + 10)
+        rng = 5+1:5+el.n
+        vv = QMEVector(el, view(vdata, rng))
+        @. vv = x * 2
+        @test vv.data === @views vdata[rng]
+        @test vdata[rng] ≈ x.data .* 2
 
         # Test get_velocity_as_QMEVector
         v = EPW.get_velocity_as_QMEVector(el)

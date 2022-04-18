@@ -7,7 +7,7 @@ export data_ik
 `data` represents a block-diagonal sparse matrix `f[(m, n, k)]`, where `m` and `n` are band indices
 and `k` is a k-point index. The matrix is diagonal in `k`, so there is only one `k` index.
 """
-struct QMEVector{ElType, FT, VT <: AbstractVector{ElType}}
+struct QMEVector{ElType, FT, VT <: AbstractVector{ElType}} <: AbstractVector{ElType}
     state::QMEStates{FT}
     data::VT
     function QMEVector(state::QMEStates{FT}, data::VT) where {FT, ElType, VT <: AbstractVector{ElType}}
@@ -21,7 +21,7 @@ end
 Base.eltype(::Type{QMEVector{ElType, FT, VT}}) where {ElType, FT, VT} = ElType
 QMEVector(state, ::Type{ElType}) where ElType = QMEVector(state, zeros(ElType, state.n))
 
-Base.size(A::QMEVector) = A.state.n
+Base.size(A::QMEVector) = (A.state.n,)
 Base.getindex(A::QMEVector, i::Int) = A.data[i]
 Base.setindex!(A::QMEVector, v, i::Int) = (A.data[i] = v)
 Base.IndexStyle(::Type{QMEVector}) = IndexLinear()
@@ -32,6 +32,21 @@ Base.copy(x::QMEVector) = QMEVector(x.state, copy(x.data))
 
 Base.:*(A::AbstractMatrix, v::QMEVector) = QMEVector(v.state, A * v.data)
 Base.:\(A::AbstractMatrix, v::QMEVector) = QMEVector(v.state, A \ v.data)
+
+# Broadcasting
+Base.BroadcastStyle(::Type{<:QMEVector}) = Broadcast.ArrayStyle{QMEVector}()
+function Base.similar(bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{QMEVector}}, ::Type{ElType}) where ElType
+    A = find_entry(bc)
+    QMEVector(A.state, similar(Array{ElType}, axes(bc)))
+end
+
+"`A = find_entry(As)` returns the first QMEVector among the arguments."
+find_entry(x) = x
+find_entry(x::QMEVector, rest) = x
+find_entry(bc::Base.Broadcast.Broadcasted) = find_entry(bc.args)
+find_entry(args::Tuple) = find_entry(find_entry(args[1]), Base.tail(args))
+find_entry(::Tuple{}) = nothing
+find_entry(::Any, rest) = find_entry(rest)
 
 function check_state_identity(x::QMEVector, y::QMEVector)
     if x.state !== y.state
@@ -57,25 +72,6 @@ function Base.:*(x::QMEVector, y::QMEVector)
     end
     QMEVector(state, z)
 end
-
-function Base.:+(x::QMEVector, y::QMEVector)
-    check_state_identity(x, y)
-    QMEVector(x.state, x.data .+ y.data)
-end
-
-function Base.:-(x::QMEVector, y::QMEVector)
-    check_state_identity(x, y)
-    QMEVector(x.state, x.data .- y.data)
-end
-
-Base.:+(a::Number, x::QMEVector) = QMEVector(x.state, x.data .+ a)
-Base.:-(a::Number, x::QMEVector) = QMEVector(x.state, x.data .- a)
-Base.:*(a::Number, x::QMEVector) = QMEVector(x.state, x.data .* a)
-Base.:/(a::Number, x::QMEVector) = QMEVector(x.state, x.data ./ a)
-Base.:+(x::QMEVector, a::Number) = QMEVector(x.state, x.data .+ a)
-Base.:-(x::QMEVector, a::Number) = QMEVector(x.state, x.data .- a)
-Base.:*(x::QMEVector, a::Number) = QMEVector(x.state, x.data .* a)
-Base.:/(x::QMEVector, a::Number) = QMEVector(x.state, x.data ./ a)
 
 """
     data_ik(x::QMEVector{ElType, FT}, ik) where {ElType, FT}
