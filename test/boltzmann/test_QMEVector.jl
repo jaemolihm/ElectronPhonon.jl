@@ -35,6 +35,16 @@ using LinearAlgebra
         @assert cnt == el.n
     end
 
+    @testset "QMEVector constructor" begin
+        using OffsetArrays
+        T = ComplexF64
+        for v in (rand(T, el.n), view(rand(T, el.n+1), 2:el.n+1), OffsetArray(rand(T, el.n), :))
+            @test QMEVector(el, v) isa QMEVector{T, Float64, typeof(v)}
+        end
+        @test_throws ArgumentError QMEVector(el, rand(T, el.n+1))
+        @test_throws ArgumentError QMEVector(el, OffsetArray(rand(T, el.n), 2:1+el.n))
+    end
+
     @testset "QMEVector" begin
         # Test basic operations
         x = QMEVector(el, rand(el.n))

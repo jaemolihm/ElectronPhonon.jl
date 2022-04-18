@@ -7,16 +7,18 @@ export data_ik
 `data` represents a block-diagonal sparse matrix `f[(m, n, k)]`, where `m` and `n` are band indices
 and `k` is a k-point index. The matrix is diagonal in `k`, so there is only one `k` index.
 """
-struct QMEVector{ElType, FT}
+struct QMEVector{ElType, FT, VT <: AbstractVector{ElType}}
     state::QMEStates{FT}
-    data::Vector{ElType}
-    function QMEVector(state::QMEStates{FT}, data::AbstractVector{ElType}) where {ElType, FT}
-        state.n != length(data) && throw(ArgumentError("state.n must be identical to
-            length(data), but got $(state.n) and $(length(data))"))
-        new{ElType, FT}(state, data)
+    data::VT
+    function QMEVector(state::QMEStates{FT}, data::VT) where {FT, ElType, VT <: AbstractVector{ElType}}
+        state.n == length(data) || throw(ArgumentError(
+            "state.n must be identical to length(data), but got $(state.n) and $(length(data))"))
+        axes(data, 1) == 1:state.n || throw(ArgumentError(
+            "axes(data, 1) must be identical to 1:state.n, but got $(axes(data, 1))"))
+        new{ElType, FT, VT}(state, data)
     end
 end
-Base.eltype(::Type{QMEVector{ElType, FT}}) where {ElType, FT} = ElType
+Base.eltype(::Type{QMEVector{ElType, FT, VT}}) where {ElType, FT, VT} = ElType
 QMEVector(state, ::Type{ElType}) where ElType = QMEVector(state, zeros(ElType, state.n))
 
 Base.size(A::QMEVector) = A.state.n
