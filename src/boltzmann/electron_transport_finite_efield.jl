@@ -55,7 +55,7 @@ function solve_electron_finite_efield(qme_model::AbstractQMEModel{FT}, out_linea
 
         # Solve (I + Sₒ⁻¹ * E∇) * δρ = δᴱρ_serta
         A = I(el.n) + Sₒ⁻¹_iT * E∇
-        δρ_serta.data .= δᴱρ_serta.data
+        δρ_serta .= δᴱρ_serta
         IterativeSolvers.gmres!(δρ_serta.data, A, δᴱρ_serta.data; verbose, reltol=rtol, maxiter)
         current_serta[:, iT] .= vec(occupation_to_conductivity(δρ_serta, transport_params))
 
@@ -68,8 +68,8 @@ function solve_electron_finite_efield(qme_model::AbstractQMEModel{FT}, out_linea
 
             # Solve (I + Sₒ⁻¹ * (Sᵢ + E∇)) * δρ = δᴱρ
             scatmap = QMEScatteringMap(qme_model, qme_model.el, Sᵢ_irr[iT], Sₒ⁻¹_iT, E∇)
-            δρ.data .= δᴱρ.data
-            _, history = IterativeSolvers.gmres!(δρ.data, scatmap, δᴱρ.data; verbose, reltol=rtol, maxiter, log=true)
+            δρ .= δᴱρ
+            _, history = IterativeSolvers.gmres!(δρ, scatmap, δᴱρ; verbose, reltol=rtol, maxiter, log=true)
             @info history
             current[:, iT] .= vec(occupation_to_conductivity(δρ, transport_params))
         end
