@@ -31,6 +31,7 @@ using Test
     include("boltzmann/test_el_transport_semiconductor.jl")
     include("boltzmann/test_el_transport_metal.jl")
     include("boltzmann/test_el_master_equation.jl")
+    include("boltzmann/test_el_ac_conductivity.jl")
     include("boltzmann/test_el_hall_conductivity.jl")
     include("boltzmann/test_el_transport_finite_efield.jl")
 end

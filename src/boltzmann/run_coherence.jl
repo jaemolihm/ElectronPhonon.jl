@@ -58,7 +58,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 for i in el.rng
                     el.vdiag[i] = real.(el.v[i, i])
                 end
-            end # ik
+            end
         end
         el_k_boltzmann = electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff, nstates_base_k)
         dump_BTData(create_group(fid_btedata, "initialstate_electron"), el_k_boltzmann)

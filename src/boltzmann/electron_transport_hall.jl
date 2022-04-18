@@ -52,7 +52,7 @@ function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEMode
             c1, c2 = mod1(c + 1, 3), mod1(c + 2, 3)
             v∇δᴱρ = v[c1] * (∇[c2] * δᴱρ[b]) - v[c2] * (∇[c1] * δᴱρ[b])
             mul!(δᴱᴮρ_serta.data, Sₒ⁻¹, v∇δᴱρ.data)
-            σ_hall_serta[:, b, c, iT] .= vec(occupation_to_conductivity(δᴱᴮρ_serta, transport_params))
+            σ_hall_serta[:, b, c, iT] .= real.(vec(occupation_to_conductivity(δᴱᴮρ_serta, transport_params)))
         end
 
         @views r_hall_serta[:, :, :, iT] = compute_hall_factor(out_linear.σ_serta[:, :, iT],
@@ -92,7 +92,7 @@ function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEMode
                 end
 
                 # Converged result is stored at g.x === δᴱᴮρ.data.
-                σ_hall[:, b, c, iT] .= vec(occupation_to_conductivity(δᴱᴮρ, transport_params))
+                σ_hall[:, b, c, iT] .= real.(vec(occupation_to_conductivity(δᴱᴮρ, transport_params)))
             end
             @info "Total $(g.mv_products) matrix-vector products used"
 
@@ -113,7 +113,7 @@ function compute_hall_factor(σ, σ_hall)
     r = zeros(3, 3, 3)
     σinv = inv(σ)
     for a in 1:3, b in 1:3, c in 1:3, d in 1:3, e in 1:3
-        r[a, b, c] += σinv[a, d] * σ_hall[d, e, c] * σinv[e, b]
+        r[a, b, c] += real(σinv[a, d] * σ_hall[d, e, c] * σinv[e, b])
     end
     r
 end

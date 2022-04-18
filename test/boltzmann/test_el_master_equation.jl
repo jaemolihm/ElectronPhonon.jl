@@ -172,8 +172,8 @@ using LinearAlgebra
         _, mobility_qme_iter_SI = transport_print_mobility(out_qme.σ, transport_params, do_print=false);
 
         @test transport_params.μlist ≈ μlist_ref
-        @test mobility_qme_serta_SI ≈ mobility_serta_ref
-        @test mobility_qme_iter_SI ≈ mobility_iter_ref
+        @test real.(mobility_qme_serta_SI) ≈ mobility_serta_ref
+        @test real.(mobility_qme_iter_SI) ≈ mobility_iter_ref
     end
 end
 

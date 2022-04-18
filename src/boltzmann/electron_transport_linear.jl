@@ -1,11 +1,12 @@
 export solve_electron_linear_conductivity
 
 """
-    function solve_electron_linear_conductivity(qme_model::AbstractQMEModel;
-        maxiter=100, rtol=1e-10, qme_offdiag_cutoff=Inf)
+    function solve_electron_linear_conductivity(qme_model::AbstractQMEModel, ω;
+        use_full_grid=false, maxiter=100, rtol=1e-10, qme_offdiag_cutoff=Inf)
 Solve quantum master equation for electrons to compute linear electrical conductivity.
 
 # Inputs
+- `ω`: Frequency of the electric field. If `ω /= 0`, one must use `use_full_grid = true`.
 - `use_full_grid = false`: If `true`, solve the QME on the full grid. If `false`, solve the
 QME on the irreducible grid and symmetrize the conductivity matrix.
 
@@ -21,13 +22,16 @@ drive_efield[i] = - v[i] * (df/dε)_{ε=e1[i]}              : if e_mk  = e_nk
 ```
 and ``i = (m, n, k)``, ``δρ_i = δρ_{mn;k}``, ``e1[i], e2[i] = e_mk, e_nk``, and ``v[i] = v_{mn;k}``.
 """
-function solve_electron_linear_conductivity(qme_model::AbstractQMEModel; use_full_grid=false, kwargs...)
+function solve_electron_linear_conductivity(qme_model::AbstractQMEModel, ω=0; use_full_grid=false, kwargs...)
     # Function barrier because some fields of qme_model are not typed
     Sₒ = use_full_grid ? qme_model.Sₒ : qme_model.Sₒ_irr
-    solve_electron_linear_conductivity(qme_model, Sₒ, qme_model.Sᵢ_irr; use_full_grid, kwargs...)
+    if ω != 0 && use_full_grid == false
+        throw(ArgumentError("For AC conductivity (ω = $ω), one must set use_full_grid = false."))
+    end
+    solve_electron_linear_conductivity(qme_model, ω, Sₒ, qme_model.Sᵢ_irr; use_full_grid, kwargs...)
 end
 
-function solve_electron_linear_conductivity(qme_model::AbstractQMEModel{FT}, Sₒ, Sᵢ=nothing;
+function solve_electron_linear_conductivity(qme_model::AbstractQMEModel{FT}, ω, Sₒ, Sᵢ=nothing;
     use_full_grid, maxiter=100, rtol=1e-10, qme_offdiag_cutoff=Inf, verbose=false) where {FT}
 
     params = qme_model.transport_params
@@ -46,9 +50,9 @@ function solve_electron_linear_conductivity(qme_model::AbstractQMEModel{FT}, S�
     end
 
     nT = length(params.Tlist)
-    σ_serta = zeros(FT, 3, 3, nT)
+    σ_serta = zeros(Complex{FT}, 3, 3, nT)
     δρ_serta = [QMEVector(el, Vec3{Complex{FT}}) for _ in 1:nT]
-    σ = fill(FT(NaN), 3, 3, nT)
+    σ = fill(Complex{FT}(NaN), 3, 3, nT)
     δρ = [QMEVector(el, fill(Vec3(fill(Complex{FT}(NaN), 3)), el.n)) for _ in 1:nT]
 
     drive_efield = zeros(Vec3{Complex{FT}}, el.n)
@@ -69,6 +73,7 @@ function solve_electron_linear_conductivity(qme_model::AbstractQMEModel{FT}, S�
 
         # Add the scattering-out term and the bare Hamiltonian term into S_serta
         Sₒ_iT = copy(Sₒ[iT])
+        Sₒ_iT += im * ω * I(el.n)
         for i in 1:el.n
             (; e1, e2) = el[i]
             if abs(e1 - e2) >= EPW.electron_degen_cutoff

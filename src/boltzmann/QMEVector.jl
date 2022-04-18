@@ -101,7 +101,7 @@ TODO: Make it work for genearl `SArray`.
 """
 function occupation_to_conductivity(δρ::QMEVector, params)
     state = δρ.state
-    σ = mapreduce(i -> state.kpts.weights[state.ik[i]] .* real.(δρ.data[i] * state.v[i]'), +, 1:state.n)
+    σ = mapreduce(i -> state.kpts.weights[state.ik[i]] .* δρ.data[i] * state.v[i]', +, 1:state.n)
     return σ * params.spin_degeneracy / params.volume
 end
 
