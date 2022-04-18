@@ -417,7 +417,7 @@ function compute_transport_distribution_function(out_qme, δρ=out_qme.δρ, el:
     for iT in 1:length(out_qme.params.Tlist)
         @views for i in 1:el.n
             @. e_gaussian = gaussian((elist - el.e1[i]) / smearing) / smearing
-            σ_i = (el.kpts.weights[el.ik[i]] * real.(δρ[i, iT] * el.v[i]'))
+            σ_i = (el.kpts.weights[el.ik[i]] * real.(δρ[iT][i] * el.v[i]'))
             for b in 1:3, a in 1:3
                 Σ_tdf[:, a, b, iT] .+= e_gaussian .* σ_i[a, b]
             end

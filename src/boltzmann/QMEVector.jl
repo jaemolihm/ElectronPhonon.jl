@@ -25,7 +25,6 @@ Base.size(A::QMEVector) = (A.state.n,)
 Base.getindex(A::QMEVector, i::Int) = A.data[i]
 Base.setindex!(A::QMEVector, v, i::Int) = (A.data[i] = v)
 Base.IndexStyle(::Type{QMEVector}) = IndexLinear()
-Base.similar(A::QMEVector) = QMEVector(A.state, similar(A.data))
 Base.similar(A::QMEVector, ::Type{S}) where S = QMEVector(A.state, similar(A.data, S))
 
 Base.copy(x::QMEVector) = QMEVector(x.state, copy(x.data))
@@ -47,6 +46,8 @@ find_entry(bc::Base.Broadcast.Broadcasted) = find_entry(bc.args)
 find_entry(args::Tuple) = find_entry(find_entry(args[1]), Base.tail(args))
 find_entry(::Tuple{}) = nothing
 find_entry(::Any, rest) = find_entry(rest)
+
+reinterpret_to_numeric_vector(v::QMEVector{ElType}) where ElType = reinterpret(eltype(ElType), v.data)
 
 function check_state_identity(x::QMEVector, y::QMEVector)
     if x.state !== y.state

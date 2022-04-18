@@ -49,8 +49,7 @@ function solve_electron_finite_efield(qme_model::AbstractQMEModel{FT}, out_linea
 
         # SERTA
         # Compute δᴱρ_serta
-        δᴱρ_irr_all = QMEVector(qme_model.el_irr, out_linear.δρ_serta[:, iT])
-        δᴱρ_all = unfold_QMEVector(δᴱρ_irr_all, qme_model, true, false)
+        δᴱρ_all = unfold_QMEVector(out_linear.δρ_serta[iT], qme_model, true, false)
         δᴱρ_serta = QMEVector(δᴱρ_all.state, dot.(Ref(E), δᴱρ_all.data))
 
         # Solve (I + Sₒ⁻¹ * E∇) * δρ = δᴱρ_serta

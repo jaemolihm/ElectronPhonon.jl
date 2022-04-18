@@ -40,8 +40,7 @@ function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEMode
         # SERTA: Solve δᴱᴮρ_serta = Sₒ⁻¹ (v × ∇) δᴱρ_serta
         # First take δᴱρ on el_irr as QMEVector{Vec3}, unfold them to el, and make QMEVector{Number}
         # Note that we use out_linear.δρ_serta, which is computed from SERTA.
-        δᴱρ_irr_all = QMEVector(qme_model.el_irr, out_linear.δρ_serta[:, iT])
-        δᴱρ_all = unfold_QMEVector(δᴱρ_irr_all, qme_model, true, false)
+        δᴱρ_all = unfold_QMEVector(out_linear.δρ_serta[iT], qme_model, true, false)
         for i in 1:3
             δᴱρ[i].data .= [x[i] for x in δᴱρ_all.data]
         end
@@ -63,8 +62,7 @@ function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEMode
             # IBTE: Solve scatmap * δᴱᴮρ = (I + Sₒ⁻¹ Sᵢ) δᴱᴮρ = δᴱᴮρ_serta using GMRES
             # Equivalent to solving (Sₒ + Sᵢ)x = b with preconditioner P = Sₒ.
             # Note that we use out_linear.δρ, which is computed from IBTE.
-            δᴱρ_irr_all = QMEVector(qme_model.el_irr, out_linear.δρ[:, iT])
-            δᴱρ_all = unfold_QMEVector(δᴱρ_irr_all, qme_model, true, false)
+            δᴱρ_all = unfold_QMEVector(out_linear.δρ[iT], qme_model, true, false)
             for i in 1:3
                 δᴱρ[i].data .= [x[i] for x in δᴱρ_all.data]
             end
