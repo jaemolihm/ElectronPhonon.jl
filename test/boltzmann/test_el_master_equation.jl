@@ -352,6 +352,15 @@ end
         @test all(isapprox.(mobility_serta_w_sym, mobility_serta_wo_sym, atol=5.0))
         @test all(isapprox.(mobility_iter_w_sym, mobility_iter_wo_sym, atol=5.0))
 
+        # Test use_full_grid = true
+        out_qme_w_symmetry_full_grid = solve_electron_linear_conductivity(qme_model, use_full_grid=true)
+        @test out_qme_w_symmetry_full_grid.σ ≈ out_qme_w_symmetry.σ rtol=0.05
+        @test out_qme_w_symmetry_full_grid.σ_serta ≈ out_qme_w_symmetry.σ_serta rtol=0.05
+        @test (EPW.unfold_QMEVector(out_qme_w_symmetry.δρ[1], qme_model, true, false)
+               ≈ out_qme_w_symmetry_full_grid.δρ[1]) rtol=0.05
+        @test (EPW.unfold_QMEVector(out_qme_w_symmetry.δρ_serta[1], qme_model, true, false)
+               ≈ out_qme_w_symmetry_full_grid.δρ_serta[1]) rtol=0.05
+
         # Transport distribution function
         @testset "TDF" begin
             el = qme_model.el

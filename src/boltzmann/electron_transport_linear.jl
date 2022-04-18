@@ -4,6 +4,11 @@ export solve_electron_linear_conductivity
     function solve_electron_linear_conductivity(qme_model::AbstractQMEModel;
         maxiter=100, rtol=1e-10, qme_offdiag_cutoff=Inf)
 Solve quantum master equation for electrons to compute linear electrical conductivity.
+
+# Inputs
+- `use_full_grid = false`: If `true`, solve the QME on the full grid. If `false`, solve the
+QME on the irreducible grid and symmetrize the conductivity matrix.
+
 Linearized quantum master equation (stationary state case):
 ```math
 0 = ∂ δρ / ∂t
@@ -16,18 +21,24 @@ drive_efield[i] = - v[i] * (df/dε)_{ε=e1[i]}              : if e_mk  = e_nk
 ```
 and ``i = (m, n, k)``, ``δρ_i = δρ_{mn;k}``, ``e1[i], e2[i] = e_mk, e_nk``, and ``v[i] = v_{mn;k}``.
 """
-function solve_electron_linear_conductivity(qme_model::AbstractQMEModel; kwargs...)
+function solve_electron_linear_conductivity(qme_model::AbstractQMEModel; use_full_grid=false, kwargs...)
     # Function barrier because some fields of qme_model are not typed
-    (; Sₒ_irr, Sᵢ_irr) = qme_model
-    solve_electron_linear_conductivity(qme_model, Sₒ_irr, Sᵢ_irr; kwargs...)
+    Sₒ = use_full_grid ? qme_model.Sₒ : qme_model.Sₒ_irr
+    solve_electron_linear_conductivity(qme_model, Sₒ, qme_model.Sᵢ_irr; use_full_grid, kwargs...)
 end
 
 function solve_electron_linear_conductivity(qme_model::AbstractQMEModel{FT}, Sₒ, Sᵢ=nothing;
-    maxiter=100, rtol=1e-10, qme_offdiag_cutoff=Inf, verbose=false) where {FT}
+    use_full_grid, maxiter=100, rtol=1e-10, qme_offdiag_cutoff=Inf, verbose=false) where {FT}
 
     params = qme_model.transport_params
-    el = qme_model.el_irr
-    (; el_f, symmetry, filename) = qme_model
+    if use_full_grid
+        el = qme_model.el
+        symmetry = nothing
+    else
+        el = qme_model.el_irr
+        symmetry = qme_model.symmetry
+    end
+    (; el_f, filename) = qme_model
 
     if Sᵢ !== nothing
         ! isfile(filename) && error("filename = $filename is not a valid file.")
