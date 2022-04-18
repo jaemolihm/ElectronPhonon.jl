@@ -94,6 +94,13 @@ using LinearAlgebra
             @test v[i].state === el
             @test v[i].data ≈ [v[i] for v in el.v]
         end
+
+        # Test similar
+        x = QMEVector(el, rand(el.n))
+        for FT in (ComplexF64, ComplexF64, Float64, Float32)
+            @test similar(x, FT) isa QMEVector{FT}
+            @test similar(x, FT).state === x.state
+        end
     end
 end
 
