@@ -187,7 +187,7 @@ function transport_print_mobility(σ, params::ElectronTransportParams; do_print=
                 @printf "μ (eV) = %.4f\n" params.μlist[i] / unit_to_aru(:eV)
                 println("mobility (cm²/Vs) = ")
                 for a in 1:3
-                    @printf "%10.3f %10.3f %10.3f\n" mobility_SI[:, a, i]...
+                    @printf "%10.3f %10.3f %10.3f\n" real.(mobility_SI[:, a, i])...
                 end
                 println()
             end
@@ -199,7 +199,7 @@ function transport_print_mobility(σ, params::ElectronTransportParams; do_print=
                 @printf "μ (eV) = %.4f\n" params.μlist[i] / unit_to_aru(:eV)
                 println("conductivity (1/(Ω*cm)) = ")
                 for a in 1:3
-                    @printf "%12.3f %12.3f %12.3f\n" σ_SI[:, a, i]...
+                    @printf "%12.3f %12.3f %12.3f\n" real.(σ_SI[:, a, i])...
                 end
                 println()
             end
