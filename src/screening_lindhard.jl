@@ -50,8 +50,8 @@ function epsilon_lindhard(xq, ω, params::LindhardScreeningParams; verbose=false
         # TODO: Remove assumption of degeneracy==2
         println("Lindhard screening parameters")
         @show rs
-        @show kFermi
-        println("EFermi = ", EFermi * unit_to_aru(:Ha))
+        println("kFermi = $kFermi (bohr⁻¹)")
+        println("EFermi = $(EFermi * unit_to_aru(:Ha) / unit_to_aru(:eV)) (eV)")
         println("k_TF = ", sqrt((16/3π^2)^(2/3)*rs*kFermi^2))
     end
 

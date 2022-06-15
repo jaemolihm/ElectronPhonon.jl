@@ -2,7 +2,10 @@ using HDF5
 using OffsetArrays
 
 """
-Debugging flags in `kwargs`
+# Inputs
+- `screening_params`: Screening of the electron-phonon vertex
+
+# Debugging flags in `kwargs`
 - `DEBUG_random_gauge`: Multiply random phases to the eigenstates at k+q to change the eigenstate gauge. (Default: false)
 - `compute_derivative`: Compute the covariant derivative operator and write to file.
 - `max_derivative_order`: Maximum order of the finite-difference formula for the covariant derivative.
@@ -11,7 +14,8 @@ Debugging flags in `kwargs`
 function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq, kpts,
         kqpts, qpts, nstates_base_k, nstates_base_kq, energy_conservation,
         average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, qme_offdiag_cutoff;
-        fourier_mode, compute_derivative=false, max_derivative_order=1, kwargs...)
+        fourier_mode, compute_derivative=false, max_derivative_order=1, screening_params=nothing,
+        kwargs...)
     FT = Float64
 
     nw = model.nw
@@ -128,6 +132,18 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             else
                 compute_covariant_derivative_matrix(el_k_boltzmann, el_k_save, bvec_data;
                                                     hdf_group=g, fourier_mode)
+            end
+        end
+    end
+
+    # Compute screening parameters
+    if screening_params !== nothing
+        ϵ_screen = zeros(ComplexF64, nmodes, qpts.n)
+        for (iq, xq) in enumerate(qpts.vectors)
+            ph = ph_save[iq]
+            xq_cart = model.recip_lattice * xq
+            @views for imode = 1:nmodes
+                ϵ_screen[imode, iq] = epsilon_lindhard(xq_cart, ph.e[imode], screening_params)
             end
         end
     end
@@ -339,6 +355,13 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             @timing "dipole" if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
+            end
+
+            # Screening
+            if screening_params !== nothing
+                @views for imode = 1:nmodes
+                    epdata.ep[:, :, imode] ./= ϵ_screen[imode, iq]
+                end
             end
 
             # Skip calculation of g2 because g2 is not used.

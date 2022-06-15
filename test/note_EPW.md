@@ -30,3 +30,7 @@ Also, current (2021/09/01) public version of EPW also diagonalizes the velocity 
 within the degenerate subspace. However, this method is inconsistent so it will be removed
 in EPW in the future (https://forum.epw-code.org/viewtopic.php?f=3&t=1495). So, the EPW
 reference results are created by removing the corresponding code in subroutine vmewan2bloch.
+
+5. EPW computes velocity using the Berry connection method. In this Julia code, direct
+Wannier interpolation of velocity (`model.el_velocity_mode = :Direct`) is the default.
+To compare with EPW, set `model.el_velocity_mode = :BerryConnection`.

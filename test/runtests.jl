@@ -1,7 +1,7 @@
 using EPW
 using Test
 
-@testset "EPW.jl" begin
+@time @testset "EPW.jl" begin
     include("test_occupation.jl")
     include("test_kpoints.jl")
     include("test_symmetry.jl")
@@ -15,6 +15,7 @@ using Test
     include("test_ElectronState.jl")
     include("test_plot_bandstructure.jl")
     include("test_check_model_symmetry.jl")
+    include("test_screening.jl")
 
     # Integration tests
     include("test_cubicBN_eigenvalues.jl")
@@ -31,6 +32,7 @@ using Test
     include("boltzmann/test_el_transport_semiconductor.jl")
     include("boltzmann/test_el_transport_metal.jl")
     include("boltzmann/test_el_master_equation.jl")
+    include("boltzmann/test_el_transport_screening.jl")
     include("boltzmann/test_el_ac_conductivity.jl")
     include("boltzmann/test_el_hall_conductivity.jl")
     include("boltzmann/test_el_transport_finite_efield.jl")
