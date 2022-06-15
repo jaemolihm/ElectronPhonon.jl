@@ -101,18 +101,19 @@ using HDF5
 
     if run_for_qme
         btedata_prefix = joinpath(folder, "btedata_coherence")
-        @timing "e-ph main" compute_electron_phonon_bte_data_coherence(model, btedata_prefix, window_k, window_kq,
+        @timing "e-ph main" data = compute_electron_phonon_bte_data_coherence(
+            model, btedata_prefix, window_k, window_kq,
             GridKpoints(kpts), GridKpoints(kqpts), qpts, nstates_base_k, nstates_base_kq, energy_conservation,
             average_degeneracy, symmetry, mpi_comm_k, mpi_comm_q, qme_offdiag_cutoff;
             fourier_mode, kwargs...)
     else
         btedata_prefix = joinpath(folder, "btedata")
-        compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq,
+        data = compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq,
             kpts, kqpts, qpts, nstates_base_k, nstates_base_kq, energy_conservation,
             average_degeneracy, mpi_comm_k, mpi_comm_q; fourier_mode, kwargs...)
     end
 
-    (;kpts, qpts, kqpts)
+    (;kpts, qpts, kqpts, data)
 end
 
 function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, window_kq, kpts,

@@ -3,6 +3,8 @@ Lindhard screening.
 Reference: L. Hedin, Phys. Rev. 139, A796 (1965)
 """
 
+# TODO: Test plasma frequency
+
 export LindhardScreeningParams
 
 using Parameters
@@ -26,6 +28,7 @@ H_lindhard(z) = 2*z + (1-z^2) * log((z+1)/(z-1))
     epsilon_lindhard(xq, ω, params::LindhardScreeningParams; verbose=false)
 Compute dielectric function using Lindhard theory. Use Eq. (56) of Hedin (1965).
 Assume an isotropic 3d parabolic band with effective mass m_eff, and assume zero temperature.
+Generalized to work with arbitrary number of degeneracy (spin and/or valley).
 
 # Inputs
 - `xq`: the crystal momentum in Cartesian basis, 1/Bohr.

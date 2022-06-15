@@ -18,6 +18,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         kwargs...)
     FT = Float64
 
+    data_to_return = Dict()
+
     nw = model.nw
     nmodes = model.nmodes
     nk = kpts.n
@@ -139,13 +141,28 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # Compute screening parameters
     if screening_params !== nothing
         ϵ_screen = zeros(ComplexF64, nmodes, qpts.n)
-        for (iq, xq) in enumerate(qpts.vectors)
-            ph = ph_save[iq]
-            xq_cart = model.recip_lattice * xq
-            @views for imode = 1:nmodes
-                ϵ_screen[imode, iq] = epsilon_lindhard(xq_cart, ph.e[imode], screening_params)
+        if screening_params isa LindhardScreeningParams
+            for (iq, xq) in enumerate(qpts.vectors)
+                ph = ph_save[iq]
+                xq_cart = model.recip_lattice * xq
+                ϵ_screen[:, iq] .= epsilon_lindhard.(Ref(xq_cart), ph.e, Ref(screening_params))
             end
+        elseif screening_params isa RPAScreeningParams
+            χ0 = compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry, screening_params)
+
+            for (iq, xq) in enumerate(qpts.vectors)
+                if all(abs.(xq) .< 1e-8) # skip q = 0
+                    ϵ_screen[:, iq] .= 1
+                else
+                    xq_cart = model.recip_lattice * xq
+                    coeff = EPW.e2 * 4π / norm(xq_cart)^2 / model.volume * screening_params.degeneracy / screening_params.ϵM
+                    @. ϵ_screen[:, iq] = 1 - χ0[:, iq] * coeff
+                end
+            end
+        else
+            error("Unknown screening_params type $(typeof(screening_params))")
         end
+        data_to_return["ϵ_screen"] =  ϵ_screen
     end
 
     # Write gauge matrices that map eigenstates in el_k_save to eigenstates in el_kq_save.
@@ -352,7 +369,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
             # Compute electron-phonon coupling
             get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
-            @timing "dipole" if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
+            @timing "dipole" if any(abs.(xq) .> 1e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
             end
@@ -408,6 +425,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
     close(fid_btedata)
     @info "nscat_tot = $nscat_tot"
-    nothing
+
+    data_to_return
 end
 
