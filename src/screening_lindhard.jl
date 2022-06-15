@@ -25,39 +25,37 @@ H_lindhard(z) = 2*z + (1-z^2) * log((z+1)/(z-1))
 """
     epsilon_lindhard(xq, ω, params::LindhardScreeningParams; verbose=false)
 Compute dielectric function using Lindhard theory. Use Eq. (56) of Hedin (1965).
-Assume an isotropic, 3d parabolic band with effective mass m_eff, assume zero temperature.
-- xq: the crystal momentum in Cartesian basis, 1/Bohr.
-- ω: frequency in Ry.
-- verbose: if true, print Lindhard screening parameters.
+Assume an isotropic 3d parabolic band with effective mass m_eff, and assume zero temperature.
+
+# Inputs
+- `xq`: the crystal momentum in Cartesian basis, 1/Bohr.
+- `ω`: frequency in Ry.
+- `params::LindhardScreeningParams`: parameters.
+- `verbose`: if true, print Lindhard screening parameters.
 """
 function epsilon_lindhard(xq, ω, params::LindhardScreeningParams; verbose=false)
-    degeneracy = params.degeneracy
-    m_eff = params.m_eff
-    n = params.n
-    ϵM = params.ϵM
-    smearing = params.smearing
+    (; degeneracy, m_eff, n, ϵM, smearing) = params
 
     if norm(xq) < 1E-10
         return Complex{eltype(xq)}(1)
     end
 
     # Compute parameters
-    kFermi = (6 * π^2 * n / degeneracy)^(1/3)
-    EFermi = kFermi^2 / (2 * m_eff) # in Hartree
+    k_fermi = (6 * π^2 * n / degeneracy)^(1/3) # k0 in Hedin (1965)
+    e_fermi = k_fermi^2 / m_eff # in Rydberg units
     rs = m_eff / ϵM * (3/(4π*n))^(1/3)
-    coeff = (4/9π)^(1/3) * rs / 8π
+    coeff = (4/9π)^(1/3) * rs / 8π * (degeneracy / 2)^(4/3)
     if verbose
-        # TODO: Remove assumption of degeneracy==2
         println("Lindhard screening parameters")
-        @show rs
-        println("kFermi = $kFermi (bohr⁻¹)")
-        println("EFermi = $(EFermi * unit_to_aru(:Ha) / unit_to_aru(:eV)) (eV)")
-        println("k_TF = ", sqrt((16/3π^2)^(2/3)*rs*kFermi^2))
+        println("rs = $rs (bohr)")
+        println("k_fermi = $k_fermi (bohr⁻¹)")
+        println("e_fermi = $(e_fermi / unit_to_aru(:eV)) (eV)")
+        # println("k_TF = ", sqrt((16/3π^2)^(2/3)*rs*k_fermi^2)) # FIXME: This equation assumes degeneracy == 2
     end
 
     # Unitless variables
-    q = norm(xq) / (2 * kFermi)
-    u = (ω + im * smearing) / unit_to_aru(:Ha) / (4 * EFermi)
+    q = norm(xq) / (2 * k_fermi)
+    u = (ω + im * smearing) / (4 * e_fermi)
 
     # Dielectric function
     ϵ = 1 + coeff * (H_lindhard(q + u/q) + H_lindhard(q - u/q)) / q^3
