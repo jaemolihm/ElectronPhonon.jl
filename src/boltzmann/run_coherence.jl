@@ -140,6 +140,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
     # Compute screening parameters
     if screening_params !== nothing
+        println("Compute screening: $(typeof(screening_params))")
         ϵ_screen = zeros(ComplexF64, nmodes, qpts.n)
         if screening_params isa LindhardScreeningParams
             for (iq, xq) in enumerate(qpts.vectors)
@@ -148,8 +149,9 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 ϵ_screen[:, iq] .= epsilon_lindhard.(Ref(xq_cart), ph.e, Ref(screening_params))
             end
         elseif screening_params isa RPAScreeningParams
+            bte_compute_μ!(screening_params, BTStates(el_k_boltzmann); do_print=false)
             ϵ_screen = compute_epsilon_rpa(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry,
-                model.volume, model.recip_lattice, screening_params)
+                model.recip_lattice, screening_params)
         else
             error("Unknown screening_params type $(typeof(screening_params))")
         end

@@ -10,17 +10,60 @@ export RPAScreening
 using StaticArrays
 using LinearAlgebra
 
-Base.@kwdef struct RPAScreeningParams{T<:Real}
-    degeneracy::Int64 # degeneracy of bands. spin and/or valley degeneracy.
-    temperature::T # Temperature
-    μ::T # Chemical potential
-    ϵM::T # Macroscopic dielectric constant. Unitless.
-    smearing::T # Smearing of frequency in Rydberg.
+# TODO: Anisotropic ϵM
+
+"""
+    RPAScreeningParams{FT<:Real}
+Parameters for free carrier screening based on RPA. Only a single n and T is allowed.
+Internally, T, n, and μ are stored as a size-1 vector to use bte_compute_μ! (which requires
+vector access).
+
+# Arguments:
+- `T::FT`: Temperature.
+- `n::FT`: Number of electrons per unit cell, relative to the reference configuration where
+    `spin_degeneracy * nband_valence` bands are filled. Includes the spin degeneracy.
+- `ϵM::FT`: Macroscopic dielectric constant.
+- `nband_valence::Int`: Number of valence bands, excluding spin degeneracy.
+- `volume::FT`: Volume of the unit cell.
+- `smearing::FT`: Smearing of frequency for RPA calculation.
+- `spin_degeneracy::Int`: Spin degeneracy of bands.
+- `type::Symbol`: Type of the carrier. `:Metal` or `:Semiconductor`. Defaults to `:Metal` if
+    abs(n) >= 1 and to `:Semiconductor` otherwise.
+"""
+struct RPAScreeningParams{FT<:Real}
+    ϵM::FT
+    Tlist::Vector{FT}
+    nlist::Vector{FT}
+    nband_valence::Int
+    volume::FT
+    smearing::FT
+    spin_degeneracy::Int
+    μlist::Vector{FT}
+    type::Symbol
+    function RPAScreeningParams(; ϵM, T, n, nband_valence, volume, smearing, spin_degeneracy)
+        FT = typeof(T)
+        Tlist = [T]
+        nlist = [n]
+        μlist = fill(convert(eltype(Tlist), NaN), length(Tlist))
+        type = maximum(abs.(nlist)) >= 1 ? :Metal : :Semiconductor
+        new{FT}(ϵM, Tlist, nlist, nband_valence, volume, smearing, spin_degeneracy, μlist, type)
+    end
+end
+
+function Base.getproperty(obj::RPAScreeningParams, name::Symbol)
+    if name === :n
+        first(getfield(obj, :nlist))
+    elseif name === :T
+        first(getfield(obj, :Tlist))
+    elseif name === :μ
+        first(getfield(obj, :μlist))
+    else
+        getfield(obj, name)
+    end
 end
 
 function compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry, params::RPAScreeningParams)
-    μ = params.μ
-    T = params.temperature
+    (; μ, T) = params
     η = params.smearing
 
     for el in el_k_save
@@ -85,7 +128,7 @@ function compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry
 end
 
 function compute_epsilon_rpa(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry,
-        volume, recip_lattice, params::RPAScreeningParams)
+        recip_lattice, params::RPAScreeningParams)
     χ0 = compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry, params)
     ϵ = zero(χ0)
     for (iq, xq) in enumerate(qpts.vectors)
@@ -93,7 +136,7 @@ function compute_epsilon_rpa(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, 
             ϵ[:, iq] .= 1
         else
             xq_cart = recip_lattice * xq
-            coeff = EPW.e2 * 4π / norm(xq_cart)^2 / volume * params.degeneracy / params.ϵM
+            coeff = EPW.e2 * 4π / norm(xq_cart)^2 / params.volume * params.spin_degeneracy / params.ϵM
             @. ϵ[:, iq] = 1 - χ0[:, iq] * coeff
         end
     end
