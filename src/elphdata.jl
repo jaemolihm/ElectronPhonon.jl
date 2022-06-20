@@ -104,13 +104,21 @@ function get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq; fourier_mode="norma
 end
 
 """
-    epdata_compute_eph_dipole!(epdata::ElPhData, polar::Polar, sign=1)
+    epdata_compute_eph_dipole!(epdata::ElPhData, polar::Polar, div_factor=1)
 Compute electron-phonon coupling matrix elements using pre-computed `ph.eph_dipole_coeff` and `mmat`.
+Divide by `div_factor` if given. Can be used to screen the dipole term (`div_factor = 1 / ϵ`)
+or to subtracting the dipole term from `epdata.ep` (`div_factor = -1`).
 """
-function epdata_compute_eph_dipole!(epdata::ElPhData, sign=1)
+function epdata_compute_eph_dipole!(epdata::ElPhData, div_factor=nothing)
     coeff = epdata.ph.eph_dipole_coeff
-    @views @inbounds for imode = 1:epdata.nmodes
-        epdata.ep[:, :, imode] .+= (sign * coeff[imode]) .* epdata.mmat
+    if div_factor === nothing
+        @views @inbounds for imode = 1:epdata.nmodes
+            @. epdata.ep[:, :, imode] += coeff[imode] * epdata.mmat
+        end
+    else
+        @views @inbounds for imode = 1:epdata.nmodes
+            @. epdata.ep[:, :, imode] += (coeff[imode] / div_factor[imode]) * epdata.mmat
+        end
     end
 end
 

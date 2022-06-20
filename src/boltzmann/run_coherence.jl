@@ -360,17 +360,19 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
             # Compute electron-phonon coupling
             get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
+
+            # Compute dipole contribution to electron-phonon coupling
             @timing "dipole" if any(abs.(xq) .> 1e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
-                model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
-            end
-
-            # Screening
-            if screening_params !== nothing
-                @views for imode = 1:nmodes
-                    epdata.ep[:, :, imode] ./= ϵ_screen[imode, iq]
+                if model.polar_eph.use
+                    if screening_params !== nothing
+                        epdata_compute_eph_dipole!(epdata, view(ϵ_screen, :, iq))
+                    else
+                        epdata_compute_eph_dipole!(epdata)
+                    end
                 end
             end
+
 
             # Skip calculation of g2 because g2 is not used.
             # epdata_set_g2!(epdata)
