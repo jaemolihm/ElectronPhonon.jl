@@ -36,7 +36,7 @@ using LinearAlgebra
         degeneracy = 4,
         m_eff = 0.4,
         n = transport_params.nlist[1] / model.volume,
-        ϵM = sum(diag(model.polar_phonon.ϵ)) / 3,
+        ϵM = model.polar_phonon.ϵ,
         smearing = 0.05 * unit_to_aru(:eV)
     )
 
@@ -44,7 +44,7 @@ using LinearAlgebra
         spin_degeneracy = 2,
         T = 300.0 .* unit_to_aru(:K),
         n = transport_params.nlist[1],
-        ϵM = sum(diag(model.polar_phonon.ϵ)) / 3,
+        ϵM = model.polar_phonon.ϵ,
         smearing = 0.05 * unit_to_aru(:eV),
         volume = model.volume,
         nband_valence = 4,

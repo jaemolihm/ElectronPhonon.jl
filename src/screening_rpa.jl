@@ -19,10 +19,10 @@ Internally, T, n, and μ are stored as a size-1 vector to use bte_compute_μ! (w
 vector access).
 
 # Arguments:
+- `ϵM::Mat3{FT}`: Macroscopic dielectric constant.
 - `T::FT`: Temperature.
 - `n::FT`: Number of electrons per unit cell, relative to the reference configuration where
     `spin_degeneracy * nband_valence` bands are filled. Includes the spin degeneracy.
-- `ϵM::FT`: Macroscopic dielectric constant.
 - `nband_valence::Int`: Number of valence bands, excluding spin degeneracy.
 - `volume::FT`: Volume of the unit cell.
 - `smearing::FT`: Smearing of frequency for RPA calculation.
@@ -31,7 +31,7 @@ vector access).
     abs(n) >= 1 and to `:Semiconductor` otherwise.
 """
 struct RPAScreeningParams{FT<:Real}
-    ϵM::FT
+    ϵM::Mat3{FT}
     Tlist::Vector{FT}
     nlist::Vector{FT}
     nband_valence::Int
@@ -136,7 +136,8 @@ function compute_epsilon_rpa(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, 
             ϵ[:, iq] .= 1
         else
             xq_cart = recip_lattice * xq
-            coeff = EPW.e2 * 4π / norm(xq_cart)^2 / params.volume * params.spin_degeneracy / params.ϵM
+            ϵM = xq_cart' * params.ϵM * xq_cart / norm(xq_cart)^2
+            coeff = EPW.e2 * 4π / norm(xq_cart)^2 / params.volume * params.spin_degeneracy / ϵM
             @. ϵ[:, iq] = 1 - χ0[:, iq] * coeff
         end
     end

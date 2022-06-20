@@ -1,13 +1,14 @@
 using Test
 
 @testset "epsilon_lindhard" begin
+    using LinearAlgebra
     using EPW: LindhardScreeningParams, epsilon_lindhard
 
     screening_params = LindhardScreeningParams(
         degeneracy = 2,
         m_eff = 0.4,
         n = -1.5e-6,
-        ϵM = 4.5,
+        ϵM = 4.5 * Mat3(I(3)),
         smearing = 0.05 * unit_to_aru(:eV)
     )
     @test epsilon_lindhard(Vec3(0., 0., 0.0), 0.0, screening_params) == 1
@@ -19,7 +20,7 @@ using Test
         degeneracy = 8,
         m_eff = -0.3,
         n = 1e-4,
-        ϵM = 6.0,
+        ϵM = 6.0 * Mat3(I(3)),
         smearing = 0.1 * unit_to_aru(:eV)
     )
     @test epsilon_lindhard(Vec3(0., 0., 0.0), 0.0, screening_params) == 1
