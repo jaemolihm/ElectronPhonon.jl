@@ -83,3 +83,19 @@ function compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry
 
     χ0_symmetrized
 end
+
+function compute_epsilon_rpa(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry,
+        volume, recip_lattice, params::RPAScreeningParams)
+    χ0 = compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry, params)
+    ϵ = zero(χ0)
+    for (iq, xq) in enumerate(qpts.vectors)
+        if all(abs.(xq) .< 1e-8) # skip q = 0
+            ϵ[:, iq] .= 1
+        else
+            xq_cart = recip_lattice * xq
+            coeff = EPW.e2 * 4π / norm(xq_cart)^2 / volume * params.degeneracy / params.ϵM
+            @. ϵ[:, iq] = 1 - χ0[:, iq] * coeff
+        end
+    end
+    ϵ
+end

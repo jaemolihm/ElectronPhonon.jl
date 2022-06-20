@@ -13,7 +13,6 @@ using LinearAlgebra
     tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
     mkpath(tmp_dir)
 
-    energy_conservation = (:None, 0.0)
     window_k  = (15.0, 16.0) .* unit_to_aru(:eV)
     window_kq = (15.0, 16.0) .* unit_to_aru(:eV)
 
@@ -60,12 +59,9 @@ using LinearAlgebra
         # Calculate matrix elements
         @time EPW.run_transport(
             model, nklist, nqlist,
-            fourier_mode = "gridopt",
             folder = tmp_dir,
             window_k  = window_k,
             window_kq = window_kq,
-            energy_conservation = energy_conservation,
-            use_irr_k = use_irr_k,
             average_degeneracy = false,
             run_for_qme = true,
             screening_params = screening_params,
