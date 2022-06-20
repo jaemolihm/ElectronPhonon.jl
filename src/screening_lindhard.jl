@@ -44,9 +44,9 @@ function epsilon_lindhard(xq, ω, params::LindhardScreeningParams; verbose=false
     end
 
     # Compute parameters
-    k_fermi = (6 * π^2 * n / degeneracy)^(1/3) # k0 in Hedin (1965)
-    e_fermi = k_fermi^2 / m_eff # in Rydberg units
-    rs = m_eff / ϵM * (3/(4π*n))^(1/3)
+    k_fermi = (6 * π^2 * abs(n) / degeneracy)^(1/3) # k0 in Hedin (1965)
+    e_fermi = k_fermi^2 / abs(m_eff) # in Rydberg units
+    rs = abs(m_eff) / ϵM * (3/(4π*abs(n)))^(1/3)
     coeff = (4/9π)^(1/3) * rs / 8π * (degeneracy / 2)^(4/3)
     if verbose
         println("Lindhard screening parameters")

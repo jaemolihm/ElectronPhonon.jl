@@ -6,7 +6,7 @@ using Test
     screening_params = LindhardScreeningParams(
         degeneracy = 2,
         m_eff = 0.4,
-        n = 1.5e-6,
+        n = -1.5e-6,
         ϵM = 4.5,
         smearing = 0.05 * unit_to_aru(:eV)
     )
@@ -17,7 +17,7 @@ using Test
 
     screening_params = LindhardScreeningParams(
         degeneracy = 8,
-        m_eff = 0.3,
+        m_eff = -0.3,
         n = 1e-4,
         ϵM = 6.0,
         smearing = 0.1 * unit_to_aru(:eV)
