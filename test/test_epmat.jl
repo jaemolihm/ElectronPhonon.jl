@@ -9,10 +9,10 @@ using OffsetArrays: no_offset_view
     folder_tmp_el = joinpath(folder, "tmp_el")
     mkpath(folder_tmp_el)
 
-    model_ph = load_model(folder, epmat_outer_momentum="ph")
-    model_el = load_model(folder, epmat_outer_momentum="el")
-    model_ph_disk = load_model(folder, true, folder, epmat_outer_momentum="ph")
-    model_el_disk = load_model(folder, true, folder_tmp_el, epmat_outer_momentum="el")
+    model_ph = load_model(folder; epmat_outer_momentum="ph")
+    model_el = load_model(folder; epmat_outer_momentum="el")
+    model_ph_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder, epmat_outer_momentum="ph")
+    model_el_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder_tmp_el, epmat_outer_momentum="el")
 
     xk = Vec3([0.1, -0.4, 0.7])
     xq = Vec3([0.5, 0.2, -0.5])

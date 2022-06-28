@@ -32,7 +32,6 @@ using EPW
 
     model = load_model(folder)
     model.el_velocity_mode = :BerryConnection
-    # model_disk = load_model(folder, true, folder)
 
     Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)
     smearing = 80.0 * unit_to_aru(:meV)
@@ -100,7 +99,6 @@ end
 
     model = load_model(folder)
     model.el_velocity_mode = :BerryConnection
-    # model_disk = load_model(folder, true, folder)
 
     Tlist = [100.0, 200.0, 300.0] .* unit_to_aru(:K)
     smearing = 50.0 * unit_to_aru(:meV)

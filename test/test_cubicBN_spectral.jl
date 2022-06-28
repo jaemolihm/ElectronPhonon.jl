@@ -7,7 +7,7 @@ using NPZ
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder)
-    model_disk = load_model(folder, true, folder)
+    model_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder)
 
     μ = 25.0 * unit_to_aru(:eV)
     Tlist = [200.0, 300.0] .* unit_to_aru(:K)

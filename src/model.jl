@@ -75,8 +75,8 @@ end
 
 "Read file and create ModelEPW object in the MPI root.
 Broadcast to all other processors."
-function load_model(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing;
-        epmat_outer_momentum="ph", load_symmetry_operators=false)
+function load_model(folder::String; epmat_on_disk::Bool=false, tmpdir=nothing,
+    epmat_outer_momentum="ph", load_symmetry_operators=false)
     # Read model from file
     if mpi_initialized()
         # FIXME: Read only in the root core, and then bcast.

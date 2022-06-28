@@ -15,7 +15,7 @@ using NPZ
     ph_imsigma_ref = npzread(joinpath(folder, "ph_imsigma.npy")) * unit_to_aru(:eV)
 
     model = load_model(folder)
-    model_disk = load_model(folder, true, folder)
+    model_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder)
 
     μ = 25.0 * unit_to_aru(:eV)
     Tlist = [200.0, 300.0] .* unit_to_aru(:K)
