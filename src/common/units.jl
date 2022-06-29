@@ -6,10 +6,12 @@
 export unit_to_aru
 
 const e2 = 2 # e^2 in Rydberg atomic units
+const e_SI = 1.602176634e-19 # e in SI units
 
 # Commonly used constants. The factors convert from the respective unit
 # to atomic units
 module units
+    using EPW: e2, e_SI
     const Ha = 2                   # Hartree -> Rydberg
     const Ry = 1                   # Rydberg -> Rydberg
     const eV = 0.03674932248 * 2   # electron volt -> Rydberg
@@ -19,10 +21,11 @@ module units
     const m  = 1.8897261254578281 * 1E10  # m -> Bohr
     const K  = 3.166810508e-6 * 2  # Kelvin -> Rydberg
     const ħ  = 1 / 1.054571800E-34 # J*s -> Rydberg units
-
     const s = 1 / (4.8377687 * 1e-17) # second -> Rydberg units
-
-    const e_SI = 1.602176634e-19 # e in SI units
+    const C = sqrt(e2) / e_SI # Coulomb
+    const J = eV / e_SI # 1 Joule = 1 eV / e
+    const V = J / C # 1 Volt = 1 J / C
+    const A = C / s # 1 Ampere = 1 C / s
 end
 
 """

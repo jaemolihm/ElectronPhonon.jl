@@ -173,7 +173,7 @@ using LinearAlgebra
 
     @testset "subgrid q" begin
         # Reference data created from Julia
-        moblity_ref = cat([139.2223930040638, 63.903148701648945, 32.01401923743331] .* Ref(I(3))..., dims=3)
+        moblity_ref = cat([139.2223904798442, 63.90314754302455, 32.01401865698665] .* Ref(I(3))..., dims=3)
 
         energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
         window_k  = (15.0, 15.8) .* unit_to_aru(:eV)
