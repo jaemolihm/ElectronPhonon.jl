@@ -164,7 +164,7 @@ end
         fw = fws[threadid()]
 
         for (ir_23, ir_rng) in enumerate(gridopt.irmap_rng_23)
-            buffer_w .= 0.0
+            buffer_w .= 0
             for ir in ir_rng
                 # Read buffer_r = op_r[rng, ir]
                 seek(fr, sizeof(Complex{T}) * (obj.ndata*(ir-1) + rng[1]-1))
@@ -204,7 +204,7 @@ end
         fw = fws[threadid()]
 
         for (ir_3, ir_rng) in enumerate(gridopt.irmap_rng_3)
-            buffer_w .= 0.0
+            buffer_w .= 0
             for ir in ir_rng
                 # Read buffer_r = op_r_23[rng, ir]
                 seek(fr, sizeof(Complex{T}) * (obj.ndata*(ir-1) + rng[1]-1))
