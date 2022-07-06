@@ -245,9 +245,11 @@ function compute_qme_scattering_matrix!(model::AbstractQMEModel; compute_Sᵢ=tr
     model.Sₒ_irr, model.Sᵢ_irr = compute_qme_scattering_matrix(filename, transport_params,
                                     el_irr, el_f, ph; compute_Sᵢ, use_mrta)
     unfold_scattering_out_matrix!(model)
+    model
 end
 
 function set_constant_qme_scattering_matrix!(model::AbstractQMEModel, inv_τ_constant)
     model.Sₒ_irr = [I(model.el_irr.n) * (-inv_τ_constant + 0.0im) for _ in model.transport_params.Tlist]
     unfold_scattering_out_matrix!(model)
+    model
 end

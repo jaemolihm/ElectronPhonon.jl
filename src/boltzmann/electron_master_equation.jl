@@ -14,9 +14,10 @@ Compute the scattering matrix element for quantum master equation of electrons.
     Eq. (49) of Ponce et al, Rep. Prog. Phys. (2020). Since the MRTA is an approximate way to
     describe the scattering-in term, one must set `compute_Sᵢ = false` when using MRTA.
 - `compute_Sᵢ`: If true, compute the scattering-in term.
+- `use_eph_dipole=true`: If false, do not include dipole e-ph term even if present.
 """
 function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el_f::QMEStates{FT}, ph;
-        compute_Sᵢ=true, use_mrta=false) where {FT}
+        compute_Sᵢ=true, use_mrta=false, use_eph_dipole=true) where {FT}
     if compute_Sᵢ && use_mrta
         throw(ArgumentError("compute_Sᵢ = true and use_mrta = true is not compatible."))
     end
@@ -27,6 +28,9 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     fid = h5open(filename, "r")
     group_scattering = open_group(fid, "scattering")
     mpi_isroot() && println("Original grid: Total $(length(group_scattering)) groups of scattering")
+
+    # Disable eph dipole if eph_dipole data is not present.
+    use_eph_dipole = use_eph_dipole && "eph_dipole" ∈ keys(open_group(fid, "phonon"))
 
     @assert params.smearing[1] == :Gaussian
     η = params.smearing[2]
@@ -53,10 +57,46 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
         @. nocc_ph_all[:, i] = occ_boson(ph.e[i], params.Tlist)
     end
 
+    if use_eph_dipole
+        phonon_eph_dipole = read(fid, "phonon/eph_dipole")::Vector{Complex{FT}}
+        if "ϵ_screen" in keys(fid)
+            ϵ_screen = vec(read(fid, "ϵ_screen"))::Vector{Complex{FT}}
+        else
+            ϵ_screen = ones(Complex{FT}, ph.n)
+        end
+    end
+
     for ik in 1:el_i.kpts.n
         mpi_isroot() && mod(ik, 50) == 0 && println("Calculating scattering for group $ik")
 
         @timing "read scat" scat = load_BTData(open_group(group_scattering, "ik$ik"), ElPhVertexDataset{FT})
+
+        # TODO: Make this a separate function
+        # Add long-range terms to the e-ph matrix element
+        if use_eph_dipole
+            # Read mmat = <u(k+q)|u(k)> at ik
+            mmat = load_BTData(open_group(fid, "mmat/ik$ik"), EPW.MatrixElementDataset{Complex{FT}})
+
+            # Long-range dipole term
+            for ib in el_i.ib_rng[ik]
+                for ikq in 1:el_f.kpts.n
+                    for jb in el_f.ib_rng[ikq]
+                        xq = el_f.kpts.vectors[ikq] - el_i.kpts.vectors[ik]
+                        xq_int = mod.(round.(Int, xq.data .* ph.ngrid), ph.ngrid)
+                        ind_ph_list = get(ind_ph_map, CI(xq_int...), nothing)
+                        ind_ph_list === nothing && continue # skip if this xq is not in ph
+
+                        for imode in 1:ph.nband
+                            ind_ph = ind_ph_list[imode]
+                            ω_ph = ph.e[ind_ph]
+                            if scat[ikq, ib, jb, imode] !== nothing
+                                scat[ikq, ib, jb, imode] += phonon_eph_dipole[ind_ph] * mmat[ikq, ib, jb] / sqrt(2ω_ph) / ϵ_screen[ind_ph]
+                            end
+                        end
+                    end
+                end
+            end
+        end
 
         # 1. Scattering-out term
         # P_{ib1, ib2} = sum_{ikq, imode, jb, ±} g*_{jb, ib1} * g_{jb, ib2}

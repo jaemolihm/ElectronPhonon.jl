@@ -106,8 +106,18 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # Write phonon states to HDF5 file
         mpi_isroot() && println("Calculating phonon states")
         ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
-        ph_boltzmann, _ = phonon_states_to_BTStates(ph_save, qpts)
-        dump_BTData(create_group(fid_btedata, "phonon"), ph_boltzmann)
+        ph_boltzmann, indmap = phonon_states_to_BTStates(ph_save, qpts)
+        g = create_group(fid_btedata, "phonon")
+        dump_BTData(g, ph_boltzmann)
+        if model.polar_eph.use
+            # Write phonon polar information
+            eph_dipole = zeros(Complex{FT}, ph_boltzmann.n)
+            for ik in axes(indmap, 2), imode in axes(indmap, 1)
+                eph_dipole[indmap[imode, ik]] = ph_save[ik].eph_dipole_coeff[imode]
+            end
+            g["eph_dipole"] = eph_dipole
+            eph_dipole = nothing
+        end
 
         # Write symmetry information to HDF5 file if used
         if symmetry !== nothing
@@ -156,6 +166,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             error("Unknown screening_params type $(typeof(screening_params))")
         end
         data_to_return["ϵ_screen"] =  ϵ_screen
+        fid_btedata["ϵ_screen"] =  ϵ_screen
     end
 
     # Write gauge matrices that map eigenstates in el_k_save to eigenstates in el_kq_save.
@@ -293,7 +304,6 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         dump_BTData(create_group(g, "is_degenerate"), is_degenerate)
     end
 
-
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epdatas = [ElPhData{Float64}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
@@ -309,6 +319,13 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     bt_imode = zeros(Int16, max_nscat)
     bt_ik = zeros(Int, max_nscat)
     bt_ikq = zeros(Int, max_nscat)
+
+    max_nmmat = nkq * nband_max^2
+    bt_mmat_ik = zeros(Int, max_nmmat)
+    bt_mmat_ikq = zeros(Int, max_nmmat)
+    bt_mmat_ib = zeros(Int16, max_nmmat)
+    bt_mmat_jb = zeros(Int16, max_nmmat)
+    bt_mmat = zeros(Complex{FT}, max_nmmat)
 
     # Setup for collecting scattering processes
     println("MPI-k rank $(mpi_myrank(mpi_comm_k)), Number of k   points = $nk")
@@ -335,6 +352,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u); fourier_mode)
 
         bt_nscat = 0
+        bt_nmmat = 0
 
         # Threads.@threads :static for ikq in 1:nkq
         for ikq in 1:nkq
@@ -366,15 +384,23 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             # Compute dipole contribution to electron-phonon coupling
             @timing "dipole" if any(abs.(xq) .> 1e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
-                if model.polar_eph.use
-                    if screening_params !== nothing
-                        epdata_compute_eph_dipole!(epdata, view(ϵ_screen, :, iq))
-                    else
-                        epdata_compute_eph_dipole!(epdata)
-                    end
+                # TODO: Remove this part. Now polar_eph is added in compute_qme_scattering_matrix
+                # if model.polar_eph.use
+                    # if screening_params !== nothing
+                    #     epdata_compute_eph_dipole!(epdata, view(ϵ_screen, :, iq))
+                    # else
+                    #     epdata_compute_eph_dipole!(epdata)
+                    # end
+                # end
+                for jb in el_kq.rng, ib in el_k.rng
+                    bt_nmmat += 1
+                    bt_mmat_ik[bt_nmmat] = ik
+                    bt_mmat_ikq[bt_nmmat] = ikq
+                    bt_mmat_ib[bt_nmmat] = ib
+                    bt_mmat_jb[bt_nmmat] = jb
+                    bt_mmat[bt_nmmat] = epdata.mmat[jb, ib]
                 end
             end
-
 
             # Skip calculation of g2 because g2 is not used.
             # epdata_set_g2!(epdata)
@@ -413,6 +439,16 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             g["imode"] = bt_imode[1:bt_nscat]
             g["ik"] = bt_ik[1:bt_nscat]
             g["ikq"] = bt_ikq[1:bt_nscat]
+        end
+
+        # Write mmat for long-range e-ph calculation
+        @views begin
+            g = create_group(fid_btedata, "mmat/ik$ik")
+            g["ik"] = bt_mmat_ik[1:bt_nmmat]
+            g["ikq"] = bt_mmat_ikq[1:bt_nmmat]
+            g["ib"] = bt_mmat_ib[1:bt_nmmat]
+            g["jb"] = bt_mmat_jb[1:bt_nmmat]
+            g["mel"] = bt_mmat[1:bt_nmmat]
         end
 
         nscat_tot += bt_nscat
