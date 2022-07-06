@@ -332,7 +332,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         el_sym = nothing
     end
 
-    model = ModelEPW(;alat, lattice, recip_lattice, volume, nw, nmodes,
+    ModelEPW(;alat, lattice, recip_lattice, volume, nw, nmodes,
         mass, atom_pos, atom_labels, symmetry,
         use_polar_dipole, polar_phonon, polar_eph,
         el_ham, el_ham_R, el_pos, el_vel, el_velocity_mode,

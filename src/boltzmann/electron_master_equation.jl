@@ -169,8 +169,8 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
         # 2. Scattering-in term
         # dδρ_{ib1,ib2,k}/dt = sum_{ikq, imode, jb1, jb2, ±} g*_{jb1, ib1} * g_{jb2, ib2}
         #                    * δ^{1/2}(e_ib1 - e_jb1 ± ω_imode) * δ^{1/2}(e_ib2 - e_jb2 ± ω_imode)
-        #                    * (n_imode +     (f_jb1 + f_jb2) / 2 )       (+)
-        #                      (n_imode + 1 - (f_jb1 + f_jb2) / 2 )       (-)
+        #                      (n_imode + 1 - (f_ib1 + f_ib2) / 2 )       (+)
+        #                    * (n_imode +     (f_ib1 + f_ib2) / 2 )       (-)
 
         @timing "scat in" for ib2 in el_i.ib_rng[ik], ib1 in el_i.ib_rng[ik]
             # Calculate only if (ib1, ib2, ik) ∈ el_i
