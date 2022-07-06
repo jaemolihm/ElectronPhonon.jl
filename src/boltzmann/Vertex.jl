@@ -55,7 +55,7 @@ function load_BTData(f, ::Type{ElPhVertexDataset{FT}}) where FT
     Is = @. ib - nband_ignore_i + (jb - nband_ignore_j - 1) * nband_i
     Js = @. imode + (ikq - 1) * nmodes
     Vs = ElPhVertexElement.(mel, econv_p, econv_m)
-    data = sparse(Is, Js, Vs)
+    data = sparse(Is, Js, Vs, nband_i * nband_j, nkq * nmodes)
 
     ElPhVertexDataset(data, nband_i, nband_j, nband_ignore_i, nband_ignore_j, nmodes, nkq)
 end
