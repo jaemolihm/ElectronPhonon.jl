@@ -2,15 +2,11 @@
 Screening in the Random phase approximation.
 """
 
-# TODO: Use n instead of μ
-
 export RPAScreeningParams
 export RPAScreening
 
 using StaticArrays
 using LinearAlgebra
-
-# TODO: Anisotropic ϵM
 
 """
     RPAScreeningParams{FT<:Real}
@@ -62,7 +58,7 @@ function Base.getproperty(obj::RPAScreeningParams, name::Symbol)
     end
 end
 
-function compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry, params::RPAScreeningParams)
+function compute_χ0(ph, el_k_save, el_kq_save, kpts, kqpts, symmetry, params::RPAScreeningParams)
     (; μ, T) = params
     η = params.smearing
 
@@ -78,11 +74,10 @@ function compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry
     rng_max = iband_min:iband_max
     nband_max = length(rng_max)
     mmat = OffsetArray(zeros(eltype(first(el_k_save).u), nband_max, nband_max), rng_max, rng_max)
-    χ0 = zeros(ComplexF64, first(ph_save).nmodes, qpts.n)
+    χ0 = zeros(ComplexF64, ph.n)
 
-    for iq = 1:qpts.n
-        xq = qpts.vectors[iq]
-        ph = ph_save[iq]
+    for i in 1:ph.n
+        xq = ph[i].xks
         xq == Vec3(0, 0, 0) && continue # skip q = 0
 
         for ik = 1:kpts.n
@@ -105,7 +100,7 @@ function compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry
             @views for ib = el_k.rng, jb = el_kq.rng
                 abs(f_k[ib] - f_kq[jb]) < 1E-10 && continue
                 numerator = (f_k[ib] - f_kq[jb]) * abs(mmat[jb, ib])^2 * kpts.weights[ik]
-                @. χ0[:, iq] += numerator / (ph.e + ek[ib] - ekq[jb] + im * η)
+                χ0[i] += numerator / (ph[i].e + ek[ib] - ekq[jb] + im * η)
             end
         end
     end
@@ -113,13 +108,20 @@ function compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry
     # Symmetrize χ0_avg.
     # We summed only the k points in the irreducible BZ. So, we need to sum χ0_avg
     # over symmetry-equivalent q points.
+    ind_ph_map = states_index_map(ph)
     χ0_symmetrized = zero(χ0)
-    for (iq, xq) in enumerate(qpts.vectors)
+    for i in 1:ph.n
+        xq = ph[i].xks
+        imode = ph[i].iband
         for symop in symmetry
+            # Find index of (imode, S(xq))
             sxq = symop.is_tr ? -symop.S * xq : symop.S * xq
-            isq = xk_to_ik(sxq, qpts)
-            isq === nothing && continue
-            @views χ0_symmetrized[:, iq] .+= χ0[:, isq]
+            sxq_int = mod.(round.(Int, sxq.data .* ph.ngrid), ph.ngrid)
+            ind_ph_list = get(ind_ph_map, CI(sxq_int...), nothing)
+            ind_ph_list === nothing && continue # skip if this xq is not in ph
+            j = ind_ph_list[imode]
+            j == 0 && continue # skip if this imode is not in ph
+            @views χ0_symmetrized[j] += χ0[i]
         end
     end
     χ0_symmetrized ./= length(symmetry)
@@ -127,18 +129,19 @@ function compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry
     χ0_symmetrized
 end
 
-function compute_epsilon_rpa(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry,
+function compute_epsilon_rpa(ph, el_k_save, el_kq_save, kpts, kqpts, symmetry,
         recip_lattice, params::RPAScreeningParams)
-    χ0 = compute_χ0(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry, params)
+    χ0 = compute_χ0(ph, el_k_save, el_kq_save, kpts, kqpts, symmetry, params)
     ϵ = zero(χ0)
-    for (iq, xq) in enumerate(qpts.vectors)
+    for i in 1:ph.n
+        xq = ph[i].xks
         if all(abs.(xq) .< 1e-8) # skip q = 0
-            ϵ[:, iq] .= 1
+            ϵ[i] = 1
         else
             xq_cart = recip_lattice * xq
             ϵM = xq_cart' * params.ϵM * xq_cart / norm(xq_cart)^2
             coeff = EPW.e2 * 4π / norm(xq_cart)^2 / params.volume * params.spin_degeneracy / ϵM
-            @. ϵ[:, iq] = 1 - χ0[:, iq] * coeff
+            ϵ[i] = 1 - χ0[i] * coeff
         end
     end
     ϵ

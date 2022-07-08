@@ -60,7 +60,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     if use_eph_dipole
         phonon_eph_dipole = read(fid, "phonon/eph_dipole")::Vector{Complex{FT}}
         if "ϵ_screen" in keys(fid)
-            ϵ_screen = vec(read(fid, "ϵ_screen"))::Vector{Complex{FT}}
+            ϵ_screen = read(fid, "ϵ_screen")::Vector{Complex{FT}}
         else
             ϵ_screen = ones(Complex{FT}, ph.n)
         end

@@ -151,17 +151,13 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # Compute screening parameters
     if screening_params !== nothing
         println("Compute screening: $(typeof(screening_params))")
-        ϵ_screen = zeros(ComplexF64, nmodes, qpts.n)
         if screening_params isa LindhardScreeningParams
-            for (iq, xq) in enumerate(qpts.vectors)
-                ph = ph_save[iq]
-                xq_cart = model.recip_lattice * xq
-                ϵ_screen[:, iq] .= epsilon_lindhard.(Ref(xq_cart), ph.e, Ref(screening_params))
-            end
+            xqs_cart = Ref(model.recip_lattice) .* ph_boltzmann.xks
+            ϵ_screen = epsilon_lindhard.(xqs_cart, ph_boltzmann.e, Ref(screening_params))
         elseif screening_params isa RPAScreeningParams
             bte_compute_μ!(screening_params, BTStates(el_k_boltzmann); do_print=false)
-            ϵ_screen = compute_epsilon_rpa(el_k_save, el_kq_save, ph_save, kpts, kqpts, qpts, symmetry,
-                model.recip_lattice, screening_params)
+            ϵ_screen = compute_epsilon_rpa(ph_boltzmann, el_k_save, el_kq_save, kpts, kqpts,
+                symmetry, model.recip_lattice, screening_params)
         else
             error("Unknown screening_params type $(typeof(screening_params))")
         end
@@ -381,17 +377,10 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             # Compute electron-phonon coupling
             get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
 
-            # Compute dipole contribution to electron-phonon coupling
-            @timing "dipole" if any(abs.(xq) .> 1e-8) && model.use_polar_dipole
+            # Save mmat for computing dipole contribution to electron-phonon coupling
+            # The dipole e-ph matrix element itself is computed in compute_qme_scattering_matrix
+            @timing "mmat" if model.use_polar_dipole
                 epdata_set_mmat!(epdata)
-                # TODO: Remove this part. Now polar_eph is added in compute_qme_scattering_matrix
-                # if model.polar_eph.use
-                    # if screening_params !== nothing
-                    #     epdata_compute_eph_dipole!(epdata, view(ϵ_screen, :, iq))
-                    # else
-                    #     epdata_compute_eph_dipole!(epdata)
-                    # end
-                # end
                 for jb in el_kq.rng, ib in el_k.rng
                     bt_nmmat += 1
                     bt_mmat_ik[bt_nmmat] = ik
