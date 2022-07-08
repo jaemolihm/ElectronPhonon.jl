@@ -36,9 +36,13 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     η = params.smearing[2]
     inv_η = 1 / η
 
+    # Preallocate buffer arrays
     p_mel = zeros(Complex{FT}, nT)
     p_mel_ikq = zeros(Complex{FT}, nT)
     s_mel_ikq = zeros(Complex{FT}, nT)
+    eph_mel_1 = zeros(Complex{FT}, nT)
+    eph_mel_2 = zeros(Complex{FT}, nT)
+    gg = zeros(Complex{FT}, nT)
 
     # Scattering-out and scattering-in matrices
     # Sₒ is sparse (block diagonal) while Sᵢ is not sparse in general.
@@ -60,9 +64,9 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     if use_eph_dipole
         phonon_eph_dipole = read(fid, "phonon/eph_dipole")::Vector{Complex{FT}}
         if "ϵ_screen" in keys(fid)
-            ϵ_screen = read(fid, "ϵ_screen")::Vector{Complex{FT}}
+            ϵ_screen = read(fid, "ϵ_screen")::Matrix{Complex{FT}}
         else
-            ϵ_screen = ones(Complex{FT}, ph.n)
+            ϵ_screen = ones(Complex{FT}, nT, ph.n)
         end
     end
 
@@ -71,31 +75,9 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
 
         @timing "read scat" scat = load_BTData(open_group(group_scattering, "ik$ik"), ElPhVertexDataset{FT})
 
-        # TODO: Make this a separate function
-        # Add long-range terms to the e-ph matrix element
+        # Read mmat = <u(k+q)|u(k)> at ik
         if use_eph_dipole
-            # Read mmat = <u(k+q)|u(k)> at ik
             mmat = load_BTData(open_group(fid, "mmat/ik$ik"), EPW.MatrixElementDataset{Complex{FT}})
-
-            # Long-range dipole term
-            for ib in el_i.ib_rng[ik]
-                for ikq in 1:el_f.kpts.n
-                    for jb in el_f.ib_rng[ikq]
-                        xq = el_f.kpts.vectors[ikq] - el_i.kpts.vectors[ik]
-                        xq_int = mod.(round.(Int, xq.data .* ph.ngrid), ph.ngrid)
-                        ind_ph_list = get(ind_ph_map, CI(xq_int...), nothing)
-                        ind_ph_list === nothing && continue # skip if this xq is not in ph
-
-                        for imode in 1:ph.nband
-                            ind_ph = ind_ph_list[imode]
-                            ω_ph = ph.e[ind_ph]
-                            if scat[ikq, ib, jb, imode] !== nothing
-                                scat[ikq, ib, jb, imode] += phonon_eph_dipole[ind_ph] * mmat[ikq, ib, jb] / sqrt(2ω_ph) / ϵ_screen[ind_ph]
-                            end
-                        end
-                    end
-                end
-            end
         end
 
         # 1. Scattering-out term
@@ -156,12 +138,20 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     ω_ph < EPW.omega_acoustic && continue
                     nocc_ph = @view nocc_ph_all[:, ind_ph]
 
-                    # Matrix element factor
                     s1 = scat[ikq, ib1, jb, imode]
                     s1 === nothing && continue
                     s2 = scat[ikq, ib2, jb, imode]
                     s2 === nothing && continue
-                    gg = conj(s1.mel) * s2.mel
+
+                    # Matrix element factor
+                    eph_mel_1 .= s1.mel
+                    eph_mel_2 .= s2.mel
+                    @views if use_eph_dipole
+                        # Add long-range term
+                        @. eph_mel_1 += phonon_eph_dipole[ind_ph] * mmat[ikq, ib1, jb] / sqrt(2ω_ph) / ϵ_screen[:, ind_ph]
+                        @. eph_mel_2 += phonon_eph_dipole[ind_ph] * mmat[ikq, ib2, jb] / sqrt(2ω_ph) / ϵ_screen[:, ind_ph]
+                    end
+                    @. gg = conj(eph_mel_1) * eph_mel_2
 
                     if s1.econv_p && s2.econv_p
                         if use_mrta == true
@@ -249,12 +239,20 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     nocc_ph = @view nocc_ph_all[:, ind_ph]
 
                     # DEBUG: 0.3 sec
-                    # Matrix element factor
                     s1 = scat[ikq, ib1, jb1, imode]
                     s1 === nothing && continue
                     s2 = scat[ikq, ib2, jb2, imode]
                     s2 === nothing && continue
-                    gg = s1.mel' * s2.mel
+
+                    # Matrix element factor
+                    eph_mel_1 .= s1.mel
+                    eph_mel_2 .= s2.mel
+                    @views if use_eph_dipole
+                        # Add long-range term
+                        @. eph_mel_1 += phonon_eph_dipole[ind_ph] * mmat[ikq, ib1, jb1] / sqrt(2ω_ph) / ϵ_screen[:, ind_ph]
+                        @. eph_mel_2 += phonon_eph_dipole[ind_ph] * mmat[ikq, ib2, jb2] / sqrt(2ω_ph) / ϵ_screen[:, ind_ph]
+                    end
+                    @. gg = conj(eph_mel_1) * eph_mel_2
 
                     # DEBUG: 1.2 sec -> 0.9 sec
                     if s1.econv_p && s2.econv_p
@@ -277,7 +275,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
     Sₒ, Sᵢ
 end
 
-function _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_ph, inv_η, f_kq, n_ph)
+@inline function _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_ph, inv_η, f_kq, n_ph)
     # energy conservation factor
     delta1 = gaussian((e_i1 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
     delta2 = gaussian((e_i2 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
@@ -286,11 +284,11 @@ function _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_
         # occupation factor
         n = sign_ph == 1 ? n_ph[iT] + 1 - f_kq[iT] : n_ph[iT] + f_kq[iT]
         # P matrix element
-        p_mel_ikq[iT] += gg * delta * n
+        p_mel_ikq[iT] += gg[iT] * delta * n
     end
 end
 
-function _compute_p_matrix_element_mrta!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_ph, inv_η, f_kq, n_ph, v_i1, v_f)
+@inline function _compute_p_matrix_element_mrta!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_ph, inv_η, f_kq, n_ph, v_i1, v_f)
     # Momentum relaxation time approximation: See Eq. (49) of Ponce et al, Rep. Prog. Phys. (2020).
     # energy conservation factor
     delta1 = gaussian((e_i1 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
@@ -302,11 +300,11 @@ function _compute_p_matrix_element_mrta!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, 
         # occupation factor
         n = sign_ph == 1 ? n_ph[iT] + 1 - f_kq[iT] : n_ph[iT] + f_kq[iT]
         # P matrix element
-        p_mel_ikq[iT] += gg * delta * n * vfac
+        p_mel_ikq[iT] += gg[iT] * delta * n * vfac
     end
 end
 
-function _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, sign_ph, inv_η, f_kq1, f_kq2, n_ph)
+@inline function _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, sign_ph, inv_η, f_kq1, f_kq2, n_ph)
     # energy conservation factor
     delta1 = gaussian((e_i1 - e_f1 - sign_ph * ω_ph) * inv_η) * inv_η
     delta2 = gaussian((e_i2 - e_f2 - sign_ph * ω_ph) * inv_η) * inv_η
@@ -316,7 +314,7 @@ function _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω
         favg = (f_kq1[iT] + f_kq2[iT]) / 2
         n = sign_ph == 1 ? n_ph[iT] + favg : n_ph[iT] + 1 - favg
         # scattering matrix element
-        s_mel_ikq[iT] += gg * delta * n
+        s_mel_ikq[iT] += gg[iT] * delta * n
     end
 end
 

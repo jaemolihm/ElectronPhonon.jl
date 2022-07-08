@@ -14,7 +14,7 @@ using LinearAlgebra
 @with_kw struct LindhardScreeningParams{T<:Real}
     degeneracy::Int64 # degeneracy of bands. spin and/or valley degeneracy.
     m_eff::T # Ratio of effective mass and electron mass. Unitless.
-    n::T # Absolute carrier density in Bohr^-3.
+    nlist::Vector{T} # Absolute carrier density in Bohr^-3.
     ϵM::Mat3{T} # Macroscopic dielectric constant. Unitless.
     smearing::T # Smearing of frequency in Rydberg.
 end
@@ -37,10 +37,13 @@ Generalized to work with arbitrary number of degeneracy (spin and/or valley).
 - `verbose`: if true, print Lindhard screening parameters.
 """
 function epsilon_lindhard(xq, ω, params::LindhardScreeningParams; verbose=false)
-    (; degeneracy, m_eff, n, ϵM, smearing) = params
+    (; degeneracy, m_eff, nlist, ϵM, smearing) = params
+    _epsilon_lindhard.(nlist, Ref(xq), ω, m_eff, Ref(ϵM), degeneracy, smearing; verbose)
+end
 
+function _epsilon_lindhard(n, xq, ω, m_eff, ϵM, degeneracy, smearing; verbose=false)
     if norm(xq) < 1E-10
-        return Complex{eltype(xq)}(1)
+        return Complex{eltype(n)}(1)
     end
 
     ϵM_q = xq' * ϵM * xq / norm(xq)^2
