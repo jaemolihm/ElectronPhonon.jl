@@ -8,6 +8,8 @@ export RPAScreening
 using StaticArrays
 using LinearAlgebra
 
+# TODO: Cleanup indmap_ph
+
 """
     RPAScreeningParams{FT<:Real}
 Parameters for free carrier screening based on RPA.
@@ -36,7 +38,7 @@ Base.@kwdef struct RPAScreeningParams{FT<:Real}
     type::Symbol = maximum(abs.(nlist)) >= 1 ? :Metal : :Semiconductor
 end
 
-function compute_χ0(ph, el_k_save, el_kq_save, kpts, kqpts, symmetry, params::RPAScreeningParams)
+function compute_χ0(ph, indmap_ph, el_k_save, el_kq_save, kpts, kqpts, symmetry, params::RPAScreeningParams)
     η = params.smearing
 
     iband_min = minimum(el.rng.start for el in el_k_save if el.nband > 0)
@@ -54,11 +56,12 @@ function compute_χ0(ph, el_k_save, el_kq_save, kpts, kqpts, symmetry, params::R
             set_occupation!(el, μ, T)
         end
 
-        for i in 1:ph.n
-            xq = ph[i].xks
-            xq == Vec3(0, 0, 0) && continue # skip q = 0
+        for ik in 1:kpts.n
+            for iq in 1:ph.nk
+                i = indmap_ph[1, iq]
+                xq = ph[i].xks
+                xq == Vec3(0, 0, 0) && continue # skip q = 0
 
-            for ik = 1:kpts.n
                 xk = kpts.vectors[ik]
                 ikq = xk_to_ik(xk + xq, kqpts)
                 ikq === nothing && continue
@@ -71,14 +74,17 @@ function compute_χ0(ph, el_k_save, el_kq_save, kpts, kqpts, symmetry, params::R
                 f_k = el_k.occupation
                 f_kq = el_kq.occupation
 
-                # Compute
+                # Compute overlap matrix
                 mmat_in_rng = view(mmat, el_kq.rng, el_k.rng)
                 mul!(no_offset_view(mmat_in_rng), no_offset_view(el_kq.u)', no_offset_view(el_k.u))
 
                 @views for ib = el_k.rng, jb = el_kq.rng
                     abs(f_k[ib] - f_kq[jb]) < 1E-10 && continue
                     numerator = (f_k[ib] - f_kq[jb]) * abs(mmat[jb, ib])^2 * kpts.weights[ik]
-                    χ0[iT, i] += numerator / (ph[i].e + ek[ib] - ekq[jb] + im * η)
+                    for imode in 1:ph.nband
+                        i = indmap_ph[imode, iq]
+                        χ0[iT, i] += numerator / (ph[i].e + ek[ib] - ekq[jb] + im * η)
+                    end
                 end
             end
         end
@@ -108,9 +114,9 @@ function compute_χ0(ph, el_k_save, el_kq_save, kpts, kqpts, symmetry, params::R
     χ0_symmetrized
 end
 
-function compute_epsilon_rpa(ph, el_k_save, el_kq_save, kpts, kqpts, symmetry,
+function compute_epsilon_rpa(ph, indmap_ph, el_k_save, el_kq_save, kpts, kqpts, symmetry,
         recip_lattice, params::RPAScreeningParams)
-    χ0 = compute_χ0(ph, el_k_save, el_kq_save, kpts, kqpts, symmetry, params)
+    χ0 = compute_χ0(ph, indmap_ph, el_k_save, el_kq_save, kpts, kqpts, symmetry, params)
     ϵ = zero(χ0)
     @views for i in 1:ph.n
         xq = ph[i].xks

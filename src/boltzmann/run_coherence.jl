@@ -112,14 +112,14 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # Write phonon states to HDF5 file
         mpi_isroot() && println("Calculating phonon states")
         ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
-        ph_boltzmann, indmap = phonon_states_to_BTStates(ph_save, qpts)
+        ph_boltzmann, indmap_ph = phonon_states_to_BTStates(ph_save, qpts)
         g = create_group(fid_btedata, "phonon")
         dump_BTData(g, ph_boltzmann)
         if model.polar_eph.use
             # Write phonon polar information
             eph_dipole = zeros(Complex{FT}, ph_boltzmann.n)
-            for ik in axes(indmap, 2), imode in axes(indmap, 1)
-                eph_dipole[indmap[imode, ik]] = ph_save[ik].eph_dipole_coeff[imode]
+            for ik in axes(indmap_ph, 2), imode in axes(indmap_ph, 1)
+                eph_dipole[indmap_ph[imode, ik]] = ph_save[ik].eph_dipole_coeff[imode]
             end
             g["eph_dipole"] = eph_dipole
             eph_dipole = nothing
@@ -162,7 +162,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
                 ph_boltzmann.e[i], screening_params) for i in 1:ph_boltzmann.n)
         elseif screening_params isa RPAScreeningParams
             bte_compute_μ!(screening_params, BTStates(el_k_boltzmann); do_print=false)
-            ϵ_screen = compute_epsilon_rpa(ph_boltzmann, el_k_save, el_kq_save, kpts, kqpts,
+            ϵ_screen = compute_epsilon_rpa(ph_boltzmann, indmap_ph, el_k_save, el_kq_save, kpts, kqpts,
                 symmetry, model.recip_lattice, screening_params)
         else
             error("Unknown screening_params type $(typeof(screening_params))")
