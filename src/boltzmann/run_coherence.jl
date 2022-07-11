@@ -26,6 +26,12 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     nq = qpts.n
     nkq = kqpts.n
 
+    println("MPI-k rank $(mpi_myrank(mpi_comm_k)), Number of k   points = $nk")
+    println("MPI-k rank $(mpi_myrank(mpi_comm_k)), Number of k+q points = $nkq")
+    println("MPI-k rank $(mpi_myrank(mpi_comm_k)), Number of q   points = $nq")
+    flush(stdout)
+    flush(stderr)
+
     mpi_isroot() && println("Calculating electron and phonon states")
     g = nothing
     # TODO: parallelize this part
@@ -322,13 +328,6 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     bt_mmat_ib = zeros(Int16, max_nmmat)
     bt_mmat_jb = zeros(Int16, max_nmmat)
     bt_mmat = zeros(Complex{FT}, max_nmmat)
-
-    # Setup for collecting scattering processes
-    println("MPI-k rank $(mpi_myrank(mpi_comm_k)), Number of k   points = $nk")
-    println("MPI-k rank $(mpi_myrank(mpi_comm_k)), Number of k+q points = $nkq")
-    println("MPI-k rank $(mpi_myrank(mpi_comm_k)), Number of q   points = $nq")
-    flush(stdout)
-    flush(stderr)
 
     nscat_tot = 0
     for ik in 1:nk
