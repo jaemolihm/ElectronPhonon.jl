@@ -78,7 +78,7 @@ function compute_χ0(ph, indmap_ph, el_k_save, el_kq_save, kpts, kqpts, symmetry
                 mmat_in_rng = view(mmat, el_kq.rng, el_k.rng)
                 mul!(no_offset_view(mmat_in_rng), no_offset_view(el_kq.u)', no_offset_view(el_k.u))
 
-                @views for ib = el_k.rng, jb = el_kq.rng
+                for ib = el_k.rng, jb = el_kq.rng
                     abs(f_k[ib] - f_kq[jb]) < 1E-10 && continue
                     numerator = (f_k[ib] - f_kq[jb]) * abs(mmat[jb, ib])^2 * kpts.weights[ik]
                     for imode in 1:ph.nband

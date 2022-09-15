@@ -240,10 +240,10 @@ function bte_compute_μ!(model::AbstractQMEModel; kwargs...)
     bte_compute_μ!(model.transport_params, BTStates(model.el_irr); kwargs...)
 end
 
-function compute_qme_scattering_matrix!(model::AbstractQMEModel; compute_Sᵢ=true, use_mrta=false)
+function compute_qme_scattering_matrix!(model::AbstractQMEModel; kwargs...)
     (; filename, transport_params, el_irr, el_f, ph) = model
     model.Sₒ_irr, model.Sᵢ_irr = compute_qme_scattering_matrix(filename, transport_params,
-                                    el_irr, el_f, ph; compute_Sᵢ, use_mrta)
+                                    el_irr, el_f, ph; kwargs...)
     unfold_scattering_out_matrix!(model)
     model
 end

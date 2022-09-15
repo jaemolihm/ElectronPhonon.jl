@@ -139,6 +139,7 @@ function _compute_lifetime_serta_single_scattering!(inv_τ::AbstractArray{FT}, e
 
         inv_τ[iT] = coeff1 * fcoeff
     end
+    inv_τ
 end
 
 

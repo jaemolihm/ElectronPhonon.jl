@@ -7,7 +7,7 @@ export find_fermi_energy
 
 """
     compute_ncarrier(μ, T, energy, weights)
-Compute carrier density.
+Compute number of electrons per unit cell.
 - μ: Chemical potential.
 - T: temperature
 - energy: band energy
@@ -31,7 +31,7 @@ end
 
 """
     compute_ncarrier_hole(μ, T, energy::AbstractVector, weights)
-Compute hole density.
+Compute number of holes per unit cell.
 """
 function compute_ncarrier_hole(μ, T, energy::AbstractVector, weights)
     sum(@. weights * (1 - occ_fermion(energy - μ, T)))
@@ -40,7 +40,7 @@ end
 """
     find_chemical_potential(ncarrier, T, energy, weights)
 Find chemical potential for target carrier density using bisection.
-- `ncarrier`: target carrier density (electron or hole density)
+- `ncarrier`: target number of carriers (electrons or holes) per unit cell)
 - `T`: temperature
 - `energy`: band energy
 - `weights`: k-point weights.
@@ -58,6 +58,7 @@ end
     find_chemical_potential_semiconductor(ncarrier, T, energy_e, energy_h, weights_e, weights_h)
 Find chemical potential for target carrier density using bisection. Minimize floating point
 error by computing doped carrier density, not the total carrier density.
+- `ncarrier`: target number of electrons per unit cell. `ncarrier > 0` for electron doping, `ncarrier < 0` for hole doping.
 """
 function find_chemical_potential_semiconductor(ncarrier, T, energy_e, energy_h, weights_e, weights_h)
     # FIXME: T=0 case
