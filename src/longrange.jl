@@ -19,7 +19,8 @@ Base.@kwdef struct Polar{T <: Real}
     atom_pos::Vector{Vec3{T}} # Atom position in alat units
     # Dipole term information
     ϵ::Mat3{T} # Dielectric tensor
-    Z::Vector{Mat3{T}} # Born effective charge tensor
+    Z::Vector{Mat3{T}} = zeros(Mat3{T}, length(atom_pos))  # Born effective charge tensor
+    Q::Vector{Vec3{Mat3{T}}} = zeros(Vec3{Mat3{T}}, length(atom_pos))  # Quadrupole tensor
     nxs::NTuple{3, Int} # Bounds of reciprocal space grid points to do Ewald sum
     cutoff::T # Maximum exponent for the reciprocal space Ewald sum
     η::T # Ewald parameter
@@ -35,7 +36,7 @@ function Base.show(io::IO, obj::Polar)
 end
 
 """
-Compute list of G vectors such that (q+G)/ϵ(q+G) / (2π / alat)^2 / (4 * η) < cutoff for some q in [-0.5, 0.5]^3
+Compute list of G vectors such that (q+G)ϵ(q+G) / (2π / alat)^2 / (4 * η) < cutoff for some q in [-0.5, 0.5]^3
 Do this by computing minval = min_{q ∈ [-0.5, 0.5]^3} (q+G) * ϵ * (q+G)
 Select the G vector if minval / (2π / alat)^2 / (4 * η) < cutoff.
 """
@@ -76,16 +77,36 @@ end
 # Null initialization for non-polar case
 # FIXME: defining Polar{T}() does not work. (maybe overriden by @kwdef.)
 Polar{T}(::Nothing) where {T} = Polar{T}(use=false, alat=0, volume=0, nmodes=0, recip_lattice=zeros(Mat3{T}),
-    atom_pos=[], ϵ=zeros(Mat3{T}), Z=[], nxs=(0,0,0), cutoff=0, η=0, Glist=[])
+    atom_pos=[], ϵ=zeros(Mat3{T}), nxs=(0,0,0), cutoff=0, η=0, Glist=[])
+
+"""
+    parse_epw_quadrupole_fmt(filename)
+parse quadrupole.fmt file in the EPW format (as of EPW v5.5)
+"""
+function parse_epw_quadrupole_fmt(filename)
+    Q = Vec3{Mat3{Float64}}[]
+    Q_iatm = zeros(Float64, 3, 3, 3)
+    open(filename, "r") do f
+        readline(f)  # dummy header
+        for line in readlines(f)
+            iatm, idir = parse.(Int, split(line)[1:2])
+            Qxx, Qyy, Qzz, Qyz, Qxz, Qxy = parse.(Float64, split(line)[3:end])
+            Q_iatm[idir, :, :] .= [Qxx Qxy Qxz; Qxy Qyy Qyz; Qxz Qyz Qzz]
+            idir == 3 && push!(Q, Vec3{Mat3{Float64}}(eachslice(Q_iatm, dims=1)))
+        end
+    end
+    Q
+end
 
 # Compute dynmat += sign * (dynmat from dipole-dipole interaction)
+# TODO: Multiply phase factor only once
 @timing "lr_dyn_dip" function dynmat_dipole!(dynmat, xq, polar::Polar{T}, sign=1) where {T}
-    if ! polar.use
-        return
-    end
+    polar.use || return dynmat
+
+    metric = (2T(π) / polar.alat)^2  # Conversion factor for G^2, unit bohr⁻²
 
     # Map xq to inside [-0.5, 0.5]^3
-    xq = normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
+    xq = normalize_kpoint_coordinate(xq .+ T(1/2)) .- T(1/2)
 
     @assert eltype(dynmat) == Complex{T}
 
@@ -95,28 +116,38 @@ Polar{T}(::Nothing) where {T} = Polar{T}(use=false, alat=0, volume=0, nmodes=0, 
 
     # First term: q-independent part.
     for G_crystal in polar.Glist
-        G = polar.recip_lattice * G_crystal / (2π / polar.alat)
-        GϵG = G' * polar.ϵ * G
+        G = polar.recip_lattice * G_crystal  # In bohr⁻¹
+        GϵG = G' * polar.ϵ * G  # In bohr⁻²
 
         # Skip if G=0 or if exponenent GϵG is large
-        if (GϵG <= 0) || (GϵG / (4 * polar.η) >= polar.cutoff)
+        if (GϵG <= 0) || (GϵG / (4 * metric * polar.η) >= polar.cutoff)
             continue
         end
 
-        fac2 = fac * exp(-GϵG / (4 * polar.η)) / GϵG
+        fac2 = fac * exp(-GϵG / (4 * metric * polar.η)) / GϵG  # The exponent is unitless
         for iatom = 1:natom
             GZi = G' * polar.Z[iatom]
-            f = zero(G')
+            GQi = (Ref(G') .* polar.Q[iatom] .* Ref(G))'
+
+            GZ_phase = zero(Vec3{complex(T)})'
+            GQ_phase = zero(Vec3{complex(T)})'
             for jatom = 1:natom
                 GZj = G' * polar.Z[jatom]
-                phasefac = cospi(2 * G' * (atom_pos[iatom] - atom_pos[jatom]))
-                f .+= GZj * phasefac
+                GQj = (Ref(G') .* polar.Q[jatom] .* Ref(G))'
+                phasefac = cis(polar.alat * G' * (atom_pos[iatom] - atom_pos[jatom]))
+                GZ_phase += GZj * phasefac
+                GQ_phase += GQj * phasefac
             end
 
-            dyn_tmp = -fac2 .* (GZi' * f)
+            dyn_tmp = fac2 * (GZi' * GZ_phase)  # dipole-dipole
+            dyn_tmp += fac2 * (GQi' * GZ_phase - GZi' * GQ_phase) / 2 * im  # dipole-quadrupole
+            dyn_tmp += fac2 * (GQi' * GQ_phase) / 4  # quadrupole-quadrupole
             for j in 1:3
                 for i in 1:3
-                    dynmat[3*(iatom-1)+i, 3*(iatom-1)+j] += dyn_tmp[i, j]
+                    # Minus sign because we are subtracting the q=0 contribution as the
+                    # correction to satisfy the acoustic sum rule
+                    # Ref: Gonze and Lee (1997), see also Lin, Ponce, Marzari (2022)
+                    dynmat[3*(iatom-1)+i, 3*(iatom-1)+j] -= dyn_tmp[i, j]
                 end
             end
         end
@@ -125,22 +156,26 @@ Polar{T}(::Nothing) where {T} = Polar{T}(use=false, alat=0, volume=0, nmodes=0, 
     # Second term: q-dependent part.
     # Note that the definition of G is different: xq is added.
     for G_crystal in polar.Glist
-        G = polar.recip_lattice * (xq .+ G_crystal) / (2π / polar.alat)
-        GϵG = G' * polar.ϵ * G
+        G = polar.recip_lattice * (xq .+ G_crystal)  # In bohr⁻¹
+        GϵG = G' * polar.ϵ * G  # In bohr⁻²
 
         # Skip if G=0 or if exponenent GϵG is large
-        if (GϵG <= 0) || (GϵG / (4 * polar.η) >= polar.cutoff)
+        if (GϵG <= 0) || (GϵG / (4 * metric * polar.η) >= polar.cutoff)
             continue
         end
 
-        fac2 = fac * exp(-GϵG / (4 * polar.η)) / GϵG
+        fac2 = fac * exp(-GϵG / (4 * metric * polar.η)) / GϵG  # The exponent is unitless
         for jatom = 1:natom
             GZj = G' * polar.Z[jatom]
+            GQj = (Ref(G') .* polar.Q[jatom] .* Ref(G))'
             for iatom = 1:natom
                 GZi = G' * polar.Z[iatom]
-                phasefac = cispi(2 * G' * (atom_pos[iatom] - atom_pos[jatom]))
+                GQi = (Ref(G') .* polar.Q[iatom] .* Ref(G))'
+                phasefac = cis(polar.alat * G' * (atom_pos[iatom] - atom_pos[jatom]))
 
-                dyn_tmp = (fac2 * phasefac) .* (GZi' * GZj)
+                dyn_tmp = (fac2 * phasefac) * (GZi' * GZj)  # dipole-dipole
+                dyn_tmp += (fac2 * phasefac) * (GQi' * GZj - GZi' * GQj) / 2 * im  # dipole-quadrupole
+                dyn_tmp += (fac2 * phasefac) * (GQi' * GQj) / 4  # quadrupole-quadrupole
                 for j in 1:3
                     for i in 1:3
                         dynmat[3*(iatom-1)+i, 3*(jatom-1)+j] += dyn_tmp[i, j]
@@ -149,6 +184,7 @@ Polar{T}(::Nothing) where {T} = Polar{T}(use=false, alat=0, volume=0, nmodes=0, 
             end
         end
     end
+    dynmat
 end
 
 # Compute coefficients for dipole e-ph coupling. The coefficients depend only on the phonon properties.
@@ -157,6 +193,7 @@ function get_eph_dipole_coeffs!(coeff, xq, polar::Polar{T}, u_ph) where {T}
         coeff .= 0
         return coeff
     end
+    metric = (2T(π) / polar.alat)^2  # Conversion factor for G^2, unit bohr⁻²
 
     # Map xq to inside [-0.5, 0.5]^3
     xq = normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
@@ -170,21 +207,22 @@ function get_eph_dipole_coeffs!(coeff, xq, polar::Polar{T}, u_ph) where {T}
     tmp .= 0
 
     for G_crystal in polar.Glist
-        G = polar.recip_lattice * (xq .+ G_crystal) / (2T(π) / polar.alat)
-        GϵG = G' * polar.ϵ * G
+        G = polar.recip_lattice * (xq .+ G_crystal)  # In bohr⁻¹
+        GϵG = G' * polar.ϵ * G  # In bohr⁻²
 
         # Skip if G=0 or if exponenent GϵG is large
-        if (GϵG <= 0) || (GϵG / (4 * polar.η) >= polar.cutoff)
+        if (GϵG <= 0) || (GϵG / (4 * metric * polar.η) >= polar.cutoff)
             continue
         end
 
-        GϵG *= 2T(π) / polar.alat
-        fac2 = fac * exp(-GϵG / (4 * polar.η)) / GϵG
+        # sqrt(metric) is included to keep compatibility with EPW v5.6
+        fac2 = fac * exp(-GϵG * sqrt(metric) / (4 * metric * polar.η)) / GϵG  # The exponent is unitless
         for iatom in 1:natom
-            phasefac = cispi(-2 * dot(G, atom_pos[iatom]))
-            @views for ipol in 1:3
-                GZ = dot(G, polar.Z[iatom][:, ipol])
-                tmp[3*(iatom-1)+ipol] += fac2 * phasefac * GZ
+            phasefac = cis(-polar.alat * dot(G, atom_pos[iatom]))
+            GZi = G' * polar.Z[iatom]
+            GQi = (Ref(G') .* polar.Q[iatom] .* Ref(G))' / 2
+            for ipol in 1:3
+                tmp[3*(iatom-1)+ipol] += fac2 * phasefac * (GZi[ipol] - im * GQi[ipol])
             end
         end
     end

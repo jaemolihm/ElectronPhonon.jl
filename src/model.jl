@@ -158,6 +158,8 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     # Polar parameters
     use_polar_dipole = fortran_read_bool(f)
 
+    # FIXME: quadrupole without dipole
+
     if use_polar_dipole
         ϵ_arr = read(f, (Float64, 3, 3))
         ϵ = Mat3{T}(ϵ_arr)
@@ -165,8 +167,8 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         Z = [Mat3{Float64}(arr) for arr in eachslice(Z_arr, dims=3)]
 
         # EPW hard-coded parameters (see EPW/src/rigid_epw.f90)
-        cutoff = T(14.0) # gmax
-        η = T(1.0) # alph
+        cutoff = T(14.0)  # gmax
+        η = T(1.0)  # alph
 
         # Compute nxs for phonon dynamical matrix. See SUBROUTINE rgd_blk of EPW
         nxs_array = [0, 0, 0]
@@ -176,11 +178,16 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
             end
         end
         nxs = tuple(nxs_array...)
-        polar_phonon = Polar{T}(use=true; alat, volume, nmodes, recip_lattice, atom_pos, ϵ, Z, nxs, cutoff, η)
+        if isfile(joinpath(folder, "quadrupole.fmt"))
+            Q = parse_epw_quadrupole_fmt(joinpath(folder, "quadrupole.fmt"))
+        else
+            Q = zeros(Vec3{Mat3{T}}, length(atom_pos))
+        end
+        polar_phonon = Polar{T}(use=true; alat, volume, nmodes, recip_lattice, atom_pos, ϵ, Z, Q, nxs, cutoff, η)
 
         # For e-ph coupling, nxs is nqc. See SUBROUTINE rgd_blk_epw_fine of EPW
         nxs = map(x -> 1 < x < 5 ? 5 : x, nqc) # quick-and-dirty fix for small nqc
-        polar_eph = Polar{T}(use=true; alat, volume, nmodes, recip_lattice, atom_pos, ϵ, Z, nxs, cutoff, η)
+        polar_eph = Polar{T}(use=true; alat, volume, nmodes, recip_lattice, atom_pos, ϵ, Z, Q, nxs, cutoff, η)
     else
         # Set null objects
         polar_phonon = Polar{T}(nothing)
