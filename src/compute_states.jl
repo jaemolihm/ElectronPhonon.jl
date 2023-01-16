@@ -23,7 +23,7 @@ function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window=(
     end
 
     # compute quantities
-    for ik in 1:kpts.n
+    Threads.@threads for ik in 1:kpts.n
         xk = kpts.vectors[ik]
         el = states[ik]
 
@@ -70,7 +70,7 @@ function compute_phonon_states(model::ModelEPW{FT}, kpts, quantities; fourier_mo
     end
 
     # compute quantities
-    for ik in 1:kpts.n
+    Threads.@threads for ik in 1:kpts.n
         xk = kpts.vectors[ik]
         ph = states[ik]
 

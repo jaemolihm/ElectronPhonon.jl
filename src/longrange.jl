@@ -27,8 +27,7 @@ Base.@kwdef struct Polar{T <: Real}
     # G vectors to use in the Ewald sum
     Glist::Vector{Vec3{Int}} = get_Glist(nxs, η, recip_lattice, alat, ϵ, cutoff)
     # preallocaetd buffer
-    tmp1::Vector{Complex{T}} = zeros(Complex{T}, nmodes)
-    tmp2::Vector{Complex{T}} = zeros(Complex{T}, nmodes)
+    tmp::Vector{Vector{Complex{T}}} = [zeros(Complex{T}, nmodes) for _ in 1:nthreads()]
 end
 
 function Base.show(io::IO, obj::Polar)
@@ -203,7 +202,7 @@ function get_eph_dipole_coeffs!(coeff, xq, polar::Polar{T}, u_ph) where {T}
     fac = 1im * EPW.e2 * 4T(π) / polar.volume
 
     # temporary vectors of size (nmodes,)
-    tmp = polar.tmp1
+    tmp = polar.tmp[threadid()]
     tmp .= 0
 
     for G_crystal in polar.Glist
@@ -238,7 +237,7 @@ end
     @assert eltype(eph) == Complex{T}
 
     nmodes = polar.nmodes
-    coeff = polar.tmp2
+    coeff = polar.tmp[threadid()]
     get_eph_dipole_coeffs!(coeff, xq, polar, u_ph)
 
     @views @inbounds for imode = 1:nmodes

@@ -81,7 +81,7 @@ end
 "Get eigenenergy of electrons at a single k point.
 Input hk is destroyed at output."
 @timing "eig_el_val" function solve_eigen_el_valueonly!(eigvalues, hk)
-    # eigvalues = eigvals(Hermitian(hk))
+    # eigvalues .= eigvals(Hermitian(hk))
     # Use AllocatedLAPACK module for preallocating and reusing workspaces
     epw_syev!('N', 'U', hk, eigvalues)[1]
 end

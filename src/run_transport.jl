@@ -78,7 +78,7 @@ using HDF5
         # Generate k points
         mpi_isroot() && println("Setting k-point grid")
         symmetry_k = use_irr_k ? symmetry : nothing
-        kpts, iband_min_k, iband_max_k, nstates_base_k = filter_kpoints(k_input, nw,
+        @time kpts, iband_min_k, iband_max_k, nstates_base_k = filter_kpoints(k_input, nw,
             model.el_ham, window_k, mpi_comm_k, symmetry=symmetry_k; fourier_mode)
 
         # Generate k+q points
@@ -86,7 +86,7 @@ using HDF5
         # If k_input is a GridKpoint, set shift for kqpts so that qpts includes the Gamma point.
         shift_k = k_input isa GridKpoints ? Vec3{FT}(k_input.shift) : Vec3{FT}(0, 0, 0)
         shift_kq = shift_k .+ shift_q ./ qgrid
-        kqpts, iband_min_kq, iband_max_kq, nstates_base_kq = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq; fourier_mode)
+        @time kqpts, iband_min_kq, iband_max_kq, nstates_base_kq = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq; fourier_mode)
         if mpi_comm_k !== nothing
             # k+q points are not distributed over mpi_comm_k in the remaining part.
             kqpts = mpi_allgather(kqpts, mpi_comm_k)
@@ -166,8 +166,8 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
 
     # Setup for collecting scattering processes
     @timing "bt init" begin
-        max_nscat = nkq * nmodes * nband_max^2 * 2
-        bt_scat = ElPhScatteringData{Float64}(max_nscat)
+        max_nscat = cld(nkq, nthreads()) * nmodes * nband_max^2 * 2
+        bt_scat_threads = [ElPhScatteringData{Float64}(max_nscat) for _ in 1:nthreads()]
     end
 
     println("MPI-k rank $(mpi_myrank(mpi_comm_k)), Number of k   points = $nk")
@@ -193,12 +193,12 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
 
         get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u); fourier_mode)
 
-        bt_nscat = 0
+        empty!.(bt_scat_threads)
 
-        # Threads.@threads :static for ikq in 1:nkq
-        for ikq in 1:nkq
+        Threads.@threads for ikq in 1:nkq
             tid = Threads.threadid()
             epdata = epdatas[tid]
+            bt_scat = bt_scat_threads[tid]
 
             epdata.wtk = kpts.weights[ik]
             epdata.wtq = kqpts.weights[ikq]
@@ -237,21 +237,17 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
                 check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
                     kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
-                bt_nscat += 1
-                bt_scat.ind_el_i[bt_nscat] = imap_el_k[ib, ik]
-                bt_scat.ind_el_f[bt_nscat] = imap_el_kq[jb, ikq]
-                bt_scat.ind_ph[bt_nscat] = imap_ph[imode, iq]
-                bt_scat.sign_ph[bt_nscat] = sign_ph
-                bt_scat.mel[bt_nscat] = epdata.g2[jb, ib, imode]
+                data = (imap_el_k[ib, ik], imap_el_kq[jb, ikq], imap_ph[imode, iq], sign_ph, epdata.g2[jb, ib, imode])
+                push!(bt_scat, data)
             end
         end # ikq
 
         @timing "bt_dump" begin
             g = create_group(fid_btedata, "scattering/ik$ik")
-            dump_BTData(g, bt_scat, bt_nscat)
+            dump_BTData(g, bt_scat_threads)
         end
 
-        nscat_tot += bt_nscat
+        nscat_tot += sum(bt_scat.n for bt_scat in bt_scat_threads)
     end # ik
     close(fid_btedata)
     @info "nscat_tot = $nscat_tot"

@@ -391,18 +391,17 @@ Multithreading is not supported because of large buffer array size.
     @assert Threads.threadid() == 1
 
     ep_kR = _get_buffer(_buffer_nothreads1, (nw, nw, nmodes, nr_ep))
-    ep_kR2 = _get_buffer(_buffer1, (nw, nband, nmodes))
-    ep_kR_tmp = _get_buffer(_buffer2, (nw, nband))
 
     get_fourier!(ep_kR, epmat, xk; fourier_mode)
 
     # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
-    for ir in 1:nr_ep
-        @views @inbounds for imode in 1:nmodes
+    @views for ir in 1:nr_ep
+        ep_kR2 = Base.ReshapedArray(epobj_ekpR.op_r[1:ndata, ir], (nw, nband, nmodes), ())
+        ep_kR_tmp = _get_buffer(_buffer2, (nw, nband))
+        @inbounds for imode in 1:nmodes
             mul!(ep_kR_tmp, ep_kR[:, :, imode, ir], uk)
             ep_kR2[:, :, imode] .= ep_kR_tmp
         end
-        epobj_ekpR.op_r[1:ndata, ir] .= Base.ReshapedArray(ep_kR2, (ndata,), ())
     end
     epobj_ekpR.ndata = ndata
     reset_gridopts_in_obj!(epobj_ekpR)
