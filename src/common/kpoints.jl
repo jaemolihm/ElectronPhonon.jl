@@ -330,7 +330,7 @@ function unfold_kpoints(kpts::GridKpoints, symmetry)
     for symop in symmetry
         s_shift = symop.is_tr ? -symop.S * shift : symop.S * shift
         dk = s_shift - shift
-        if norm(dk - Vec3(round.(Int, dk.data .* ngrid) ./ ngrid)) > eps(eltype(dk))
+        if norm(dk - Vec3(round.(Int, dk.data .* ngrid) ./ ngrid)) > 10*eps(eltype(dk))
             error("kpts.shift = $(kpts.shift) does not respect the symmetry $symop. Cannot unfold.")
         end
     end

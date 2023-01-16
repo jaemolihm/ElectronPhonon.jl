@@ -319,13 +319,13 @@ end
 
 
 """
-    compute_transport_distribution_function(elist::AbstractVector{R}, smearing, el, inv_τ, params) where {R}
+    compute_transport_distribution_function(elist, smearing, el, inv_τ, params)
 Compute the transport distribution function ``Σ^{a,b}(elist)``, where
 ``Σ^{a,b}(e) = 1/volume * ∑_{n,k} v^a_{nk} * v^b_{nk} * df_{nk} / τ_{nk} * δ(e - e_{nk})``.
 ``Σ^{a,b}(e)`` satisfies ``σ^{a,b} = ∫de (-df(e)/de) Σ^{a,b}(e)``.
 We use Gaussian smearing for the delta function using `smearing`.
 """
-function compute_transport_distribution_function(elist, smearing, el, inv_τ, params, symmetry=nothing) where {R}
+function compute_transport_distribution_function(elist, smearing, el, inv_τ, params, symmetry=nothing)
     Tlist = params.Tlist
     μlist = params.μlist
     e = el.e
