@@ -38,7 +38,7 @@ function check_electron_symmetry_of_model(model::EPW.ModelEPW{FT}, ngrid; fourie
         :Velocity_BerryConnection => 1e3 * unit_to_aru(:meV) * unit_to_aru(:Å),
     )
 
-    kpts = GridKpoints(generate_kvec_grid(ngrid...))
+    kpts = GridKpoints(kpoints_grid(ngrid))
     nw = model.nw
     symmetry = model.el_sym.symmetry
 

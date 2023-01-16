@@ -21,11 +21,11 @@ using Test
     @test all(symop * inv(symop) ≈ one(symop) for symop in symmetry)
     EPW.check_group(symmetry)
 
-    kpts = bzmesh_ir_wedge((6, 6, 6), symmetry)
+    kpts = kpoints_grid((6, 6, 6); symmetry)
     @test kpts.n == 16
-    kpts = bzmesh_ir_wedge((6, 6, 6), symmetry, ignore_time_reversal=true)
+    kpts = kpoints_grid((6, 6, 6); symmetry, ignore_time_reversal=true)
     @test kpts.n == 16
-    kpts = bzmesh_ir_wedge((7, 7, 7), symmetry)
+    kpts = kpoints_grid((7, 7, 7); symmetry)
     @test kpts.n == 20
 
     # Cubic Boron Nitride structure
@@ -44,17 +44,17 @@ using Test
     @test all(symop * inv(symop) ≈ one(symop) for symop in symmetry)
     EPW.check_group(symmetry)
 
-    kpts = bzmesh_ir_wedge((6, 6, 6), symmetry)
+    kpts = kpoints_grid((6, 6, 6); symmetry)
     @test kpts.n == 16
-    kpts = bzmesh_ir_wedge((6, 6, 6), symmetry, ignore_time_reversal=true)
+    kpts = kpoints_grid((6, 6, 6); symmetry, ignore_time_reversal=true)
     @test kpts.n == 22
-    kpts = bzmesh_ir_wedge((7, 7, 7), symmetry)
+    kpts = kpoints_grid((7, 7, 7); symmetry)
     @test kpts.n == 20
 
     # Cubic Boron Nitride sturucture imported from file
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model(folder, epmat_outer_momentum="ph")
+    model = load_model(folder, skip_epmat=true)
     @test model.symmetry.nsym == 48
     @test model.symmetry.time_reversal == true
 
@@ -62,9 +62,9 @@ using Test
     @test all(symop * inv(symop) ≈ one(symop) for symop in symmetry)
     EPW.check_group(symmetry)
 
-    kpts = bzmesh_ir_wedge((6, 6, 6), model.symmetry)
+    kpts = kpoints_grid((6, 6, 6); model.symmetry)
     @test kpts.n == 16
-    kpts = bzmesh_ir_wedge((7, 7, 7), model.symmetry)
+    kpts = kpoints_grid((7, 7, 7); model.symmetry)
     @test kpts.n == 20
 end
 

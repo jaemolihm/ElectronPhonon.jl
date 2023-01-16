@@ -6,7 +6,7 @@ using OffsetArrays: no_offset_view
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     model = load_model(folder, load_symmetry_operators=true)
-    kpts = generate_kvec_grid(4, 4, 4) # cubicBN data is generated using 4*4*4 coarse k grid
+    kpts = kpoints_grid((4, 4, 4)) # cubicBN data is generated using 4*4*4 coarse k grid
 
     model.el_velocity_mode = :Direct
     els_direct = compute_electron_states(model, kpts, ["velocity"], fourier_mode="normal")

@@ -40,11 +40,7 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode
     if symmetry !== nothing && (! all(shift .== 0))
         error("nonzero shift and symmetry incompatible (not implemented)")
     end
-    if symmetry === nothing
-        kpoints = generate_kvec_grid(nks...; shift)
-    else
-        kpoints = bzmesh_ir_wedge(nks, symmetry)
-    end
+    kpoints = kpoints_grid(nks; symmetry, shift)
 
     # If the window is trivial, return the whole grid
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
@@ -70,17 +66,7 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MP
         error("nonzero shift and symmetry incompatible (not implemented)")
     end
     # Distribute k points
-    if symmetry === nothing
-        kpoints = generate_kvec_grid(nks..., mpi_comm; shift)
-    else
-        # Create the irreducible k points in the root. Then redistribute.
-        if mpi_isroot(mpi_comm)
-            kpoints = bzmesh_ir_wedge(nks, symmetry)
-        else
-            kpoints = Kpoints{Float64}()
-        end
-        kpoints = mpi_scatter(kpoints, mpi_comm)
-    end
+    kpoints = kpoints_grid(nks, mpi_comm; shift, symmetry)
 
     # If the window is trivial, return the whole grid
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))

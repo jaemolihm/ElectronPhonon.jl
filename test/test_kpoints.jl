@@ -6,7 +6,7 @@ using EPW
     nk1 = 2
     nk2 = 3
     nk3 = 4
-    kpts = generate_kvec_grid(nk1, nk2, nk3)
+    kpts = kpoints_grid((nk1, nk2, nk3))
     @test kpts.n == nk1 * nk2 * nk3
     @test sum(kpts.weights) ≈ 1
     @test kpts.vectors[19] ≈ [1/2, 1/3, 2/4]
@@ -23,7 +23,7 @@ using EPW
     @test kpts_filtered.weights[2] ≈ 1 / (nk1 * nk2 * nk3)
 
     # Test kpoints_create_subgrid
-    kpts = generate_kvec_grid(2, 2, 2)
+    kpts = kpoints_grid((2, 2, 2))
     ik_keep = zeros(Bool, kpts.n)
     ik_keep[7:8] .= true
     kpts = EPW.get_filtered_kpoints(kpts, ik_keep)
@@ -69,7 +69,7 @@ end
     Random.seed!(111)
     N = 3
     shift = [0, 1//2, 1//2] ./ N
-    kpts = generate_kvec_grid(N, N, N; shift)
+    kpts = kpoints_grid((N, N, N); shift)
     @test kpts.vectors[1] ≈ Vec3(0, 1//2N, 1//2N)
 
     kpts = EPW.get_filtered_kpoints(kpts, rand(Bool, kpts.n))

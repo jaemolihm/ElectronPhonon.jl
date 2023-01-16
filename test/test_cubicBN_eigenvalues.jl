@@ -10,7 +10,7 @@ using EPW
 
     model = load_model(folder, epmat_outer_momentum="el")
 
-    kpts = generate_kvec_grid(3, 3, 3)
+    kpts = kpoints_grid((3, 3, 3))
 
     # electron
     el_states = compute_electron_states(model, kpts, ["eigenvalue"], fourier_mode="gridopt")

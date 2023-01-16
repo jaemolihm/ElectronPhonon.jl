@@ -14,7 +14,6 @@ using LinearAlgebra
 export Symmetry
 export symmetry_operations
 export symmetry_is_subset
-export bzmesh_ir_wedge
 export symmetrize
 export symmetrize_array
 export symmetrize_array!
@@ -416,24 +415,29 @@ end
 normalize_kpoint_coordinate(k::AbstractVector) = normalize_kpoint_coordinate.(k)
 
 
+function bzmesh_ir_wedge(ngrid, symmetry::Symmetry; ignore_time_reversal=false)
+    Base.depwarn("Renamed. Use kpoints_grid instead", :bzmesh_ir_wedge)
+    kpoints_grid_symmetry(ngrid, symmetry; ignore_time_reversal)
+end
+
 """
-    bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; ignore_time_reversal=false)
+    kpoints_grid(grid, symmetry::Symmetry; ignore_time_reversal=false)
 Construct the irreducible wedge of a uniform Brillouin zone mesh for sampling ``k``-Points.
 The mesh includes the Gamma point. Returns a `Kpoints` object.
 - `ignore_time_reversal`: If true, ignore all symmetries involving time reversal.
 """
-function bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; ignore_time_reversal=false)
+function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=false)
     nsym_used = ignore_time_reversal ? sum(.!symmetry.is_tr) : symmetry.nsym
     weight_irr_int = Vector{Int}()
     k_irr = Vector{Vec3{Float64}}()
-    found = zeros(Bool, kgrid_size...)
+    found = zeros(Bool, ngrid...)
 
-    # kz = i3 / kgrid_size[3] is the fastest index
-    for (i3, i2, i1) in Iterators.product((0:n-1 for n in reverse(kgrid_size))...)
+    # kz = i3 / ngrid[3] is the fastest index
+    for (i3, i2, i1) in Iterators.product((0:n-1 for n in reverse(ngrid))...)
         # check if this k-point has already been found equivalent to another. If so, skip.
         found[i1+1, i2+1, i3+1] && continue
 
-        k = Vec3{Rational{Int}}((i1, i2, i3) .// kgrid_size)
+        k = Vec3{Rational{Int}}((i1, i2, i3) .// ngrid)
 
         # Check if there are equivalent k-point to the remaining k points
         # Also, count the number of symops that map k to itself.
@@ -444,7 +448,7 @@ function bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; ignore_time_reversal=fa
             end
             Sk = is_tr ? mod.(-S * k, 1) : mod.(S * k, 1)
             if Sk > k
-                i1, i2, i3 = Int.(Sk.data .* kgrid_size) .+ 1
+                i1, i2, i3 = Int.(Sk.data .* ngrid) .+ 1
                 found[i1, i2, i3] = true
             elseif Sk == k
                 nsym_star += 1
@@ -457,10 +461,10 @@ function bzmesh_ir_wedge(kgrid_size, symmetry::Symmetry; ignore_time_reversal=fa
         push!(k_irr, k)
         push!(weight_irr_int, nsym_used / nsym_star)
     end
-    @assert sum(weight_irr_int) == prod(kgrid_size)
-    weight_irr = weight_irr_int / prod(kgrid_size)
+    @assert sum(weight_irr_int) == prod(ngrid)
+    weight_irr = weight_irr_int / prod(ngrid)
     k_irr, weight_irr
-    Kpoints{Float64}(length(k_irr), k_irr, weight_irr, kgrid_size)
+    Kpoints{Float64}(length(k_irr), k_irr, weight_irr, ngrid)
 end
 
 

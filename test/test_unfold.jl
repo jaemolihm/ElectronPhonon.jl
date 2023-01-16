@@ -9,8 +9,8 @@ using EPW
     @testset "kpoints" begin
         # Unfolding of irreducible BZ to full BZ
         nk = 30
-        kpts = GridKpoints(bzmesh_ir_wedge((nk, nk, nk), model.symmetry));
-        kpts_unfold_ref = GridKpoints(generate_kvec_grid(nk, nk, nk));
+        kpts = GridKpoints(kpoints_grid((nk, nk, nk); model.symmetry));
+        kpts_unfold_ref = GridKpoints(kpoints_grid((nk, nk, nk)));
         kpts_unfold = EPW.unfold_kpoints(kpts, model.symmetry);
         @test kpts_unfold == kpts_unfold_ref
 
@@ -41,7 +41,7 @@ using EPW
     @testset "ElectronStates" begin
         symmetry = model.el_sym.symmetry
         nk = 5
-        kpts_full = GridKpoints(generate_kvec_grid(nk, nk, nk))
+        kpts_full = GridKpoints(kpoints_grid((nk, nk, nk)))
         kpts_irr, ik_to_ikirr_isym = EPW.fold_kpoints(kpts_full, symmetry)
         el_irr = compute_electron_states(model, kpts_irr, ["eigenvector", "velocity", "position"])
         el_full = compute_electron_states(model, kpts_full, ["eigenvector", "velocity", "position"])

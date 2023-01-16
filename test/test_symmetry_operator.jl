@@ -21,7 +21,7 @@ using EPW.WanToBloch: get_symmetry_representation_wannier!
         model.el_velocity_mode = el_velocity_mode
 
         # Test symmetry of Hamiltonian and eigenstates
-        kpts = generate_kvec_grid(6, 6, 6);
+        kpts = kpoints_grid((6, 6, 6));
         kpts = GridKpoints(kpts);
         els = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"]; fourier_mode="gridopt");
 

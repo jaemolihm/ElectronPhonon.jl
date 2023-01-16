@@ -64,11 +64,7 @@ function run_eph_outer_loop_q(
         end
         qpoints_all = q_input
     elseif q_input isa NTuple{3,Int}
-        if mpi_comm_q === nothing
-            qpoints_all = generate_kvec_grid(q_input...)
-        else
-            qpoints_all = generate_kvec_grid(q_input..., mpi_comm_q)
-        end
+        qpoints_all = kpoints_grid(q_input, mpi_comm_q)
     else
         error("type of q_input is wrong")
     end

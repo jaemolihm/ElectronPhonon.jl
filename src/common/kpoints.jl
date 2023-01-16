@@ -3,7 +3,7 @@
 using MPI
 
 export Kpoints
-export generate_kvec_grid
+export kpoints_grid
 export GridKpoints
 export xk_to_ik
 export shift_center!
@@ -55,27 +55,64 @@ function Base.sort!(k::Kpoints)
     k
 end
 
-"""
-    generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer)
-Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
-Return all k points.
-"""
 function generate_kvec_grid(nk1, nk2, nk3; shift=(0, 0, 0))
-    nk = nk1 * nk2 * nk3
-    generate_kvec_grid(nk1, nk2, nk3, 1:nk; shift)
+    Base.depwarn("Renamed. Use kpoints_grid instead", :generate_kvec_grid)
+    kpoints_grid((nk1, nk2, nk3); shift)
+end
+
+function generate_kvec_grid(nk1, nk2, nk3, mpi_comm::MPI.Comm; shift=(0, 0, 0))
+    Base.depwarn("Renamed. Use kpoints_grid instead", :generate_kvec_grid)
+    kpoints_grid((nk1, nk2, nk3), mpi_comm; shift)
 end
 
 """
-    generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer, rng)
+    kpoints_grid(ngrid; shift=(0, 0, 0); symmetry=nothing, ignore_time_reversal=false) => Kpoints
+Generate regular grid of k points with size ngrid. Shift the grid from the center by `shift`
+in crystal coordinates.
+If `mpi_comm` is set to a MPI communicator, distribute the k points over it.
+# Keyword arguments
+- `symmetry`: If given, return the irreducible wedge of a uniform Brillouin zone mesh. The
+    `symmetry` is incompatible with `shift`: : mesh always includes the Gamma point.
+- `ignore_time_reversal`: If `true` and `symmetry` is given, ignore all symmetries involving
+    time reversal.
+"""
+function kpoints_grid(ngrid, mpi_comm::Union{MPI.Comm, Nothing}=nothing; shift=(0, 0, 0), symmetry=nothing, ignore_time_reversal=false)
+    if symmetry isa Symmetry
+        if shift != (0, 0, 0)
+            error("kpoints_grid with symmetry incompatible with shift")
+        end
+        if mpi_comm isa MPI.Comm
+            # Create the irreducible k points in the root. Then redistribute.
+            kpoints = if mpi_isroot(mpi_comm)
+                kpoints_grid_symmetry(ngrid, symmetry; ignore_time_reversal)
+            else
+                Kpoints{Float64}()
+            end
+            return mpi_scatter(kpoints, mpi_comm)
+        else
+            return kpoints_grid_symmetry(ngrid, symmetry; ignore_time_reversal)
+        end
+    elseif symmetry === nothing
+        nk = prod(ngrid)
+        range = mpi_comm isa MPI.Comm ? mpi_split_iterator(1:nk, mpi_comm) : 1:nk
+        return kpoints_grid_range(ngrid, range; shift)
+    else
+        error("Wrong input symmetry: must be a Symmetry object or nothing")
+    end
+end
+
+"""
+    kpoints_grid_range(ngrid::NTuple{3, Int}, rng)
 Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
 Return k points for global index in the given range.
 -`shift`: Shift for the grid in the crystal coordinates.
 """
-function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int}, ::Type{FT}=Float64; shift=(0, 0, 0)) where FT
+function kpoints_grid_range(ngrid::NTuple{3, Int}, rng::UnitRange{Int}, ::Type{FT}=Float64; shift=(0, 0, 0)) where FT
     # TODO: Type
-    nk_grid = nk1 * nk2 * nk3
+    nk1, nk2, nk3 = ngrid
+    nk = nk1 * nk2 * nk3
     @assert rng[1] >= 1
-    @assert rng[end] <= nk_grid
+    @assert rng[end] <= nk
     kvecs = Vec3{FT}[]
 
     for ik in rng
@@ -86,18 +123,7 @@ function generate_kvec_grid(nk1, nk2, nk3, rng::UnitRange{Int}, ::Type{FT}=Float
         push!(kvecs, Vec3{FT}(i/nk1, j/nk2, k/nk3) .+ shift)
     end
     nk = length(kvecs)
-    Kpoints(nk, kvecs, fill(1/nk_grid, (nk,)), (nk1, nk2, nk3))
-end
-
-"""
-    generate_kvec_grid(nk1::Integer, nk2::Integer, nk3::Integer, mpi_comm::MPI.Comm)
-Generate regular nk1 * nk2 * nk3 grid of k points as Vector of StaticVectors.
-Return all k points. k points are distributed over the MPI communicator mpi_comm.
-"""
-function generate_kvec_grid(nk1, nk2, nk3, mpi_comm::MPI.Comm; shift=(0, 0, 0))
-    nk = nk1 * nk2 * nk3
-    range = mpi_split_iterator(1:nk, mpi_comm)
-    generate_kvec_grid(nk1, nk2, nk3, range; shift)
+    Kpoints(nk, kvecs, fill(1/nk, (nk,)), (nk1, nk2, nk3))
 end
 
 "Filter kpoints using a Boolean vector ik_keep. Retern Kpoints object where

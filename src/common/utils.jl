@@ -9,7 +9,6 @@ export occ_fermion
 export occ_fermion_derivative
 export occ_boson
 export gaussian
-export generate_kvec_grid
 export average_degeneracy
 export bisect
 
