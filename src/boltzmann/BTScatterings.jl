@@ -64,7 +64,7 @@ Dump BTData object `obj` to an HDF5 file or group `f`.
 """
 @timing "dump_BTData" function dump_BTData(f, obj::ElPhScatteringData{T}, n=obj.n) where {T}
     if n > obj.n
-        error("Number of scattering processes $num cannot be greater than obj.n $(obj.n)")
+        error("Number of scattering processes $n cannot be greater than obj.n $(obj.n)")
     end
     f["n"] = n
     @views f["ind_el_i"] = obj.ind_el_i[1:n]

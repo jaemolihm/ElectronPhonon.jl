@@ -155,7 +155,7 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
 
         get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u; fourier_mode)
 
-        bt_nscat = 0
+        empty!(bt_scat)
 
         # Threads.@threads :static for ikq in 1:nkq
         for ik in 1:nk
@@ -194,21 +194,17 @@ function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_p
                 check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
                     qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
-                bt_nscat += 1
-                bt_scat.ind_el_i[bt_nscat] = imap_el_k[ib, ik]
-                bt_scat.ind_el_f[bt_nscat] = imap_el_kq[jb, ikq]
-                bt_scat.ind_ph[bt_nscat] = imap_ph[imode, iq]
-                bt_scat.sign_ph[bt_nscat] = sign_ph
-                bt_scat.mel[bt_nscat] = epdata.g2[jb, ib, imode]
+                data = (imap_el_k[ib, ik], imap_el_kq[jb, ikq], imap_ph[imode, iq], sign_ph, epdata.g2[jb, ib, imode])
+                push!(bt_scat, data)
             end
         end # ik
 
         @timing "bt_dump" begin
             g = create_group(fid_btedata, "scattering/iq$iq")
-            dump_BTData(g, bt_scat, bt_nscat)
+            dump_BTData(g, bt_scat)
         end
 
-        nscat_tot += bt_nscat
+        nscat_tot += bt_scat.n
     end # iq
     close(fid_btedata)
     @info "nscat_tot = $nscat_tot"
@@ -291,7 +287,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
         end
         get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u); fourier_mode)
 
-        bt_nscat = 0
+        empty!(bt_scat)
 
         # Threads.@threads :static for ikq in 1:nkq
         for iq in 1:nq
@@ -330,21 +326,17 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
                 check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
                     qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
-                bt_nscat += 1
-                bt_scat.ind_el_i[bt_nscat] = imap_el_k[ib, ik]
-                bt_scat.ind_el_f[bt_nscat] = imap_el_kq[jb, ikq]
-                bt_scat.ind_ph[bt_nscat] = imap_ph[imode, iq]
-                bt_scat.sign_ph[bt_nscat] = sign_ph
-                bt_scat.mel[bt_nscat] = epdata.g2[jb, ib, imode]
+                data = (imap_el_k[ib, ik], imap_el_kq[jb, ikq], imap_ph[imode, iq], sign_ph, epdata.g2[jb, ib, imode])
+                push!(bt_scat, data)
             end
         end # iq
 
         @timing "bt_dump" begin
             g = create_group(fid_btedata, "scattering/ik$ik")
-            dump_BTData(g, bt_scat, bt_nscat)
+            dump_BTData(g, bt_scat)
         end
 
-        nscat_tot += bt_nscat
+        nscat_tot += bt_scat.n
     end # ik
     close(fid_btedata)
     @info "nscat_tot = $nscat_tot"
