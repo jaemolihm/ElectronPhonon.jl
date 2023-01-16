@@ -1,6 +1,5 @@
 using Test
 using EPW
-using OffsetArrays: no_offset_view
 
 @testset "ElectronState" begin
     BASE_FOLDER = dirname(dirname(pathof(EPW)))
@@ -8,7 +7,7 @@ using OffsetArrays: no_offset_view
     folder_tmp_el = joinpath(folder, "tmp_el")
     mkpath(folder_tmp_el)
 
-    model = load_model(folder)
+    model = load_model(folder; skip_epmat=true)
     window = (10.0, 25.0) .* unit_to_aru(:eV)
 
     @testset "basic" begin

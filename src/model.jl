@@ -21,7 +21,7 @@ end
 
 "Tight-binding model for electron, phonon, and electron-phonon coupling.
 All data is in coarse real-space grid."
-Base.@kwdef mutable struct ModelEPW{FT <: AbstractFloat, WannType <: AbstractWannierObject{FT}}
+Base.@kwdef mutable struct ModelEPW{FT <: AbstractFloat, WannType <: Union{Nothing, AbstractWannierObject{FT}}}
     # Lattice information
     alat::FT # Lattice parameter
     # Lattice vector in Bohr. lattice[:, i] is the i-th lattice vector.
@@ -76,13 +76,13 @@ end
 "Read file and create ModelEPW object in the MPI root.
 Broadcast to all other processors."
 function load_model(folder::String; epmat_on_disk::Bool=false, tmpdir=nothing,
-    epmat_outer_momentum="ph", load_symmetry_operators=false)
+    epmat_outer_momentum="ph", load_symmetry_operators=false, skip_epmat=false)
     # Read model from file
     if mpi_initialized()
         # FIXME: Read only in the root core, and then bcast.
         # The implementation below breaks if epmat size is large. MPI bcast of large array
         # with sizeof(array) is greater than typemax(Cint) was not possible.
-        model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators)
+        model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators, skip_epmat)
         # if mpi_isroot(EPW.mpi_world_comm())
         #     model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
         # else
@@ -91,7 +91,7 @@ function load_model(folder::String; epmat_on_disk::Bool=false, tmpdir=nothing,
         # # Broadcast to all processors
         # model = mpi_bcast(model, EPW.mpi_world_comm())
     else
-        model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators)
+        model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators, skip_epmat)
     end
 
     # Check symmetry of model
@@ -110,9 +110,11 @@ tmpdir
     Directory to write temporary binary files for epmat_on_disk=false calse.
 epmat_outer_momentum
     Outer momentum that model.epmat couples to. "ph" (default) or "el".
+skip_epmat
+    If true, skip reading the electron-phonon matrix elements.
 """
 function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=nothing;
-        epmat_outer_momentum, load_symmetry_operators)
+        epmat_outer_momentum, load_symmetry_operators, skip_epmat)
     T = Float64
 
     if epmat_on_disk && tmpdir === nothing
@@ -241,7 +243,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
 
     # Electron-phonon coupling
     # This part is the bottleneck of this function.
-    if epmat_on_disk
+    if !skip_epmat && epmat_on_disk
         empat_filename = "tmp_epmat.bin"
 
         # epmat stays on disk. Read each epmat for each ir and write to file.
@@ -272,7 +274,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
             end
         end
         close(fw)
-    else
+    elseif !skip_epmat && !epmat_on_disk
         # Read epmat to memory
         epmat_re_rp = zeros(ComplexF64, nw, nw, nmodes, nr_el, nr_ep)
         for ir in 1:nr_ep
@@ -313,7 +315,10 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         el_velocity_mode = :BerryConnection
     end
 
-    if epmat_on_disk
+    if skip_epmat
+        epmat = nothing
+        epmat_outer_momentum = "nothing"
+    elseif epmat_on_disk
         if epmat_outer_momentum == "ph"
             epmat = DiskWannierObject(Float64, "epmat", nr_ep, irvec_ep, nw*nw*nmodes*nr_el,
                 tmpdir, empat_filename, irvec_next=irvec_el)
