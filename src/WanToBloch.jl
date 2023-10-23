@@ -47,7 +47,7 @@ function _get_buffer(buffer::Vector{Vector{T}}, dims::NTuple{N, Int}) where {T, 
     if length(buffer[tid]) < prod(dims)
         resize!(buffer[tid], prod(dims))
     end
-    Base.ReshapedArray(buffer[tid], dims, ())
+    Base.ReshapedArray(view(buffer[tid], 1:prod(dims)), dims, ())
 end
 
 # =============================================================================
