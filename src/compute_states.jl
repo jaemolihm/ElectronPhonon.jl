@@ -23,7 +23,7 @@ function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window=(
     end
 
     # compute quantities
-    Threads.@threads for ik in 1:kpts.n
+    Threads.@threads :static for ik in 1:kpts.n
         xk = kpts.vectors[ik]
         el = states[ik]
 

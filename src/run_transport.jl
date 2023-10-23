@@ -195,7 +195,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
 
         empty!.(bt_scat_threads)
 
-        Threads.@threads for ikq in 1:nkq
+        Threads.@threads :static for ikq in 1:nkq
             tid = Threads.threadid()
             epdata = epdatas[tid]
             bt_scat = bt_scat_threads[tid]

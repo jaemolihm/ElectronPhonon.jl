@@ -52,6 +52,7 @@ function set_occupation!(ph::PhononState, T)
         ph.occupation[i] = occ_boson(ph.e[i], T)
     end
 end
+get_occupation(ph::PhononState, T) = occ_boson.(ph.e, T)
 
 # Define wrappers of WanToBloch functions
 

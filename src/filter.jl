@@ -7,6 +7,7 @@
 using Base.Threads
 using MPI
 using EPW: Kpoints
+using Interpolations: AbstractInterpolation
 
 export filter_kpoints
 export filter_qpoints

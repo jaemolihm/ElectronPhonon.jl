@@ -180,8 +180,10 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # TODO: Cleanup gauge and gauge_self.
     mpi_isroot() && println("Calculating and writing gauge matrices")
 
-    iband_min = minimum(el.rng.start for el in el_k_save if el.nband > 0)
-    iband_max = maximum(el.rng.stop  for el in el_k_save if el.nband > 0)
+    iband_min = min(minimum(el.rng.start for el in el_k_save  if el.nband > 0),
+                    minimum(el.rng.start for el in el_kq_save if el.nband > 0))
+    iband_max = max(maximum(el.rng.stop  for el in el_k_save  if el.nband > 0),
+                    maximum(el.rng.stop  for el in el_kq_save if el.nband > 0))
     rng_max = iband_min:iband_max
     nband_max = length(rng_max)
     gauge = OffsetArray(zeros(Complex{FT}, nband_max, nband_max, nk), rng_max, rng_max, :)

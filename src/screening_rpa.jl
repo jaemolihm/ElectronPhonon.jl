@@ -41,8 +41,10 @@ end
 function compute_χ0(ph, indmap_ph, el_k_save, el_kq_save, kpts, kqpts, symmetry, params::RPAScreeningParams)
     η = params.smearing
 
-    iband_min = minimum(el.rng.start for el in el_k_save if el.nband > 0)
-    iband_max = maximum(el.rng.stop  for el in el_k_save if el.nband > 0)
+    iband_min = min(minimum(el.rng.start for el in el_k_save  if el.nband > 0),
+                    minimum(el.rng.start for el in el_kq_save if el.nband > 0))
+    iband_max = max(maximum(el.rng.stop  for el in el_k_save  if el.nband > 0),
+                    maximum(el.rng.stop  for el in el_kq_save if el.nband > 0))
     rng_max = iband_min:iband_max
     nband_max = length(rng_max)
     mmat = OffsetArray(zeros(eltype(first(el_k_save).u), nband_max, nband_max), rng_max, rng_max)

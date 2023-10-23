@@ -365,9 +365,9 @@ function unfold_kpoints(kpts::GridKpoints, symmetry)
     sk_hash_dict = Dict{Int, Int}()
     sk_vectors = empty(kpts.vectors)
     sk_weights = empty(kpts.weights)
-    for ik in 1:kpts.n
-        xk = kpts.vectors[ik]
-        for symop in symmetry
+    for symop in symmetry
+        for ik in 1:kpts.n
+            xk = kpts.vectors[ik]
             sk = symop.is_tr ? -symop.S * xk : symop.S * xk
             sk = EPW.normalize_kpoint_coordinate(sk)
             sk_hash = EPW._hash_xk(sk, ngrid, shift)

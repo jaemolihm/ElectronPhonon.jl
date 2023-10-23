@@ -159,15 +159,13 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
 
     # Polar parameters
     use_polar_dipole = fortran_read_bool(f)
+    # 2023.02.16 change: in EPW, always write ϵ and Z.
+    ϵ_arr = read(f, (Float64, 3, 3))
+    ϵ = Mat3{T}(ϵ_arr)
+    Z_arr = read(f, (Float64, 3, 3, natoms))
+    Z = [Mat3{Float64}(arr) for arr in eachslice(Z_arr, dims=3)]
 
-    # FIXME: quadrupole without dipole
-
-    if use_polar_dipole
-        ϵ_arr = read(f, (Float64, 3, 3))
-        ϵ = Mat3{T}(ϵ_arr)
-        Z_arr = read(f, (Float64, 3, 3, natoms))
-        Z = [Mat3{Float64}(arr) for arr in eachslice(Z_arr, dims=3)]
-
+    if use_polar_dipole || isfile(joinpath(folder, "quadrupole.fmt"))
         # EPW hard-coded parameters (see EPW/src/rigid_epw.f90)
         cutoff = T(14.0)  # gmax
         η = T(1.0)  # alph

@@ -18,6 +18,7 @@ export set_eigen_valueonly!
 export set_velocity_diag!
 export set_position!
 export compute_symmetry_representation!
+export get_occupation
 
 # TODO: Remove nband_bound. nband >= length(rng) can hold. Create a function `trim(el::ElectronState)`
 #       (or even trim!) that reduces nband to length(rng).
@@ -133,6 +134,8 @@ function set_occupation!(el::ElectronState, μ, T)
         el.occupation[i] = occ_fermion(el.e[i] - μ, T)
     end
 end
+get_occupation(el::ElectronState, μ, T) = occ_fermion.(el.e .- μ, T)
+
 
 # Define wrappers of WanToBloch functions
 
