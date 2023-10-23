@@ -181,7 +181,7 @@ function spglib_spacegroup_number(model)
     # TODO Are magnetic moments passed?
     spg_positions, spg_numbers, _ = spglib_atoms(atom_pos_crys(model), model.atom_labels)
     structure = Spglib.Cell(model.lattice, spg_positions, spg_numbers)
-    Spglib.get_spacegroup_number(structure)
+    Spglib.get_dataset(structure).spacegroup_number
 end
 
 atom_pos_crys(model) = [inv(model.lattice) * (pos .* model.alat) for pos in model.atom_pos]
