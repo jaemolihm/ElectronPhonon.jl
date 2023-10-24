@@ -81,30 +81,42 @@ function compute_phonon_states(model::ModelEPW{FT}, kpts, quantities; fourier_mo
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
     end
 
-    nmodes = model.nmodes
+    (; nmodes, mass) = model
+    polar = model.polar_phonon
 
     states = [PhononState(nmodes, FT) for ik=1:kpts.n]
     if quantities == []
         return states
     end
 
+    need_velocity = "velocity_diagonal" ∈ quantities
+
+    # Setup WannierInterpolators
+    dyn_threads = [get_interpolator(model.ph_dyn; fourier_mode) for _ in 1:nthreads()]
+    if need_velocity
+        dyn_R_threads = [get_interpolator(model.ph_dyn_R; fourier_mode) for _ in 1:nthreads()]
+    end
+
     # compute quantities
     Threads.@threads for ik in 1:kpts.n
+        dyn = dyn_threads[threadid()]
+        need_velocity && (dyn_R = dyn_R_threads[threadid()])
+
         xk = kpts.vectors[ik]
         ph = states[ik]
 
         if quantities == ["eigenvalue"]
-            set_eigen_valueonly!(ph, model, xk; fourier_mode)
+            set_eigen_valueonly!(ph, xk, dyn, mass, polar)
         else
-            set_eigen!(ph, model, xk; fourier_mode)
+            set_eigen!(ph, xk, dyn, mass, polar)
             if "velocity" ∈ quantities
                 # not implemented
-                error("velocity not implemented")
+                error("full velocity for phonons not implemented")
             elseif "velocity_diagonal" ∈ quantities
-                set_velocity_diag!(ph, model, xk; fourier_mode)
+                set_velocity_diag!(ph, xk, dyn_R)
             end
             if "eph_dipole_coeff" ∈ quantities
-                set_eph_dipole_coeff!(ph, model, xk)
+                set_eph_dipole_coeff!(ph, xk, polar)
             end
         end
     end # ik

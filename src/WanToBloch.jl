@@ -220,20 +220,20 @@ end
 # FIXME: fourier_mode vs mode, keyword or positional
 
 """
-    get_ph_eigen!(values, vectors, ph_dyn, mass, xq, polar=nothing; fourier_mode="normal")
+    get_ph_eigen!(values, vectors, xq, dyn, mass, polar)
 Compute electron eigenenergy and eigenvector.
 """
-@timing "w2b_ph_eig" function get_ph_eigen!(values, vectors, ph_dyn, mass, xq, polar=nothing; fourier_mode="normal")
+@timing "w2b_ph_eig" function get_ph_eigen!(values, vectors, xq, dyn, mass, polar)
     nmodes = length(values)
     @assert size(vectors) == (nmodes, nmodes)
     @assert size(mass) == (nmodes,)
-    @assert ph_dyn.ndata == nmodes^2
+    @assert dyn.ndata == nmodes^2
 
     # dynq = _get_buffer(_buffer_ph_eigen, (nmodes, nmodes))
     # Use vectors as a temporary storage for the dynamical matrix
     dynq = vectors
 
-    get_fourier!(dynq, ph_dyn, xq; fourier_mode)
+    get_fourier!(dynq, dyn, xq)
     if ! isnothing(polar)
         dynmat_dipole!(dynq, xq, polar, 1)
     end
@@ -242,20 +242,20 @@ Compute electron eigenenergy and eigenvector.
         dynq[i, j] /= sqrt(mass[j])
     end
     solve_eigen_ph!(values, vectors, dynq, mass)
-    nothing
+    values, vectors
 end
 
 """
-    get_el_eigen_valueonly!(values, nw, el_ham, xk; fourier_mode="normal")
+    get_el_eigen_valueonly!(values, xq, dyn, mass, polar)
 """
-@timing "w2b_ph_eigval" function get_ph_eigen_valueonly!(values, ph_dyn, mass, xq, polar=nothing; fourier_mode="normal")
+@timing "w2b_ph_eigval" function get_ph_eigen_valueonly!(values, xq, dyn, mass, polar)
     nmodes = length(values)
     @assert size(mass) == (nmodes,)
-    @assert ph_dyn.ndata == nmodes^2
+    @assert dyn.ndata == nmodes^2
 
     dynq = _get_buffer(_buffer1, (nmodes, nmodes))
 
-    get_fourier!(dynq, ph_dyn, xq; fourier_mode)
+    get_fourier!(dynq, dyn, xq)
     if ! isnothing(polar)
         dynmat_dipole!(dynq, xq, polar, 1)
     end
@@ -264,19 +264,19 @@ end
         dynq[i, j] /= sqrt(mass[j])
     end
     solve_eigen_ph_valueonly!(values, dynq)
-    nothing
+    values
 end
 
 
 """
-    get_ph_velocity_diag!(vel_diag, nw, el_ham_R, xk, uk; fourier_mode="normal")
-Compute electron band velocity, only the band-diagonal part.
+    get_ph_velocity_diag!(vel_diag, dyn_R, xk, uk)
+Compute phonon band velocity, only the band-diagonal part.
 # Outputs
 - `vel_diag`: (3, nmodes) array, contains diagonal band velocity.
 # Inputs
 - `uk`: nmodes * nmodes matrix containing phonon eigenvectors.
 """
-@timing "w2b_ph_vel" function get_ph_velocity_diag!(vel_diag, ph_dyn_R, xk, uk; fourier_mode="normal")
+@timing "w2b_ph_vel" function get_ph_velocity_diag!(vel_diag, dyn_R, xk, uk)
     # FIXME: Polar is not implemented.
     nmodes = size(uk, 1)
     @assert size(uk) == (nmodes, nmodes)
@@ -285,7 +285,7 @@ Compute electron band velocity, only the band-diagonal part.
     vk = _get_buffer(_buffer1, (nmodes, nmodes, 3))
     tmp = _get_buffer(_buffer2, (nmodes, nmodes))
 
-    get_fourier!(vk, ph_dyn_R, xk; fourier_mode)
+    get_fourier!(vk, dyn_R, xk)
 
     # vel_diag[idir, i] = uk'[i, :] * vk[:, :, idir] * uk[:, i]
     @views @inbounds for idir = 1:3
