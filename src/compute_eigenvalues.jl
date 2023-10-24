@@ -6,14 +6,16 @@ export compute_eigenvalues_el
 export compute_eigenvalues_ph
 
 function compute_eigenvalues_el(model::ModelEPW{FT}, kpts; fourier_mode="gridopt") where FT
+    ham = get_interpolator(model.el_ham; fourier_mode)
+    e = zeros(FT, model.nw, kpts.n)
     el = ElectronState{FT}(model.nw)
-    e = zeros(model.nw, kpts.n)
     for ik in 1:kpts.n
-        set_eigen_valueonly!(el, model, kpts.vectors[ik]; fourier_mode)
+        set_eigen_valueonly!(el, ham, kpts.vectors[ik])
         e[:, ik] .= el.e_full
     end # ik
     e
 end
+
 
 function compute_eigenvalues_ph(model::ModelEPW{FT}, kpts; fourier_mode="gridopt") where FT
     ph = PhononState(model.nmodes, FT)

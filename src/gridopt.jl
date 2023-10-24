@@ -1,83 +1,67 @@
-
-using Parameters
 using LinearAlgebra
-using Base.Threads
 
-"Real-space data with reduced dimensions for fourier_mode=gridopt in get_fourier"
-@with_kw mutable struct GridOpt{T<:Real}
-    is_initialized::Bool = false
-    ndata::Int = 0 # Size of the Fourier-transformed data matrix
+mutable struct GridOpt{T<:Real}
+    const ndata::Int # Size of the Fourier-transformed data matrix
 
     # Data for (k1, R2, R3)
-    k1::Float64 = NaN
-    nr_23::Int = 0
-    irvec_23::Vector{Vec2{Int}} = Vector{Vec2{Int}}(undef, 0)
-    irmap_rng_23::Array{UnitRange{Int64},1} = Array{UnitRange{Int64},1}(undef, 0)
-    op_r_23::Array{Complex{T},2} = Matrix{Complex{T}}(undef, 0, 0)
+    k1::T
+    const nr_23::Int
+    const irvec_23::Vector{Vec2{Int}}
+    const irmap_rng_23::Vector{UnitRange{Int}}
+    const op_r_23::Array{Complex{T},2}
 
     # Data for (k1, k2, R3)
-    k2::Float64 = NaN
-    nr_3::Int = 0
-    irvec_3::Vector{Int} = Vector{Int}(undef, 0)
-    irmap_rng_3::Array{UnitRange{Int64},1} = Array{UnitRange{Int64},1}(undef, 0)
-    op_r_3::Array{Complex{T},2} = Matrix{Complex{T}}(undef, 0, 0)
+    k2::T
+    const nr_3::Int
+    const irvec_3::Vector{Int}
+    const irmap_rng_3::Vector{UnitRange{Int}}
+    const op_r_3::Array{Complex{T},2}
 
     # Cache for Fourier transformation
-    phase::Vector{Complex{T}} = Vector{Complex{T}}(undef, 0)
-    phase_23::Vector{Complex{T}} = Vector{Complex{T}}(undef, 0)
-    phase_3::Vector{Complex{T}} = Vector{Complex{T}}(undef, 0)
-    rdotk_3::Vector{T} = Vector{T}(undef, 0)
-end
+    const phase::Vector{Complex{T}}
+    const phase_23::Vector{Complex{T}}
+    const phase_3::Vector{Complex{T}}
 
-function gridopt_initialize_irvec!(gridopt, irvec)
-    # Here, we assume that irvec is sorted according to (r[3], r[2], r[1]).
+    function GridOpt(::Type{T}, irvec::Vector{Vec3{Int}}, ndata::Int) where {T}
+        # Here, we assume that irvec is sorted according to (r[3], r[2], r[1]).
 
-    # Initialize 23
-    gridopt.k1 = NaN
-    @views gridopt.irvec_23 = unique([Vec2(r[2:3]) for r in irvec])
-    gridopt.nr_23 = length(gridopt.irvec_23)
-    gridopt.irmap_rng_23 = Array{UnitRange{Int64},1}()
-    @views for r_23 in gridopt.irvec_23
-        ir_first = findfirst(x -> x[2:3] == r_23, irvec)
-        ir_last = findlast(x -> x[2:3] == r_23, irvec)
-        push!(gridopt.irmap_rng_23, ir_first:ir_last)
+        # Initialize 23
+        k1 = NaN
+        irvec_23 = unique!([Vec2(r[2:3]) for r in irvec])
+        nr_23 = length(irvec_23)
+        irmap_rng_23 = UnitRange{Int}[]
+        @views for r_23 in irvec_23
+            ir_first = findfirst(x -> x[2:3] == r_23, irvec)
+            ir_last = findlast(x -> x[2:3] == r_23, irvec)
+            push!(irmap_rng_23, ir_first:ir_last)
+        end
+
+        # Initialize 3
+        k2 = NaN
+        irvec_3 = unique!([r[2] for r in irvec_23])
+        nr_3 = length(irvec_3)
+        irmap_rng_3 = UnitRange{Int}[]
+        for r_3 in irvec_3
+            ir_first = findfirst(x -> x[2] == r_3, irvec_23)
+            ir_last = findlast(x -> x[2] == r_3, irvec_23)
+            push!(irmap_rng_3, ir_first:ir_last)
+        end
+
+        # Initialize 23
+        op_r_23 = zeros(Complex{T}, ndata, nr_23)
+
+        # Initialize 3
+        op_r_3 = zeros(Complex{T}, ndata, nr_3)
+
+        # Initialize cache data
+        phase = zeros(Complex{T}, length(irvec))
+        phase_23 = zeros(Complex{T}, nr_23)
+        phase_3 = zeros(Complex{T}, nr_3)
+
+        new{T}(ndata, k1, nr_23, irvec_23, irmap_rng_23, op_r_23,
+            k2, nr_3, irvec_3, irmap_rng_3, op_r_3,
+            phase, phase_23, phase_3)
     end
-
-    # Initialize 3
-    gridopt.k2 = NaN
-    gridopt.irvec_3 = unique([r[2] for r in gridopt.irvec_23])
-    gridopt.nr_3 = length(gridopt.irvec_3)
-    gridopt.irmap_rng_3 = Array{UnitRange{Int64},1}()
-    @views for r_3 in gridopt.irvec_3
-        ir_first = findfirst(x -> x[2] == r_3, gridopt.irvec_23)
-        ir_last = findlast(x -> x[2] == r_3, gridopt.irvec_23)
-        push!(gridopt.irmap_rng_3, ir_first:ir_last)
-    end
-
-end
-
-function gridopt_initialize!(gridopt::GridOpt{T}, obj) where {T}
-    # Here, we assume that irvec is sorted according to (r[3], r[2], r[1]).
-
-    gridopt_initialize_irvec!(gridopt, obj.irvec)
-    gridopt.ndata = obj.ndata
-
-    # Initialize 23
-    gridopt.op_r_23 = zeros(Complex{T}, size(obj.op_r, 1), gridopt.nr_23)
-
-    # Initialize 3
-    gridopt.op_r_3 = zeros(Complex{T}, size(obj.op_r, 1), gridopt.nr_3)
-
-    # Initialize cache data
-    gridopt.phase = zeros(Complex{T}, length(obj.irvec))
-    gridopt.phase_23 = zeros(Complex{T}, gridopt.nr_23)
-    gridopt.phase_3 = zeros(Complex{T}, gridopt.nr_3)
-    gridopt.rdotk_3 = zeros(T, gridopt.nr_3)
-
-    @info "Initializing gridopt"
-    @info "nr=$(length(obj.irvec)), nr_23=$(gridopt.nr_23), nr_3=$(gridopt.nr_3)"
-
-    gridopt.is_initialized = true
 end
 
 # TODO: Rename to gridopt_compute_krr?
@@ -110,10 +94,8 @@ end
 end
 
 @timing "g3" function gridopt_get3!(op_k_1d, gridopt::GridOpt{T}, k) where {T}
-    rdotk = gridopt.rdotk_3
     phase = gridopt.phase_3
-    rdotk .= k .* gridopt.irvec_3
-    phase .= cispi.(2 .* rdotk)
+    @. phase = cispi(2 * k * gridopt.irvec_3)
 
     @views mul!(op_k_1d, gridopt.op_r_3[1:gridopt.ndata, :], phase)
     return

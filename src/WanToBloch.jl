@@ -50,38 +50,48 @@ function _get_buffer(buffer::Vector{Vector{T}}, dims::NTuple{N, Int}) where {T, 
     Base.ReshapedArray(view(buffer[tid], 1:prod(dims)), dims, ())
 end
 
+function _reshape_workspace(workspace::AbstractVector{T}, dims::NTuple{N, Int}) where {T, N}
+    n = prod(dims)
+    if length(workspace) < n
+        resize!(workspace, n)
+    end
+    Base.ReshapedArray(view(workspace, 1:n), dims, ())
+end
+
 # =============================================================================
 #  Electrons
 
 """
-    get_el_eigen!(values, vectors, nw, el_ham, xk; fourier_mode="normal")
+    get_el_eigen!(values, vectors, nw, ham, xk)
 Compute electron eigenenergy and eigenvector.
 """
-@timing "w2b_el_eig" function get_el_eigen!(values, vectors, nw, el_ham, xk; fourier_mode="normal")
+@timing "w2b_el_eig" function get_el_eigen!(values, vectors, nw, ham, xk)
     @assert size(values) == (nw,)
     @assert size(vectors) == (nw, nw)
 
     hk = _get_buffer(_buffer1, (nw, nw))
-    get_fourier!(hk, el_ham, xk; fourier_mode)
+    # hk = zeros(eltype(ham), (nw, nw))
+    # hk = _reshape_workspace(workspaces[1], (nw, nw))
+    get_fourier!(hk, ham, xk)
     solve_eigen_el!(values, vectors, hk)
     nothing
 end
 
 """
-    get_el_eigen_valueonly!(values, nw, el_ham, xk; fourier_mode="normal")
+    get_el_eigen_valueonly!(values, nw, ham, xk)
 """
-@timing "w2b_el_eigval" function get_el_eigen_valueonly!(values, nw, el_ham, xk; fourier_mode="normal")
+@timing "w2b_el_eigval" function get_el_eigen_valueonly!(values, nw, ham, xk)
     # FIXME: Names get_el_eigen_valueonly! and solve_eigen_el_valueonly! are confusing.
     @assert size(values) == (nw,)
 
     hk = _get_buffer(_buffer1, (nw, nw))
-    get_fourier!(hk, el_ham, xk; fourier_mode)
+    get_fourier!(hk, ham, xk)
     solve_eigen_el_valueonly!(values, hk)
     nothing
 end
 
 """
-    get_el_velocity_diag_berry_connection!(velocity_diag, nw, el_ham_R, xk, uk; fourier_mode="normal")
+    get_el_velocity_diag_berry_connection!(velocity_diag, nw, ham_R, xk, uk)
 Compute the diagoanl part of electron band velocity using the Berry connection formula. See
 docstring for get_el_velocity_berry_connection! for details.
 For the diagonal part, the Berry connection contribution is zero.
@@ -89,7 +99,7 @@ For the diagonal part, the Berry connection contribution is zero.
 velocity_diag: nband-dimensional vector.
 uk: nw * nband matrix containing nband eigenvectors of H(k).
 """
-@timing "w2b_el_vel" function get_el_velocity_diag_berry_connection!(velocity_diag, nw, el_ham_R, xk, uk; fourier_mode="normal")
+@timing "w2b_el_vel" function get_el_velocity_diag_berry_connection!(velocity_diag, nw, ham_R, xk, uk)
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity_diag) == (3, nband)
@@ -97,12 +107,12 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
     vk = _get_buffer(_buffer1, (nw, nw, 3))
     tmp = _get_buffer(_buffer2, (nw, nband))
 
-    get_fourier!(vk, el_ham_R, xk; fourier_mode)
+    get_fourier!(vk, ham_R, xk)
 
     # velocity_diag[idir, iband] = uk'[iband, :] * vk[:, :, idir] * uk[:, iband]
     @views @inbounds for idir = 1:3
         mul!(tmp, vk[:, :, idir], uk)
-        @views @inbounds for iband in 1:nband
+        for iband in 1:nband
             velocity_diag[idir, iband] = real(dot(uk[:, iband], tmp[:, iband]))
         end
     end
@@ -110,7 +120,7 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
 end
 
 """
-    get_el_velocity_berry_connection!(velocity, nw, el_ham_R, ek, xk, uk, rbar; fourier_mode="normal")
+    get_el_velocity_berry_connection!(velocity, nw, ham_R, ek, xk, uk, rbar)
 Compute electron band velocity using the Berry connection formula:
 ``v_{m,n} = (U^\\dagger dH^{(W)}(k) / dk U)_{m,n} + i * (e_m - e_n) * rbar_{m,n}``,
 where ``rbar = U^\\dagger A U``
@@ -119,7 +129,7 @@ where ``rbar = U^\\dagger A U``
 - `velocity``: (3, `nband`, `nband`) matrix
 - `uk`: `nw` * `nband` matrix containing nband eigenvectors of ``H(k)``.
 """
-@timing "w2b_el_vel" function get_el_velocity_berry_connection!(velocity, nw, el_ham_R, ek, xk, uk, rbar; fourier_mode="normal")
+@timing "w2b_el_vel" function get_el_velocity_berry_connection!(velocity, nw, ham_R, ek, xk, uk, rbar)
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)
@@ -127,7 +137,7 @@ where ``rbar = U^\\dagger A U``
     vk = _get_buffer(_buffer1, (nw, nw, 3))
     tmp = _get_buffer(_buffer2, (nw, nband))
 
-    get_fourier!(vk, el_ham_R, xk; fourier_mode)
+    get_fourier!(vk, ham_R, xk)
 
     # velocity[idir, :, :] = uk' * vk[:, :, idir] * uk
     @views @inbounds for idir = 1:3
@@ -144,15 +154,15 @@ where ``rbar = U^\\dagger A U``
 end
 
 """
-    get_el_velocity_direct!(velocity, nw, el_vel, xk, uk; fourier_mode="normal")
+    get_el_velocity_direct!(velocity, nw, vel, xk, uk)
 Compute electron band velocity by direct Wannier interpolation of ``dH/dk`` matrix elements.
-- `el_vel`: a `WannierObject`, containing matrix elements of ``dH/dk`` in real-space Wannier basis.
+- `vel`: WannierInterpolator for the velocity matrix (``dH/dk``).
 - `velocity``: (3, `nband`, `nband`) matrix
 - `uk`: `nw` * `nband` matrix containing nband eigenvectors of ``H(k)``.
 
 TODO: Can we reduce code duplication with get_el_velocity_berry_connection?
 """
-@timing "w2b_el_vel" function get_el_velocity_direct!(velocity, nw, el_vel, xk, uk; fourier_mode="normal")
+@timing "w2b_el_vel" function get_el_velocity_direct!(velocity, nw, vel, xk, uk)
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)
@@ -160,7 +170,7 @@ TODO: Can we reduce code duplication with get_el_velocity_berry_connection?
     vk = _get_buffer(_buffer1, (nw, nw, 3))
     tmp = _get_buffer(_buffer2, (nw, nband))
 
-    get_fourier!(vk, el_vel, xk; fourier_mode)
+    get_fourier!(vk, vel, xk)
 
     # velocity[idir, :, :] = uk' * vk[:, :, idir] * uk
     @views @inbounds for idir = 1:3

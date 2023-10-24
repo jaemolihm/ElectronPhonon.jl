@@ -12,6 +12,7 @@ export get_fourier!
 export update_op_r!
 
 abstract type AbstractWannierObject{T<:Real} end
+Base.eltype(::Type{<:AbstractWannierObject{T}}) where {T} = Complex{T}
 
 "Check validity of input for WannierObject constructor"
 function check_wannierobject(irvec::Vector{Vec3{Int}}, op_r)
@@ -32,13 +33,8 @@ Base.@kwdef mutable struct WannierObject{T} <: AbstractWannierObject{T}
     irvec::Vector{Vec3{Int}}
     op_r::Array{Complex{T},2}
     ndata::Int # Size of the Fourier-transformed data matrix
-
-    # For gridopt Fourier transform
-    gridopts::Vector{GridOpt{T}}
-
-    # Allocated buffer for normal Fourier transform
-    rdotks::Vector{Vector{T}}
-    phases::Vector{Vector{Complex{T}}}
+               # By default, ndata = size(op_r, 1). If one only wants a part of op_r to be
+               # transformed, one may use ndata to be smaller.
 
     # For a higher-order WannierObject, the irvec to be used to Fourier transform op_k.
     irvec_next::Union{Nothing,Vector{Vec3{Int}}}
@@ -51,11 +47,8 @@ function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing)
     end
     T = eltype(op_r).parameters[1]
     WannierObject{T}(nr=nr, irvec=irvec, op_r=op_r, ndata=size(op_r, 1),
-        gridopts=[GridOpt{T}() for i=1:Threads.nthreads()],
-        rdotks=[zeros(T, nr) for i=1:Threads.nthreads()],
-        phases=[zeros(Complex{T}, nr) for i=1:Threads.nthreads()],
         irvec_next=irvec_next,
-        )
+    )
 end
 
 function Base.show(io::IO, obj::AbstractWannierObject)
