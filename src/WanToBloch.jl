@@ -371,8 +371,7 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 end
 
 """
-`get_eph_RR_to_kR!(epobj_eRpq::WannierObject{T}, epmat::AbstractWannierObject{T},
-    xk, uk; fourier_mode="normal") where {T}`
+    get_eph_RR_to_kR!(epobj_eRpq::WannierObject{T}, epmat, xk, uk) where {T}
 
 Compute electron-phonon coupling matrix in electron Bloch, phonon Wannier basis.
 Multithreading is not supported because of large buffer array size.
@@ -384,24 +383,21 @@ Multithreading is not supported because of large buffer array size.
 - `xk`: Input. k point vector.
 - `uk`: Input. nw * nw matrix containing electron eigenvectors at k.
 """
-@timing "w2b_eph_RRtokR" function get_eph_RR_to_kR!(epobj_ekpR::WannierObject{T},
-        epmat::AbstractWannierObject{T}, xk, uk; fourier_mode="normal") where {T}
+@timing "w2b_eph_RRtokR" function get_eph_RR_to_kR!(epobj_ekpR::WannierObject{T}, epmat, xk, uk) where {T}
     """
     size(uk) = (nw, nband)
     size(epobj_ekpR.op_r) = (nw * nband_bound * nmodes, nr_ep)
     size(epmat.op_r) = (nw^2 * nmodes * nr_ep, nr_el)
     """
-    nr_ep = length(epmat.irvec_next)
+    nr_ep = length(epmat.parent.irvec_next)
     nw, nband = size(uk)
     nmodes = div(epmat.ndata, nw^2 * nr_ep)
     ndata = nw * nband * nmodes
     @assert epobj_ekpR.nr == nr_ep
     @assert size(epobj_ekpR.op_r, 1) >= ndata
-    @assert Threads.threadid() == 1
 
     ep_kR = _get_buffer(_buffer_nothreads1, (nw, nw, nmodes, nr_ep))
-
-    get_fourier!(ep_kR, epmat, xk; fourier_mode)
+    get_fourier!(ep_kR, epmat, xk)
 
     # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
     @views for ir in 1:nr_ep
@@ -413,26 +409,24 @@ Multithreading is not supported because of large buffer array size.
         end
     end
     epobj_ekpR.ndata = ndata
-    reset_gridopts_in_obj!(epobj_ekpR)
     nothing
 end
 
 """
-    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xk, u_ph, ukq; fourier_mode="normal")
+    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xk, u_ph, ukq)
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 The electron state at k should be already in the eigenstate basis in epobj_ekpR.
 
 # Arguments
 - `ep_kq`: Output. E-ph matrix in electron and phonon Bloch basis.
-- `epobj_ekpR`: Input. AbstractWannierObject. E-ph matrix in electron Wannier,
+- `epobj_ekpR`: Input. WannierInterpolator. E-ph matrix in electron Wannier,
     phonon Bloch basis.
 - `xq`: Input. q point vector.
 - `u_ph`: Input. nmodes * nmodes matrix containing phonon eigenvectors.
 - `ukq`: Input. Electron eigenstate at k+q.
 - `rngk`, `rngkq`: Input. Range of electron states inside the window.
 """
-@timing "w2b_eph_kRtokq" function get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, u_ph, ukq;
-        fourier_mode="normal")
+@timing "w2b_eph_kRtokq" function get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, u_ph, ukq)
     """
     size(ep_kq) = (nbandkq, nbandk, nmodes)
     size(epobj_ekpR.op_r) = (nw * nband_bound * nmodes, nr_ep)
@@ -444,12 +438,12 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
     nw = size(ukq, 1)
     @assert size(u_ph) == (nmodes, nmodes)
     @assert size(ukq, 2) == nbandkq
-    @assert epobj_ekpR.ndata == nw * nbandk * nmodes
+    @assert epobj_ekpR.parent.ndata == nw * nbandk * nmodes
 
     ep_kq_wan = _get_buffer(_buffer1, (nw, nbandk, nmodes))
     tmp = _get_buffer(_buffer2, (nbandkq, nbandk))
 
-    get_fourier!(ep_kq_wan, epobj_ekpR, xq; fourier_mode)
+    get_fourier!(ep_kq_wan, epobj_ekpR, xq)
 
     # Transform from phonon Cartesian to eigenmode basis and from electron Wannier at k+q
     # to eigenstate basis. The electron at k is already in eigenstate basis.

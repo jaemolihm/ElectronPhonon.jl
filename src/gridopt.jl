@@ -1,6 +1,7 @@
 using LinearAlgebra
 
 mutable struct GridOpt{T<:Real}
+    # TODO: Remove ndata
     const ndata::Int # Size of the Fourier-transformed data matrix
 
     # Data for (k1, R2, R3)
@@ -65,7 +66,7 @@ mutable struct GridOpt{T<:Real}
 end
 
 # TODO: Rename to gridopt_compute_krr?
-@timing "s23" function gridopt_set23!(gridopt::GridOpt{T}, irvec, op_r, k) where {T}
+@timing "s23" function gridopt_set23!(gridopt::GridOpt{T}, irvec, op_r, k, ndata) where {T}
     gridopt.k1 = k
     gridopt.k2 = NaN
     gridopt.op_r_23 .= 0
@@ -73,30 +74,39 @@ end
     for (ir, r) in enumerate(irvec)
         phase[ir] = cispi(2 * k * r[1])
     end
-    rng_data = 1:gridopt.ndata
+    rng_data = 1:ndata
     @views @inbounds for (ir_23, ir_rng) in enumerate(gridopt.irmap_rng_23)
         mul!(gridopt.op_r_23[rng_data, ir_23], op_r[rng_data, ir_rng], phase[ir_rng])
     end
 end
 
 # TODO: Rename to gridopt_compute_kkr?
-@timing "s3" function gridopt_set3!(gridopt::GridOpt{T}, k) where {T}
+@timing "s3" function gridopt_set3!(gridopt::GridOpt{T}, k, ndata) where {T}
     gridopt.k2 = k
     gridopt.op_r_3 .= 0
     phase = gridopt.phase_23
     for (ir, r) in enumerate(gridopt.irvec_23)
         phase[ir] = cispi(2 * k * r[1])
     end
-    rng_data = 1:gridopt.ndata
+    rng_data = 1:ndata
     @views @inbounds for (ir_3, ir_rng) in enumerate(gridopt.irmap_rng_3)
         mul!(gridopt.op_r_3[rng_data, ir_3], gridopt.op_r_23[rng_data, ir_rng], phase[ir_rng])
     end
 end
 
-@timing "g3" function gridopt_get3!(op_k_1d, gridopt::GridOpt{T}, k) where {T}
+@timing "g3" function gridopt_get3!(op_k_1d, gridopt::GridOpt{T}, k, ndata) where {T}
     phase = gridopt.phase_3
     @. phase = cispi(2 * k * gridopt.irvec_3)
 
-    @views mul!(op_k_1d, gridopt.op_r_3[1:gridopt.ndata, :], phase)
+    @views mul!(op_k_1d, gridopt.op_r_3[1:ndata, :], phase)
     return
+end
+
+"""
+    reset_gridopt!(gridopt::GridOpt)
+Reset the `GridOpt`. Must be called when the parent data is modified.
+"""
+function reset_gridopt!(gridopt::GridOpt)
+    gridopt.k1 = NaN
+    gridopt.k2 = NaN
 end

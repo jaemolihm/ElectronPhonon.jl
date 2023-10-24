@@ -159,10 +159,13 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
     nband_max = max(maximum(el.nband for el in el_k_save),
                     maximum(el.nband for el in el_kq_save))
 
+    epdatas = [ElPhData{Float64}(nw, nmodes, nband_max) for _ in 1:nthreads()]
+
+    epmat = EPW.get_interpolator(model.epmat; fourier_mode)
+
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData{Float64}(nw, nmodes, nband_max)]
-    Threads.resize_nthreads!(epdatas)
-    epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nband_max*nmodes, length(model.epmat.irvec_next))))
+    epobj_ekpR_obj = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nband_max*nmodes, length(model.epmat.irvec_next))))
+    epobj_ekpR_threads = [get_interpolator(epobj_ekpR_obj; fourier_mode) for _ in 1:nthreads()]
 
     # Setup for collecting scattering processes
     @timing "bt init" begin
@@ -191,7 +194,8 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             epdata.el_k = el_k
         end
 
-        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u); fourier_mode)
+        get_eph_RR_to_kR!(epobj_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
+        reset_gridopt!.(epobj_ekpR_threads)
 
         empty!.(bt_scat_threads)
 
@@ -199,6 +203,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             tid = Threads.threadid()
             epdata = epdatas[tid]
             bt_scat = bt_scat_threads[tid]
+            epobj_ekpR = epobj_ekpR_threads[tid]
 
             epdata.wtk = kpts.weights[ik]
             epdata.wtq = kqpts.weights[ikq]
@@ -220,7 +225,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             check_energy_conservation_all(epdata, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
+            get_eph_kR_to_kq!(epdata, epobj_ekpR, xq)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
