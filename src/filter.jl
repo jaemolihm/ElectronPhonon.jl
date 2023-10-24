@@ -137,3 +137,25 @@ function filter_qpoints(qpoints, kpoints, nw, el_ham, window; fourier_mode="grid
     end
     EPW.get_filtered_kpoints(qpoints, iq_keep)
 end
+
+function filter_qpoints(qpoints, kpoints, itp_el::Dict{Int, <: AbstractInterpolation}, window)
+    iq_keep_threads = [zeros(Bool, qpoints.n)]
+    Threads.resize_nthreads!(iq_keep_threads)
+
+    @threads :static for iq in 1:qpoints.n
+        iq_keep = iq_keep_threads[Threads.threadid()]
+        xq = qpoints.vectors[iq]
+        for xk in kpoints.vectors, iw in keys(itp_el)
+            xkq = xq + xk
+            ekq = itp_el[iw](xkq...)
+            if window[1] <= ekq <= window[2]
+                # If k+q is inside window, use this q point
+                iq_keep[iq] = true
+                break
+            end
+        end
+    end
+
+    iq_keep = reduce(.|, iq_keep_threads)
+    EPW.get_filtered_kpoints(qpoints, iq_keep)
+end
