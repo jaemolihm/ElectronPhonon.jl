@@ -85,16 +85,19 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MP
 end
 
 function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal")
-    eigenvalues_ = [zeros(Float64, nw) for _ in 1:nthreads()]
+    eigenvalues_ = [zeros(real(eltype(el_ham)), nw) for _ in 1:nthreads()]
     ik_keep_ = [zeros(Bool, kpoints.n) for _ in 1:nthreads()]
     nelec_below_window_ = zeros(eltype(window), kpoints.n)
     band_min_ = [nw for _ in 1:nthreads()]
     band_max_ = [1 for _ in 1:nthreads()]
+    ham_threads = [get_interpolator(el_ham; fourier_mode) for _ in 1:nthreads()]
 
     @threads :static for ik in 1:kpoints.n
+        ham = ham_threads[threadid()]
         xk = kpoints.vectors[ik]
         eigenvalues = eigenvalues_[threadid()]
-        get_el_eigen_valueonly!(eigenvalues, nw, el_ham, xk; fourier_mode)
+
+        get_el_eigen_valueonly!(eigenvalues, nw, ham, xk)
         bands_in_window = inside_window(eigenvalues, window...)
         nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
         if ! isempty(bands_in_window)
@@ -120,13 +123,16 @@ the window.
 """
 function filter_qpoints(qpoints, kpoints, nw, el_ham, window; fourier_mode="gridopt")
     iq_keep = zeros(Bool, qpoints.n)
-    eigenvalues_threads = [zeros(Float64, nw) for i=1:nthreads()]
-    @threads for iq in 1:qpoints.n
+    eigenvalues_threads = [zeros(real(eltype(el_ham)), nw) for _ in 1:nthreads()]
+    ham_threads = [get_interpolator(el_ham; fourier_mode) for _ in 1:nthreads()]
+
+    @threads :static for iq in 1:qpoints.n
+        ham = nthreads[threadid()]
         eigenvalues = eigenvalues_threads[threadid()]
         xq = qpoints.vectors[iq]
         for xk in kpoints.vectors
             xkq = xq + xk
-            get_el_eigen_valueonly!(eigenvalues, nw, el_ham, xkq; fourier_mode)
+            get_el_eigen_valueonly!(eigenvalues, nw, ham, xkq)
 
             # If k+q is inside window, use this q point
             if ! isempty(inside_window(eigenvalues, window...))

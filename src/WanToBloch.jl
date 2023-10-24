@@ -217,7 +217,6 @@ end
 
 # =============================================================================
 #  Phonons
-# FIXME: fourier_mode vs mode, keyword or positional
 
 """
     get_ph_eigen!(values, vectors, xq, dyn, mass, polar)
