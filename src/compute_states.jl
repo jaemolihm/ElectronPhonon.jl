@@ -6,7 +6,7 @@ export compute_phonon_states
 Compute the quantities listed in `quantities` and return a vector of ElectronState.
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "velocity"
 """
-function compute_electron_states(model::ModelEPW{FT}, kpts, quantities, window=(-Inf, Inf); fourier_mode="normal") where FT
+function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-Inf, Inf); fourier_mode="normal") where FT
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
     for quantity in quantities
@@ -74,7 +74,7 @@ Compute the quantities listed in `quantities` and return a vector of PhononState
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"
 TODO: Implement quantities "velocity"
 """
-function compute_phonon_states(model::ModelEPW{FT}, kpts, quantities; fourier_mode="normal") where FT
+function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode="normal") where FT
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]
     for quantity in quantities

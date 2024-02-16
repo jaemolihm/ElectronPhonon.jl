@@ -3,7 +3,7 @@ using EPW.WanToBloch
 
 """
     run_eph_outer_loop_q(
-        model::EPW.ModelEPW,
+        model::EPW.Model,
         k_input::Union{NTuple{3,Int}, EPW.Kpoints},
         q_input::Union{NTuple{3,Int}, EPW.Kpoints};
         mpi_comm_k=nothing,
@@ -20,7 +20,7 @@ Loop over k and q points to compute e-ph related quantities.
 - `k_input`, `q_input`: either a 3-element tuple (n1, n2, n3) or a Kpoints object.
 """
 function run_eph_outer_loop_q(
-        model::EPW.ModelEPW{FT},
+        model::EPW.Model{FT},
         k_input::Union{NTuple{3,Int}, EPW.Kpoints},
         q_input::Union{NTuple{3,Int}, EPW.Kpoints};
         mpi_comm_k=nothing,

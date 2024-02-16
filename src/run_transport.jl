@@ -13,7 +13,7 @@ using HDF5
 - `qme_offdiag_cutoff`: Maximum interband energy difference to include the off-diagonal part. Used only if `run_for_qme`==true.
 """
 @timing "run_transport" function run_transport(
-        model::ModelEPW{FT},
+        model::Model{FT},
         k_input::Union{NTuple{3,Int}, AbstractKpoints},
         q_input::Union{NTuple{3,Int}, AbstractKpoints};
         mpi_comm_k=nothing,

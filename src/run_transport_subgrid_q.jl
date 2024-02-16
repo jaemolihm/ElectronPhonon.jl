@@ -18,7 +18,7 @@ TODO:
 - Implement mpi_comm_q
 """
 function run_transport_subgrid_q(
-        model::ModelEPW{FT},
+        model::Model{FT},
         kpts::AbstractKpoints,
         qpts_original::AbstractKpoints,
         subgrid_q_max,
@@ -78,7 +78,7 @@ function run_transport_subgrid_q(
 end
 
 
-function compute_electron_phonon_bte_data_outer_q(model::ModelEPW{FT}, btedata_prefix, window_k,
+function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_prefix, window_k,
     window_kq, kpts, kqpts, qpts, energy_conservation, mpi_comm_k, mpi_comm_q; fourier_mode) where FT
 
     if model.epmat_outer_momentum != "ph"

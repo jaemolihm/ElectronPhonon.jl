@@ -19,7 +19,7 @@ function plot_decay(obj::AbstractWannierObject, lattice, ax=PyPlot.gca(); logsca
     fig
 end
 
-function plot_decay(model::ModelEPW)
+function plot_decay(model::Model)
     operators = [:el_ham, :el_ham_R, :el_pos, :el_vel, :ph_dyn, :ph_dyn_R]
     fig, plotaxes = PyPlot.subplots(2, 3, figsize=(8, 5))
     for (ax, key) in zip(vec(plotaxes), operators)

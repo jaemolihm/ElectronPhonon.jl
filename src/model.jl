@@ -10,7 +10,7 @@ using FortranFiles
 
 export load_model
 
-# TODO: Implement Base.show(model::ModelEPW)
+# TODO: Implement Base.show(model::Model)
 
 fortran_read_bool(f) = Bool(abs(read(f, Int32))) # In fortran file, 0 is false, -1 or +1 is true
 
@@ -21,7 +21,7 @@ end
 
 "Tight-binding model for electron, phonon, and electron-phonon coupling.
 All data is in coarse real-space grid."
-Base.@kwdef mutable struct ModelEPW{FT <: AbstractFloat, WannType <: Union{Nothing, AbstractWannierObject{FT}}}
+Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing, AbstractWannierObject{FT}}}
     # Lattice information
     alat::FT # Lattice parameter
     # Lattice vector in Bohr. lattice[:, i] is the i-th lattice vector.
@@ -73,7 +73,7 @@ Base.@kwdef mutable struct ModelEPW{FT <: AbstractFloat, WannType <: Union{Nothi
     el_sym::Union{SymmetryOperators{FT, WannierObject{FT}}, Nothing} = nothing
 end
 
-"Read file and create ModelEPW object in the MPI root.
+"Read file and create Model object in the MPI root.
 Broadcast to all other processors."
 function load_model(folder::String; epmat_on_disk::Bool=false, tmpdir=nothing,
     epmat_outer_momentum="ph", load_symmetry_operators=false, skip_epmat=false)
@@ -124,7 +124,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         error("epmat_outer_momentum must be ph or el.")
     end
 
-    # Read binary data written by EPW and create ModelEPW object
+    # Read binary data written by EPW and create Model object
     f = FortranFile(joinpath(folder, "epw_data_julia.bin"), "r")
 
     # Structure parameters
@@ -342,7 +342,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         el_sym = nothing
     end
 
-    ModelEPW(;alat, lattice, recip_lattice, volume, nw, nmodes,
+    Model(;alat, lattice, recip_lattice, volume, nw, nmodes,
         mass, atom_pos, atom_labels, symmetry,
         use_polar_dipole, polar_phonon, polar_eph,
         el_ham, el_ham_R, el_pos, el_vel, el_velocity_mode,
