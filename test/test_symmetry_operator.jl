@@ -1,12 +1,12 @@
 using Test
-using EPW
+using ElectronPhonon
 using LinearAlgebra
-using EPW.WanToBloch: get_symmetry_representation_wannier!
+using ElectronPhonon.WanToBloch: get_symmetry_representation_wannier!
 
 # Test symmetry operator that acts on the electron Wannier functions
 
 @testset "symmetry operator" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder, load_symmetry_operators=true)
@@ -77,7 +77,7 @@ using EPW.WanToBloch: get_symmetry_representation_wannier!
                 end
                 if model.el_velocity_mode === :BerryConnection
                     for j in 1:nw, i in 1:nw
-                        if abs(e[i] - e[j]) < EPW.electron_degen_cutoff
+                        if abs(e[i] - e[j]) < ElectronPhonon.electron_degen_cutoff
                             @test els[isk].v[i, j] ≈ v_rotated[i, j] atol=1e-2
                         end
                     end

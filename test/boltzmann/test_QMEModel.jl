@@ -1,11 +1,11 @@
 using Test
-using EPW
+using ElectronPhonon
 using LinearAlgebra
 
 # TODO: Add test for covariant derivative (same with and without symmetry)
 
 @testset "QMEModel" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     folder_tmp = joinpath(folder, "tmp")
     mkpath(folder_tmp)
@@ -27,7 +27,7 @@ using LinearAlgebra
     )
 
     @testset "without symmetry" begin
-        @time output = EPW.run_transport(
+        @time output = ElectronPhonon.run_transport(
             model, (nk, nk, nk), (nq, nq, nq),
             fourier_mode = "gridopt",
             folder = folder_tmp,
@@ -44,20 +44,20 @@ using LinearAlgebra
         qme_model = load_QMEModel(filename, transport_params)
         bte_compute_μ!(qme_model)
 
-        @test qme_model isa EPW.QMEModel
+        @test qme_model isa ElectronPhonon.QMEModel
 
         compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
 
         # Test multiply_Sᵢ for scalar and vector eltype are identical for QMEModel without symmetry
         v = QMEVector(qme_model.el, rand(Vec3{ComplexF64}, qme_model.el.n))
         v_1 = QMEVector(qme_model.el, [x[1] for x in v.data])
-        Sᵢx = EPW.multiply_Sᵢ(v, qme_model.Sᵢ_irr[1], qme_model)
-        Sᵢx_1 = EPW.multiply_Sᵢ(v_1, qme_model.Sᵢ_irr[1], qme_model)
+        Sᵢx = ElectronPhonon.multiply_Sᵢ(v, qme_model.Sᵢ_irr[1], qme_model)
+        Sᵢx_1 = ElectronPhonon.multiply_Sᵢ(v_1, qme_model.Sᵢ_irr[1], qme_model)
         @test Sᵢx_1.data ≈ [x[1] for x in Sᵢx.data]
     end
 
     @testset "with symmetry" begin
-        @time output = EPW.run_transport(
+        @time output = ElectronPhonon.run_transport(
             model, (nk, nk, nk), (nq, nq, nq),
             fourier_mode = "gridopt",
             folder = folder_tmp,
@@ -73,7 +73,7 @@ using LinearAlgebra
         qme_model = load_QMEModel(filename, transport_params)
         bte_compute_μ!(qme_model)
 
-        @test qme_model isa EPW.QMEIrreducibleKModel
+        @test qme_model isa ElectronPhonon.QMEIrreducibleKModel
 
         compute_qme_scattering_matrix!(qme_model, compute_Sᵢ=true)
 
@@ -85,12 +85,12 @@ using LinearAlgebra
         # multiply_Sᵢ uses these assumptions.
         trodd, invodd = true, false
         v_irr_raw = QMEVector(qme_model.el_irr, rand(Vec3{ComplexF64}, qme_model.el_irr.n))
-        v_irr = EPW.symmetrize_QMEVector(v_irr_raw, qme_model, trodd, invodd)
-        v = EPW.unfold_QMEVector(v_irr, qme_model, trodd, invodd)
+        v_irr = ElectronPhonon.symmetrize_QMEVector(v_irr_raw, qme_model, trodd, invodd)
+        v = ElectronPhonon.unfold_QMEVector(v_irr, qme_model, trodd, invodd)
 
-        Sv_irr = EPW.multiply_Sᵢ(v_irr, qme_model.Sᵢ_irr[1], qme_model)
-        Sv = EPW.multiply_Sᵢ(v, qme_model.Sᵢ_irr[1], qme_model)
-        Sv_irr_unfold = EPW.unfold_QMEVector(Sv_irr, qme_model, trodd, invodd)
+        Sv_irr = ElectronPhonon.multiply_Sᵢ(v_irr, qme_model.Sᵢ_irr[1], qme_model)
+        Sv = ElectronPhonon.multiply_Sᵢ(v, qme_model.Sᵢ_irr[1], qme_model)
+        Sv_irr_unfold = ElectronPhonon.unfold_QMEVector(Sv_irr, qme_model, trodd, invodd)
         @test Sv.data ≈ Sv_irr_unfold.data
     end
 end

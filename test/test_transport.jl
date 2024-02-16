@@ -1,5 +1,5 @@
 using Test
-using EPW
+using ElectronPhonon
 
 # TODO: Add test without polar_eph
 
@@ -27,7 +27,7 @@ using EPW
                      0.9251486570528965   9.830014101273708    1.3594469777367564;
                      0.36436063998625484  1.359446977736756    8.377626548640242]
 
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder)
@@ -53,7 +53,7 @@ using EPW
     )
 
     # Run electron-phonon coupling calculation
-    @time output = EPW.run_eph_outer_loop_q(
+    @time output = ElectronPhonon.run_eph_outer_loop_q(
         model, nklist, nqlist,
         fourier_mode="gridopt",
         window=window,
@@ -95,7 +95,7 @@ end
         1.2067828805494904e-8 2.2129873746637645e-8 0.3886418678731324
     ]
 
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_Pb")
 
     model = load_model(folder)
@@ -104,7 +104,7 @@ end
     Tlist = [100.0, 200.0, 300.0] .* unit_to_aru(:K)
     smearing = 50.0 * unit_to_aru(:meV)
 
-    e_fermi = 11.594123 * EPW.unit_to_aru(:eV)
+    e_fermi = 11.594123 * unit_to_aru(:eV)
     window  = (-0.5, 0.5) .* unit_to_aru(:eV) .+ e_fermi
 
     nklist = (10, 10, 10)
@@ -120,7 +120,7 @@ end
     )
 
     # Run electron-phonon coupling calculation
-    @time output = EPW.run_eph_outer_loop_q(
+    @time output = ElectronPhonon.run_eph_outer_loop_q(
         model, nklist, nqlist,
         fourier_mode="gridopt",
         window=window,

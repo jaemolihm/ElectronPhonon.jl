@@ -143,7 +143,7 @@ not `el_irr`, which is on the irreducible k grid.
 - `hdf_group`: If given, write data for the sparse matrix to file. If not given, return the
 sparse matrix itself.
 """
-function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_states, bvec_data,
+function compute_covariant_derivative_matrix(el_irr::QMEStates{FT}, el_irr_states, bvec_data,
         el_sym, el, ik_to_ikirr_isym; hdf_group=nothing, fourier_mode="gridopt") where FT
 
     nw = first(el_irr_states).nw
@@ -303,10 +303,10 @@ function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates{FT}, el_irr_s
 end
 
 """
-    compute_covariant_derivative_matrix(el_irr::EPW.QMEStates, el_irr_states, bvec_data; kwargs...)
+    compute_covariant_derivative_matrix(el_irr::QMEStates, el_irr_states, bvec_data; kwargs...)
 Run without any symmetry.
 """
-function compute_covariant_derivative_matrix(el_irr::EPW.QMEStates, el_irr_states, bvec_data;
+function compute_covariant_derivative_matrix(el_irr::QMEStates, el_irr_states, bvec_data;
                                              kwargs...)
     # Without symmetry
     el = el_irr

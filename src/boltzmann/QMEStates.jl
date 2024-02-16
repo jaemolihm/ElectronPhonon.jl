@@ -97,7 +97,7 @@ end
 - `offdiag_cutoff`: Maximum interband energy difference to include the off-diagonal part.
 """
 @timing "el_to_BTC" function electron_states_to_QMEStates(el_states::Vector{ElectronState{T}},
-        kpts::EPW.AbstractKpoints{T}, offdiag_cutoff, nstates_base=zero(T)) where {T <: Real}
+        kpts::AbstractKpoints{T}, offdiag_cutoff, nstates_base=zero(T)) where {T <: Real}
     @assert kpts.n == length(el_states)
     nk = length(el_states)
 
@@ -134,7 +134,7 @@ end
 function BTStates(s::QMEStates)
     # Take only diagonal elements from QMEStates and create BTStates
     inds = s.ib1 .== s.ib2
-    EPW.BTStates(sum(inds), s.kpts.n, s.nband, s.e1[inds], real.(s.v[inds]), s.kpts.weights[s.ik[inds]],
+    BTStates(sum(inds), s.kpts.n, s.nband, s.e1[inds], real.(s.v[inds]), s.kpts.weights[s.ik[inds]],
                  s.kpts.vectors[s.ik[inds]], s.ib1[inds], s.kpts.ngrid, s.nstates_base)
 end
 

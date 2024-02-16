@@ -6,7 +6,7 @@
 
 using Base.Threads
 using MPI
-using EPW: Kpoints
+using ElectronPhonon: Kpoints
 using Interpolations: AbstractInterpolation
 
 export filter_kpoints
@@ -47,7 +47,7 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
 
     ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode)
-    EPW.get_filtered_kpoints(kpoints, ik_keep), band_min, band_max, nelec_below_window
+    get_filtered_kpoints(kpoints, ik_keep), band_min, band_max, nelec_below_window
 end
 
 filter_kpoints(k_input, nw, el_ham, window, mpi_comm::Nothing; kwargs...) = filter_kpoints(k_input, nw, el_ham, window; kwargs...)
@@ -74,7 +74,7 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MP
 
     ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode)
 
-    k_filtered = EPW.get_filtered_kpoints(kpoints, ik_keep)
+    k_filtered = get_filtered_kpoints(kpoints, ik_keep)
 
     band_min = mpi_min(band_min, mpi_comm)
     band_max = mpi_max(band_max, mpi_comm)
@@ -141,7 +141,7 @@ function filter_qpoints(qpoints, kpoints, nw, el_ham, window; fourier_mode="grid
             end
         end
     end
-    EPW.get_filtered_kpoints(qpoints, iq_keep)
+    get_filtered_kpoints(qpoints, iq_keep)
 end
 
 function filter_qpoints(qpoints, kpoints, itp_el::Dict{Int, <: AbstractInterpolation}, window)
@@ -163,5 +163,5 @@ function filter_qpoints(qpoints, kpoints, itp_el::Dict{Int, <: AbstractInterpola
     end
 
     iq_keep = reduce(.|, iq_keep_threads)
-    EPW.get_filtered_kpoints(qpoints, iq_keep)
+    get_filtered_kpoints(qpoints, iq_keep)
 end

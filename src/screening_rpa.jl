@@ -127,7 +127,7 @@ function compute_epsilon_rpa(ph, indmap_ph, el_k_save, el_kq_save, kpts, kqpts, 
         else
             xq_cart = recip_lattice * xq
             ϵM = xq_cart' * params.ϵM * xq_cart / norm(xq_cart)^2
-            coeff = EPW.e2 * 4π / norm(xq_cart)^2 / params.volume * params.spin_degeneracy / ϵM
+            coeff = ElectronPhonon.e2 * 4π / norm(xq_cart)^2 / params.volume * params.spin_degeneracy / ϵM
             @. ϵ[:, i] = 1 - χ0[:, i] * coeff
         end
     end

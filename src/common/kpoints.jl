@@ -135,16 +135,16 @@ end
 
 function _gather_ngrid(ngrid, comm)
     # If ngrid is not same among processers, set ngrid to (0,0,0).
-    ngrid_root = EPW.mpi_bcast(ngrid, comm)
-    all_ngrids_same = EPW.mpi_reduce(ngrid == ngrid_root, &, comm)
+    ngrid_root = mpi_bcast(ngrid, comm)
+    all_ngrids_same = mpi_reduce(ngrid == ngrid_root, &, comm)
     new_ngrid = all_ngrids_same ? ngrid_root : (0, 0, 0)
     new_ngrid
 end
 
 "mpi_gather(k::Kpoints, comm::MPI.Comm)"
 function mpi_gather(k::Kpoints{FT}, comm::MPI.Comm) where {FT}
-    kvectors = EPW.mpi_gather(k.vectors, comm)
-    weights = EPW.mpi_gather(k.weights, comm)
+    kvectors = mpi_gather(k.vectors, comm)
+    weights = mpi_gather(k.weights, comm)
     new_ngrid = _gather_ngrid(k.ngrid, comm)
     if mpi_isroot(comm)
         Kpoints{FT}(length(kvectors), kvectors, weights, new_ngrid)
@@ -157,8 +157,8 @@ end
     mpi_allgather(k::Kpoints, comm::MPI.Comm)
 """
 function mpi_allgather(k::Kpoints, comm::MPI.Comm)
-    kvectors = EPW.mpi_allgather(k.vectors, comm)
-    weights = EPW.mpi_allgather(k.weights, comm)
+    kvectors = mpi_allgather(k.vectors, comm)
+    weights = mpi_allgather(k.weights, comm)
     new_ngrid = _gather_ngrid(k.ngrid, comm)
     Kpoints(length(kvectors), kvectors, weights, new_ngrid)
 end
@@ -218,7 +218,7 @@ function kpoints_create_subgrid(k::Kpoints, nsubgrid)
             end
         end
     end
-    EPW.Kpoints(new_n, new_vectors, new_weights, new_ngrid)
+    Kpoints(new_n, new_vectors, new_weights, new_ngrid)
 end
 
 """
@@ -253,7 +253,7 @@ function add_two_kpoint_grids(kpts, qpts, op, ngrid_kq)
             xkq = mod.(op(xk_rational, xq_rational), 1) + shift_kq
 
             # Find new k+q points, append to xkq_hash_to_ikq and xkqs
-            xk_hash_value = EPW._hash_xk(xkq, ngrid_kq, shift_kq)
+            xk_hash_value = _hash_xk(xkq, ngrid_kq, shift_kq)
             if xk_hash_value ∉ keys(xkq_hash_to_ikq)
                 ikq += 1
                 xkq_hash_to_ikq[xk_hash_value] = ikq
@@ -369,8 +369,8 @@ function unfold_kpoints(kpts::GridKpoints, symmetry)
         for ik in 1:kpts.n
             xk = kpts.vectors[ik]
             sk = symop.is_tr ? -symop.S * xk : symop.S * xk
-            sk = EPW.normalize_kpoint_coordinate(sk)
-            sk_hash = EPW._hash_xk(sk, ngrid, shift)
+            sk = normalize_kpoint_coordinate(sk)
+            sk_hash = _hash_xk(sk, ngrid, shift)
 
             isk = get(sk_hash_dict, sk_hash, nothing)
             if isk === nothing
@@ -418,8 +418,8 @@ function fold_kpoints(kpts::GridKpoints, symmetry)
             # We want the mapping xk = S * xkirr, so we compute sk = inv(S) * xk.
             # FIXME: Optimize by finding inv(S) in symop.
             sk = symop.is_tr ? -inv(symop.S) * xk : inv(symop.S) * xk
-            sk = EPW.normalize_kpoint_coordinate(sk)
-            sk_hash = EPW._hash_xk(sk, ngrid, shift)
+            sk = normalize_kpoint_coordinate(sk)
+            sk_hash = _hash_xk(sk, ngrid, shift)
 
             ikirr = get(hash_dict_irr, sk_hash, nothing)
             if ikirr !== nothing
@@ -436,7 +436,7 @@ function fold_kpoints(kpts::GridKpoints, symmetry)
             push!(vectors_irr, xk)
             push!(weights_irr, kpts.weights[ik])
             push!(ik_to_ikirr_isym, (length(vectors_irr), 1))
-            xk_hash = EPW._hash_xk(xk, ngrid, shift)
+            xk_hash = _hash_xk(xk, ngrid, shift)
             hash_dict_irr[xk_hash] = length(vectors_irr)
         end
     end

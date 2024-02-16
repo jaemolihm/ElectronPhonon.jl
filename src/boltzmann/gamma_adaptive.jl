@@ -37,7 +37,7 @@ function run_gamma_adaptive(kpts::GridKpoints{FT}, qpts_original::GridKpoints{FT
 
     for iter in 1:adaptive_max_iter
         # 3. Find list of q points to make subgrid
-        qpts = EPW.kpoints_create_subgrid(qpts_original, adaptive_subgrid)
+        qpts = kpoints_create_subgrid(qpts_original, adaptive_subgrid)
         indmap = sortperm(qpts)
         sort!(qpts)
         iq_subgrid_to_grid = repeat(1:qpts_original.n, inner=prod(adaptive_subgrid))[indmap]
@@ -61,7 +61,7 @@ function run_gamma_adaptive(kpts::GridKpoints{FT}, qpts_original::GridKpoints{FT
 
         # 6. Update qpts_original as the subgrid q points that should be further subdivided
         iq_subgrid_keep = map(iq -> iq ∈ iq_original_selected, iq_subgrid_to_grid)
-        qpts_original = EPW.get_filtered_kpoints(qpts, iq_subgrid_keep)
+        qpts_original = get_filtered_kpoints(qpts, iq_subgrid_keep)
         inv_τ_subgrid_old = inv_τ_subgrid[:, iq_subgrid_keep, :]
         inv_τ_total .+= dropdims(sum(inv_τ_diff, dims=2), dims=2)
 
@@ -132,7 +132,7 @@ function gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, 
 
                 @views for sign_ph in (-1, 1)
                     s = (; ind_el_i, ind_el_f, ind_ph, sign_ph, mel)
-                    EPW._compute_lifetime_serta_single_scattering!(inv_τ_single, el_i, el_f, ph, params, s, model.recip_lattice)
+                    _compute_lifetime_serta_single_scattering!(inv_τ_single, el_i, el_f, ph, params, s, model.recip_lattice)
                     inv_τ_q[ind_el_i, iq, :] .+= inv_τ_single
                 end
             end

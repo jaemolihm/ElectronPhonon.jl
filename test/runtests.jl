@@ -1,7 +1,7 @@
-using EPW
+using ElectronPhonon
 using Test
 
-@time @testset "EPW.jl" begin
+@time @testset "ElectronPhonon.jl" begin
     include("test_occupation.jl")
     include("test_kpoints.jl")
     include("test_symmetry.jl")

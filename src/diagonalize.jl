@@ -1,7 +1,7 @@
 # __precompile__(true)
 
 using LinearAlgebra
-using EPW.AllocatedLAPACK: epw_syev!
+using ElectronPhonon.AllocatedLAPACK: epw_syev!
 
 export solve_eigen_el!
 export solve_eigen_el_valueonly!

@@ -1,5 +1,5 @@
 using Test
-using EPW
+using ElectronPhonon
 using HDF5
 using LinearAlgebra
 using SparseArrays
@@ -7,7 +7,7 @@ using SparseArrays
 # TODO: Add test with symmetry
 
 @testset "covariant derivative" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     folder_tmp = joinpath(folder, "tmp")
     mkpath(folder_tmp)
@@ -30,10 +30,10 @@ using SparseArrays
         kpts = kpoints_grid((5, 5, 5))
         nband = 7
         el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window)
-        el = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
+        el = ElectronPhonon.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
 
         bvec_data = finite_difference_vectors(model.recip_lattice, el.kpts.ngrid)
-        ∇ = EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data)
+        ∇ = ElectronPhonon.compute_covariant_derivative_matrix(el, el_k_save, bvec_data)
         @test size(∇[1]) == (el.n, el.n)
         @test nnz(∇[1]) == 51910
     end
@@ -50,15 +50,15 @@ using SparseArrays
         kpts = GridKpoints(Kpoints(length(kpts_list), kpts_list, ones(length(kpts_list)), (nk, nk, nk)))
 
         el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"])
-        el = EPW.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
+        el = ElectronPhonon.electron_states_to_QMEStates(el_k_save, kpts, qme_offdiag_cutoff)
 
         bvec_data_list = [finite_difference_vectors(model.recip_lattice, el.kpts.ngrid; order) for order in 1:max_order]
-        ∇_list = [EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data) for bvec_data in bvec_data_list]
+        ∇_list = [ElectronPhonon.compute_covariant_derivative_matrix(el, el_k_save, bvec_data) for bvec_data in bvec_data_list]
 
         # Test IO
         h5open(joinpath(folder_tmp, "covariant_derivative.h5"), "w") do f
-            EPW.compute_covariant_derivative_matrix(el, el_k_save, bvec_data_list[1]; hdf_group=f)
-            ∇_from_file = EPW.load_covariant_derivative_matrix(f)
+            ElectronPhonon.compute_covariant_derivative_matrix(el, el_k_save, bvec_data_list[1]; hdf_group=f)
+            ∇_from_file = ElectronPhonon.load_covariant_derivative_matrix(f)
             @test ∇_list[1] ≈ ∇_from_file
         end
 
@@ -75,7 +75,7 @@ using SparseArrays
             ∇f = ∇_list[order][1] * f
             for i in 1:el.n
                 if el.ik[i] == ik0
-                    if abs(el.e1[i] - el.e2[i]) < EPW.electron_degen_cutoff
+                    if abs(el.e1[i] - el.e2[i]) < ElectronPhonon.electron_degen_cutoff
                         error_degen[order] += abs(∇f[i] - ∇f_ik0_analytic[el.ib1[i], el.ib2[i]])
                     else
                         error_nondegen[order] += abs(∇f[i] - ∇f_ik0_analytic[el.ib1[i], el.ib2[i]])

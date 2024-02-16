@@ -3,11 +3,11 @@ using Random
 using StaticArrays
 using OffsetArrays
 using HDF5
-using EPW
-using EPW: _data_julia_to_hdf5, _data_hdf5_to_julia
+using ElectronPhonon
+using ElectronPhonon: _data_julia_to_hdf5, _data_hdf5_to_julia
 
 function test_hdf_io(data::T) where T
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
     mkpath(tmp_dir)
 
@@ -63,7 +63,7 @@ end
 
 # TODO: Merge test_hdf_io and test_hdf_io_btdata
 function test_hdf_io_btdata(data::T) where T
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
     mkpath(tmp_dir)
 
@@ -80,7 +80,7 @@ end
 @testset "hdf5 IO BTData" begin
     # Test HDF5 IO of composite types
     Random.seed!(123)
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
     mkpath(tmp_dir)
 

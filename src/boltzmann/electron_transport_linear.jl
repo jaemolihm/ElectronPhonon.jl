@@ -65,7 +65,7 @@ function solve_electron_linear_conductivity(qme_model::AbstractQMEModel{FT}, ω,
         # Compute the E-field drive term
         for i in 1:el.n
             e1, e2 = el.e1[i], el.e2[i]
-            if abs(e1 - e2) < EPW.electron_degen_cutoff
+            if abs(e1 - e2) < electron_degen_cutoff
                 drive_efield[i] = - el.v[i] * occ_fermion_derivative(e1 - μ, T)
             else
                 drive_efield[i] = - el.v[i] * (occ_fermion(e1 - μ, T) - occ_fermion(e2 - μ, T)) / (e1 - e2)
@@ -78,7 +78,7 @@ function solve_electron_linear_conductivity(qme_model::AbstractQMEModel{FT}, ω,
         Sₒ_iT += im * ω * I(el.n)
         for i in 1:el.n
             (; e1, e2) = el[i]
-            if abs(e1 - e2) >= EPW.electron_degen_cutoff
+            if abs(e1 - e2) >= electron_degen_cutoff
                 Sₒ_iT[i, i] += -im * (e1 - e2)
             end
         end

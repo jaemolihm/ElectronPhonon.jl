@@ -1,5 +1,5 @@
 using IterativeSolvers
-using EPW
+using ElectronPhonon
 using Test
 
 @testset "iterative solvers" begin
@@ -14,7 +14,7 @@ using Test
     b = rand(N)
     x = rand(N)
     x_direct = gmres(A, b; reltol)
-    EPW.reset_gmres_iterable!(g, x, b; reltol)
+    ElectronPhonon.reset_gmres_iterable!(g, x, b; reltol)
     for _ in g; end
     @test g.x ≈ x_direct
 end

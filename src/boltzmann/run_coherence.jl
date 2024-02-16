@@ -57,7 +57,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             end
             # Linearly combine degenerate eigenvectors
             for el in el_k_save, ib in el.rng[1:end-1]
-                if abs(el.e[ib] - el.e[ib+1]) < EPW.electron_degen_cutoff && rand() > 0.5
+                if abs(el.e[ib] - el.e[ib+1]) < electron_degen_cutoff && rand() > 0.5
                     v1, v2 = copy(el.u[:, ib]), copy(el.u[:, ib+1])
                     a = rand()
                     @. el.u[:, ib]   =    sqrt(a) * v1 + sqrt(1-a) * v2
@@ -88,7 +88,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             end
             # Linearly combine degenerate eigenvectors
             for el in el_kq_save_irr, ib in el.rng[1:end-1]
-                if abs(el.e[ib] - el.e[ib+1]) < EPW.electron_degen_cutoff && rand() > 0.5
+                if abs(el.e[ib] - el.e[ib+1]) < electron_degen_cutoff && rand() > 0.5
                     v1, v2 = copy(el.u[:, ib]), copy(el.u[:, ib+1])
                     a = rand()
                     @. el.u[:, ib]   =    sqrt(a) * v1 + sqrt(1-a) * v2

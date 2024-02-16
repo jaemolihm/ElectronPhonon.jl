@@ -4,8 +4,8 @@
 using OffsetArrays
 using OffsetArrays: no_offset_view
 
-using EPW.AllocatedLAPACK: epw_syev!
-using EPW.WanToBloch: get_el_eigen!, get_el_velocity_diag_berry_connection!,
+using ElectronPhonon.AllocatedLAPACK: epw_syev!
+using ElectronPhonon.WanToBloch: get_el_eigen!, get_el_velocity_diag_berry_connection!,
                       get_el_velocity_berry_connection!, get_el_velocity_direct!,
                       get_symmetry_representation_eigen!
 
@@ -114,7 +114,7 @@ end
 Find out the bands inside the window and set el.nband and el.rng.
 """
 function set_window!(el::ElectronState, window=(-Inf, Inf))
-    ibands = EPW.inside_window(el.e_full, window...)
+    ibands = inside_window(el.e_full, window...)
     if isempty(ibands)
         el.nband = 0
         el.rng = 1:0

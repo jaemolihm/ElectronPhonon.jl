@@ -59,7 +59,7 @@ function run_transport_constant_relaxation_time(model, k_input, transport_params
 
                 # Use velocity matrix inside degenerate subspace
                 for n in el_k.rng
-                    if abs(el_k.e[n] - emk) .< EPW.electron_degen_cutoff
+                    if abs(el_k.e[n] - emk) .< electron_degen_cutoff
                         vv = real(el_k.v[m, n] * transpose(el_k.v[n, m]))
                         σ_intra_degen[:, :, iT] .+= vv .* (kpts.weights[ik] * dfocc * τ)
                         σ_full[:, :, iT] .+= vv .* (kpts.weights[ik] * dfocc * τ)
@@ -71,7 +71,7 @@ function run_transport_constant_relaxation_time(model, k_input, transport_params
                     enk = el_k.e[n]
                     fmk = occ_fermion(emk - μ, T)
                     fnk = occ_fermion(enk - μ, T)
-                    if abs(emk - enk) >= EPW.electron_degen_cutoff
+                    if abs(emk - enk) >= electron_degen_cutoff
                         vv = real(el_k.v[m, n] * transpose(el_k.v[n, m]))
                         coeff = -(fmk - fnk) / (emk - enk) * inv_τ_constant / ((emk - enk)^2 + inv_τ_constant^2)
                         σ_full[:, :, iT] .+= vv .* (coeff * kpts.weights[ik])

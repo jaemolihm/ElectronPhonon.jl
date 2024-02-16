@@ -79,7 +79,7 @@ function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEMode
                 mul!(δᴱᴮρ_serta.data, Sₒ⁻¹, v∇δᴱρ.data)
 
                 # Set and run GMRES solver. Initial guess is δᴱᴮρ = δᴱᴮρ_serta.
-                EPW.reset_gmres_iterable!(g, δᴱᴮρ_serta.data, δᴱᴮρ_serta.data; reltol=rtol, abstol=atol)
+                reset_gmres_iterable!(g, δᴱᴮρ_serta.data, δᴱᴮρ_serta.data; reltol=rtol, abstol=atol)
                 cnt = 0
                 for (iteration, residual) in enumerate(g)
                     cnt += 1

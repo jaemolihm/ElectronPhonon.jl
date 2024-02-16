@@ -1,4 +1,4 @@
-using EPW.WanToBloch: get_symmetry_representation_wannier!
+using ElectronPhonon.WanToBloch: get_symmetry_representation_wannier!
 
 export unfold_QMEStates
 
@@ -370,7 +370,7 @@ end
 
 
 
-# function symmetrize_scattering_out_matrix(Sₒ_irr, qme_model::EPW.QMEIrreducibleKModel{FT}) where FT
+# function symmetrize_scattering_out_matrix(Sₒ_irr, qme_model::QMEIrreducibleKModel{FT}) where FT
 #     (; el_irr) = qme_model
 #     @assert size(Sₒ_irr) == (el_irr.n, el_irr.n)
 #     f = h5open(qme_model.filename, "r")

@@ -1,11 +1,11 @@
 using Test
-using EPW
+using ElectronPhonon
 using NPZ
 
 # TODO: Add test with use_ws = false
 
 @testset "cubicBN self-energy" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     # Load reference data (calculated from EPW)
@@ -42,7 +42,7 @@ using NPZ
     )
 
     # Run electron-phonon coupling calculation
-    @time output = EPW.run_eph_outer_loop_q(
+    @time output = ElectronPhonon.run_eph_outer_loop_q(
         model, nklist, nqlist,
         fourier_mode="gridopt",
         window=window,
@@ -50,7 +50,7 @@ using NPZ
         phself_params=phself_params,
     )
 
-    @time output_disk = EPW.run_eph_outer_loop_q(
+    @time output_disk = ElectronPhonon.run_eph_outer_loop_q(
         model_disk, nklist, nqlist,
         fourier_mode="gridopt",
         window=window,

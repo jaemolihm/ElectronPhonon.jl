@@ -1,13 +1,13 @@
 using Test
-using EPW
+using ElectronPhonon
 
 @testset "check model symmetry" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     model = load_model(folder, load_symmetry_operators=true)
     model.el_velocity_mode = :Direct
 
-    res = EPW.check_electron_symmetry_of_model(model, (5, 5, 5))
+    res = ElectronPhonon.check_electron_symmetry_of_model(model, (5, 5, 5))
     @test model.el_velocity_mode == :Direct # Check model.el_velocity_mode is not changed
 
     for data in (res.rms_errors, res.max_errors)

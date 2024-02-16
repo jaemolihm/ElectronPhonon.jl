@@ -2,7 +2,7 @@ using Test
 
 @testset "epsilon_lindhard" begin
     using LinearAlgebra
-    using EPW: LindhardScreeningParams, epsilon_lindhard
+    using ElectronPhonon: LindhardScreeningParams, epsilon_lindhard
 
     screening_params = LindhardScreeningParams(
         degeneracy = 2,

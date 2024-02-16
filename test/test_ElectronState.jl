@@ -1,8 +1,8 @@
 using Test
-using EPW
+using ElectronPhonon
 
 @testset "ElectronState" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     folder_tmp_el = joinpath(folder, "tmp_el")
     mkpath(folder_tmp_el)

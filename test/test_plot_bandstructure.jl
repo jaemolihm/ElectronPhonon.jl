@@ -1,10 +1,10 @@
 using Test
-using EPW
+using ElectronPhonon
 using LinearAlgebra
 using PyPlot
 
 @testset "plot bandstructure" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     model = load_model(folder)
 
@@ -62,10 +62,10 @@ using PyPlot
     ref_xticks = [0.000000000000, 0.919939283628, 1.245186936494, 2.220929895094,
                   3.017620684655, 3.668115990389, 4.128085632203]
 
-    @test EPW.spglib_spacegroup_number(model) == 216
-    @test EPW.get_spglib_lattice(model) ≈ model.alat * I(3)
+    @test ElectronPhonon.spglib_spacegroup_number(model) == 216
+    @test ElectronPhonon.get_spglib_lattice(model) ≈ model.alat * I(3)
 
-    kpts, plot_xdata = EPW.high_symmetry_kpath(model, kline_density=10)
+    kpts, plot_xdata = ElectronPhonon.high_symmetry_kpath(model, kline_density=10)
 
     @test kpts.n == length(ref_kcoords)
     for ik in 1:length(ref_kcoords)
@@ -94,9 +94,9 @@ using PyPlot
     atom_labels = ["A", "B"]
     model = (;alat, lattice, atom_pos, atom_labels)
 
-    @test EPW.atom_pos_crys(model) ≈ atom_pos_crys
-    @test EPW.spglib_spacegroup_number(model) == 187
-    @test EPW.get_spglib_lattice(model) ≈ lattice
+    @test ElectronPhonon.atom_pos_crys(model) ≈ atom_pos_crys
+    @test ElectronPhonon.spglib_spacegroup_number(model) == 187
+    @test ElectronPhonon.get_spglib_lattice(model) ≈ lattice
 
     transf = Mat3([[1 2 3]; [0 1 0]; [0 0 1]]') # transformation matrix to new lattice vector convention
     @assert det(transf) ≈ 1
@@ -104,11 +104,11 @@ using PyPlot
     model_new = (;alat, lattice=lattice_new, atom_pos, atom_labels)
 
     # model_new describes the same physical structure with model, just with a different lattice vector convention.
-    @test EPW.spglib_spacegroup_number(model_new) == EPW.spglib_spacegroup_number(model)
-    @test EPW.get_spglib_lattice(model_new) ≈ EPW.get_spglib_lattice(model)
+    @test ElectronPhonon.spglib_spacegroup_number(model_new) == ElectronPhonon.spglib_spacegroup_number(model)
+    @test ElectronPhonon.get_spglib_lattice(model_new) ≈ ElectronPhonon.get_spglib_lattice(model)
 
-    kpts, plot_xdata = EPW.high_symmetry_kpath(model, kline_density=50)
-    kpts_new, plot_xdata_new = EPW.high_symmetry_kpath(model_new, kline_density=50)
+    kpts, plot_xdata = ElectronPhonon.high_symmetry_kpath(model, kline_density=50)
+    kpts_new, plot_xdata_new = ElectronPhonon.high_symmetry_kpath(model_new, kline_density=50)
     @test plot_xdata.x ≈ plot_xdata_new.x
     @test plot_xdata.xticks ≈ plot_xdata_new.xticks
     @test plot_xdata.xlabels == plot_xdata_new.xlabels
@@ -118,7 +118,7 @@ using PyPlot
 end
 
 @testset "plot deformation pot." begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     model = load_model(folder, epmat_outer_momentum="el")
 
@@ -128,7 +128,7 @@ end
 end
 
 @testset "plot decay" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     model = load_model(folder, epmat_outer_momentum="el")
 

@@ -1,12 +1,12 @@
 using Test
-using EPW
+using ElectronPhonon
 using LinearAlgebra
 
 # TODO: Add test without polar_eph
 # TODO: Add test with tetrahedron
 
 @testset "Transport electron semiconductor SERTA" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model_el = load_model(folder, epmat_outer_momentum="el")
@@ -23,7 +23,7 @@ using LinearAlgebra
     smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
 
     @testset "electron doping" begin
-        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+        energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
         window = (15.0, 16.0) .* unit_to_aru(:eV)
         window_k  = window
         window_kq = window
@@ -32,7 +32,7 @@ using LinearAlgebra
         nqlist = (15, 15, 15)
 
         # Calculate matrix elements
-        @time EPW.run_transport(
+        @time ElectronPhonon.run_transport(
             model_el, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -56,7 +56,7 @@ using LinearAlgebra
         bte_compute_μ!(transport_params, btmodel.el_i, do_print=false)
 
         inv_τ = zeros(btmodel.el_i.n, length(transport_params.Tlist))
-        EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
+        ElectronPhonon.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
         σ = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
         σ = symmetrize_array(σ, model_el.symmetry, order=2)
         _, mobility = transport_print_mobility(σ, transport_params, do_print=false)
@@ -72,7 +72,7 @@ using LinearAlgebra
         )
 
         # Run electron-phonon coupling calculation
-        @time output = EPW.run_eph_outer_loop_q(
+        @time output = ElectronPhonon.run_eph_outer_loop_q(
             model_ph, nklist, nqlist,
             fourier_mode="gridopt",
             window=window,
@@ -92,7 +92,7 @@ using LinearAlgebra
 
         @testset "TDF" begin
             el = btmodel.el_i
-            tdf_smearing = 10.0 * EPW.unit_to_aru(:meV)
+            tdf_smearing = 10.0 * unit_to_aru(:meV)
             elist = range(minimum(el.e) - 3e-3, maximum(el.e) + 3e-3, length=1001)
             Σ_tdf = compute_transport_distribution_function(elist, tdf_smearing, el, inv_τ, transport_params, model_ph.symmetry)
             @test size(Σ_tdf) == (length(elist), 3, 3, length(transport_params.Tlist))
@@ -101,7 +101,7 @@ using LinearAlgebra
     end
 
     @testset "hole doping" begin
-        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+        energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
         window = (10.5, 11.0) .* unit_to_aru(:eV)
         window_k  = window
         window_kq = window
@@ -110,7 +110,7 @@ using LinearAlgebra
         nqlist = (12, 12, 12)
 
         # Calculate matrix elements
-        @time EPW.run_transport(
+        @time ElectronPhonon.run_transport(
             model_el, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -136,7 +136,7 @@ using LinearAlgebra
         bte_compute_μ!(transport_params, btmodel.el_i, do_print=false)
 
         inv_τ = zeros(btmodel.el_i.n, length(transport_params.Tlist))
-        EPW.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
+        ElectronPhonon.compute_lifetime_serta!(inv_τ, btmodel, transport_params, model_el.recip_lattice)
         σ = compute_conductivity_serta!(transport_params, inv_τ, btmodel.el_i, nklist, model_el.recip_lattice)
         # σ = symmetrize_array(σ, model_el.symmetry, order=2)
         _, mobility = transport_print_mobility(σ, transport_params, do_print=false)
@@ -152,7 +152,7 @@ using LinearAlgebra
         )
 
         # Run electron-phonon coupling calculation
-        @time output = EPW.run_eph_outer_loop_q(
+        @time output = ElectronPhonon.run_eph_outer_loop_q(
             model_ph, nklist, nqlist,
             fourier_mode="gridopt",
             window=window,
@@ -175,7 +175,7 @@ using LinearAlgebra
         # Reference data created from Julia
         moblity_ref = cat([139.2223904798442, 63.90314754302455, 32.01401865698665] .* Ref(I(3))..., dims=3)
 
-        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+        energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
         window_k  = (15.0, 15.8) .* unit_to_aru(:eV)
         window_kq = (15.0, 16.0) .* unit_to_aru(:eV)
 
@@ -192,7 +192,7 @@ using LinearAlgebra
         nqlist = (15, 15, 15)
 
         # Calculate matrix elements
-        @time output = EPW.run_transport(
+        @time output = ElectronPhonon.run_transport(
             model_el, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -225,7 +225,7 @@ using LinearAlgebra
             @test output_subgrid.qpts.n == 104
 
             # Calculate mobility
-            output_serta_subgrid = EPW.run_serta_subgrid(filename_original, filename_subgrid, transport_params, model.symmetry, output.qpts, model.recip_lattice, do_print=false);
+            output_serta_subgrid = ElectronPhonon.run_serta_subgrid(filename_original, filename_subgrid, transport_params, model.symmetry, output.qpts, model.recip_lattice, do_print=false);
 
             @test output_serta_subgrid.mobility_SI ≈ moblity_ref
         end
@@ -234,7 +234,7 @@ end
 
 # Compare with EPW
 @testset "Transport electron semiconductor EPW" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder, epmat_outer_momentum="el")
@@ -253,7 +253,7 @@ end
 
         Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)
         smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
-        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+        energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
         window = (15.0, 15.8) .* unit_to_aru(:eV)
         window_k  = window
         window_kq = window
@@ -262,7 +262,7 @@ end
         nqlist = (15, 15, 15)
 
         # Calculate matrix elements
-        @time output = EPW.run_transport(
+        @time output = ElectronPhonon.run_transport(
             model, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -285,19 +285,19 @@ end
         @test transport_params.type === :Semiconductor
 
         # SERTA
-        output_serta = EPW.run_serta(filename_btedata, transport_params, model.symmetry, model.recip_lattice);
+        output_serta = ElectronPhonon.run_serta(filename_btedata, transport_params, model.symmetry, model.recip_lattice);
 
         @test output.qpts.n == 58
         @test all(isapprox.(transport_params.μlist, μlist_ref_epw, atol=2e-6 * unit_to_aru(:eV)))
         @test all(isapprox.(output_serta.mobility_SI, mobility_ref_epw_iter0, atol=1e-3))
 
         # LBTE
-        @time bte_scat_mat, el_i, el_f, ph = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
+        @time bte_scat_mat, el_i, el_f, ph = ElectronPhonon.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
         @test length(bte_scat_mat) == length(transport_params.Tlist)
         @test all(size.(bte_scat_mat) .== Ref((el_i.n, el_f.n)))
 
         inv_τ = output_serta.inv_τ;
-        @time output_lbte = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model.symmetry);
+        @time output_lbte = ElectronPhonon.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model.symmetry);
 
         _, mobility_serta = transport_print_mobility(output_lbte.σ_serta, transport_params, do_print=false)
         _, mobility_iter1 = transport_print_mobility(output_lbte.σ_iter[2,:,:,:], transport_params, do_print=false)
@@ -345,7 +345,7 @@ end
 
         Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)
         smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
-        energy_conservation = (:Fixed, 5 * 80.0 * EPW.unit_to_aru(:meV))
+        energy_conservation = (:Fixed, 5 * 80.0 * unit_to_aru(:meV))
         energy_conservation = (:None, 0.0)
         window = (10.5, 11.0) .* unit_to_aru(:eV)
         window_k  = window
@@ -355,7 +355,7 @@ end
         nqlist = (15, 15, 15)
 
         # Calculate matrix elements
-        @time output = EPW.run_transport(
+        @time output = ElectronPhonon.run_transport(
             model, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -378,18 +378,18 @@ end
         @test transport_params.type === :Semiconductor
 
         # SERTA
-        output_serta = EPW.run_serta(filename_btedata, transport_params, nothing, model.recip_lattice);
+        output_serta = ElectronPhonon.run_serta(filename_btedata, transport_params, nothing, model.recip_lattice);
         @test output.qpts.n == 495
         @test all(isapprox.(transport_params.μlist, μlist_ref_epw, atol=3e-6 * unit_to_aru(:eV)))
         @test all(isapprox.(output_serta.mobility_SI, mobility_ref_epw_iter0, atol=1e-3))
 
         # LBTE
-        @time bte_scat_mat, el_i, el_f, ph = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
+        @time bte_scat_mat, el_i, el_f, ph = ElectronPhonon.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
         @test length(bte_scat_mat) == length(transport_params.Tlist)
         @test all(size.(bte_scat_mat) .== Ref((el_i.n, el_f.n)))
 
         inv_τ = output_serta.inv_τ;
-        @time output_lbte = EPW.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, nothing, rtol=1e-7);
+        @time output_lbte = ElectronPhonon.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, nothing, rtol=1e-7);
         # BTE does not converge for the default rtol = 1e-10, so I set rtol = 1e-7 to mimic EPW which uses atol = 1e-6.
 
         _, mobility_serta = transport_print_mobility(output_lbte.σ_serta, transport_params, do_print=false)

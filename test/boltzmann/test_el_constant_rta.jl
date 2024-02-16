@@ -1,9 +1,9 @@
 using Test
-using EPW
+using ElectronPhonon
 using LinearAlgebra
 
 @testset "Transport electron CRTA" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
@@ -18,7 +18,7 @@ using LinearAlgebra
     smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
 
     @testset "electron doping" begin
-        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+        energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
         window = (15.0, 16.0) .* unit_to_aru(:eV)
         window_k  = window
         window_kq = window
@@ -28,7 +28,7 @@ using LinearAlgebra
         nqlist = (15, 15, 15)
 
         # Calculate matrix elements
-        @time EPW.run_transport(
+        @time ElectronPhonon.run_transport(
             model, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -69,7 +69,7 @@ using LinearAlgebra
     end
 
     @testset "hole doping" begin
-        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+        energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
         window_k  = (8.0, 20.0) .* unit_to_aru(:eV)
         window_kq = (10.0, 11.0) .* unit_to_aru(:eV)
         inv_τ_constant = 2000.0 * unit_to_aru(:meV)
@@ -95,7 +95,7 @@ using LinearAlgebra
         @test out_crta.σ_full ≈ cat(Ref(I(3)) .* [0.010409912743973742, 0.007950391640720972, 0.006583333746310548]..., dims=3)
 
         # Compare with BTE
-        @time EPW.run_transport(
+        @time ElectronPhonon.run_transport(
             model, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -123,7 +123,7 @@ using LinearAlgebra
         @test !(out_crta.σ_full ≈ out_crta.σ_intra_degen)
 
         # Compare with QME with degenerate bands only
-        @time output = EPW.run_transport(
+        @time output = ElectronPhonon.run_transport(
             model, nklist, nqlist,
             folder = tmp_dir,
             window_k  = window_k,
@@ -131,7 +131,7 @@ using LinearAlgebra
             energy_conservation = energy_conservation,
             use_irr_k = true,
             run_for_qme = true,
-            qme_offdiag_cutoff = EPW.electron_degen_cutoff,
+            qme_offdiag_cutoff = ElectronPhonon.electron_degen_cutoff,
         );
 
         filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")
@@ -150,7 +150,7 @@ using LinearAlgebra
         @test !(out_crta.σ_full ≈ out_qme.σ_serta)
 
         # Compare with full QME
-        @time output = EPW.run_transport(
+        @time output = ElectronPhonon.run_transport(
             model, nklist, nqlist,
             folder = tmp_dir,
             window_k  = window_k,
@@ -178,7 +178,7 @@ using LinearAlgebra
 
         # QME with qme_offdiag_cutoff set to include only degenerate bands. Should be equivalent
         # to the σ_intra_degen case of CRTA.
-        out_qme_only_degen = solve_electron_linear_conductivity(qme_model, qme_offdiag_cutoff=EPW.electron_degen_cutoff)
+        out_qme_only_degen = solve_electron_linear_conductivity(qme_model, qme_offdiag_cutoff=ElectronPhonon.electron_degen_cutoff)
         @test out_qme_only_degen.σ_serta ≈ out_crta.σ_intra_degen
         @test ! (out_qme_only_degen.σ_serta ≈ out_crta.σ_full)
     end

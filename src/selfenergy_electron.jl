@@ -47,7 +47,7 @@ end
         # Calculate imaginary part of electron self-energy
         for imode in 1:epdata.nmodes
             omega = epdata.ph.e[imode]
-            if (omega < EPW.omega_acoustic)
+            if (omega < omega_acoustic)
                 continue
             end
 

@@ -1,9 +1,9 @@
 using Test
-using EPW
+using ElectronPhonon
 using LinearAlgebra
 
 @testset "Transport electron QME" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
@@ -18,7 +18,7 @@ using LinearAlgebra
     smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
 
     @testset "electron doping" begin
-        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+        energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
         window_k  = (15.0, 16.0) .* unit_to_aru(:eV)
         window_kq = (15.0, 16.2) .* unit_to_aru(:eV)
 
@@ -38,7 +38,7 @@ using LinearAlgebra
             symmetry = use_irr_k ? model.el_sym.symmetry : nothing
 
             # Calculate matrix elements
-            @time EPW.run_transport(
+            @time ElectronPhonon.run_transport(
                 model, nklist, nqlist,
                 fourier_mode = "gridopt",
                 folder = tmp_dir,
@@ -68,7 +68,7 @@ using LinearAlgebra
 
             # For electron-doped BN, there is only 1 band, so the result is identical to BTE
             # Calculate matrix elements
-            @time EPW.run_transport(
+            @time ElectronPhonon.run_transport(
                 model, nklist, nqlist,
                 fourier_mode = "gridopt",
                 folder = tmp_dir,
@@ -80,12 +80,12 @@ using LinearAlgebra
             )
             filename_btedata = joinpath(tmp_dir, "btedata.rank0.h5")
 
-            output_serta = EPW.run_serta(filename_btedata, transport_params, symmetry, model.recip_lattice);
+            output_serta = ElectronPhonon.run_serta(filename_btedata, transport_params, symmetry, model.recip_lattice);
 
             # LBTE
-            bte_scat_mat, el_i_bte, el_f_bte, ph_bte = EPW.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
+            bte_scat_mat, el_i_bte, el_f_bte, ph_bte = ElectronPhonon.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
             inv_τ = output_serta.inv_τ;
-            output_lbte = EPW.solve_electron_bte(el_i_bte, el_f_bte, bte_scat_mat, inv_τ, transport_params, symmetry)
+            output_lbte = ElectronPhonon.solve_electron_bte(el_i_bte, el_f_bte, bte_scat_mat, inv_τ, transport_params, symmetry)
 
             # Test QME and BTE result is identical (because there is only one band)
             @test qme_model.el.nband == 1
@@ -136,7 +136,7 @@ using LinearAlgebra
             -0.02069388447158823 0.020693875164414996 3.343404719304864
         ]
 
-        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+        energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
         window = (10.5, 11.0) .* unit_to_aru(:eV)
         window_k  = window
         window_kq = window
@@ -157,7 +157,7 @@ using LinearAlgebra
         symmetry = nothing
 
         # Calculate matrix elements
-        @time EPW.run_transport(
+        @time ElectronPhonon.run_transport(
             model, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -191,7 +191,7 @@ end
 
 
 @testset "Transport electron QME symmetry" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
@@ -205,7 +205,7 @@ end
     smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
 
     @testset "electron doping" begin
-        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+        energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
         window = (15.0, 16.0) .* unit_to_aru(:eV)
         window_k  = window
         window_kq = window
@@ -226,7 +226,7 @@ end
         )
 
         # Run without symmetry
-        @time EPW.run_transport(
+        @time ElectronPhonon.run_transport(
             model, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -251,7 +251,7 @@ end
         out_qme_wo_symmetry = solve_electron_linear_conductivity(qme_model)
 
         # Run with symmetry
-        @time EPW.run_transport(
+        @time ElectronPhonon.run_transport(
             model, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -286,7 +286,7 @@ end
     end
 
     @testset "hole doping" begin
-        energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+        energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
         window = (10.5, 11.0) .* unit_to_aru(:eV)
         window_k  = window
         window_kq = window
@@ -304,7 +304,7 @@ end
         nqlist = (12, 12, 12)
 
         # Run without symmetry
-        @time EPW.run_transport(
+        @time ElectronPhonon.run_transport(
             model, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -329,7 +329,7 @@ end
         out_qme_wo_symmetry = solve_electron_linear_conductivity(qme_model)
 
         # Run with symmetry
-        @time EPW.run_transport(
+        @time ElectronPhonon.run_transport(
             model, nklist, nqlist,
             fourier_mode = "gridopt",
             folder = tmp_dir,
@@ -368,9 +368,9 @@ end
         out_qme_w_symmetry_full_grid = solve_electron_linear_conductivity(qme_model, use_full_grid=true)
         @test out_qme_w_symmetry_full_grid.σ ≈ out_qme_w_symmetry.σ rtol=0.05
         @test out_qme_w_symmetry_full_grid.σ_serta ≈ out_qme_w_symmetry.σ_serta rtol=0.05
-        @test (EPW.unfold_QMEVector(out_qme_w_symmetry.δρ[1], qme_model, true, false)
+        @test (ElectronPhonon.unfold_QMEVector(out_qme_w_symmetry.δρ[1], qme_model, true, false)
                ≈ out_qme_w_symmetry_full_grid.δρ[1]) rtol=0.05
-        @test (EPW.unfold_QMEVector(out_qme_w_symmetry.δρ_serta[1], qme_model, true, false)
+        @test (ElectronPhonon.unfold_QMEVector(out_qme_w_symmetry.δρ_serta[1], qme_model, true, false)
                ≈ out_qme_w_symmetry_full_grid.δρ_serta[1]) rtol=0.05
 
         # Transport distribution function
@@ -380,7 +380,7 @@ end
             de = elist[2] - elist[1]
             smearing = 10 * unit_to_aru(:meV)
 
-            Σ_tdf = EPW.compute_transport_distribution_function(out_qme_w_symmetry; elist, smearing, symmetry=model.el_sym.symmetry)
+            Σ_tdf = ElectronPhonon.compute_transport_distribution_function(out_qme_w_symmetry; elist, smearing, symmetry=model.el_sym.symmetry)
 
             @test size(Σ_tdf) == (length(elist), 3, 3, length(transport_params.Tlist))
             @test dropdims(sum(Σ_tdf, dims=1), dims=1) .* de ≈ out_qme_w_symmetry.σ
@@ -392,7 +392,7 @@ end
 # Randomly perturb the gauge of eigenstates by setting the debugging flag
 # DEBUG_random_gauge to true. And check that the result does not change.
 @testset "Transport electron QME gauge" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
 
@@ -403,7 +403,7 @@ end
     Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)
     smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
 
-    energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+    energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
     window = (10.5, 11.0) .* unit_to_aru(:eV)
     window_k  = window
     window_kq = window
@@ -425,10 +425,10 @@ end
 
         out_bte = Dict()
         out_qme = Dict()
-        for qme_offdiag_cutoff in [-1, EPW.electron_degen_cutoff]
+        for qme_offdiag_cutoff in [-1, ElectronPhonon.electron_degen_cutoff]
             for random_gauge in [false, true]
                 # Calculate matrix elements
-                @time EPW.run_transport(
+                @time ElectronPhonon.run_transport(
                     model, nklist, nqlist,
                     fourier_mode = "gridopt",
                     folder = tmp_dir,

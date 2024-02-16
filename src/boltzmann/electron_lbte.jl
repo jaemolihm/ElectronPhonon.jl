@@ -30,9 +30,9 @@ TODO: Is this valid if time-reversal is broken?
 function compute_bte_scattering_matrix(filename, params, recip_lattice, ::Type{FT}=Float64) where {FT <: AbstractFloat}
     # Read btedata
     fid = h5open(filename, "r")
-    el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{FT})
-    el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.BTStates{FT})
-    ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{FT})
+    el_i = load_BTData(open_group(fid, "initialstate_electron"), BTStates{FT})
+    el_f = load_BTData(open_group(fid, "finalstate_electron"), BTStates{FT})
+    ph = load_BTData(open_group(fid, "phonon"), BTStates{FT})
 
     # Compute chemical potential
     bte_compute_μ!(params, el_i)
@@ -47,7 +47,7 @@ function compute_bte_scattering_matrix(filename, params, recip_lattice, ::Type{F
     @time for (ig, key) in enumerate(keys(group_scattering))
         mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
         g = open_group(group_scattering, key)
-        scat = load_BTData(g, EPW.ElPhScatteringData{FT})
+        scat = load_BTData(g, ElPhScatteringData{FT})
 
         for (iscat, s) in enumerate(scat)
             # Swap ind_el_i and ind_el_f because we are calculating the scattering-in process
@@ -56,7 +56,7 @@ function compute_bte_scattering_matrix(filename, params, recip_lattice, ::Type{F
             # FIXME: For tetrahedron, currently the el_i and ph are linearly interpolated.
             #        Maybe one should add an option to choose which energies are interpolated.
             s_swap = (ind_el_i=s.ind_el_f, ind_el_f=s.ind_el_i, ind_ph=s.ind_ph, sign_ph=-s.sign_ph, mel=s.mel)
-            EPW._compute_lifetime_serta_single_scattering!(inv_τ_iscat, el_f, el_i, ph, params, s_swap, recip_lattice)
+            _compute_lifetime_serta_single_scattering!(inv_τ_iscat, el_f, el_i, ph, params, s_swap, recip_lattice)
 
             # Although el_i and el_f are swapped, one should take k point weights from el_f, not el_i.
             inv_τ_iscat .*= el_f.k_weight[s.ind_el_f] / el_i.k_weight[s.ind_el_i]
@@ -76,7 +76,7 @@ Solve Boltzmann transport equation for electrons.
 scat_mat is a rectangular matrix, mapping states in `el_f` to states in `el_i`.
 δf[j] is the occupations for states `el_f` and is calculated by unfolding `δf_i`.
 """
-function solve_electron_bte(el_i::EPW.BTStates{FT}, el_f::EPW.BTStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; max_iter=100, rtol=1e-10) where {FT}
+function solve_electron_bte(el_i::BTStates{FT}, el_f::BTStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; max_iter=100, rtol=1e-10) where {FT}
     output = (σ_serta = zeros(FT, 3, 3, length(params.Tlist)),
               σ = zeros(FT, 3, 3, length(params.Tlist)),
               δf_i_serta = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
@@ -89,7 +89,7 @@ function solve_electron_bte(el_i::EPW.BTStates{FT}, el_f::EPW.BTStates{FT}, scat
     for iT in 1:length(params.Tlist)
         μ = params.μlist[iT]
         T = params.Tlist[iT]
-        δf_i_serta = @. -EPW.occ_fermion_derivative(el_i.e - μ, T) / inv_τ_i[:, iT] * el_i.vdiag
+        δf_i_serta = @. -occ_fermion_derivative(el_i.e - μ, T) / inv_τ_i[:, iT] * el_i.vdiag
         σ_serta = symmetrize(occupation_to_conductivity(δf_i_serta, el_i, params), symmetry)
 
         # Initial guess: SERTA occupations
@@ -126,12 +126,12 @@ function solve_electron_bte(el_i::EPW.BTStates{FT}, el_f::EPW.BTStates{FT}, scat
 end
 
 """
-    unfold_data_map(state::EPW.BTStates{FT}, symmetry) -> (map_unfold, indmap)
+    unfold_data_map(state::BTStates{FT}, symmetry) -> (map_unfold, indmap)
 Construct a sparse matrix that unfolds a vector field defined on `state` using `symmetry`.
 Assume the vector field is polar (i.e. not a pseudovector) and odd under time reversal.
 For the unfolded states, `indmap[(xk_int..., iband)] = i` holds.
 """
-function unfold_data_map(state::EPW.BTStates{FT}, symmetry) where {FT}
+function unfold_data_map(state::BTStates{FT}, symmetry) where {FT}
     inds_i = Int[]
     inds_unfold = Int[]
     values = Mat3{FT}[]
@@ -167,7 +167,7 @@ function unfold_data_map(state::EPW.BTStates{FT}, symmetry) where {FT}
     sparse(inds_unfold, inds_i, values), indmap
 end
 
-function unfold_data_map(state::EPW.BTStates{FT}, ::Nothing) where {FT}
+function unfold_data_map(state::BTStates{FT}, ::Nothing) where {FT}
     # Special case where no symmetry is used. Unfolding matrix is identity.
     # One just needs to compute indmap.
     indmap = Dictionary{CI{4}, Int}()
@@ -191,7 +191,7 @@ polar (i.e. not a pseudovector) and even under time reversal.
 For vector fields ``f_i`` and ``f_f`` (defined on `el_i` and `el_f`, respectively),
 ``f_f = map_i_to_f * f_i`` holds.
 """
-function vector_field_unfold_and_interpolate_map(el_i::EPW.BTStates{FT}, el_f, symmetry) where FT
+function vector_field_unfold_and_interpolate_map(el_i::BTStates{FT}, el_f, symmetry) where FT
     map_unfold, indmap_unfold = unfold_data_map(el_i, symmetry)
 
     ranges = map(n -> range(0, 1, length=n+1)[1:end-1], el_i.ngrid)

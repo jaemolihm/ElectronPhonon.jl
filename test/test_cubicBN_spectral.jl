@@ -1,9 +1,9 @@
 using Test
-using EPW
+using ElectronPhonon
 using NPZ
 
 @testset "cubicBN spectral" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder)
@@ -19,7 +19,7 @@ using NPZ
 
     nklist = (5, 5, 5)
     xqs = reshape([0.1, 0.2, 0.4], (3, 1))
-    qpts = EPW.Kpoints(xqs)
+    qpts = ElectronPhonon.Kpoints(xqs)
 
     phspec_params = PhononSpectralParams(
         μ = μ,
@@ -30,21 +30,21 @@ using NPZ
     )
 
     # Run electron-phonon coupling calculation
-    @time output = EPW.run_eph_outer_loop_q(
+    @time output = ElectronPhonon.run_eph_outer_loop_q(
         model, nklist, qpts,
         fourier_mode="normal",
         window=window,
         phspec_params=phspec_params,
     )
 
-    @time output_gridopt = EPW.run_eph_outer_loop_q(
+    @time output_gridopt = ElectronPhonon.run_eph_outer_loop_q(
         model, nklist, qpts,
         fourier_mode="gridopt",
         window=window,
         phspec_params=phspec_params,
     )
 
-    @time output_disk_gridopt = EPW.run_eph_outer_loop_q(
+    @time output_disk_gridopt = ElectronPhonon.run_eph_outer_loop_q(
         model_disk, nklist, qpts,
         fourier_mode="gridopt",
         window=window,

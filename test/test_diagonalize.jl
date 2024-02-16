@@ -1,4 +1,4 @@
-using EPW
+using ElectronPhonon
 using Test
 using Random
 using LinearAlgebra

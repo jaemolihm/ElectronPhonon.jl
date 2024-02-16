@@ -1,6 +1,6 @@
 using Test
 using Random
-using EPW
+using ElectronPhonon
 
 @testset "Smearing functions" begin
     e = 0.04
@@ -19,6 +19,9 @@ using EPW
 end
 
 @testset "Chemical potential" begin
+    using ElectronPhonon: compute_ncarrier, compute_ncarrier_hole
+    using ElectronPhonon: find_chemical_potential, find_chemical_potential_semiconductor
+
     # Setup energy and weights
     Random.seed!(123)
     nband = 4
@@ -32,13 +35,13 @@ end
     T = 0.25
     nband_valence = 2
 
-    @test EPW.compute_ncarrier(Inf, T, energy, weights) ≈ nband
-    @test EPW.compute_ncarrier(-Inf, T, energy, weights) ≈ 0
+    @test compute_ncarrier(Inf, T, energy, weights) ≈ nband
+    @test compute_ncarrier(-Inf, T, energy, weights) ≈ 0
 
     for ncarrier in [1e-3, -1e-3]
         # General function
-        μ = EPW.find_chemical_potential(ncarrier + nband_valence, T, energy, weights)
-        @test EPW.compute_ncarrier(μ, T, energy, weights) ≈ ncarrier + nband_valence
+        μ = find_chemical_potential(ncarrier + nband_valence, T, energy, weights)
+        @test compute_ncarrier(μ, T, energy, weights) ≈ ncarrier + nband_valence
 
         # Semiconductor-specific function
         energy_e = vec(energy[3:4, :])
@@ -46,12 +49,12 @@ end
         energy_h = vec(energy[1:2, :])
         weights_h = repeat(weights, inner=2)
 
-        n_e = EPW.compute_ncarrier(μ, T, energy_e, weights_e)
-        n_h = EPW.compute_ncarrier_hole(μ, T, energy_h, weights_h)
+        n_e = compute_ncarrier(μ, T, energy_e, weights_e)
+        n_h = compute_ncarrier_hole(μ, T, energy_h, weights_h)
         @test n_e - n_h ≈ ncarrier
 
-        μ_s = EPW.find_chemical_potential_semiconductor(ncarrier, T, energy_e, energy_h,
-                                                        weights_e, weights_h)
+        μ_s = find_chemical_potential_semiconductor(ncarrier, T, energy_e, energy_h,
+                                                    weights_e, weights_h)
         @test μ_s ≈ μ
     end
 
@@ -65,13 +68,13 @@ end
         N = 10_000
 
         # General method (metallic case): floating point error is large
-        μ_1 = EPW.find_chemical_potential(ncarrier + 1, T, [e_e, e_h], [1.0, 1.0])
-        μ_N = EPW.find_chemical_potential(ncarrier + 1, T, repeat([e_e, e_h], N), repeat([1 / N, 1 / N], N))
+        μ_1 = find_chemical_potential(ncarrier + 1, T, [e_e, e_h], [1.0, 1.0])
+        μ_N = find_chemical_potential(ncarrier + 1, T, repeat([e_e, e_h], N), repeat([1 / N, 1 / N], N))
         @test !(μ_1 ≈ μ_N)
 
         # Semiconductor specific method: floating point error is small
-        μ_1 = EPW.find_chemical_potential_semiconductor(ncarrier, T, [e_e], [e_h], [1.0], [1.0])
-        μ_N = EPW.find_chemical_potential_semiconductor(ncarrier, T, fill(e_e, N), fill(e_h, N), fill(1 / N, N), fill(1 / N, N))
+        μ_1 = find_chemical_potential_semiconductor(ncarrier, T, [e_e], [e_h], [1.0], [1.0])
+        μ_N = find_chemical_potential_semiconductor(ncarrier, T, fill(e_e, N), fill(e_h, N), fill(1 / N, N), fill(1 / N, N))
         @test μ_1 ≈ μ_N
     end
 end

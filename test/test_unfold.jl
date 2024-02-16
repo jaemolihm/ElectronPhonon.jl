@@ -1,8 +1,13 @@
 using Test
-using EPW
+using ElectronPhonon
 
 @testset "unfold" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    using ElectronPhonon: unfold_kpoints, fold_kpoints, normalize_kpoint_coordinate
+    using ElectronPhonon: electron_degen_cutoff, unfold_ElectronStates, unfold_QMEStates
+    using ElectronPhonon: electron_states_to_QMEStates, electron_states_to_QMEStates
+    using ElectronPhonon: BTStates, occupation_to_conductivity
+
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     model = load_model(folder, load_symmetry_operators=true)
 
@@ -11,7 +16,7 @@ using EPW
         nk = 30
         kpts = GridKpoints(kpoints_grid((nk, nk, nk); model.symmetry));
         kpts_unfold_ref = GridKpoints(kpoints_grid((nk, nk, nk)));
-        kpts_unfold = EPW.unfold_kpoints(kpts, model.symmetry);
+        kpts_unfold = unfold_kpoints(kpts, model.symmetry);
         @test kpts_unfold == kpts_unfold_ref
 
         # Unfolding of irreducible BZ inside given energy window to full BZ
@@ -21,11 +26,11 @@ using EPW
             symmetry=model.symmetry)[1])
         kpts_unfold_ref = GridKpoints(filter_kpoints((nk, nk, nk), model.nw, model.el_ham, window,
             nothing, symmetry=nothing)[1])
-        kpts_unfold = EPW.unfold_kpoints(kpts, model.symmetry);
+        kpts_unfold = unfold_kpoints(kpts, model.symmetry);
         @test kpts_unfold == kpts_unfold_ref
 
         # Test folding of kpoints (inverse of unfolding)
-        kpts_by_folding, ik_to_ikirr_isym = EPW.fold_kpoints(kpts_unfold, model.symmetry)
+        kpts_by_folding, ik_to_ikirr_isym = fold_kpoints(kpts_unfold, model.symmetry)
         @test kpts_by_folding.n == kpts.n
         for ik = 1:kpts_unfold.n
             ikirr, isym = ik_to_ikirr_isym[ik]
@@ -33,7 +38,7 @@ using EPW
             xk = kpts_unfold.vectors[ik]
             xkirr = kpts_by_folding.vectors[ikirr]
             skirr = symop.is_tr ? -symop.S * xkirr : symop.S * xkirr
-            skirr = EPW.normalize_kpoint_coordinate(skirr)
+            skirr = normalize_kpoint_coordinate(skirr)
             @test xk ≈ skirr
         end
     end
@@ -42,10 +47,10 @@ using EPW
         symmetry = model.el_sym.symmetry
         nk = 5
         kpts_full = GridKpoints(kpoints_grid((nk, nk, nk)))
-        kpts_irr, ik_to_ikirr_isym = EPW.fold_kpoints(kpts_full, symmetry)
+        kpts_irr, ik_to_ikirr_isym = fold_kpoints(kpts_full, symmetry)
         el_irr = compute_electron_states(model, kpts_irr, ["eigenvector", "velocity", "position"])
         el_full = compute_electron_states(model, kpts_full, ["eigenvector", "velocity", "position"])
-        el_full_unfold = EPW.unfold_ElectronStates(model, el_irr, kpts_irr, kpts_full, ik_to_ikirr_isym,
+        el_full_unfold = unfold_ElectronStates(model, el_irr, kpts_irr, kpts_full, ik_to_ikirr_isym,
             symmetry; quantities=["velocity_diagonal", "velocity", "position"])
 
         hk = zeros(ComplexF64, model.nw, model.nw)
@@ -86,22 +91,22 @@ using EPW
 
         kpts = GridKpoints(kpts)
         el_k_save = compute_electron_states(model, kpts, quantities, window; fourier_mode);
-        el = EPW.electron_states_to_QMEStates(el_k_save, kpts, EPW.electron_degen_cutoff, nstates_base);
+        el = electron_states_to_QMEStates(el_k_save, kpts, electron_degen_cutoff, nstates_base);
 
         kpts_unfold_ref = GridKpoints(filter_kpoints((nk, nk, nk), model.nw, model.el_ham, window,
             nothing, symmetry=nothing)[1]);
         el_k_save_unfold = compute_electron_states(model, kpts_unfold_ref, quantities, window; fourier_mode);
-        el_unfold_ref = EPW.electron_states_to_QMEStates(el_k_save_unfold, kpts_unfold_ref,
-            EPW.electron_degen_cutoff, nstates_base);
+        el_unfold_ref = electron_states_to_QMEStates(el_k_save_unfold, kpts_unfold_ref,
+            electron_degen_cutoff, nstates_base);
 
-        el_unfold, isk_to_ik_isym = EPW.unfold_QMEStates(el, symmetry);
+        el_unfold, isk_to_ik_isym = unfold_QMEStates(el, symmetry);
 
         # Test isk_to_ik_isym mapping is correct
         for isk in 1:el_unfold.kpts.n
             ik, isym = isk_to_ik_isym[isk]
             symop = symmetry[isym]
             sk = symop.is_tr ? -symop.S * el.kpts.vectors[ik] : symop.S * el.kpts.vectors[ik]
-            @test EPW.normalize_kpoint_coordinate(sk) ≈ el_unfold_ref.kpts.vectors[isk]
+            @test normalize_kpoint_coordinate(sk) ≈ el_unfold_ref.kpts.vectors[isk]
         end
 
         # Test whether el_unfold is consistent with el_unfold_ref
@@ -126,16 +131,16 @@ using EPW
             nband_valence = 4,
             spin_degeneracy = 2
         )
-        bte_compute_μ!(transport_params, EPW.BTStates(el); do_print=false)
+        bte_compute_μ!(transport_params, BTStates(el); do_print=false)
         μ = transport_params.μlist[1]
         T = transport_params.Tlist[1]
 
         inv_τ_constant = 10 * unit_to_aru(:meV)
         δρ = @. -el.v * occ_fermion_derivative(el.e1 - μ, T) / inv_τ_constant;
-        σ = symmetrize(EPW.occupation_to_conductivity(δρ, el, transport_params), symmetry);
+        σ = symmetrize(occupation_to_conductivity(δρ, el, transport_params), symmetry);
 
         δρ_unfold = @. -el_unfold.v * occ_fermion_derivative(el_unfold.e1 - μ, T) / inv_τ_constant;
-        σ_unfold = EPW.occupation_to_conductivity(δρ_unfold, el_unfold, transport_params);
+        σ_unfold = occupation_to_conductivity(δρ_unfold, el_unfold, transport_params);
         @test isapprox(σ_unfold, σ; rtol=1e-5)
     end
 end

@@ -43,14 +43,14 @@ Base.lastindex(s::BTStates) = s.n
 
 """
     electron_states_to_BTStates(el_states::Vector{ElectronState{T}},
-    kpts::EPW.Kpoints{T}) where {T <: Real}
+    kpts::Kpoints{T}) where {T <: Real}
 Transform Vector of ElectronState to a BTState.
 # Output
 - A BTState object
 - `imap`: imap[ib, ik] is the index of the state in BTStates (for ib in `el_states[ik].rng`)
 """
 @timing "el_to_BT" function electron_states_to_BTStates(el_states::Vector{ElectronState{T}},
-        kpts::EPW.AbstractKpoints{T}, nstates_base=0) where {T <: Real}
+        kpts::AbstractKpoints{T}, nstates_base=0) where {T <: Real}
     nk = length(el_states)
     n = sum([el.nband for el in el_states])
     ngrid = kpts.ngrid
@@ -86,14 +86,14 @@ end
 
 """
     phonon_states_to_BTStates(ph_states::Vector{PhononState{T}},
-    kpts::EPW.Kpoints{T}) where {T <: Real}
+    kpts::Kpoints{T}) where {T <: Real}
 Transform Vector of PhononState to a BTState.
 # Output
 - A BTState object
 - `imap`: imap[ib, ik] is the index of the state in BTStates (for ib in `ph_states[ik].rng`)
 """
 @timing "ph_to_BT" function phonon_states_to_BTStates(ph_states::Vector{PhononState{T}},
-        kpts::EPW.AbstractKpoints{T}) where {T <: Real}
+        kpts::AbstractKpoints{T}) where {T <: Real}
     nk = length(ph_states)
     nmodes = ph_states[1].nmodes
     ngrid = kpts.ngrid
@@ -167,7 +167,7 @@ function mpi_gather(s::BTStates{FT}, comm::MPI.Comm) where {FT}
 
     # If ngrid is not same among processers, set ngrid to (0,0,0).
     ngrid_root = mpi_bcast(s.ngrid, comm)
-    all_ngrids_same = EPW.mpi_reduce(s.ngrid == ngrid_root, &, comm)
+    all_ngrids_same = mpi_reduce(s.ngrid == ngrid_root, &, comm)
     ngrid = all_ngrids_same ? ngrid_root : (0, 0, 0)
 
     if mpi_isroot(comm)

@@ -1,8 +1,10 @@
 using Test
 using Random
-using EPW
+using ElectronPhonon
 
 @testset "kpoints: grid" begin
+    using ElectronPhonon: get_filtered_kpoints, kpoints_grid, kpoints_create_subgrid
+
     nk1 = 2
     nk2 = 3
     nk3 = 4
@@ -15,7 +17,7 @@ using EPW
     ik_keep = zeros(Bool, nk1 * nk2 * nk3)
     ik_keep[7] = true
     ik_keep[11] = true
-    kpts_filtered = EPW.get_filtered_kpoints(kpts, ik_keep)
+    kpts_filtered = get_filtered_kpoints(kpts, ik_keep)
     @test kpts_filtered.n == sum(ik_keep)
     @test kpts_filtered.vectors[1] ≈ kpts.vectors[7]
     @test kpts_filtered.vectors[2] ≈ kpts.vectors[11]
@@ -26,8 +28,8 @@ using EPW
     kpts = kpoints_grid((2, 2, 2))
     ik_keep = zeros(Bool, kpts.n)
     ik_keep[7:8] .= true
-    kpts = EPW.get_filtered_kpoints(kpts, ik_keep)
-    kpts2 = EPW.kpoints_create_subgrid(kpts, (2, 3, 4))
+    kpts = get_filtered_kpoints(kpts, ik_keep)
+    kpts2 = kpoints_create_subgrid(kpts, (2, 3, 4))
     @test kpts2.n == 48
     @test kpts2.vectors[1]  ≈ kpts.vectors[1] .+ (-1/4, -2/6, -3/8) ./ (2, 2, 2)
     @test kpts2.vectors[19] ≈ kpts.vectors[1] .+ ( 1/4,  0/6,  1/8) ./ (2, 2, 2)
@@ -66,13 +68,15 @@ end
 end
 
 @testset "kpoints: GridKpoints" begin
+    using ElectronPhonon: get_filtered_kpoints, kpoints_grid
+
     Random.seed!(111)
     N = 3
     shift = [0, 1//2, 1//2] ./ N
     kpts = kpoints_grid((N, N, N); shift)
     @test kpts.vectors[1] ≈ Vec3(0, 1//2N, 1//2N)
 
-    kpts = EPW.get_filtered_kpoints(kpts, rand(Bool, kpts.n))
+    kpts = get_filtered_kpoints(kpts, rand(Bool, kpts.n))
     gridkpts = GridKpoints(kpts)
     @test gridkpts.ngrid == (N, N, N)
     @test gridkpts.shift ≈ shift

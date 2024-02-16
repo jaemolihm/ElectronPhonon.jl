@@ -149,7 +149,7 @@ function compute_lifetime_serta_doublegrid_interpolation(el_i, el_f, ph, scat_fi
     δe_subgrid = zeros((subgrid .+ 1)...)
     for ik in 1:el_i.nk
         mod(ik, 100) == 0 && println("ik = $ik")
-        scat = load_BTData(open_group(scat_fid, "ik$ik"), EPW.ElPhScatteringData{FT})
+        scat = load_BTData(open_group(scat_fid, "ik$ik"), ElPhScatteringData{FT})
 
         for iscat in 1:scat.n
             # if mod(iscat, 200000) == 0

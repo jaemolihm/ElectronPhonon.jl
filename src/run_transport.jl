@@ -27,7 +27,7 @@ using HDF5
         shift_q=(0, 0, 0),
         average_degeneracy=false,
         run_for_qme=false,
-        qme_offdiag_cutoff=EPW.electron_degen_cutoff,
+        qme_offdiag_cutoff=electron_degen_cutoff,
         symmetry = nothing,
         kwargs...
     ) where FT
@@ -161,7 +161,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
 
     epdatas = [ElPhData{Float64}(nw, nmodes, nband_max) for _ in 1:nthreads()]
 
-    epmat = EPW.get_interpolator(model.epmat; fourier_mode)
+    epmat = get_interpolator(model.epmat; fourier_mode)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epobj_ekpR_obj = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nband_max*nmodes, length(model.epmat.irvec_next))))

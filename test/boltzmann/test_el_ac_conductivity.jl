@@ -1,9 +1,9 @@
 using Test
-using EPW
+using ElectronPhonon
 using LinearAlgebra
 
 @testset "Transport electron AC CRTA" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
     mkpath(tmp_dir)
@@ -12,7 +12,7 @@ using LinearAlgebra
 
     Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)
     smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
-    energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
+    energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
     window_k  = (8.0, 20.0) .* unit_to_aru(:eV)
     window_kq = (10.0, 11.0) .* unit_to_aru(:eV)
     inv_τ_constant = 20.0 * unit_to_aru(:meV)
@@ -32,7 +32,7 @@ using LinearAlgebra
     symmetry = model.el_sym.symmetry
 
     # AC conductivity with CRTA
-    @time output = EPW.run_transport(
+    @time output = ElectronPhonon.run_transport(
         model, nklist, nqlist,
         folder = tmp_dir,
         window_k  = window_k,
@@ -40,7 +40,7 @@ using LinearAlgebra
         energy_conservation = energy_conservation,
         use_irr_k = true,
         run_for_qme = true,
-        qme_offdiag_cutoff = EPW.electron_degen_cutoff,
+        qme_offdiag_cutoff = ElectronPhonon.electron_degen_cutoff,
     );
 
     filename = joinpath(tmp_dir, "btedata_coherence.rank0.h5")

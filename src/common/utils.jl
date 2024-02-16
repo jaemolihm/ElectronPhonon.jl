@@ -67,7 +67,7 @@ end
 
 "Average data for degenerate states using energy. Non allocating version."
 function average_degeneracy!(data_averaged, data, energy, degeneracy_cutoff=1.e-6)
-    # TODO: Use EPW.electron_degen_cutoff
+    # TODO: Use electron_degen_cutoff
     @assert size(data) == size(data_averaged)
     @assert axes(data) == axes(data_averaged)
 

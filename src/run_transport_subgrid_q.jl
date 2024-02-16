@@ -44,10 +44,10 @@ function run_transport_subgrid_q(
     # Find list of q points to make subgrid
     do_subgrid = [norm(model.recip_lattice * xq) / (2π / model.alat) < subgrid_q_max for xq in qpts_original.vectors]
     iqs_to_subgrid = (1:qpts_original.n)[do_subgrid]
-    qpts_to_subgrid = EPW.get_filtered_kpoints(qpts_original, do_subgrid)
+    qpts_to_subgrid = get_filtered_kpoints(qpts_original, do_subgrid)
 
     # Compute q point object for the subgrid
-    qpts = EPW.kpoints_create_subgrid(qpts_to_subgrid, subgrid_scale)
+    qpts = kpoints_create_subgrid(qpts_to_subgrid, subgrid_scale)
     indmap = sortperm(qpts)
     sort!(qpts)
     iq_subgrid_to_grid = repeat(iqs_to_subgrid, inner=prod(subgrid_scale))[indmap]

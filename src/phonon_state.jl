@@ -1,7 +1,7 @@
 
 # Phonon eigenvalue and eigenvector at a single q point
 
-using EPW.WanToBloch: get_ph_eigen!
+using ElectronPhonon.WanToBloch: get_ph_eigen!
 
 export PhononState
 export copyto!

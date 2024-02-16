@@ -178,7 +178,7 @@ function transport_print_mobility(σ, params::ElectronTransportParams; do_print=
     # Multiply e2 = 2 (in Rydberg units) because what σ is density flow conductivity, not
     # charge flow conductivity (i.e. we did not use e = sqrt(2) anywhere).
     # Convert from Rydberg units to A / (V * cm)
-    σ_SI = @. σ * EPW.e2 / (unit_to_aru(:A) / unit_to_aru(:V) / unit_to_aru(:cm))
+    σ_SI = @. σ * ElectronPhonon.e2 / (unit_to_aru(:A) / unit_to_aru(:V) / unit_to_aru(:cm))
     mobility_SI = σ_SI ./ reshape(abs.(charge_density_SI), 1, 1, :)
 
     if do_print

@@ -5,11 +5,11 @@ Use thread-save preallocated buffers.
 module WanToBloch
 
 using LinearAlgebra
-using EPW: @timing
-using EPW: AbstractWannierObject, WannierObject
-using EPW: get_fourier!, update_op_r!, reset_gridopts_in_obj!
-using EPW: solve_eigen_el!, solve_eigen_el_valueonly!, solve_eigen_ph!, solve_eigen_ph_valueonly!
-using EPW: dynmat_dipole!
+using ElectronPhonon: @timing
+using ElectronPhonon: AbstractWannierObject, WannierObject
+using ElectronPhonon: get_fourier!, update_op_r!, reset_gridopts_in_obj!
+using ElectronPhonon: solve_eigen_el!, solve_eigen_el_valueonly!, solve_eigen_ph!, solve_eigen_ph_valueonly!
+using ElectronPhonon: dynmat_dipole!
 
 export get_el_eigen!
 export get_el_eigen_valueonly!

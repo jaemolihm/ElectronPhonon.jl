@@ -1,10 +1,10 @@
 using Printf
-using EPW.WanToBloch: get_symmetry_representation_wannier!
+using ElectronPhonon.WanToBloch: get_symmetry_representation_wannier!
 
 export check_electron_symmetry_of_model
 
 """
-    check_electron_symmetry_of_model(model::EPW.Model{FT}, ngrid; fourier_mode="gridopt")
+    check_electron_symmetry_of_model(model::Model{FT}, ngrid; fourier_mode="gridopt")
 Check whether the electron operators in Wannier function basis follow the symmetry of the system.
 Symmetry in `model.el_sym.symmetry`, not `model.symmetry` are tested because one has symmetry
 operators in the Wannier basis only for the former.
@@ -19,7 +19,7 @@ Note: the symmetry of position or H * R matrices cannot be directly tested becau
 symmetry operation involves translation and shift of Wannier functions. So we use the velocity
 matrix computed using the Berry curvature method as an indirect check of position matrix.
 """
-function check_electron_symmetry_of_model(model::EPW.Model{FT}, ngrid; fourier_mode="gridopt") where FT
+function check_electron_symmetry_of_model(model::Model{FT}, ngrid; fourier_mode="gridopt") where FT
     model.el_sym === nothing && error("model.el_sym must be set. Pass load_symmetry_operators=true in load_model.")
 
     error_keys = [:Energy, :SymMatrixUnitarity, :Hamiltonian, :Velocity_Direct, :Velocity_BerryConnection]
@@ -31,7 +31,7 @@ function check_electron_symmetry_of_model(model::EPW.Model{FT}, ngrid; fourier_m
     # finite-difference error in the position matrix elements.
     # TODO: Check whether this bound is reasonable.
     rms_error_bounds = Dict(
-        :Energy => EPW.electron_degen_cutoff,
+        :Energy => electron_degen_cutoff,
         :SymMatrixUnitarity => 1e-3,
         :Hamiltonian => 1.0 * unit_to_aru(:meV),
         :Velocity_Direct => 1.0 * unit_to_aru(:meV) * unit_to_aru(:Å),
@@ -70,7 +70,7 @@ function check_electron_symmetry_of_model(model::EPW.Model{FT}, ngrid; fourier_m
             xk = kpts.vectors[ik]
             sk = symop.is_tr ? -symop.S * xk : symop.S * xk
             isk = xk_to_ik(sk, kpts)
-            if ! (kpts.vectors[isk] ≈ EPW.normalize_kpoint_coordinate(sk))
+            if ! (kpts.vectors[isk] ≈ normalize_kpoint_coordinate(sk))
                 error("k point grid is not symmetric: sk=$sk (xk=$xk, isym=$isym) not in the grid.")
             end
 

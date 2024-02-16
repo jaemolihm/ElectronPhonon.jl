@@ -1,9 +1,9 @@
 using Test
-using EPW
+using ElectronPhonon
 using LinearAlgebra
 
 @testset "Transport finite E field" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
@@ -15,8 +15,8 @@ using LinearAlgebra
     window_k  = (10.6, 11.0) .* unit_to_aru(:eV)
     window_kq = (10.5, 11.0) .* unit_to_aru(:eV)
     smearing = (:Gaussian, 80.0 * unit_to_aru(:meV))
-    energy_conservation = (:Fixed, 4 * 80.0 * EPW.unit_to_aru(:meV))
-    qme_offdiag_cutoff = EPW.electron_degen_cutoff
+    energy_conservation = (:Fixed, 4 * 80.0 * unit_to_aru(:meV))
+    qme_offdiag_cutoff = ElectronPhonon.electron_degen_cutoff
 
     transport_params = ElectronTransportParams(
         Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K),
@@ -45,7 +45,7 @@ using LinearAlgebra
         symmetry = use_symmetry ? model.el_sym.symmetry : nothing
 
         # Calculate matrix elements
-        @time EPW.run_transport(
+        @time ElectronPhonon.run_transport(
             model, (nk, nk, nk), (nk, nk, nk),
             fourier_mode = "gridopt",
             folder = tmp_dir,

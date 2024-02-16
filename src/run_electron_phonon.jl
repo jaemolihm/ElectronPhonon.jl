@@ -1,11 +1,11 @@
 
-using EPW.WanToBloch
+using ElectronPhonon.WanToBloch
 
 """
     run_eph_outer_loop_q(
-        model::EPW.Model,
-        k_input::Union{NTuple{3,Int}, EPW.Kpoints},
-        q_input::Union{NTuple{3,Int}, EPW.Kpoints};
+        model::Model,
+        k_input::Union{NTuple{3,Int}, Kpoints},
+        q_input::Union{NTuple{3,Int}, Kpoints};
         mpi_comm_k=nothing,
         mpi_comm_q=nothing,
         fourier_mode="normal",
@@ -20,9 +20,9 @@ Loop over k and q points to compute e-ph related quantities.
 - `k_input`, `q_input`: either a 3-element tuple (n1, n2, n3) or a Kpoints object.
 """
 function run_eph_outer_loop_q(
-        model::EPW.Model{FT},
-        k_input::Union{NTuple{3,Int}, EPW.Kpoints},
-        q_input::Union{NTuple{3,Int}, EPW.Kpoints};
+        model::Model{FT},
+        k_input::Union{NTuple{3,Int}, Kpoints},
+        q_input::Union{NTuple{3,Int}, Kpoints};
         mpi_comm_k=nothing,
         mpi_comm_q=nothing,
         fourier_mode="normal",
@@ -58,9 +58,9 @@ function run_eph_outer_loop_q(
         model.el_ham, window, mpi_comm_k)
 
     # Generate q points
-    if q_input isa EPW.Kpoints
+    if q_input isa Kpoints
         if mpi_comm_q !== nothing
-            error("q_input as EPW.Kpoints with mpi_comm_q not implemented")
+            error("q_input as Kpoints with mpi_comm_q not implemented")
         end
         qpoints_all = q_input
     elseif q_input isa NTuple{3,Int}
@@ -187,11 +187,11 @@ function run_eph_outer_loop_q(
     output["ek"] = ek_full_save
     output["iband_min"] = iband_min
     output["iband_max"] = iband_max
-    output["omega"] = EPW.mpi_gather(omega_save, mpi_comm_q)
+    output["omega"] = mpi_gather(omega_save, mpi_comm_q)
 
     # Post-process computed data, write to file if asked to.
     if compute_elself
-        EPW.mpi_sum!(elself.imsigma, mpi_comm_q)
+        mpi_sum!(elself.imsigma, mpi_comm_q)
         # Average over degenerate states
         el_imsigma_avg = similar(elself.imsigma)
         @views for iT in 1:size(elself.imsigma, 3)
@@ -207,7 +207,7 @@ function run_eph_outer_loop_q(
         @views for iT in 1:size(ph_imsigma, 3)
             average_degeneracy!(ph_imsigma_avg[:,:,iT], ph_imsigma[:,:,iT], omega_save)
         end
-        output["phself_imsigma"] = EPW.mpi_gather(ph_imsigma_avg, mpi_comm_q)
+        output["phself_imsigma"] = mpi_gather(ph_imsigma_avg, mpi_comm_q)
     end
 
     if compute_phspec
@@ -228,7 +228,7 @@ function run_eph_outer_loop_q(
     end
 
     if compute_transport
-        EPW.mpi_sum!(transport_serta.inv_τ, mpi_comm_q)
+        mpi_sum!(transport_serta.inv_τ, mpi_comm_q)
         σ = compute_conductivity_serta!(transport_params, transport_serta.inv_τ,
             el_k_save, kpoints.weights, window)
         output["transport_σ"] = σ

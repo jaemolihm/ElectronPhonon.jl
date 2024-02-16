@@ -1,6 +1,6 @@
 using StaticArrays
 using LinearAlgebra
-using EPW
+using ElectronPhonon
 using Random
 using Test
 
@@ -19,7 +19,7 @@ using Test
 
     @test all(inv(symop) * symop ≈ one(symop) for symop in symmetry)
     @test all(symop * inv(symop) ≈ one(symop) for symop in symmetry)
-    EPW.check_group(symmetry)
+    ElectronPhonon.check_group(symmetry)
 
     kpts = kpoints_grid((6, 6, 6); symmetry)
     @test kpts.n == 16
@@ -42,7 +42,7 @@ using Test
 
     @test all(inv(symop) * symop ≈ one(symop) for symop in symmetry)
     @test all(symop * inv(symop) ≈ one(symop) for symop in symmetry)
-    EPW.check_group(symmetry)
+    ElectronPhonon.check_group(symmetry)
 
     kpts = kpoints_grid((6, 6, 6); symmetry)
     @test kpts.n == 16
@@ -52,7 +52,7 @@ using Test
     @test kpts.n == 20
 
     # Cubic Boron Nitride sturucture imported from file
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     model = load_model(folder, skip_epmat=true)
     @test model.symmetry.nsym == 48
@@ -60,7 +60,7 @@ using Test
 
     @test all(inv(symop) * symop ≈ one(symop) for symop in symmetry)
     @test all(symop * inv(symop) ≈ one(symop) for symop in symmetry)
-    EPW.check_group(symmetry)
+    ElectronPhonon.check_group(symmetry)
 
     kpts = kpoints_grid((6, 6, 6); model.symmetry)
     @test kpts.n == 16

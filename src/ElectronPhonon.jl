@@ -1,6 +1,4 @@
-#__precompile__(false)
-
-module EPW
+module ElectronPhonon
 
 using TimerOutputs
 

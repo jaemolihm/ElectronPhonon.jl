@@ -1,7 +1,7 @@
 
 using FortranFiles
 
-# Symmetry convention of EPW.jl and Quantum ESPRESSO
+# Symmetry convention of ElectronPhonon.jl and Quantum ESPRESSO
 # In QE, the symmetry operation is r -> r * S_QE - τ_QE.
 # In our convention (we follow DFTK), we have r -> W * r + w, so W = S_QE^T, w = -τ_QE.
 # Then, we store symmetries in reciprocal space, so we have
@@ -56,8 +56,8 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
     # If :Direct, use direct interpolation of dH/dk matrix elements (stored in el_vel).
     # If :BerryConnection, compute the Berry connection using el_pos and use Eq. (31) of
     # X. Wang et al, PRB 74 195118 (2006).
-    # el_velocity_mode = :Direct          corresponds to vme = "dipole"  of EPW.
-    # el_velocity_mode = :BerryConnection corresponds to vme = "wannier" of EPW.
+    # el_velocity_mode = :Direct          corresponds to vme = "dipole"  of
+    # el_velocity_mode = :BerryConnection corresponds to vme = "wannier" of
 
     ph_dyn::WannierObject{FT} # Phonon dynamical matrix
     ph_dyn_R::WannierObject{FT} # Phonon dynamical matrix
@@ -83,13 +83,13 @@ function load_model(folder::String; epmat_on_disk::Bool=false, tmpdir=nothing,
         # The implementation below breaks if epmat size is large. MPI bcast of large array
         # with sizeof(array) is greater than typemax(Cint) was not possible.
         model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators, skip_epmat)
-        # if mpi_isroot(EPW.mpi_world_comm())
+        # if mpi_isroot(mpi_world_comm())
         #     model = load_model_from_epw(folder, epmat_on_disk, tmpdir)
         # else
         #     model = nothing
         # end
         # # Broadcast to all processors
-        # model = mpi_bcast(model, EPW.mpi_world_comm())
+        # model = mpi_bcast(model, mpi_world_comm())
     else
         model = load_model_from_epw(folder, epmat_on_disk, tmpdir; epmat_outer_momentum, load_symmetry_operators, skip_epmat)
     end
@@ -166,7 +166,7 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
     Z = [Mat3{Float64}(arr) for arr in eachslice(Z_arr, dims=3)]
 
     if use_polar_dipole || isfile(joinpath(folder, "quadrupole.fmt"))
-        # EPW hard-coded parameters (see EPW/src/rigid_epw.f90)
+        # EPW hard-coded parameters (see EPW/src/rigid_f90)
         cutoff = T(14.0)  # gmax
         η = T(1.0)  # alph
 
@@ -362,7 +362,7 @@ function load_symmetry_operators_from_epw(folder)
     nsym = Int(read(f, Int32))
     symmetry_S = Int.(read(f, (Int32, 3, 3, nsym)))
     symmetry_τ = read(f, (Float64, 3, nsym))
-    time_reversal = EPW.fortran_read_bool(f)
+    time_reversal = fortran_read_bool(f)
 
     # Symmetry conversion: see comment in the header.
     Ss = [Mat3(symmetry_S[:, :, i]) for i in 1:nsym]

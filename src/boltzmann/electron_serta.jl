@@ -159,12 +159,12 @@ function compute_conductivity_serta!(params, inv_τ, el::BTStates{R}, ngrid, rec
 
         # Maximum occupation for given energies
         if emax < μ
-            dfocc_max = -EPW.occ_fermion_derivative(emax - μ, T)
+            dfocc_max = -occ_fermion_derivative(emax - μ, T)
         elseif emin > μ
-            dfocc_max = -EPW.occ_fermion_derivative(emin - μ, T)
+            dfocc_max = -occ_fermion_derivative(emin - μ, T)
         else
             # energy range include enk - μ = 0.
-            dfocc_max = -EPW.occ_fermion_derivative(zero(T), T)
+            dfocc_max = -occ_fermion_derivative(zero(T), T)
         end
         # @info dfocc_max
 
@@ -207,7 +207,7 @@ function occ_fermion_derivative_smear(e, vcart, μ, T, ngrid, recip_lattice, npo
     dfocc_smear = 0.0
     @inbounds for i1 in 1:npoints[1], i2 in 1:npoints[2], i3 in 1:npoints[3]
         k = dkmin .+ ddk .* (i1-0.5, i2-0.5, i3-0.5)
-        dfocc_smear += EPW.occ_fermion_derivative(e + dot(v, k) - μ, T)
+        dfocc_smear += occ_fermion_derivative(e + dot(v, k) - μ, T)
     end
     dfocc_smear /= prod(npoints)
     dfocc_smear
@@ -337,7 +337,7 @@ function compute_transport_distribution_function(elist, smearing, el, inv_τ, pa
     for iT in 1:length(Tlist)
         T = Tlist[iT]
         μ = μlist[iT]
-        dfocc = -EPW.occ_fermion_derivative.(e .- μ, T)
+        dfocc = -occ_fermion_derivative.(e .- μ, T)
         @views for a in 1:3, b in 1:3
             @. σ_list = w * dfocc * vv[a, b, :] / inv_τ[:, iT]
             for i in 1:el.n
@@ -357,9 +357,9 @@ end
 function run_serta(filename, transport_params, symmetry, recip_lattice, ::Type{FT}=Float64; do_print=false) where FT
     # Read btedata
     fid = h5open(filename, "r")
-    el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{FT})
-    el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.BTStates{FT})
-    ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{FT})
+    el_i = load_BTData(open_group(fid, "initialstate_electron"), BTStates{FT})
+    el_f = load_BTData(open_group(fid, "finalstate_electron"), BTStates{FT})
+    ph = load_BTData(open_group(fid, "phonon"), BTStates{FT})
 
     # Compute chemical potential
     bte_compute_μ!(transport_params, el_i; do_print)
@@ -372,7 +372,7 @@ function run_serta(filename, transport_params, symmetry, recip_lattice, ::Type{F
     @time for (ig, key) in enumerate(keys(group_scattering))
         mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
         g = open_group(group_scattering, key)
-        scat = load_BTData(g, EPW.ElPhScatteringData{FT})
+        scat = load_BTData(g, ElPhScatteringData{FT})
         compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat, transport_params, recip_lattice)
     end
 
@@ -391,15 +391,15 @@ end
 function run_serta_subgrid(filename_original, filename_subgrid, transport_params, symmetry, qpts, recip_lattice, ::Type{FT}=Float64; do_print=false) where FT
     # Read original grid btedata
     fid = h5open(filename_original, "r")
-    el_i = load_BTData(open_group(fid, "initialstate_electron"), EPW.BTStates{FT})
-    el_f = load_BTData(open_group(fid, "finalstate_electron"), EPW.BTStates{FT})
-    ph = load_BTData(open_group(fid, "phonon"), EPW.BTStates{FT})
+    el_i = load_BTData(open_group(fid, "initialstate_electron"), BTStates{FT})
+    el_f = load_BTData(open_group(fid, "finalstate_electron"), BTStates{FT})
+    ph = load_BTData(open_group(fid, "phonon"), BTStates{FT})
 
     # Read subgrid btedata
     fid_sub = h5open(filename_subgrid, "r")
-    el_i_sub = load_BTData(fid_sub["initialstate_electron"], EPW.BTStates{FT})
-    el_f_sub = load_BTData(fid_sub["finalstate_electron"], EPW.BTStates{FT})
-    ph_sub = load_BTData(fid_sub["phonon"], EPW.BTStates{FT})
+    el_i_sub = load_BTData(fid_sub["initialstate_electron"], BTStates{FT})
+    el_f_sub = load_BTData(fid_sub["finalstate_electron"], BTStates{FT})
+    ph_sub = load_BTData(fid_sub["phonon"], BTStates{FT})
     iq_subgrid_to_grid = read(fid_sub, "iq_subgrid_to_grid")
 
     # Compute chemical potential
@@ -429,7 +429,7 @@ function run_serta_subgrid(filename_original, filename_subgrid, transport_params
     mpi_isroot() && println("Original grid: Total $(length(group_scattering)) groups of scattering")
     @time for (ig, key) in enumerate(keys(group_scattering))
         mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
-        scat = load_BTData(open_group(group_scattering, key), EPW.ElPhScatteringData{FT})
+        scat = load_BTData(open_group(group_scattering, key), ElPhScatteringData{FT})
         scat_exclude_subgrid = filter(s -> ind_ph_filter[s.ind_ph], scat)
         compute_lifetime_serta!(inv_τ, el_i, el_f, ph, scat_exclude_subgrid, transport_params, recip_lattice)
     end
@@ -440,7 +440,7 @@ function run_serta_subgrid(filename_original, filename_subgrid, transport_params
     mpi_isroot() && println("Subgrid: Total $(length(group_scattering_sub)) groups of scattering")
     @time for (ig, key) in enumerate(keys(group_scattering_sub))
         mpi_isroot() && mod(ig, 100) == 0 && println("Calculating scattering for group $ig")
-        scat = load_BTData(open_group(group_scattering_sub, key), EPW.ElPhScatteringData{FT})
+        scat = load_BTData(open_group(group_scattering_sub, key), ElPhScatteringData{FT})
         compute_lifetime_serta!(inv_τ, el_i_sub, el_f_sub, ph_sub, scat, transport_params, recip_lattice)
     end
 

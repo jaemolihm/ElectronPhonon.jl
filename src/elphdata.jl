@@ -5,7 +5,7 @@ using Base: @kwdef
 using OffsetArrays
 using OffsetArrays: no_offset_view
 
-import EPW.WanToBloch: get_eph_Rq_to_kq!, get_eph_kR_to_kq!
+import ElectronPhonon.WanToBloch: get_eph_Rq_to_kq!, get_eph_kR_to_kq!
 
 export ElPhData
 export epdata_set_g2!

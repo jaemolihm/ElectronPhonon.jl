@@ -15,7 +15,7 @@ end
 Split an iterable approximately evenly into N chunks, which will be returned.
 """
 function split_iterator(itr, N)
-    counts = EPW.split_count(length(itr), N)
+    counts = split_count(length(itr), N)
     map(0:N-1) do i
         rng = (1+sum(counts[1:i])):sum(counts[1:i+1])
         itr[rng]

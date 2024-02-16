@@ -1,9 +1,9 @@
 using Test
-using EPW
+using ElectronPhonon
 using LinearAlgebra
 
 @testset "transport with screening" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
@@ -68,7 +68,7 @@ using LinearAlgebra
         end
 
         # Calculate matrix elements
-        @time EPW.run_transport(
+        @time ElectronPhonon.run_transport(
             model, nklist, nqlist,
             folder = tmp_dir,
             window_k  = window_k,

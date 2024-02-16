@@ -11,7 +11,7 @@ const e_SI = 1.602176634e-19 # e in SI units
 # Commonly used constants. The factors convert from the respective unit
 # to atomic units
 module units
-    using EPW: e2, e_SI
+    using ElectronPhonon: e2, e_SI
     const Ha = 2                   # Hartree -> Rydberg
     const Ry = 1                   # Rydberg -> Rydberg
     const eV = 0.03674932248 * 2   # electron volt -> Rydberg

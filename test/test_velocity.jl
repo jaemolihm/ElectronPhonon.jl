@@ -1,9 +1,11 @@
-using EPW
+using ElectronPhonon
 using Test
 using OffsetArrays: no_offset_view
 
 @testset "velocity" begin
-    BASE_FOLDER = dirname(dirname(pathof(EPW)))
+    using ElectronPhonon: get_el_velocity_diag_berry_connection!
+
+    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
     model = load_model(folder, load_symmetry_operators=true)
     kpts = kpoints_grid((4, 4, 4)) # cubicBN data is generated using 4*4*4 coarse k grid
@@ -30,7 +32,7 @@ using OffsetArrays: no_offset_view
     for ik in 1:kpts.n
         uk = no_offset_view(els_berry[ik].u)
         xk = kpts.vectors[ik]
-        EPW.get_el_velocity_diag_berry_connection!(velocity_diag, model.nw, model.el_ham_R, xk, uk)
+        get_el_velocity_diag_berry_connection!(velocity_diag, model.nw, model.el_ham_R, xk, uk)
         @test velocity_diag ≈ reshape(reinterpret(Float64, els_berry[ik].vdiag), 3, model.nw)
     end
 end

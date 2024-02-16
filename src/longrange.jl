@@ -111,7 +111,7 @@ end
 
     atom_pos = polar.atom_pos
     natom = length(atom_pos)
-    fac = sign * EPW.e2 * 4T(π) / polar.volume
+    fac = sign * ElectronPhonon.e2 * 4T(π) / polar.volume
 
     # First term: q-independent part.
     for G_crystal in polar.Glist
@@ -199,7 +199,7 @@ function get_eph_dipole_coeffs!(coeff, xq, polar::Polar{T}, u_ph) where {T}
 
     atom_pos = polar.atom_pos
     natom = length(atom_pos)
-    fac = 1im * EPW.e2 * 4T(π) / polar.volume
+    fac = 1im * ElectronPhonon.e2 * 4T(π) / polar.volume
 
     # temporary vectors of size (nmodes,)
     tmp = polar.tmp[threadid()]

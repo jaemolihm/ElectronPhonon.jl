@@ -1,5 +1,5 @@
-name = "EPW"
-uuid = "79b50138-a645-4962-95e0-037ab248ffc9"
+name = "ElectronPhonon"
+uuid = "06c0995b-90c7-4aad-a219-585912522888"
 authors = ["Jae-Mo Lihm <jaemolim96@gmail.com> and contributors"]
 version = "0.1.0"
 

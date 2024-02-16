@@ -77,7 +77,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
 
         # Read mmat = <u(k+q)|u(k)> at ik
         if use_eph_dipole
-            mmat = load_BTData(open_group(fid, "mmat/ik$ik"), EPW.MatrixElementDataset{Complex{FT}})
+            mmat = load_BTData(open_group(fid, "mmat/ik$ik"), MatrixElementDataset{Complex{FT}})
         end
 
         # 1. Scattering-out term
@@ -135,7 +135,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     ind_ph == 0 && continue # skip if this imode is not in ph
                     ω_ph = ph.e[ind_ph]
                     # Skip if phonon frequency is too close to 0 (acoustic phonon at q=0)
-                    ω_ph < EPW.omega_acoustic && continue
+                    ω_ph < omega_acoustic && continue
                     nocc_ph = @view nocc_ph_all[:, ind_ph]
 
                     s1 = scat[ikq, ib1, jb, imode]
@@ -235,7 +235,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     ind_ph == 0 && continue # skip if this imode is not in ph
                     ω_ph = ph.e[ind_ph]
                     # Skip if phonon frequency is too close to 0 (acoustic phonon at q=0)
-                    ω_ph < EPW.omega_acoustic && continue
+                    ω_ph < omega_acoustic && continue
                     nocc_ph = @view nocc_ph_all[:, ind_ph]
 
                     # DEBUG: 0.3 sec
@@ -488,7 +488,7 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
 end
 
 # TODO: Cleanup. Give SERTA and exact output at the same time.
-function compute_transport_distribution_function(out_qme, δρ=out_qme.δρ, el::EPW.QMEStates=out_qme.el; elist, smearing, symmetry=nothing)
+function compute_transport_distribution_function(out_qme, δρ=out_qme.δρ, el::QMEStates=out_qme.el; elist, smearing, symmetry=nothing)
     Σ_tdf = zeros(length(elist), 3, 3, length(out_qme.params.Tlist))
     e_gaussian = zero(elist)
     for iT in 1:length(out_qme.params.Tlist)
