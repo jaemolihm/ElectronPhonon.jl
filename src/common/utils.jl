@@ -1,7 +1,3 @@
-# __precompile__(true)
-
-using Statistics
-
 # TODO: separate to smearing.jl and kpoints.jl
 
 # module Utils
@@ -75,15 +71,17 @@ function average_degeneracy!(data_averaged, data, energy, degeneracy_cutoff=1.e-
     @assert size(data) == size(data_averaged)
     @assert axes(data) == axes(data_averaged)
 
+    _mean(x) = sum(x) / length(x)
+
     iblist_degen = zeros(Bool, axes(data, 1))
 
     # This is fast enough, so no need for threading.
-    for ik in axes(data, 2)
+    @views for ik in axes(data, 2)
         for ib in axes(data, 1)
             for jb in axes(data, 1)
                 iblist_degen[jb] = abs(energy[jb, ik] - energy[ib, ik]) < degeneracy_cutoff
             end
-            data_averaged[ib, ik] = mean(data[iblist_degen, ik])
+            data_averaged[ib, ik] = _mean(data[iblist_degen, ik])
         end # ib
     end # ik
     nothing
