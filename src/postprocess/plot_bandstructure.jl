@@ -62,7 +62,7 @@ end
 function irrfbz_path_for_cell(cell)
     # standardize cell
     dset = Spglib.get_dataset(cell)
-    sgnum = dset.spacegroup_number
+    sgnum = Int(dset.spacegroup_number)
     std_lattice = Bravais.DirectBasis(collect(eachcol(dset.std_lattice)))
     # TODO: For triclinic, one may need additional reduction (niggli) because seek-path
     #       uses a different convention from spglib.
