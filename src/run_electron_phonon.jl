@@ -107,6 +107,8 @@ function run_eph_outer_loop_q(
     omega_save = zeros(nmodes, nq)
     ph = PhononState(nmodes, FT)
 
+    # Setup WannierInterpolators
+    epmat = get_interpolator(model.epmat; fourier_mode)
     dyn = get_interpolator(model.ph_dyn; fourier_mode)
     ham_threads = [get_interpolator(model.el_ham; fourier_mode) for _ in 1:nthreads()]
     vel_threads = if model.el_velocity_mode === :Direct
@@ -116,7 +118,6 @@ function run_eph_outer_loop_q(
     end
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epmat = get_interpolator(model.epmat; fourier_mode)
     ep_eRpq_obj = WannierObject(model.epmat.irvec_next,
                                 zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
     ep_eRpq_threads = [get_interpolator(ep_eRpq_obj; fourier_mode) for _ in 1:nthreads()]

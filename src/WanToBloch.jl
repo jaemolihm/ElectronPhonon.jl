@@ -299,7 +299,7 @@ end
 #  Electron-phonon coupling
 
 """
-`get_eph_RR_to_Rq!(epobj_eRpq::WannierObject, epmat::AbstractWannierInterpolator, xq, u_ph)`
+`get_eph_RR_to_Rq!(epobj_eRpq::WannierObject, epmat, xq, u_ph)`
 
 Compute electron-phonon coupling matrix in electron Wannier, phonon Bloch basis.
 Multithreading is not supported because of large buffer array size.
@@ -311,8 +311,7 @@ Multithreading is not supported because of large buffer array size.
 - `xq`: Input. q point vector.
 - `u_ph`: Input. nmodes * nmodes matrix containing phonon eigenvectors.
 """
-@timing "w2b_eph_RRtoRq" function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject,
-        epmat::AbstractWannierInterpolator, xq, u_ph)
+@timing "w2b_eph_RRtoRq" function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject, epmat, xq, u_ph)
     nr_el = epobj_eRpq.nr
     nmodes = size(u_ph, 1)
     nbasis = div(epobj_eRpq.ndata, nmodes) # Number of electron basis squared.
