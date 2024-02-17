@@ -95,23 +95,27 @@ function compute_χ0(ph, indmap_ph, el_k_save, el_kq_save, kpts, kqpts, symmetry
     # Symmetrize χ0_avg.
     # We summed only the k points in the irreducible BZ. So, we need to sum χ0_avg
     # over symmetry-equivalent q points.
-    ind_ph_map = states_index_map(ph)
-    χ0_symmetrized = zero(χ0)
-    for i in 1:ph.n
-        xq = ph[i].xks
-        imode = ph[i].iband
-        for symop in symmetry
-            # Find index of (imode, S(xq))
-            sxq = symop.is_tr ? -symop.S * xq : symop.S * xq
-            sxq_int = mod.(round.(Int, sxq.data .* ph.ngrid), ph.ngrid)
-            ind_ph_list = get(ind_ph_map, CI(sxq_int...), nothing)
-            ind_ph_list === nothing && continue # skip if this xq is not in ph
-            j = ind_ph_list[imode]
-            j == 0 && continue # skip if this imode is not in ph
-            @views χ0_symmetrized[:, j] .+= χ0[:, i]
+    if symmetry !== nothing
+        ind_ph_map = states_index_map(ph)
+        χ0_symmetrized = zero(χ0)
+        for i in 1:ph.n
+            xq = ph[i].xks
+            imode = ph[i].iband
+            for symop in symmetry
+                # Find index of (imode, S(xq))
+                sxq = symop.is_tr ? -symop.S * xq : symop.S * xq
+                sxq_int = mod.(round.(Int, sxq.data .* ph.ngrid), ph.ngrid)
+                ind_ph_list = get(ind_ph_map, CI(sxq_int...), nothing)
+                ind_ph_list === nothing && continue # skip if this xq is not in ph
+                j = ind_ph_list[imode]
+                j == 0 && continue # skip if this imode is not in ph
+                @views χ0_symmetrized[:, j] .+= χ0[:, i]
+            end
         end
+        χ0_symmetrized ./= length(symmetry)
+    else
+        χ0_symmetrized = χ0
     end
-    χ0_symmetrized ./= length(symmetry)
 
     χ0_symmetrized
 end
@@ -126,8 +130,8 @@ function compute_epsilon_rpa(ph, indmap_ph, el_k_save, el_kq_save, kpts, kqpts, 
             ϵ[:, i] .= 1
         else
             xq_cart = recip_lattice * xq
-            ϵM = xq_cart' * params.ϵM * xq_cart / norm(xq_cart)^2
-            coeff = ElectronPhonon.e2 * 4π / norm(xq_cart)^2 / params.volume * params.spin_degeneracy / ϵM
+            ϵM_q² = xq_cart' * params.ϵM * xq_cart
+            coeff = ElectronPhonon.e2 * 4π / ϵM_q² / params.volume * params.spin_degeneracy
             @. ϵ[:, i] = 1 - χ0[:, i] * coeff
         end
     end
