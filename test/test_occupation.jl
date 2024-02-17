@@ -9,13 +9,17 @@ using ElectronPhonon
 
     @test occ_fermion(-Inf, T) == 1
     @test occ_fermion(Inf, T) == 0
-    @test occ_boson(Inf, T) == 0
-    @test occ_boson(T, T) ≈ 1 / (exp(1) - 1)
     @test occ_fermion(0, T) ≈ 1 / 2
     @test occ_fermion(T, T) ≈ 1 / (exp(1) + 1)
 
     @test abs((occ_fermion(e+δ, T) - occ_fermion(e-δ, T)) / (2 * δ)
              - occ_fermion_derivative(e, T)) < 1e-8
+
+    @test occ_boson(Inf, T) == 0
+    @test occ_boson(-Inf, T) == -1
+    @test occ_boson(T, T) ≈ 1 / (exp(1) - 1)
+    @test occ_boson(0, T) == 0
+    @test occ_boson(1e-8, T) + occ_boson(-1e-8, T) ≈ -1
 end
 
 @testset "Chemical potential" begin
