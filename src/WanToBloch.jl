@@ -368,7 +368,7 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 end
 
 """
-    get_eph_RR_to_kR!(epobj_eRpq::WannierObject{T}, epmat, xk, uk) where {T}
+    get_eph_RR_to_kR!(epobj_ekpR::WannierObject{T}, epmat, xk, uk) where {T}
 
 Compute electron-phonon coupling matrix in electron Bloch, phonon Wannier basis.
 Multithreading is not supported because of large buffer array size.
@@ -406,6 +406,7 @@ Multithreading is not supported because of large buffer array size.
         end
     end
     epobj_ekpR.ndata = ndata
+    epobj_ekpR._id += 1
     nothing
 end
 

@@ -124,7 +124,10 @@ function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_pref
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epdatas = [ElPhData{FT}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
-    epobj_eRpq = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    epmat = get_interpolator(model.epmat; fourier_mode)
+    ep_eRpq_obj = WannierObject(model.epmat.irvec_next,
+                zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    ep_eRpq = get_interpolator(ep_eRpq_obj; fourier_mode)
 
     # Setup for collecting scattering processes
     @timing "bt init" begin
@@ -153,7 +156,7 @@ function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_pref
             epdata.ph = ph
         end
 
-        get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u; fourier_mode)
+        get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
 
         empty!(bt_scat)
 
@@ -182,7 +185,7 @@ function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_pref
             check_energy_conservation_all(epdata, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk; fourier_mode)
+            get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
@@ -257,7 +260,11 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epdatas = [ElPhData{Float64}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
-    epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+
+    ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
+            zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    epmat = get_interpolator(model.epmat; fourier_mode)
+    ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
 
     # Setup for collecting scattering processes
     @timing "bt init" begin
@@ -285,7 +292,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
         for epdata in epdatas
             epdata.el_k = el_k
         end
-        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u); fourier_mode)
+        get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
 
         empty!(bt_scat)
 
@@ -314,7 +321,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
             check_energy_conservation_all(epdata, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
+            get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)

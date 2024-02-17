@@ -81,7 +81,7 @@ using LinearAlgebra
 
         _, mobility_serta = transport_print_mobility(output["transport_σ"], transport_params_serta, do_print=false)
         @test all(isapprox.(transport_params.μlist, transport_params_serta.μlist, atol=1e-7))
-        @test all(isapprox.(mobility, mobility_serta, atol=2e-1))
+        @test all(isapprox.(mobility, mobility_serta, atol=0.2))
 
         kpts = GridKpoints(output["kpts"])
         for i in 1:btmodel.el_i.n
