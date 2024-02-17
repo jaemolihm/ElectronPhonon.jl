@@ -181,17 +181,15 @@ TODO: Can we reduce code duplication with get_el_velocity_berry_connection?
 end
 
 """Compute the symmetry representation in the Bloch Wannier basis."""
-function get_symmetry_representation_wannier!(sym_W, el_sym_op::AbstractWannierObject{FT},
-    xk, is_tr; fourier_mode="normal") where FT
+function get_symmetry_representation_wannier!(sym_W, el_sym_op, xk, is_tr)
     @assert length(sym_W) == el_sym_op.ndata
     # For time reversal, the complex conjugation part acts on the Fourier factor so one needs -xk
-    (is_tr ? get_fourier!(sym_W, el_sym_op, -xk; fourier_mode)
-           : get_fourier!(sym_W, el_sym_op, xk; fourier_mode))
+    (is_tr ? get_fourier!(sym_W, el_sym_op, -xk)
+           : get_fourier!(sym_W, el_sym_op, xk))
 end
 
 """Compute the symmetry representation in the eigenstate basis."""
-function get_symmetry_representation_eigen!(sym_H, el_sym_op::AbstractWannierObject{FT},
-    xk, uk, usk, is_tr; fourier_mode="normal") where FT
+function get_symmetry_representation_eigen!(sym_H, el_sym_op, xk, uk, usk, is_tr)
     nw, nband_k = size(uk)
     nband_sk = size(usk, 2)
     @assert size(sym_H) == (nband_sk, nband_k)
@@ -201,7 +199,7 @@ function get_symmetry_representation_eigen!(sym_H, el_sym_op::AbstractWannierObj
     u_tmp = _get_buffer(_buffer3, (nw, nband_k))
 
     # Compute matrix in Wannier basis
-    get_symmetry_representation_wannier!(sym_W, el_sym_op, xk, is_tr; fourier_mode)
+    get_symmetry_representation_wannier!(sym_W, el_sym_op, xk, is_tr)
 
     # Apply gauge to transform to the eigenstate basis
     if is_tr

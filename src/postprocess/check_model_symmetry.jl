@@ -49,13 +49,15 @@ function check_electron_symmetry_of_model(model::Model{FT}, ngrid; fourier_mode=
     model.el_velocity_mode = el_velocity_mode_save
 
     # Compute operators in Wannier basis
+    ham = get_interpolator(model.el_ham; fourier_mode)
+    vel = get_interpolator(model.el_vel; fourier_mode)
     op_Hk = [zeros(Complex{FT}, nw, nw) for _ in 1:kpts.n]
     op_vk_direct = [zeros(Complex{FT}, nw, nw, 3) for _ in 1:kpts.n]
     op_vk_berry = [zeros(Complex{FT}, nw, nw, 3) for _ in 1:kpts.n]
     for ik in 1:kpts.n
         xk = kpts.vectors[ik]
-        get_fourier!(op_Hk[ik], model.el_ham, xk; fourier_mode)
-        get_fourier!(op_vk_direct[ik], model.el_vel, xk; fourier_mode)
+        get_fourier!(op_Hk[ik], ham, xk)
+        get_fourier!(op_vk_direct[ik], vel, xk)
         v_bc = el_states[ik].u_full * el_states[ik].v * el_states[ik].u_full'
         for i in 1:3, jw in 1:nw, iw in 1:nw
             op_vk_berry[ik][iw, jw, i] = v_bc[iw, jw][i]
@@ -66,6 +68,7 @@ function check_electron_symmetry_of_model(model::Model{FT}, ngrid; fourier_mode=
     S_vk = [zeros(Complex{FT}, nw, nw) for _ in 1:3]
 
     for (isym, symop) in enumerate(symmetry)
+        el_sym = get_interpolator(model.el_sym.operators[isym]; fourier_mode)
         for ik in 1:kpts.n
             xk = kpts.vectors[ik]
             sk = symop.is_tr ? -symop.S * xk : symop.S * xk
@@ -75,7 +78,7 @@ function check_electron_symmetry_of_model(model::Model{FT}, ngrid; fourier_mode=
             end
 
             # SymMatrixUnitarity: Check unitarity of symmetry operators in Wannier basis
-            get_symmetry_representation_wannier!(sym_W, model.el_sym.operators[isym], xk, symop.is_tr; fourier_mode)
+            get_symmetry_representation_wannier!(sym_W, el_sym, xk, symop.is_tr)
             sym_W_error = sqrt(norm(sym_W' * sym_W - I(nw)))
             max_errors[:SymMatrixUnitarity] = max(max_errors[:SymMatrixUnitarity], sym_W_error)
             rms_errors[:SymMatrixUnitarity] += sum(sym_W_error^2)

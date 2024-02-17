@@ -3,6 +3,7 @@ using ElectronPhonon
 using OffsetArrays: no_offset_view
 
 @testset "cubicBN epmat" begin
+    using ElectronPhonon: WannierObject
     using ElectronPhonon: get_eph_RR_to_Rq!, get_eph_Rq_to_kq!
     using ElectronPhonon: get_eph_RR_to_kR!, get_eph_kR_to_kq!
 

@@ -45,7 +45,13 @@ function plot_electron_phonon_deformation_potential(model, xk=Vec3(0., 0., 0.);
     xk = kpts.vectors[ik]
     el_k = el_k_save[ik]
     epdata.el_k = el_k
-    get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u); fourier_mode)
+
+    epmat = get_interpolator(model.epmat; fourier_mode)
+    ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
+            zeros(ComplexF64, (nw*epdata.nband_bound*nmodes, length(model.epmat.irvec_next))))
+    ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
+
+    get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epdata.el_k.u))
 
     # Calculate electron-phonon coupling matrix elements
     for iq in 1:nq
@@ -57,7 +63,7 @@ function plot_electron_phonon_deformation_potential(model, xk=Vec3(0., 0., 0.);
         epdata.ph = ph_save[iq]
 
         # Compute electron-phonon coupling
-        get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
+        get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
         if include_polar && any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
             epdata_set_mmat!(epdata)
             model.polar_eph.use && epdata_compute_eph_dipole!(epdata)

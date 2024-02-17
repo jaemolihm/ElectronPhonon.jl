@@ -32,6 +32,12 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     flush(stdout)
     flush(stderr)
 
+    vel = if model.el_velocity_mode === :Direct
+        get_interpolator(model.el_vel; fourier_mode)
+    else
+        get_interpolator(model.el_ham_R; fourier_mode)
+    end
+
     mpi_isroot() && println("Calculating electron and phonon states")
     g = nothing
     # TODO: parallelize this part
@@ -66,7 +72,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             end
             # compute quantities using the new eigenbasis
             for (el, xk) in zip(el_k_save, kpts.vectors)
-                set_velocity!(el, model, xk; fourier_mode)
+                set_velocity!(el, vel, xk, model.el_velocity_mode)
                 for i in el.rng
                     el.vdiag[i] = real.(el.v[i, i])
                 end
@@ -97,7 +103,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             end
             # compute quantities using the new eigenbasis
             for (el, xk) in zip(el_kq_save_irr, kqpts_irr.vectors)
-                set_velocity!(el, model, xk; fourier_mode)
+                set_velocity!(el, vel, xk, model.el_velocity_mode)
                 for i in el.rng
                     el.vdiag[i] = real.(el.v[i, i])
                 end
@@ -193,6 +199,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # Write symmetry object to file
         g = create_group(fid_btedata, "gauge/symmetry")
         dump_BTData(g, symmetry)
+        el_sym_itp = get_interpolator.(model.el_sym.operators; fourier_mode)
 
         for (isym, symop) in enumerate(symmetry)
             # Find symmetry in model.el_sym
@@ -200,7 +207,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
             gauge .= 0
             is_degenerate .= false
-            @views for ik = 1:nk
+            @views for ik in 1:nk
                 xk = kpts.vectors[ik]
                 sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
                 isk = xk_to_ik(sxk, kqpts)
@@ -213,7 +220,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
                 # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k) = <u(Sk)|S|u(k)>
                 compute_symmetry_representation!(gauge[el_sk.rng, el_k.rng, ik], el_k, el_sk,
-                xk, model.el_sym.operators[isym_el], symop.is_tr; fourier_mode)
+                xk, el_sym_itp[isym_el], symop.is_tr)
                 # FIXME: Perform SVD to make gauge completely unitary
 
                 # Set is_degenerate. Use more loose tolerance because symmetry can be slightly
@@ -269,7 +276,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
                 # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k) = <u(k)|S|u(k)>
                 compute_symmetry_representation!(gauge_list[el_k.rng, el_k.rng, icount], el_k, el_k,
-                    xk, model.el_sym.operators[isym_el], symop.is_tr; fourier_mode)
+                    xk, el_sym_itp[isym_el], symop.is_tr)
                 # FIXME: Perform SVD to make gauge completely unitary
             end
 
@@ -311,7 +318,11 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epdatas = [ElPhData{Float64}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
-    epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nband_max*nmodes, length(model.epmat.irvec_next))))
+
+    ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
+            zeros(ComplexF64, (nw*nband_max*nmodes, length(model.epmat.irvec_next))))
+    epmat = get_interpolator(model.epmat; fourier_mode)
+    ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
 
     # Setup for collecting scattering processes
     max_nscat = nkq * nmodes * nband_max^2
@@ -346,7 +357,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             epdata.el_k = el_k
         end
 
-        get_eph_RR_to_kR!(epobj_ekpR, model.epmat, xk, no_offset_view(el_k.u); fourier_mode)
+        get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
 
         bt_nscat = 0
         bt_nmmat = 0
@@ -376,7 +387,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             check_energy_conservation_all(epdata, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epdata, epobj_ekpR, xq; fourier_mode)
+            get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
 
             # Save mmat for computing dipole contribution to electron-phonon coupling
             # The dipole e-ph matrix element itself is computed in compute_qme_scattering_matrix

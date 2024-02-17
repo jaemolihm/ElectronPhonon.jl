@@ -244,8 +244,8 @@ end
 ```
 """
 function compute_symmetry_representation!(sym_H, el_k::ElectronState{FT}, el_sk::ElectronState{FT},
-    xk, el_sym_op, is_tr; fourier_mode="normal") where FT
+    xk, el_sym_op, is_tr) where FT
     uk = no_offset_view(el_k.u)
     usk = no_offset_view(el_sk.u)
-    get_symmetry_representation_eigen!(sym_H, el_sym_op, xk, uk, usk, is_tr; fourier_mode)
+    get_symmetry_representation_eigen!(sym_H, el_sym_op, xk, uk, usk, is_tr)
 end

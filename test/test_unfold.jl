@@ -1,5 +1,6 @@
 using Test
 using ElectronPhonon
+using LinearAlgebra
 
 @testset "unfold" begin
     using ElectronPhonon: unfold_kpoints, fold_kpoints, normalize_kpoint_coordinate
@@ -53,13 +54,15 @@ using ElectronPhonon
         el_full_unfold = unfold_ElectronStates(model, el_irr, kpts_irr, kpts_full, ik_to_ikirr_isym,
             symmetry; quantities=["velocity_diagonal", "velocity", "position"])
 
+        ham = get_interpolator(model.el_ham; fourier_mode="gridopt")
+
         hk = zeros(ComplexF64, model.nw, model.nw)
         for ik = 1:kpts_full.n
             el1 = el_full_unfold[ik]
             el2 = el_full[ik]
 
             # Check eigenvectors in el is correct: U' * H(Sk) * U = Diagonal(e(Sk))
-            get_fourier!(hk, model.el_ham, kpts_full.vectors[ik]);
+            get_fourier!(hk, ham, kpts_full.vectors[ik]);
             @test el1.u' * hk * el1.u ≈ Diagonal(el2.e) atol=1e-6
 
             # Check velocity matrix is correct by converting to Wannier basis

@@ -3,6 +3,8 @@ using Test
 using Random
 
 @testset "fourier" begin
+    using ElectronPhonon: WannierObject
+
     irvec = [Vec3{Int}([0, 0, 0]), Vec3{Int}([1, -2, 1]),
         Vec3{Int}([1, 3, -2]), Vec3{Int}([-1, 3, -2]),
         Vec3{Int}([-1, -3, 1])]
