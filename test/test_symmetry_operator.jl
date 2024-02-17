@@ -10,6 +10,7 @@ using ElectronPhonon.WanToBloch: get_symmetry_representation_wannier!
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = load_model(folder, load_symmetry_operators=true)
+    fourier_mode = "gridopt"
 
     # Read symmetry operators from file
     @test model.el_sym.symmetry.nsym == 48
@@ -23,7 +24,9 @@ using ElectronPhonon.WanToBloch: get_symmetry_representation_wannier!
         # Test symmetry of Hamiltonian and eigenstates
         kpts = kpoints_grid((6, 6, 6));
         kpts = GridKpoints(kpts);
-        els = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"]; fourier_mode="gridopt");
+        els = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"]; fourier_mode);
+        ham = get_interpolator(model.el_ham; fourier_mode)
+        el_sym_itp = get_interpolator.(model.el_sym.operators; fourier_mode)
 
         nw = model.nw
         sym_W = zeros(ComplexF64, nw, nw)
@@ -33,18 +36,18 @@ using ElectronPhonon.WanToBloch: get_symmetry_representation_wannier!
 
         for ik in 1:kpts.n
             xk = kpts.vectors[ik]
-            get_fourier!(hk, model.el_ham, xk)
+            get_fourier!(hk, ham, xk)
             for (isym, symop) in enumerate(model.el_sym.symmetry)
                 sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
                 isk = xk_to_ik(sxk, kpts)
 
-                get_symmetry_representation_wannier!(sym_W, model.el_sym.operators[isym], xk, symop.is_tr)
-                compute_symmetry_representation!(sym_H, els[ik], els[isk], xk, model.el_sym.operators[isym], symop.is_tr)
+                get_symmetry_representation_wannier!(sym_W, el_sym_itp[isym], xk, symop.is_tr)
+                compute_symmetry_representation!(sym_H, els[ik], els[isk], xk, el_sym_itp[isym], symop.is_tr)
 
                 @test norm(sym_W' * sym_W - I(nw)) < 3e-6
 
                 # Test symmetry of Hamiltonian in Wannier basis
-                get_fourier!(hsk, model.el_ham, sxk)
+                get_fourier!(hsk, ham, sxk)
                 if symop.is_tr
                     @test norm(hsk - sym_W * conj.(hk) * sym_W') < 1e-2
                 else
