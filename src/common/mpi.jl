@@ -4,6 +4,7 @@
 # Convenience functions for working with MPI
 using MPI
 
+export mpi_world_comm
 export mpi_initialized
 export mpi_nprocs
 export mpi_isroot
@@ -13,6 +14,10 @@ export mpi_sum!
 export mpi_gather
 export mpi_allgather
 export mpi_scatter
+export mpi_bcast
+export mpi_bcast!
+
+
 
 """
 Initialize MPI. Must be called before doing any non-trivial MPI work
@@ -124,10 +129,11 @@ end
     mpi_scatter(arr, comm::MPI.Comm)
 Scatters array along the last dimension from root to all processes.
 """
-function mpi_scatter(arr::AbstractArray, comm::MPI.Comm)
-    @assert _check_size(arr, MPI_ROOT, comm)
-
-    dims = mpi_bcast(size(arr), comm)
+function mpi_scatter(arr::Union{AbstractArray,Nothing}, comm::MPI.Comm)
+    T = arr !== nothing ? eltype(arr) : nothing
+    dims = arr !== nothing ? size(arr) : nothing
+    T = mpi_bcast(T, comm)
+    dims = mpi_bcast(dims, comm)
 
     # Size of array in each processors.
     # block_size: first to second last dimensions.
@@ -137,7 +143,16 @@ function mpi_scatter(arr::AbstractArray, comm::MPI.Comm)
     counts = split_count(tot_count, mpi_nprocs(comm)) .* block_size
     counts_cint = Cint.(counts)
 
+    if arr === nothing
+        arr = zeros(T, dims[1:end-1]..., 0)
+    end
+
     arr_scattered = MPI.Scatterv(arr, counts_cint, MPI_ROOT, comm)
     reshape(arr_scattered, (dims[1:end-1]..., :))
 end
 mpi_scatter(x, comm::Nothing) = x
+
+
+using OffsetArrays
+mpi_sum!(x::Vector{T}, comm::MPI.Comm) where {T <: AbstractArray} = mpi_sum!.(x, Ref(comm))
+mpi_sum!(x::OffsetArray, comm::MPI.Comm) = mpi_sum!(x.parent, comm)
