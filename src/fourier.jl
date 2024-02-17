@@ -29,15 +29,19 @@ end
 
 "Data in coarse real-space grid for a single operator"
 Base.@kwdef mutable struct WannierObject{T} <: AbstractWannierObject{T}
-    nr::Int
-    irvec::Vector{Vec3{Int}}
-    op_r::Array{Complex{T},2}
-    ndata::Int # Size of the Fourier-transformed data matrix
+    const nr::Int
+    const irvec::Vector{Vec3{Int}}
+    const op_r::Array{Complex{T},2}
+    const ndata::Int # Size of the Fourier-transformed data matrix
                # By default, ndata = size(op_r, 1). If one only wants a part of op_r to be
                # transformed, one may use ndata to be smaller.
 
     # For a higher-order WannierObject, the irvec to be used to Fourier transform op_k.
-    irvec_next::Union{Nothing,Vector{Vec3{Int}}}
+    const irvec_next::Union{Nothing,Vector{Vec3{Int}}}
+
+    # When op_r is updated, increment _id.
+    # This is used to check if interpolator are up-to-date.
+    _id::Int
 end
 
 function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing)
@@ -47,7 +51,7 @@ function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing)
     end
     T = eltype(op_r).parameters[1]
     WannierObject{T}(nr=nr, irvec=irvec, op_r=op_r, ndata=size(op_r, 1),
-        irvec_next=irvec_next,
+        irvec_next=irvec_next, _id=0,
     )
 end
 
@@ -67,74 +71,10 @@ function wannier_object_multiply_R(obj::AbstractWannierObject{T}, lattice) where
     WannierObject(obj.irvec, reshape(opR_r, (obj.ndata*3, obj.nr)))
 end
 
-function get_phase_expikr!(obj, xk, tid)
-    rdotk = obj.rdotks[tid]
-    phase = obj.phases[tid]
-    for (ir, r) in enumerate(obj.irvec)
-        rdotk[ir] = dot(r, xk)
-    end
-    @. phase = cispi(2 * rdotk)
-    phase
-end
-
 function update_op_r!(obj, op_r_new)
     @assert length(obj.op_r) == length(op_r_new)
     @assert eltype(obj.op_r) == eltype(op_r_new)
     # Reshape and set obj.op_r .= op_r_new without allocation
     obj.op_r .= _reshape(op_r_new, size(obj.op_r))
-    reset_gridopts_in_obj!(obj)
+    obj._id += 1
 end
-
-function reset_gridopts_in_obj!(obj::AbstractWannierObject)
-    for gridopt in obj.gridopts
-        gridopt.k1 = NaN
-        gridopt.k2 = NaN
-        gridopt.ndata = obj.ndata
-    end
-end
-
-"Fourier transform real-space operator to momentum-space operator"
-@timing "get_fourier" function get_fourier!(op_k, obj::AbstractWannierObject{T}, xk; fourier_mode="normal") where {T}
-    @assert eltype(op_k) == Complex{T}
-    @assert length(op_k) == obj.ndata
-
-    op_k_1d = _reshape(op_k, (length(op_k),))
-
-    if fourier_mode == "normal"
-        phase = get_phase_expikr!(obj, xk, threadid())
-        _get_fourier_normal!(op_k_1d, obj, xk, phase)
-    elseif fourier_mode == "gridopt"
-        _get_fourier_gridopt!(op_k_1d, obj, xk)
-    else
-        error("fourier_mode must be normal or gridopt")
-    end
-    op_k
-end
-
-"Fourier transform real-space operator to momentum-space operator with a
-pre-computed phase factor"
-function _get_fourier_normal!(op_k_1d, obj::AbstractWannierObject{T}, xk, phase) where {T}
-    @views mul!(op_k_1d, obj.op_r[1:obj.ndata, :], phase)
-    return
-end
-
-"Fourier transform real-space operator to momentum-space operator with grid optimization"
-function _get_fourier_gridopt!(op_k_1d, obj::AbstractWannierObject{T}, xk) where {T}
-    tid = Threads.threadid()
-    gridopt = obj.gridopts[tid]
-
-    if ! gridopt.is_initialized
-        gridopt_initialize!(gridopt, obj)
-    end
-
-    if ! isapprox(xk[1], gridopt.k1, atol=1.e-9)
-        gridopt_set23!(gridopt, obj.irvec, obj.op_r, xk[1])
-    end
-    if ! isapprox(xk[2], gridopt.k2, atol=1.e-9)
-        gridopt_set3!(gridopt, xk[2])
-    end
-
-    gridopt_get3!(op_k_1d, gridopt, xk[3])
-end
-
-# end # FourierModule

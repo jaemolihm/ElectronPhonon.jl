@@ -195,7 +195,6 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
         end
 
         get_eph_RR_to_kR!(epobj_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
-        reset_gridopt!.(epobj_ekpR_threads)
 
         empty!.(bt_scat_threads)
 
