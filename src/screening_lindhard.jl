@@ -10,6 +10,7 @@ export LindhardScreeningParams
 using Parameters
 using StaticArrays
 using LinearAlgebra
+using QuadGK
 
 @with_kw struct LindhardScreeningParams{T<:Real}
     degeneracy::Int64 # degeneracy of bands. spin and/or valley degeneracy.
@@ -38,10 +39,10 @@ Generalized to work with arbitrary number of degeneracy (spin and/or valley).
 """
 function epsilon_lindhard(xq, ω, params::LindhardScreeningParams; verbose=false)
     (; degeneracy, m_eff, nlist, ϵM, smearing) = params
-    _epsilon_lindhard.(nlist, Ref(xq), ω, m_eff, Ref(ϵM), degeneracy, smearing; verbose)
+    _epsilon_lindhard.(Ref(xq), ω, nlist, m_eff, Ref(ϵM), degeneracy, smearing; verbose)
 end
 
-function _epsilon_lindhard(n, xq, ω, m_eff, ϵM, degeneracy, smearing; verbose=false)
+function _epsilon_lindhard(xq, ω, n, m_eff, ϵM, degeneracy, smearing; verbose=false)
     if norm(xq) < 1E-10
         return Complex{eltype(n)}(1)
     end
@@ -67,5 +68,34 @@ function _epsilon_lindhard(n, xq, ω, m_eff, ϵM, degeneracy, smearing; verbose=
 
     # Dielectric function
     ϵ = 1 + coeff * (H_lindhard(q + u/q) + H_lindhard(q - u/q)) / q^3
+    ϵ
+end
+
+
+function epsilon_lindhard_finite_temperature(xq, ω, m, T, μ, ϵM, degeneracy, smearing)
+    q = norm(xq)
+    ϵM_q = xq' * ϵM * xq
+    χ0 = _epsilonlindhard_finite_temperature_χ0(q, ω + im * smearing, m, T, μ)
+    ϵ = 1 - degeneracy * χ0 * 4π * ElectronPhonon.e2 / ϵM_q
+    ϵ
+end
+
+function _epsilonlindhard_finite_temperature_χ0(q, ω, m, T, μ)
+    εq = q^2 / m
+    function f(k)
+        occ_fermion(k^2/m - μ, T) * k * (  log(( ω - εq - 2k*q/m) / ( ω - εq + 2k*q/m))
+                                         + log((-ω - εq - 2k*q/m) / (-ω - εq + 2k*q/m)))
+    end
+    quadgk(f, 0, Inf)[1] * -m / 2 / 4π^2 / q
+end
+
+function epsilon_lindhard_multivalley(xq, ω, m_list, T, μ, ϵM, degeneracy, smearing)
+    χ0 = mapreduce(+, m_list) do m
+        m_avg = det(m)^(1/3)
+        q_avg = sqrt(m_avg * dot(xq, m \ xq))
+        _epsilonlindhard_finite_temperature_χ0(q_avg, ω + im * smearing, m_avg, T, μ)
+    end
+    ϵM_q = xq' * ϵM * xq
+    ϵ = 1 - degeneracy * χ0 * 4π * ElectronPhonon.e2 / ϵM_q
     ϵ
 end
