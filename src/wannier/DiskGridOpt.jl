@@ -1,13 +1,13 @@
+using Base.Threads: @threads, nthreads
 
-# Struct and functions for disk-buffered Wannier objects
-
-using Base.Threads
-
-export DiskWannierObject
+# TODO: This is not used in the current code.
+# Currently, fourier_mode = "gridopt" + DiskWannierObject uses op_r from disk, but
+# stores op_r_23, op_r_3 in memory. DiskGridOpt can be implemented and used as a new
+# fourier_mode = "gridopt_disk" to store op_r_23, op_r_3 in disk.
 
 "Real-space data with reduced dimensions for fourier_mode=gridopt in get_fourier
 with reading writing op_r to disk."
-@with_kw mutable struct DiskGridOpt{T<:Real}
+Base.@kwdef mutable struct DiskGridOpt{T<:Real}
     is_initialized::Bool = false
     # Data for (k1, R2, R3)
     k1::Float64 = NaN
@@ -28,77 +28,17 @@ with reading writing op_r to disk."
     phase_23::Vector{Complex{T}} = Vector{Complex{T}}(undef, 0)
     phase_3::Vector{Complex{T}} = Vector{Complex{T}}(undef, 0)
     rdotk_3::Vector{T} = Vector{T}(undef, 0)
+
+    # # Buffer for writing op_r_23, op_r_3 (used only in gridopt)
+    # buffers_w::Vector{Vector{Complex{T}}}
+    # buffers_w=[zeros(Complex{T}, length(rng)) for rng in ranges],
 end
 
-"Data in coarse real-space grid for a single operator"
-Base.@kwdef struct DiskWannierObject{T} <: AbstractWannierObject{T}
-    nr::Int
-    irvec::Vector{Vec3{Int}}
-    ndata::Int # First dimension of op_r
 
-    # For gridopt Fourier transform
-    gridopts::Vector{DiskGridOpt{T}}
 
-    # Allocated buffer for normal Fourier transform
-    rdotks::Vector{Vector{T}}
-    phases::Vector{Vector{Complex{T}}}
 
-    # For a higher-order WannierObject, the irvec to be used to Fourier transform op_k.
-    irvec_next::Union{Nothing,Vector{Vec3{Int}}}
 
-    # For reading data from file
-    tag::String
-    dir::String
-    filename::String
-    # Buffer for reading op_r
-    buffers_r::Vector{Vector{Complex{T}}}
-    # Buffer for writing op_r_23, op_r_3 (used only in gridopt)
-    buffers_w::Vector{Vector{Complex{T}}}
 
-    # For multithreading IO
-    ranges::Vector{UnitRange{Int}}
-end
-
-function DiskWannierObject(T, tag, nr, irvec::Vector{Vec3{Int}}, ndata, dir, filename;
-        irvec_next=nothing)
-    ranges = split_iterator(1:ndata, nthreads())
-    DiskWannierObject{T}(tag=tag, nr=nr, irvec=irvec, ndata=ndata,
-        dir=dir, filename=filename,
-        rdotks=[zeros(T, nr) for i=1:nthreads()],
-        phases=[zeros(Complex{T}, nr) for i=1:nthreads()],
-        ranges=ranges,
-        irvec_next=irvec_next,
-        gridopts=[DiskGridOpt{T}() for i=1:Threads.nthreads()],
-        buffers_r=[zeros(Complex{T}, length(rng)) for rng in ranges],
-        buffers_w=[zeros(Complex{T}, length(rng)) for rng in ranges],
-    )
-end
-
-function DiskWannierObject(T, tag, nr, irvec::Array{Int,2}, ndata, dir, filename)
-    irvec_svector = reinterpret(Vec3{Int}, vec(irvec))
-    DiskWannierObject(T, tag, nr, irvec_svector, ndata, dir, filename)
-end
-
-"Fourier transform real-space operator to momentum-space operator with a
-pre-computed phase factor"
-@timing "disk_normal" function _get_fourier_normal!(op_k_1d, obj::DiskWannierObject{T}, xk, phase) where {T}
-    # Read op_r from file and sum over R
-    op_k_1d .= 0
-    @threads for irng in axes(obj.ranges, 1)
-        rng = obj.ranges[irng]
-        buffer_r = obj.buffers_r[irng]
-
-        f = open(joinpath(obj.dir, obj.filename), "r")
-        @views @inbounds for i in 1:obj.nr
-            # Seek and read op_r[rng, i] from file
-            seek(f, sizeof(Complex{T}) * (obj.ndata*(i-1) + rng[1]-1))
-            read!(f, buffer_r)
-            op_k_1d[rng] .+= buffer_r .* phase[i]
-        end
-        close(f)
-    end
-    return
-end
 
 "Fourier transform real-space operator to momentum-space operator with grid optimization"
 function _get_fourier_gridopt!(op_k_1d, obj::DiskWannierObject{T}, xk) where {T}

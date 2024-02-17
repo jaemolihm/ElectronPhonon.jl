@@ -21,10 +21,12 @@ include("common/AllocatedLAPACK.jl")
 
 include("external/iterativesolvers.jl")
 
-include("gridopt.jl")
-include("fourier.jl")
-include("WannierInterpolator.jl")
-include("fourier_disk.jl")
+include("wannier/WannierObject.jl")
+include("wannier/DiskWannierObject.jl")
+include("wannier/GridOpt.jl")
+include("wannier/DiskGridOpt.jl")
+include("wannier/WannierInterpolator.jl")
+
 include("diagonalize.jl")
 include("longrange.jl")
 include("model.jl")

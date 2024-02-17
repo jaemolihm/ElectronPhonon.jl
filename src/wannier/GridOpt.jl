@@ -66,17 +66,24 @@ mutable struct GridOpt{T<:Real}
 end
 
 # TODO: Rename to gridopt_compute_krr?
-@timing "s23" function gridopt_set23!(gridopt::GridOpt{T}, irvec, op_r, k, ndata) where {T}
+@timing "s23" function gridopt_set23!(gridopt::GridOpt{T}, parent::WT, k, ndata) where {T, WT}
     gridopt.k1 = k
     gridopt.k2 = NaN
     gridopt.op_r_23 .= 0
     phase = gridopt.phase
-    for (ir, r) in enumerate(irvec)
+    for (ir, r) in enumerate(parent.irvec)
         phase[ir] = cispi(2 * k * r[1])
     end
     rng_data = 1:ndata
-    @views @inbounds for (ir_23, ir_rng) in enumerate(gridopt.irmap_rng_23)
-        mul!(gridopt.op_r_23[rng_data, ir_23], op_r[rng_data, ir_rng], phase[ir_rng])
+    @views for (ir_23, ir_rng) in enumerate(gridopt.irmap_rng_23)
+        if WT <: DiskWannierObject
+            gridopt.op_r_23[rng_data, ir_23] .= 0
+            for ir in ir_rng
+                gridopt.op_r_23[rng_data, ir_23] .+= phase[ir] .* read_op_r(parent, ir)[rng_data]
+            end
+        else
+            mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
+        end
     end
 end
 
@@ -89,7 +96,7 @@ end
         phase[ir] = cispi(2 * k * r[1])
     end
     rng_data = 1:ndata
-    @views @inbounds for (ir_3, ir_rng) in enumerate(gridopt.irmap_rng_3)
+    @views for (ir_3, ir_rng) in enumerate(gridopt.irmap_rng_3)
         mul!(gridopt.op_r_3[rng_data, ir_3], gridopt.op_r_23[rng_data, ir_rng], phase[ir_rng])
     end
 end

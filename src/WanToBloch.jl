@@ -6,7 +6,7 @@ module WanToBloch
 
 using LinearAlgebra
 using ElectronPhonon: @timing
-using ElectronPhonon: AbstractWannierObject, WannierObject
+using ElectronPhonon: AbstractWannierObject, WannierObject, AbstractWannierInterpolator
 using ElectronPhonon: get_fourier!, update_op_r!
 using ElectronPhonon: solve_eigen_el!, solve_eigen_el_valueonly!, solve_eigen_ph!, solve_eigen_ph_valueonly!
 using ElectronPhonon: dynmat_dipole!
@@ -301,8 +301,7 @@ end
 #  Electron-phonon coupling
 
 """
-`get_eph_RR_to_Rq!(epobj_eRpq::WannierObject{T}, epmat::AbstractWannierObject{T},
-xq, u_ph; fourier_mode="normal") where {T}`
+`get_eph_RR_to_Rq!(epobj_eRpq::WannierObject, epmat::AbstractWannierInterpolator, xq, u_ph)`
 
 Compute electron-phonon coupling matrix in electron Wannier, phonon Bloch basis.
 Multithreading is not supported because of large buffer array size.
@@ -314,8 +313,8 @@ Multithreading is not supported because of large buffer array size.
 - `xq`: Input. q point vector.
 - `u_ph`: Input. nmodes * nmodes matrix containing phonon eigenvectors.
 """
-@timing "w2b_eph_RRtoRq" function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject{T},
-        epmat::AbstractWannierObject{T}, xq, u_ph; fourier_mode="normal") where {T}
+@timing "w2b_eph_RRtoRq" function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject,
+        epmat::AbstractWannierInterpolator, xq, u_ph)
     nr_el = epobj_eRpq.nr
     nmodes = size(u_ph, 1)
     nbasis = div(epobj_eRpq.ndata, nmodes) # Number of electron basis squared.
@@ -327,7 +326,7 @@ Multithreading is not supported because of large buffer array size.
     ep_Rq = _get_buffer(_buffer_nothreads1, (nbasis, nmodes, nr_el))
     ep_Rq_tmp = _get_buffer(_buffer1, (nbasis, nmodes))
 
-    get_fourier!(ep_Rq, epmat, xq; fourier_mode)
+    get_fourier!(ep_Rq, epmat, xq)
 
     # Transform from phonon Cartesian to eigenmode basis, one ir_el at a time.
     for ir in 1:nr_el
@@ -340,7 +339,7 @@ Multithreading is not supported because of large buffer array size.
 end
 
 """
-    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq; fourier_mode="normal")
+    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq)
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 
 # Arguments
@@ -350,7 +349,7 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 - `xk`: Input. k point vector.
 - `uk`, `ukq`: Input. Electron eigenstate at k and k+q, respectively.
 """
-@timing "w2b_eph_Rqtokq" function get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq; fourier_mode="normal")
+@timing "w2b_eph_Rqtokq" function get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq)
     nbandkq, nbandk, nmodes = size(ep_kq)
     @assert size(uk, 2) == nbandk
     @assert size(ukq, 2) == nbandkq
@@ -359,7 +358,7 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
     ep_kq_wan = _get_buffer(_buffer1, (size(ukq, 1), size(uk, 1), nmodes))
     tmp = _get_buffer(_buffer2, (size(ukq, 1), nbandk))
 
-    get_fourier!(ep_kq_wan, epobj_eRpq, xk; fourier_mode)
+    get_fourier!(ep_kq_wan, epobj_eRpq, xk)
 
     # Rotate e-ph matrix from electron Wannier to eigenstate basis
     # ep_kq[ibkq, ibk, imode] = ukq'[ibkq, :] * ep_kq_wan[:, :, imode] * uk[:, ibk]

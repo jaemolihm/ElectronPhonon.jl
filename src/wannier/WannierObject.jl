@@ -1,14 +1,5 @@
-# __precompile__(true)
-
-# module FourierModule
-
-using Parameters
 using LinearAlgebra
-using Base.Threads
 
-export AbstractWannierObject
-export WannierObject
-export get_fourier!
 export update_op_r!
 
 abstract type AbstractWannierObject{T<:Real} end
@@ -32,7 +23,7 @@ Base.@kwdef mutable struct WannierObject{T} <: AbstractWannierObject{T}
     const nr::Int
     const irvec::Vector{Vec3{Int}}
     const op_r::Array{Complex{T},2}
-    const ndata::Int # Size of the Fourier-transformed data matrix
+    ndata::Int # Size of the Fourier-transformed data matrix
                # By default, ndata = size(op_r, 1). If one only wants a part of op_r to be
                # transformed, one may use ndata to be smaller.
 
@@ -40,7 +31,7 @@ Base.@kwdef mutable struct WannierObject{T} <: AbstractWannierObject{T}
     const irvec_next::Union{Nothing,Vector{Vec3{Int}}}
 
     # When op_r is updated, increment _id.
-    # This is used to check if interpolator are up-to-date.
+    # This is used to check if interpolators are up-to-date.
     _id::Int
 end
 
