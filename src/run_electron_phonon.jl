@@ -1,5 +1,6 @@
 
 using ElectronPhonon.WanToBloch
+using Base.Threads: nthreads, threadid, @threads
 
 """
     run_eph_outer_loop_q(
@@ -75,17 +76,17 @@ function run_eph_outer_loop_q(
     nq = qpoints.n
     nband = iband_max - iband_min + 1
 
-    epdatas = [ElPhData{FT}(nw, nmodes, nband) for i=1:Threads.nthreads()]
+    epdatas = [ElPhData{FT}(nw, nmodes, nband) for _ in 1:nthreads()]
 
     # Initialize data structs
     if compute_elself
         elself = ElectronSelfEnergy{FT}(iband_min:iband_max, nk, length(elself_params.Tlist))
     end
     if compute_phself
-        phselfs = [PhononSelfEnergy{FT}(nmodes, nq, length(phself_params.Tlist)) for i=1:Threads.nthreads()]
+        phselfs = [PhononSelfEnergy{FT}(nmodes, nq, length(phself_params.Tlist)) for _ in 1:nthreads()]
     end
     if compute_phspec
-        phspecs = [PhononSpectralData(phspec_params, nmodes, nq) for i=1:Threads.nthreads()]
+        phspecs = [PhononSpectralData(phspec_params, nmodes, nq) for _ in 1:nthreads()]
     end
     if compute_transport
         transport_serta = TransportSERTA{FT}(iband_min:iband_max, nk, length(transport_params.Tlist))
@@ -106,9 +107,19 @@ function run_eph_outer_loop_q(
     omega_save = zeros(nmodes, nq)
     ph = PhononState(nmodes, FT)
 
+    dyn = get_interpolator(model.ph_dyn; fourier_mode)
+    ham_threads = [get_interpolator(model.el_ham; fourier_mode) for _ in 1:nthreads()]
+    vel_threads = if model.el_velocity_mode === :Direct
+        [get_interpolator(model.el_vel; fourier_mode) for _ in 1:nthreads()]
+    else
+        [get_interpolator(model.el_ham_R; fourier_mode) for _ in 1:nthreads()]
+    end
+
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epobj_eRpq = WannierObject(model.epmat.irvec_next,
-                zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    epmat = get_interpolator(model.epmat; fourier_mode)
+    ep_eRpq_obj = WannierObject(model.epmat.irvec_next,
+                                zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    ep_eRpq_threads = [get_interpolator(ep_eRpq_obj; fourier_mode) for _ in 1:nthreads()]
 
     mpi_isroot() && @info "Number of q points = $nq"
     mpi_isroot() && @info "Number of k points = $nk"
@@ -120,9 +131,9 @@ function run_eph_outer_loop_q(
         xq = qpoints.vectors[iq]
 
         # Phonon eigenvalues
-        set_eigen!(ph, model, xq; fourier_mode)
+        set_eigen!(ph, xq, dyn, model.mass, model.polar_phonon)
         if model.use_polar_dipole
-            set_eph_dipole_coeff!(ph, model, xq)
+            set_eph_dipole_coeff!(ph, xq, model.polar_eph)
         end
         omega_save[:, iq] .= ph.e
 
@@ -130,15 +141,15 @@ function run_eph_outer_loop_q(
             epdata.ph = ph
         end
 
-        get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq, ph.u; fourier_mode)
+        get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
 
-        Threads.@threads :static for ik in 1:nk
-        # for ik in 1:nk
-            tid = Threads.threadid()
+        @threads :static for ik in 1:nk
+            tid = threadid()
             epdata = epdatas[tid]
-            # phself = phselfs[tid]
+            ham = ham_threads[tid]
+            vel = vel_threads[tid]
+            ep_eRpq = ep_eRpq_threads[tid]
 
-            # println("$tid $ik")
             xk = kpoints.vectors[ik]
             xkq = xk + xq
 
@@ -149,14 +160,14 @@ function run_eph_outer_loop_q(
             epdata.el_k = el_k_save[ik]
 
             # Compute electron state at k+q.
-            set_eigen!(epdata.el_kq, model, xkq; fourier_mode)
+            set_eigen!(epdata.el_kq, ham, xkq)
 
             # Set energy window, skip if no state is inside the window
             set_window!(epdata.el_kq, window)
             length(epdata.el_kq.rng) == 0 && continue
 
-            set_velocity_diag!(epdata.el_kq, model, xkq; fourier_mode)
-            get_eph_Rq_to_kq!(epdata, epobj_eRpq, xk; fourier_mode)
+            set_velocity_diag!(epdata.el_kq, vel, xkq, model.el_velocity_mode)
+            get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
                 model.polar_eph.use && epdata_compute_eph_dipole!(epdata)

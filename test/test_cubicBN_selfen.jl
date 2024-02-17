@@ -28,18 +28,8 @@ using NPZ
     nklist = (5, 5, 5)
     nqlist = (5, 5, 5)
 
-    elself_params = ElectronSelfEnergyParams(
-    μ = μ,
-    Tlist = Tlist,
-    smearing = smearing,
-    )
-
-    phself_params = PhononSelfEnergyParams(
-    μ = μ,
-    Tlist = Tlist,
-    smearing = smearing,
-    spin_degeneracy = 2.0
-    )
+    elself_params = ElectronSelfEnergyParams(; μ, Tlist, smearing)
+    phself_params = PhononSelfEnergyParams(; μ, Tlist, smearing, spin_degeneracy = 2.0)
 
     # Run electron-phonon coupling calculation
     @time output = ElectronPhonon.run_eph_outer_loop_q(
@@ -50,6 +40,7 @@ using NPZ
         phself_params=phself_params,
     )
 
+    # Run electron-phonon coupling calculation
     @time output_disk = ElectronPhonon.run_eph_outer_loop_q(
         model_disk, nklist, nqlist,
         fourier_mode="gridopt",
@@ -58,13 +49,13 @@ using NPZ
         phself_params=phself_params,
     )
 
-    @testset "WannierObject" begin
+    function _test(output)
         iband_min = output["iband_min"]
         iband_max = output["iband_max"]
         @test iband_min == 2
         @test iband_max == 8
 
-        @test ek_ref ≈ output["ek"][iband_min:iband_max, :] atol=2.e-4
+        @test ek_ref ≈ output["ek"][iband_min:iband_max, :] atol=1.e-4
         @test all(isapprox.(omega_ref, output["omega"], atol=1.e-8))
         @test all(isapprox.(ph_imsigma_ref, output["phself_imsigma"], atol=1.e-8))
 
@@ -75,24 +66,19 @@ using NPZ
                 .& (abs.(ek_ref .- window_max) .> smearing * 10))
         errors = abs.(el_imsigma_ref - output["elself_imsigma"].parent)
         @test maximum(reshape(errors, :, length(Tlist))[inds, :]) < 1.e-8
+
+        return output
+    end
+
+    @testset "WannierObject" begin
+        _test(output)
     end
 
     @testset "DiskWannierObject" begin
-        iband_min = output_disk["iband_min"]
-        iband_max = output_disk["iband_max"]
-        @test iband_min == 2
-        @test iband_max == 8
-
-        @test ek_ref ≈ output_disk["ek"][iband_min:iband_max, :] atol=2.e-4
-        @test all(isapprox.(omega_ref, output_disk["omega"], atol=1.e-8))
-        @test all(isapprox.(ph_imsigma_ref, output_disk["phself_imsigma"], atol=1.e-8))
-
-        # Electron self-energy error can be large for states whose energy is near the window
-        # boundary, with separation not much larger than the smearing.
-        # So, we test only states is far from the window boundary.
-        inds = vec((abs.(ek_ref .- window_min) .> smearing * 10)
-                .& (abs.(ek_ref .- window_max) .> smearing * 10))
-        errors = abs.(el_imsigma_ref - output_disk["elself_imsigma"].parent)
-        @test maximum(reshape(errors, :, length(Tlist))[inds, :]) < 1.e-8
+        _test(output_disk)
+        for key in keys(output)
+            key == "kpts" && continue
+            @test output_disk[key] ≈ output[key] || "key $key, error $(norm(output_disk[key] - output[key]))"
+        end
     end
 end

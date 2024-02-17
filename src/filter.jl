@@ -127,7 +127,7 @@ function filter_qpoints(qpoints, kpoints, nw, el_ham, window; fourier_mode="grid
     ham_threads = [get_interpolator(el_ham; fourier_mode) for _ in 1:nthreads()]
 
     @threads :static for iq in 1:qpoints.n
-        ham = nthreads[threadid()]
+        ham = ham_threads[threadid()]
         eigenvalues = eigenvalues_threads[threadid()]
         xq = qpoints.vectors[iq]
         for xk in kpoints.vectors

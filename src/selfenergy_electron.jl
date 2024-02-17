@@ -33,7 +33,6 @@ end
 """
 @timing "selfen_el" function compute_electron_selfen!(elself, epdata,
         params::ElectronSelfEnergyParams, ik)
-    ph_occ = epdata.ph.occupation
     el_kq_occ = epdata.el_kq.occupation
 
     μ = params.μ
@@ -41,7 +40,6 @@ end
 
     for (iT, T) in enumerate(params.Tlist)
 
-        set_occupation!(epdata.ph, T)
         set_occupation!(epdata.el_kq, μ, T)
 
         # Calculate imaginary part of electron self-energy
@@ -50,14 +48,15 @@ end
             if (omega < omega_acoustic)
                 continue
             end
+            occ_ph = occ_boson(epdata.ph.e[imode], T)
 
             @inbounds for ib in epdata.el_k.rng, jb in epdata.el_kq.rng
                 delta_e1 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] - omega)
                 delta_e2 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] + omega)
                 delta1 = gaussian(delta_e1 * inv_smear) * inv_smear
                 delta2 = gaussian(delta_e2 * inv_smear) * inv_smear
-                fcoeff1 = ph_occ[imode] + el_kq_occ[jb]
-                fcoeff2 = ph_occ[imode] + 1.0 - el_kq_occ[jb]
+                fcoeff1 = occ_ph + el_kq_occ[jb]
+                fcoeff2 = occ_ph + 1.0 - el_kq_occ[jb]
                 elself.imsigma[ib, ik, iT] += (epdata.g2[jb, ib, imode] * epdata.wtq
                     * π * (fcoeff1 * delta1 + fcoeff2 * delta2)
                 )
