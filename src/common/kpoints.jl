@@ -7,6 +7,7 @@ export kpoints_grid
 export GridKpoints
 export xk_to_ik
 export shift_center!
+export split_kpoints
 
 abstract type AbstractKpoints{T <: Real} end
 
@@ -447,3 +448,13 @@ function fold_kpoints(kpts::GridKpoints, symmetry)
 end
 
 fold_kpoints(kpts::GridKpoints, symmetry::Nothing) = kpts, [(ik, 1) for ik = 1:kpts.n]
+
+
+function split_kpoints(kpts::Kpoints, N)
+    rngs = split_iterator(1:kpts.n, N)
+    [Kpoints(length(rng), kpts.vectors[rng], kpts.weights[rng], kpts.ngrid) for rng in rngs]
+end
+
+function split_kpoints(kpts::GridKpoints, N)
+    GridKpoints.(split_kpoints(Kpoints(kpts), N))
+end

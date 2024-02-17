@@ -13,6 +13,10 @@ using ElectronPhonon
     @test sum(kpts.weights) ≈ 1
     @test kpts.vectors[19] ≈ [1/2, 1/3, 2/4]
 
+    kpts_split = split_kpoints(kpts, 5)
+    @test sum([k.n for k in kpts_split]) == kpts.n
+    @test all([k isa Kpoints for k in kpts_split])
+
     # Test get_filtered_kpoints
     ik_keep = zeros(Bool, nk1 * nk2 * nk3)
     ik_keep[7] = true
@@ -92,4 +96,8 @@ end
     sort!(gridkpts_mix)
     @test all(gridkpts_mix.vectors .≈ gridkpts.vectors)
     @test all(xk_to_ik.(gridkpts_mix.vectors, Ref(gridkpts_mix)) .== 1:gridkpts_mix.n)
+
+    kpts_split = split_kpoints(gridkpts, 5)
+    @test sum([k.n for k in kpts_split]) == gridkpts.n
+    @test all([k isa GridKpoints for k in kpts_split])
 end
