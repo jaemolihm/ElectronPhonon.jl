@@ -27,36 +27,37 @@ export get_symmetry_representation_wannier!
 # TODO: Allow the type to change.
 # Preallocated buffers for temporary arrays. Access via _get_buffer. When multiple arrays
 # are needed, use _buffer1 for the largest array, _buffer2 for the next largest, and so on.
-const _buffer_nothreads1 = [Vector{ComplexF64}(undef, 0)]
-const _buffer1 = [Vector{ComplexF64}(undef, 0)]
 const _buffer2 = [Vector{ComplexF64}(undef, 0)]
 const _buffer3 = [Vector{ComplexF64}(undef, 0)]
 
 function __init__()
-    Threads.resize_nthreads!(_buffer1)
     Threads.resize_nthreads!(_buffer2)
     Threads.resize_nthreads!(_buffer3)
 end
 
 """
-    _get_buffer(buffer::Vector{Vector{T, N}}, dims::NTuple{N, Int}) where {T, N}
+    _get_buffer(buffer::Vector{Vector{T}}, dims::NTuple{N, Int}) where {T, N}
 Get preallocated buffer as a ReshapedArray in a thread-safe way.
 Resize buffer if the allocated size is smaller than the requested size"""
 function _get_buffer(buffer::Vector{Vector{T}}, dims::NTuple{N, Int}) where {T, N}
     tid = Threads.threadid()
-    if length(buffer[tid]) < prod(dims)
-        resize!(buffer[tid], prod(dims))
-    end
-    Base.ReshapedArray(view(buffer[tid], 1:prod(dims)), dims, ())
+    _reshape_buffer(buffer[tid], dims)
 end
 
-function _reshape_workspace(workspace::AbstractVector{T}, dims::NTuple{N, Int}) where {T, N}
+
+"""
+    _reshape_buffer(buffer::Vector{T}, dims::NTuple{N, Int}) where {T, N}
+Get preallocated buffer as a ReshapedArray.
+Resize buffer if the allocated size is smaller than the requested size.
+"""
+function _reshape_buffer(buffer::AbstractVector{T}, dims::NTuple{N, Int}) where {T, N}
     n = prod(dims)
-    if length(workspace) < n
-        resize!(workspace, n)
+    if length(buffer) < n
+        resize!(buffer, n)
     end
-    Base.ReshapedArray(view(workspace, 1:n), dims, ())
+    Base.ReshapedArray(view(buffer, 1:n), dims, ())
 end
+
 
 # =============================================================================
 #  Electrons
@@ -69,9 +70,7 @@ Compute electron eigenenergy and eigenvector.
     @assert size(values) == (nw,)
     @assert size(vectors) == (nw, nw)
 
-    hk = _get_buffer(_buffer1, (nw, nw))
-    # hk = zeros(eltype(ham), (nw, nw))
-    # hk = _reshape_workspace(workspaces[1], (nw, nw))
+    hk = _reshape_buffer(ham.out, (nw, nw))
     get_fourier!(hk, ham, xk)
     solve_eigen_el!(values, vectors, hk)
     nothing
@@ -84,7 +83,7 @@ end
     # FIXME: Names get_el_eigen_valueonly! and solve_eigen_el_valueonly! are confusing.
     @assert size(values) == (nw,)
 
-    hk = _get_buffer(_buffer1, (nw, nw))
+    hk = _reshape_buffer(ham.out, (nw, nw))
     get_fourier!(hk, ham, xk)
     solve_eigen_el_valueonly!(values, hk)
     nothing
@@ -104,7 +103,7 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
     nband = size(uk, 2)
     @assert size(velocity_diag) == (3, nband)
 
-    vk = _get_buffer(_buffer1, (nw, nw, 3))
+    vk = _reshape_buffer(ham_R.out, (nw, nw, 3))
     tmp = _get_buffer(_buffer2, (nw, nband))
 
     get_fourier!(vk, ham_R, xk)
@@ -134,7 +133,7 @@ where ``rbar = U^\\dagger A U``
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)
 
-    vk = _get_buffer(_buffer1, (nw, nw, 3))
+    vk = _reshape_buffer(ham_R.out, (nw, nw, 3))
     tmp = _get_buffer(_buffer2, (nw, nband))
 
     get_fourier!(vk, ham_R, xk)
@@ -167,7 +166,7 @@ TODO: Can we reduce code duplication with get_el_velocity_berry_connection?
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)
 
-    vk = _get_buffer(_buffer1, (nw, nw, 3))
+    vk = _reshape_buffer(vel.out, (nw, nw, 3))
     tmp = _get_buffer(_buffer2, (nw, nband))
 
     get_fourier!(vk, vel, xk)
@@ -194,7 +193,7 @@ function get_symmetry_representation_eigen!(sym_H, el_sym_op, xk, uk, usk, is_tr
     nband_sk = size(usk, 2)
     @assert size(sym_H) == (nband_sk, nband_k)
 
-    sym_W = _get_buffer(_buffer1, (nw, nw))
+    sym_W = _reshape_buffer(el_sym_op.out, (nw, nw))
     tmp = _get_buffer(_buffer2, (nw, nband_k))
     u_tmp = _get_buffer(_buffer3, (nw, nband_k))
 
@@ -250,7 +249,7 @@ end
     @assert size(mass) == (nmodes,)
     @assert dyn.ndata == nmodes^2
 
-    dynq = _get_buffer(_buffer1, (nmodes, nmodes))
+    dynq = _reshape_buffer(dyn.out, (nmodes, nmodes))
 
     get_fourier!(dynq, dyn, xq)
     if ! isnothing(polar)
@@ -279,7 +278,7 @@ Compute phonon band velocity, only the band-diagonal part.
     @assert size(uk) == (nmodes, nmodes)
     @assert size(vel_diag) == (3, nmodes)
 
-    vk = _get_buffer(_buffer1, (nmodes, nmodes, 3))
+    vk = _reshape_buffer(dyn_R.out, (nmodes, nmodes, 3))
     tmp = _get_buffer(_buffer2, (nmodes, nmodes))
 
     get_fourier!(vk, dyn_R, xk)
@@ -316,12 +315,11 @@ Multithreading is not supported because of large buffer array size.
     nmodes = size(u_ph, 1)
     nbasis = div(epobj_eRpq.ndata, nmodes) # Number of electron basis squared.
     @assert size(u_ph) == (nmodes, nmodes)
-    @assert Threads.threadid() == 1
     @assert epobj_eRpq.ndata == nbasis * nmodes
     @assert epmat.ndata == nbasis * nmodes * nr_el
 
-    ep_Rq = _get_buffer(_buffer_nothreads1, (nbasis, nmodes, nr_el))
-    ep_Rq_tmp = _get_buffer(_buffer1, (nbasis, nmodes))
+    ep_Rq = _reshape_buffer(epmat.out, (nbasis, nmodes, nr_el))
+    ep_Rq_tmp = _get_buffer(_buffer2, (nbasis, nmodes))
 
     get_fourier!(ep_Rq, epmat, xq)
 
@@ -352,7 +350,7 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
     @assert size(ukq, 2) == nbandkq
     @assert epobj_eRpq.ndata == size(ukq, 1) * size(uk, 1) * nmodes
 
-    ep_kq_wan = _get_buffer(_buffer1, (size(ukq, 1), size(uk, 1), nmodes))
+    ep_kq_wan = _reshape_buffer(epobj_eRpq.out, (size(ukq, 1), size(uk, 1), nmodes))
     tmp = _get_buffer(_buffer2, (size(ukq, 1), nbandk))
 
     get_fourier!(ep_kq_wan, epobj_eRpq, xk)
@@ -385,14 +383,14 @@ Multithreading is not supported because of large buffer array size.
     size(epobj_ekpR.op_r) = (nw * nband_bound * nmodes, nr_ep)
     size(epmat.op_r) = (nw^2 * nmodes * nr_ep, nr_el)
     """
-    nr_ep = length(epmat.parent.irvec_next)
+    nr_ep = length(epmat.irvec_next)
     nw, nband = size(uk)
     nmodes = div(epmat.ndata, nw^2 * nr_ep)
     ndata = nw * nband * nmodes
     @assert epobj_ekpR.nr == nr_ep
     @assert size(epobj_ekpR.op_r, 1) >= ndata
 
-    ep_kR = _get_buffer(_buffer_nothreads1, (nw, nw, nmodes, nr_ep))
+    ep_kR = _reshape_buffer(epmat.out, (nw, nw, nmodes, nr_ep))
     get_fourier!(ep_kR, epmat, xk)
 
     # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
@@ -435,9 +433,9 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
     nw = size(ukq, 1)
     @assert size(u_ph) == (nmodes, nmodes)
     @assert size(ukq, 2) == nbandkq
-    @assert epobj_ekpR.parent.ndata == nw * nbandk * nmodes
+    @assert epobj_ekpR.ndata == nw * nbandk * nmodes
 
-    ep_kq_wan = _get_buffer(_buffer1, (nw, nbandk, nmodes))
+    ep_kq_wan = _reshape_buffer(epobj_ekpR.out, (nw, nbandk, nmodes))
     tmp = _get_buffer(_buffer2, (nbandkq, nbandk))
 
     get_fourier!(ep_kq_wan, epobj_ekpR, xq)

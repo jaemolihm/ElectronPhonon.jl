@@ -12,9 +12,12 @@ struct NormalWannierInterpolator{T, WT <: AbstractWannierObject} <: AbstractWann
     rdotk::Vector{T}
     phase::Vector{Complex{T}}
 
+    # Output buffer
+    out::Vector{Complex{T}}
+
     function NormalWannierInterpolator(parent::WT) where {WT <: AbstractWannierObject{T}} where {T}
         nr = length(parent.irvec)
-        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr))
+        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr), zeros(Complex{T}, parent.ndata))
     end
 end
 
@@ -26,18 +29,21 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
     # For gridopt Fourier transform
     const gridopt::GridOpt{T}
 
+    # Output buffer
+    out::Vector{Complex{T}}
+
     # Uheck if `gridopt` is up-to-date with `parent`.
     # If the ids do not match, reset `gridopt`.
     _id::Int
 
     function GridoptWannierInterpolator(parent::WT) where {WT <: AbstractWannierObject{T}} where {T}
-        new{T, WT}(parent, GridOpt(T, parent.irvec, parent.ndata), parent._id)
+        new{T, WT}(parent, GridOpt(T, parent.irvec, parent.ndata), zeros(Complex{T}, parent.ndata), parent._id)
     end
 end
 
 
 function Base.getproperty(obj::AbstractWannierInterpolator, name::Symbol)
-    if name === :nr || name === :ndata
+    if name === :nr || name === :ndata || name === :irvec_next
         getfield(obj.parent, name)
     else
         getfield(obj, name)
