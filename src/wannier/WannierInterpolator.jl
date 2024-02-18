@@ -15,9 +15,12 @@ struct NormalWannierInterpolator{T, WT <: AbstractWannierObject} <: AbstractWann
     # Output buffer
     out::Vector{Complex{T}}
 
+    # Buffer for intermediate calculations
+    buffer::Vector{Complex{T}}
+
     function NormalWannierInterpolator(parent::WT) where {WT <: AbstractWannierObject{T}} where {T}
         nr = length(parent.irvec)
-        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr), zeros(Complex{T}, parent.ndata))
+        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr), zeros(Complex{T}, parent.ndata), Complex{T}[])
     end
 end
 
@@ -32,12 +35,15 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
     # Output buffer
     out::Vector{Complex{T}}
 
+    # Buffer for intermediate calculations
+    buffer::Vector{Complex{T}}
+
     # Uheck if `gridopt` is up-to-date with `parent`.
     # If the ids do not match, reset `gridopt`.
     _id::Int
 
     function GridoptWannierInterpolator(parent::WT) where {WT <: AbstractWannierObject{T}} where {T}
-        new{T, WT}(parent, GridOpt(T, parent.irvec, parent.ndata), zeros(Complex{T}, parent.ndata), parent._id)
+        new{T, WT}(parent, GridOpt(T, parent.irvec, parent.ndata), zeros(Complex{T}, parent.ndata), Complex{T}[], parent._id)
     end
 end
 
