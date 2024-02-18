@@ -1,5 +1,3 @@
-using ElectronPhonon.WanToBloch: get_symmetry_representation_wannier!
-
 export unfold_QMEStates
 
 """

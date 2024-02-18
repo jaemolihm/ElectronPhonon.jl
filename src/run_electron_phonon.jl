@@ -1,5 +1,3 @@
-
-using ElectronPhonon.WanToBloch
 using Base.Threads: nthreads, threadid, @threads
 
 """

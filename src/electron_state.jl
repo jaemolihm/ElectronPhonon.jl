@@ -5,9 +5,6 @@ using OffsetArrays
 using OffsetArrays: no_offset_view
 
 using ElectronPhonon.AllocatedLAPACK: epw_syev!
-using ElectronPhonon.WanToBloch: get_el_eigen!, get_el_velocity_diag_berry_connection!,
-                      get_el_velocity_berry_connection!, get_el_velocity_direct!,
-                      get_symmetry_representation_eigen!
 
 export ElectronState
 export copyto!
@@ -137,7 +134,7 @@ end
 get_occupation(el::ElectronState, μ, T) = occ_fermion.(el.e .- μ, T)
 
 
-# Define wrappers of WanToBloch functions
+# Define wrappers of wannier_to_bloch functions
 
 """
     set_eigen!(el::ElectronState, ham, xk)

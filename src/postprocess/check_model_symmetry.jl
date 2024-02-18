@@ -1,5 +1,4 @@
 using Printf
-using ElectronPhonon.WanToBloch: get_symmetry_representation_wannier!
 
 export check_electron_symmetry_of_model
 

@@ -5,8 +5,6 @@ using Base: @kwdef
 using OffsetArrays
 using OffsetArrays: no_offset_view
 
-import ElectronPhonon.WanToBloch: get_eph_Rq_to_kq!, get_eph_kR_to_kq!
-
 export ElPhData
 export epdata_set_g2!
 export epdata_set_mmat!
@@ -83,7 +81,7 @@ end
     @views mul!(no_offset_view(epdata.mmat), no_offset_view(epdata.el_kq.u)', no_offset_view(epdata.el_k.u))
 end
 
-# Define wrappers of WanToBloch functions
+# Define wrappers of wannier_to_bloch functions
 
 """
     get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk)

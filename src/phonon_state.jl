@@ -1,8 +1,6 @@
 
 # Phonon eigenvalue and eigenvector at a single q point
 
-using ElectronPhonon.WanToBloch: get_ph_eigen!
-
 export PhononState
 export copyto!
 export set_occupation!
@@ -54,7 +52,7 @@ function set_occupation!(ph::PhononState, T)
 end
 get_occupation(ph::PhononState, T) = occ_boson.(ph.e, T)
 
-# Define wrappers of WanToBloch functions
+# Define wrappers of wannier_to_bloch functions
 
 """
     set_eigen!(ph::PhononState, xk, dyn, mass, polar)

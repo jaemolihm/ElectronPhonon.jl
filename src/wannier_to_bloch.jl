@@ -1,15 +1,4 @@
-"""
-Module for transformation from Wannier basis to Bloch eigenstate basis.
-Use thread-save preallocated buffers.
-"""
-module WanToBloch
-
 using LinearAlgebra
-using ElectronPhonon: @timing
-using ElectronPhonon: AbstractWannierObject, WannierObject, AbstractWannierInterpolator
-using ElectronPhonon: get_fourier!, update_op_r!
-using ElectronPhonon: solve_eigen_el!, solve_eigen_el_valueonly!, solve_eigen_ph!, solve_eigen_ph_valueonly!
-using ElectronPhonon: dynmat_dipole!
 
 export get_el_eigen!
 export get_el_eigen_valueonly!
@@ -431,6 +420,4 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
         end
     end
     nothing
-end
-
 end

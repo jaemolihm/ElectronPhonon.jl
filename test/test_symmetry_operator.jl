@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using LinearAlgebra
-using ElectronPhonon.WanToBloch: get_symmetry_representation_wannier!
+using ElectronPhonon: get_symmetry_representation_wannier!
 
 # Test symmetry operator that acts on the electron Wannier functions
 
