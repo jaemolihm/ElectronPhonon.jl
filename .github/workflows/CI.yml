@@ -41,7 +41,7 @@ jobs:
             ${{ runner.os }}-
       - name: Install TetrahedronIntegration
         run: |
-          julia -e '
+          julia --project=. -e '
           using Pkg
           Pkg.add(url="https://github.com/jaemolihm/TetrahedronIntegration.jl")'
       - uses: julia-actions/julia-buildpkg@v1
