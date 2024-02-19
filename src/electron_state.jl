@@ -4,8 +4,6 @@
 using OffsetArrays
 using OffsetArrays: no_offset_view
 
-using ElectronPhonon.AllocatedLAPACK: epw_syev!
-
 export ElectronState
 export copyto!
 export set_window!

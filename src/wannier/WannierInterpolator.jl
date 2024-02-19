@@ -1,3 +1,5 @@
+using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV
+
 export get_interpolator
 export get_fourier!
 
@@ -18,9 +20,13 @@ struct NormalWannierInterpolator{T, WT <: AbstractWannierObject} <: AbstractWann
     # Buffer for intermediate calculations
     buffer::Vector{Complex{T}}
 
+    # Buffer for diagonalization
+    ws::HermitianEigenWsSYEV{Complex{T},T}
+
     function NormalWannierInterpolator(parent::WT) where {WT <: AbstractWannierObject{T}} where {T}
         nr = length(parent.irvec)
-        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr), zeros(Complex{T}, parent.ndata), Complex{T}[])
+        ws = HermitianEigenWsSYEV{Complex{T},T}()
+        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr), zeros(Complex{T}, parent.ndata), Complex{T}[], ws)
     end
 end
 
@@ -38,13 +44,17 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
     # Buffer for intermediate calculations
     buffer::Vector{Complex{T}}
 
+    # Buffer for diagonalization
+    ws::HermitianEigenWsSYEV{Complex{T},T}
+
     # Uheck if `gridopt` is up-to-date with `parent`.
     # If the ids do not match, reset `gridopt`.
     _id::Int
 
     function GridoptWannierInterpolator(parent::WT) where {WT <: AbstractWannierObject{T}} where {T}
         gridopt = GridOpt(T, parent.irvec, parent.ndata)
-        new{T, WT}(parent, gridopt, zeros(Complex{T}, parent.ndata), Complex{T}[], parent._id)
+        ws = HermitianEigenWsSYEV{Complex{T},T}()
+        new{T, WT}(parent, gridopt, zeros(Complex{T}, parent.ndata), Complex{T}[], ws, parent._id)
     end
 end
 

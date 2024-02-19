@@ -1,7 +1,7 @@
 # __precompile__(true)
 
 using LinearAlgebra
-using ElectronPhonon.AllocatedLAPACK: epw_syev!
+using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV, syev!
 
 export solve_eigen_el!
 export solve_eigen_el_valueonly!
@@ -26,9 +26,13 @@ end
     return false
 end
 
-"Get eigenenergy and eigenvector of electrons at a single k point.
-Input hk is not destroyed at output."
-@timing "eig_el" function solve_eigen_el!(eigvalues, eigvectors, hk)
+"""
+    solve_eigen_el!(eigvalues, eigvectors, hk, ws=nothing)
+Get eigenenergy and eigenvector of electrons at a single k point. Input hk is not destroyed at output.
+
+Mimic EPW to fix eigenvector gauge for degenerate bands.
+"""
+@timing "eig_el" function solve_eigen_el!(eigvalues, eigvectors, hk, ws::Union{HermitianEigenWsSYEV,Nothing}=nothing)
     @assert size(eigvectors) == size(hk)
     # Directly calling LAPACK.syev! is more efficient than
     # eigen(Hermitian(hk)) for small matrices, because eigen uses
@@ -36,7 +40,10 @@ Input hk is not destroyed at output."
     # eigvalues, eigvectors[:, :] = eigen(Hermitian(hk))
     # Use AllocatedLAPACK module for preallocating and reusing workspaces
     eigvectors .= hk
-    epw_syev!('V', 'U', eigvectors, eigvalues)
+    if ws === nothing
+        ws = HermitianEigenWsSYEV(eigvectors)
+    end
+    eigvalues .= syev!(ws, 'V', 'U', eigvectors)[1]
 
     # If there are no degenerate bands, return
     is_degenerate(eigvalues, electron_degen_cutoff) || return eigvalues, eigvectors
@@ -67,7 +74,7 @@ Input hk is not destroyed at output."
         @views if ndegen > 1
             rng = degen_from:degen_to
             perturbation_matrix = eigvectors[:, rng]' * hk * eigvectors[:, rng]
-            epw_syev!('V', 'U', perturbation_matrix)
+            syev!(ws, 'V', 'U', perturbation_matrix)
             eigvectors[:, rng] .= eigvectors[:, rng] * perturbation_matrix
         end
 
@@ -78,17 +85,23 @@ Input hk is not destroyed at output."
     eigvalues, eigvectors
 end
 
-"Get eigenenergy of electrons at a single k point.
-Input hk is destroyed at output."
-@timing "eig_el_val" function solve_eigen_el_valueonly!(eigvalues, hk)
-    # eigvalues .= eigvals(Hermitian(hk))
+"""
+    solve_eigen_el_valueonly!(eigvalues, hk, ws=nothing)
+Get eigenenergy of electrons at a single k point. Input hk is destroyed at output.
+"""
+@timing "eig_el_val" function solve_eigen_el_valueonly!(eigvalues, hk, ws::Union{HermitianEigenWsSYEV,Nothing}=nothing)
     # Use AllocatedLAPACK module for preallocating and reusing workspaces
-    epw_syev!('N', 'U', hk, eigvalues)[1]
+    if ws === nothing
+        ws = HermitianEigenWsSYEV(hk)
+    end
+    eigvalues .= syev!(ws, 'N', 'U', hk)[1]
 end
 
-"Get frequency and eigenmode of phonons at a single q point.
-Input dynq is destroyed at output."
-@timing "eig_ph" function solve_eigen_ph!(eigvalues, eigvectors, dynq, mass)
+"""
+    solve_eigen_ph!(eigvalues, eigvectors, dynq, mass, ws=nothing)
+Get frequency and eigenmode of phonons at a single q point. Input dynq is not destroyed at output.
+"""
+@timing "eig_ph" function solve_eigen_ph!(eigvalues, eigvectors, dynq, mass, ws::Union{HermitianEigenWsSYEV,Nothing}=nothing)
     @assert size(dynq)[1] == length(mass)
     @assert size(eigvectors) == size(dynq)
     # F = eigen!(Hermitian(dynq))
@@ -96,7 +109,10 @@ Input dynq is destroyed at output."
     # eigvectors .= F.vectors
     # Use AllocatedLAPACK module for preallocating and reusing workspaces
     eigvectors .= dynq
-    epw_syev!('V', 'U', eigvectors, eigvalues)
+    if ws === nothing
+        ws = HermitianEigenWsSYEV(eigvectors)
+    end
+    eigvalues .= syev!(ws, 'V', 'U', eigvectors)[1]
 
     # Computed eigenvalues are omega^2. Return sign(omega^2) * omega.
     @inbounds for i in eachindex(eigvalues)
@@ -110,16 +126,21 @@ Input dynq is destroyed at output."
     eigvalues
 end
 
-"Get frequency of phonons at a single q point.
-Input dynq is destroyed at output."
-@timing "eig_ph_val" function solve_eigen_ph_valueonly!(eigvalues, dynq)
+"""
+    solve_eigen_ph_valueonly!(eigvalues, dynq, ws=nothing)
+Get frequency of phonons at a single q point. Input dynq is destroyed at output.
+"""
+@timing "eig_ph_val" function solve_eigen_ph_valueonly!(eigvalues, dynq, ws::Union{HermitianEigenWsSYEV,Nothing}=nothing)
     # Directly calling LAPACK.syev! is more efficient than eigen(Hermitian(hk))
     # But, for the sake of type stability, we use eigen and eigvals.
     # eigvalues = LAPACK.syev!('N', 'U', dynq)
     # eigvalues = eigvals!(Hermitian(dynq))
 
     # Use AllocatedLAPACK module for preallocating and reusing workspaces
-    epw_syev!('N', 'U', dynq, eigvalues)[1]
+    if ws === nothing
+        ws = HermitianEigenWsSYEV(dynq)
+    end
+    eigvalues .= syev!(ws, 'N', 'U', dynq)[1]
 
     # Computed eigenvalues are omega^2. Return sign(omega^2) * omega.
     @. eigvalues = sqrt(abs(eigvalues)) * sign(eigvalues)

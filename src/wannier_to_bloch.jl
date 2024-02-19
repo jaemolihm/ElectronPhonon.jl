@@ -41,7 +41,7 @@ Compute electron eigenenergy and eigenvector.
 
     hk = _reshape_buffer(ham.out, (nw, nw))
     get_fourier!(hk, ham, xk)
-    solve_eigen_el!(values, vectors, hk)
+    solve_eigen_el!(values, vectors, hk, ham.ws)
     nothing
 end
 
@@ -54,7 +54,7 @@ end
 
     hk = _reshape_buffer(ham.out, (nw, nw))
     get_fourier!(hk, ham, xk)
-    solve_eigen_el_valueonly!(values, hk)
+    solve_eigen_el_valueonly!(values, hk, ham.ws)
     nothing
 end
 
@@ -200,7 +200,7 @@ Compute phonon eigenenergy and eigenvector.
         dynq[i, j] /= sqrt(mass[i])
         dynq[i, j] /= sqrt(mass[j])
     end
-    solve_eigen_ph!(values, vectors, dynq, mass)
+    solve_eigen_ph!(values, vectors, dynq, mass, dyn.ws)
     values, vectors
 end
 
@@ -222,7 +222,7 @@ end
         dynq[i, j] /= sqrt(mass[i])
         dynq[i, j] /= sqrt(mass[j])
     end
-    solve_eigen_ph_valueonly!(values, dynq)
+    solve_eigen_ph_valueonly!(values, dynq, dyn.ws)
     values
 end
 
