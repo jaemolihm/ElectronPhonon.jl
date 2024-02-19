@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         version:
-          - '1.9'
+          - '1'
         os:
           - ubuntu-latest
         arch:
@@ -40,6 +40,9 @@ jobs:
             ${{ runner.os }}-test-
             ${{ runner.os }}-
       - name: Install TetrahedronIntegration
+        env:
+          JULIA_PROJECT: ${{ github.workspace }}
+          PYTHON: ""
         run: |
           julia --project=. -e '
           using Pkg
