@@ -358,9 +358,10 @@ Multithreading is not supported because of large buffer array size.
 
     # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
     @views for ir in 1:nr_ep
-        ep_kR2 = Base.ReshapedArray(epobj_ekpR.op_r[1:ndata, ir], (nw, nband, nmodes), ())
         for imode in 1:nmodes
-            mul!(ep_kR2[:, :, imode], ep_kR[:, :, imode, ir], uk)
+            rng = (1:nw*nband) .+ (nw*nband * (imode - 1))
+            ep_kR2 = Base.ReshapedArray(epobj_ekpR.op_r[rng, ir], (nw, nband), ())
+            mul!(ep_kR2, ep_kR[:, :, imode, ir], uk)
         end
     end
     epobj_ekpR.ndata = ndata
