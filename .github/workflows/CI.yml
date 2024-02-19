@@ -39,6 +39,11 @@ jobs:
             ${{ runner.os }}-test-${{ env.cache-name }}-
             ${{ runner.os }}-test-
             ${{ runner.os }}-
+      - name: Install TetrahedronIntegration
+        run: |
+          julia -e '
+          using Pkg
+          Pkg.add("https://github.com/jaemolihm/TetrahedronIntegration.jl")'
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1
