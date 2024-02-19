@@ -43,13 +43,14 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
     _id::Int
 
     function GridoptWannierInterpolator(parent::WT) where {WT <: AbstractWannierObject{T}} where {T}
-        new{T, WT}(parent, GridOpt(T, parent.irvec, parent.ndata), zeros(Complex{T}, parent.ndata), Complex{T}[], parent._id)
+        gridopt = GridOpt(T, parent.irvec, parent.ndata)
+        new{T, WT}(parent, gridopt, zeros(Complex{T}, parent.ndata), Complex{T}[], parent._id)
     end
 end
 
 
 function Base.getproperty(obj::AbstractWannierInterpolator, name::Symbol)
-    if name === :nr || name === :ndata || name === :irvec_next
+    if name === :nr || name === :ndata
         getfield(obj.parent, name)
     else
         getfield(obj, name)

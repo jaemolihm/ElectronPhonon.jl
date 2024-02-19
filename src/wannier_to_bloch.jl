@@ -346,7 +346,7 @@ Multithreading is not supported because of large buffer array size.
     size(epobj_ekpR.op_r) = (nw * nband_bound * nmodes, nr_ep)
     size(epmat.op_r) = (nw^2 * nmodes * nr_ep, nr_el)
     """
-    nr_ep = length(epmat.irvec_next)
+    nr_ep = length(epmat.parent.irvec_next)
     nw, nband = size(uk)
     nmodes = div(epmat.ndata, nw^2 * nr_ep)
     ndata = nw * nband * nmodes
@@ -354,16 +354,13 @@ Multithreading is not supported because of large buffer array size.
     @assert size(epobj_ekpR.op_r, 1) >= ndata
 
     ep_kR = _reshape_buffer(epmat.out, (nw, nw, nmodes, nr_ep))
-    ep_kR_tmp = _reshape_buffer(epmat.buffer, (nw, nband))
-
     get_fourier!(ep_kR, epmat, xk)
 
     # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
     @views for ir in 1:nr_ep
         ep_kR2 = Base.ReshapedArray(epobj_ekpR.op_r[1:ndata, ir], (nw, nband, nmodes), ())
         for imode in 1:nmodes
-            mul!(ep_kR_tmp, ep_kR[:, :, imode, ir], uk)
-            ep_kR2[:, :, imode] .= ep_kR_tmp
+            mul!(ep_kR2[:, :, imode], ep_kR[:, :, imode, ir], uk)
         end
     end
     epobj_ekpR.ndata = ndata
