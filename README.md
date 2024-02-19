@@ -1,6 +1,6 @@
 # EPW.jl
 
-[![codecov](https://codecov.io/gh/jaemolihm/EPW.jl/branch/master/graph/badge.svg?token=Q8SU1PBXCA)](https://codecov.io/gh/jaemolihm/EPW.jl)
+[![codecov](https://codecov.io/gh/jaemolihm/ElectronPhonon.jl/graph/badge.svg?token=P7BO11SX2C)](https://codecov.io/gh/jaemolihm/ElectronPhonon.jl)
 
 Julia implementation of electron-phonon coupling using Wannier functions
 
