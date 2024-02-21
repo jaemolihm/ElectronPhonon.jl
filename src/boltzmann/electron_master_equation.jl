@@ -277,44 +277,44 @@ end
 
 @inline function _compute_p_matrix_element!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_ph, inv_η, f_kq, n_ph)
     # energy conservation factor
-    delta1 = gaussian((e_i1 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
-    delta2 = gaussian((e_i2 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
-    delta = sqrt(delta1 * delta2)
+    δ1 = gaussian((e_i1 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
+    δ2 = gaussian((e_i2 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
+    δ = sqrt(δ1 * δ2)
     for iT in 1:length(p_mel_ikq)
         # occupation factor
         n = sign_ph == 1 ? n_ph[iT] + 1 - f_kq[iT] : n_ph[iT] + f_kq[iT]
         # P matrix element
-        p_mel_ikq[iT] += gg[iT] * delta * n
+        p_mel_ikq[iT] += gg[iT] * δ * n
     end
 end
 
 @inline function _compute_p_matrix_element_mrta!(p_mel_ikq, gg, e_i1, e_i2, e_f, ω_ph, sign_ph, inv_η, f_kq, n_ph, v_i1, v_f)
     # Momentum relaxation time approximation: See Eq. (49) of Ponce et al, Rep. Prog. Phys. (2020).
     # energy conservation factor
-    delta1 = gaussian((e_i1 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
-    delta2 = gaussian((e_i2 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
-    delta = sqrt(delta1 * delta2)
+    δ1 = gaussian((e_i1 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
+    δ2 = gaussian((e_i2 - e_f - sign_ph * ω_ph) * inv_η) * inv_η
+    δ = sqrt(δ1 * δ2)
     vfac = 1 - dot(v_i1, v_f) / dot(v_i1, v_i1) # Original Eq. (49)
     # vfac = 1 - dot(v_i1, v_f) / norm(v_i1) / norm(v_f) # Modified form to make 0 <= vfac <= 1
     for iT in 1:length(p_mel_ikq)
         # occupation factor
         n = sign_ph == 1 ? n_ph[iT] + 1 - f_kq[iT] : n_ph[iT] + f_kq[iT]
         # P matrix element
-        p_mel_ikq[iT] += gg[iT] * delta * n * vfac
+        p_mel_ikq[iT] += gg[iT] * δ * n * vfac
     end
 end
 
 @inline function _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, sign_ph, inv_η, f_kq1, f_kq2, n_ph)
     # energy conservation factor
-    delta1 = gaussian((e_i1 - e_f1 - sign_ph * ω_ph) * inv_η) * inv_η
-    delta2 = gaussian((e_i2 - e_f2 - sign_ph * ω_ph) * inv_η) * inv_η
-    delta = sqrt(delta1 * delta2)
+    δ1 = gaussian((e_i1 - e_f1 - sign_ph * ω_ph) * inv_η) * inv_η
+    δ2 = gaussian((e_i2 - e_f2 - sign_ph * ω_ph) * inv_η) * inv_η
+    δ = sqrt(δ1 * δ2)
     for iT in 1:length(s_mel_ikq)
         # occupation factor
         favg = (f_kq1[iT] + f_kq2[iT]) / 2
         n = sign_ph == 1 ? n_ph[iT] + favg : n_ph[iT] + 1 - favg
         # scattering matrix element
-        s_mel_ikq[iT] += gg[iT] * delta * n
+        s_mel_ikq[iT] += gg[iT] * δ * n
     end
 end
 
