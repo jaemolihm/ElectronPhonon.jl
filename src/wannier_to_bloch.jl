@@ -357,6 +357,7 @@ Multithreading is not supported because of large buffer array size.
     get_fourier!(ep_kR, epmat, xk)
 
     # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
+    # FIXME: Remove allocation from mul! (Too many ReshapedArray + views cause this problem)
     @views for ir in 1:nr_ep
         for imode in 1:nmodes
             rng = (1:nw*nband) .+ (nw*nband * (imode - 1))

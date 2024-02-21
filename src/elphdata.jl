@@ -110,11 +110,11 @@ or to subtracting the dipole term from `epdata.ep` (`div_factor = -1`).
 function epdata_compute_eph_dipole!(epdata::ElPhData, div_factor=nothing)
     coeff = epdata.ph.eph_dipole_coeff
     if div_factor === nothing
-        @views @inbounds for imode = 1:epdata.nmodes
+        @views for imode = 1:epdata.nmodes
             @. epdata.ep[:, :, imode] += coeff[imode] * epdata.mmat
         end
     else
-        @views @inbounds for imode = 1:epdata.nmodes
+        @views for imode = 1:epdata.nmodes
             @. epdata.ep[:, :, imode] += (coeff[imode] / div_factor[imode]) * epdata.mmat
         end
     end
