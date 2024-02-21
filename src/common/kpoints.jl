@@ -21,6 +21,15 @@ struct Kpoints{T} <: AbstractKpoints{T}
     ngrid::NTuple{3,Int64}
 end
 
+@inline function Base.getproperty(obj::Kpoints, name::Symbol)
+    if name === :shift
+        zero(eltype(getfield(obj, :vectors)))
+    else
+        getfield(obj, name)
+    end
+end
+
+
 Kpoints{T}() where {T} = Kpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), (0, 0, 0))
 
 # Initializing Kpoints with a vector of k points

@@ -59,7 +59,7 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
 end
 
 
-function Base.getproperty(obj::AbstractWannierInterpolator, name::Symbol)
+@inline function Base.getproperty(obj::AbstractWannierInterpolator, name::Symbol)
     if name === :nr || name === :ndata
         getfield(obj.parent, name)
     else

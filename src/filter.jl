@@ -5,6 +5,8 @@
 # TODO: Rename filter_kpoints -> filter_kpoints_by_energy / initialize_and_filter_kpoints
 
 using Base.Threads
+using ChunkSplitters
+using Folds
 using MPI
 using ElectronPhonon: Kpoints
 using Interpolations: AbstractInterpolation
@@ -85,33 +87,33 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MP
 end
 
 function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal")
-    eigenvalues_ = [zeros(real(eltype(el_ham)), nw) for _ in 1:nthreads()]
-    ik_keep_ = [zeros(Bool, kpoints.n) for _ in 1:nthreads()]
+    ik_keep = zeros(Bool, kpoints.n)
     nelec_below_window_ = zeros(eltype(window), kpoints.n)
-    band_min_ = [nw for _ in 1:nthreads()]
-    band_max_ = [1 for _ in 1:nthreads()]
-    ham_threads = [get_interpolator(el_ham; fourier_mode) for _ in 1:nthreads()]
+    band_min_ = zeros(Int, kpoints.n)
+    band_max_ = zeros(Int, kpoints.n)
 
-    @threads :static for ik in 1:kpoints.n
-        ham = ham_threads[threadid()]
-        xk = kpoints.vectors[ik]
-        eigenvalues = eigenvalues_[threadid()]
+    @threads for iks in chunks(kpoints.vectors; n=2*nthreads())
+        ham = get_interpolator(el_ham; fourier_mode)
+        eigenvalues = zeros(real(eltype(el_ham)), nw)
 
-        get_el_eigen_valueonly!(eigenvalues, nw, ham, xk)
-        bands_in_window = inside_window(eigenvalues, window...)
-        nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
-        if ! isempty(bands_in_window)
-            ik_keep_[threadid()][ik] = true
-            band_min_[threadid()] = min(bands_in_window[1], band_min_[threadid()])
-            band_max_[threadid()] = max(bands_in_window[end], band_max_[threadid()])
+        for ik in iks
+            xk = kpoints.vectors[ik]
+            get_el_eigen_valueonly!(eigenvalues, nw, ham, xk)
+            bands_in_window = inside_window(eigenvalues, window...)
+
+            nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
+            if ! isempty(bands_in_window)
+                ik_keep[ik] = true
+                band_min_[ik] = bands_in_window[1]
+                band_max_[ik] = bands_in_window[end]
+            end
         end
     end
 
-    ik_keep = reduce(.|, ik_keep_)
     nelec_below_window = sum(nelec_below_window_)
     band_min = minimum(band_min_)
     band_max = maximum(band_max_)
-    ik_keep, band_min, band_max, nelec_below_window
+    (; ik_keep, band_min, band_max, nelec_below_window)
 end
 
 
@@ -123,21 +125,22 @@ the window.
 """
 function filter_qpoints(qpoints, kpoints, nw, el_ham, window; fourier_mode="gridopt")
     iq_keep = zeros(Bool, qpoints.n)
-    eigenvalues_threads = [zeros(real(eltype(el_ham)), nw) for _ in 1:nthreads()]
-    ham_threads = [get_interpolator(el_ham; fourier_mode) for _ in 1:nthreads()]
 
-    @threads :static for iq in 1:qpoints.n
-        ham = ham_threads[threadid()]
-        eigenvalues = eigenvalues_threads[threadid()]
-        xq = qpoints.vectors[iq]
-        for xk in kpoints.vectors
-            xkq = xq + xk
-            get_el_eigen_valueonly!(eigenvalues, nw, ham, xkq)
+    @threads for iqs in chunks(qpoints.vectors; n=2*nthreads())
+        ham = get_interpolator(el_ham; fourier_mode)
+        eigenvalues = zeros(real(eltype(el_ham)), nw)
 
-            # If k+q is inside window, use this q point
-            if ! isempty(inside_window(eigenvalues, window...))
-                iq_keep[iq] = true
-                break
+        for iq in iqs
+            xq = qpoints.vectors[iq]
+            for xk in kpoints.vectors
+                xkq = xq + xk
+                get_el_eigen_valueonly!(eigenvalues, nw, ham, xkq)
+
+                # If k+q is inside window, use this q point
+                if ! isempty(inside_window(eigenvalues, window...))
+                    iq_keep[iq] = true
+                    break
+                end
             end
         end
     end
@@ -145,23 +148,17 @@ function filter_qpoints(qpoints, kpoints, nw, el_ham, window; fourier_mode="grid
 end
 
 function filter_qpoints(qpoints, kpoints, itp_el::Dict{Int, <: AbstractInterpolation}, window)
-    iq_keep_threads = [zeros(Bool, qpoints.n)]
-    Threads.resize_nthreads!(iq_keep_threads)
-
-    @threads :static for iq in 1:qpoints.n
-        iq_keep = iq_keep_threads[Threads.threadid()]
+    iq_keep = Folds.map(1:qpoints.n) do iq
         xq = qpoints.vectors[iq]
         for xk in kpoints.vectors, iw in keys(itp_el)
             xkq = xq + xk
             ekq = itp_el[iw](xkq...)
             if window[1] <= ekq <= window[2]
                 # If k+q is inside window, use this q point
-                iq_keep[iq] = true
-                break
+                return true
             end
         end
+        return false
     end
-
-    iq_keep = reduce(.|, iq_keep_threads)
     get_filtered_kpoints(qpoints, iq_keep)
 end
