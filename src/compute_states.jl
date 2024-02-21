@@ -1,3 +1,6 @@
+using ChunkSplitters
+using Base.Threads: nthreads, threadid, @threads
+
 export compute_electron_states
 export compute_phonon_states
 
@@ -18,50 +21,49 @@ function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-In
     if quantities == []
         return states
     end
-    
+
     need_velocity = ("position" ∈ quantities
         || "velocity" ∈ quantities || "velocity_diagonal" ∈ quantities)
     need_position = ("position" ∈ quantities
         || ("velocity" ∈ quantities && el_velocity_mode === :BerryConnection))
 
-    # Setup WannierInterpolators
-    ham_threads = [get_interpolator(model.el_ham; fourier_mode) for _ in 1:nthreads()]
-    if need_velocity
-        vel_threads = if el_velocity_mode === :Direct
-            [get_interpolator(model.el_vel; fourier_mode) for _ in 1:nthreads()]
-        else
-            [get_interpolator(model.el_ham_R; fourier_mode) for _ in 1:nthreads()]
-        end
-    end
-    if need_position
-        pos_threads = [get_interpolator(model.el_pos; fourier_mode) for _ in 1:nthreads()]
-    end
 
     # compute quantities
-    Threads.@threads :static for ik in 1:kpts.n
-        ham = ham_threads[threadid()]
-        need_velocity && (vel = vel_threads[threadid()])
-        need_position && (pos = pos_threads[threadid()])
-
-        xk = kpts.vectors[ik]
-        el = states[ik]
-
-        if quantities == ["eigenvalue"]
-            set_eigen_valueonly!(el, ham, xk)
-            set_window!(el, window)
-        else
-            set_eigen!(el, ham, xk)
-            set_window!(el, window)
-            if "position" ∈ quantities || ("velocity" ∈ quantities && el_velocity_mode === :BerryConnection)
-                set_position!(el, pos, xk)
+    @threads for iks in chunks(kpts.vectors; n=2nthreads())
+        # Setup thread-local WannierInterpolators
+        ham = get_interpolator(model.el_ham; fourier_mode)
+        if need_velocity
+            vel = if el_velocity_mode === :Direct
+                get_interpolator(model.el_vel; fourier_mode)
+            else
+                get_interpolator(model.el_ham_R; fourier_mode)
             end
-            if "velocity" ∈ quantities
-                set_velocity!(el, vel, xk, el_velocity_mode)
-                for i in el.rng
-                    el.vdiag[i] = real.(el.v[i, i])
+        end
+        if need_position
+            pos = get_interpolator(model.el_pos; fourier_mode)
+        end
+
+        for ik in iks
+            xk = kpts.vectors[ik]
+            el = states[ik]
+
+            if quantities == ["eigenvalue"]
+                set_eigen_valueonly!(el, ham, xk)
+                set_window!(el, window)
+            else
+                set_eigen!(el, ham, xk)
+                set_window!(el, window)
+                if "position" ∈ quantities || ("velocity" ∈ quantities && el_velocity_mode === :BerryConnection)
+                    set_position!(el, pos, xk)
                 end
-            elseif "velocity_diagonal" ∈ quantities
-                set_velocity_diag!(el, vel, xk, el_velocity_mode)
+                if "velocity" ∈ quantities
+                    set_velocity!(el, vel, xk, el_velocity_mode)
+                    for i in el.rng
+                        el.vdiag[i] = real.(el.v[i, i])
+                    end
+                elseif "velocity_diagonal" ∈ quantities
+                    set_velocity_diag!(el, vel, xk, el_velocity_mode)
+                end
             end
         end
     end # ik
