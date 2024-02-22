@@ -258,7 +258,7 @@ function compute_qme_scattering_matrix(filename, params, el_i::QMEStates{FT}, el
                     if s1.econv_p && s2.econv_p
                         _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, +1, inv_η, focc_i1, focc_i2, nocc_ph)
                     end
-                    if s1.econv_m && s1.econv_m
+                    if s1.econv_m && s2.econv_m
                         _compute_s_in_matrix_element!(s_mel_ikq, gg, e_i1, e_i2, e_f1, e_f2, ω_ph, -1, inv_η, focc_i1, focc_i2, nocc_ph)
                     end
                 end
