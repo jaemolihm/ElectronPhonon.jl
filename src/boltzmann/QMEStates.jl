@@ -161,6 +161,25 @@ exist in `states`.
     end
 end
 
+"""
+    get_1d_index_range(states::QMEStates, ik)
+Return the range of 1d indices of the states at k point `ik` in `states`.
+"""
+@inline function get_1d_index_range(states::QMEStates, ik)
+    (; nband_ignore, nband) = states
+    if 1 <= ik <= states.kpts.n
+        # Minimuma and maximum indices must come from ib1 == ib2.
+        ib_rng = (nband_ignore+1):(nband_ignore+nband)
+        ibmin = ib_rng[findfirst(ib -> get_1d_index(states, ib, ib, ik) != 0, ib_rng)]
+        ibmax = ib_rng[findlast(ib -> get_1d_index(states, ib, ib, ik) != 0, ib_rng)]
+        indmin = get_1d_index(states, ibmin, ibmin, ik)
+        indmax = get_1d_index(states, ibmax, ibmax, ik)
+        return indmin:indmax
+    else
+        return 1:0
+    end
+end
+
 @inline function hasstate(states::QMEStates, ib1, ib2, ik)
     get_1d_index(states, ib1, ib2, ik) != 0
 end
