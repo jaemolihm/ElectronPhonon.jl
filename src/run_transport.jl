@@ -283,9 +283,7 @@ end
 
 # Check if energy-conserving scattering exists for all bands, modes, and sign_ph, and return true if so.
 @timing "econv_all" function check_energy_conservation_all(epdata, ngrid, recip_lattice, econv_mode, econv_tol)
-    el_k = epdata.el_k
-    el_kq = epdata.el_kq
-    ph = epdata.ph
+    (; el_k, el_kq, ph) = epdata
 
     # If econv_mode is :None, do not check energy conservation. Always return true.
     econv_mode == :None && return true

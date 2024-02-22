@@ -1,4 +1,7 @@
+using Base.Threads
 using LinearAlgebra
+
+# TODO: Add threads option to GridOpt or WannierInterpolator (to enable only for epmat)
 
 mutable struct GridOpt{T<:Real}
     # TODO: Remove ndata
