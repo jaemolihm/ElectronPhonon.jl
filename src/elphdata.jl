@@ -102,20 +102,20 @@ function get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq)
 end
 
 """
-    epdata_compute_eph_dipole!(epdata::ElPhData, polar::Polar, div_factor=1)
+    epdata_compute_eph_dipole!(epdata::ElPhData, polar::Polar, factor=1)
 Compute electron-phonon coupling matrix elements using pre-computed `ph.eph_dipole_coeff` and `mmat`.
-Divide by `div_factor` if given. Can be used to screen the dipole term (`div_factor = 1 / ϵ`)
-or to subtracting the dipole term from `epdata.ep` (`div_factor = -1`).
+Divide by `factor` if given. Can be used to screen the dipole term (`factor = ϵ`)
+or to subtracting the dipole term from `epdata.ep` (`factor = -1`).
 """
-function epdata_compute_eph_dipole!(epdata::ElPhData, div_factor=nothing)
+function epdata_compute_eph_dipole!(epdata::ElPhData, factor=nothing)
     coeff = epdata.ph.eph_dipole_coeff
-    if div_factor === nothing
+    if factor === nothing
         @views for imode = 1:epdata.nmodes
             @. epdata.ep[:, :, imode] += coeff[imode] * epdata.mmat
         end
     else
         @views for imode = 1:epdata.nmodes
-            @. epdata.ep[:, :, imode] += (coeff[imode] / div_factor[imode]) * epdata.mmat
+            @. epdata.ep[:, :, imode] += (coeff[imode] / factor[imode]) * epdata.mmat
         end
     end
 end

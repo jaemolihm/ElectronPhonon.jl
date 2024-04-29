@@ -210,11 +210,11 @@ function compute_occupations_electron(el::QMEStates, Tlist, μlist)
 end
 
 """
-    occupation_to_conductivity(δρ, el::QMEStates, params)
+    occupation_to_conductivity(δρ, el::QMEStates, params, quantity=el.v)
 Compute electron conductivity using the density matrix `δρ`.
 """
-function occupation_to_conductivity(δρ, el::QMEStates, params)
-    @assert length(δρ) == el.n
-    σ = mapreduce(i -> el.kpts.weights[el.ik[i]] .* real.(δρ[i] * el.v[i]'), +, 1:el.n)
+function occupation_to_conductivity(δρ, el::QMEStates, params, quantity=el.v)
+    @assert length(δρ) == length(quantity) == el.n
+    σ = mapreduce(i -> el.kpts.weights[el.ik[i]] .* real.(δρ[i] * quantity[i]'), +, 1:el.n)
     return σ * params.spin_degeneracy / params.volume
 end

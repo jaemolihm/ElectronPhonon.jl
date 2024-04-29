@@ -393,3 +393,59 @@ end
 function Base.show(io::IO, sym::SymmetryOperators)
     print(io, "$(typeof(sym)) with $(sym.symmetry.nsym) symmetries")
 end
+
+
+
+"""
+    epmat_impose_hermiticity(model)
+
+Impose Hermiticity of e-ph matrix elements: ``g_ij(Re, Rp) = g*_ji(-Re, Rp-Re)`` by
+averaging the two terms.
+
+In the momentum representation, this implies
+``
+g(k+q, -q)† = e(-i (k+q) Re) e(i q Rp) g(Re, Rp)†
+            = e(-i k Re) e(i q (Rp - Re)) g(Re, Rp)†
+            = e(i k Re) e(i q Rp) g(-Re, Rp-Re)†
+            = e(i k Re) e(i q Rp) g(Re, Rp)
+            = g(k, q)
+``
+
+Hermiticity is broken in the current implementation of EPW due to the use of asymmetric
+Wigner-Seitz selection for e-ph matrix elements. We recover it by averaging epmat with its
+Hermitian conjugate.
+Hermiticity is not related to crystal symmetry; it should hold for Wannier functions
+that break the crystal symmetry.
+"""
+function epmat_impose_hermiticity(model)
+    epmat_impose_hermiticity(model.epmat, model.nw, model.nmodes, model.epmat_outer_momentum)
+end
+
+function epmat_impose_hermiticity(epmat, nw, nmodes, epmat_outer_momentum)
+    @assert epmat_outer_momentum == "el"
+    irvec_Re = epmat.irvec
+    irvec_Rp = epmat.irvec_next
+
+    g = Base.ReshapedArray(epmat.op_r, (nw, nw, nmodes, length(irvec_Rp), length(irvec_Re)), ());
+
+    _dagger(A) = conj.(permutedims(A, (2, 1, 3)))
+
+    # for Re in irvec, Rp in irvec_next
+    Re = Vec3(0, 0, 0)
+    @info sum(g)
+    @views for Re in irvec_Re, Rp in irvec_Rp
+        iRe1 = findfirst(x -> x == Re, irvec_Re)
+        iRp1 = findfirst(x -> x == Rp, irvec_Rp)
+        iRe2 = findfirst(x -> x == -Re, irvec_Re)
+        iRp2 = findfirst(x -> x == Rp-Re, irvec_Rp)
+
+        if iRe2 === nothing || iRp2 === nothing
+            g[:, :, :, iRp1, iRe1] .= 0
+        else
+            A = (g[:, :, :, iRp1, iRe1] .+ _dagger(g[:, :, :, iRp2, iRe2])) ./ 2
+            g[:, :, :, iRp1, iRe1] .= A
+            g[:, :, :, iRp2, iRe2] .= _dagger(A)
+        end
+    end
+    @info sum(g)
+end

@@ -44,6 +44,7 @@ include("transport_electron.jl")
 include("compute_states.jl")
 include("compute_eigenvalues.jl")
 include("run_electron_phonon.jl")
+include("berry_curvature.jl")
 
 include("boltzmann/BTData.jl")
 include("boltzmann/BTStates.jl")
@@ -72,9 +73,10 @@ include("boltzmann/electron_transport_linear.jl")
 include("boltzmann/electron_transport_hall.jl")
 include("boltzmann/electron_transport_finite_efield.jl")
 
+include("postprocess/band_structures.jl")
+include("postprocess/check_model_symmetry.jl")
 include("postprocess/plot_bandstructure.jl")
 include("postprocess/plot_electron_phonon.jl")
 include("postprocess/plot_decay.jl")
-include("postprocess/check_model_symmetry.jl")
 
 end

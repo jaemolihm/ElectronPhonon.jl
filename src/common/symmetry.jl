@@ -479,7 +479,7 @@ For array of StaticArrays, use `symmetrize.(arr, Ref(symmetry))`.
 """
 symmetrize(arr, symmetry::Symmetry; tr_odd, axial) = error("Symmetrization Not implemented for this data type")
 
-symmetrize(arr, symmetry::Nothing) = arr
+symmetrize(arr, symmetry::Nothing; tr_odd, axial) = arr
 
 function symmetrize(scalar::Number, symmetry::Symmetry; tr_odd=false, axial=false)
     scalar_symm = scalar

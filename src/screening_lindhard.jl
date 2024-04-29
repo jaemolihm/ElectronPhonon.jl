@@ -6,6 +6,7 @@ Reference: L. Hedin, Phys. Rev. 139, A796 (1965)
 # TODO: Test plasma frequency
 
 export LindhardScreeningParams
+export AnisotropicLindhardScreeningParams
 
 using Parameters
 using StaticArrays
@@ -98,4 +99,20 @@ function epsilon_lindhard_multivalley(xq, ω, m_list, T, μ, ϵM, degeneracy, sm
     ϵM_q = xq' * ϵM * xq
     ϵ = 1 - degeneracy * χ0 * 4π * ElectronPhonon.e2 / ϵM_q
     ϵ
+end
+
+Base.@kwdef struct AnisotropicLindhardScreeningParams{T <: Real}
+    m_list::Vector{Mat3{T}}  # List of unitless effective mass tensors.
+    degeneracy::Int64 # degeneracy of bands. spin and/or valley degeneracy.
+    ϵM::Mat3{T} # Macroscopic dielectric constant. Unitless.
+    smearing::T # Smearing of frequency in Rydberg.
+    e0::T # Reference energy in Rydberg.
+end
+
+function epsilon_lindhard(xq, ω, T, μ, params::AnisotropicLindhardScreeningParams)
+    (; degeneracy, m_list, ϵM, smearing, e0) = params
+    if norm(xq) < 1E-10
+        return Complex{eltype(ω)}(1)
+    end
+    epsilon_lindhard_multivalley(xq, ω, m_list, T, μ - e0, ϵM, degeneracy, smearing)
 end

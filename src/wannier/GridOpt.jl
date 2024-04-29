@@ -78,14 +78,40 @@ end
         phase[ir] = cispi(2 * k * r[1])
     end
     rng_data = 1:ndata
-    @views for (ir_23, ir_rng) in enumerate(gridopt.irmap_rng_23)
-        if WT <: DiskWannierObject
-            gridopt.op_r_23[rng_data, ir_23] .= 0
-            for ir in ir_rng
-                gridopt.op_r_23[rng_data, ir_23] .+= phase[ir] .* read_op_r(parent, ir)[rng_data]
+    # @views for (ir_23, ir_rng) in enumerate(gridopt.irmap_rng_23)
+    #     ir_rng = gridopt.irmap_rng_23[ir_23]
+    #     if WT <: DiskWannierObject
+    #         gridopt.op_r_23[rng_data, ir_23] .= 0
+    #         for ir in ir_rng
+    #             gridopt.op_r_23[rng_data, ir_23] .+= phase[ir] .* read_op_r(parent, ir)[rng_data]
+    #         end
+    #     else
+    #         mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
+    #     end
+    # end
+    if ndata > 100_000
+        @views @threads for ir_23 in eachindex(gridopt.irmap_rng_23)
+            ir_rng = gridopt.irmap_rng_23[ir_23]
+            if WT <: DiskWannierObject
+                gridopt.op_r_23[rng_data, ir_23] .= 0
+                for ir in ir_rng
+                    gridopt.op_r_23[rng_data, ir_23] .+= phase[ir] .* read_op_r(parent, ir)[rng_data]
+                end
+            else
+                mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
             end
-        else
-            mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
+        end
+    else
+        @views for (ir_23, ir_rng) in enumerate(gridopt.irmap_rng_23)
+            ir_rng = gridopt.irmap_rng_23[ir_23]
+            if WT <: DiskWannierObject
+                gridopt.op_r_23[rng_data, ir_23] .= 0
+                for ir in ir_rng
+                    gridopt.op_r_23[rng_data, ir_23] .+= phase[ir] .* read_op_r(parent, ir)[rng_data]
+                end
+            else
+                mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
+            end
         end
     end
 end
@@ -99,8 +125,18 @@ end
         phase[ir] = cispi(2 * k * r[1])
     end
     rng_data = 1:ndata
-    @views for (ir_3, ir_rng) in enumerate(gridopt.irmap_rng_3)
-        mul!(gridopt.op_r_3[rng_data, ir_3], gridopt.op_r_23[rng_data, ir_rng], phase[ir_rng])
+    # @views for (ir_3, ir_rng) in enumerate(gridopt.irmap_rng_3)
+    #     mul!(gridopt.op_r_3[rng_data, ir_3], gridopt.op_r_23[rng_data, ir_rng], phase[ir_rng])
+    # end
+    if ndata > 100_000
+        @views @threads for ir_3 in eachindex(gridopt.irmap_rng_3)
+            ir_rng = gridopt.irmap_rng_3[ir_3]
+            mul!(gridopt.op_r_3[rng_data, ir_3], gridopt.op_r_23[rng_data, ir_rng], phase[ir_rng])
+        end
+    else
+        @views for (ir_3, ir_rng) in enumerate(gridopt.irmap_rng_3)
+            mul!(gridopt.op_r_3[rng_data, ir_3], gridopt.op_r_23[rng_data, ir_rng], phase[ir_rng])
+        end
     end
 end
 

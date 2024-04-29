@@ -1,6 +1,7 @@
 using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV
 
 export get_interpolator
+export get_interpolator_channel
 export get_fourier!
 
 abstract type AbstractWannierInterpolator{T} end
@@ -68,6 +69,11 @@ end
 end
 
 
+"""
+    get_interpolator(obj::AbstractWannierObject; fourier_mode="normal")
+Return a interpolator for the given object.
+For a multithreaded use, one must use `get_interpolator_channel` instead.
+"""
 function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal")
     if fourier_mode === "normal"
         NormalWannierInterpolator(obj)
@@ -76,6 +82,19 @@ function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal")
     else
         throw(ArgumentError("Wrong fourier_mode $fourier_mode"))
     end
+end
+
+
+"""
+    get_interpolator_channel(obj::AbstractWannierObject{T}, fourier_mode; nbuffers = nthreads())
+Return a `Channel` of interpolators for multithreading.
+"""
+function get_interpolator_channel(obj::AbstractWannierObject{T}, fourier_mode; nbuffers = nthreads()) where {T}
+    itp_channel = Channel{AbstractWannierInterpolator{T}}(nbuffers)
+    Folds.foreach(1:nbuffers) do _
+        put!(itp_channel, get_interpolator(obj; fourier_mode))
+    end
+    itp_channel
 end
 
 

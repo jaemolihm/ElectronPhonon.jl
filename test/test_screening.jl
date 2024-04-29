@@ -3,9 +3,9 @@ using Test
 # TODO: Add test for finite temperature
 # TODO: Add test for multivalley
 
-@testset "epsilon_lindhard" begin
+@testset "screening Lindhard" begin
     using LinearAlgebra
-    using ElectronPhonon: LindhardScreeningParams, epsilon_lindhard
+    using ElectronPhonon: epsilon_lindhard
     using ElectronPhonon: epsilon_lindhard_finite_temperature, _epsilon_lindhard
 
     screening_params = LindhardScreeningParams(
@@ -39,10 +39,16 @@ using Test
     degeneracy = 2
     n = (μ * m)^(3/2) / (6π^2 / degeneracy)  # 3DEG
     smearing = 0.05
-    xq = SVector(0.1, 0.2, 0.3)
+    xq = Vec3(0.1, 0.2, 0.3)
     ϵM = Mat3(Diagonal([3., 4., 5.]))
     ωs = range(0, 1, length=201)
-    ys = epsilon_lindhard_finite_temperature.(Ref(xq), ωs, m, T, μ, Ref(ϵM), degeneracy, smearing)
+    params_aniso_1 = AnisotropicLindhardScreeningParams(;
+        ϵM, smearing, m_list = [m * Mat3(I(3))], degeneracy,
+    )
+    params_aniso_2 = AnisotropicLindhardScreeningParams(;
+        ϵM, smearing, m_list = fill(m * Mat3(I(3)), degeneracy), degeneracy = 1,
+    )
     ys_0K = _epsilon_lindhard.(Ref(xq), ωs, n, m, Ref(ϵM), degeneracy, smearing)
-    @test ys ≈ ys_0K rtol=1e-5
+    @test epsilon_lindhard.(Ref(xq), ωs, T, μ, Ref(params_aniso_1)) ≈ ys_0K rtol=1e-5
+    @test epsilon_lindhard.(Ref(xq), ωs, T, μ, Ref(params_aniso_2)) ≈ ys_0K rtol=1e-5
 end
