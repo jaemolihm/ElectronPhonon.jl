@@ -10,7 +10,9 @@ function plot_decay(obj::AbstractWannierObject, lattice, ax=PyPlot.gca(); logsca
     ax.set_ylabel("norm of op(R)")
     if logscale
         # drop very small values
-        ax.set_ylim([minimum(norms[norms .> 1e-10]) / 2, maximum(norms) * 2])
+        if any(norms .> 1e-10)
+            ax.set_ylim([minimum(norms[norms .> 1e-10]) / 2, maximum(norms) * 2])
+        end
         ax.set_yscale("log")
     end
     fig = PyPlot.gcf()

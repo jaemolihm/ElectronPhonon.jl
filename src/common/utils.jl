@@ -47,11 +47,13 @@ Occupation of a boson at energy `e` and temperature `T`.
 """
 @inline function occ_boson(e, T, occ_type=:BoseEinstein)
     if occ_type == :BoseEinstein
-        if T > sqrt(eps(eltype(T)))
+        if 0 <= T <= sqrt(eps(eltype(T)))
+            return zero(e)
+        elseif T > sqrt(eps(eltype(T)))
             x = e / T
             return e == 0 ? zero(e) : 1 / expm1(x)
         else
-            throw(ArgumentError("Temperature for occ_boson cannot be zero or negative"))
+            throw(ArgumentError("Temperature for occ_boson cannot be negative"))
         end
     else
         throw(ArgumentError("unknown occ_type $occ_type"))
