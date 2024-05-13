@@ -79,4 +79,13 @@ include("postprocess/plot_bandstructure.jl")
 include("postprocess/plot_electron_phonon.jl")
 include("postprocess/plot_decay.jl")
 
+
+
+include("model_new.jl")
+include("calculator/AbstractCalculator.jl")
+include("calculator/occupation.jl")
+include("calculator/run_electron_phonon.jl")
+
+export ElectronOccupationParams
+
 end
