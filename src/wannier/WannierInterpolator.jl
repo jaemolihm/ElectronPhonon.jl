@@ -89,7 +89,7 @@ end
     get_interpolator_channel(obj::AbstractWannierObject{T}, fourier_mode; nbuffers = nthreads())
 Return a `Channel` of interpolators for multithreading.
 """
-function get_interpolator_channel(obj::AbstractWannierObject{T}, fourier_mode; nbuffers = nthreads()) where {T}
+function get_interpolator_channel(obj::AbstractWannierObject{T}; fourier_mode, nbuffers = nthreads()) where {T}
     itp_channel = Channel{AbstractWannierInterpolator{T}}(nbuffers)
     Folds.foreach(1:nbuffers) do _
         put!(itp_channel, get_interpolator(obj; fourier_mode))

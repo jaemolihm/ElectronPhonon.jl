@@ -35,13 +35,24 @@ Base.@kwdef mutable struct WannierObject{T} <: AbstractWannierObject{T}
     _id::Int
 end
 
-function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing)
+function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing, sort=false)
     nr = length(irvec)
-    if ! check_wannierobject(irvec, op_r)
+
+    # Sort R vectors
+    if sort
+        inds = sortperm(irvec, by=x->reverse(x))
+        irvec_ = irvec[inds]
+        op_r_ = op_r[:, inds]
+    else
+        irvec_ = irvec
+        op_r_ = op_r
+    end
+
+    if ! check_wannierobject(irvec_, op_r_)
         error("WannierObject constructor check failed")
     end
-    T = eltype(op_r).parameters[1]
-    WannierObject{T}(nr=nr, irvec=irvec, op_r=op_r, ndata=size(op_r, 1),
+    T = eltype(op_r_).parameters[1]
+    WannierObject{T}(nr=nr, irvec=irvec_, op_r=op_r_, ndata=size(op_r_, 1),
         irvec_next=irvec_next, _id=0,
     )
 end
