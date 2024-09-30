@@ -13,6 +13,12 @@ abstract type AbstractKpoints{T <: Real} end
 
 # TODO: Add `shift` field for shifted regular grid.
 
+"""
+    Kpoints{T}
+
+Generic type for k points.
+Use `kpoints_grid` to generate a regular grid of k points.
+"""
 struct Kpoints{T} <: AbstractKpoints{T}
     n::Int                   # Number of k points
     vectors::Vector{Vec3{T}} # Fractional coordinate of k points
@@ -350,8 +356,10 @@ get_filtered_kpoints(k::GridKpoints, ik_keep) = GridKpoints(get_filtered_kpoints
 kpoints_create_subgrid(k::GridKpoints, nsubgrid) = GridKpoints(kpoints_create_subgrid(Kpoints(k), nsubgrid))
 
 """
-    unfold_kpoints(kpts::GridKpoints, symmetry)
+    unfold_kpoints(kpts::GridKpoints, symmetry) => kpts_unfold, ik_to_ikirr_isym
+
 Unfold k points using symmetry to the full Brillouin zone.
+Output `ik_to_ikirr_isym` gives a map ik => (ikirr, isym) such that ``xk[ik] = S[isym](xkirr[ikirr])``.
 """
 function unfold_kpoints(kpts::GridKpoints, symmetry)
     # If symmetry is trivial, do nothing and return a copy of input kpts
@@ -375,7 +383,9 @@ function unfold_kpoints(kpts::GridKpoints, symmetry)
     sk_hash_dict = Dict{Int, Int}()
     sk_vectors = empty(kpts.vectors)
     sk_weights = empty(kpts.weights)
-    for symop in symmetry
+    ik_to_ikirr_isym = Tuple{Int, Int}[]
+
+    for (isym, symop) in enumerate(symmetry)
         for ik in 1:kpts.n
             xk = kpts.vectors[ik]
             sk = symop.is_tr ? -symop.S * xk : symop.S * xk
@@ -387,6 +397,7 @@ function unfold_kpoints(kpts::GridKpoints, symmetry)
                 # new sk point
                 push!(sk_vectors, sk)
                 push!(sk_weights, kpts.weights[ik])
+                push!(ik_to_ikirr_isym, (ik, isym))
                 sk_hash_dict[sk_hash] = length(sk_vectors)
             else
                 # sk point already found
@@ -398,8 +409,10 @@ function unfold_kpoints(kpts::GridKpoints, symmetry)
     sk_weights ./= length(symmetry)
 
     kpts_unfold = GridKpoints(length(sk_vectors), sk_vectors, sk_weights, ngrid, shift, sk_hash_dict)
+    ik_to_ikirr_isym = ik_to_ikirr_isym[sortperm(kpts_unfold)]
     sort!(kpts_unfold)
-    return kpts_unfold
+
+    return kpts_unfold, ik_to_ikirr_isym
 end
 
 """

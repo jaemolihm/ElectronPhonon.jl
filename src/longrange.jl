@@ -43,6 +43,8 @@ function get_Glist(nxs, η, recip_lattice, alat, ϵ, cutoff)
     FT = typeof(η)
     ϵ_crystal = recip_lattice' * ϵ * recip_lattice
 
+    metric = (2 * FT(π) / alat)^2  # Conversion factor for G^2, unit bohr⁻²
+
     f(qG) = qG' * ϵ_crystal * qG
     function g!(G, qG)
         G .= 2 .* (ϵ_crystal * qG)
@@ -64,7 +66,7 @@ function get_Glist(nxs, η, recip_lattice, alat, ϵ, cutoff)
         results = optimize(f, g!, lower, upper, initial_x, Fminbox(inner_optimizer))
 
         minval = Optim.minimum(results)
-        GϵG = minval / (2π / alat)^2 / (4 * η)
+        GϵG = minval / (4 * metric * η)
 
         if GϵG < cutoff
             push!(Glist, G_crystal)
@@ -124,13 +126,13 @@ end
         end
 
         fac2 = fac * exp(-GϵG / (4 * metric * polar.η)) / GϵG  # The exponent is unitless
-        for iatom = 1:natom
+        for iatom in 1:natom
             GZi = G' * polar.Z[iatom]
             GQi = (Ref(G') .* polar.Q[iatom] .* Ref(G))'
 
             GZ_phase = zero(Vec3{complex(T)})'
             GQ_phase = zero(Vec3{complex(T)})'
-            for jatom = 1:natom
+            for jatom in 1:natom
                 GZj = G' * polar.Z[jatom]
                 GQj = (Ref(G') .* polar.Q[jatom] .* Ref(G))'
                 phasefac = cis(polar.alat * G' * (atom_pos[iatom] - atom_pos[jatom]))
@@ -141,13 +143,11 @@ end
             dyn_tmp = fac2 * (GZi' * GZ_phase)  # dipole-dipole
             dyn_tmp += fac2 * (GQi' * GZ_phase - GZi' * GQ_phase) / 2 * im  # dipole-quadrupole
             dyn_tmp += fac2 * (GQi' * GQ_phase) / 4  # quadrupole-quadrupole
-            for j in 1:3
-                for i in 1:3
-                    # Minus sign because we are subtracting the q=0 contribution as the
-                    # correction to satisfy the acoustic sum rule
-                    # Ref: Gonze and Lee (1997), see also Lin, Ponce, Marzari (2022)
-                    dynmat[3*(iatom-1)+i, 3*(iatom-1)+j] -= dyn_tmp[i, j]
-                end
+            for j in 1:3, i in 1:3
+                # Minus sign because we are subtracting the q=0 contribution as the
+                # correction to satisfy the acoustic sum rule
+                # Ref: Gonze and Lee (1997), see also Lin, Ponce, Marzari (2022)
+                dynmat[3*(iatom-1)+i, 3*(iatom-1)+j] -= dyn_tmp[i, j]
             end
         end
     end
@@ -164,10 +164,10 @@ end
         end
 
         fac2 = fac * exp(-GϵG / (4 * metric * polar.η)) / GϵG  # The exponent is unitless
-        for jatom = 1:natom
+        for jatom in 1:natom
             GZj = G' * polar.Z[jatom]
             GQj = (Ref(G') .* polar.Q[jatom] .* Ref(G))'
-            for iatom = 1:natom
+            for iatom in 1:natom
                 GZi = G' * polar.Z[iatom]
                 GQi = (Ref(G') .* polar.Q[iatom] .* Ref(G))'
                 phasefac = cis(polar.alat * G' * (atom_pos[iatom] - atom_pos[jatom]))
@@ -175,10 +175,8 @@ end
                 dyn_tmp = (fac2 * phasefac) * (GZi' * GZj)  # dipole-dipole
                 dyn_tmp += (fac2 * phasefac) * (GQi' * GZj - GZi' * GQj) / 2 * im  # dipole-quadrupole
                 dyn_tmp += (fac2 * phasefac) * (GQi' * GQj) / 4  # quadrupole-quadrupole
-                for j in 1:3
-                    for i in 1:3
-                        dynmat[3*(iatom-1)+i, 3*(jatom-1)+j] += dyn_tmp[i, j]
-                    end
+                for j in 1:3, i in 1:3
+                    dynmat[3*(iatom-1)+i, 3*(jatom-1)+j] += dyn_tmp[i, j]
                 end
             end
         end
@@ -186,9 +184,13 @@ end
     dynmat
 end
 
-# Compute coefficients for dipole e-ph coupling. The coefficients depend only on the phonon properties.
+"""
+    get_eph_dipole_coeffs!(coeff, xq, polar::Polar{T}, u_ph) where {T}
+Compute coefficients for dipole e-ph coupling. The coefficients depend only on the phonon properties.
+- `xq` : q point in crystal coordinates
+"""
 function get_eph_dipole_coeffs!(coeff, xq, polar::Polar{T}, u_ph) where {T}
-    if ! polar.use || all(abs.(xq) .<= 1.0e-8)
+    if ! polar.use
         coeff .= 0
         return coeff
     end
@@ -214,8 +216,12 @@ function get_eph_dipole_coeffs!(coeff, xq, polar::Polar{T}, u_ph) where {T}
             continue
         end
 
-        # sqrt(metric) is included to keep compatibility with EPW v5.6
-        fac2 = fac * exp(-GϵG * sqrt(metric) / (4 * metric * polar.η)) / GϵG  # The exponent is unitless
+        # After EPW v5.7: sqrt(metric) factor is removed
+        fac2 = fac * exp(-GϵG / (4 * metric * polar.η)) / GϵG
+
+        # Until EPW v5.6: sqrt(metric) is included to keep compatibility
+        # fac2 = fac * exp(-GϵG * sqrt(metric) / (4 * metric * polar.η)) / GϵG  # The exponent is unitless
+
         for iatom in 1:natom
             phasefac = cis(-polar.alat * dot(G, atom_pos[iatom]))
             GZi = G' * polar.Z[iatom]

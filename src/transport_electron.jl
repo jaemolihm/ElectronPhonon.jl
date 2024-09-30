@@ -170,7 +170,7 @@ Utility to calculate and print mobility in SI units.
 TODO: Allow printing if σ is not 3*3.
 FIXME: Is abs(charge_density_SI) correct?
 """
-function transport_print_mobility(σ, params::ElectronTransportParams; do_print=true)
+function transport_print_mobility(σ, params; do_print=true)
     carrier_density_SI = params.nlist ./ params.volume .* unit_to_aru(:cm)^3
     charge_density_SI = carrier_density_SI .* units.e_SI
 

@@ -26,6 +26,7 @@ module units
     const J = eV / e_SI # 1 Joule = 1 eV / e
     const V = J / C # 1 Volt = 1 J / C
     const A = C / s # 1 Ampere = 1 C / s
+    const THz = 2π * 1e12 / s  # THz -> Rydberg
 end
 
 """

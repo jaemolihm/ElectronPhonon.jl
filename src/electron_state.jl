@@ -124,12 +124,16 @@ function set_window!(el::ElectronState, window=(-Inf, Inf))
     return el
 end
 
-function set_occupation!(el::ElectronState, μ, T)
+function set_occupation!(el::ElectronState, μ, T; occ_type = :FermiDirac)
     for i in el.rng
-        el.occupation[i] = occ_fermion(el.e[i] - μ, T)
+        el.occupation[i] = occ_fermion(el.e[i] - μ, T; occ_type)
     end
+    el.occupation
 end
-get_occupation(el::ElectronState, μ, T) = occ_fermion.(el.e .- μ, T)
+
+function get_occupation(el::ElectronState, μ, T; occ_type = :FermiDirac)
+    occ_fermion.(el.e .- μ, T; occ_type)
+end
 
 
 # Define wrappers of wannier_to_bloch functions
