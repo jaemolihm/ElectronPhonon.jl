@@ -1,4 +1,5 @@
 # TODO: separate to smearing.jl and kpoints.jl
+using SpecialFunctions: erf
 
 # module Utils
 export occ_fermion
@@ -13,14 +14,28 @@ export bisect
 Occupation of a fermion at energy `e` and temperature `T`.
 """
 @inline function occ_fermion(e, T; occ_type=:FermiDirac)
-    if occ_type == :FermiDirac
-        if T > 1.0E-8
-            return 1 / (exp(e/T) + 1)
+    if T > sqrt(eps(eltype(T)))
+        x = e / T
+
+        if occ_type == :FermiDirac
+            return 1 / (exp(x) + 1)
+
+        elseif occ_type == :ColdSmearing || occ_type == :MarzariVanderbilt || occ_type == :MV
+            # Cold smearing (Marzari, Vanderbilt, DeVita, Payne, PRL 82, 3296 (1999))
+            xp = x + 1 / sqrt(2)
+            return (sqrt(2/π) * exp(-xp^2) + 1 - erf(xp)) / 2
+
+            # TODO: Implement Methfessel-Paxton
+
         else
-            return (sign(e) + 1) / 2
+            throw(ArgumentError("unknown occ_type $occ_type"))
         end
+
+    elseif T >= 0
+        return (1 - sign(e)) / 2
+
     else
-        throw(ArgumentError("unknown occ_type $occ_type"))
+        throw(ArgumentError("Temperature must be positive"))
     end
 end
 
@@ -47,13 +62,12 @@ Occupation of a boson at energy `e` and temperature `T`.
 """
 @inline function occ_boson(e, T, occ_type=:BoseEinstein)
     if occ_type == :BoseEinstein
-        if 0 <= T <= sqrt(eps(eltype(T)))
+        if T > sqrt(eps(eltype(T)))
+            return e == 0 ? zero(e) : 1 / expm1(e / T)
+        elseif T >= 0
             return zero(e)
-        elseif T > sqrt(eps(eltype(T)))
-            x = e / T
-            return e == 0 ? zero(e) : 1 / expm1(x)
         else
-            throw(ArgumentError("Temperature for occ_boson cannot be negative"))
+            throw(ArgumentError("Temperature must be positive"))
         end
     else
         throw(ArgumentError("unknown occ_type $occ_type"))
