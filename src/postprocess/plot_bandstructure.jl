@@ -30,7 +30,7 @@ function plot_bandstructure(model; kline_density=40, close_fig=true, εF=nothing
 
     display(fig)
     close_fig && close(fig)
-    (;fig, kpts, e_el, e_ph, plot_xdata)
+    (; fig, plotaxes, kpts, e_el, e_ph, plot_xdata)
 end
 
 function plot_band_data(axis, data, plot_xdata; ylabel=nothing, title=nothing, fmt=nothing)

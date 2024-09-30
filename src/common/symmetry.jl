@@ -41,7 +41,8 @@ function spglib_atoms(atoms, magnetic_moments=[])
     n_attypes = isempty(atoms) ? 0 : sum(length(positions) for (typ, positions) in atoms)
     spg_numbers = Vector{Cint}(undef, n_attypes)
     spg_spins = Vector{Cdouble}(undef, n_attypes)
-    spg_positions = Matrix{Cdouble}(undef, 3, n_attypes)
+    # spg_positions = Matrix{Cdouble}(undef, 3, n_attypes)
+    spg_positions = Vec3{Float64}[]
 
     arbitrary_spin = false
     offset = 0
@@ -54,7 +55,8 @@ function spglib_atoms(atoms, magnetic_moments=[])
         for (ipos, pos) in enumerate(positions)
             # assign the same number to all elements with this position
             spg_numbers[offset + ipos] = nextnumber
-            spg_positions[:, offset + ipos] .= pos
+            # spg_positions[:, offset + ipos] .= pos
+            push!(spg_positions, pos)
 
             if !isempty(magnetic_moments)
                 magmom = magnetic_moments[iatom][2][ipos]
@@ -479,7 +481,7 @@ For array of StaticArrays, use `symmetrize.(arr, Ref(symmetry))`.
 """
 symmetrize(arr, symmetry::Symmetry; tr_odd, axial) = error("Symmetrization Not implemented for this data type")
 
-symmetrize(arr, symmetry::Nothing; tr_odd, axial) = arr
+symmetrize(arr, symmetry::Nothing; tr_odd = false, axial = false) = arr
 
 function symmetrize(scalar::Number, symmetry::Symmetry; tr_odd=false, axial=false)
     scalar_symm = scalar
