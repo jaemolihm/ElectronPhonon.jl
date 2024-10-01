@@ -75,6 +75,7 @@ include("boltzmann/electron_transport_finite_efield.jl")
 
 include("postprocess/band_structures.jl")
 include("postprocess/check_model_symmetry.jl")
+include("postprocess/dos.jl")
 include("postprocess/plot_bandstructure.jl")
 include("postprocess/plot_electron_phonon.jl")
 include("postprocess/plot_decay.jl")
