@@ -46,6 +46,7 @@ include("compute_states.jl")
 include("compute_eigenvalues.jl")
 include("run_electron_phonon.jl")
 include("berry_curvature.jl")
+include("wfpt.jl")
 
 include("boltzmann/BTData.jl")
 include("boltzmann/BTStates.jl")

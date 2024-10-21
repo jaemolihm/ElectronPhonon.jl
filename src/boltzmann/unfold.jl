@@ -86,7 +86,7 @@ Output:
 - `isk_to_ik_isym`: Vector containing (ik, isym) that unfolds to k point isk.
 """
 function unfold_QMEStates(el::QMEStates, symmetry)
-    kpts_unfold = unfold_kpoints(el.kpts, symmetry)
+    kpts_unfold = unfold_kpoints(el.kpts, symmetry)[1]
     isk_to_ik_isym = fill((-1, -1), kpts_unfold.n)
     ik_unfold = empty(el.ik)
     ib1_unfold = empty(el.ib1)
