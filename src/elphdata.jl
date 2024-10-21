@@ -45,9 +45,12 @@ function ElPhData{T}(nw, nmodes, nband_bound=nw) where {T}
     @assert nband_bound > 0
 
     ElPhData{T}(nw=nw, nmodes=nmodes, nband_bound=nband_bound, wtk=T(0), wtq=T(0),
-        el_k=ElectronState{T}(nw),
-        el_kq=ElectronState{T}(nw),
-        ph=PhononState(nmodes, T),
+        el_k = ElectronState{T}(nw),
+        el_kq = ElectronState{T}(nw),
+        ph = PhononState(nmodes, T),
+        ep = zeros(Complex{T}, nband_bound * nband_bound * nmodes, 1, 1),
+        g2 = zeros(Complex{T}, nband_bound * nband_bound * nmodes, 1, 1),
+        buffer2 = zeros(Complex{T}, nband_bound * nband_bound * nmodes, 1, 1),
     )
 end
 
@@ -58,7 +61,10 @@ ElPhData(nw, nmodes, nband_bound=nw) = ElPhData{Float64}(nw, nmodes, nband_bound
         OffsetArray(view(getfield(epdata, name), 1:getfield(epdata, :el_kq).nband, 1:getfield(epdata, :el_k).nband),
             getfield(epdata, :el_kq).rng, getfield(epdata, :el_k).rng)
     elseif name === :ep || name === :g2 || name === :buffer2
-        OffsetArray(view(getfield(epdata, name), 1:getfield(epdata, :el_kq).nband, 1:getfield(epdata, :el_k).nband, :),
+        n1 = getfield(epdata, :el_kq).nband
+        n2 = getfield(epdata, :el_k).nband
+        n3 = getfield(epdata, :nmodes)
+        OffsetArray(reshape(view(getfield(epdata, name), 1:n1*n2*n3, 1, 1), n1, n2, n3),
             getfield(epdata, :el_kq).rng, getfield(epdata, :el_k).rng, :)
     else
         getfield(epdata, name)
