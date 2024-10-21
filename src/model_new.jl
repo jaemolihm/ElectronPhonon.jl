@@ -3,48 +3,6 @@ function pair_to_complex(pair)
     return Complex(nums...)
 end
 
-struct Structure
-    # Lattice information
-    alat          :: Float64        # Lattice parameter
-    lattice       :: Mat3{Float64}  # lattice[:, i] is the i-th lattice vector in Bohr.
-    recip_lattice :: Mat3{Float64}  # recip_lattice[:, i] is the i-th reciprocal lattice vector in 1/Bohr.
-    volume        :: Float64        # Cell volume in Bohr^3. (=det(lattice))
-
-    # Atom information
-    mass        :: Vector{Float64}        # Atom mass in Rydberg units. (1 amu = 911.444)
-    atom_pos    :: Vector{Vec3{Float64}}  # Atom position in alat units, Cartesian coordinates
-    atom_labels :: Vector{String}
-
-    # Symmetries
-    symmetry :: Symmetry{Float64}
-
-    function Structure(alat, lattice, mass, atom_pos, atom_labels; compute_symmetry = true)
-        if length(mass) != length(atom_pos)
-            error("Length of mass and atom_pos must be the same.")
-        end
-        if length(mass) != length(atom_labels)
-            error("Length of mass and atom_labels must be the same.")
-        end
-
-        recip_lattice = inv(lattice') * 2π
-        volume = abs(det(lattice))
-
-        if compute_symmetry
-            # Compute symmetry operations using Spglib
-            atom_pos_crystal = Ref(lattice) .\ (atom_pos * alat)
-            atoms_spglib = [label => [x for (l, x) in zip(atom_labels, atom_pos_crystal) if l == label] for label in atom_labels]
-            symmetry = symmetry_operations(lattice, atoms_spglib)
-
-        else
-            # Trivial symmetry only.
-            symmetry = identity_symmetry()
-        end
-
-        new(alat, lattice, recip_lattice, volume, repeat(mass, inner=3), atom_pos, atom_labels, symmetry)
-    end
-end
-
-
 function _parse_wigner(f, nr, dims1, dims2)
     irvec = zeros(Int, 3, nr)
     wslen = zeros(Float64, nr)
@@ -78,25 +36,83 @@ function epw_parse_structure(folder::String)
     nat = parse(Int, readline(f))
     nmodes = parse(Int, readline(f))
     nelec, = parse.(Float64, split(readline(f)))
-    at = Mat3(parse.(Float64, split(readline(f))))
-    bg = Mat3(parse.(Float64, split(readline(f))))
+    data = split(readline(f))
+    if length(data) == 9
+        # GNU compiler: 3*3 matrix as 9 numbers in 1 line
+        at = Mat3(parse.(Float64, data))
+        bg = Mat3(parse.(Float64, split(readline(f))))
+        compiler_type = :GNU
+    else
+        # Intel compiler: 3*3 matrix as 3 numbers in 3 lines
+        append!(data, split(readline(f)))
+        append!(data, split(readline(f)))
+        at = Mat3(parse.(Float64, data))
+        data = split(readline(f))
+        append!(data, split(readline(f)))
+        append!(data, split(readline(f)))
+        bg = Mat3(parse.(Float64, data))
+        compiler_type = :INTEL
+    end
+
     omega = parse(Float64, readline(f))
     alat = parse(Float64, readline(f))
-    tau = parse.(Float64, split(readline(f)))
-    amass = parse.(Float64, split(readline(f)))
-    ityp = parse.(Int, split(readline(f)))
+    if compiler_type === :GNU
+        tau = parse.(Float64, split(readline(f)))
+    elseif compiler_type === :INTEL
+        tau = vcat([parse.(Float64, split(readline(f))) for _ in 1:nat]...)
+    end
+
+    if compiler_type === :GNU
+        # GNU compiler: 10 numbers in 1 line
+        amass = parse.(Float64, split(readline(f)))
+    elseif compiler_type === :INTEL
+        # Intel compiler: 10 numbers in 4 lines as 3+3+3+1
+        data = split(readline(f))
+        append!(data, split(readline(f)))
+        append!(data, split(readline(f)))
+        append!(data, split(readline(f)))
+        amass = parse.(Float64, data)
+    end
+
+    if compiler_type === :GNU
+        ityp = parse.(Int, split(readline(f)))
+    elseif compiler_type === :INTEL
+        # Intel compiler: 10 numbers in 4 lines as 3+3+3+1
+        data = split(readline(f))
+        for _ in 1:div(nat - 1, 6)
+            append!(data, split(readline(f)))
+        end
+        ityp = parse.(Int, data)
+    end
+
+    noncolin = occursin("T", readline(f))
+    do_cutoff_2D_epw = occursin("T", readline(f))
+
+    w_centers = if compiler_type === :GNU
+        parse.(Float64, split(readline(f)))
+    elseif compiler_type === :INTEL
+        error("Not implemented")
+        # vcat([parse.(Float64, split(readline(f))) for _ in 1:nat]...)
+    end
+    wann_centers = reinterpret(Vec3{Float64}, reshape(w_centers, 3, :))[:] * alat
+
+    L = parse(Float64, readline(f))
+
     close(f)
 
-    # Convert to jl convention
+    # Convert to EP.jl convention
     lattice = at .* alat
     recip_lattice = bg .* (2π / alat)
     @assert lattice' * recip_lattice ≈ 2π * I(3)
 
     mass = amass[ityp]
-    atom_pos = reinterpret(Vec3{Float64}, reshape(tau, 3, 2))[:]
+    atom_pos = reinterpret(Vec3{Float64}, reshape(tau, 3, :))[:]
     atom_labels = string.(ityp)  # EPW does not store atom labels, use ityp instead
 
-    return Structure(alat, lattice, mass, atom_pos, atom_labels)
+    # w_centers : Wannier centers in Cartesian bohr units
+    # L : Length parameter for 2D polar
+
+    return Structure(alat, lattice, mass, atom_pos, atom_labels), wann_centers, L
 end
 
 
@@ -110,7 +126,7 @@ function load_model_from_epw_new(
     load_symmetry_operators :: Bool = false,
     )
 
-    structure = ElectronPhonon.epw_parse_structure(folder)
+    structure, wann_centers, L = ElectronPhonon.epw_parse_structure(folder)
 
     # Read Wigner-Seitz information
     f = open(joinpath(folder, "wigner.fmt"), "r")
@@ -127,6 +143,13 @@ function load_model_from_epw_new(
     ef = parse(Float64, readline(f))
     nw, nr_el, nmodes, nr_ph, nr_ep = parse.(Int, split(readline(f)))
     zstar_epsi = parse.(Float64, split(readline(f)))
+    if length(zstar_epsi) == 3
+        # Intel compiler writes 3 floats in 1 line
+        for _ in 2 : (3 * length(structure.atom_pos) + 3)
+            append!(zstar_epsi, parse.(Float64, split(readline(f))))
+        end
+    end
+    @assert length(zstar_epsi) == 9 * length(structure.atom_pos) + 9
 
     ham = zeros(ComplexF64, nw, nw, nr_el)
     for i in 1:nw
@@ -203,28 +226,28 @@ function load_model_from_epw_new(
     use_polar_dipole = any(norm.(Z) .> sqrt(eps(Float64)))
 
     if use_polar_dipole || isfile(joinpath(folder, "quadrupole.fmt"))
-        # EPW hard-coded parameters (see EPW/src/rigid_f90)
-        cutoff = 14.0  # gmax
-        η = 1.0  # alph
-
         if isfile(joinpath(folder, "quadrupole.fmt"))
             Q = parse_epw_quadrupole_fmt(joinpath(folder, "quadrupole.fmt"))
         else
             Q = zeros(Vec3{Mat3{Float64}}, length(structure.atom_pos))
         end
 
-        # Compute nxs for phonon dynamical matrix. See SUBROUTINE rgd_blk of EPW
-        nxs = Tuple(floor(Int, sqrt(4*η*cutoff) / norm(structure.recip_lattice[:, i])) + 1 for i in 1:3)
-        polar_phonon = Polar{Float64}(use=true; structure.alat, structure.volume, nmodes, structure.recip_lattice, structure.atom_pos, ϵ, Z, Q, nxs, cutoff, η)
+        if L > 0
+            polar_phonon = Polar(structure; use = true, ϵ, Z, Q, L, mode = :Polar2D)
+        else
+            polar_phonon = Polar(structure; use = true, ϵ, Z, Q, mode = :Polar3D)
+        end
 
-        # Compute nxs for electron-phonon coupling. See SUBROUTINE rgd_blk_epw of EPW
         # FIXME: EPW shifts origin for each q, this is not implemented here (See SUBROUTINE rgd_blk_epw of EPW)
-        nxs = Tuple(floor(Int, sqrt(4*η*cutoff) / norm(structure.recip_lattice[:, i])) + 1 for i in 1:3)
-        polar_eph = Polar{Float64}(use=true; structure.alat, structure.volume, nmodes, structure.recip_lattice, structure.atom_pos, ϵ, Z, Q, nxs, cutoff, η)
+        if L > 0
+            polar_eph = Polar(structure; use = true, ϵ, Z, Q, L, mode = :Polar2D)
+        else
+            polar_eph = Polar(structure; use = true, ϵ, Z, Q, mode = :Polar3D)
+        end
     else
         # Set null objects
-        polar_phonon = Polar{Float64}(nothing)
-        polar_eph = Polar{Float64}(nothing)
+        polar_phonon = Polar(nothing)
+        polar_eph = Polar(nothing)
     end
 
 
@@ -235,6 +258,68 @@ function load_model_from_epw_new(
     vel = zeros(ComplexF64, 3, nw, nw, nr_el)
     # el_velocity_mode = :Direct
     el_velocity_mode = :BerryConnection
+
+    # Position (dipole) matrix elements
+    if isfile(joinpath(folder, "vmedata.fmt"))
+        f = open(joinpath(folder, "vmedata.fmt"), "r")
+        for ib in 1:nw
+            for jb in 1:nw
+                for ir in 1:nr_el
+                    for idir in 1:3
+                        pos[idir, ib, jb, ir] = ElectronPhonon.pair_to_complex(readline(f))
+                    end
+                end
+            end
+        end
+        close(f)
+    else
+        println("vmedata.fmt not found. Setting position matrix elements to zero.")
+        pos .= 0
+    end
+
+    # Velocity matrix elements
+    if isfile(joinpath(folder, "dmedata.fmt"))
+        f = open(joinpath(folder, "dmedata.fmt"), "r")
+        for ib in 1:nw
+            for jb in 1:nw
+                for ir in 1:nr_el
+                    for idir in 1:3
+                        vel[idir, ib, jb, ir] = ElectronPhonon.pair_to_complex(readline(f))
+                    end
+                end
+            end
+        end
+        close(f)
+    else
+        println("dmedata.fmt not found. Setting velocity matrix elements to zero.")
+        vel .= 0
+    end
+
+    if size(ndegen_el, 1) == 1
+        @views for ir in 1:nr_el
+            if ndegen_el[1, 1, ir] == 0
+                pos[:, :, :, ir] .= 0
+                vel[:, :, :, ir] .= 0
+            else
+                pos[:, :, :, ir] ./= ndegen_el[1, 1, ir]
+                vel[:, :, :, ir] ./= ndegen_el[1, 1, ir]
+            end
+        end
+    else
+        @views for ir in 1:nr_el
+            for j in 1:nw
+                for i in 1:nw
+                    if ndegen_el[i, j, ir] == 0
+                        pos[:, i, j, ir] .= 0
+                        vel[:, i, j, ir] .= 0
+                    else
+                        pos[:, i, j, ir] ./= ndegen_el[i, j, ir]
+                        vel[:, i, j, ir] ./= ndegen_el[i, j, ir]
+                    end
+                end
+            end
+        end
+    end
 
 
     # Sort R vectors using R[3], and then R[2], and then R[1].
@@ -333,7 +418,7 @@ function read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_
                 epmat[:, :, :, :, ir_ep] ./= ndegen_ep[1, 1, ir_ep]
             end
         end
-    
+
         @views for ir_el in 1:nr_el
             if ndegen_el[1, 1, ir_el] == 0
                 epmat[:, :, ir_el, :, :] .= 0
@@ -351,7 +436,7 @@ function read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_
                 epmat[iw, :, :, imode, ir_ep] ./= ndegen_ep[iw, iatm, ir_ep]
             end
         end
-    
+
         @views for ir_el in 1:nr_el, jw in 1:nw, iw in 1:nw
             if ndegen_el[iw, jw, ir_el] == 0
                 epmat[iw, jw, ir_el, :, :] .= 0
@@ -376,6 +461,6 @@ function read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_
         epmat = reshape(epmat, (nw^2 * nmodes * nr_ep, nr_el))
         ep = WannierObject(irvec_el, epmat; irvec_next = irvec_ep)
     end
-    
+
     return ep
 end

@@ -93,34 +93,34 @@ function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode=
 
     need_velocity = "velocity_diagonal" ∈ quantities
 
-    # Setup WannierInterpolators
-    dyn_threads = [get_interpolator(model.ph_dyn; fourier_mode) for _ in 1:nthreads()]
-    if need_velocity
-        dyn_R_threads = [get_interpolator(model.ph_dyn_R; fourier_mode) for _ in 1:nthreads()]
-    end
-
     # compute quantities
-    Threads.@threads for ik in 1:kpts.n
-        dyn = dyn_threads[threadid()]
-        need_velocity && (dyn_R = dyn_R_threads[threadid()])
+    @threads for iks in chunks(kpts.vectors; n = nthreads())
 
-        xk = kpts.vectors[ik]
-        ph = states[ik]
-
-        if quantities == ["eigenvalue"]
-            set_eigen_valueonly!(ph, xk, dyn, mass, polar)
-        else
-            set_eigen!(ph, xk, dyn, mass, polar)
-            if "velocity" ∈ quantities
-                # not implemented
-                error("full velocity for phonons not implemented")
-            elseif "velocity_diagonal" ∈ quantities
-                set_velocity_diag!(ph, xk, dyn_R)
-            end
-            if "eph_dipole_coeff" ∈ quantities
-                set_eph_dipole_coeff!(ph, xk, polar)
-            end
+        # Setup thread-local WannierInterpolators
+        dyn = get_interpolator(model.ph_dyn; fourier_mode)
+        if need_velocity
+            dyn_R = get_interpolator(model.ph_dyn_R; fourier_mode)
         end
-    end # ik
+
+        for ik in iks
+            xk = kpts.vectors[ik]
+            ph = states[ik]
+
+            if quantities == ["eigenvalue"]
+                set_eigen_valueonly!(ph, xk, dyn, mass, polar)
+            else
+                set_eigen!(ph, xk, dyn, mass, polar)
+                if "velocity" ∈ quantities
+                    # not implemented
+                    error("full velocity for phonons not implemented")
+                elseif "velocity_diagonal" ∈ quantities
+                    set_velocity_diag!(ph, xk, dyn_R)
+                end
+                if "eph_dipole_coeff" ∈ quantities
+                    set_eph_dipole_coeff!(ph, xk, polar)
+                end
+            end
+        end  # ik
+    end  # iks
     states
 end

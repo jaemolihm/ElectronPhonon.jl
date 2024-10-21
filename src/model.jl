@@ -42,8 +42,8 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
 
     # Long-range term in polar systems
     use_polar_dipole::Bool
-    polar_phonon::Polar{FT}
-    polar_eph::Polar{FT}
+    polar_phonon::Polar
+    polar_eph::Polar
 
     el_ham::WannierObject{FT} # ELectron Hamiltonian
     # TODO: Use Hermiticity of hk
@@ -183,15 +183,15 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         else
             Q = zeros(Vec3{Mat3{T}}, length(atom_pos))
         end
-        polar_phonon = Polar{T}(use=true; alat, volume, nmodes, recip_lattice, atom_pos, ϵ, Z, Q, nxs, cutoff, η)
+        polar_phonon = Polar(use=true; alat, volume, nmodes, recip_lattice, atom_pos, ϵ, Z, Q, nxs, cutoff, η)
 
         # For e-ph coupling, nxs is nqc. See SUBROUTINE rgd_blk_epw_fine of EPW
         nxs = map(x -> 1 < x < 5 ? 5 : x, nqc) # quick-and-dirty fix for small nqc
-        polar_eph = Polar{T}(use=true; alat, volume, nmodes, recip_lattice, atom_pos, ϵ, Z, Q, nxs, cutoff, η)
+        polar_eph = Polar(use=true; alat, volume, nmodes, recip_lattice, atom_pos, ϵ, Z, Q, nxs, cutoff, η)
     else
         # Set null objects
-        polar_phonon = Polar{T}(nothing)
-        polar_eph = Polar{T}(nothing)
+        polar_phonon = Polar(nothing)
+        polar_eph = Polar(nothing)
     end
 
     # Electron Hamiltonian

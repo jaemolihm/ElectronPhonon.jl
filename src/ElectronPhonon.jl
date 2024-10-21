@@ -17,6 +17,7 @@ include("common/reshape.jl")
 include("common/kpoints.jl")
 include("common/symmetry.jl")
 include("common/fermi_energy.jl")
+include("common/Structure.jl")
 include("common/AllocatedLAPACK.jl")
 
 include("external/iterativesolvers.jl")
