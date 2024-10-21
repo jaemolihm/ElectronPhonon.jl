@@ -6,6 +6,7 @@ export occ_fermion
 export occ_fermion_derivative
 export occ_boson
 export gaussian
+export delta_smeared
 export average_degeneracy
 export bisect
 
@@ -81,6 +82,44 @@ const inv_sqrtpi = 1 / sqrt(pi)
     exp(-value^2) * inv_sqrtpi
     # abs(value) < 15.0 ? exp(-value^2) * inv_sqrtpi : 0.0
 end
+
+
+"""
+    delta_smeared(Δe, smearing :: Tuple{Symbol, Float64})
+
+Smeared delta function.
+
+- `smearing == (:Gaussian, η)`: Gaussian smearing.
+- `smearing == (:Lorentzian, η)`: Lorentzian smearing.
+- `smearing == (:Tetrahedron, η)`: Tetrahedron smearing.
+- `smearing == (:GaussianTetrahedron, η)`: Gaussian Tetrahedron smearing.
+"""
+function delta_smeared(Δe, smearing :: Tuple{Symbol, Float64})
+    type, η = smearing
+
+    if type == :Gaussian
+        delta = gaussian(Δe / η) / η
+
+    elseif type == :Lorentzian
+        delta = η / (Δe^2 + η^2) / π
+
+    elseif type == :Tetrahedron
+        # v_cart = - el_f.vdiag[ind_el_f] - sign_ph * ph.vdiag[ind_ph]
+        # v_delta_e = recip_lattice' * v_cart
+        # delta = delta_parallelepiped(zero(FT), delta_e, v_delta_e, 1 ./ ngrid)
+        throw(ArgumentError("Smearing Tetrahedron not implemented yet"))
+
+    elseif type == :GaussianTetrahedron
+        # v_cart = - el_f.vdiag[ind_el_f] - sign_ph * ph.vdiag[ind_ph]
+        # v_delta_e = recip_lattice' * v_cart
+        # delta = gaussian_parallelepiped(η, delta_e, v_delta_e, 1 ./ ngrid) / η
+        throw(ArgumentError("Smearing GaussianTetrahedron not implemented yet"))
+
+    else
+        throw(ArgumentError("Unknown smearing type: $type"))
+    end
+end
+
 
 "Average data for degenerate states using energy. Non allocating version."
 function average_degeneracy!(data_averaged, data, energy, degeneracy_cutoff=1.e-6)
