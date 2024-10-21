@@ -144,7 +144,7 @@ end
 
 """Compute the symmetry representation in the Bloch Wannier basis."""
 function get_symmetry_representation_wannier!(sym_W, el_sym_op, xk, is_tr)
-    @assert length(sym_W) == el_sym_op.ndata
+    @assert length(sym_W) == el_sym_op.parent.ndata
     # For time reversal, the complex conjugation part acts on the Fourier factor so one needs -xk
     (is_tr ? get_fourier!(sym_W, el_sym_op, -xk)
            : get_fourier!(sym_W, el_sym_op, xk))
@@ -187,7 +187,7 @@ Compute phonon eigenenergy and eigenvector.
     nmodes = length(values)
     @assert size(vectors) == (nmodes, nmodes)
     @assert size(mass) == (nmodes,)
-    @assert dyn.ndata == nmodes^2
+    @assert dyn.parent.ndata == nmodes^2
 
     # Use vectors as a temporary storage for the dynamical matrix
     dynq = vectors
@@ -210,7 +210,7 @@ end
 @timing "w2b_ph_eigval" function get_ph_eigen_valueonly!(values, xq, dyn, mass, polar)
     nmodes = length(values)
     @assert size(mass) == (nmodes,)
-    @assert dyn.ndata == nmodes^2
+    @assert dyn.parent.ndata == nmodes^2
 
     dynq = _reshape_buffer(dyn.out, (nmodes, nmodes))
 
@@ -279,7 +279,7 @@ Multithreading is not supported because of large buffer array size.
     nbasis = div(epobj_eRpq.ndata, nmodes) # Number of electron basis squared.
     @assert size(u_ph) == (nmodes, nmodes)
     @assert epobj_eRpq.ndata == nbasis * nmodes
-    @assert epmat.ndata == nbasis * nmodes * nr_el
+    @assert epmat.parent.ndata == nbasis * nmodes * nr_el
 
     ep_Rq = _reshape_buffer(epmat.out, (nbasis, nmodes, nr_el))
     ep_Rq_tmp = _reshape_buffer(epmat.buffer, (nbasis, nmodes))
@@ -311,7 +311,7 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
     nbandkq, nbandk, nmodes = size(ep_kq)
     @assert size(uk, 2) == nbandk
     @assert size(ukq, 2) == nbandkq
-    @assert epobj_eRpq.ndata == size(ukq, 1) * size(uk, 1) * nmodes
+    @assert epobj_eRpq.parent.ndata == size(ukq, 1) * size(uk, 1) * nmodes
 
     ep_kq_wan = _reshape_buffer(epobj_eRpq.out, (size(ukq, 1), size(uk, 1), nmodes))
     tmp = _reshape_buffer(epobj_eRpq.buffer, (size(ukq, 1), nbandk))
@@ -348,7 +348,7 @@ Multithreading is not supported because of large buffer array size.
     """
     nr_ep = length(epmat.parent.irvec_next)
     nw, nband = size(uk)
-    nmodes = div(epmat.ndata, nw^2 * nr_ep)
+    nmodes = div(epmat.parent.ndata, nw^2 * nr_ep)
     ndata = nw * nband * nmodes
     @assert epobj_ekpR.nr == nr_ep
     @assert size(epobj_ekpR.op_r, 1) >= ndata
@@ -357,7 +357,6 @@ Multithreading is not supported because of large buffer array size.
     get_fourier!(ep_kR, epmat, xk)
 
     # Transform from electron Wannier to eigenmode basis, one ir_el and modes at a time.
-    # FIXME: Remove allocation from mul! (Too many ReshapedArray + views cause this problem)
     @views for ir in 1:nr_ep
         for imode in 1:nmodes
             rng = (1:nw*nband) .+ (nw*nband * (imode - 1))
@@ -365,6 +364,7 @@ Multithreading is not supported because of large buffer array size.
             mul!(ep_kR2, ep_kR[:, :, imode, ir], uk)
         end
     end
+
     epobj_ekpR.ndata = ndata
     epobj_ekpR._id += 1
     nothing
@@ -396,27 +396,26 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
     nw = size(ukq, 1)
     @assert size(u_ph) == (nmodes, nmodes)
     @assert size(ukq, 2) == nbandkq
-    @assert epobj_ekpR.ndata == nw * nbandk * nmodes
+    @assert epobj_ekpR.parent.ndata == nw * nbandk * nmodes
 
     ep_kq_wan = _reshape_buffer(epobj_ekpR.out, (nw, nbandk, nmodes))
-    tmp = _reshape_buffer(epobj_ekpR.buffer, (nbandkq, nbandk))
+    tmp = _reshape_buffer(epobj_ekpR.buffer, (nbandkq, nbandk, nmodes))
 
     get_fourier!(ep_kq_wan, epobj_ekpR, xq)
 
     # Transform from phonon Cartesian to eigenmode basis and from electron Wannier at k+q
     # to eigenstate basis. The electron at k is already in eigenstate basis.
     # ep_kq[ibkq, :, imode] = ukq'[ibkq, iw] * ep_kq_wan[iw, :, jmode] * u_ph[jmode, imode]
-    ep_kq .= 0
-    @timing "rotate" begin
-        for jmode = 1:nmodes
-            @views mul!(tmp, ukq', ep_kq_wan[:, :, jmode])
-            @views for imode in 1:nmodes
-                ep_kq[:, :, imode] .+= tmp .* u_ph[jmode, imode]
-            end
-            # The tullio version is slightly (~10%) faster. Not added now to avoid adding
-            # Tullio as dependency, but may added later.
-            # @tullio threads=false ep_kq[ib, jb, imode] += tmp[ib, jb] * u_ph[$jmode, imode]
-        end
-    end
+    # Implement as matrix multiplication D = A * B * C with reshaping
+    AB1 = reshape(tmp, (nbandkq, nbandk * nmodes))
+    A = ukq'
+    B = reshape(ep_kq_wan, (nw, nbandk * nmodes))
+    mul!(AB1, A, B)
+
+    D = reshape(ep_kq, (nbandkq * nbandk, nmodes))
+    AB2 = reshape(tmp, (nbandkq * nbandk, nmodes))
+    C = u_ph
+    mul!(D, AB2, C)
+
     nothing
 end

@@ -4,9 +4,6 @@ using LinearAlgebra
 # TODO: Add threads option to GridOpt or WannierInterpolator (to enable only for epmat)
 
 mutable struct GridOpt{T<:Real}
-    # TODO: Remove ndata
-    const ndata::Int # Size of the Fourier-transformed data matrix
-
     # Data for (k1, R2, R3)
     k1::T
     const nr_23::Int
@@ -26,7 +23,9 @@ mutable struct GridOpt{T<:Real}
     const phase_23::Vector{Complex{T}}
     const phase_3::Vector{Complex{T}}
 
-    function GridOpt(::Type{T}, irvec::Vector{Vec3{Int}}, ndata::Int) where {T}
+    const threads :: Bool
+
+    function GridOpt(::Type{T}, irvec::Vector{Vec3{Int}}, ndata::Int, threads :: Bool) where {T}
         # Here, we assume that irvec is sorted according to (r[3], r[2], r[1]).
 
         # Initialize 23
@@ -62,9 +61,9 @@ mutable struct GridOpt{T<:Real}
         phase_23 = zeros(Complex{T}, nr_23)
         phase_3 = zeros(Complex{T}, nr_3)
 
-        new{T}(ndata, k1, nr_23, irvec_23, irmap_rng_23, op_r_23,
+        new{T}(k1, nr_23, irvec_23, irmap_rng_23, op_r_23,
             k2, nr_3, irvec_3, irmap_rng_3, op_r_3,
-            phase, phase_23, phase_3)
+            phase, phase_23, phase_3, threads)
     end
 end
 
@@ -78,15 +77,33 @@ end
         phase[ir] = cispi(2 * k * r[1])
     end
     rng_data = 1:ndata
-    @views @batch for ir_23 in eachindex(gridopt.irmap_rng_23)
-        ir_rng = gridopt.irmap_rng_23[ir_23]
-        if WT <: DiskWannierObject
-            gridopt.op_r_23[rng_data, ir_23] .= 0
-            for ir in ir_rng
-                gridopt.op_r_23[rng_data, ir_23] .+= phase[ir] .* read_op_r(parent, ir)[rng_data]
+
+    if gridopt.threads
+        # FIXME: Nesting @threads and @batch sometimes gives incorrect result. (Some
+        # elements of gridopt.op_r_23 is not computed and left as 0.)
+        # If this is solved, make @batch always activated.
+        @views @batch for ir_23 in eachindex(gridopt.irmap_rng_23)
+            ir_rng = gridopt.irmap_rng_23[ir_23]
+            if WT <: DiskWannierObject
+                gridopt.op_r_23[rng_data, ir_23] .= 0
+                for ir in ir_rng
+                    gridopt.op_r_23[rng_data, ir_23] .+= phase[ir] .* read_op_r(parent, ir)[rng_data]
+                end
+            else
+                mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
             end
-        else
-            mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
+        end
+    else
+        @views for ir_23 in eachindex(gridopt.irmap_rng_23)
+            ir_rng = gridopt.irmap_rng_23[ir_23]
+            if WT <: DiskWannierObject
+                gridopt.op_r_23[rng_data, ir_23] .= 0
+                for ir in ir_rng
+                    gridopt.op_r_23[rng_data, ir_23] .+= phase[ir] .* read_op_r(parent, ir)[rng_data]
+                end
+            else
+                mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
+            end
         end
     end
 end
@@ -100,9 +117,16 @@ end
         phase[ir] = cispi(2 * k * r[1])
     end
     rng_data = 1:ndata
-    @views @batch for ir_3 in eachindex(gridopt.irmap_rng_3)
-        ir_rng = gridopt.irmap_rng_3[ir_3]
-        mul!(gridopt.op_r_3[rng_data, ir_3], gridopt.op_r_23[rng_data, ir_rng], phase[ir_rng])
+    if gridopt.threads
+        @views @batch for ir_3 in eachindex(gridopt.irmap_rng_3)
+            ir_rng = gridopt.irmap_rng_3[ir_3]
+            mul!(gridopt.op_r_3[rng_data, ir_3], gridopt.op_r_23[rng_data, ir_rng], phase[ir_rng])
+        end
+    else
+        @views for ir_3 in eachindex(gridopt.irmap_rng_3)
+            ir_rng = gridopt.irmap_rng_3[ir_3]
+            mul!(gridopt.op_r_3[rng_data, ir_3], gridopt.op_r_23[rng_data, ir_rng], phase[ir_rng])
+        end
     end
 end
 

@@ -52,8 +52,8 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
     # If the ids do not match, reset `gridopt`.
     _id::Int
 
-    function GridoptWannierInterpolator(parent::WT) where {WT <: AbstractWannierObject{T}} where {T}
-        gridopt = GridOpt(T, parent.irvec, parent.ndata)
+    function GridoptWannierInterpolator(parent::WT, threads = false) where {WT <: AbstractWannierObject{T}} where {T}
+        gridopt = GridOpt(T, parent.irvec, parent.ndata, threads)
         ws = HermitianEigenWsSYEV{Complex{T},T}()
         new{T, WT}(parent, gridopt, zeros(Complex{T}, parent.ndata), Complex{T}[], ws, parent._id)
     end
@@ -61,7 +61,7 @@ end
 
 
 @inline function Base.getproperty(obj::AbstractWannierInterpolator, name::Symbol)
-    if name === :nr || name === :ndata
+    if name === :nr
         getfield(obj.parent, name)
     else
         getfield(obj, name)
@@ -74,11 +74,11 @@ end
 Return a interpolator for the given object.
 For a multithreaded use, one must use `get_interpolator_channel` instead.
 """
-function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal")
+function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", threads = false)
     if fourier_mode === "normal"
         NormalWannierInterpolator(obj)
     elseif fourier_mode === "gridopt"
-        GridoptWannierInterpolator(obj)
+        GridoptWannierInterpolator(obj, threads)
     else
         throw(ArgumentError("Wrong fourier_mode $fourier_mode"))
     end
