@@ -38,7 +38,7 @@ function plot_band_data(axis, data, plot_xdata; ylabel=nothing, title=nothing, f
         fmt = fmt === nothing ? "k" : fmt
         axis.plot(plot_xdata.x, data, fmt)
     elseif ndims(data) == 2
-        get_fmt(i) = fmt === nothing ? "C$(mod(i, 10))" : fmt
+        get_fmt(i) = fmt === nothing ? "C$(mod(i-1, 10))" : fmt
         for iband in 1:size(data, 1)
             axis.plot(plot_xdata.x, data[iband, :], get_fmt(iband))
         end

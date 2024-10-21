@@ -1,9 +1,15 @@
 import PyPlot
 
-export plot_electron_phonon_deformation_potential
+export plot_deformation_potential
+
+function plot_electron_phonon_deformation_potential(model, xk=Vec3(0., 0., 0.);
+    kline_density=40, band_rng=1:model.nw, include_polar=true, close_fig=true)
+    Base.depwarn("Renamed. Use plot_deformation_potential", :plot_electron_phonon_deformation_potential)
+    plot_deformation_potential(model, xk; kline_density, band_rng, include_polar, close_fig)
+end
 
 """
-    plot_electron_phonon_deformation_potential(model, xk=Vec3(0., 0., 0.); kline_density=40,
+    plot_deformation_potential(model, xk=Vec3(0., 0., 0.); kline_density=40,
         band_rng=1:model.nw, include_polar=true, close_fig=true)
 Calculate and plot the total electrin-phonon deformation potential ``D(q, ν)`` along a high-symmetry q-point path.
 Reference: J. Sjakste et al., Phys. Rev. B 92, 054307 (2015), Eqs. (3-4)
@@ -16,9 +22,8 @@ Here, ``k`` is a single point (`xk`) is used while ``q`` are multiple points on 
 - `band_rng`: range of bands to include in the deformation potential. Default: `1:model.nw`
 - `include_polar`: if true, include the polar e-ph interaction if present. Default: `true`
 """
-function plot_electron_phonon_deformation_potential(model, xk=Vec3(0., 0., 0.);
+function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
         kline_density=40, band_rng=1:model.nw, include_polar=true, close_fig=true)
-    model.epmat_outer_momentum != "el" && error("model.epmat_outer_momentum must be el")
     nw = model.nw
     nmodes = model.nmodes
     fourier_mode = "normal" # Since we use a band path, gridopt is not useful.
@@ -47,35 +52,77 @@ function plot_electron_phonon_deformation_potential(model, xk=Vec3(0., 0., 0.);
     epdata.el_k = el_k
 
     epmat = get_interpolator(model.epmat; fourier_mode)
-    ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
-            zeros(ComplexF64, (nw*epdata.nband_bound*nmodes, length(model.epmat.irvec_next))))
-    ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
 
-    get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epdata.el_k.u))
+    if model.epmat_outer_momentum == "el"
+        # (Re, Rp) -> (k, Rp) -> (k, q)
+        ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
+                zeros(ComplexF64, (nw*epdata.nband_bound*nmodes, length(model.epmat.irvec_next))))
+        ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
 
-    # Calculate electron-phonon coupling matrix elements
-    for iq in 1:nq
-        xkq = kqpts.vectors[iq]
-        xq = qpts.vectors[iq]
+        get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epdata.el_k.u))
 
-        # Set electron and phonon states in epdata
-        epdata.el_kq = el_kq_save[iq]
-        epdata.ph = ph_save[iq]
+        # Calculate electron-phonon coupling matrix elements
+        for iq in 1:nq
+            xkq = kqpts.vectors[iq]
+            xq = qpts.vectors[iq]
 
-        # Compute electron-phonon coupling
-        get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
-        if include_polar && any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
-            epdata_set_mmat!(epdata)
-            model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
-        end
-        epdata_set_g2!(epdata)
+            # Set electron and phonon states in epdata
+            epdata.el_kq = el_kq_save[iq]
+            epdata.ph = ph_save[iq]
 
-        @views for imode in 1:nmodes
-            # Here, |g|^2 = |epdata.ep|^2 / 2ω, so 2ω|g|^2 = |epdata.ep|^2.
-            deformation_potential[imode, iq] = norm(epdata.ep[band_rng, band_rng, imode])
-            e_ph[imode, iq] = epdata.ph.e[imode]
-        end
-    end # iq
+            # Compute electron-phonon coupling
+            get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
+            if include_polar && any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
+                epdata_set_mmat!(epdata)
+                model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
+            end
+            epdata_set_g2!(epdata)
+
+            @views for imode in 1:nmodes
+                # Here, |g|^2 = |epdata.ep|^2 / 2ω, so 2ω|g|^2 = |epdata.ep|^2.
+                deformation_potential[imode, iq] = norm(epdata.ep[band_rng, band_rng, imode])
+                e_ph[imode, iq] = epdata.ph.e[imode]
+            end
+        end # iq
+
+    elseif model.epmat_outer_momentum == "ph"
+        # (Re, Rp) -> (Re, q) -> (k, q)
+        # For a single k and many q, this is inefficient because get_eph_RR_to_Rq! is
+        # called inside the loop.
+
+        ep_eRpq_obj = WannierObject(model.epmat.irvec_next,
+                zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+        ep_eRpq = get_interpolator(ep_eRpq_obj)
+
+        # Calculate electron-phonon coupling matrix elements
+        for iq in 1:nq
+            xkq = kqpts.vectors[iq]
+            xq = qpts.vectors[iq]
+
+            # Set electron and phonon states in epdata
+            epdata.el_kq = el_kq_save[iq]
+            epdata.ph = ph_save[iq]
+
+            # Compute electron-phonon coupling
+            get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, epdata.ph.u)
+            get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
+
+            if include_polar && any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
+                epdata_set_mmat!(epdata)
+                model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
+            end
+            epdata_set_g2!(epdata)
+
+            @views for imode in 1:nmodes
+                # Here, |g|^2 = |epdata.ep|^2 / 2ω, so 2ω|g|^2 = |epdata.ep|^2.
+                deformation_potential[imode, iq] = norm(epdata.ep[band_rng, band_rng, imode])
+                e_ph[imode, iq] = epdata.ph.e[imode]
+            end
+        end # iq
+
+    else
+        throw(ArgumentError("model.epmat_outer_momentum must be el or ph"))
+    end
 
     unit_cell_mass = sum(model.mass[1:3:end])
     deformation_potential .*= sqrt(unit_cell_mass)
