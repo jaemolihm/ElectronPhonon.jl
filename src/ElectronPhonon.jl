@@ -87,6 +87,7 @@ include("model_new.jl")
 include("calculator/AbstractCalculator.jl")
 include("calculator/occupation.jl")
 include("calculator/run_electron_phonon.jl")
+include("calculator/run_eph_outer_q.jl")
 
 export ElectronOccupationParams
 
