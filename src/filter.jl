@@ -162,3 +162,36 @@ function filter_qpoints(qpoints, kpoints, itp_el::Dict{Int, <: AbstractInterpola
     end
     get_filtered_kpoints(qpoints, iq_keep)
 end
+
+
+
+"""
+    filter_kpoints_multigrid(nks1, nks2, window1, window2, nw, el_ham;
+                             fourier_mode="gridopt", symmetry=nothing)
+Generate k point grid using the double grid method
+1) Mesh with size nks1 inside window1 (denser mesh, narrower window)
+2) Mesh with size nks2 inside window2 (coarser mesh, wider window)
+"""
+function filter_kpoints_multigrid(nks1, nks2, window1, window2, nw, el_ham;
+                                  fourier_mode="gridopt", symmetry=nothing)
+
+    all(mod.(nks1, nks2) .== 0) || throw(ArgumentError("nks1 must be a multiple of nks2"))
+
+    kpts1, = filter_kpoints(nks1, nw, el_ham, window1; symmetry, fourier_mode)
+    kpts1 = GridKpoints(kpts1)
+    kpts2, = filter_kpoints(nks2, nw, el_ham, window2; symmetry, fourier_mode)
+    kpts2 = GridKpoints(kpts2)
+
+    # Merge kpts1 and kpts2, remove duplicates
+
+    (; vectors, weights, ngrid) = kpts1
+    for i in 1:kpts2.n
+        xk = kpts2.vectors[i]
+        if xk_to_ik(xk, kpts1) === nothing
+            push!(vectors, xk)
+            push!(weights, kpts2.weights[i])
+        end
+    end
+
+    GridKpoints(Kpoints(length(vectors), vectors, weights, ngrid))
+end
