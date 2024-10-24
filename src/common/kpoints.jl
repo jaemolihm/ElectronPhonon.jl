@@ -39,9 +39,17 @@ end
 Kpoints{T}() where {T} = Kpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), (0, 0, 0))
 
 # Initializing Kpoints with a vector of k points
-function Kpoints(xks::AbstractVector{Vec3{T}}) where {T <: Real}
+function Kpoints(xks::AbstractVector{Vec3{T}}; ngrid = (0, 0, 0)) where {T <: Real}
     n = length(xks)
-    Kpoints{T}(n, Vector(xks), ones(n) ./ n, (0, 0, 0))
+    if any(ngrid .> 0)
+        all(ngrid .> 0) || error("ngrid must be positive, not $ngrid.")
+        for xk in xks
+            if !(round.(Int, xk .* ngrid) ≈ xk .* ngrid)
+                error("xk must be on the grid")
+            end
+        end
+    end
+    Kpoints{T}(n, Vector(xks), ones(n) ./ n, ngrid)
 end
 
 # Initializing Kpoints with a k point array
