@@ -39,13 +39,13 @@ function bte_compute_μ!(params, el::BTStates{R}; do_print=true) where {R <: Rea
     for i in axes(params.Tlist, 1)
         T = params.Tlist[i]
         if params.type == :Metal
-            μ = find_chemical_potential(ncarrier_target[i], T, el.e, el.k_weight)
+            μ = find_chemical_potential(ncarrier_target[i], T, el.e, el.k_weight, params.occ_type)
         elseif params.type == :Semiconductor
-            μ = find_chemical_potential_semiconductor(ncarrier_target[i], T, e_e, e_h, w_e, w_h)
+            μ = find_chemical_potential_semiconductor(ncarrier_target[i], T, e_e, e_h, w_e, w_h, params.occ_type)
         end
         params.μlist[i] = μ
         if do_print && mpi_isroot()
-            @info @sprintf "n = %.1e cm^-3 , T = %.1f K , μ = %.4f eV" params.nlist[i] / (params.volume/unit_to_aru(:cm)^3) T/unit_to_aru(:K) μ/unit_to_aru(:eV)
+            @info @sprintf "n = %.1e cm^-3 , T = %.1f K (%s) , μ = %.4f eV" params.nlist[i] / (params.volume/unit_to_aru(:cm)^3) T/unit_to_aru(:K) params.occ_type μ/unit_to_aru(:eV)
         end
     end
     params.μlist

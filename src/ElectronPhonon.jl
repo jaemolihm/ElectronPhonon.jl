@@ -18,6 +18,7 @@ include("common/kpoints.jl")
 include("common/symmetry.jl")
 include("common/fermi_energy.jl")
 include("common/Structure.jl")
+include("common/occupation.jl")
 include("common/AllocatedLAPACK.jl")
 
 include("external/iterativesolvers.jl")
@@ -86,7 +87,6 @@ include("postprocess/plot_decay.jl")
 
 include("model_new.jl")
 include("calculator/AbstractCalculator.jl")
-include("calculator/occupation.jl")
 include("calculator/run_electron_phonon.jl")
 include("calculator/run_eph_outer_q.jl")
 

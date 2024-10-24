@@ -32,7 +32,10 @@ struct ElectronOccupationParams
     # Type of the carrier. `:Metal` or `:Semiconductor`.
     type :: Symbol
 
-    function ElectronOccupationParams(; Tlist, nlist, μlist = nothing, volume, nelec, spin_degeneracy, type = nothing)
+    # Type of the occupation function
+    occ_type :: Symbol
+
+    function ElectronOccupationParams(; Tlist, nlist, μlist = nothing, volume, nelec, spin_degeneracy, type = nothing, occ_type = :FermiDirac)
         # If either T or n is a scalar, convert it to a vector.
         if Tlist isa Number && nlist isa Number
             Tlist = [Tlist]
@@ -75,18 +78,28 @@ struct ElectronOccupationParams
             end
         end
 
-        new(Tlist, nlist, μlist, nelec, volume, spin_degeneracy, type)
+        if occ_type ∉ (:FermiDirac, :MV)
+            throw(ArgumentError("Invalid occupation type: $occ_type"))
+        end
+
+        new(Tlist, nlist, μlist, nelec, volume, spin_degeneracy, type, occ_type)
     end
 end
 
-function Base.getproperty(occ::ElectronOccupationParams, name::Symbol)
-    # TODO: Rename all "nband_valence" to "nelec"
-    if name === :nband_valence
-        return getfield(occ, :nelec) / getfield(occ, :spin_degeneracy)
-    else
-        return getfield(occ, name)
-    end
+
+# Iterator interface
+Base.length(occ::ElectronOccupationParams) = length(occ.μlist)
+Base.firstindex(occ) = 1
+Base.lastindex(occ) = length(occ)
+Base.keys(occ::ElectronOccupationParams) = 1:length(occ)
+function Base.getindex(occ::ElectronOccupationParams, i)
+    1 <= i <= length(occ) || throw(BoundsError(occ, i))
+    return (; T=occ.Tlist[i], μ=occ.μlist[i], n=occ.nlist[i])
 end
+function Base.iterate(occ::ElectronOccupationParams, i=1)
+    i > length(occ) ? nothing : (occ[i], i+1)
+end
+
 
 """
     chemical_potential_is_computed(occ :: ElectronOccupationParams)
@@ -97,17 +110,15 @@ function chemical_potential_is_computed(occ :: ElectronOccupationParams)
     all(.!isnan.(occ.μlist))
 end
 
-
-# Iterator interface
-Base.length(occ::ElectronOccupationParams) = length(occ.μlist)
-Base.firstindex(occ) = 1
-Base.lastindex(occ) = length(occ)
-
-function Base.getindex(occ::ElectronOccupationParams, i)
-    1 <= i <= length(occ) || throw(BoundsError(occ, i))
-    return (; T=occ.Tlist[i], μ=occ.μlist[i], n=occ.nlist[i])
-end
-
-function Base.iterate(occ::ElectronOccupationParams, i=1)
-    i > length(occ) ? nothing : (occ[i], i+1)
+"""
+    set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true)
+If `occ.μlist` is not set, compute the chemical potential and set it.
+If `occ.μlist` is already set to some value that is not NaN, do nothing.
+"""
+function set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true)
+    if !chemical_potential_is_computed(occ)
+        el, _ = electron_states_to_BTStates(el_states, kpts, nelec_below_window)
+        bte_compute_μ!(occ, el; do_print)
+    end
+    occ
 end
