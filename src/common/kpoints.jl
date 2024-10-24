@@ -473,7 +473,11 @@ function fold_kpoints(kpts::GridKpoints, symmetry)
     end
 
     kpts_irr = GridKpoints(length(vectors_irr), vectors_irr, weights_irr, ngrid, shift, hash_dict_irr)
+
+    inds = invperm(sortperm(kpts_irr))
     sort!(kpts_irr)
+
+    ik_to_ikirr_isym = [(inds[ikirr], isym) for (ikirr, isym) in ik_to_ikirr_isym]
     return kpts_irr, ik_to_ikirr_isym
 end
 
