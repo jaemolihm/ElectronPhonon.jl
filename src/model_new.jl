@@ -126,6 +126,9 @@ function load_model_from_epw_new(
     load_symmetry_operators :: Bool = false,
     )
 
+    # el_velocity_mode = :Direct
+    el_velocity_mode = :BerryConnection
+
     structure, wann_centers, L = ElectronPhonon.epw_parse_structure(folder)
 
     # Read Wigner-Seitz information
@@ -252,12 +255,8 @@ function load_model_from_epw_new(
 
 
     # Position (dipole) and velocity matrix elements
-    # FIXME: Implement, and then use el_velocity_mode = :Direct
-    # FIXME: Apply ndegen
     pos = zeros(ComplexF64, 3, nw, nw, nr_el)
     vel = zeros(ComplexF64, 3, nw, nw, nr_el)
-    # el_velocity_mode = :Direct
-    el_velocity_mode = :BerryConnection
 
     # Position (dipole) matrix elements
     if isfile(joinpath(folder, "vmedata.fmt"))
@@ -384,16 +383,14 @@ function load_model_from_epw_new(
     end
 
 
-
     Model(; structure.alat, structure.lattice, structure.recip_lattice, structure.volume, nw, nmodes,
-        structure.mass, structure.atom_pos, structure.atom_labels, structure.symmetry,
+        wann_centers, structure.mass, structure.atom_pos, structure.atom_labels, structure.symmetry,
         use_polar_dipole, polar_phonon, polar_eph,
         el_ham, el_ham_R, el_pos, el_vel, el_velocity_mode,
         ph_dyn, ph_dyn_R,
         epmat = ep, epmat_outer_momentum,
         el_sym,
     )
-
 
 end
 

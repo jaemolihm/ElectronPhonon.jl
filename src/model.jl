@@ -40,6 +40,9 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
     nw::Int
     nmodes::Int
 
+    # Wannier centers in Cartesian coordinates, bohr units
+    wann_centers :: Vector{Vec3{FT}}
+
     # Long-range term in polar systems
     use_polar_dipole::Bool
     polar_phonon::Polar
