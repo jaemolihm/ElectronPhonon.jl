@@ -1,6 +1,7 @@
 
 # Data and functions for k points
 using MPI
+using Printf
 
 export Kpoints
 export kpoints_grid
@@ -491,4 +492,34 @@ end
 
 function split_kpoints(kpts::GridKpoints, N)
     GridKpoints.(split_kpoints(Kpoints(kpts), N))
+end
+
+
+function print_in_qe_format(kpts :: AbstractKpoints, unit = :Crystal; recip_lattice = nothing, alat = nothing)
+    if unit === :Crystal
+        println(" $(kpts.n) crystal")
+        for xk in kpts.vectors
+            @printf "%12.8f %12.8f %12.8f 1.0\n" xk[1] xk[2] xk[3]
+        end
+
+    elseif unit === :Cartesian
+        recip_lattice === nothing && error("recip_lattice must be given for Cartesian unit")
+        println(" $(kpts.n) cartesian")
+        for xk in kpts.vectors
+            xk = recip_lattice * xk
+            @printf "%12.8f %12.8f %12.8f 1.0\n" xk[1] xk[2] xk[3]
+        end
+
+    elseif unit === :tpiba
+        recip_lattice === nothing && error("recip_lattice must be given for tpiba unit")
+        alat === nothing && error("alat must be given for tpiba unit")
+        println(" $(kpts.n) cartesian")
+        for xk in kpts.vectors
+            xk = recip_lattice * xk / (2π / alat)
+            @printf "%12.8f %12.8f %12.8f 1.0\n" xk[1] xk[2] xk[3]
+        end
+
+    else
+        error("Wrong unit $unit. Must :Crystal or :Cartesian or :tpiba")
+    end
 end
