@@ -122,3 +122,40 @@ function set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_pr
     end
     occ
 end
+
+
+function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true)
+    if occ.type == :Metal
+        # For metals, compute the total electron density.
+        # Since occ.n is the difference of number of electrons per cell from nband_valence,
+        # nband_valence should be added for the real target ncarrier.
+        # Also, el.nstates_base is the contribution to the ncarrier from occupied states
+        # outside the window (i.e. not included in `energy`). So it is subtracted.
+        ncarrier_target = @. occ.nlist / occ.spin_degeneracy + occ.nband_valence - el.nstates_base
+    elseif occ.type == :Semiconductor
+        # For semiconductors, count the doped carriers to minimize floating point error.
+        # FIXME: nband_valence needs to be set.
+        nband_valence = round(Int, occ.nelec / occ.spin_degeneracy)
+        ncarrier_target = @. occ.nlist / occ.spin_degeneracy
+        e_e = el.e[el.iband .>  nband_valence]
+        e_h = el.e[el.iband .<= nband_valence]
+        w_e = el.k_weight[el.iband .>  nband_valence]
+        w_h = el.k_weight[el.iband .<= nband_valence]
+    else
+        throw(DomainError("Invalid occ.type $(occ.type)"))
+    end
+
+    for i in axes(occ.Tlist, 1)
+        T = occ.Tlist[i]
+        if occ.type == :Metal
+            μ = find_chemical_potential(ncarrier_target[i], T, el.e, el.k_weight, occ.occ_type)
+        elseif occ.type == :Semiconductor
+            μ = find_chemical_potential_semiconductor(ncarrier_target[i], T, e_e, e_h, w_e, w_h, occ.occ_type)
+        end
+        occ.μlist[i] = μ
+        if do_print && mpi_isroot()
+            @info @sprintf "n = %.1e cm^-3 , T = %.1f K (%s) , μ = %.4f eV" occ.nlist[i] / (occ.volume/unit_to_aru(:cm)^3) T/unit_to_aru(:K) occ.occ_type μ/unit_to_aru(:eV)
+        end
+    end
+    occ.μlist
+end
