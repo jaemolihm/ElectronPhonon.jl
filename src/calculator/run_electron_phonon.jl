@@ -153,7 +153,7 @@ function run_eph_outer_k(
 
     for calc in calculators
         setup_calculator!(calc, kpts, qpts, el_k_save;
-            rng_band = iband_min:iband_max,
+            nw, nmodes, rng_band = iband_min:iband_max,
             el_states_kq = el_kq_save, kqpts, nelec_below_window_k, nelec_below_window_kq,
             nchunks_threads
         )
