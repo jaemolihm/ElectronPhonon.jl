@@ -227,6 +227,7 @@ function load_model_from_epw_new(
     Z = [Mat3(arr) for arr in eachslice(reshape(zstar_epsi[1:end-9], 3, 3, :); dims=3)]
     ϵ = Mat3(zstar_epsi[end-8:end])
     use_polar_dipole = any(norm.(Z) .> sqrt(eps(Float64)))
+    # use_polar_dipole = false # DEBUG
 
     if use_polar_dipole || isfile(joinpath(folder, "quadrupole.fmt"))
         if isfile(joinpath(folder, "quadrupole.fmt"))
@@ -265,7 +266,12 @@ function load_model_from_epw_new(
             for jb in 1:nw
                 for ir in 1:nr_el
                     for idir in 1:3
-                        pos[idir, ib, jb, ir] = ElectronPhonon.pair_to_complex(readline(f))
+                        # EPW computes the position matrix elements in two ways: using the
+                        # naive formula, and then the translationally-invariant formula.
+                        # The former is called cvmew, latter is called crrw.
+                        # We read the latter which is the more accurate one.
+                        readline(f) # Skip cvmew
+                        pos[idir, ib, jb, ir] = ElectronPhonon.pair_to_complex(readline(f))  # Read crrw
                     end
                 end
             end
