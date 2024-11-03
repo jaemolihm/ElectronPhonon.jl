@@ -16,7 +16,7 @@ export compute_transport_distribution_function
 """
     bte_compute_μ!(params, el::BTStates{R}; do_print=true) where {R <: Real}
 """
-function bte_compute_μ!(params, el::BTStates{R}; do_print=true) where {R <: Real}
+function bte_compute_μ!(params :: ElectronTransportParams, el::BTStates{R}; do_print=true) where {R <: Real}
     if params.type == :Metal
         # For metals, compute the total electron density.
         # Since params.n is the difference of number of electrons per cell from nband_valence,
