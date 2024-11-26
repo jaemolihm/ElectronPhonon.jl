@@ -32,6 +32,13 @@ Parse crystal.fmt file written by EPW.
 """
 function epw_parse_structure(folder::String)
 
+    # When writing an array using * format in fortran, GNU and intel compilers behave
+    # differently:
+    # GNU compiler writes all numbers in a single line.
+    # Intel compiler writes 3 numbers in one line.
+    # So, we have to first check the compiler_type by the length of line, and then read
+    # the rest of file accordingly.
+
     f = open(joinpath(folder, "crystal.fmt"), "r")
     nat = parse(Int, readline(f))
     nmodes = parse(Int, readline(f))
@@ -88,16 +95,26 @@ function epw_parse_structure(folder::String)
     noncolin = occursin("T", readline(f))
     do_cutoff_2D_epw = occursin("T", readline(f))
 
-    w_centers = if compiler_type === :GNU
-        parse.(Float64, split(readline(f)))
+    if compiler_type === :GNU
+        w_centers_1d = parse.(Float64, split(readline(f)))
+        L = parse(Float64, readline(f))
     elseif compiler_type === :INTEL
-        error("Not implemented")
-        # vcat([parse.(Float64, split(readline(f))) for _ in 1:nat]...)
+        # w_centers is written in nw lines with 3 values. Since we don't know nw, we read
+        # until we find a line with a single number (for L) appears.
+        w_centers_1d = Float64[]
+        while !eof(f)
+            data = parse.(Float64, split(readline(f)))
+            if length(data) == 3
+                append!(w_centers_1d, data)
+            elseif length(data) == 1
+                L = data[1]
+                break
+            else
+                throw(ArgumentError("Unexpected line in crystal.fmt"))
+            end
+        end
     end
-    wann_centers = reinterpret(Vec3{Float64}, reshape(w_centers, 3, :))[:] * alat
-
-    L = parse(Float64, readline(f))
-
+    wann_centers = reinterpret(Vec3{Float64}, reshape(w_centers_1d, 3, :))[:] * alat
     close(f)
 
     # Convert to EP.jl convention
