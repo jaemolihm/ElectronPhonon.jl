@@ -125,18 +125,19 @@ function set_window!(el::ElectronState, window=(-Inf, Inf))
 end
 
 function set_occupation!(el::ElectronState, occ :: ElectronOccupationParams, i :: Int)
-    (; μ, T) = occ[i]
-    set_occupation!(el, μ, T; occ.occ_type)
+    for ib in el.rng
+        el.occupation[ib] = occ_fermion(el.e[ib], occ, i)
+    end
+    el.occupation
 end
 
 function get_occupation(el::ElectronState, occ :: ElectronOccupationParams, i :: Int)
-    (; μ, T) = occ[i]
-    get_occupation(el, μ, T; occ.occ_type)
+    get_occupation.(el.e, Ref(occ), i)
 end
 
 function set_occupation!(el::ElectronState, μ, T; occ_type = :FermiDirac)
-    for i in el.rng
-        el.occupation[i] = occ_fermion(el.e[i] - μ, T; occ_type)
+    for ib in el.rng
+        el.occupation[ib] = occ_fermion(el.e[ib] - μ, T; occ_type)
     end
     el.occupation
 end
