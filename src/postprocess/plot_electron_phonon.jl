@@ -139,8 +139,13 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
     else
         deformation_title *= "\n(No long-range part in model)"
     end
+
+    # Compute mode averaged deformation potential
+    deformation_potential_avg = sqrt.(sum(deformation_potential.^2, dims=1)[1, :] ./ nmodes)
+
     plot_band_data(plotaxes[1], deformation_potential ./ (unit_to_aru(:eV) / unit_to_aru(:Å)),
                     plot_xdata, ylabel="D(q) (eV/Å)", title=deformation_title)
+    plot_band_data(plotaxes[1], deformation_potential_avg ./ (unit_to_aru(:eV) / unit_to_aru(:Å)), plot_xdata, fmt = "k--")
     plot_band_data(plotaxes[2], e_ph ./ unit_to_aru(:meV), plot_xdata,
                     ylabel="energy (meV)", title="Phonon dispersion")
     plotaxes[1].axhline(0, c="k", lw=1)

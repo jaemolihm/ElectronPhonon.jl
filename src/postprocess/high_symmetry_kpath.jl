@@ -97,13 +97,11 @@ function plot_band_data(axis, data, plot_xdata; add_style = true,
 end
 
 function plot_band_data_style(axis, plot_xdata; ylabel=nothing, title=nothing)
-    for x in plot_xdata.xticks
-        axis.axvline(x, c="k", lw=1, ls="--")
-    end
+    axis.axvline.(plot_xdata.xticks; c="k", lw=1, ls="--")
     axis.set_xticks(plot_xdata.xticks)
     axis.set_xticklabels(plot_xdata.xlabels)
     axis.set_xlim(extrema(plot_xdata.x))
-    axis.set_ylabel(ylabel)
-    axis.set_title(title)
+    ylabel !== nothing && axis.set_ylabel(ylabel)
+    title !== nothing && axis.set_title(title)
     nothing
 end
