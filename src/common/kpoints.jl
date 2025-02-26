@@ -314,14 +314,24 @@ struct GridKpoints{T} <: AbstractKpoints{T}
     _xk_hash_to_ik::Dict{Int,Int}
 end
 
-function GridKpoints(kpts::Kpoints{T}) where {T}
-    all(kpts.ngrid .> 0) || error("kpts must be on a grid to make GridKpoints")
+function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid) where {T}
+    all(ngrid .> 0) || throw(ArgumentError("ngrid must be set or provided to make GridKpoints"))
     if kpts.n == 0
-        return GridKpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), kpts.ngrid, zero(Vec3{T}), Dict{Int,Int}())
+        return GridKpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), ngrid, zero(Vec3{T}), Dict{Int,Int}())
     end
-    shift = mod.(kpts.vectors[1], 1 ./ kpts.ngrid)
-    _xk_hash_to_ik = Dict(_hash_xk.(kpts.vectors, Ref(kpts.ngrid), Ref(shift)) .=> 1:kpts.n)
-    GridKpoints{T}(kpts.n, kpts.vectors, kpts.weights, kpts.ngrid, shift, _xk_hash_to_ik)
+
+    shift = mod.(first(kpts.vectors), 1 ./ ngrid)
+
+    # Check if all k points are on the shifted grid
+    for xk in kpts.vectors
+        nxk = (xk - shift) .* ngrid
+        if !(round.(Int, nxk) ≈ nxk)
+            throw(ArgumentError("k point $xk is not on the grid of size $ngrid shifted by $shift"))
+        end
+    end
+
+    _xk_hash_to_ik = Dict(_hash_xk.(kpts.vectors, Ref(ngrid), Ref(shift)) .=> 1:kpts.n)
+    GridKpoints{T}(kpts.n, kpts.vectors, kpts.weights, ngrid, shift, _xk_hash_to_ik)
 end
 
 GridKpoints(xk::Vec3{T}) where {T <: Real} = GridKpoints(Kpoints(xk))
@@ -513,7 +523,7 @@ function print_in_qe_format(kpts :: AbstractKpoints, unit = :Crystal; recip_latt
     elseif unit === :tpiba
         recip_lattice === nothing && error("recip_lattice must be given for tpiba unit")
         alat === nothing && error("alat must be given for tpiba unit")
-        println(" $(kpts.n) cartesian")
+        println(" $(kpts.n) tpiba")
         for xk in kpts.vectors
             xk = recip_lattice * xk / (2π / alat)
             @printf "%12.8f %12.8f %12.8f 1.0\n" xk[1] xk[2] xk[3]
