@@ -39,9 +39,9 @@ function bte_compute_μ!(params :: ElectronTransportParams, el::BTStates{R}; do_
     for i in axes(params.Tlist, 1)
         T = params.Tlist[i]
         if params.type == :Metal
-            μ = find_chemical_potential(ncarrier_target[i], T, el.e, el.k_weight, params.occ_type)
+            μ = find_chemical_potential(ncarrier_target[i], T, el.e, el.k_weight; params.occ_type)
         elseif params.type == :Semiconductor
-            μ = find_chemical_potential_semiconductor(ncarrier_target[i], T, e_e, e_h, w_e, w_h, params.occ_type)
+            μ = find_chemical_potential_semiconductor(ncarrier_target[i], T, e_e, e_h, w_e, w_h; params.occ_type)
         end
         params.μlist[i] = μ
         if do_print && mpi_isroot()

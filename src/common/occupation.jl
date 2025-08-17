@@ -157,9 +157,9 @@ function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true)
     for i in axes(occ.Tlist, 1)
         T = occ.Tlist[i]
         if occ.type == :Metal
-            μ = find_chemical_potential(ncarrier_target[i], T, el.e, el.k_weight, occ.occ_type)
+            μ = find_chemical_potential(ncarrier_target[i], T, el.e, el.k_weight; occ.occ_type)
         elseif occ.type == :Semiconductor
-            μ = find_chemical_potential_semiconductor(ncarrier_target[i], T, e_e, e_h, w_e, w_h, occ.occ_type)
+            μ = find_chemical_potential_semiconductor(ncarrier_target[i], T, e_e, e_h, w_e, w_h; occ.occ_type)
         end
         occ.μlist[i] = μ
         if do_print && mpi_isroot()
