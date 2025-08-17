@@ -105,7 +105,7 @@ def read_specfun_ph(nq, nmodes, ntemperatures):
 
     return selfen, specfun
 
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
 if __name__ == "__main__":
     # Parse self-energy calculation

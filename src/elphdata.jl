@@ -113,7 +113,7 @@ Compute electron-phonon coupling matrix elements using pre-computed `ph.eph_dipo
 Divide by `factor` if given. Can be used to screen the dipole term (`factor = ϵ`)
 or to subtracting the dipole term from `epdata.ep` (`factor = -1`).
 """
-function epdata_compute_eph_dipole!(epdata::ElPhData, factor=nothing; model)
+function epdata_compute_eph_dipole!(epdata::ElPhData, factor=nothing; model = nothing)
     # epdata.ep .= 0
     # return
     coeff = epdata.ph.eph_dipole_coeff

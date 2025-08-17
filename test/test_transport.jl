@@ -30,7 +30,7 @@ using ElectronPhonon
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
-    model = load_model(folder)
+    model = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum = "ph")
     model.el_velocity_mode = :BerryConnection
 
     Tlist = [200.0, 300.0, 400.0] .* unit_to_aru(:K)

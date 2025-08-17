@@ -1,22 +1,20 @@
 --
 &inputepw
   prefix      = 'bn'
-  amass(1)    = 28.086
+  amass(1)    = 10.811
+  amass(2)    = 14.0067
   outdir      = 'temp/'
   dvscf_dir   = './save/'
   etf_mem     = 0
 
   elph        = .true.
-  kmaps       = .true.  ! if true, read kmaps from file
   epbread     = .false.
   epwread     = .true.
 
   lpolar      = .true.
-  lifc        = .true.
+  lifc        = .false.
   use_ws      = .true.
-  vme         = .true.
-
-  export_julia = .false.
+  vme         = 'wannier'
 
   specfun_ph = .true.
   wmin_specfun = 0.0

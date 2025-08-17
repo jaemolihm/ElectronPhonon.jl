@@ -22,6 +22,7 @@ mpirun -np 16 $QE/epw.x -nk 16 -in epw.setup.in > epw.setup.out
 
 # EPW
 mpirun -np 1 $QE/epw.x -nk 1 -in epw.selfen.in > epw.selfen.out
+mpirun -np 1 $QE/epw.x -nk 1 -in epw.specfun.in > epw.specfun.out
 mpirun -np 1 $QE/epw.x -nk 1 -in epw.transport.hole.in > epw.transport.hole.out
 rm inv_tau* restart.fmt IBTEvel_sup.fmt
 mpirun -np 1 $QE/epw.x -nk 1 -in epw.transport.elec.in > epw.transport.elec.out
