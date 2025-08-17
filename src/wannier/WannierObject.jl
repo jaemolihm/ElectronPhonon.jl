@@ -8,11 +8,11 @@ Base.eltype(::Type{<:AbstractWannierObject{T}}) where {T} = Complex{T}
 "Check validity of input for WannierObject constructor"
 function check_wannierobject(irvec::Vector{Vec3{Int}}, op_r)
     if size(op_r, 2) != length(irvec)
-        @error ("size(op_r, 2)=$(size(op_r, 2)) must equal length(irvec)=$(length(irvec))")
+        println("size(op_r, 2)=$(size(op_r, 2)) must equal length(irvec)=$(length(irvec))")
         return false
     end
     if ! issorted(irvec, by=x->reverse(x))
-        @error "irvec is not sorted. irvec must be sorted by reverse(r)"
+        println("irvec is not sorted. irvec must be sorted by reverse(r)")
         return false
     end
     return true
@@ -51,7 +51,8 @@ function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing, sort=
     if ! check_wannierobject(irvec_, op_r_)
         error("WannierObject constructor check failed")
     end
-    T = eltype(op_r_).parameters[1]
+    # FIXME: better type parameter for WannierObject
+    T = eltype(op_r_).parameters[1]  # ComplexF64 -> Float64
     WannierObject{T}(nr=nr, irvec=irvec_, op_r=op_r_, ndata=size(op_r_, 1),
         irvec_next=irvec_next, _id=0,
     )
@@ -64,13 +65,14 @@ end
 # WannierObject(nr, irvec::Array{Int,2}, op_r) = WannierObject(nr, reinterpret(Vec3{Int}, vec(irvec))[:], op_r)
 
 function wannier_object_multiply_R(obj::AbstractWannierObject{T}, lattice) where {T}
+    # Put R to the slowest index
     opR_r = zeros(Complex{T}, (obj.ndata, 3, obj.nr))
     for ir = 1:obj.nr
         @views for i = 1:3
             opR_r[:, i, ir] .= im .* obj.op_r[:, ir] .* dot(lattice[i, :], obj.irvec[ir])
         end
     end
-    WannierObject(obj.irvec, reshape(opR_r, (obj.ndata*3, obj.nr)))
+    WannierObject(obj.irvec, reshape(opR_r, (obj.ndata*3, obj.nr)); obj.irvec_next)
 end
 
 function update_op_r!(obj, op_r_new)
@@ -79,4 +81,19 @@ function update_op_r!(obj, op_r_new)
     # Reshape and set obj.op_r .= op_r_new without allocation
     obj.op_r .= _reshape(op_r_new, size(obj.op_r))
     obj._id += 1
+end
+
+"""
+    get_next_wannier_object(parent :: WannierObject{T}) where {T}
+For a higher-order WannierObject (e.g. `g(Rₑ, Rₚ) → g(k, Rₚ) → g(k, q)`), return a
+child WannierObject whose `child.irvec` is `parent.irvec_next`.
+"""
+function get_next_wannier_object(parent :: WannierObject{T}) where {T}
+    if parent.irvec_next === nothing
+        throw(ArgumentError("irvec_next must be set"))
+    end
+    nr_child = length(parent.irvec_next)
+    mod(parent.ndata, nr_child) == 0 || throw(ArgumentError("ndata must be divisible by length(irvec_next)"))
+    ndata_child = div(parent.ndata, nr_child)
+    WannierObject(parent.irvec_next, zeros(Complex{T}, (ndata_child, nr_child)))
 end

@@ -125,8 +125,7 @@ function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_pref
     epdatas = [ElPhData{FT}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
     epmat = get_interpolator(model.epmat; fourier_mode)
-    ep_eRpq_obj = WannierObject(model.epmat.irvec_next,
-                zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    ep_eRpq_obj = get_next_wannier_object(model.epmat)
     ep_eRpq = get_interpolator(ep_eRpq_obj; fourier_mode)
 
     # Setup for collecting scattering processes
@@ -349,5 +348,3 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
     @info "nscat_tot = $nscat_tot"
     nothing
 end
-
-

@@ -71,6 +71,8 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
     epmat::WannType
     # The crystal momentum that the outer R index of epmat couples. "k" or "q".
     epmat_outer_momentum::String
+    # epmat_outer_momentum == :el : epmat.op_r is indexed as (i, j, nmodes, Rₚ, Rₑ)
+    # epmat_outer_momentum == :ph : epmat.op_r is indexed as (i, j, nmodes, Rₑ, Rₚ)
 
     # Symmetry operators for Wannier functions
     el_sym::Union{SymmetryOperators{FT, WannierObject{FT}}, Nothing} = nothing

@@ -319,8 +319,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     epdatas = [ElPhData{Float64}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
 
-    ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
-            zeros(ComplexF64, (nw*nband_max*nmodes, length(model.epmat.irvec_next))))
+    ep_ekpR_obj = get_next_wannier_object(model.epmat)
     epmat = get_interpolator(model.epmat; fourier_mode)
     ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
 
@@ -460,4 +459,3 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
     data_to_return
 end
-

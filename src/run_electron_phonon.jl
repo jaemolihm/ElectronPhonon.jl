@@ -116,8 +116,7 @@ function run_eph_outer_loop_q(
     end
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    ep_eRpq_obj = WannierObject(model.epmat.irvec_next,
-                                zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    ep_eRpq_obj = get_next_wannier_object(model.epmat)
     ep_eRpq_threads = [get_interpolator(ep_eRpq_obj; fourier_mode) for _ in 1:nthreads()]
 
     mpi_isroot() && @info "Number of q points = $nq"

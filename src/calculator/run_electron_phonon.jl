@@ -5,7 +5,6 @@
 using Dates: now
 using Base.Threads: nthreads, threadid, @threads
 using ChunkSplitters
-using ElectronPhonon: WannierObject, fold_kpoints, unfold_ElectronStates, check_energy_conservation_all, epsilon_lindhard
 using OffsetArrays: no_offset_view
 
 
@@ -29,10 +28,10 @@ function run_eph_outer_k(
         skip_eph = false,
         el_kq_from_unfolding = false,
         precompute_el_kq = el_kq_from_unfolding,
-        use_symmetry = true,
         energy_conservation = (:None, 0.0),
         screening_params = nothing,
         progress_print_step = 20,
+        symmetry = model.symmetry,
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
     ) where {FT}
 
@@ -49,8 +48,6 @@ function run_eph_outer_k(
     mpi_comm_q === nothing || error("mpi_comm_q not implemented")
 
     (; nw, nmodes) = model
-
-    symmetry = use_symmetry ? model.symmetry : nothing
 
     # Generate k points
     @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
@@ -80,7 +77,7 @@ function run_eph_outer_k(
 
 
     # Compute and save electron state at k
-    @time el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"], window_k; fourier_mode)
+    @time el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_k; fourier_mode)
     @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
 
 
@@ -96,14 +93,14 @@ function run_eph_outer_k(
             # To ensure gauge consistency between symmetry-equivalent k points, we explicitly compute
             # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
             kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
-            el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity"], window_kq; fourier_mode)
+            el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
 
             el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
 
             # el_kq_save_irr is not used anymore.
             el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
         else
-            el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity"], window_kq; fourier_mode)
+            el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
         end
     else
         kqpts = nothing
@@ -129,8 +126,7 @@ function run_eph_outer_k(
     end
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
-    ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
-            zeros(ComplexF64, (nw*nband_max*nmodes, length(model.epmat.irvec_next))))
+    ep_ekpR_obj = get_next_wannier_object(model.epmat)
     epmat = get_interpolator(model.epmat; fourier_mode, threads = true)
     ep_ekpRs = get_interpolator_channel(ep_ekpR_obj; fourier_mode)
 
@@ -142,6 +138,7 @@ function run_eph_outer_k(
         else
             get_interpolator_channel(model.el_ham_R; fourier_mode)
         end
+        pos_threads = get_interpolator_channel(model.el_pos; fourier_mode)
     end
 
     if mpi_isroot()
@@ -188,6 +185,7 @@ function run_eph_outer_k(
             if !precompute_el_kq
                 ham = take!(ham_threads)
                 vel = take!(vel_threads)
+                pos = take!(pos_threads)
             end
 
             ϵs = zeros(Complex{FT}, model.nmodes)
@@ -217,6 +215,7 @@ function run_eph_outer_k(
                     length(epdata.el_kq.rng) == 0 && continue
 
                     set_velocity_diag!(epdata.el_kq, vel, xkq, model.el_velocity_mode)
+                    set_position!(epdata.el_kq, pos, xkq)
                     # TODO: full velocity
                 end
 
@@ -237,7 +236,7 @@ function run_eph_outer_k(
                     else
                         ϵs .= 1
                     end
-                    epdata_compute_eph_dipole!(epdata, ϵs)
+                    epdata_compute_eph_dipole!(epdata, ϵs; model)
                     epdata_set_g2!(epdata)
                 end
 
@@ -254,6 +253,7 @@ function run_eph_outer_k(
             if !precompute_el_kq
                 put!(ham_threads, ham)
                 put!(vel_threads, vel)
+                put!(pos_threads, pos)
             end
         end # iq chunk
 
@@ -262,7 +262,7 @@ function run_eph_outer_k(
 
     end # ik
 
-    postprocess_calculator!.(calculators; qpts, model.symmetry)
+    postprocess_calculator!.(calculators; qpts, symmetry)
 
     (; kpts, qpts, el_k_save, ph_save)
 end
@@ -280,12 +280,14 @@ function run_eph_over_k_and_kq(
         fourier_mode = "gridopt",
         window_k  = (-Inf, Inf),
         window_kq = (-Inf, Inf),
+        el_kq_from_unfolding = false,
         skip_eph = false,
-        use_symmetry = true,
+        symmetry = model.symmetry,
         energy_conservation = (:None, 0.0),
         screening_params = nothing,
         progress_print_step = 20,
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
+        covariant_derivative_of_g = false,  # Compute cov. derivative of g
     ) where {FT}
 
     if model.epmat_outer_momentum != "el"
@@ -302,15 +304,34 @@ function run_eph_over_k_and_kq(
 
     (; nw, nmodes) = model
 
-    symmetry = use_symmetry ? model.symmetry : nothing
-
     # Generate k points
     @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
         kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
+    @time el_k_save  = compute_electron_states(model, kpts,  ["eigenvalue", "eigenvector", "velocity", "position"], window_k;  fourier_mode)
     nk = kpts.n
 
-    @time kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
-        kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode)
+    if el_kq_from_unfolding
+        # To ensure gauge consistency between symmetry-equivalent k points, we explicitly compute
+        # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
+        @time kqpts_irr, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
+            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; symmetry, fourier_mode)
+
+        kqpts, ik_to_ikirr_isym_kq = unfold_kpoints(kqpts_irr, symmetry)
+
+        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
+
+        el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
+
+        # el_kq_save_irr is not used anymore.
+        el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
+
+    else
+        @time kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
+            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode)
+
+        @time el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
+    end
+
 
     # Precompute qpts and phonon states if k and k+q meshes are commensurate
     if all(kpts.ngrid .> 0) && all(mod.(kqpts.ngrid, kpts.ngrid) .== 0)
@@ -328,11 +349,6 @@ function run_eph_over_k_and_kq(
     end
 
 
-    # Compute and save electron state at k and k+q
-    @time el_k_save  = compute_electron_states(model, kpts,  ["eigenvalue", "eigenvector", "velocity"], window_k;  fourier_mode)
-    @time el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity"], window_kq; fourier_mode)
-
-
     # Maximum number of electron bands to decide the size of e-ph matrix buffer.
     nband_max = max(maximum(el.nband for el in el_k_save),
                     maximum(el.nband for el in el_kq_save))
@@ -344,10 +360,33 @@ function run_eph_over_k_and_kq(
     end
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
-    ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
-            zeros(ComplexF64, (nw*nband_max*nmodes, length(model.epmat.irvec_next))))
+    ep_ekpR_obj = get_next_wannier_object(model.epmat)
     epmat = get_interpolator(model.epmat; fourier_mode, threads = true)
     ep_ekpRs = get_interpolator_channel(ep_ekpR_obj; fourier_mode)
+
+    # Setup WannierObject and interpolator for im * Rₑ * g(Rₑ, Rₚ)
+    if covariant_derivative_of_g
+        epmat_R_obj = ElectronPhonon.wannier_object_multiply_R(model.epmat, model.lattice);
+        epmat_R = get_interpolator(epmat_R_obj; fourier_mode, threads = true);
+
+        epobj_ekpR_R = get_next_wannier_object(epmat_R_obj);
+        ep_ekpR_Rs = get_interpolator_channel(epobj_ekpR_R; fourier_mode);
+
+        # Tight-binding approximation: dgᵃ_{ijν}(Rₑ, Rₚ) += im * (rᵃ_j - rᵃ_i) g_{ijν}(Rₑ, Rₚ)
+        # epmat        : (i, j, nmodes, Rₚ, Rₑ)
+        # epobj_ekpR_R : (i, j, nmodes, Rₚ, 3, Rₑ)
+        @views for ire in axes(epmat_R_obj.op_r, 2)
+            nrp = length(epmat_R_obj.irvec_next)
+            tmp_g  = Base.ReshapedArray(model.epmat.op_r[:, ire], (nw, nw, nmodes, nrp), ())
+            tmp_gR = Base.ReshapedArray(epmat_R_obj.op_r[:, ire], (nw, nw, nmodes, nrp, 3), ())
+            for idir in 1:3, iw in 1:nw
+                ri = model.wann_centers[iw][idir]
+                tmp_gR[iw, :, :, :, idir] .-= im .* ri .* tmp_g[iw, :, :, :]
+                tmp_gR[:, iw, :, :, idir] .+= im .* ri .* tmp_g[:, iw, :, :]
+            end
+        end
+
+    end
 
 
     # Precompute phonon states if precompute_ph == true
@@ -367,6 +406,7 @@ function run_eph_over_k_and_kq(
             ;
             rng_band = iband_min:iband_max,
             el_states_kq = el_kq_save,
+            model.nw,
             model.nmodes,
             kqpts,
             nelec_below_window_k,
@@ -374,7 +414,6 @@ function run_eph_over_k_and_kq(
             nchunks_threads,
         )
     end
-
 
     if mpi_isroot()
         @info "Number of k points = $(kpts.n)"
@@ -400,15 +439,28 @@ function run_eph_over_k_and_kq(
             get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
         end
 
-        # Multithreading setup
-        for calc in calculators
-            setup_calculator_inner!(calc, ik; ik)
+        if covariant_derivative_of_g
+            get_fourier!(epmat_R.out, epmat_R, xk);
+            # (iw_jw_imode, Rₚ, idir) -> (iw_jw_imode_idir, Rₚ)
+            tmp = Base.ReshapedArray(epmat_R.out, (nw*nw*nmodes, length(epobj_ekpR_R.irvec), 3), ())
+            epobj_ekpR_R.op_r .= reshape(permutedims(tmp, (1, 3, 2)), (nw*nw*nmodes*3, length(epobj_ekpR_R.irvec)))
         end
 
-        @threads :static for (id_chunk, ikqs) in enumerate(chunks(1:kqpts.n; n=nchunks_threads))
+        # Multithreading setup
+        for calc in calculators
+            setup_calculator_inner!(calc; ik)
+        end
+
+        @threads for (id_chunk, ikqs) in enumerate(chunks(1:kqpts.n; n=nchunks_threads))
         # @time for (id_chunk, ikqs) in enumerate(collect(chunks(1:kqpts.n; n=nchunks_threads))[1:1])
             epdata = take!(epdatas)
             ep_ekpR = take!(ep_ekpRs)
+
+            if covariant_derivative_of_g
+                ep_ekpR_R = take!(ep_ekpR_Rs)
+            else
+                ep_ekpR_R = nothing
+            end
 
             if ! precompute_ph
                 dyn = take!(dyn_threads)
@@ -416,12 +468,19 @@ function run_eph_over_k_and_kq(
                 dyn = nothing
             end
 
-            _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, calculators, el_kq_save, xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk, energy_conservation, screening_params, skip_eph)
+            _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, calculators, el_kq_save,
+                xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk,
+                energy_conservation, screening_params, skip_eph;
+                ep_ekpR_R
+            )
 
             put!(ep_ekpRs, ep_ekpR)
             put!(epdatas, epdata)
             if ! precompute_ph
                 put!(dyn_threads, dyn)
+            end
+            if covariant_derivative_of_g
+                put!(ep_ekpR_Rs, ep_ekpR_R)
             end
         end # ikq chunk
 
@@ -433,14 +492,21 @@ function run_eph_over_k_and_kq(
     end # ik
 
     for calc in calculators
-        postprocess_calculator!(calc; qpts, model.symmetry)
+        postprocess_calculator!(calc; qpts, symmetry)
     end
 
-    (; kpts, qpts, el_k_save, ph_save)
+    (; kpts, qpts, el_k_save, el_kq_save, ph_save)
 end
 
 
-function _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, calculators, el_kq_save, xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk, energy_conservation, screening_params, skip_eph)
+function _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, calculators, el_kq_save,
+        xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk,
+        energy_conservation, screening_params, skip_eph;
+        ep_ekpR_R
+    )
+
+    (; nw, nmodes) = model
+
     ϵs = zeros(ComplexF64, model.nmodes)
 
     for ikq in ikqs
@@ -478,6 +544,63 @@ function _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, calculators, e
         # Compute electron-phonon coupling
         if !skip_eph
             get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
+
+            if ep_ekpR_R !== nothing
+                # This must be done before the long-range calculation
+
+                get_fourier!(ep_ekpR_R.out, ep_ekpR_R, xq)
+                dg_wan = Base.ReshapedArray(ep_ekpR_R.out, (nw, nw, nmodes, 3), ())
+                dg = zeros(ComplexF64, (epdata.el_kq.nband, epdata.el_k.nband, nmodes, 3))
+
+                # Apply electron gauge matrices (Wannier to eigenstate)
+                tmp1 = zeros(ComplexF64, nw, nw)
+                @views for idir in 1:3, imode in 1:nmodes
+                    tmp1 .= dg_wan[:, :, imode, idir]
+                    dg[:, :, imode, idir] .= no_offset_view(epdata.el_kq.u)' * tmp1 * no_offset_view(epdata.el_k.u)
+                end
+
+                # Apply phonon gauge matrix (Wannier to eigenstate)
+                tmp2 = zeros(ComplexF64, size(dg, 1), size(dg, 3))
+                @views for idir in 1:3
+                    for iw in axes(dg, 2)
+                        tmp2 .= dg[:, iw, :, idir]
+                        dg[:, iw, :, idir] .= tmp2 * epdata.ph.u
+                    end
+                end
+
+                # One could compute the Berry connection term as below. However, there are two issues.
+                # 1. One needs to sum all bands (or WFs) to compute matrix multiplication g * rbar.
+                #    But this is not currently possible as we truncate g by the window already
+                #    at the level of g(k, Rₚ).
+                # 2. Calculating covatiant derivative of g using WFs are not exact in any case
+                #    because one in principle needs terms like <u_k+q+b|dV|u_k> in plane wave.
+                #    (or compute [r, dV] directly in plane wave)
+                # Therefore, we just stick to the simple diagonal tight-binding approximation,
+                # which is implemented by adding im * (rj - ri) * g_{ij} to dg
+                # (i.e. derivative in tight-binding gauge, where phase factor is e^{i*k*(R + rj - ri)}).
+                # # Add Berry connection term : im * (g * rbar_k - rbar_kq * g)
+                # @views for idir in 1:3
+                #     ξk  = no_offset_view(getindex.(epdata.el_k.rbar,  idir))
+                #     ξkq = no_offset_view(getindex.(epdata.el_kq.rbar, idir))
+                #     for imode in 1:nmodes
+                #         g = no_offset_view(epdata.ep[:, :, imode])
+                #         dg[:, :, imode, idir] .+= im .* (g * ξk .- ξkq * g)
+                #     end
+                # end
+
+                # For debugging
+                # if ik == ikq
+                #     dk_dir = model.recip_lattice * Vec3(0, 0, 1)
+                #     print("$(abs(dk_dir' * dg[1, 1, 6, :])), ")
+                # end
+
+                epdata_dg = OffsetArray(dg, epdata.el_kq.rng, epdata.el_k.rng, :, :)
+
+            else
+                epdata_dg = nothing
+
+            end
+
             if screening_params !== nothing
                 # FIXME: screening should go into calculator
                 (; T, μ) = calculators[1].occ[1]
@@ -487,7 +610,7 @@ function _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, calculators, e
             else
                 ϵs .= 1
             end
-            epdata_compute_eph_dipole!(epdata, ϵs)
+            epdata_compute_eph_dipole!(epdata, ϵs; model)
             epdata_set_g2!(epdata)
         end
 
@@ -496,7 +619,8 @@ function _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, calculators, e
         # Now, we are done with matrix elements. All data saved in epdata.
 
         for calc in calculators
-            run_calculator!(calc, epdata, ik, iq, ikq; xq, xk, id_chunk)
+            # FIXME: Find out better way to pass epdata_dg
+            run_calculator!(calc, epdata, ik, iq, ikq; xq, xk, id_chunk, epdata_dg)
         end
 
     end # ikq

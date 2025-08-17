@@ -27,6 +27,8 @@ To get an array with 1-based indexing, use `OffsetArrays.no_offset_view`.
 """
 Base.@kwdef mutable struct ElectronState{T <: Real}
     nw::Int # Number of Wannier functions
+    xk::Vec3{T}  # k vector in crystal coordinates
+
     e_full::Vector{T} # Eigenvalues at all bands
     u_full::Matrix{Complex{T}} # Electron eigenvectors
 
@@ -38,13 +40,14 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
     # These arrays are defined only for bands inside the window
     vdiag::Vector{Vec3{T}} # Diagonal components of band velocity in Cartesian coordinates.
     v::Matrix{Vec3{Complex{T}}} # Velocity matrix in Cartesian coordinates.
-    rbar::Matrix{Vec3{Complex{T}}} # Position matrix in Cartesian coordinates (without the Hamiltonian derivative term).
+    rbar::Matrix{Vec3{Complex{T}}} # Position matrix in Cartesian coordinates (without the Hamiltonian derivative term). (i.e. Berry connection)
     occupation::Vector{T} # Electron occupation number
 end
 
 function ElectronState{T}(nw, nband_bound=0) where {T}
     ElectronState{T}(
         nw=nw,
+        xk=Vec3{T}(NaN, NaN, NaN),
         e_full=zeros(T, nw),
         u_full=zeros(Complex{T}, nw, nw),
         nband_bound=nband_bound,
@@ -83,6 +86,7 @@ function Base.copyto!(dest::ElectronState, src::ElectronState)
         throw(ArgumentError("src.nw ($(src.nw)) must be equal to dest.nw ($(dest.nw))"))
     end
     dest.nband = src.nband
+    dest.xk = src.xk
     dest.e_full .= src.e_full
     dest.u_full .= src.u_full
     dest.rng = src.rng
@@ -154,6 +158,7 @@ end
 Compute electron eigenenergy and eigenvector and save them in el.
 """
 function set_eigen!(el::ElectronState, ham, xk)
+    el.xk = xk
     get_el_eigen!(el.e_full, el.u_full, el.nw, ham, xk)
 
     # Reset window to a dummy value
@@ -166,6 +171,7 @@ end
 Compute electron eigenenergy and save them in el.
 """
 function set_eigen_valueonly!(el::ElectronState, ham, xk)
+    el.xk = xk
     get_el_eigen_valueonly!(el.e_full, el.nw, ham, xk)
 
     # Reset window to a dummy value

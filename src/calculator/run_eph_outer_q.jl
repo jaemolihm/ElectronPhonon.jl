@@ -4,7 +4,6 @@
 
 using ChunkSplitters
 using Base.Threads: nthreads, threadid, @threads
-using ElectronPhonon: WannierObject, fold_kpoints, unfold_ElectronStates, check_energy_conservation_all, epsilon_lindhard
 using OffsetArrays: no_offset_view
 
 
@@ -34,6 +33,8 @@ function run_eph_outer_q(
         energy_conservation = (:None, 0.0),
         screening_params = nothing,
         progress_print_step = 20,
+        keep_all_qpts = false,
+        nchunks_threads = nthreads(),  # Number of chunks for multithreading
     ) where {FT}
 
     if model.epmat_outer_momentum != "ph"
@@ -49,8 +50,6 @@ function run_eph_outer_q(
     mpi_comm_q === nothing || error("mpi_comm_q not implemented")
 
     (; nw, nmodes) = model
-
-    nchunks_threads = 2 * nthreads()  # Number of chunks for multithreading
 
     symmetry = use_symmetry ? model.symmetry : nothing
 
@@ -68,7 +67,10 @@ function run_eph_outer_q(
     else
         error("type of qpts_input is wrong")
     end
-    @time qpts = filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
+
+    if !keep_all_qpts
+        @time qpts = filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
+    end
     nq = qpts.n
 
 
@@ -82,7 +84,7 @@ function run_eph_outer_q(
 
 
     # Compute and save electron state at k
-    @time el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"], window_k; fourier_mode)
+    @time el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_k; fourier_mode)
     @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
 
 
@@ -98,14 +100,14 @@ function run_eph_outer_q(
             # To ensure gauge consistency between symmetry-equivalent k points, we explicitly compute
             # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
             kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
-            el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity"], window_kq; fourier_mode)
+            el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
 
             el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
 
             # el_kq_save_irr is not used anymore.
             el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
         else
-            el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity"], window_kq; fourier_mode)
+            el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
         end
     else
         kqpts = nothing
@@ -131,8 +133,7 @@ function run_eph_outer_q(
     end
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
-    ep_eRpq_obj = WannierObject(model.epmat.irvec_next,
-                                zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    ep_eRpq_obj = get_next_wannier_object(model.epmat)
     ep_eRpqs = get_interpolator_channel(ep_eRpq_obj; fourier_mode)
 
     epmat = get_interpolator(model.epmat; fourier_mode, threads = true)
@@ -238,7 +239,7 @@ function run_eph_outer_q(
                     else
                         ϵs .= 1
                     end
-                    epdata_compute_eph_dipole!(epdata, ϵs)
+                    epdata_compute_eph_dipole!(epdata, ϵs; model)
                     epdata_set_g2!(epdata)
                 end
 
@@ -265,5 +266,5 @@ function run_eph_outer_q(
 
     postprocess_calculator!.(calculators; qpts, model.symmetry)
 
-    (; kpts, qpts, el_k_save, ph_save)
+    (; kpts, qpts, el_k_save, el_kq_save, ph_save)
 end

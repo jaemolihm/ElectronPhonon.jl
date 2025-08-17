@@ -47,11 +47,26 @@ Approximation to minus the delta function divided by temperature.
 """
 @inline function occ_fermion_derivative(e, T; occ_type=:FermiDirac)
     if occ_type == :FermiDirac
+        if T > sqrt(eps(eltype(T)))
+            x = e / T
+            return -1 / (2 + exp(x) + exp(-x)) / T
+            # The following is mathematically equivalent, but is numerically unstable if e << -T
+            # occ = occ_fermion(e, T, occ_type=:FermiDirac)
+            # return -occ * (1 - occ) / T
+
+        elseif T >= 0
+            return zero(e)
+
+        else
+            throw(ArgumentError("Temperature must be positive"))
+        end
+
+    elseif occ_type == :ColdSmearing || occ_type == :MarzariVanderbilt || occ_type == :MV
+        # Cold smearing (Marzari, Vanderbilt, DeVita, Payne, PRL 82, 3296 (1999))
         x = e / T
-        return -1 / (2 + exp(x) + exp(-x)) / T
-        # The following is mathematically equivalent, but is numerically unstable if e << -T
-        # occ = occ_fermion(e, T, occ_type=:FermiDirac)
-        # return -occ * (1 - occ) / T
+        xp = x + 1 / sqrt(2)
+        return - (sqrt(2) * xp + 1) / sqrt(π) * exp(-xp^2) / T
+
     else
         throw(ArgumentError("unknown occ_type $occ_type"))
     end

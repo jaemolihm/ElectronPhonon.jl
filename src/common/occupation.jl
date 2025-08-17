@@ -100,6 +100,15 @@ function Base.iterate(occ::ElectronOccupationParams, i=1)
     i > length(occ) ? nothing : (occ[i], i+1)
 end
 
+function occ_fermion(e, occ :: ElectronOccupationParams, i :: Integer)
+    (; μ, T) = occ[i]
+    occ_fermion(e - μ, T; occ.occ_type)
+end
+function occ_fermion_derivative(e, occ :: ElectronOccupationParams, i :: Integer)
+    (; μ, T) = occ[i]
+    occ_fermion_derivative(e - μ, T; occ.occ_type)
+end
+
 
 """
     chemical_potential_is_computed(occ :: ElectronOccupationParams)
@@ -131,10 +140,10 @@ function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true)
         # nband_valence should be added for the real target ncarrier.
         # Also, el.nstates_base is the contribution to the ncarrier from occupied states
         # outside the window (i.e. not included in `energy`). So it is subtracted.
-        ncarrier_target = @. occ.nlist / occ.spin_degeneracy + occ.nband_valence - el.nstates_base
+        ncarrier_target = @. (occ.nlist + occ.nelec) / occ.spin_degeneracy - el.nstates_base
     elseif occ.type == :Semiconductor
         # For semiconductors, count the doped carriers to minimize floating point error.
-        # FIXME: nband_valence needs to be set.
+        # FIXME: nband_valence needs to be a field
         nband_valence = round(Int, occ.nelec / occ.spin_degeneracy)
         ncarrier_target = @. occ.nlist / occ.spin_degeneracy
         e_e = el.e[el.iband .>  nband_valence]

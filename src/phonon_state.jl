@@ -10,21 +10,25 @@ export set_velocity_diag!
 
 Base.@kwdef mutable struct PhononState{T <: Real}
     nmodes::Int # Number of modes
+    xq::Vec3{T}  # q vector in crystal coordinates
     e::Vector{T} # Phonon eigenavlues
     u::Matrix{Complex{T}} # Phonon eigenmodes
     vdiag::Vector{Vec3{T}} # Diagonal components of band velocity in Cartesian coordinates.
     occupation::Vector{T} # Phonon occupation number
     eph_dipole_coeff::Vector{Complex{T}} # dipole potential coefficients for e-ph coupling
+    eph_r_coeff::Matrix{Complex{T}} # dipole potential coefficients for e-ph coupling
 end
 
 function PhononState{T}(nmodes) where {T}
     PhononState{T}(
         nmodes=nmodes,
+        xq=Vec3{T}(NaN, NaN, NaN),
         e=zeros(T, nmodes),
         u=zeros(Complex{T}, nmodes, nmodes),
         vdiag=zeros(Vec3{T}, nmodes),
         occupation=zeros(T, nmodes),
-        eph_dipole_coeff=zeros(Complex{T}, nmodes)
+        eph_dipole_coeff=zeros(Complex{T}, nmodes),
+        eph_r_coeff=zeros(Complex{T}, nmodes, 3)
     )
 end
 
@@ -35,6 +39,7 @@ function Base.copyto!(dest::PhononState, src::PhononState)
         throw(ArgumentError("src.nmodes ($(src.nmodes)) cannot be greater " *
             "than dest.nmodes ($(dest.nmodes))"))
     end
+    dest.xq = src.xq
     dest.e .= src.e
     dest.u .= src.u
     dest.occupation .= src.occupation
@@ -59,6 +64,7 @@ get_occupation(ph::PhononState, T) = occ_boson.(ph.e, T)
 Compute phonon eigenenergy and eigenvector and save them in `ph`.
 """
 function set_eigen!(ph::PhononState, xk, dyn, mass, polar)
+    ph.xq = xk
     get_ph_eigen!(ph.e, ph.u, xk, dyn, mass, polar)
 end
 
@@ -67,6 +73,7 @@ end
 Compute phonon eigenenergy and save them in `ph`.
 """
 function set_eigen_valueonly!(ph::PhononState, xk, dyn, mass, polar)
+    ph.xq = xk
     get_ph_eigen_valueonly!(ph.e, xk, dyn, mass, polar)
 end
 
@@ -91,5 +98,5 @@ Compute the coefficients for the dipole electron-phonon coupling. The phonon eig
 be already set.
 """
 function set_eph_dipole_coeff!(ph::PhononState{T}, xk, polar) where {T}
-    get_eph_dipole_coeffs!(ph.eph_dipole_coeff, xk, polar, ph.u)
+    get_eph_dipole_coeffs!(ph.eph_dipole_coeff, ph.eph_r_coeff, xk, polar, ph.u)
 end

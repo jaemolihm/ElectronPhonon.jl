@@ -54,7 +54,10 @@ In the Rydberg units, ``e(k + δk) = e0 + δk * m⁻¹ * δk``. So, ``m = 2(d²e
 function find_effective_mass(model, kpts, iband)
     f(xk) = compute_eigenvalues_el(model, Kpoints(model.recip_lattice \ xk); fourier_mode="normal")[iband]
     map(kpts.vectors) do xk0
-        hessian = jacobian(central_fdm(5, 1), xk -> grad(central_fdm(5, 1, adapt=0), f, xk)[1], model.recip_lattice * xk0)[1]
+        # FIXME: Can we remove SVector to Vector conversion?
+        # I put it since FiniteDifferences (v0.12.32) gives error
+        # setindex!(::SVector{3, Float64}, value, ::Int) is not defined
+        hessian = jacobian(central_fdm(5, 1), xk -> grad(central_fdm(5, 1, adapt=0), f, xk)[1], Vector(model.recip_lattice * xk0))[1]
         2 * inv(Mat3(hessian))
     end
 end

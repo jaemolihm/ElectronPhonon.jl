@@ -113,15 +113,88 @@ Compute electron-phonon coupling matrix elements using pre-computed `ph.eph_dipo
 Divide by `factor` if given. Can be used to screen the dipole term (`factor = ϵ`)
 or to subtracting the dipole term from `epdata.ep` (`factor = -1`).
 """
-function epdata_compute_eph_dipole!(epdata::ElPhData, factor=nothing)
+function epdata_compute_eph_dipole!(epdata::ElPhData, factor=nothing; model)
+    # epdata.ep .= 0
+    # return
     coeff = epdata.ph.eph_dipole_coeff
+    coeff_r = epdata.ph.eph_r_coeff
     if factor === nothing
-        @views for imode = 1:epdata.nmodes
+        @views for imode in 1:epdata.nmodes
             @. epdata.ep[:, :, imode] += coeff[imode] * epdata.mmat
         end
     else
-        @views for imode = 1:epdata.nmodes
-            @. epdata.ep[:, :, imode] += (coeff[imode] / factor[imode]) * epdata.mmat
+        # THIS
+        # r = epdata.el_kq.u' * epdata.el_k.u * epdata.el_k.rbar
+
+        # r = epdata.el_kq.rbar * epdata.el_kq.u' * epdata.el_k.u
+
+        # epdata.ep .= 0
+
+        @views for imode in 1:epdata.nmodes
+            # @. epdata.ep[:, :, imode] += (coeff[imode] / factor[imode]) * epdata.mmat
+            for m in epdata.el_kq.rng, n in epdata.el_k.rng
+                for iw in 1:epdata.nw
+                    epdata.ep[m, n, imode] += (coeff[imode] / factor[imode]) * epdata.el_kq.u[iw, m]' * epdata.el_k.u[iw, n]
+                end
+            end
+        end
+
+        @views for imode in 1:epdata.nmodes
+            for m in epdata.el_kq.rng, n in epdata.el_k.rng
+                for i in 1:3
+                    # epdata.ep[m, n, imode] += (coeff_r[imode, i] / factor[imode]) * r[m, n][i]
+                end
+            end
+        end
+    end
+
+    return
+
+
+    polar = model.polar_eph
+    (; alat, recip_lattice, volume, atom_pos) = polar.cell
+    (; η, cutoff) = polar.method
+    natom = length(atom_pos)
+    metric = (2π / alat)^2  # Conversion factor for G^2, unit bohr⁻²
+    xq = epdata.ph.xq
+    xq = normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
+
+    fac = 1im * ElectronPhonon.e2 * 4π / volume
+
+    # temporary vectors of size (nmodes,)
+    tmp = zeros(Vec3{ComplexF64}, polar.nmodes)
+
+    for G_crystal in polar.Glist
+        qG = recip_lattice * (xq .+ G_crystal)  # In bohr⁻¹
+        GϵG = qG' * polar.ϵ * qG  # In bohr⁻²
+
+        # Skip if G=0 or if exponenent GϵG is large
+        if (GϵG <= 0) || (GϵG / (4 * metric * η) >= cutoff)
+            continue
+        end
+
+        # After EPW v5.7: sqrt(metric) factor is removed
+        fac2 = fac * exp(-GϵG / (4 * metric * η)) / GϵG
+
+        # Until EPW v5.6: sqrt(metric) is included to keep compatibility
+        # fac2 = fac * exp(-GϵG * sqrt(metric) / (4 * metric * polar.η)) / GϵG  # The exponent is unitless
+
+        for iatom in 1:natom
+            phasefac = cis(-alat * dot(qG, atom_pos[iatom]))
+            GZi = qG' * polar.Z[iatom]
+            for ipol in 1:3
+                tmp[3*(iatom-1)+ipol] += im * qG * (fac2 * phasefac * GZi[ipol])
+            end
+        end
+    end
+
+    coeff_r = Transpose(epdata.ph.u) * tmp
+
+    r = epdata.el_kq.u' * epdata.el_k.u * epdata.el_k.rbar
+
+    @views for imode in 1:epdata.nmodes
+        for m in epdata.el_kq.rng, n in epdata.el_k.rng
+            epdata.ep[m, n, imode] += conj.(coeff_r[imode])' * r[m, n]
         end
     end
 end

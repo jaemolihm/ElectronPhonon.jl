@@ -98,8 +98,7 @@ function compute_debye_waller_active_space(model, kpts, el_mom, window; fourier_
     el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector"]; fourier_mode);
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
-    ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
-        zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    ep_ekpR_obj = get_next_wannier_object(model.epmat)
     epmat = get_interpolator(model.epmat; fourier_mode)
     ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
 
@@ -160,11 +159,10 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
     dw_active = ElectronPhonon.compute_debye_waller_active_space(model, kpts, el_mom, window_wfpt)
 
     dw_itps = get_interpolator_channel(dwmat; fourier_mode)
-    el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector"]; fourier_mode);
+    el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "position"]; fourier_mode);
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
-    ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
-        zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+    ep_ekpR_obj = get_next_wannier_object(model.epmat)
     epmat = get_interpolator(model.epmat; fourier_mode)
     ep_ekpRs = get_interpolator_channel(ep_ekpR_obj; fourier_mode)
 
@@ -250,7 +248,7 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
                 # Add g*g contribution to the Sternheimer matrix
                 get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
                 epdata_set_mmat!(epdata)
-                epdata_compute_eph_dipole!(epdata)
+                epdata_compute_eph_dipole!(epdata; model)
 
                 for imode in 1:nmodes, ib in 1:nw, jb in 1:nw, pb in 1:nw
                     ek1 = el_k.e[ib]

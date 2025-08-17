@@ -4,7 +4,7 @@
 # We follow the DFTK convention.
 # The symmetry operations (S, τ) are reciprocal-space operations.
 # The corresponding real-space operation r -> W * r + w satisfies S = W' and τ = -W^-1 w.
-# See https://juliamolsim.github.io/DFTK.jl/stable/advanced/symmetries for details.
+# See https://juliamolsim.github.io/DFTK.jl/dev/developer/symmetries for details.
 
 using spglib_jll
 using Spglib
@@ -417,6 +417,13 @@ end
 normalize_kpoint_coordinate(k::AbstractVector) = normalize_kpoint_coordinate.(k)
 
 
+"""Bring kpoint coordinates into the range [-0.5, 0.5)"""
+function normalize_kpoint_coordinate_centered(x::Real)
+    normalize_kpoint_coordinate(x + 0.5) .- 0.5
+end
+normalize_kpoint_coordinate_centered(k::AbstractVector) = normalize_kpoint_coordinate_centered.(k)
+
+
 function bzmesh_ir_wedge(ngrid, symmetry::Symmetry; ignore_time_reversal=false)
     Base.depwarn("Renamed. Use kpoints_grid instead", :bzmesh_ir_wedge)
     kpoints_grid_symmetry(ngrid, symmetry; ignore_time_reversal)
@@ -466,7 +473,7 @@ function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=f
     @assert sum(weight_irr_int) == prod(ngrid)
     weight_irr = weight_irr_int / prod(ngrid)
     k_irr, weight_irr
-    Kpoints{Float64}(length(k_irr), k_irr, weight_irr, ngrid)
+    GridKpoints(Kpoints{Float64}(length(k_irr), k_irr, weight_irr, ngrid))
 end
 
 
@@ -541,15 +548,15 @@ function symmetrize_array(arr::AbstractArray{T}, symmetry; order, tr_odd=false, 
     arr_sym = zero(arr)
     @views if order == 0
         for i in eachindex(arr)
-            arr_sym[i] = symmetrize(arr[i], symmetry, tr_odd=tr_odd, axial=axial)
+            arr_sym[i] = symmetrize(arr[i], symmetry; tr_odd, axial)
         end
     elseif order == 1
         for ind in CartesianIndices(size(arr)[order+1:end])
-            arr_sym[:, ind] .= symmetrize(SVector{3}(arr[:, ind]), symmetry, tr_odd=tr_odd, axial=axial)
+            arr_sym[:, ind] .= symmetrize(SVector{3}(arr[:, ind]), symmetry; tr_odd, axial)
         end
     elseif order == 2
         for ind in CartesianIndices(size(arr)[order+1:end])
-            arr_sym[:, :, ind] .= symmetrize(SMatrix{3, 3}(arr[:, :, ind]), symmetry, tr_odd=tr_odd, axial=axial)
+            arr_sym[:, :, ind] .= symmetrize(SMatrix{3, 3}(arr[:, :, ind]), symmetry; tr_odd, axial)
         end
     else
         error("Order $order not implemented")
@@ -566,3 +573,29 @@ end
 
 # TODO: use == instead of isapprox for symop?
 # TODO: Implement == (or isapprox) for Symmetry, and use it in test_hdf.jl
+
+
+
+"""
+    apply_symop(S :: SymOp, k :: Vec3, mode :: Symbol) -> Sk :: Vec3
+Transform `k` (in reduced coordiantes by default) according to `S`.
+- `mode == :position` or `:position_cartesian`: polar, time-reversal even (e.g. position)
+- `mode == :momentum` or `:momentum_cartesian`: polar, time-reversal odd (e.g. momentum, velocity)
+"""
+@inline function apply_symop(S :: SymOp, k :: Vec3, mode :: Symbol, tr_apply_conj = true)
+    # NOTE: Making tr_apply_conj a keyword argument would be nicer, but it is slow.
+    if mode === :position
+        # r -> W * r + w where S = W' and τ = -W^-1 w.
+        return S.S' * (k - S.τ)
+    elseif mode === :position_cartesian
+        return S.Scart' * (k - S.τcart)
+    elseif mode === :momentum
+        Sk = S.S * k
+        return S.is_tr ? (tr_apply_conj ? conj(-Sk) : -Sk) : Sk
+    elseif mode === :momentum_cartesian
+        Sk = S.Scart * k
+        return S.is_tr ? (tr_apply_conj ? conj(-Sk) : -Sk) : Sk
+    else
+        throw(ArgumentError("Wrong mode $mode"))
+    end
+end

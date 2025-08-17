@@ -164,7 +164,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
     epmat = get_interpolator(model.epmat; fourier_mode)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epobj_ekpR_obj = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nband_max*nmodes, length(model.epmat.irvec_next))))
+    epobj_ekpR_obj = get_next_wannier_object(model.epmat)
     epobj_ekpR_threads = [get_interpolator(epobj_ekpR_obj; fourier_mode) for _ in 1:nthreads()]
 
     # Setup for collecting scattering processes

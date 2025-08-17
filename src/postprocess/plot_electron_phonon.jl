@@ -44,7 +44,6 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
     epdata = ElPhData(nw, nmodes)
-    epobj_ekpR = WannierObject(model.epmat.irvec_next, zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
 
     ik = 1
     xk = kpts.vectors[ik]
@@ -55,8 +54,7 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
 
     if model.epmat_outer_momentum == "el"
         # (Re, Rp) -> (k, Rp) -> (k, q)
-        ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
-                zeros(ComplexF64, (nw*epdata.nband_bound*nmodes, length(model.epmat.irvec_next))))
+        ep_ekpR_obj = get_next_wannier_object(model.epmat)
         ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
 
         get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epdata.el_k.u))
@@ -74,7 +72,7 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
             get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
             if include_polar && any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
-                model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
+                model.polar_eph.use && epdata_compute_eph_dipole!(epdata; model)
             end
             epdata_set_g2!(epdata)
 
@@ -90,8 +88,7 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
         # For a single k and many q, this is inefficient because get_eph_RR_to_Rq! is
         # called inside the loop.
 
-        ep_eRpq_obj = WannierObject(model.epmat.irvec_next,
-                zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
+        ep_eRpq_obj = get_next_wannier_object(model.epmat)
         ep_eRpq = get_interpolator(ep_eRpq_obj)
 
         # Calculate electron-phonon coupling matrix elements
@@ -109,7 +106,7 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
 
             if include_polar && any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epdata_set_mmat!(epdata)
-                model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
+                model.polar_eph.use && epdata_compute_eph_dipole!(epdata; model)
             end
             epdata_set_g2!(epdata)
 
@@ -153,5 +150,5 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
     display(fig)
     close_fig && close(fig)
 
-    (;fig, e_ph, deformation_potential, qpts, plot_xdata)
+    (; fig, e_ph, deformation_potential, qpts, plot_xdata)
 end
