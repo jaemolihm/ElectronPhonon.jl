@@ -76,7 +76,7 @@ Solve Boltzmann transport equation for electrons.
 scat_mat is a rectangular matrix, mapping states in `el_f` to states in `el_i`.
 δf[j] is the occupations for states `el_f` and is calculated by unfolding `δf_i`.
 """
-function solve_electron_bte(el_i::BTStates{FT}, el_f::BTStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; max_iter=100, rtol=1e-10) where {FT}
+function solve_electron_bte(el_i::BTStates{FT}, el_f::BTStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; max_iter=100, rtol=1e-10, mixing = 1.0) where {FT}
     output = (σ_serta = zeros(FT, 3, 3, length(params.Tlist)),
               σ = zeros(FT, 3, 3, length(params.Tlist)),
               δf_i_serta = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
@@ -85,6 +85,8 @@ function solve_electron_bte(el_i::BTStates{FT}, el_f::BTStates{FT}, scat_mat, in
     )
 
     map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
+
+    δf_i_tmp = zeros(Vec3{FT}, el_i.n)
 
     for iT in 1:length(params.Tlist)
         μ = params.μlist[iT]
@@ -105,7 +107,8 @@ function solve_electron_bte(el_i::BTStates{FT}, el_f::BTStates{FT}, scat_mat, in
             δf_f = map_i_to_f * δf_i
 
             # Multiply scattering matrix, and
-            δf_i .= (scat_mat[iT] * δf_f) ./ inv_τ_i[:, iT] .+ δf_i_serta
+            δf_i_tmp .= (scat_mat[iT] * δf_f) ./ inv_τ_i[:, iT] .+ δf_i_serta
+            @. δf_i = δf_i_tmp * mixing + δf_i * (1 - mixing)
             σ = symmetrize(occupation_to_conductivity(δf_i, el_i, params), symmetry)
             output.σ_iter[iter+1, :, :, iT] .= σ
 
