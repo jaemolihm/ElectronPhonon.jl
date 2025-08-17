@@ -7,7 +7,7 @@ using OffsetArrays: no_offset_view
 
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model(folder, load_symmetry_operators=true)
+    model = load_model_from_epw_new(folder, "temp", "bn"; load_epmat = false)
     kpts = kpoints_grid((4, 4, 4)) # cubicBN data is generated using 4*4*4 coarse k grid
 
     model.el_velocity_mode = :Direct

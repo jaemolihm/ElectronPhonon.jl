@@ -7,7 +7,7 @@ using ElectronPhonon
     folder_tmp_el = joinpath(folder, "tmp_el")
     mkpath(folder_tmp_el)
 
-    model = load_model(folder; skip_epmat=true)
+    model = load_model_from_epw_new(folder, "temp", "bn"; load_epmat = false)
     window = (10.0, 25.0) .* unit_to_aru(:eV)
 
     @testset "basic" begin

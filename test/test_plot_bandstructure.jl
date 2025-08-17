@@ -6,7 +6,7 @@ using PyPlot
 @testset "plot bandstructure" begin
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model(folder)
+    model = load_model_from_epw_new(folder, "temp", "bn"; load_epmat = false)
 
     ref_kcoords = [
         [ 0.000000000000, 0.000000000000, 0.000000000000],
@@ -120,21 +120,26 @@ end
 @testset "plot deformation pot." begin
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model(folder, epmat_outer_momentum="el")
+    model = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum = "el")
+    model_ph = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum = "ph")
 
     # Test that the function runs. No test for the correctness.
-    plot_electron_phonon_deformation_potential(model)
-    plot_electron_phonon_deformation_potential(model, Vec3(0.0, 0.5, 0.0), band_rng=1:2, kline_density=15, include_polar=false)
+    plot_deformation_potential(model)
+    plot_deformation_potential(model_ph)
+    plot_deformation_potential(model, Vec3(0.0, 0.5, 0.0), band_rng=1:2, kline_density=15, include_polar=false)
 end
 
 @testset "plot decay" begin
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model(folder, epmat_outer_momentum="el")
+    model = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum = "ph")
+    model_ph = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum = "ph")
 
     nfigs = length(PyPlot.get_fignums())
     @test plot_decay(model.el_ham, model.lattice) isa PyPlot.Figure
     @test plot_decay(model) isa PyPlot.Figure
+    @test plot_decay_eph(model) isa PyPlot.Figure
+    @test plot_decay_eph(model_ph) isa PyPlot.Figure
     # test all figures are closed
     @test length(PyPlot.get_fignums()) == nfigs
 end

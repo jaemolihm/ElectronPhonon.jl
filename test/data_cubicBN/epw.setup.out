@@ -29,7 +29,7 @@
                                                      npj Comput Mater 9, 156 (2023)   
                                                                                       
 
-     Program EPW v.5.9 starts on 17Aug2025 at 14:13:47 
+     Program EPW v.5.9 starts on 17Aug2025 at 14:28: 1 
 
      This program is part of the open-source Quantum ESPRESSO suite
      for quantum simulation of materials; please cite
@@ -44,7 +44,7 @@
 
      MPI processes distributed on     1 nodes
      K-points division:     npool     =      16
-     1012336 MiB available memory on the printing compute node when the environment starts
+     1008528 MiB available memory on the printing compute node when the environment starts
 
      Reading input from epw.setup.in
 
@@ -199,9 +199,9 @@
                 l(2) =   0
                 l(3) =   1
                 l(4) =   1
-     EPW          :      0.51s CPU      0.56s WALL
+     EPW          :      0.54s CPU      0.58s WALL
 
-     EPW          :      0.51s CPU      0.56s WALL
+     EPW          :      0.54s CPU      0.58s WALL
 
      -------------------------------------------------------------------
      Wannierization on  4 x  4 x  4 electronic grid
@@ -264,7 +264,7 @@
      (  -0.16873   0.08127   0.16873) :   1.00894
 
      -------------------------------------------------------------------
-     WANNIER      :      1.90s CPU      2.19s WALL (       1 calls)
+     WANNIER      :      1.95s CPU      2.22s WALL (       1 calls)
      -------------------------------------------------------------------
      HDF5 is NOT used in the current build. Exciton-phonon coupling calculations are disabled.
 
@@ -368,8 +368,8 @@
      Writing Hamiltonian, Dynamical matrix and EP vertex in Wann rep to file
 
      ===================================================================
-     Memory usage:  VmHWM =        85Mb
-                   VmPeak =       816Mb
+     Memory usage:  VmHWM =        84Mb
+                   VmPeak =       817Mb
      ===================================================================
      
      Using uniform q-mesh:     1    1    1
@@ -396,19 +396,19 @@
      We only need to compute        1 q-points
       
      ===================================================================
-     Memory usage:  VmHWM =        85Mb
-                   VmPeak =       816Mb
+     Memory usage:  VmHWM =        84Mb
+                   VmPeak =       817Mb
      ===================================================================
 
 
      Unfolding on the coarse grid
      elphon_wrap  :      1.14s CPU      1.35s WALL (       1 calls)
-     dvqpsi_us3   :      0.72s CPU      0.73s WALL (     192 calls)
+     dvqpsi_us3   :      0.71s CPU      0.73s WALL (     192 calls)
      com_dvloc    :      0.04s CPU      0.04s WALL (     192 calls)
                                         0.00s GPU  (     192 calls)
      dvqpsi_us_on :      0.03s CPU      0.03s WALL (     192 calls)
      calbec       :      0.02s CPU      0.02s WALL (     496 calls)
-     fft          :      0.15s CPU      0.15s WALL (       4 calls)
+     fft          :      0.15s CPU      0.16s WALL (       4 calls)
      ffts         :      0.03s CPU      0.03s WALL (     192 calls)
      fftw         :      0.58s CPU      0.59s WALL (    4983 calls)
 
@@ -430,14 +430,14 @@
      wigner_seitz :      0.01s CPU      0.01s WALL (       1 calls)
      DynW2B       :      0.00s CPU      0.00s WALL (       1 calls)
      HamW2B       :      0.00s CPU      0.00s WALL (       5 calls)
-     ephW2Bp      :      0.00s CPU      0.00s WALL (       1 calls)
+     ephW2Bp      :      0.00s CPU      0.01s WALL (       1 calls)
      ephW2B       :      0.00s CPU      0.00s WALL (       1 calls)
      vmeW2B       :      0.00s CPU      0.00s WALL (       2 calls)
      rgd_blk_epw  :      0.00s CPU      0.00s WALL (      33 calls)
 
 
      Total program execution
-     EPW          :      3.93s CPU      4.76s WALL
+     EPW          :      4.01s CPU      4.83s WALL
 
      % Copyright (C) 2016-2023 EPW-Collaboration                                    
                                                                                     

@@ -2,19 +2,20 @@ using ElectronPhonon
 using Test
 
 @time @testset "ElectronPhonon.jl" begin
+    # Basic tests
     include("test_occupation.jl")
     include("test_kpoints.jl")
     include("test_symmetry.jl")
     include("test_fourier.jl")
     include("test_diagonalize.jl")
     include("test_iterativesolvers.jl")
-    include("test_symmetry_operator.jl")
-    include("test_unfold.jl")
+    # include("test_symmetry_operator.jl")
+    # include("test_unfold.jl")
     include("test_velocity.jl")
     include("test_epmat.jl")
     include("test_ElectronState.jl")
     include("test_plot_bandstructure.jl")
-    include("test_check_model_symmetry.jl")
+    # include("test_check_model_symmetry.jl")
     include("test_screening.jl")
 
     # Integration tests

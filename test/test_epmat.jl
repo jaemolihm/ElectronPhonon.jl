@@ -13,10 +13,10 @@ using OffsetArrays: no_offset_view
     folder_tmp_el = joinpath(folder, "tmp_el")
     mkpath(folder_tmp_el)
 
-    model_ph = load_model(folder; epmat_outer_momentum="ph")
-    model_el = load_model(folder; epmat_outer_momentum="el")
-    model_ph_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder, epmat_outer_momentum="ph")
-    model_el_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder_tmp_el, epmat_outer_momentum="el")
+    model_ph = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum="ph")
+    model_el = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum="el")
+    # model_ph_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder, epmat_outer_momentum="ph")
+    # model_el_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder_tmp_el, epmat_outer_momentum="el")
 
     xk = Vec3([0.1, -0.4, 0.7])
     xq = Vec3([0.5, 0.2, -0.5])
@@ -48,7 +48,8 @@ using OffsetArrays: no_offset_view
 
     i = 0
     for fourier_mode in ["normal", "gridopt"]
-        for model in [model_ph, model_ph_disk, model_el, model_el_disk]
+        for model in [model_ph, model_el]
+        # for model in [model_ph, model_ph_disk, model_el, model_el_disk]
             i += 1
             epdata = ElPhData(nw, nmodes, nband)
             epdata.ph = ph

@@ -43,10 +43,10 @@ using Test
     ϵM = Mat3(Diagonal([3., 4., 5.]))
     ωs = range(0, 1, length=201)
     params_aniso_1 = AnisotropicLindhardScreeningParams(;
-        ϵM, smearing, m_list = [m * Mat3(I(3))], degeneracy,
+        ϵM, smearing, m_list = [m * Mat3(I(3))], degeneracy, e0 = 0.
     )
     params_aniso_2 = AnisotropicLindhardScreeningParams(;
-        ϵM, smearing, m_list = fill(m * Mat3(I(3)), degeneracy), degeneracy = 1,
+        ϵM, smearing, m_list = fill(m * Mat3(I(3)), degeneracy), degeneracy = 1, e0 = 0.
     )
     ys_0K = _epsilon_lindhard.(Ref(xq), ωs, n, m, Ref(ϵM), degeneracy, smearing)
     @test epsilon_lindhard.(Ref(xq), ωs, T, μ, Ref(params_aniso_1)) ≈ ys_0K rtol=1e-5
