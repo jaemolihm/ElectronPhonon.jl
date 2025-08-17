@@ -1,5 +1,5 @@
 
-     Program PWSCF v.6.7GPU starts on 20Jul2021 at 12:30:41 
+     Program PWSCF v.7.4 starts on 17Aug2025 at 14: 7:41 
 
      This program is part of the open-source Quantum ESPRESSO suite
      for quantum simulation of materials; please cite
@@ -10,33 +10,37 @@
      in publications or presentations arising from this work. More details at
      http://www.quantum-espresso.org/quote
 
-     Parallel version (MPI), running on     2 processors
+     Parallel version (MPI), running on    16 processors
 
      MPI processes distributed on     1 nodes
-     K-points division:     npool     =       2
+     1012888 MiB available memory on the printing compute node when the environment starts
+
      Reading input from bands.in
 
      Current dimensions of program PWSCF are:
      Max number of different atomic species (ntypx) = 10
      Max number of k-points (npk) =  40000
-     Max angular momentum in pseudopotentials (lmaxx) =  3
+     Max angular momentum in pseudopotentials (lmaxx) =  4
 
      Atomic positions and unit cell read from directory:
      temp/bn.save/
-     Atomic positions from file used, from input discarded
- 
 
+
+     K-points division:     npool     =       4
+     R & G space division:  proc/nbgrp/npool/nimage =       4
      Subspace diagonalization in iterative solution of the eigenvalue problem:
      a serial algorithm will be used
 
- 
-     G-vector sticks info
+
+     Parallelization info
      --------------------
      sticks:   dense  smooth     PW     G-vecs:    dense   smooth      PW
+     Min         109     109     37                 1557     1557     284
+     Max         110     110     38                 1558     1558     285
      Sum         439     439    151                 6231     6231    1139
- 
+
      Using Slab Decomposition
- 
+
 
 
      bravais-lattice index     =            2
@@ -88,8 +92,8 @@
                 l(4) =   1
 
      atomic species   valence    mass     pseudopotential
-        B              3.00    10.81100     B ( 1.00)
-        N              5.00    14.00670     N ( 1.00)
+     B                 3.00    10.81100     B ( 1.00)
+     N                 5.00    14.00670     N ( 1.00)
 
      24 Sym. Ops. (no inversion) found (18 have fractional translation)
 
@@ -387,14 +391,14 @@ T_2    3.00  0.00 -1.00 -1.00  1.00
    Cartesian axes
 
      site n.     atom                  positions (alat units)
-         1           B   tau(   1) = (  -0.1250000   0.1250000   0.1250000  )
-         2           N   tau(   2) = (   0.1250000  -0.1250000  -0.1250000  )
+         1        B      tau(   1) = (  -0.1250000   0.1250000   0.1250000  )
+         2        N      tau(   2) = (   0.1250000  -0.1250000  -0.1250000  )
 
    Crystallographic axes
 
      site n.     atom                  positions (cryst. coord.)
-         1           B   tau(   1) = (  0.1250000  0.1250000  0.1250000  )
-         2           N   tau(   2) = ( -0.1250000 -0.1250000 -0.1250000  )
+         1        B      tau(   1) = (  0.1250000  0.1250000  0.1250000  )
+         2        N      tau(   2) = ( -0.1250000 -0.1250000 -0.1250000  )
 
      number of k points=   199
                        cart. coord. in units 2pi/alat
@@ -801,37 +805,37 @@ T_2    3.00  0.00 -1.00 -1.00  1.00
 
      Dense  grid:     6231 G-vectors     FFT dimensions: (  30,  30,  30)
 
-     Dynamical RAM for                 wfc:       0.14 MB
+     Dynamical RAM for                 wfc:       0.04 MB
 
-     Dynamical RAM for     wfc (w. buffer):      14.57 MB
+     Dynamical RAM for     wfc (w. buffer):       1.84 MB
 
-     Dynamical RAM for           str. fact:       0.19 MB
+     Dynamical RAM for           str. fact:       0.05 MB
 
      Dynamical RAM for           local pot:       0.00 MB
 
-     Dynamical RAM for          nlocal pot:       0.19 MB
+     Dynamical RAM for          nlocal pot:       0.05 MB
 
      Dynamical RAM for                qrad:       0.77 MB
 
-     Dynamical RAM for          rho,v,vnew:       0.90 MB
+     Dynamical RAM for          rho,v,vnew:       0.24 MB
 
-     Dynamical RAM for           G-vectors:       0.40 MB
+     Dynamical RAM for           G-vectors:       0.10 MB
 
      Dynamical RAM for          h,s,v(r/c):       0.03 MB
 
      Dynamical RAM for          <psi|beta>:       0.00 MB
 
-     Dynamical RAM for                 psi:       0.29 MB
+     Dynamical RAM for                 psi:       0.07 MB
 
-     Dynamical RAM for                hpsi:       0.29 MB
+     Dynamical RAM for                hpsi:       0.07 MB
 
-     Dynamical RAM for      wfcinit/wfcrot:       0.29 MB
+     Dynamical RAM for      wfcinit/wfcrot:       0.08 MB
 
-     Estimated static dynamical RAM per process >      18.35 MB
+     Estimated static dynamical RAM per process >       3.39 MB
 
-     Estimated max dynamical RAM per process >      18.95 MB
+     Estimated max dynamical RAM per process >       3.56 MB
 
-     Estimated total dynamical RAM >      37.90 MB
+     Estimated total dynamical RAM >      56.95 MB
 
      The potential is recalculated from file :
      temp/bn.save/charge-density
@@ -841,309 +845,159 @@ T_2    3.00  0.00 -1.00 -1.00  1.00
      Band Structure Calculation
      Davidson diagonalization with overlap
 
-     Computing kpt #:     1  of   100 on this pool
+     Computing kpt #:     1  of    50 on this pool
+     total cpu time spent up to now is        0.4 secs
+
+     Computing kpt #:     2  of    50 on this pool
      total cpu time spent up to now is        0.5 secs
 
-     Computing kpt #:     2  of   100 on this pool
+     Computing kpt #:     3  of    50 on this pool
+     total cpu time spent up to now is        0.6 secs
+
+     Computing kpt #:     4  of    50 on this pool
+     total cpu time spent up to now is        0.7 secs
+
+     Computing kpt #:     5  of    50 on this pool
+     total cpu time spent up to now is        0.7 secs
+
+     Computing kpt #:     6  of    50 on this pool
      total cpu time spent up to now is        0.8 secs
 
-     Computing kpt #:     3  of   100 on this pool
+     Computing kpt #:     7  of    50 on this pool
+     total cpu time spent up to now is        0.9 secs
+
+     Computing kpt #:     8  of    50 on this pool
      total cpu time spent up to now is        1.0 secs
 
-     Computing kpt #:     4  of   100 on this pool
+     Computing kpt #:     9  of    50 on this pool
+     total cpu time spent up to now is        1.0 secs
+
+     Computing kpt #:    10  of    50 on this pool
+     total cpu time spent up to now is        1.1 secs
+
+     Computing kpt #:    11  of    50 on this pool
      total cpu time spent up to now is        1.2 secs
 
-     Computing kpt #:     5  of   100 on this pool
+     Computing kpt #:    12  of    50 on this pool
+     total cpu time spent up to now is        1.2 secs
+
+     Computing kpt #:    13  of    50 on this pool
+     total cpu time spent up to now is        1.3 secs
+
+     Computing kpt #:    14  of    50 on this pool
      total cpu time spent up to now is        1.4 secs
 
-     Computing kpt #:     6  of   100 on this pool
+     Computing kpt #:    15  of    50 on this pool
      total cpu time spent up to now is        1.5 secs
 
-     Computing kpt #:     7  of   100 on this pool
+     Computing kpt #:    16  of    50 on this pool
+     total cpu time spent up to now is        1.5 secs
+
+     Computing kpt #:    17  of    50 on this pool
+     total cpu time spent up to now is        1.6 secs
+
+     Computing kpt #:    18  of    50 on this pool
      total cpu time spent up to now is        1.7 secs
 
-     Computing kpt #:     8  of   100 on this pool
+     Computing kpt #:    19  of    50 on this pool
+     total cpu time spent up to now is        1.7 secs
+
+     Computing kpt #:    20  of    50 on this pool
      total cpu time spent up to now is        1.8 secs
 
-     Computing kpt #:     9  of   100 on this pool
+     Computing kpt #:    21  of    50 on this pool
+     total cpu time spent up to now is        1.9 secs
+
+     Computing kpt #:    22  of    50 on this pool
+     total cpu time spent up to now is        1.9 secs
+
+     Computing kpt #:    23  of    50 on this pool
      total cpu time spent up to now is        2.0 secs
 
-     Computing kpt #:    10  of   100 on this pool
+     Computing kpt #:    24  of    50 on this pool
      total cpu time spent up to now is        2.1 secs
 
-     Computing kpt #:    11  of   100 on this pool
+     Computing kpt #:    25  of    50 on this pool
+     total cpu time spent up to now is        2.2 secs
+
+     Computing kpt #:    26  of    50 on this pool
+     total cpu time spent up to now is        2.2 secs
+
+     Computing kpt #:    27  of    50 on this pool
      total cpu time spent up to now is        2.3 secs
 
-     Computing kpt #:    12  of   100 on this pool
+     Computing kpt #:    28  of    50 on this pool
      total cpu time spent up to now is        2.4 secs
 
-     Computing kpt #:    13  of   100 on this pool
+     Computing kpt #:    29  of    50 on this pool
+     total cpu time spent up to now is        2.4 secs
+
+     Computing kpt #:    30  of    50 on this pool
+     total cpu time spent up to now is        2.5 secs
+
+     Computing kpt #:    31  of    50 on this pool
      total cpu time spent up to now is        2.6 secs
 
-     Computing kpt #:    14  of   100 on this pool
+     Computing kpt #:    32  of    50 on this pool
+     total cpu time spent up to now is        2.7 secs
+
+     Computing kpt #:    33  of    50 on this pool
+     total cpu time spent up to now is        2.7 secs
+
+     Computing kpt #:    34  of    50 on this pool
      total cpu time spent up to now is        2.8 secs
 
-     Computing kpt #:    15  of   100 on this pool
+     Computing kpt #:    35  of    50 on this pool
      total cpu time spent up to now is        2.9 secs
 
-     Computing kpt #:    16  of   100 on this pool
+     Computing kpt #:    36  of    50 on this pool
+     total cpu time spent up to now is        2.9 secs
+
+     Computing kpt #:    37  of    50 on this pool
      total cpu time spent up to now is        3.0 secs
 
-     Computing kpt #:    17  of   100 on this pool
+     Computing kpt #:    38  of    50 on this pool
+     total cpu time spent up to now is        3.1 secs
+
+     Computing kpt #:    39  of    50 on this pool
      total cpu time spent up to now is        3.2 secs
 
-     Computing kpt #:    18  of   100 on this pool
+     Computing kpt #:    40  of    50 on this pool
+     total cpu time spent up to now is        3.2 secs
+
+     Computing kpt #:    41  of    50 on this pool
      total cpu time spent up to now is        3.3 secs
 
-     Computing kpt #:    19  of   100 on this pool
+     Computing kpt #:    42  of    50 on this pool
+     total cpu time spent up to now is        3.4 secs
+
+     Computing kpt #:    43  of    50 on this pool
+     total cpu time spent up to now is        3.4 secs
+
+     Computing kpt #:    44  of    50 on this pool
      total cpu time spent up to now is        3.5 secs
 
-     Computing kpt #:    20  of   100 on this pool
+     Computing kpt #:    45  of    50 on this pool
      total cpu time spent up to now is        3.6 secs
 
-     Computing kpt #:    21  of   100 on this pool
+     Computing kpt #:    46  of    50 on this pool
+     total cpu time spent up to now is        3.6 secs
+
+     Computing kpt #:    47  of    50 on this pool
+     total cpu time spent up to now is        3.7 secs
+
+     Computing kpt #:    48  of    50 on this pool
      total cpu time spent up to now is        3.8 secs
 
-     Computing kpt #:    22  of   100 on this pool
+     Computing kpt #:    49  of    50 on this pool
      total cpu time spent up to now is        3.9 secs
 
-     Computing kpt #:    23  of   100 on this pool
-     total cpu time spent up to now is        4.1 secs
+     Computing kpt #:    50  of    50 on this pool
+     total cpu time spent up to now is        3.9 secs
 
-     Computing kpt #:    24  of   100 on this pool
-     total cpu time spent up to now is        4.2 secs
+     ethr =  1.25E-12,  avg # of iterations = 28.3
 
-     Computing kpt #:    25  of   100 on this pool
-     total cpu time spent up to now is        4.4 secs
-
-     Computing kpt #:    26  of   100 on this pool
-     total cpu time spent up to now is        4.5 secs
-
-     Computing kpt #:    27  of   100 on this pool
-     total cpu time spent up to now is        4.6 secs
-
-     Computing kpt #:    28  of   100 on this pool
-     total cpu time spent up to now is        4.8 secs
-
-     Computing kpt #:    29  of   100 on this pool
-     total cpu time spent up to now is        4.9 secs
-
-     Computing kpt #:    30  of   100 on this pool
-     total cpu time spent up to now is        5.0 secs
-
-     Computing kpt #:    31  of   100 on this pool
-     total cpu time spent up to now is        5.2 secs
-
-     Computing kpt #:    32  of   100 on this pool
-     total cpu time spent up to now is        5.3 secs
-
-     Computing kpt #:    33  of   100 on this pool
-     total cpu time spent up to now is        5.5 secs
-
-     Computing kpt #:    34  of   100 on this pool
-     total cpu time spent up to now is        5.6 secs
-
-     Computing kpt #:    35  of   100 on this pool
-     total cpu time spent up to now is        5.7 secs
-
-     Computing kpt #:    36  of   100 on this pool
-     total cpu time spent up to now is        5.9 secs
-
-     Computing kpt #:    37  of   100 on this pool
-     total cpu time spent up to now is        6.0 secs
-
-     Computing kpt #:    38  of   100 on this pool
-     total cpu time spent up to now is        6.1 secs
-
-     Computing kpt #:    39  of   100 on this pool
-     total cpu time spent up to now is        6.3 secs
-
-     Computing kpt #:    40  of   100 on this pool
-     total cpu time spent up to now is        6.4 secs
-
-     Computing kpt #:    41  of   100 on this pool
-     total cpu time spent up to now is        6.6 secs
-
-     Computing kpt #:    42  of   100 on this pool
-     total cpu time spent up to now is        6.7 secs
-
-     Computing kpt #:    43  of   100 on this pool
-     total cpu time spent up to now is        6.8 secs
-
-     Computing kpt #:    44  of   100 on this pool
-     total cpu time spent up to now is        7.0 secs
-
-     Computing kpt #:    45  of   100 on this pool
-     total cpu time spent up to now is        7.1 secs
-
-     Computing kpt #:    46  of   100 on this pool
-     total cpu time spent up to now is        7.2 secs
-
-     Computing kpt #:    47  of   100 on this pool
-     total cpu time spent up to now is        7.4 secs
-
-     Computing kpt #:    48  of   100 on this pool
-     total cpu time spent up to now is        7.5 secs
-
-     Computing kpt #:    49  of   100 on this pool
-     total cpu time spent up to now is        7.6 secs
-
-     Computing kpt #:    50  of   100 on this pool
-     total cpu time spent up to now is        7.8 secs
-
-     Computing kpt #:    51  of   100 on this pool
-     total cpu time spent up to now is        7.9 secs
-
-     Computing kpt #:    52  of   100 on this pool
-     total cpu time spent up to now is        8.0 secs
-
-     Computing kpt #:    53  of   100 on this pool
-     total cpu time spent up to now is        8.2 secs
-
-     Computing kpt #:    54  of   100 on this pool
-     total cpu time spent up to now is        8.3 secs
-
-     Computing kpt #:    55  of   100 on this pool
-     total cpu time spent up to now is        8.4 secs
-
-     Computing kpt #:    56  of   100 on this pool
-     total cpu time spent up to now is        8.5 secs
-
-     Computing kpt #:    57  of   100 on this pool
-     total cpu time spent up to now is        8.7 secs
-
-     Computing kpt #:    58  of   100 on this pool
-     total cpu time spent up to now is        8.8 secs
-
-     Computing kpt #:    59  of   100 on this pool
-     total cpu time spent up to now is        8.9 secs
-
-     Computing kpt #:    60  of   100 on this pool
-     total cpu time spent up to now is        9.1 secs
-
-     Computing kpt #:    61  of   100 on this pool
-     total cpu time spent up to now is        9.2 secs
-
-     Computing kpt #:    62  of   100 on this pool
-     total cpu time spent up to now is        9.3 secs
-
-     Computing kpt #:    63  of   100 on this pool
-     total cpu time spent up to now is        9.5 secs
-
-     Computing kpt #:    64  of   100 on this pool
-     total cpu time spent up to now is        9.6 secs
-
-     Computing kpt #:    65  of   100 on this pool
-     total cpu time spent up to now is        9.8 secs
-
-     Computing kpt #:    66  of   100 on this pool
-     total cpu time spent up to now is        9.9 secs
-
-     Computing kpt #:    67  of   100 on this pool
-     total cpu time spent up to now is       10.0 secs
-
-     Computing kpt #:    68  of   100 on this pool
-     total cpu time spent up to now is       10.2 secs
-
-     Computing kpt #:    69  of   100 on this pool
-     total cpu time spent up to now is       10.3 secs
-
-     Computing kpt #:    70  of   100 on this pool
-     total cpu time spent up to now is       10.4 secs
-
-     Computing kpt #:    71  of   100 on this pool
-     total cpu time spent up to now is       10.6 secs
-
-     Computing kpt #:    72  of   100 on this pool
-     total cpu time spent up to now is       10.7 secs
-
-     Computing kpt #:    73  of   100 on this pool
-     total cpu time spent up to now is       10.9 secs
-
-     Computing kpt #:    74  of   100 on this pool
-     total cpu time spent up to now is       11.0 secs
-
-     Computing kpt #:    75  of   100 on this pool
-     total cpu time spent up to now is       11.2 secs
-
-     Computing kpt #:    76  of   100 on this pool
-     total cpu time spent up to now is       11.3 secs
-
-     Computing kpt #:    77  of   100 on this pool
-     total cpu time spent up to now is       11.5 secs
-
-     Computing kpt #:    78  of   100 on this pool
-     total cpu time spent up to now is       11.6 secs
-
-     Computing kpt #:    79  of   100 on this pool
-     total cpu time spent up to now is       11.8 secs
-
-     Computing kpt #:    80  of   100 on this pool
-     total cpu time spent up to now is       11.9 secs
-
-     Computing kpt #:    81  of   100 on this pool
-     total cpu time spent up to now is       12.1 secs
-
-     Computing kpt #:    82  of   100 on this pool
-     total cpu time spent up to now is       12.2 secs
-
-     Computing kpt #:    83  of   100 on this pool
-     total cpu time spent up to now is       12.3 secs
-
-     Computing kpt #:    84  of   100 on this pool
-     total cpu time spent up to now is       12.5 secs
-
-     Computing kpt #:    85  of   100 on this pool
-     total cpu time spent up to now is       12.6 secs
-
-     Computing kpt #:    86  of   100 on this pool
-     total cpu time spent up to now is       12.8 secs
-
-     Computing kpt #:    87  of   100 on this pool
-     total cpu time spent up to now is       12.9 secs
-
-     Computing kpt #:    88  of   100 on this pool
-     total cpu time spent up to now is       13.1 secs
-
-     Computing kpt #:    89  of   100 on this pool
-     total cpu time spent up to now is       13.2 secs
-
-     Computing kpt #:    90  of   100 on this pool
-     total cpu time spent up to now is       13.4 secs
-
-     Computing kpt #:    91  of   100 on this pool
-     total cpu time spent up to now is       13.5 secs
-
-     Computing kpt #:    92  of   100 on this pool
-     total cpu time spent up to now is       13.7 secs
-
-     Computing kpt #:    93  of   100 on this pool
-     total cpu time spent up to now is       13.8 secs
-
-     Computing kpt #:    94  of   100 on this pool
-     total cpu time spent up to now is       14.0 secs
-
-     Computing kpt #:    95  of   100 on this pool
-     total cpu time spent up to now is       14.1 secs
-
-     Computing kpt #:    96  of   100 on this pool
-     total cpu time spent up to now is       14.3 secs
-
-     Computing kpt #:    97  of   100 on this pool
-     total cpu time spent up to now is       14.4 secs
-
-     Computing kpt #:    98  of   100 on this pool
-     total cpu time spent up to now is       14.6 secs
-
-     Computing kpt #:    99  of   100 on this pool
-     total cpu time spent up to now is       14.8 secs
-
-     Computing kpt #:   100  of   100 on this pool
-     total cpu time spent up to now is       14.9 secs
-
-     ethr =  1.25E-12,  avg # of iterations = 28.2
-
-     total cpu time spent up to now is       14.9 secs
+     total cpu time spent up to now is        3.9 secs
 
      End of band structure calculation
 
@@ -1789,7 +1643,7 @@ T_2    3.00  0.00 -1.00 -1.00  1.00
 
           k =-0.7292-0.0000 0.7292 (   790 PWs)   bands (ev):
 
-    -3.4231   2.8492   3.1027   6.9519  18.0207  24.2572  26.2935  27.3061
+    -3.4232   2.8492   3.1027   6.9519  18.0207  24.2572  26.2935  27.3061
     29.1731  37.2999  37.6275  45.9411
 
           k =-0.7188 0.0000 0.7188 (   782 PWs)   bands (ev):
@@ -2142,54 +1996,55 @@ T_2    3.00  0.00 -1.00 -1.00  1.00
     -9.1495  10.9216  10.9216  10.9216  19.6703  19.6703  19.6703  21.3697
     35.4041  39.0945  39.0945  39.1556
 
-     Writing output data file temp/bn.save/
- 
-     init_run     :      0.07s CPU      0.07s WALL (       1 calls)
-     electrons    :     14.48s CPU     14.62s WALL (       1 calls)
+     Writing all to output data dir temp/bn.save/ :
+     XML data file
+     init_run     :      0.19s CPU      0.19s WALL (       1 calls)
+     electrons    :      3.58s CPU      3.64s WALL (       1 calls)
 
      Called by init_run:
      wfcinit      :      0.00s CPU      0.00s WALL (       1 calls)
-     wfcinit:atom :      0.01s CPU      0.01s WALL (     100 calls)
-     wfcinit:wfcr :      0.60s CPU      0.61s WALL (     100 calls)
-     potinit      :      0.01s CPU      0.01s WALL (       1 calls)
-     hinit0       :      0.05s CPU      0.05s WALL (       1 calls)
+     wfcinit:atom :      0.00s CPU      0.00s WALL (      50 calls)
+     wfcinit:wfcr :      0.14s CPU      0.14s WALL (      50 calls)
+     potinit      :      0.00s CPU      0.00s WALL (       1 calls)
+     hinit0       :      0.18s CPU      0.18s WALL (       1 calls)
 
      Called by electrons:
-     c_bands      :     14.48s CPU     14.62s WALL (       1 calls)
-     v_of_rho     :      0.00s CPU      0.01s WALL (       1 calls)
+     c_bands      :      3.58s CPU      3.63s WALL (       1 calls)
+     v_of_rho     :      0.00s CPU      0.00s WALL (       1 calls)
      v_h          :      0.00s CPU      0.00s WALL (       1 calls)
      v_xc         :      0.00s CPU      0.00s WALL (       1 calls)
 
      Called by c_bands:
-     init_us_2    :      0.02s CPU      0.02s WALL (     100 calls)
-     cegterg      :     12.35s CPU     12.48s WALL (     176 calls)
+     init_us_2    :      0.00s CPU      0.00s WALL (      50 calls)
+     cegterg      :      3.12s CPU      3.17s WALL (     110 calls)
 
      Called by sum_band:
 
      Called by *egterg:
-     cdiaghg      :      0.49s CPU      0.50s WALL (    2977 calls)
-     cegterg:over :      0.27s CPU      0.27s WALL (    2877 calls)
-     cegterg:upda :      0.18s CPU      0.18s WALL (    2877 calls)
-     cegterg:last :      0.40s CPU      0.40s WALL (    1831 calls)
-     h_psi        :     11.37s CPU     11.49s WALL (    3153 calls)
-     g_psi        :      0.11s CPU      0.11s WALL (    2877 calls)
+     cdiaghg      :      0.24s CPU      0.25s WALL (    1873 calls)
+     cegterg:over :      0.13s CPU      0.13s WALL (    1823 calls)
+     cegterg:upda :      0.02s CPU      0.02s WALL (    1823 calls)
+     cegterg:last :      0.03s CPU      0.03s WALL (    1017 calls)
+     h_psi        :      2.78s CPU      2.82s WALL (    1983 calls)
+     g_psi        :      0.01s CPU      0.01s WALL (    1823 calls)
 
      Called by h_psi:
-     h_psi:calbec :      0.12s CPU      0.12s WALL (    3153 calls)
-     vloc_psi     :     11.09s CPU     11.20s WALL (    3153 calls)
-     add_vuspsi   :      0.12s CPU      0.12s WALL (    3153 calls)
+     h_psi:calbec :      0.07s CPU      0.07s WALL (    1983 calls)
+     vloc_psi     :      2.69s CPU      2.73s WALL (    1983 calls)
+                                        0.00s GPU  (    1983 calls)
+     add_vuspsi   :      0.01s CPU      0.01s WALL (    1983 calls)
 
      General routines
-     calbec       :      0.11s CPU      0.12s WALL (    3153 calls)
-     fft          :      0.00s CPU      0.01s WALL (       4 calls)
-     fftw         :      9.95s CPU     10.06s WALL (   46040 calls)
- 
-     Parallel routines
- 
-     PWSCF        :     14.78s CPU     14.97s WALL
+     calbec       :      0.07s CPU      0.07s WALL (    1983 calls)
+     fft          :      0.14s CPU      0.14s WALL (       4 calls)
+     fftw         :      2.55s CPU      2.60s WALL (   25748 calls)
 
- 
-   This run was terminated on:  12:30:56  20Jul2021            
+     Parallel routines
+
+     PWSCF        :      3.90s CPU      3.97s WALL
+
+
+   This run was terminated on:  14: 7:45  17Aug2025            
 
 =------------------------------------------------------------------------------=
    JOB DONE.

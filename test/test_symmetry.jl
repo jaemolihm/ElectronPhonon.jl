@@ -54,9 +54,11 @@ using Test
     # Cubic Boron Nitride sturucture imported from file
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model(folder, skip_epmat=true)
+    model = load_model_from_epw_new(folder, "temp", "bn"; load_epmat = false)
     @test model.symmetry.nsym == 48
     @test model.symmetry.time_reversal == true
+    @test length(model.symmetry.is_tr) == 48
+    @test count(model.symmetry.is_tr) == 24
 
     @test all(inv(symop) * symop ≈ one(symop) for symop in symmetry)
     @test all(symop * inv(symop) ≈ one(symop) for symop in symmetry)

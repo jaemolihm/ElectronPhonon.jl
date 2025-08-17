@@ -1,3 +1,5 @@
+export load_model_from_epw_new
+
 function pair_to_complex(pair)
     nums = parse.(Float64, split(strip(pair)[2:end-1], ","))
     return Complex(nums...)

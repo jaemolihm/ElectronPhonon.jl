@@ -1,10 +1,11 @@
 
-     Program Q2R v.6.7MaX starts on 17Jan2021 at 19:57: 8 
+     Program Q2R v.7.4 starts on 17Aug2025 at 14: 6:51 
 
      This program is part of the open-source Quantum ESPRESSO suite
      for quantum simulation of materials; please cite
          "P. Giannozzi et al., J. Phys.:Condens. Matter 21 395502 (2009);
          "P. Giannozzi et al., J. Phys.:Condens. Matter 29 465901 (2017);
+         "P. Giannozzi et al., J. Chem. Phys. 152 154105 (2020);
           URL http://www.quantum-espresso.org", 
      in publications or presentations arising from this work. More details at
      http://www.quantum-espresso.org/quote
@@ -12,31 +13,37 @@
      Parallel version (MPI), running on     1 processors
 
      MPI processes distributed on     1 nodes
+     1013130 MiB available memory on the printing compute node when the environment starts
 
-     reading grid info from file dyn_dir/bn.dyn0    
+
+  reading grid info from file dyn_dir/bn.dyn0    
+
   reading force constants from file dyn_dir/bn.dyn1
  macroscopic fields = T
    4.53304   0.00000   0.00000
-   0.00000   4.53304   0.00000
-   0.00000   0.00000   4.53304
+  -0.00000   4.53304   0.00000
+  -0.00000   0.00000   4.53304
   na=            1
-   1.89101   0.00000   0.00000
-   0.00000   1.89101   0.00000
+   1.89101  -0.00000  -0.00000
+  -0.00000   1.89101   0.00000
    0.00000   0.00000   1.89101
   na=            2
   -1.89072   0.00000   0.00000
    0.00000  -1.89072   0.00000
    0.00000   0.00000  -1.89072
-Norm of the difference between old and new effective charges:    0.00035236737020155178
+  Norm of the difference between old and new effective charges:    0.00035298378429555734
+  alpha Ewald:    1.1816304409032627     
   nqs=            1
  q=   0.00000000  0.00000000  0.00000000
   reading force constants from file dyn_dir/bn.dyn2
+  alpha Ewald:    1.1816304409032627     
   nqs=            4
  q=   0.50000000 -0.50000000  0.50000000
  q=  -0.50000000  0.50000000  0.50000000
  q=   0.50000000  0.50000000 -0.50000000
  q=  -0.50000000 -0.50000000 -0.50000000
   reading force constants from file dyn_dir/bn.dyn3
+  alpha Ewald:    1.1816304409032627     
   nqs=            3
  q=   0.00000000 -1.00000000  0.00000000
  q=   0.00000000  0.00000000 -1.00000000
@@ -45,11 +52,11 @@ Norm of the difference between old and new effective charges:    0.0003523673702
       q-space grid ok, #points =    8
 
       fft-check success (sum of imaginary terms < 10^-12)
- 
-     Q2R          :      0.01s CPU      0.02s WALL
 
- 
-   This run was terminated on:  19:57: 8  17Jan2021            
+     Q2R          :      0.03s CPU      0.03s WALL
+
+
+   This run was terminated on:  14: 6:51  17Aug2025            
 
 =------------------------------------------------------------------------------=
    JOB DONE.
