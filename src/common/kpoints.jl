@@ -314,7 +314,7 @@ struct GridKpoints{T} <: AbstractKpoints{T}
     _xk_hash_to_ik::Dict{Int,Int}
 end
 
-function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid) where {T}
+function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; atol = sqrt(eps(T))) where {T}
     all(ngrid .> 0) || throw(ArgumentError("ngrid must be set or provided to make GridKpoints"))
     if kpts.n == 0
         return GridKpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), ngrid, zero(Vec3{T}), Dict{Int,Int}())
@@ -325,7 +325,7 @@ function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid) where {T}
     # Check if all k points are on the shifted grid
     for xk in kpts.vectors
         nxk = (xk - shift) .* ngrid
-        if !(round.(Int, nxk) ≈ nxk)
+        if ! isapprox(round.(Int, nxk), nxk; atol)
             throw(ArgumentError("k point $xk is not on the grid of size $ngrid shifted by $shift"))
         end
     end
