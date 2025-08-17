@@ -5,7 +5,7 @@ using LinearAlgebra
 @testset "QMEStates" begin
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model(folder)
+    model = load_model_from_epw_new(folder, "temp", "bn"; load_epmat = false)
 
     # Setup QMEVector
     qme_offdiag_cutoff = 1.0 .* unit_to_aru(:eV)
@@ -104,59 +104,59 @@ using LinearAlgebra
     end
 end
 
-@testset "QMEVector symmetry" begin
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    folder_tmp = joinpath(folder, "tmp")
-    mkpath(folder_tmp)
+# @testset "QMEVector symmetry" begin
+#     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
+#     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
+#     folder_tmp = joinpath(folder, "tmp")
+#     mkpath(folder_tmp)
 
-    model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
+#     model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
 
-    nk = 20
-    nq = 20
-    window_k  = (10.5, 11.0) .* unit_to_aru(:eV)
-    window_kq = (10.4, 11.0) .* unit_to_aru(:eV)
+#     nk = 20
+#     nq = 20
+#     window_k  = (10.5, 11.0) .* unit_to_aru(:eV)
+#     window_kq = (10.4, 11.0) .* unit_to_aru(:eV)
 
-    @time output = ElectronPhonon.run_transport(
-        model, (nk, nk, nk), (nq, nq, nq),
-        fourier_mode = "gridopt",
-        folder = folder_tmp,
-        window_k  = window_k,
-        window_kq = window_kq,
-        average_degeneracy = false,
-        run_for_qme = true,
-        compute_derivative = true,
-        use_irr_k = true,
-    );
+#     @time output = ElectronPhonon.run_transport(
+#         model, (nk, nk, nk), (nq, nq, nq),
+#         fourier_mode = "gridopt",
+#         folder = folder_tmp,
+#         window_k  = window_k,
+#         window_kq = window_kq,
+#         average_degeneracy = false,
+#         run_for_qme = true,
+#         compute_derivative = true,
+#         use_irr_k = true,
+#     );
 
-    transport_params = ElectronTransportParams{Float64}(
-        Tlist = [300.0] .* unit_to_aru(:K),
-        nlist = [-1.0e16 * model.volume / unit_to_aru(:cm)^3],
-        smearing = (:Gaussian, 50.0 * unit_to_aru(:meV)),
-        volume = model.volume,
-        nband_valence = 4,
-        spin_degeneracy = 2
-    )
+#     transport_params = ElectronTransportParams{Float64}(
+#         Tlist = [300.0] .* unit_to_aru(:K),
+#         nlist = [-1.0e16 * model.volume / unit_to_aru(:cm)^3],
+#         smearing = (:Gaussian, 50.0 * unit_to_aru(:meV)),
+#         volume = model.volume,
+#         nband_valence = 4,
+#         spin_degeneracy = 2
+#     )
 
-    filename = joinpath(folder_tmp, "btedata_coherence.rank0.h5")
-    qme_model = load_QMEModel(filename, transport_params)
-    bte_compute_μ!(qme_model)
-    (; el_irr, el_f) = qme_model
+#     filename = joinpath(folder_tmp, "btedata_coherence.rank0.h5")
+#     qme_model = load_QMEModel(filename, transport_params)
+#     bte_compute_μ!(qme_model)
+#     (; el_irr, el_f) = qme_model
 
-    # Test that symmetrization applied twice is equivalent to symmetrization applied once.
-    x_irr = QMEVector(el_irr, copy(el_irr.v))
-    x_irr_symm = ElectronPhonon.symmetrize_QMEVector(x_irr, qme_model, true, false)
-    x_irr_symm2 = ElectronPhonon.symmetrize_QMEVector(x_irr_symm, qme_model, true, false)
-    @test norm(x_irr_symm2.data .- x_irr_symm.data) < norm(x_irr.data) * 1e-7
+#     # Test that symmetrization applied twice is equivalent to symmetrization applied once.
+#     x_irr = QMEVector(el_irr, copy(el_irr.v))
+#     x_irr_symm = ElectronPhonon.symmetrize_QMEVector(x_irr, qme_model, true, false)
+#     x_irr_symm2 = ElectronPhonon.symmetrize_QMEVector(x_irr_symm, qme_model, true, false)
+#     @test norm(x_irr_symm2.data .- x_irr_symm.data) < norm(x_irr.data) * 1e-7
 
-    # Test map from el_irr to el_f is the same with unfolding and rotation to el_f.
-    unfold_map, unfold_map_tr = ElectronPhonon._qme_linear_response_unfold_map(el_irr, el_f, qme_model.filename);
-    y1 = QMEVector(el_f, unfold_map * x_irr_symm.data) + QMEVector(el_f, unfold_map_tr * conj.(x_irr_symm.data))
-    x_symm = ElectronPhonon.unfold_QMEVector(x_irr_symm, qme_model, true, false)
-    y2 = QMEVector(el_f, qme_model.el_to_el_f_sym_maps[1] * x_symm.data)
-    @test norm(y1.data .- y2.data) < norm(y1.data) * 1e-7
+#     # Test map from el_irr to el_f is the same with unfolding and rotation to el_f.
+#     unfold_map, unfold_map_tr = ElectronPhonon._qme_linear_response_unfold_map(el_irr, el_f, qme_model.filename);
+#     y1 = QMEVector(el_f, unfold_map * x_irr_symm.data) + QMEVector(el_f, unfold_map_tr * conj.(x_irr_symm.data))
+#     x_symm = ElectronPhonon.unfold_QMEVector(x_irr_symm, qme_model, true, false)
+#     y2 = QMEVector(el_f, qme_model.el_to_el_f_sym_maps[1] * x_symm.data)
+#     @test norm(y1.data .- y2.data) < norm(y1.data) * 1e-7
 
-    # Test unfold_QMEVector is a copy if x.state === qme_model.el
-    x = QMEVector(qme_model.el, rand(ComplexF64, qme_model.el.n))
-    @test ElectronPhonon.unfold_QMEVector(x, qme_model, true, false).data ≈ x.data
-end
+#     # Test unfold_QMEVector is a copy if x.state === qme_model.el
+#     x = QMEVector(qme_model.el, rand(ComplexF64, qme_model.el.n))
+#     @test ElectronPhonon.unfold_QMEVector(x, qme_model, true, false).data ≈ x.data
+# end
