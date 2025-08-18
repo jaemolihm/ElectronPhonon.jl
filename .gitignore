@@ -23,9 +23,3 @@ docs/site/
 # environment.
 Manifest.toml
 
-# ===============
-# EPW.jl specific
-# Data files for testing.
-# TODO: Need to determine how to run CI in GitHub
-test/data_*/epw_data_julia.bin
-test/data_*/epw_data_julia_symmetry.bin
