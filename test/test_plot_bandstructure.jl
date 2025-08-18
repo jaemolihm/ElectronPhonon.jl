@@ -3,8 +3,6 @@ using ElectronPhonon
 using LinearAlgebra
 using PyPlot
 
-include("common_models_from_artifacts.jl")
-
 @testset "plot bandstructure" begin
     model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
 

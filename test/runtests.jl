@@ -1,6 +1,8 @@
 using ElectronPhonon
 using Test
 
+include("common_models_from_artifacts.jl")
+
 @time @testset "ElectronPhonon.jl" begin
     # Basic tests
     include("test_occupation.jl")

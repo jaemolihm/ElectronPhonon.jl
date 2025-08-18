@@ -2,8 +2,6 @@ using Test
 using ElectronPhonon
 using OffsetArrays: no_offset_view
 
-include("common_models_from_artifacts.jl")
-
 @testset "cubicBN epmat" begin
     using ElectronPhonon: WannierObject
     using ElectronPhonon: get_eph_RR_to_Rq!, get_eph_Rq_to_kq!

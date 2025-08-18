@@ -1,8 +1,6 @@
 using Test
 using ElectronPhonon
 
-include("common_models_from_artifacts.jl")
-
 @testset "cubicBN spectral" begin
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")

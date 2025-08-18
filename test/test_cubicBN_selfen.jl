@@ -2,8 +2,6 @@ using Test
 using ElectronPhonon
 using NPZ
 
-include("common_models_from_artifacts.jl")
-
 # TODO: Add test with use_ws = false
 
 @testset "cubicBN self-energy" begin

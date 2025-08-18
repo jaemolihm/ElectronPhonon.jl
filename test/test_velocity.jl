@@ -2,8 +2,6 @@ using ElectronPhonon
 using Test
 using OffsetArrays: no_offset_view
 
-include("common_models_from_artifacts.jl")
-
 @testset "velocity" begin
     using ElectronPhonon: get_el_velocity_diag_berry_connection!
 

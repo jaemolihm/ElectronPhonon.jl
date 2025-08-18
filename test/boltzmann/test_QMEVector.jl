@@ -2,8 +2,6 @@ using Test
 using ElectronPhonon
 using LinearAlgebra
 
-include("common_models_from_artifacts.jl")
-
 @testset "QMEStates" begin
     model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph")
 

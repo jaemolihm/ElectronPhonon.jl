@@ -4,8 +4,6 @@ using ElectronPhonon
 using Random
 using Test
 
-include("common_models_from_artifacts.jl")
-
 @testset "symmetry" begin
     # Silicon structure
     lattice = 2.0 * [[0 1 1.];
