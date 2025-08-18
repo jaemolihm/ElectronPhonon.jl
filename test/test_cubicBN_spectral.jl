@@ -1,11 +1,13 @@
 using Test
 using ElectronPhonon
 
+include("common_models_from_artifacts.jl")
+
 @testset "cubicBN spectral" begin
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
-    model = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum = "ph")
+    model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph")
     # model_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder)
 
     μ = 25.0 * unit_to_aru(:eV)

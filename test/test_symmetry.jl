@@ -4,6 +4,8 @@ using ElectronPhonon
 using Random
 using Test
 
+include("common_models_from_artifacts.jl")
+
 @testset "symmetry" begin
     # Silicon structure
     lattice = 2.0 * [[0 1 1.];
@@ -52,9 +54,7 @@ using Test
     @test kpts.n == 20
 
     # Cubic Boron Nitride sturucture imported from file
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model_from_epw_new(folder, "temp", "bn"; load_epmat = false)
+    model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
     @test model.symmetry.nsym == 48
     @test model.symmetry.time_reversal == true
     @test length(model.symmetry.is_tr) == 48

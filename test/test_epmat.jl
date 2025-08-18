@@ -2,19 +2,17 @@ using Test
 using ElectronPhonon
 using OffsetArrays: no_offset_view
 
+include("common_models_from_artifacts.jl")
+
 @testset "cubicBN epmat" begin
     using ElectronPhonon: WannierObject
     using ElectronPhonon: get_eph_RR_to_Rq!, get_eph_Rq_to_kq!
     using ElectronPhonon: get_eph_RR_to_kR!, get_eph_kR_to_kq!
 
     # Test fourier transform of electron-phonon matrix elements
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    folder_tmp_el = joinpath(folder, "tmp_el")
-    mkpath(folder_tmp_el)
 
-    model_ph = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum="ph")
-    model_el = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum="el")
+    model_ph = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum="ph")
+    model_el = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum="el")
     # model_ph_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder, epmat_outer_momentum="ph")
     # model_el_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder_tmp_el, epmat_outer_momentum="el")
 

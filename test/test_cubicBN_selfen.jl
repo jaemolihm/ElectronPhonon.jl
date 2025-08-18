@@ -2,11 +2,14 @@ using Test
 using ElectronPhonon
 using NPZ
 
+include("common_models_from_artifacts.jl")
+
 # TODO: Add test with use_ws = false
 
 @testset "cubicBN self-energy" begin
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
+    folder = _artifact_folder("cubicBN")
+    model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph")
+    # model_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder)
 
     # Load reference data (calculated from EPW)
     ek_ref = npzread(joinpath(folder, "el_energy.npy")) * unit_to_aru(:eV)
@@ -14,8 +17,6 @@ using NPZ
     omega_ref = npzread(joinpath(folder, "ph_energy.npy")) * unit_to_aru(:eV)
     ph_imsigma_ref = npzread(joinpath(folder, "ph_imsigma.npy")) * unit_to_aru(:eV)
 
-    model = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum = "ph")
-    # model_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder)
 
     μ = 25.0 * unit_to_aru(:eV)
     Tlist = [200.0, 300.0] .* unit_to_aru(:K)

@@ -3,10 +3,10 @@ using ElectronPhonon
 using LinearAlgebra
 using PyPlot
 
+include("common_models_from_artifacts.jl")
+
 @testset "plot bandstructure" begin
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model_from_epw_new(folder, "temp", "bn"; load_epmat = false)
+    model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
 
     ref_kcoords = [
         [ 0.000000000000, 0.000000000000, 0.000000000000],
@@ -118,10 +118,8 @@ using PyPlot
 end
 
 @testset "plot deformation pot." begin
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum = "el")
-    model_ph = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum = "ph")
+    model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "el")
+    model_ph = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph")
 
     # Test that the function runs. No test for the correctness.
     plot_deformation_potential(model)
@@ -130,10 +128,8 @@ end
 end
 
 @testset "plot decay" begin
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum = "ph")
-    model_ph = load_model_from_epw_new(folder, "temp", "bn"; epmat_outer_momentum = "ph")
+    model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "el")
+    model_ph = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph")
 
     nfigs = length(PyPlot.get_fignums())
     @test plot_decay(model.el_ham, model.lattice) isa PyPlot.Figure

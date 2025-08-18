@@ -1,6 +1,0 @@
-&input
-  fildyn = 'dyn_dir/pb.dyn'
-  zasr   = 'crystal'
-  flfrc  = 'pb.fc'
-/
-

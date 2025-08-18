@@ -1,14 +1,11 @@
 using Test
 using ElectronPhonon
 
+include("common_models_from_artifacts.jl")
+
 @testset "cubicBN eigenvalues" begin
     # Test routines that calculate eigenvalues
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    folder_tmp_el = joinpath(folder, "tmp_el")
-    mkpath(folder_tmp_el)
-
-    model = load_model_from_epw_new(folder, "temp", "bn"; load_epmat = false)
+    model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
 
     kpts = kpoints_grid((3, 3, 3))
 

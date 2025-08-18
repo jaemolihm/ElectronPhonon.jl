@@ -2,10 +2,10 @@ using Test
 using ElectronPhonon
 using LinearAlgebra
 
+include("common_models_from_artifacts.jl")
+
 @testset "QMEStates" begin
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model_from_epw_new(folder, "temp", "bn"; load_epmat = false)
+    model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph")
 
     # Setup QMEVector
     qme_offdiag_cutoff = 1.0 .* unit_to_aru(:eV)

@@ -1,13 +1,10 @@
 using Test
 using ElectronPhonon
 
-@testset "ElectronState" begin
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    folder_tmp_el = joinpath(folder, "tmp_el")
-    mkpath(folder_tmp_el)
+include("common_models_from_artifacts.jl")
 
-    model = load_model_from_epw_new(folder, "temp", "bn"; load_epmat = false)
+@testset "ElectronState" begin
+    model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
     window = (10.0, 25.0) .* unit_to_aru(:eV)
 
     @testset "basic" begin

@@ -2,12 +2,12 @@ using ElectronPhonon
 using Test
 using OffsetArrays: no_offset_view
 
+include("common_models_from_artifacts.jl")
+
 @testset "velocity" begin
     using ElectronPhonon: get_el_velocity_diag_berry_connection!
 
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
-    model = load_model_from_epw_new(folder, "temp", "bn"; load_epmat = false)
+    model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
     kpts = kpoints_grid((4, 4, 4)) # cubicBN data is generated using 4*4*4 coarse k grid
 
     model.el_velocity_mode = :Direct
