@@ -273,8 +273,8 @@ function run_eph_over_k_and_kq(
         model       :: Model{FT},
         kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
         kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
-        calculators :: AbstractVector,
         ;
+        calculators = [],
         mpi_comm_k = nothing,
         mpi_comm_q = nothing,
         fourier_mode = "gridopt",
@@ -468,10 +468,10 @@ function run_eph_over_k_and_kq(
                 dyn = nothing
             end
 
-            _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, calculators, el_kq_save,
+            _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, el_kq_save,
                 xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk,
                 energy_conservation, screening_params, skip_eph;
-                ep_ekpR_R
+                ep_ekpR_R, calculators,
             )
 
             put!(ep_ekpRs, ep_ekpR)
@@ -499,10 +499,10 @@ function run_eph_over_k_and_kq(
 end
 
 
-function _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, calculators, el_kq_save,
+function _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, el_kq_save,
         xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk,
         energy_conservation, screening_params, skip_eph;
-        ep_ekpR_R
+        ep_ekpR_R, calculators,
     )
 
     (; nw, nmodes) = model

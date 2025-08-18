@@ -8,7 +8,7 @@ using OffsetArrays: no_offset_view
 
 
 """
-    run_eph_outer_q(model, kpts, qpts, calculators; kwargs...)
+    run_eph_outer_q(model, kpts, qpts; calculators, kwargs...)
 
 * `el_kq_from_unfolding`: If true, compute the electron states at k+q by computing the
     states at k+q in the irreducible BZ and unfolding them to the full BZ. This is useful to
@@ -19,8 +19,8 @@ function run_eph_outer_q(
         model       :: Model{FT},
         kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
         qpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
-        calculators :: AbstractVector,
         ;
+        calculators = [],
         mpi_comm_k = nothing,
         mpi_comm_q = nothing,
         fourier_mode = "gridopt",
