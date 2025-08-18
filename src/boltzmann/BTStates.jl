@@ -179,3 +179,106 @@ function mpi_gather(s::BTStates{FT}, comm::MPI.Comm) where {FT}
         BTStates{FT}(n=0, nk=0, nband=0, ngrid=ngrid)
     end
 end
+
+
+"""
+    find_unfolding_indices(el_i, el_f, symmetry)
+    => ind_and_isym_map :: Vector{NTuple{2, Int}}
+
+Build a map that unfolds a velocity (polar, time-reversal odd) on `el_i` to `el_f` by `symmetry`.
+``S(ind_and_isym_map[i][2]) * el_i[ind_and_isym_map[i][1]] -> el_f[i]``
+
+If there are multiple symmetries that map f to i, return only the first one.
+The `i`-th element of `ind_and_isym_map` always corresponds to the `i`-th element of `el_f`.
+"""
+function find_unfolding_indices(el_i :: BTStates, el_f :: BTStates, symmetry)
+    ind_and_isym_map = fill((0, 0), el_f.n)
+
+    for i in 1:el_f.n
+        xk_f = el_f[i].xks
+        ib = el_f[i].iband
+
+        found = false
+
+        for (isym, S) in enumerate(symmetry)
+            for j in 1:el_i.n
+                if el_i[j].iband == ib
+                    k_i = el_i[j].xks
+                    Sk_i = apply_symop(S, k_i, :momentum)
+                    dk = Sk_i - xk_f
+                    if all(abs.(dk .- round.(dk)) .< 1e-6)
+                        ind_and_isym_map[i] = (j, isym)
+                        found = true
+                        break
+                    end
+                end
+            end
+            found && break
+        end
+
+        found || error("Cannot find the corresponding state in el_i for i = $i, e_f = $(el_f[i])")
+    end
+
+    ind_and_isym_map
+end
+
+
+"""
+    find_unfolding_indices_with_duplicates(el_i, el_f, symmetry)
+    => ind_and_isym_map :: Vector{NTuple{4, Int}}
+
+Build a map that unfolds a velocity (polar, time-reversal odd) on `el_i` to `el_f` by `symmetry`.
+``S(ind_and_isym_map[i][2]) * el_i[ind_and_isym_map[i][1]] -> el_f[ind_and_isym_map[3]]``
+There are `ind_and_isym_map[4]` symmetries with this mapping.
+
+If there are multiple symmetries that map f to i, return everything.
+Now `i`-th element of `ind_and_isym_map` does not necessarily correspond to the `i`-th
+element of `el_f`.
+"""
+function find_unfolding_indices_with_duplicates(el_i :: BTStates, el_f :: BTStates, symmetry)
+    ind_and_isym_map = NTuple{4, Int}[]
+    list_tmp = NTuple{3, Int}[]
+
+    for i in 1:el_f.n
+        xk_f = el_f[i].xks
+        ib = el_f[i].iband
+
+        # To count the degeneracy, store the indices on a temporary list
+        empty!(list_tmp)
+
+        for (isym, S) in enumerate(symmetry)
+            for j in 1:el_i.n
+                if el_i[j].iband == ib
+                    k_i = el_i[j].xks
+                    Sk_i = apply_symop(S, k_i, :momentum)
+                    dk = Sk_i - xk_f
+                    if all(abs.(dk .- round.(dk)) .< 1e-6)
+                        push!(list_tmp, (j, isym, i))
+                    end
+                end
+            end
+        end
+
+        ndegen = length(list_tmp)
+        for ii in list_tmp
+            push!(ind_and_isym_map, (ii..., ndegen))
+        end
+
+        ndegen == 0 && error("Cannot find the corresponding state in el_i for i = $i, e_f = $(el_f[i])")
+    end
+
+    ind_and_isym_map
+end
+
+"""
+    _BTE_unfold_δf(δf_i, el_f, indmap, symmetry) => δf_f
+Unfold `δf_i` (polar, time-reversal odd) on irreducible BZ to the full BZ with states `el_f`.
+`indmap` must be precomputed using `find_unfolding_indices_with_duplicates(el_i, el_f, symmetry)`.
+"""
+function _BTE_unfold_δf(δf_i, el_f, indmap, symmetry)
+    δf_f = zeros(eltype(δf_i), el_f.n)
+    for (indi, isym, indf, ndegen) in indmap
+        δf_f[indf] += apply_symop(symmetry[isym], δf_i[indi], :momentum_cartesian) / ndegen
+    end
+    δf_f
+end
