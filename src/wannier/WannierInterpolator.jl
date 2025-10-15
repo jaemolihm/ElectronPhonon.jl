@@ -15,19 +15,16 @@ struct NormalWannierInterpolator{T, WT <: AbstractWannierObject} <: AbstractWann
     rdotk::Vector{T}
     phase::Vector{Complex{T}}
 
-    # Output buffer
-    out::Vector{Complex{T}}
-
-    # Buffer for intermediate calculations
+    # Buffer for intermediate calculations (not used in Fourier transformation)
     buffer::Vector{Complex{T}}
 
-    # Buffer for diagonalization
+    # Buffer for diagonalization (not used in Fourier transformation)
     ws::HermitianEigenWsSYEV{Complex{T},T}
 
     function NormalWannierInterpolator(parent::WT) where {WT <: AbstractWannierObject{T}} where {T}
         nr = length(parent.irvec)
         ws = HermitianEigenWsSYEV{Complex{T},T}()
-        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr), zeros(Complex{T}, parent.ndata), Complex{T}[], ws)
+        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr), Complex{T}[], ws)
     end
 end
 
@@ -39,13 +36,10 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
     # For gridopt Fourier transform
     const gridopt::GridOpt{T}
 
-    # Output buffer
-    out::Vector{Complex{T}}
-
-    # Buffer for intermediate calculations
+    # Buffer for intermediate calculations (not used in Fourier transformation)
     buffer::Vector{Complex{T}}
 
-    # Buffer for diagonalization
+    # Buffer for diagonalization (not used in Fourier transformation)
     ws::HermitianEigenWsSYEV{Complex{T},T}
 
     # Uheck if `gridopt` is up-to-date with `parent`.
@@ -55,7 +49,7 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
     function GridoptWannierInterpolator(parent::WT, threads = false) where {WT <: AbstractWannierObject{T}} where {T}
         gridopt = GridOpt(T, parent.irvec, parent.ndata, threads)
         ws = HermitianEigenWsSYEV{Complex{T},T}()
-        new{T, WT}(parent, gridopt, zeros(Complex{T}, parent.ndata), Complex{T}[], ws, parent._id)
+        new{T, WT}(parent, gridopt, Complex{T}[], ws, parent._id)
     end
 end
 
