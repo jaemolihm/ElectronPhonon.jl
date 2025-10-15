@@ -33,7 +33,7 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
     u_full::Matrix{Complex{T}} # Electron eigenvectors
 
     # Variables related to the energy window.
-    nband_bound::Int # Upper bound of possible nband
+    nband_bound::Int # Upper bound of possible nband (soft limit, can be changed by resize!)
     nband::Int # Number of bands inside the energy window
     rng::UnitRange{Int} # Physical band indices of bands inside the energy window
 
@@ -44,19 +44,22 @@ Base.@kwdef mutable struct ElectronState{T <: Real}
     occupation::Vector{T} # Electron occupation number
 end
 
-function ElectronState{T}(nw, nband_bound=0) where {T}
-    ElectronState{T}(
-        nw=nw,
-        xk=Vec3{T}(NaN, NaN, NaN),
-        e_full=zeros(T, nw),
-        u_full=zeros(Complex{T}, nw, nw),
-        nband_bound=nband_bound,
-        nband=0,
-        rng=1:0,
-        vdiag=fill(zeros(Vec3{T}), (nband_bound,)),
-        v=fill(zeros(Vec3{Complex{T}}), (nband_bound, nband_bound)),
-        rbar=fill(zeros(Vec3{Complex{T}}), (nband_bound, nband_bound)),
-        occupation=zeros(T, nband_bound),
+function ElectronState{T}(nw, nband_bound = 1) where {T}
+    # nband_bound is a soft limit of the maximum number of bands inside the energy window.
+    # If the actual number of bands inside the window exceeds nband_bound, resize!(el) is
+    # called to increase the size of the arrays.
+    ElectronState{T}(;
+        nw,
+        xk = Vec3{T}(NaN, NaN, NaN),
+        e_full = zeros(T, nw),
+        u_full = zeros(Complex{T}, nw, nw),
+        nband_bound,
+        nband = 0,
+        rng = 1:0,
+        vdiag = fill(zeros(Vec3{T}), (nband_bound,)),
+        v = fill(zeros(Vec3{Complex{T}}), (nband_bound, nband_bound)),
+        rbar = fill(zeros(Vec3{Complex{T}}), (nband_bound, nband_bound)),
+        occupation = zeros(T, nband_bound),
     )
 end
 
