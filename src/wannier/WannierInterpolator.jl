@@ -70,13 +70,20 @@ end
 
 
 """
-    get_interpolator(obj::AbstractWannierObject; fourier_mode="normal")
+    get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", batch_size=32, threads=false)
 Return a interpolator for the given object.
 For a multithreaded use, one must use `get_interpolator_channel` instead.
+
+# Keyword Arguments
+- `fourier_mode`: Interpolation mode - "normal", "batched", or "gridopt"
+- `batch_size`: Batch size for "batched" mode (default: 32)
+- `threads`: Enable threading for "gridopt" mode (default: false)
 """
-function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", threads = false)
+function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", batch_size=32, threads=false)
     if fourier_mode === "normal"
         NormalWannierInterpolator(obj)
+    elseif fourier_mode === "batched"
+        BatchedWannierInterpolator(obj; batch_size)
     elseif fourier_mode === "gridopt"
         GridoptWannierInterpolator(obj, threads)
     else
@@ -109,7 +116,7 @@ end
     if WT <: DiskWannierObject
         op_k_1d .= 0
         for ir in 1:parent.nr
-            op_k_1d .+= phase[ir] .* read_op_r(parent, ir)
+            op_k_1d .+= read_op_r(parent, ir) .* phase[ir]
         end
     else
         @views mul!(op_k_1d, parent.op_r[1:parent.ndata, :], phase)

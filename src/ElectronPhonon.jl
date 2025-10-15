@@ -28,6 +28,7 @@ include("wannier/DiskWannierObject.jl")
 include("wannier/GridOpt.jl")
 include("wannier/DiskGridOpt.jl")
 include("wannier/WannierInterpolator.jl")
+include("wannier/batched_interpolator.jl")
 
 include("diagonalize.jl")
 include("longrange.jl")
