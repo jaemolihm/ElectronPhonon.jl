@@ -46,10 +46,13 @@ mutable struct BatchedWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
     # Buffers for batched Fourier transform
     phase_batch::Matrix{Complex{T}}         # (nr × batch_size)
 
-    # Buffer for intermediate calculations (not used in Fourier transformation)
+    # Output buffer
+    out::Vector{Complex{T}}
+
+    # Buffer for intermediate calculations
     buffer::Vector{Complex{T}}
 
-    # Buffer for diagonalization (not used in Fourier transformation)
+    # Buffer for diagonalization
     ws::HermitianEigenWsSYEV{Complex{T},T}
 
     # Tolerance for k-point comparison
@@ -67,6 +70,7 @@ mutable struct BatchedWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
             0,                       # cached_batch_start
             0,                       # cached_batch_end
             zeros(Complex{T}, nr, batch_size),  # phase_batch
+            zeros(Complex{T}, parent.ndata),  # out
             Complex{T}[],            # buffer
             ws,
             T(xk_tol)

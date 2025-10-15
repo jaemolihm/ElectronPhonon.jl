@@ -46,10 +46,13 @@ mutable struct BatchedGridoptWannierInterpolator{T, WT <: AbstractWannierObject}
     # Batched phases for k3 dimension
     phase_3_batch::Matrix{Complex{T}}       # (nr_3 × batch_size)
 
-    # Buffer for intermediate calculations (not used in Fourier transformation)
+    # Output buffer
+    out::Vector{Complex{T}}
+
+    # Buffer for intermediate calculations
     buffer::Vector{Complex{T}}
 
-    # Buffer for diagonalization (not used in Fourier transformation)
+    # Buffer for diagonalization
     ws::HermitianEigenWsSYEV{Complex{T},T}
 
     # Check if `gridopt` is up-to-date with `parent`
@@ -73,6 +76,7 @@ mutable struct BatchedGridoptWannierInterpolator{T, WT <: AbstractWannierObject}
             0,                       # cached_batch_start
             0,                       # cached_batch_end
             zeros(Complex{T}, nr_3, batch_size),  # phase_3_batch
+            zeros(Complex{T}, parent.ndata),  # out
             Complex{T}[],            # buffer
             ws,
             parent._id,

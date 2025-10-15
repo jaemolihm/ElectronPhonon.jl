@@ -9,11 +9,19 @@ using ElectronPhonon
 
     # electron
     el_states = compute_electron_states(model, kpts, ["eigenvalue"], fourier_mode="gridopt")
-    el_e = compute_eigenvalues_el(model, kpts)
-    @test hcat([el.e_full for el in el_states]...) ≈ el_e
+    el_e_ref = stack(el.e_full for el in el_states)
+
+    for fourier_mode in ["normal", "gridopt", "batched", "batched-gridopt"]
+        el_e = compute_eigenvalues_el(model, kpts)
+        @test el_e ≈ el_e_ref
+    end
 
     # phonon
     ph_states = compute_phonon_states(model, kpts, ["eigenvalue"], fourier_mode="gridopt")
-    ph_e = compute_eigenvalues_ph(model, kpts)
-    @test hcat([ph.e for ph in ph_states]...) ≈ ph_e
+    ph_e_ref = stack(ph.e for ph in ph_states)
+
+    for fourier_mode in ["normal", "gridopt", "batched", "batched-gridopt"]
+        ph_e = compute_eigenvalues_ph(model, kpts)
+        @test ph_e ≈ ph_e_ref
+    end
 end
