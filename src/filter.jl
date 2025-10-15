@@ -94,6 +94,7 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal")
 
     @threads for iks in chunks(kpoints.vectors; n=2*nthreads())
         ham = get_interpolator(el_ham; fourier_mode)
+        register_kpoints!(ham, view(kpoints.vectors, iks))
         eigenvalues = zeros(real(eltype(el_ham)), nw)
 
         for ik in iks
@@ -132,6 +133,8 @@ function filter_qpoints(qpoints, kpoints, nw, el_ham, window; fourier_mode="grid
 
         for iq in iqs
             xq = qpoints.vectors[iq]
+            register_kpoints!(ham, kpoints.vectors .+ Ref(xq))
+
             for xk in kpoints.vectors
                 xkq = xq + xk
                 get_el_eigen_valueonly!(eigenvalues, nw, ham, xkq)

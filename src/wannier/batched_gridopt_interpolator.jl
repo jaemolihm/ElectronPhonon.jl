@@ -117,7 +117,7 @@ The k-points must be queried in the exact order they are registered.
 - For optimal performance, k-points should be ordered with k1 slowest, k3 fastest
 - Querying out-of-order or unregistered k-points will throw an error
 """
-function register_kpoints!(obj::BatchedGridoptWannierInterpolator{T}, xk_list) where {T}
+function register_kpoints!(obj::BatchedGridoptWannierInterpolator, xk_list)
     # Clear previous state
     clear_registered_kpoints!(obj)
 
@@ -258,5 +258,16 @@ function _compute_k3_batch!(obj::BatchedGridoptWannierInterpolator{T}, start_idx
     obj.cached_batch_start = batch_start
     obj.cached_batch_end = batch_end
 
+    nothing
+end
+
+
+"""
+    skip_registered_kpoint!(obj::BatchedGridoptWannierInterpolator)
+
+Skip one registered k-point in the sequence and advance the current index.
+"""
+function skip_registered_kpoint!(obj::BatchedGridoptWannierInterpolator)
+    obj.current_index += 1
     nothing
 end

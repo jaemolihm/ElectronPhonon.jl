@@ -32,15 +32,18 @@ function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-In
     @threads for iks in chunks(kpts.vectors; n=2nthreads())
         # Setup thread-local WannierInterpolators
         ham = get_interpolator(model.el_ham; fourier_mode)
+        register_kpoints!(ham, view(kpts.vectors, iks))
         if need_velocity
             vel = if el_velocity_mode === :Direct
                 get_interpolator(model.el_vel; fourier_mode)
             else
                 get_interpolator(model.el_ham_R; fourier_mode)
             end
+            register_kpoints!(vel, view(kpts.vectors, iks))
         end
         if need_position
             pos = get_interpolator(model.el_pos; fourier_mode)
+            register_kpoints!(pos, view(kpts.vectors, iks))
         end
 
         for ik in iks

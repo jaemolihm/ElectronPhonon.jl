@@ -12,7 +12,7 @@ using ElectronPhonon
     el_e_ref = stack(el.e_full for el in el_states)
 
     for fourier_mode in ["normal", "gridopt", "batched", "batched-gridopt"]
-        el_e = compute_eigenvalues_el(model, kpts)
+        el_e = compute_eigenvalues_el(model, kpts; fourier_mode)
         @test el_e ≈ el_e_ref
     end
 
@@ -21,7 +21,7 @@ using ElectronPhonon
     ph_e_ref = stack(ph.e for ph in ph_states)
 
     for fourier_mode in ["normal", "gridopt", "batched", "batched-gridopt"]
-        ph_e = compute_eigenvalues_ph(model, kpts)
+        ph_e = compute_eigenvalues_ph(model, kpts; fourier_mode)
         @test ph_e ≈ ph_e_ref
     end
 end

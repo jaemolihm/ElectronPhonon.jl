@@ -54,7 +54,7 @@ function run_eph_outer_loop_q(
 
     # Generate k points
     kpoints, iband_min, iband_max, nelec_below_window = filter_kpoints(k_input, nw,
-        model.el_ham, window, mpi_comm_k)
+        model.el_ham, window, mpi_comm_k; fourier_mode)
 
     # Generate q points
     if q_input isa Kpoints
@@ -67,7 +67,7 @@ function run_eph_outer_loop_q(
     else
         error("type of q_input is wrong")
     end
-    qpoints_filtered = filter_qpoints(qpoints_all, kpoints, nw, model.el_ham, window)
+    qpoints_filtered = filter_qpoints(qpoints_all, kpoints, nw, model.el_ham, window; fourier_mode)
     qpoints = mpi_gather_and_scatter(qpoints_filtered, mpi_comm_q)
 
     nk = kpoints.n
@@ -114,6 +114,8 @@ function run_eph_outer_loop_q(
     else
         [get_interpolator(model.el_ham_R; fourier_mode) for _ in 1:nthreads()]
     end
+    register_kpoints!(epmat, qpoints.vectors)
+    register_kpoints!(dyn, qpoints.vectors)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
     ep_eRpq_obj = get_next_wannier_object(model.epmat)
@@ -141,54 +143,67 @@ function run_eph_outer_loop_q(
 
         get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
 
-        @threads :static for ik in 1:nk
-            tid = threadid()
-            epdata = epdatas[tid]
-            ham = ham_threads[tid]
-            vel = vel_threads[tid]
-            ep_eRpq = ep_eRpq_threads[tid]
+        @threads for (id_chunk, iks) in enumerate(chunks(1:nk; n = Threads.nthreads()))
+            epdata = epdatas[id_chunk]
 
-            xk = kpoints.vectors[ik]
-            xkq = xk + xq
+            ham = ham_threads[id_chunk]
+            vel = vel_threads[id_chunk]
+            ep_eRpq = ep_eRpq_threads[id_chunk]
+            register_kpoints!(ham, view(kpoints.vectors, iks) .+ Ref(xq))
+            register_kpoints!(vel, view(kpoints.vectors, iks) .+ Ref(xq))
+            register_kpoints!(ep_eRpq, view(kpoints.vectors, iks))
 
-            epdata.wtk = kpoints.weights[ik]
-            epdata.wtq = qpoints.weights[iq]
+            for ik in iks
 
-            # Use saved data for electron state at k.
-            epdata.el_k = el_k_save[ik]
+                xk = kpoints.vectors[ik]
+                xkq = xk + xq
 
-            # Compute electron state at k+q.
-            set_eigen!(epdata.el_kq, ham, xkq)
+                epdata.wtk = kpoints.weights[ik]
+                epdata.wtq = qpoints.weights[iq]
 
-            # Set energy window, skip if no state is inside the window
-            set_window!(epdata.el_kq, window)
-            length(epdata.el_kq.rng) == 0 && continue
+                # Use saved data for electron state at k.
+                epdata.el_k = el_k_save[ik]
 
-            set_velocity_diag!(epdata.el_kq, vel, xkq, model.el_velocity_mode)
-            get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
-            if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
-                epdata_set_mmat!(epdata)
-                model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
-            end
-            epdata_set_g2!(epdata)
+                # Compute electron state at k+q.
+                set_eigen!(epdata.el_kq, ham, xkq)
 
-            # Now, we are done with matrix elements. All data saved in epdata.
+                # Set energy window, skip if no state is inside the window
+                set_window!(epdata.el_kq, window)
 
-            # Calculate physical quantities.
-            if compute_elself
-                compute_electron_selfen!(elself, epdata, elself_params, ik)
-            end
-            if compute_phself
-                compute_phonon_selfen!(phselfs[tid], epdata, phself_params, iq)
-            end
-            if compute_phspec
-                compute_phonon_spectral!(phspecs[tid], epdata, phspec_params, iq)
-            end
-            if compute_transport
-                compute_lifetime_serta!(transport_serta, epdata, transport_params, ik)
-            end
-        end # ik
-    end # iq
+                # Skip this k point
+                if length(epdata.el_kq.rng) == 0
+                    # For batched interpolator, we must call skip_registered_kpoint! to advance the internal index.
+                    skip_registered_kpoint!(vel)
+                    skip_registered_kpoint!(ep_eRpq)
+                    continue
+                end
+
+                set_velocity_diag!(epdata.el_kq, vel, xkq, model.el_velocity_mode)
+                get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
+                if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
+                    epdata_set_mmat!(epdata)
+                    model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
+                end
+                epdata_set_g2!(epdata)
+
+                # Now, we are done with matrix elements. All data saved in epdata.
+
+                # Calculate physical quantities.
+                if compute_elself
+                    compute_electron_selfen!(elself, epdata, elself_params, ik)
+                end
+                if compute_phself
+                    compute_phonon_selfen!(phselfs[id_chunk], epdata, phself_params, iq)
+                end
+                if compute_phspec
+                    compute_phonon_spectral!(phspecs[id_chunk], epdata, phspec_params, iq)
+                end
+                if compute_transport
+                    compute_lifetime_serta!(transport_serta, epdata, transport_params, ik)
+                end
+            end  # ik
+        end  # iks chunk
+    end  # iq
 
     output = Dict()
 

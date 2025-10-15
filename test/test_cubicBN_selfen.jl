@@ -30,24 +30,6 @@ using NPZ
     elself_params = ElectronSelfEnergyParams(; μ, Tlist, smearing)
     phself_params = PhononSelfEnergyParams(; μ, Tlist, smearing, spin_degeneracy = 2.0)
 
-    # Run electron-phonon coupling calculation
-    @time output = ElectronPhonon.run_eph_outer_loop_q(
-        model, nklist, nqlist;
-        fourier_mode = "gridopt",
-        window,
-        elself_params,
-        phself_params,
-    )
-
-    # # Run electron-phonon coupling calculation
-    # @time output_disk = ElectronPhonon.run_eph_outer_loop_q(
-    #     model_disk, nklist, nqlist,
-    #     fourier_mode="gridopt",
-    #     window=window,
-    #     elself_params=elself_params,
-    #     phself_params=phself_params,
-    # )
-
     function _test(output)
         iband_min = output["iband_min"]
         iband_max = output["iband_max"]
@@ -69,8 +51,19 @@ using NPZ
         return output
     end
 
-    @testset "WannierObject" begin
-        _test(output)
+    # Run electron-phonon coupling calculation
+
+    for fourier_mode in ["normal", "batched", "gridopt", "batched-gridopt"]
+        @testset "WannierObject - $fourier_mode" begin
+            @time output = ElectronPhonon.run_eph_outer_loop_q(
+                model, nklist, nqlist;
+                fourier_mode = "gridopt",
+                window,
+                elself_params,
+                phself_params,
+            )
+            _test(output)
+        end
     end
 
     # @testset "DiskWannierObject" begin

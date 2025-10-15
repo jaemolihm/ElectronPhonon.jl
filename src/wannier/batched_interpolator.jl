@@ -108,7 +108,7 @@ The k-points must be queried in the exact order they are registered.
 - K-points MUST be queried in the same order via `get_fourier!`
 - Querying out-of-order or unregistered k-points will throw an error
 """
-function register_kpoints!(obj::BatchedWannierInterpolator{T}, xk_list) where {T}
+function register_kpoints!(obj::BatchedWannierInterpolator, xk_list)
     # Clear previous state
     clear_registered_kpoints!(obj)
 
@@ -220,5 +220,16 @@ function _compute_batch!(obj::BatchedWannierInterpolator{T, WT}, start_idx::Int)
     obj.cached_batch_start = batch_start
     obj.cached_batch_end = batch_end
 
+    nothing
+end
+
+
+"""
+    skip_registered_kpoint!(obj::BatchedWannierInterpolator)
+
+Skip one registered k-point in the sequence and advance the current index.
+"""
+function skip_registered_kpoint!(obj::BatchedWannierInterpolator)
+    obj.current_index += 1
     nothing
 end

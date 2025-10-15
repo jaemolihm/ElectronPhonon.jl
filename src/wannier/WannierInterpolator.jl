@@ -107,6 +107,15 @@ function get_interpolator_channel(obj::AbstractWannierObject{T}; fourier_mode, n
 end
 
 
+function register_kpoints!(obj::AbstractWannierInterpolator, xk_list)
+    # Null operation. Used only for bached interpolators.
+end
+
+function skip_registered_kpoint!(obj::AbstractWannierInterpolator)
+    # Null operation. Used only for bached interpolators.
+end
+
+
 @timing "get_fourier" function get_fourier!(op_k, obj::NormalWannierInterpolator{T, WT}, xk) where {T, WT}
     (; parent, phase) = obj
     @assert eltype(op_k) == Complex{T}

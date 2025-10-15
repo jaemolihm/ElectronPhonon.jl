@@ -7,6 +7,8 @@ export compute_eigenvalues_ph
 
 function compute_eigenvalues_el(model::Model{FT}, kpts; fourier_mode="gridopt") where FT
     ham = get_interpolator(model.el_ham; fourier_mode)
+    register_kpoints!(ham, kpts.vectors)
+
     e = zeros(FT, model.nw, kpts.n)
     el = ElectronState{FT}(model.nw)
     for ik in 1:kpts.n
@@ -19,6 +21,8 @@ end
 
 function compute_eigenvalues_ph(model::Model{FT}, kpts; fourier_mode="gridopt") where FT
     dyn = get_interpolator(model.ph_dyn; fourier_mode)
+    register_kpoints!(dyn, kpts.vectors)
+
     ph = PhononState(model.nmodes, FT)
     e = zeros(model.nmodes, kpts.n)
     for ik in 1:kpts.n
