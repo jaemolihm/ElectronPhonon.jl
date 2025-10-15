@@ -46,10 +46,10 @@ mutable struct BatchedWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
     # Buffers for batched Fourier transform
     phase_batch::Matrix{Complex{T}}         # (nr × batch_size)
 
-    # Buffer for intermediate calculations
+    # Buffer for intermediate calculations (not used in Fourier transformation)
     buffer::Vector{Complex{T}}
 
-    # Buffer for diagonalization
+    # Buffer for diagonalization (not used in Fourier transformation)
     ws::HermitianEigenWsSYEV{Complex{T},T}
 
     # Tolerance for k-point comparison
@@ -189,9 +189,9 @@ function _compute_batch!(obj::BatchedWannierInterpolator{T, WT}, start_idx::Int)
     batch_len = batch_end - batch_start + 1
 
     # Compute phases for all k-points in this batch
-    for (ik_local, ik_global) in enumerate(batch_start:batch_end)
+    @views for (ik_local, ik_global) in enumerate(batch_start:batch_end)
         xk = registered_kpoints[ik_global]
-        @views phase_batch[:, ik_local] .= cispi.(2 .* dot.(parent.irvec, Ref(xk)))
+        phase_batch[:, ik_local] .= cispi.(2 .* dot.(parent.irvec, Ref(xk)))
     end
 
     # Batched matrix-matrix multiplication

@@ -73,70 +73,76 @@ end
 
     obj = WannierObject(irvec, op_r)
 
-    # Create interpolators
+    # Create interpolator for comparison
     itp_normal = get_interpolator(obj, fourier_mode="normal")
-    itp_batched = get_interpolator(obj, fourier_mode="batched", batch_size=3)
 
-    # Test 1: Error when no k-points registered
-    @test_throws ErrorException get_fourier!(zeros(ComplexF64, 6), itp_batched, Vec3([0.1, 0.2, 0.3]))
+    # Test both batched and batched-gridopt interpolators
+    for mode in ["batched", "batched-gridopt"]
+        # Create batched interpolator
+        itp_batched = get_interpolator(obj, fourier_mode=mode, batch_size=3)
 
-    # Test 2: Register k-points and sequential access
-    kpoints = [Vec3([0.1, 0.2, 0.3]), Vec3([0.2, 0.3, 0.4]),
-               Vec3([0.3, 0.4, 0.5]), Vec3([0.4, 0.5, 0.6]),
-               Vec3([0.5, 0.6, 0.7])]
-    register_kpoints!(itp_batched, kpoints)
+        # Test 1: Error when no k-points registered
+        @test_throws ErrorException get_fourier!(zeros(ComplexF64, 6), itp_batched, Vec3([0.1, 0.2, 0.3]))
 
-    op_k_normal = zeros(ComplexF64, 6)
-    op_k_batched = zeros(ComplexF64, 6)
+        # Test 2: Register k-points and sequential access
+        kpoints = [Vec3(rand(3)) for _ in 1:12]
+        sort!(kpoints)
+        register_kpoints!(itp_batched, kpoints)
 
-    # Compare results with normal interpolator for each k-point
-    for xk in kpoints
-        get_fourier!(op_k_normal, itp_normal, xk)
-        get_fourier!(op_k_batched, itp_batched, xk)
-        @test op_k_normal ≈ op_k_batched
-    end
+        op_k_compare = zeros(ComplexF64, 6)
+        op_k_batched = zeros(ComplexF64, 6)
 
-    # Test 3: Error when all k-points exhausted
-    @test_throws ErrorException get_fourier!(op_k_batched, itp_batched, kpoints[1])
-
-    # Test 4: Error when k-point doesn't match
-    register_kpoints!(itp_batched, kpoints)
-    @test_throws ErrorException get_fourier!(op_k_batched, itp_batched, Vec3([0.9, 0.9, 0.9]))
-
-    # Test 5: Test clear_registered_kpoints! and re-registration
-    clear_registered_kpoints!(itp_batched)
-    @test_throws ErrorException get_fourier!(op_k_batched, itp_batched, kpoints[1])
-
-    new_kpoints = [Vec3([0.11, 0.22, 0.33]), Vec3([0.44, 0.55, 0.66])]
-    register_kpoints!(itp_batched, new_kpoints)
-
-    for xk in new_kpoints
-        get_fourier!(op_k_normal, itp_normal, xk)
-        get_fourier!(op_k_batched, itp_batched, xk)
-        @test op_k_normal ≈ op_k_batched
-    end
-
-    # Test 6: Test with different batch sizes
-    for batch_size in [1, 2, 4, 8]
-        itp_batched_test = get_interpolator(obj, fourier_mode="batched", batch_size=batch_size)
-        test_kpoints = [Vec3(rand(3)) for _ in 1:7]
-        register_kpoints!(itp_batched_test, test_kpoints)
-
-        for xk in test_kpoints
-            get_fourier!(op_k_normal, itp_normal, xk)
-            get_fourier!(op_k_batched, itp_batched_test, xk)
-            @test op_k_normal ≈ op_k_batched
+        # Compare results with reference interpolator for each k-point
+        for xk in kpoints
+            get_fourier!(op_k_compare, itp_normal, xk)
+            get_fourier!(op_k_batched, itp_batched, xk)
+            @test op_k_compare ≈ op_k_batched
         end
-    end
 
-    # Test 7: Test with 2D array output (like other interpolators)
-    op_k_2d_normal = Array{ComplexF64,2}(undef, 2, 3)
-    op_k_2d_batched = Array{ComplexF64,2}(undef, 2, 3)
+        # Test 3: Error when all k-points exhausted
+        @test_throws ErrorException get_fourier!(op_k_batched, itp_batched, kpoints[1])
 
-    register_kpoints!(itp_batched, kpoints)
-    for xk in kpoints
-        get_fourier!(op_k_2d_normal, itp_normal, xk)
-        get_fourier!(op_k_2d_batched, itp_batched, xk)
-        @test op_k_2d_normal ≈ op_k_2d_batched
+        # Test 4: Error when k-point doesn't match
+        register_kpoints!(itp_batched, kpoints)
+        @test_throws ErrorException get_fourier!(op_k_batched, itp_batched, Vec3([0.9, 0.9, 0.9]))
+
+        # Test 5: Test clear_registered_kpoints! and re-registration
+        clear_registered_kpoints!(itp_batched)
+        @test_throws ErrorException get_fourier!(op_k_batched, itp_batched, kpoints[1])
+
+        new_kpoints = [Vec3(rand(3)) for _ in 1:3]
+        sort!(new_kpoints)
+        register_kpoints!(itp_batched, new_kpoints)
+
+        for xk in new_kpoints
+            get_fourier!(op_k_compare, itp_normal, xk)
+            get_fourier!(op_k_batched, itp_batched, xk)
+            @test op_k_compare ≈ op_k_batched
+        end
+
+        # Test 6: Test with different batch sizes
+        for batch_size in [1, 2, 4, 8]
+            itp_test = get_interpolator(obj, fourier_mode=mode, batch_size=batch_size)
+            test_kpoints = [Vec3(rand(3)) for _ in 1:7]
+            sort!(test_kpoints)
+            register_kpoints!(itp_test, test_kpoints)
+
+            for xk in test_kpoints
+                get_fourier!(op_k_compare, itp_normal, xk)
+                get_fourier!(op_k_batched, itp_test, xk)
+                @test op_k_compare ≈ op_k_batched
+            end
+        end
+
+        # Test 7: Test with 2D array output
+        op_k_2d_compare = Array{ComplexF64,2}(undef, 2, 3)
+        op_k_2d_batched = Array{ComplexF64,2}(undef, 2, 3)
+
+        register_kpoints!(itp_batched, kpoints)
+        for xk in kpoints
+            get_fourier!(op_k_2d_compare, itp_normal, xk)
+            get_fourier!(op_k_2d_batched, itp_batched, xk)
+            @test op_k_2d_compare ≈ op_k_2d_batched
+        end
     end
 end

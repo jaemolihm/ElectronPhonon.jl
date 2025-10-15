@@ -69,9 +69,9 @@ Return a interpolator for the given object.
 For a multithreaded use, one must use `get_interpolator_channel` instead.
 
 # Keyword Arguments
-- `fourier_mode`: Interpolation mode - "normal", "batched", or "gridopt"
-- `batch_size`: Batch size for "batched" mode (default: 32)
-- `threads`: Enable threading for "gridopt" mode (default: false)
+- `fourier_mode`: Interpolation mode - "normal", "batched", "gridopt", or "batched-gridopt"
+- `batch_size`: Batch size for "batched" and "batched-gridopt" modes (default: 32)
+- `threads`: Enable threading for "gridopt" and "batched-gridopt" modes (default: false)
 """
 function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", batch_size=32, threads=false)
     if fourier_mode === "normal"
@@ -80,6 +80,8 @@ function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", bat
         BatchedWannierInterpolator(obj; batch_size)
     elseif fourier_mode === "gridopt"
         GridoptWannierInterpolator(obj, threads)
+    elseif fourier_mode === "batched-gridopt"
+        BatchedGridoptWannierInterpolator(obj; batch_size, threads)
     else
         throw(ArgumentError("Wrong fourier_mode $fourier_mode"))
     end
