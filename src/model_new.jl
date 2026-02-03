@@ -5,7 +5,10 @@ function pair_to_complex(pair)
     return Complex(nums...)
 end
 
-function _parse_wigner(f, nr, dims1, dims2)
+function _parse_wigner(f, nr, dims1, dims2; skip_ndegen = false)
+    # Parse wigner.fmt file
+    # skip_ndegen : Bool. If true, skip reading ndegen array.
+    #               Use for newer EPW versions that do not write ndegen.
     irvec = zeros(Int, 3, nr)
     wslen = zeros(Float64, nr)
     ndegen = zeros(Int, dims1, dims2, nr)
@@ -16,8 +19,10 @@ function _parse_wigner(f, nr, dims1, dims2)
         irvec[:, ir] .= parse.(Int, line[1:3])
         wslen[ir] = parse(Float64, line[4])
 
-        for i in 1:dims1
-            ndegen[i, :, ir] .= parse.(Int, split(readline(f)))
+        if ! skip_ndegen
+            for i in 1:dims1
+                ndegen[i, :, ir] .= parse.(Int, split(readline(f)))
+            end
         end
     end
 
@@ -135,6 +140,11 @@ function epw_parse_structure(folder::String)
 end
 
 
+"""
+- `skip_eph_ndegen:: Bool = false` : If true, skip applying Wigner-Seitz degeneracy correction
+  when reading electron-phonon coupling matrix elements. Use for newer EPW versions
+  that already apply the correction.
+"""
 function load_model_from_epw_new(
     folder :: String,
     outdir :: String,
@@ -143,6 +153,7 @@ function load_model_from_epw_new(
     epmat_outer_momentum :: String = "el",
     load_epmat :: Bool = true,
     load_symmetry_operators :: Bool = false,
+    skip_eph_ndegen :: Bool = false,
     )
 
     # el_velocity_mode = :Direct
@@ -155,7 +166,7 @@ function load_model_from_epw_new(
     nr_el, nr_ph, nr_ep, dims, dims2 = parse.(Int, split(readline(f)))
     irvec_el, ndegen_el, wslen_el = _parse_wigner(f, nr_el, dims,  dims)
     irvec_ph, ndegen_ph, wslen_ph = _parse_wigner(f, nr_ph, dims2, dims2)
-    irvec_ep, ndegen_ep, wslen_ep = _parse_wigner(f, nr_ep, dims,  dims2)
+    irvec_ep, ndegen_ep, wslen_ep = _parse_wigner(f, nr_ep, dims,  dims2; skip_ndegen = skip_eph_ndegen)
     close(f)
 
 
@@ -390,7 +401,7 @@ function load_model_from_epw_new(
 
     if load_epmat
         filename = joinpath(folder, outdir, "$prefix.epmatwp")
-        ep = read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum)
+        ep = read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum; skip_ndegen_ep = skip_eph_ndegen)
 
     else
         # Do not read epmat
@@ -420,7 +431,10 @@ function load_model_from_epw_new(
 end
 
 
-function read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum)
+function read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum; skip_ndegen_ep = false)
+    # skip_ndegen : Bool. If true, skip applying Wigner-Seitz degeneracy correction.
+    #               Use for newer EPW versions that already apply the correction.
+
     f = open(filename, "r")
     epmat = zeros(ComplexF64, nw, nw, nr_el, nmodes, nr_ep)
     @views for ir_ep in 1:nr_ep
@@ -432,15 +446,30 @@ function read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_
     epmat = epmat[:, :, ind_el, :, ind_ep]
 
     # Apply Wigner-Seitz degeneracy
-    if size(ndegen_ep, 1) == 1
-        @views for ir_ep in 1:nr_ep
-            if ndegen_ep[1, 1, ir_ep] == 0
-                epmat[:, :, :, :, ir_ep] .= 0
-            else
-                epmat[:, :, :, :, ir_ep] ./= ndegen_ep[1, 1, ir_ep]
+    if ! skip_ndegen_ep
+        if size(ndegen_ep, 1) == 1
+            @views for ir_ep in 1:nr_ep
+                if ndegen_ep[1, 1, ir_ep] == 0
+                    epmat[:, :, :, :, ir_ep] .= 0
+                else
+                    epmat[:, :, :, :, ir_ep] ./= ndegen_ep[1, 1, ir_ep]
+                end
+            end
+
+        else
+            @views for ir_ep in 1:nr_ep, imode in 1:nmodes, iw in 1:nw
+                iatm = cld(imode, 3)
+                if ndegen_ep[iw, iatm, ir_ep] == 0
+                    epmat[iw, :, :, imode, ir_ep] .= 0
+                else
+                    epmat[iw, :, :, imode, ir_ep] ./= ndegen_ep[iw, iatm, ir_ep]
+                end
             end
         end
+    end
 
+
+    if size(ndegen_el, 1) == 1
         @views for ir_el in 1:nr_el
             if ndegen_el[1, 1, ir_el] == 0
                 epmat[:, :, ir_el, :, :] .= 0
@@ -450,15 +479,6 @@ function read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_
         end
 
     else
-        @views for ir_ep in 1:nr_ep, imode in 1:nmodes, iw in 1:nw
-            iatm = cld(imode, 3)
-            if ndegen_ep[iw, iatm, ir_ep] == 0
-                epmat[iw, :, :, imode, ir_ep] .= 0
-            else
-                epmat[iw, :, :, imode, ir_ep] ./= ndegen_ep[iw, iatm, ir_ep]
-            end
-        end
-
         @views for ir_el in 1:nr_el, jw in 1:nw, iw in 1:nw
             if ndegen_el[iw, jw, ir_el] == 0
                 epmat[iw, jw, ir_el, :, :] .= 0
