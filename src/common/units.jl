@@ -27,6 +27,7 @@ module units
     const V = J / C # 1 Volt = 1 J / C
     const A = C / s # 1 Ampere = 1 C / s
     const THz = 2π * 1e12 / s  # THz -> Rydberg
+    const cm⁻¹ = 2π * 2 * 137.035999177 / cm  # cm⁻¹ -> Rydberg
 end
 
 """
