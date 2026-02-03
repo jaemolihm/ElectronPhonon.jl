@@ -318,7 +318,12 @@ function get_eph_dipole_coeffs!(coeff_δ, coeff_r, xq, polar::Polar{Polar3D}, u_
         end
     end
 
-    mul!(coeff_δ, Transpose(u_ph), tmp)
+    # Transform to eigenmode basis, or keep Cartesian if u_ph is nothing
+    if u_ph !== nothing
+        mul!(coeff_δ, Transpose(u_ph), tmp)
+    else
+        coeff_δ .= tmp
+    end
 
     # TODO: coeff_r term
 
@@ -459,8 +464,14 @@ function get_eph_dipole_coeffs!(coeff_δ, coeff_r, xq, polar::Polar{Polar2D}, u_
         end
     end
 
-    mul!(coeff_δ, Transpose(u_ph), tmp_δ)
-    mul!(coeff_r, Transpose(u_ph), tmp_r)
+    # Transform to eigenmode basis, or keep Cartesian if u_ph is nothing
+    if u_ph !== nothing
+        mul!(coeff_δ, Transpose(u_ph), tmp_δ)
+        mul!(coeff_r, Transpose(u_ph), tmp_r)
+    else
+        coeff_δ .= tmp_δ
+        coeff_r .= tmp_r
+    end
 
     coeff_δ, coeff_r
 end

@@ -2,25 +2,24 @@
 # TODO: Implement MPI
 # TODO: nband_max ?
 
-using ChunkSplitters
+using Dates: now
 using Base.Threads: nthreads, threadid, @threads
+using ChunkSplitters
 using OffsetArrays: no_offset_view
 
 
 """
-    run_eph_outer_q(model, kpts, qpts; calculators, kwargs...)
-
 * `el_kq_from_unfolding`: If true, compute the electron states at k+q by computing the
     states at k+q in the irreducible BZ and unfolding them to the full BZ. This is useful to
     ensure gauge consistency between symmetry-equivalent k points.
     To enable this option, `kpts` and `qpts` must have same grid size.
 """
-function run_eph_outer_q(
+function run_eph_outer_k(
         model       :: Model{FT},
         kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
         qpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
+        calculators :: AbstractVector,
         ;
-        calculators = [],
         mpi_comm_k = nothing,
         mpi_comm_q = nothing,
         fourier_mode = "gridopt",
@@ -29,36 +28,20 @@ function run_eph_outer_q(
         skip_eph = false,
         el_kq_from_unfolding = false,
         precompute_el_kq = el_kq_from_unfolding,
-        use_symmetry = true,
         energy_conservation = (:None, 0.0),
         screening_params = nothing,
         progress_print_step = 20,
-        keep_all_qpts = false,
+        symmetry = model.symmetry,
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
-        eph_phonon_basis::Symbol = :eigenmode,  # :eigenmode or :cartesian
     ) where {FT}
 
-    if model.epmat_outer_momentum != "ph"
-        throw(ArgumentError("model.epmat_outer_momentum must be ph to use run_eph_outer_q"))
+    if model.epmat_outer_momentum != "el"
+        throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_outer_k"))
     end
     for calc in calculators
-        if !allow_eph_outer_q(calc)
-            throw(ArgumentError("$calc does not allow run_eph_outer_q. Use run_eph_outer_k instead."))
+        if !allow_eph_outer_k(calc)
+            throw(ArgumentError("$calc does not allow eph_outer_k. Use run_eph_outer_q instead."))
         end
-    end
-
-    # Validate eph_phonon_basis compatibility with calculators
-    for calc in calculators
-        if eph_phonon_basis ∉ allowed_eph_phonon_basis(calc)
-            throw(ArgumentError("Calculator $calc does not support eph_phonon_basis = :$eph_phonon_basis. " *
-                                "Allowed: $(allowed_eph_phonon_basis(calc))"))
-        end
-    end
-
-    # Validate eph_phonon_basis compatibility with dipole screening
-    if eph_phonon_basis == :cartesian && screening_params !== nothing
-        throw(ArgumentError("eph_phonon_basis = :cartesian is incompatible with dipole screening (screening_params). " *
-                            "Dipole screening is mode-dependent and requires eigenmode basis."))
     end
 
     mpi_comm_k === nothing || error("mpi_comm_k not implemented")
@@ -70,32 +53,31 @@ function run_eph_outer_q(
         precompute_el_kq = true
     end
 
-    setup = _setup_eph_outer_q(model, kpts_input, qpts_input;
+    setup = _setup_eph_outer_k(model, kpts_input, qpts_input;
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
-        el_kq_from_unfolding, precompute_el_kq, use_symmetry,
-        keep_all_qpts, eph_phonon_basis, calculators, nchunks_threads,
+        el_kq_from_unfolding, precompute_el_kq, symmetry,
+        calculators, nchunks_threads,
     )
 
-    _loop_eph_outer_q(model,
+    _loop_eph_outer_k(model,
         setup.kpts, setup.qpts, setup.kqpts,
         setup.el_k_save, setup.el_kq_save, setup.ph_save,
         setup.precompute_el_kq,
-        setup.epdatas, setup.ep_eRpqs, setup.epmat, setup.ep_eRpq_obj,
-        setup.ham_threads, setup.vel_threads;
+        setup.epdatas, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
+        setup.ham_threads, setup.vel_threads, setup.pos_threads;
         calculators, skip_eph, window_kq,
         energy_conservation, screening_params,
-        progress_print_step, nchunks_threads,
-        eph_phonon_basis,
+        progress_print_step, nchunks_threads, symmetry,
     )
 
-    (; setup.kpts, setup.qpts, setup.el_k_save, setup.el_kq_save, setup.ph_save)
+    (; setup.kpts, setup.qpts, setup.el_k_save, setup.ph_save)
 end
 
 
-# _setup_eph_outer_q and _loop_eph_outer_q are split from run_eph_outer_q so that all
-# variables captured by the @threads closure in _loop_eph_outer_q are typed function
+# _setup_eph_outer_k and _loop_eph_outer_k are split from run_eph_outer_k so that all
+# variables captured by the @threads closure in _loop_eph_outer_k are typed function
 # arguments, avoiding Core.Box wrapping.
-function _setup_eph_outer_q(
+function _setup_eph_outer_k(
         model       :: Model{FT},
         kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
         qpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
@@ -107,16 +89,12 @@ function _setup_eph_outer_q(
         window_kq = (-Inf, Inf),
         el_kq_from_unfolding = false,
         precompute_el_kq = el_kq_from_unfolding,
-        use_symmetry = true,
-        keep_all_qpts = false,
-        eph_phonon_basis::Symbol = :eigenmode,
+        symmetry = nothing,
         calculators = [],
         nchunks_threads = nthreads(),
     ) where {FT}
 
     (; nw, nmodes) = model
-
-    symmetry = use_symmetry ? model.symmetry : nothing
 
     # Generate k points
     @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
@@ -132,10 +110,7 @@ function _setup_eph_outer_q(
     else
         error("type of qpts_input is wrong")
     end
-
-    if !keep_all_qpts
-        @time qpts = filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
-    end
+    @time qpts = filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
     nq = qpts.n
 
 
@@ -146,7 +121,7 @@ function _setup_eph_outer_q(
 
     # Compute and save electron state at k
     @time el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_k; fourier_mode)
-    @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis)
+    @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
 
 
     # If precompute_el_kq, generate a Kpoint for k+q and compute electron states therein.
@@ -189,10 +164,9 @@ function _setup_eph_outer_q(
     end
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
-    ep_eRpq_obj = get_next_wannier_object(model.epmat)
-    ep_eRpqs = get_interpolator_channel(ep_eRpq_obj; fourier_mode)
-
+    ep_ekpR_obj = get_next_wannier_object(model.epmat)
     epmat = get_interpolator(model.epmat; fourier_mode, threads = true)
+    ep_ekpRs = get_interpolator_channel(ep_ekpR_obj; fourier_mode)
 
 
     if !precompute_el_kq
@@ -202,9 +176,11 @@ function _setup_eph_outer_q(
         else
             get_interpolator_channel(model.el_ham_R; fourier_mode)
         end
+        pos_threads = get_interpolator_channel(model.el_pos; fourier_mode)
     else
         ham_threads = nothing
         vel_threads = nothing
+        pos_threads = nothing
     end
 
     if mpi_isroot()
@@ -214,31 +190,33 @@ function _setup_eph_outer_q(
     end
 
 
-    setup_calculator!.(calculators, Ref(kpts), Ref(qpts), Ref(el_k_save);
-        nw, nmodes, rng_band = iband_min:iband_max,
-        el_states_kq = el_kq_save, kqpts, nelec_below_window_k, nelec_below_window_kq,
-        nchunks_threads
-    )
+    for calc in calculators
+        setup_calculator!(calc, kpts, qpts, el_k_save;
+            nw, nmodes, rng_band = iband_min:iband_max,
+            el_states_kq = el_kq_save, kqpts, nelec_below_window_k, nelec_below_window_kq,
+            nchunks_threads
+        )
+    end
 
     return (;
         kpts, qpts, kqpts,
         el_k_save, el_kq_save, ph_save,
         precompute_el_kq, nband_max,
-        epdatas, ep_eRpqs, epmat, ep_eRpq_obj,
-        ham_threads, vel_threads,
+        epdatas, ep_ekpRs, epmat, ep_ekpR_obj,
+        ham_threads, vel_threads, pos_threads,
         iband_min, iband_max,
         nelec_below_window_k, nelec_below_window_kq,
     )
 end
 
 
-function _loop_eph_outer_q(
+function _loop_eph_outer_k(
         model       :: Model{FT},
         kpts, qpts, kqpts,
         el_k_save, el_kq_save, ph_save,
         precompute_el_kq,
-        epdatas, ep_eRpqs, epmat, ep_eRpq_obj,
-        ham_threads, vel_threads;
+        epdatas, ep_ekpRs, epmat, ep_ekpR_obj,
+        ham_threads, vel_threads, pos_threads;
         calculators = [],
         skip_eph = false,
         window_kq = (-Inf, Inf),
@@ -246,55 +224,54 @@ function _loop_eph_outer_q(
         screening_params = nothing,
         progress_print_step = 20,
         nchunks_threads = nthreads(),
-        eph_phonon_basis::Symbol = :eigenmode,
+        symmetry = nothing,
     ) where {FT}
 
-    (; nmodes) = model
     nk = kpts.n
     nq = qpts.n
 
-    for iq in 1:nq
-        if mod(iq, progress_print_step) == 0 && mpi_isroot()
-            mpi_isroot() && @info "iq = $iq"
+    for ik in 1:nk
+        if mod(ik, progress_print_step) == 0 && mpi_isroot()
+            mpi_isroot() && @info "$(now()) ik = $ik / $nk"
             flush(stdout)
             flush(stderr)
         end
-        xq = qpts.vectors[iq]
-        ph = ph_save[iq]
+        xk = kpts.vectors[ik]
+        el_k = el_k_save[ik]
 
-        # Use precomputed data for the phonon state at q
+        # Use precomputed data for the electron state at k
         for epdata in epdatas.data
-            epdata.ph = ph
+            epdata.el_k = el_k
         end
 
         if !skip_eph
-            u_ph_for_eph = (eph_phonon_basis == :eigenmode) ? ph.u : I(nmodes)
-            get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, u_ph_for_eph)
+            get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
         end
 
         # Multithreading setup
-        setup_calculator_inner!.(calculators; iq)
+        setup_calculator_inner!.(calculators, ik; ik)
 
-        @threads for (id_chunk, iks) in enumerate(chunks(1:nk; n=nchunks_threads))
+        @threads for (id_chunk, iqs) in enumerate(chunks(1:nq; n=nchunks_threads))
             epdata = take!(epdatas)
-            ep_eRpq = take!(ep_eRpqs)
+            ep_ekpR = take!(ep_ekpRs)
 
             if !precompute_el_kq
                 ham = take!(ham_threads)
                 vel = take!(vel_threads)
+                pos = take!(pos_threads)
             end
 
             ϵs = zeros(Complex{FT}, model.nmodes)
 
-            for ik in iks
-                xk = kpts.vectors[ik]
+            for iq in iqs
+                xq = qpts.vectors[iq]
                 xkq = xk + xq
 
                 epdata.wtk = kpts.weights[ik]
                 epdata.wtq = qpts.weights[iq]
 
-                # Use precomputed data for the electron state at k
-                epdata.el_k = el_k_save[ik]
+                # Use precomputed data for the phonon state at q
+                epdata.ph = ph_save[iq]
 
                 if precompute_el_kq
                     # Use precomputed data for the electron state at k+q
@@ -311,6 +288,7 @@ function _loop_eph_outer_q(
                     length(epdata.el_kq.rng) == 0 && continue
 
                     set_velocity_diag!(epdata.el_kq, vel, xkq, model.el_velocity_mode)
+                    set_position!(epdata.el_kq, pos, xkq)
                     # TODO: full velocity
                 end
 
@@ -321,7 +299,7 @@ function _loop_eph_outer_q(
 
                 # Compute electron-phonon coupling
                 if !skip_eph
-                    get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
+                    get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
                     if screening_params !== nothing
                         # FIXME: screening should go into calculator
                         (; T, μ) = calculators[1].occ[1]
@@ -341,20 +319,21 @@ function _loop_eph_outer_q(
 
                 run_calculator!.(calculators, Ref(epdata), Ref(ik), Ref(iq), Ref(ikq); xq, xk, id_chunk)
 
-            end # ik
+            end # iq
 
-            put!(ep_eRpqs, ep_eRpq)
+            put!(ep_ekpRs, ep_ekpR)
             put!(epdatas, epdata)
             if !precompute_el_kq
                 put!(ham_threads, ham)
                 put!(vel_threads, vel)
+                put!(pos_threads, pos)
             end
-        end # ik chunk
+        end # iq chunk
 
         # Multithreading collect
-        postprocess_calculator_inner!.(calculators; iq)
+        postprocess_calculator_inner!.(calculators; ik)
 
-    end # iq
+    end # ik
 
-    postprocess_calculator!.(calculators; qpts, model.symmetry)
+    postprocess_calculator!.(calculators; qpts, symmetry)
 end

@@ -271,13 +271,16 @@ Multithreading is not supported because of large buffer array size.
     Must be initialized before calling. Only the op_r field is modified.
 - `epmat`: Input. E-ph matrix in electron Wannier, phonon Wannier basis.
 - `xq`: Input. q point vector.
-- `u_ph`: Input. nmodes * nmodes matrix containing phonon eigenvectors.
+- `u_ph`: Input. nmodes * nmodes matrix containing phonon eigenvectors. To keep the
+    e-ph matrix in Cartesian basis (no transformation), pass `I(nmodes)`.
 """
-@timing "w2b_eph_RRtoRq" function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject, epmat, xq, u_ph)
+@timing "w2b_eph_RRtoRq" function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject, epmat, xq, u_ph::AbstractMatrix)
     nr_el = epobj_eRpq.nr
+
     nmodes = size(u_ph, 1)
-    nbasis = div(epobj_eRpq.ndata, nmodes) # Number of electron basis squared.
     @assert size(u_ph) == (nmodes, nmodes)
+
+    nbasis = div(epobj_eRpq.ndata, nmodes) # Number of electron basis squared.
     @assert epobj_eRpq.ndata == nbasis * nmodes
     @assert epmat.parent.ndata == nbasis * nmodes * nr_el
 

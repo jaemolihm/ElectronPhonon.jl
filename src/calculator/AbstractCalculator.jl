@@ -25,6 +25,17 @@ Each calculator should allow one or both of these two options.
 allow_eph_outer_k(::AbstractCalculator) = false
 allow_eph_outer_q(::AbstractCalculator) = false
 
+"""
+    allowed_eph_phonon_basis(calc::AbstractCalculator) -> Vector{Symbol}
+
+Return the list of phonon bases the calculator supports for e-ph matrix elements.
+- `:eigenmode`: e-ph coupling in phonon eigenmode basis (default)
+- `:cartesian`: e-ph coupling in Cartesian displacement basis
+
+Default implementation returns `[:eigenmode]` only.
+"""
+allowed_eph_phonon_basis(::AbstractCalculator) = [:eigenmode]
+
 
 function setup_calculator!(::AbstractCalculator, kpts, qpts, el_states; kwargs...)
     error("setup_calculator! has to be implemented")

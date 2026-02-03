@@ -79,7 +79,7 @@ Compute the quantities listed in `quantities` and return a vector of PhononState
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"
 TODO: Implement quantities "velocity"
 """
-function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode="normal") where FT
+function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode="normal", eph_phonon_basis::Symbol = :eigenmode) where FT
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]
     for quantity in quantities
@@ -120,7 +120,9 @@ function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode=
                     set_velocity_diag!(ph, xk, dyn_R)
                 end
                 if "eph_dipole_coeff" ∈ quantities
-                    set_eph_dipole_coeff!(ph, xk, polar)
+                    # Use ph.u for eigenmode basis, nothing for Cartesian basis
+                    u_ph_for_dipole = (eph_phonon_basis == :eigenmode) ? ph.u : nothing
+                    get_eph_dipole_coeffs!(ph.eph_dipole_coeff, ph.eph_r_coeff, xk, polar, u_ph_for_dipole)
                 end
             end
         end  # ik
