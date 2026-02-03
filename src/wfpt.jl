@@ -22,11 +22,11 @@ function load_wfpt(folder, outdir, prefix, nw, nmodes, recip_lattice, alat)
     # Read Wigner-Seitz information
     f = open(joinpath(folder, "wigner.fmt"), "r")
     nr_el, nr_ph, nr_ep, dims, dims2 = parse.(Int, split(readline(f)))
-    irvec_el, ndegen_el, wslen_el = _parse_wigner(f, nr_el, dims,  dims)
+    irvec_el_, ndegen_el, wslen_el = _parse_wigner(f, nr_el, dims,  dims)
     close(f)
 
-    ind_el = sortperm(irvec_el, by=reverse)
-    irvec_el = irvec_el[ind_el]
+    ind_el = sortperm(irvec_el_, by=reverse)
+    irvec_el = irvec_el_[ind_el]
     ndegen_el = ndegen_el[:, :, ind_el]
 
     # Momentum matrix elements
@@ -42,21 +42,21 @@ function load_wfpt(folder, outdir, prefix, nw, nmodes, recip_lattice, alat)
     close(f)
 
     # Electron-phonon correction matrix elements
-    dg = zeros(ComplexF64, nw, nw, nr_el, nmodes, nqc)
+    dg_ = zeros(ComplexF64, nw, nw, nr_el, nmodes, nqc)
     f = open(joinpath(folder, outdir, "$prefix.dgmatwe1"), "r")
-    read!(f, dg)
+    read!(f, dg_)
     close(f)
 
     # Sternheimer matrix elements
-    sth = zeros(ComplexF64, nw, nw, nr_el, nmodes, nmodes, nqc)
+    sth_ = zeros(ComplexF64, nw, nw, nr_el, nmodes, nmodes, nqc)
     f = open(joinpath(folder, outdir, "$prefix.sthmatwe1"), "r")
-    read!(f, sth)
+    read!(f, sth_)
     close(f)
 
     pmat = permutedims(pmat, [2, 3, 1, 4])[:, :, :, ind_el]
     dw = permutedims(dw, [1, 2, 4, 5, 3])[:, :, :, :, ind_el]
-    dg = permutedims(dg, [1, 2, 4, 3, 5])[:, :, :, ind_el, :]
-    sth = permutedims(sth, [1, 2, 4, 5, 3, 6])[:, :, :, :, ind_el, :]
+    dg = permutedims(dg_, [1, 2, 4, 3, 5])[:, :, :, ind_el, :]
+    sth = permutedims(sth_, [1, 2, 4, 5, 3, 6])[:, :, :, :, ind_el, :]
 
     for ir in 1:nr_el
         for j in 1:nw

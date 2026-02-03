@@ -76,19 +76,11 @@ function run_eph_outer_loop_q(
 
     epdatas = [ElPhData{FT}(nw, nmodes, nband) for _ in 1:nthreads()]
 
-    # Initialize data structs
-    if compute_elself
-        elself = ElectronSelfEnergy{FT}(iband_min:iband_max, nk, length(elself_params.Tlist))
-    end
-    if compute_phself
-        phselfs = [PhononSelfEnergy{FT}(nmodes, nq, length(phself_params.Tlist)) for _ in 1:nthreads()]
-    end
-    if compute_phspec
-        phspecs = [PhononSpectralData(phspec_params, nmodes, nq) for _ in 1:nthreads()]
-    end
-    if compute_transport
-        transport_serta = TransportSERTA{FT}(iband_min:iband_max, nk, length(transport_params.Tlist))
-    end
+    # Initialize data structs (always assign to avoid Core.Box in @threads closure)
+    elself = compute_elself ? ElectronSelfEnergy{FT}(iband_min:iband_max, nk, length(elself_params.Tlist)) : nothing
+    phselfs = compute_phself ? [PhononSelfEnergy{FT}(nmodes, nq, length(phself_params.Tlist)) for _ in 1:nthreads()] : nothing
+    phspecs = compute_phspec ? [PhononSpectralData(phspec_params, nmodes, nq) for _ in 1:nthreads()] : nothing
+    transport_serta = compute_transport ? TransportSERTA{FT}(iband_min:iband_max, nk, length(transport_params.Tlist)) : nothing
 
     # Compute and save electron state at k
     el_k_save = compute_electron_states(model, kpoints, ["eigenvalue", "eigenvector", "velocity_diagonal"], window; fourier_mode)

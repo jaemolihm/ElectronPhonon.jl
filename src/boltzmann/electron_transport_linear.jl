@@ -37,13 +37,8 @@ function solve_electron_linear_conductivity(qme_model::AbstractQMEModel{FT}, ω,
     use_full_grid, maxiter=100, rtol=1e-10, qme_offdiag_cutoff=Inf, verbose=false) where {FT}
 
     params = qme_model.transport_params
-    if use_full_grid
-        el = qme_model.el
-        symmetry = nothing
-    else
-        el = qme_model.el_irr
-        symmetry = qme_model.symmetry
-    end
+    el = use_full_grid ? qme_model.el : qme_model.el_irr
+    symmetry = use_full_grid ? nothing : qme_model.symmetry
     (; el_f, filename) = qme_model
 
     if Sᵢ !== nothing

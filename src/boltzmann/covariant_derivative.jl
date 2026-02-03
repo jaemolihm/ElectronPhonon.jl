@@ -80,39 +80,41 @@ function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1) wher
         error("b vector search failed. Maybe the lattice is very skewed.")
     end
 
-    bvecs = empty(bvecs_all)
-    wbs = empty(wbs_shell)
+    bvecs_ = empty(bvecs_all)
+    wbs_ = empty(wbs_shell)
     for ishell in 1:nshell
         if ishell_used[ishell]
             bvecs_new = bvecs_all[findall(ishell_all .== ishell)]
-            append!(bvecs, bvecs_new)
-            append!(wbs, fill(wbs_shell[ishell], length(bvecs_new)))
+            append!(bvecs_, bvecs_new)
+            append!(wbs_, fill(wbs_shell[ishell], length(bvecs_new)))
         end
     end
 
     # Higher-order finite difference
     if order == 1
         # First-order: keep b and wbs (do nothing)
+        bvecs = bvecs_
+        wbs = wbs_
     elseif order == 2
         # [1 0] / [1 1; 2^2 2^4]
-        bvecs = vcat(bvecs, 2. * bvecs)
-        wbs = vcat(wbs .* 4/3, wbs .* -1/12)
+        bvecs = vcat(bvecs_, 2. * bvecs_)
+        wbs = vcat(wbs_ .* 4/3, wbs_ .* -1/12)
     elseif order == 3
         # [1 0 0] / [1 1 1; 2^2 2^4 2^6; 3^2 3^4 3^6]
-        bvecs = vcat(bvecs, 2. * bvecs, 3. * bvecs)
-        wbs = vcat(wbs .* 3/2, wbs .* -3/20, wbs .* 1/90)
+        bvecs = vcat(bvecs_, 2. * bvecs_, 3. * bvecs_)
+        wbs = vcat(wbs_ .* 3/2, wbs_ .* -3/20, wbs_ .* 1/90)
     elseif order == 4
         # [1 0 0 0] / [1 1 1 1; 2^2 2^4 2^6 2^8; 3^2 3^4 3^6 3^8; 4^2 4^4 4^6 4^8]
-        bvecs = vcat(bvecs, 2. * bvecs, 3. * bvecs, 4. * bvecs)
-        wbs = vcat(wbs .* 8/5, wbs .* -1/5, wbs .* 8/315, wbs .* -1/560)
+        bvecs = vcat(bvecs_, 2. * bvecs_, 3. * bvecs_, 4. * bvecs_)
+        wbs = vcat(wbs_ .* 8/5, wbs_ .* -1/5, wbs_ .* 8/315, wbs_ .* -1/560)
     else
         # Create Vandermonde matrix and compute [1 0 ...] / V.
         V = hcat([(1:order).^(2*n) for n in 1:order]...)
         x = zeros(1, order)
         x[1] = 1
         coeffs = x / V
-        bvecs = vcat([bvecs .* n for n in 1:order]...)
-        wbs = vcat([wbs .* c for c in coeffs]...)
+        bvecs = vcat([bvecs_ .* n for n in 1:order]...)
+        wbs = vcat([wbs_ .* c for c in coeffs]...)
     end
 
     bvecs_cart = Ref(recip_lattice) .* bvecs
