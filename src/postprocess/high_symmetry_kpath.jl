@@ -97,7 +97,7 @@ function plot_band_data(axis, data, plot_xdata; add_style = true,
 end
 
 function plot_band_data_style(axis, plot_xdata; ylabel=nothing, title=nothing)
-    axis.axvline.(plot_xdata.xticks; c="k", lw=1, ls="--")
+    axis.axvline.(plot_xdata.xticks; c="gray", lw=1, ls="--")
     axis.set_xticks(plot_xdata.xticks)
     axis.set_xticklabels(plot_xdata.xlabels)
     axis.set_xlim(extrema(plot_xdata.x))
