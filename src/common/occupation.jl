@@ -78,7 +78,7 @@ struct ElectronOccupationParams
             end
         end
 
-        if occ_type ∉ (:FermiDirac, :MV)
+        if occ_type ∉ (:FermiDirac, :MV, :Gaussian)
             throw(ArgumentError("Invalid occupation type: $occ_type"))
         end
 

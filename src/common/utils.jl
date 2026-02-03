@@ -1,5 +1,5 @@
 # TODO: separate to smearing.jl and kpoints.jl
-using SpecialFunctions: erf
+using SpecialFunctions: erf, erfc
 
 # module Utils
 export occ_fermion
@@ -21,12 +21,17 @@ Occupation of a fermion at energy `e` and temperature `T`.
         if occ_type == :FermiDirac
             return 1 / (exp(x) + 1)
 
-        elseif occ_type == :ColdSmearing || occ_type == :MarzariVanderbilt || occ_type == :MV
+        elseif occ_type == :Cold || occ_type == :ColdSmearing || occ_type == :MarzariVanderbilt || occ_type == :MV
             # Cold smearing (Marzari, Vanderbilt, DeVita, Payne, PRL 82, 3296 (1999))
             xp = x + 1 / sqrt(2)
             return (sqrt(2/π) * exp(-xp^2) + 1 - erf(xp)) / 2
 
-            # TODO: Implement Methfessel-Paxton
+        elseif occ_type == :Gaussian || occ_type == :Gauss
+            # Gaussian smearing
+            return erfc(x) / 2
+
+        elseif occ_type == :MethfesselPaxton || occ_type == :MP
+            throw(ArgumentError("Methfessel-Paxton occupation not implemented yet"))
 
         else
             throw(ArgumentError("unknown occ_type $occ_type"))
@@ -66,6 +71,14 @@ Approximation to minus the delta function divided by temperature.
         x = e / T
         xp = x + 1 / sqrt(2)
         return - (sqrt(2) * xp + 1) / sqrt(π) * exp(-xp^2) / T
+
+    elseif occ_type == :Gaussian || occ_type == :Gauss
+        # Gaussian smearing
+        x = e / T
+        return -exp(-x^2) / sqrt(π) / T
+
+    elseif occ_type == :MethfesselPaxton || occ_type == :MP
+        throw(ArgumentError("Methfessel-Paxton occupation not implemented yet"))
 
     else
         throw(ArgumentError("unknown occ_type $occ_type"))
