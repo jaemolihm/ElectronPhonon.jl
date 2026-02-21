@@ -22,6 +22,9 @@ end
 "Tight-binding model for electron, phonon, and electron-phonon coupling.
 All data is in coarse real-space grid."
 Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing, AbstractWannierObject{FT}}}
+    # TODO: Remove redundant fields (alat, lattice, recip_lattice, volume, symmetry, mass,
+    #       atom_pos, atom_labels) and use `structure` instead. Not done because breaking.
+
     # Lattice information
     alat::FT # Lattice parameter
     # Lattice vector in Bohr. lattice[:, i] is the i-th lattice vector.
@@ -36,6 +39,9 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
     mass::Vector{FT}
     atom_pos::Vector{Vec3{FT}} # Atom position in alat units, Cartesian coordinates
     atom_labels::Vector{String}
+
+    # Crystal structure (lightweight container for lattice + atoms + symmetry)
+    structure::Structure
 
     nw::Int
     nmodes::Int
@@ -347,8 +353,10 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         el_sym = nothing
     end
 
+    structure = Structure(alat, lattice, mass[1:3:end], atom_pos, atom_labels)
+
     Model(;alat, lattice, recip_lattice, volume, nw, nmodes,
-        mass, atom_pos, atom_labels, symmetry,
+        mass, atom_pos, atom_labels, structure, symmetry,
         use_polar_dipole, polar_phonon, polar_eph,
         el_ham, el_ham_R, el_pos, el_vel, el_velocity_mode,
         ph_dyn, ph_dyn_R,

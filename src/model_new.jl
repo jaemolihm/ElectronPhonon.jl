@@ -420,7 +420,7 @@ function load_model_from_epw_new(
 
 
     Model(; structure.alat, structure.lattice, structure.recip_lattice, structure.volume, nw, nmodes,
-        wann_centers, structure.mass, structure.atom_pos, structure.atom_labels, structure.symmetry,
+        wann_centers, structure.mass, structure.atom_pos, structure.atom_labels, structure, structure.symmetry,
         use_polar_dipole, polar_phonon, polar_eph,
         el_ham, el_ham_R, el_pos, el_vel, el_velocity_mode,
         ph_dyn, ph_dyn_R,
