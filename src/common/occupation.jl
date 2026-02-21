@@ -104,6 +104,10 @@ function occ_fermion(e, occ :: ElectronOccupationParams, i :: Integer)
     (; μ, T) = occ[i]
     occ_fermion(e - μ, T; occ.occ_type)
 end
+function occ_boson(ω, occ :: ElectronOccupationParams, i :: Integer)
+    (; T) = occ[i]
+    occ_boson(ω, T)
+end
 function occ_fermion_derivative(e, occ :: ElectronOccupationParams, i :: Integer)
     (; μ, T) = occ[i]
     occ_fermion_derivative(e - μ, T; occ.occ_type)
