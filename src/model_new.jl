@@ -166,7 +166,7 @@ function load_model_from_epw_new(
     nr_el, nr_ph, nr_ep, dims, dims2 = parse.(Int, split(readline(f)))
     irvec_el, ndegen_el, wslen_el = _parse_wigner(f, nr_el, dims,  dims)
     irvec_ph, ndegen_ph, wslen_ph = _parse_wigner(f, nr_ph, dims2, dims2)
-    irvec_ep, ndegen_ep, wslen_ep = _parse_wigner(f, nr_ep, dims,  dims2; skip_ndegen = skip_eph_ndegen)
+    irvec_ep, ndegen_ep, wslen_ep = _parse_wigner(f, nr_ep, dims,  dims2)
     close(f)
 
 
