@@ -239,7 +239,7 @@ function _setup_eph_outer_q(
     setup_calculator!.(calculators, Ref(kpts), Ref(qpts), Ref(el_k_save);
         nw, nmodes, rng_band = iband_min:iband_max,
         el_states_kq = el_kq_save, kqpts, nelec_below_window_k, nelec_below_window_kq,
-        nchunks_threads
+        nchunks_threads, verbosity,
     )
 
     return (;
