@@ -36,6 +36,7 @@ function run_eph_outer_q(
         keep_all_qpts = false,
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
         eph_phonon_basis::Symbol = :eigenmode,  # :eigenmode or :cartesian
+        verbosity::Int = 1,
     ) where {FT}
 
     if model.epmat_outer_momentum != "ph"
@@ -74,6 +75,7 @@ function run_eph_outer_q(
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, precompute_el_kq, use_symmetry,
         keep_all_qpts, eph_phonon_basis, calculators, nchunks_threads,
+        verbosity,
     )
 
     _loop_eph_outer_q(model,
@@ -85,7 +87,7 @@ function run_eph_outer_q(
         calculators, skip_eph, window_kq,
         energy_conservation, screening_params,
         progress_print_step, nchunks_threads,
-        eph_phonon_basis,
+        eph_phonon_basis, verbosity,
     )
 
     (; setup.kpts, setup.qpts, setup.el_k_save, setup.el_kq_save, setup.ph_save)
@@ -112,6 +114,7 @@ function _setup_eph_outer_q(
         eph_phonon_basis::Symbol = :eigenmode,
         calculators = [],
         nchunks_threads = nthreads(),
+        verbosity::Int = 1,
     ) where {FT}
 
     (; nw, nmodes) = model
@@ -119,8 +122,13 @@ function _setup_eph_outer_q(
     symmetry = use_symmetry ? model.symmetry : nothing
 
     # Generate k points
-    @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
-        kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
+    if verbosity > 0
+        @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
+            kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
+    else
+        kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
+            kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
+    end
     nk = kpts.n
 
     # Generate q points
@@ -134,7 +142,11 @@ function _setup_eph_outer_q(
     end
 
     if !keep_all_qpts
-        @time qpts = filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
+        if verbosity > 0
+            @time qpts = filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
+        else
+            qpts = filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
+        end
     end
     nq = qpts.n
 
@@ -145,16 +157,26 @@ function _setup_eph_outer_q(
 
 
     # Compute and save electron state at k
-    @time el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_k; fourier_mode)
-    @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis)
+    if verbosity > 0
+        @time el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_k; fourier_mode)
+        @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis)
+    else
+        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_k; fourier_mode)
+        ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis)
+    end
 
 
     # If precompute_el_kq, generate a Kpoint for k+q and compute electron states therein.
     # Otherwise, it is computed on the fly for each k and each q.
     if precompute_el_kq
         shift_kq = kpts.shift + qpts.shift
-        @time kqpts, iband_min_kq, iband_max_kq, nelec_below_window_kq = filter_kpoints(
-            qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
+        if verbosity > 0
+            @time kqpts, iband_min_kq, iband_max_kq, nelec_below_window_kq = filter_kpoints(
+                qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
+        else
+            kqpts, iband_min_kq, iband_max_kq, nelec_below_window_kq = filter_kpoints(
+                qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
+        end
         kqpts = GridKpoints(kqpts)
 
         if el_kq_from_unfolding
@@ -207,7 +229,7 @@ function _setup_eph_outer_q(
         vel_threads = nothing
     end
 
-    if mpi_isroot()
+    if verbosity > 0 && mpi_isroot()
         @info "Number of k points = $nk"
         precompute_el_kq && @info "Number of k+q points = $(kqpts.n)"
         @info "Number of q points = $nq"
@@ -247,6 +269,7 @@ function _loop_eph_outer_q(
         progress_print_step = 20,
         nchunks_threads = nthreads(),
         eph_phonon_basis::Symbol = :eigenmode,
+        verbosity::Int = 1,
     ) where {FT}
 
     (; nmodes) = model
@@ -254,8 +277,8 @@ function _loop_eph_outer_q(
     nq = qpts.n
 
     for iq in 1:nq
-        if mod(iq, progress_print_step) == 0 && mpi_isroot()
-            mpi_isroot() && @info "iq = $iq"
+        if verbosity > 0 && mod(iq, progress_print_step) == 0 && mpi_isroot()
+            @info "iq = $iq"
             flush(stdout)
             flush(stderr)
         end
