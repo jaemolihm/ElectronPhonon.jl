@@ -71,6 +71,48 @@ function compute_bte_scattering_matrix(filename, params, recip_lattice, ::Type{F
 end
 
 """
+    _solve_bte(rhs, scat_mat, map_i_to_f, inv_τ; max_iter, rtol, mixing, observable, iT=nothing)
+
+Iteratively solve the linearized Boltzmann equation
+``δf = (scat_mat * map_i_to_f * δf) ./ inv_τ + rhs``
+using fixed-point iteration with optional linear mixing. Initial guess is `δf = rhs`.
+
+`observable(δf) -> X` is invoked each iteration; convergence is tested on
+`norm(X - X_old) / norm(X) < rtol`. The full history of observables is returned
+as `obs_iter` (length `max_iter+1`).
+"""
+function _solve_bte(rhs::AbstractVector, scat_mat, map_i_to_f, inv_τ;
+        max_iter=100, rtol=1e-10, mixing=1.0, observable=identity, iT=nothing)
+    δf = copy(rhs)
+    δf_tmp = similar(δf)
+    obs = observable(δf)
+    obs_iter = Vector{typeof(obs)}(undef, max_iter + 1)
+    obs_iter[1] = obs
+
+    niter = 0
+    converged = false
+    for iter in 1:max_iter
+        obs_old = obs
+
+        δf_f = map_i_to_f * δf
+        δf_tmp .= (scat_mat * δf_f) ./ inv_τ .+ rhs
+        @. δf = δf_tmp * mixing + δf * (1 - mixing)
+        obs = observable(δf)
+        obs_iter[iter + 1] = obs
+        niter = iter
+
+        if norm(obs - obs_old) / norm(obs) < rtol
+            converged = true
+            iT === nothing || @info "iT=$iT, converged at iteration $iter"
+            break
+        elseif iter == max_iter
+            iT === nothing || @info "iT=$iT, convergence not reached at maximum iteration $max_iter"
+        end
+    end
+    (; δf, obs, obs_iter, niter, converged)
+end
+
+"""
 Solve Boltzmann transport equation for electrons.
 ``δf_i[i] = scat_mat[i, j] * δf_f[j] / inv_τ_i[i] + δf_i_serta[i]``
 scat_mat is a rectangular matrix, mapping states in `el_f` to states in `el_i`.
@@ -86,44 +128,26 @@ function solve_electron_bte(el_i::BTStates{FT}, el_f::BTStates{FT}, scat_mat, in
 
     map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
 
-    δf_i_tmp = zeros(Vec3{FT}, el_i.n)
-
     for iT in 1:length(params.Tlist)
         μ = params.μlist[iT]
         T = params.Tlist[iT]
         δf_i_serta = @. -occ_fermion_derivative(el_i.e - μ, T) / inv_τ_i[:, iT] * el_i.vdiag
         σ_serta = symmetrize(occupation_to_conductivity(δf_i_serta, el_i, params), symmetry)
 
-        # Initial guess: SERTA occupations
-        δf_i = copy(δf_i_serta)
-        σ = σ_serta
-        output.σ_iter[1, :, :, iT] .= σ
+        obs = δf -> symmetrize(occupation_to_conductivity(δf, el_i, params), symmetry)
 
-        for iter in 1:max_iter
-            σ_old = σ
+        sol = _solve_bte(δf_i_serta, scat_mat[iT], map_i_to_f, view(inv_τ_i, :, iT);
+                         max_iter, rtol, mixing, observable=obs, iT)
 
-            # TODO: (scat_mat[iT] * map_i_to_f) always occur together. Do this outside of loop?
-            # Unfold from δf_i to δf_f
-            δf_f = map_i_to_f * δf_i
-
-            # Multiply scattering matrix, and
-            δf_i_tmp .= (scat_mat[iT] * δf_f) ./ inv_τ_i[:, iT] .+ δf_i_serta
-            @. δf_i = δf_i_tmp * mixing + δf_i * (1 - mixing)
-            σ = symmetrize(occupation_to_conductivity(δf_i, el_i, params), symmetry)
-            output.σ_iter[iter+1, :, :, iT] .= σ
-
-            if norm(σ - σ_old) / norm(σ) < rtol
-                @info "iT=$iT, converged at iteration $iter"
-                break
-            elseif iter == max_iter
-                @info "iT=$iT, convergence not reached at maximum iteration $max_iter"
-            end
+        output.σ_iter[1, :, :, iT] .= σ_serta
+        for iter in 1:sol.niter
+            output.σ_iter[iter + 1, :, :, iT] .= sol.obs_iter[iter + 1]
         end
 
         output.σ_serta[:, :, iT] .= σ_serta
-        output.σ[:, :, iT] .= σ
+        output.σ[:, :, iT] .= sol.obs
         output.δf_i_serta[:, iT] .= δf_i_serta
-        output.δf_i[:, iT] .= δf_i
+        output.δf_i[:, iT] .= sol.δf
     end
     output
 end
