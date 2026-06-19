@@ -17,6 +17,8 @@ function run_eph_over_k_and_kq(
         progress_print_step = 20,
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
         covariant_derivative_of_g = false,  # Compute cov. derivative of g
+        use_gpu = false,   # Run the e-ph Wannier->Bloch interpolation on the GPU
+        q_batch_size = 1024,  # GPU: number of k+q points processed per batched kernel
     ) where {FT}
 
     if model.epmat_outer_momentum != "el"
@@ -37,18 +39,34 @@ function run_eph_over_k_and_kq(
         covariant_derivative_of_g,
     )
 
-    _loop_eph_over_k_and_kq(model,
-        setup.kpts, setup.qpts, setup.kqpts,
-        setup.el_k_save, setup.el_kq_save,
-        setup.ph_save, setup.precompute_ph,
-        setup.epdatas, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
-        setup.dyn_threads,
-        setup.epmat_R, setup.epobj_ekpR_R, setup.ep_ekpR_Rs;
-        calculators, skip_eph,
-        energy_conservation, screening_params,
-        progress_print_step, nchunks_threads,
-        covariant_derivative_of_g, symmetry,
-    )
+    if use_gpu
+        # GPU path (Phase 3): minimal scope. Extra flags must be off; the loop asserts the
+        # rest (no polar, full bands, commensurate grids, no symmetry/screening/MPI).
+        covariant_derivative_of_g && throw(ArgumentError("use_gpu does not support covariant_derivative_of_g"))
+        skip_eph && throw(ArgumentError("use_gpu requires skip_eph = false"))
+        _loop_eph_over_k_and_kq_gpu(model,
+            setup.kpts, setup.qpts, setup.kqpts,
+            setup.el_k_save, setup.el_kq_save,
+            setup.ph_save, setup.precompute_ph,
+            setup.epdatas;
+            calculators,
+            energy_conservation, screening_params,
+            progress_print_step, q_batch_size, symmetry,
+        )
+    else
+        _loop_eph_over_k_and_kq(model,
+            setup.kpts, setup.qpts, setup.kqpts,
+            setup.el_k_save, setup.el_kq_save,
+            setup.ph_save, setup.precompute_ph,
+            setup.epdatas, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
+            setup.dyn_threads,
+            setup.epmat_R, setup.epobj_ekpR_R, setup.ep_ekpR_Rs;
+            calculators, skip_eph,
+            energy_conservation, screening_params,
+            progress_print_step, nchunks_threads,
+            covariant_derivative_of_g, symmetry,
+        )
+    end
 
     (; setup.kpts, setup.qpts, setup.el_k_save, setup.el_kq_save, setup.ph_save)
 end
@@ -432,4 +450,165 @@ function _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, el_kq_save,
         end
 
     end # ikq
+end
+
+
+# =============================================================================
+#  GPU calculator loop (Phase 3, see README_GPU.md "Phase 3 — calculator integration").
+#
+#  This mirrors `_loop_eph_over_k_and_kq` but moves the e-ph Wannier->Bloch interpolation
+#  onto the device using the batched drivers from `wannier_to_bloch_gpu.jl`. The code here is
+#  backend-generic: it only calls `to_device` and the generic batched drivers, so no CUDA
+#  code lives in the base package (the device methods are provided by the CUDA extension).
+#
+#  Design note: the backend is selected here by the `use_gpu` keyword and `to_device`. A
+#  cleaner long-term design would carry the backend as a `Model` type parameter (or a
+#  `ModelGPU`) and dispatch the whole loop on it, rather than branching on a keyword.
+#
+#  Minimal first step — the rest is asserted off (handled by the CPU path instead):
+#    * no polar / long-range terms (so ϵs = 1, no dipole correction)
+#    * full bands, no energy window  ->  nband == nw at every k / k+q (uniform batch shapes)
+#    * commensurate k / k+q grids (precompute_ph) so phonon states are precomputed
+#    * no covariant derivative of g, no screening, no symmetry/unfolding, single node (no MPI),
+#      and energy_conservation = (:None, 0.0)
+#
+#  Buffer reuse: the device interpolators and the per-(k,q) staging arrays are allocated once
+#  outside the `ik` loop and reused across all (k, q). The batched drivers still allocate their
+#  internal scratch per call (recycled by CUDA's memory pool); pushing that reuse into the
+#  drivers is a possible follow-up (see README_GPU.md "Buffer reuse").
+function _loop_eph_over_k_and_kq_gpu(
+        model       :: Model{FT},
+        kpts, qpts, kqpts,
+        el_k_save, el_kq_save,
+        ph_save, precompute_ph,
+        epdatas;
+        calculators = [],
+        energy_conservation = (:None, 0.0),
+        screening_params = nothing,
+        progress_print_step = 20,
+        q_batch_size = 1024,
+        symmetry = nothing,
+    ) where {FT}
+
+    (; nw, nmodes) = model
+    nk = kpts.n
+    nkq = kqpts.n
+
+    # ----- scope asserts (minimal GPU step) -----
+    precompute_ph || throw(ArgumentError(
+        "use_gpu requires commensurate k / k+q grids so phonon states are precomputed (precompute_ph)."))
+    (!model.polar_phonon.use && !model.polar_eph.use) || throw(ArgumentError(
+        "use_gpu does not support polar / long-range terms. Use the CPU path."))
+    energy_conservation === (:None, 0.0) || throw(ArgumentError(
+        "use_gpu supports only energy_conservation = (:None, 0.0)."))
+    screening_params === nothing || throw(ArgumentError("use_gpu does not support screening_params."))
+    symmetry === nothing || throw(ArgumentError("use_gpu requires symmetry = nothing (full BZ)."))
+    all(el.nband == nw for el in el_k_save) || throw(ArgumentError(
+        "use_gpu is full-band only: window_k must be (-Inf, Inf) so nband == nw at every k."))
+    all(el.nband == nw for el in el_kq_save) || throw(ArgumentError(
+        "use_gpu is full-band only: window_kq must be (-Inf, Inf) so nband == nw at every k+q."))
+
+    qb = min(Int(q_batch_size), nkq)
+
+    # ----- device interpolators (allocated once) -----
+    epmat_dev = to_device(model.epmat)
+    epmat_itp = BatchedWannierInterpolator(epmat_dev; batch_size = 1)
+    ep_ekpR_dev = to_device(get_next_wannier_object(model.epmat))
+    ep_ekpR_itp = BatchedWannierInterpolator(ep_ekpR_dev; batch_size = qb)
+
+    # ----- persistent workspace (allocated once, reused across all (k, q)) -----
+    # All device staging is sized to the full chunk `qb` and used as plain CuArrays (not
+    # batch-sliced views), so the batched drivers' reshape/cuBLAS calls stay on dense arrays.
+    uk_dev   = similar(epmat_dev.op_r, Complex{FT}, nw, nw)
+    ukqs_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, qb)
+    uphs_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, qb)
+    epkq_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nmodes, qb)
+
+    uk_host   = Matrix{Complex{FT}}(undef, nw, nw)
+    ukqs_host = Array{Complex{FT}}(undef, nw, nw, qb)
+    uphs_host = Array{Complex{FT}}(undef, nmodes, nmodes, qb)
+    epkq_host = Array{Complex{FT}}(undef, nw, nw, nmodes, qb)
+    qs_chunk  = Vector{Vec3{FT}}(undef, qb)
+    iq_chunk  = Vector{Int}(undef, qb)
+
+    epdata = take!(epdatas)
+
+    for ik in 1:nk
+        if mod(ik, progress_print_step) == 0 && mpi_isroot()
+            @info "$(now()) ik = $ik / $nk"
+            flush(stdout); flush(stderr)
+        end
+        xk = kpts.vectors[ik]
+        el_k = el_k_save[ik]
+        epdata.el_k = el_k
+
+        # g(k, R_ep) on the device: rotate the electron-k index by U(k) (single-k driver).
+        uk_host .= no_offset_view(el_k.u)
+        copyto!(uk_dev, uk_host)
+        get_eph_RR_to_kR_batched!(ep_ekpR_dev, epmat_itp, xk, uk_dev)
+
+        for calc in calculators
+            setup_calculator_inner!(calc; ik)
+        end
+
+        qstart = 1
+        while qstart <= nkq
+            qend = min(qstart + qb - 1, nkq)
+            nqc = qend - qstart + 1
+
+            # Build the per-q rotation stacks and q list for this chunk.
+            for (j, ikq) in enumerate(qstart:qend)
+                xkq = kqpts.vectors[ikq]
+                xq = xkq - xk
+                xq = normalize_kpoint_coordinate(xq .+ 1//2) .- 1//2
+                iq = xk_to_ik(xq, qpts)
+                iq === nothing && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
+                qs_chunk[j] = xq
+                iq_chunk[j] = iq
+                @views ukqs_host[:, :, j] .= no_offset_view(el_kq_save[ikq].u)
+                @views uphs_host[:, :, j] .= ph_save[iq].u
+            end
+            # Pad the tail of the final partial chunk with valid (duplicated) data so the
+            # batched kernels run on dense `qb`-sized arrays; only 1:nqc is read back.
+            for j in (nqc+1):qb
+                qs_chunk[j] = qs_chunk[nqc]
+                @views ukqs_host[:, :, j] .= ukqs_host[:, :, nqc]
+                @views uphs_host[:, :, j] .= uphs_host[:, :, nqc]
+            end
+
+            copyto!(ukqs_dev, ukqs_host)
+            copyto!(uphs_dev, uphs_host)
+
+            # One batched Wannier->Bloch over all q in the chunk: ep_kq(q) (nw, nw, nmodes).
+            get_eph_kR_to_kq_batched!(epkq_dev, ep_ekpR_itp, qs_chunk, uphs_dev, ukqs_dev)
+            copyto!(epkq_host, epkq_dev)
+
+            # Cheap host loop: write the slice into epdata, set g2, run the calculator (the
+            # calculator API is unchanged from the CPU path).
+            for (j, ikq) in enumerate(qstart:qend)
+                epdata.el_kq = el_kq_save[ikq]
+                epdata.ph = ph_save[iq_chunk[j]]
+                epdata.wtk = kpts.weights[ik]
+                epdata.wtq = kqpts.weights[ikq]
+                @views no_offset_view(epdata.ep) .= epkq_host[:, :, :, j]
+                epdata_set_g2!(epdata)
+                for calc in calculators
+                    run_calculator!(calc, epdata, ik, iq_chunk[j], ikq;
+                        xq = qs_chunk[j], xk, id_chunk = 1, epdata_dg = nothing)
+                end
+            end
+
+            qstart = qend + 1
+        end # q chunk
+
+        for calc in calculators
+            postprocess_calculator_inner!(calc; ik)
+        end
+    end # ik
+
+    put!(epdatas, epdata)
+
+    for calc in calculators
+        postprocess_calculator!(calc; qpts, symmetry)
+    end
 end

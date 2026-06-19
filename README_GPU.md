@@ -241,11 +241,48 @@ the large e-ph operator (`nw²·nmodes·nr_ep × nr_el`) and is a clear GPU win;
 are tiny for Pb so the CPU is competitive — the GPU pulls ahead for larger `nw`/`nband`/`nmodes`.
 Produced by `benchmark/bench_eph_gpu.jl`.
 
-### Phase 3 — calculator integration (PLANNED)
+### Phase 3 — calculator integration ✅ DONE (first step)
 
-Wire the batched GPU e-ph drivers into the calculator loop `run_eph_over_k_and_kq`
+Wired the batched GPU e-ph drivers into the calculator loop `run_eph_over_k_and_kq`
 (`src/calculator/run_eph_over_k_and_kq.jl`), validated with the `EliashbergCalculator`
 (`MigdalEliashberg.jl/src/calculator.jl`).
+
+- [x] New entry point via a `use_gpu` keyword on `run_eph_over_k_and_kq` (+ `q_batch_size`),
+      branching to `_loop_eph_over_k_and_kq_gpu`. The CPU loop and per-k/q CPU e-ph functions
+      are unchanged. The new loop is backend-generic (only calls `to_device` + the batched
+      drivers; no CUDA in the base package).
+- [x] Minimal scope asserted off: no polar/long-range (ϵs = 1, no dipole), full bands (no
+      energy window → `nband == nw`), commensurate grids (`precompute_ph`), and no covariant
+      derivative / screening / symmetry / MPI / nontrivial energy conservation.
+- [x] Restructured as in the plan below: `to_device(model.epmat)` once; per `ik` a single-k
+      `get_eph_RR_to_kR_batched!`; the inner `ikq` loop batched (chunked by `q_batch_size`)
+      through one `get_eph_kR_to_kq_batched!`; then a cheap host loop writing the slice into
+      `epdata.ep`, `epdata_set_g2!`, and `run_calculator!` unchanged.
+- [x] Shared device interpolators + per-(k,q) staging allocated once outside the `ik` loop and
+      reused across all (k, q). (The batched drivers still allocate their internal scratch per
+      call — recycled by CUDA's pool; pushing that into the drivers is a follow-up.)
+- [x] Validated: `EliashbergCalculator` through the CPU and GPU paths on the Pb model, full-BZ
+      commensurate grids, `symmetry=nothing` — `calc.g2`/`calc.ωq` agree (see results). GPU-guarded
+      test in `test/test_gpu.jl` (skips when CUDA unavailable or the Pb data dir is absent).
+
+**Validation & benchmark** (RTX A6000, Pb `nw=4 nmodes=3`, full BZ, CPU path on 32 threads).
+GPU vs CPU `calc.g2` agree to `max|Δ| ≈ 3–4e-11` (relative `~1e-15`; cuBLAS reordering only) and
+`calc.ωq` is bit-identical (same precomputed phonon states). End-to-end wall time (warm):
+
+| grid | nk = nkq | CPU (32 thr) | GPU | speedup |
+|---|---|---|---|---|
+| 4³ | 64  | 108 ms  | 47 ms   | 2.3× |
+| 6³ | 216 | 398 ms  | 246 ms  | 1.6× |
+| 8³ | 512 | 1991 ms | 1364 ms | 1.5× |
+
+The GPU win is real but modest for Pb because its matrices are tiny (`nw=4, nmodes=3`), so the
+serial host-side tail (`run_calculator!` writing g2 + building the per-q rotation stacks, both
+O(nk·nkq)) dominates as the grid grows — consistent with the Phase-2 finding that the small-`nw`
+kR→kq rotation is CPU-competitive. The advantage grows with `nw`/`nband`/`nmodes`. Chunking
+(`q_batch_size`) was verified correct for partial final chunks (`q_batch_size=7`, `=1`).
+
+**Follow-ups:** (1) benchmark full in-place drivers (workspace-backed scratch) to see if buffer
+reuse beats CUDA's pool here; (2) parallelize / vectorize the host tail; (3) Phase 4 below.
 
 **First step — minimal scope (assert/disable the rest):**
 - Ignore long-range / polar: assert `model.polar_phonon` and `model.polar_eph` are
@@ -297,9 +334,12 @@ CPU-only machines.
   the `batched_gemm!` primitive. Included after `wannier_to_bloch.jl`. All backend-generic.
 - `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`,
   `eigvals_batched`/`eigen_batched`, and `batched_gemm!` (`CUBLAS.gemm_strided_batched!`).
+- `src/calculator/run_eph_over_k_and_kq.jl` — **Phase 3**: `use_gpu` / `q_batch_size` keywords on
+  `run_eph_over_k_and_kq`; new backend-generic `_loop_eph_over_k_and_kq_gpu`. CPU path unchanged.
 - `benchmark/bench_el_eigen_gpu.jl` — CPU-vs-GPU band-eigenvalue benchmark.
 - `benchmark/bench_eph_gpu.jl` — e-ph benchmark, per-(k,q) vs list-batched, CPU vs GPU.
-- `test/test_gpu.jl` — GPU-guarded tests incl. e-ph (skips when CUDA unavailable); wired into `runtests.jl`.
+- `test/test_gpu.jl` — GPU-guarded tests incl. e-ph drivers and the `use_gpu` calculator loop
+  (skips when CUDA unavailable or the Pb data dir is absent); wired into `runtests.jl`.
 
 ## Design notes & follow-ups
 
