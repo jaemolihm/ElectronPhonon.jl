@@ -320,7 +320,7 @@ function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; atol = sqrt(eps(T))) 
         return GridKpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), ngrid, zero(Vec3{T}), Dict{Int,Int}())
     end
 
-    shift = mod.(first(kpts.vectors), 1 ./ ngrid)
+    shift = mod.(first(kpts.vectors) .* ngrid, 1) ./ ngrid
 
     # Check if all k points are on the shifted grid
     for xk in kpts.vectors
@@ -383,7 +383,7 @@ Output `ik_to_ikirr_isym` gives a map ik => (ikirr, isym) such that ``xk[ik] = S
 function unfold_kpoints(kpts::GridKpoints, symmetry)
     # If symmetry is trivial, do nothing and return a copy of input kpts
     if symmetry.nsym == 1
-        return deepcopy(kpts)
+        return deepcopy(kpts), [(ik, 1) for ik in 1:kpts.n]
     end
 
     ngrid = kpts.ngrid
@@ -505,6 +505,13 @@ function split_kpoints(kpts::GridKpoints, N)
 end
 
 
+"""
+    print_in_qe_format(kpts::AbstractKpoints, unit = :Crystal; recip_lattice = nothing, alat = nothing)
+Print k points in the format of Quantum ESPRESSO input.
+- `unit`: Unit of k points. Must be :Crystal, :Cartesian, or :tpiba. Default is :Crystal.
+- `recip_lattice`: Reciprocal lattice vectors in Cartesian coordinates. Required if unit is :Cartesian or :tpiba.
+- `alat`: Lattice constant. Required if unit is :tpiba.
+"""
 function print_in_qe_format(kpts :: AbstractKpoints, unit = :Crystal; recip_lattice = nothing, alat = nothing)
     if unit === :Crystal
         println(" $(kpts.n) crystal")
