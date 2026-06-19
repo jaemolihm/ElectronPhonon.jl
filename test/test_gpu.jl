@@ -1,6 +1,6 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: WannierObject, Vec3
+using ElectronPhonon: WannierObject, Vec3, get_eph_RR_to_kR!, get_eph_kR_to_kq!
 using LinearAlgebra
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
@@ -73,6 +73,43 @@ end
             for k in 1:nk2
                 @test sort(Wbig[:, k]) ≈ sort(real(eigvals(Hermitian(Hh[:, :, k]))))
             end
+        end
+
+        # --- electron-phonon: batched drivers (CPU and GPU) vs per-k reference ---
+        let nwe = 3, nmodes = 4, nr_el = 20, nr_ep = 15
+            nband = nwe
+            irvec_el = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_el], by = x -> reverse(x))
+            irvec_ep = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_ep], by = x -> reverse(x))
+            epmat_or = rand(ComplexF64, nwe^2 * nmodes * nr_ep, nr_el)
+            epmat_obj = WannierObject(irvec_el, epmat_or; irvec_next = irvec_ep)
+            uk  = rand(ComplexF64, nwe, nband)
+            ukq = rand(ComplexF64, nwe, nband)
+            u_ph = rand(ComplexF64, nmodes, nmodes)
+            xk = Vec3(0.1, -0.4, 0.7); xq = Vec3(0.5, 0.2, -0.5)
+
+            # per-k reference
+            ref = WannierObject(irvec_ep, zeros(ComplexF64, nwe*nband*nmodes, nr_ep))
+            get_eph_RR_to_kR!(ref, get_interpolator(epmat_obj; fourier_mode="normal"), xk, uk)
+            ep_ref = zeros(ComplexF64, nband, nband, nmodes)
+            get_eph_kR_to_kq!(ep_ref, get_interpolator(ref; fourier_mode="normal"), xq, u_ph, ukq)
+
+            # batched drivers — CPU
+            o_c = WannierObject(irvec_ep, zeros(ComplexF64, nwe*nband*nmodes, nr_ep))
+            get_eph_RR_to_kR_batched!(o_c, get_interpolator(epmat_obj; fourier_mode="batched"), xk, uk)
+            ep_c = zeros(ComplexF64, nband, nband, nmodes)
+            get_eph_kR_to_kq_batched!(ep_c, get_interpolator(o_c; fourier_mode="batched"), xq, u_ph, ukq)
+            @test ep_c ≈ ep_ref
+
+            # batched drivers — GPU
+            o_g = to_device(WannierObject(irvec_ep, zeros(ComplexF64, nwe*nband*nmodes, nr_ep)))
+            get_eph_RR_to_kR_batched!(o_g, get_interpolator(to_device(epmat_obj); fourier_mode="batched"), xk, cu(uk))
+            ep_g = CUDA.zeros(ComplexF64, nband, nband, nmodes)
+            get_eph_kR_to_kq_batched!(ep_g, get_interpolator(o_g; fourier_mode="batched"), xq, cu(u_ph), cu(ukq))
+            # rtol relaxed from the isapprox default: cuBLAS reorders the GEMM summations, so
+            # this cancellation-heavy random case differs from the CPU at ~1e-8 relative
+            # (physical data agrees far better). The algorithm is identical to the CPU path,
+            # which matches the per-k reference to ~1e-19.
+            @test isapprox(Array(ep_g), ep_ref; rtol=1e-6)
         end
     end
 end

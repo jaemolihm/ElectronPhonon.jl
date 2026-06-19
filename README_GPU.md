@@ -151,13 +151,19 @@ degenerate bands they may differ from `get_el_eigen!` by a gauge.)
 > The Phase-1 extension-local `CuNormalWannierInterpolator` is **removed** — it is superseded
 > by the generic device `WannierObject` + the generalized `BatchedWannierInterpolator`.
 
-### Batched rotation in `get_eph_RR_to_kR!` (Phase 2)
+### e-ph rotations (Phase 2)
 
-The `(ir_ep, imode)` loop of small `(nw×nw)·(nw×nband)` GEMMs maps to a single
-`CUBLAS.gemm_strided_batched!`, since all tiles are the same shape and contiguous in
-`ep_kR (nw,nw,nmodes,nr_ep)` and the output `op_r`. `get_eph_kR_to_kq!` is already two
-large reshaped `mul!` calls and needs no rewrite; its rotation matrices (`ukq`, `u_ph`)
-must be on the device.
+`get_eph_RR_to_kR!`'s `(ir_ep, imode)` loop of small `(nw×nw)·(nw×nband)` GEMMs is the only
+non-trivial piece. Rather than a `CUBLAS.gemm_strided_batched!` (extension-only), it is
+recast as a **single** GEMM that works on any backend:
+`out[iw,ib,b] = Σ_jw g[iw,jw,b] uk[jw,ib]` becomes `permutedims(g,(2,1,3))`, then
+`transpose(uk) * g`, then `permutedims` back — one cuBLAS/BLAS call, no batched-GEMM
+primitive. `get_eph_kR_to_kq!` is already two reshaped `mul!` calls and is reused verbatim.
+
+Consequently the e-ph GPU path needs **no new extension code**: the device Fourier reuses
+`get_fourier_batched!` and the rotations are generic GEMMs. The two drivers
+`get_eph_RR_to_kR_batched!` / `get_eph_kR_to_kq_batched!` (in `wannier_to_bloch_gpu.jl`) run
+on the CPU or GPU by the backend of the parent `op_r`.
 
 ## Phased plan
 
@@ -203,13 +209,14 @@ The GPU advantage is larger when eigenvectors are needed (4096 eigenvector solve
 batched on the GPU). For reference, the earlier *per-k* GPU `get_el_eigen!` was ×0.09 vs CPU
 — batching is the whole story. Produced by `benchmark/bench_el_eigen_gpu.jl`.
 
-### Phase 2 — e-ph interpolation
+### Phase 2 — e-ph interpolation ✅ DONE
 
-- [ ] `get_eph_RR_to_kR!`: device Fourier + `gemm_strided_batched!` rotation.
-- [ ] `get_eph_kR_to_kq!`: device Fourier + two reshaped `mul!`; device rotation matrices.
-- [ ] Batched `get_fourier!` path on device (BLAS3 GEMM).
-- [ ] Test (`test/test_epmat.jl`): both functions device vs host on a tiny random model
-  (e.g. `nw=4, nmodes=6, nr_ep=10, nr_el=30, nband=4`).
+- [x] `get_eph_RR_to_kR_batched!`: device Fourier (`get_fourier_batched!`) + rotation by `uk`
+      as one GEMM (permute + `transpose(uk)*g` + permute). Backend-generic.
+- [x] `get_eph_kR_to_kq_batched!`: device Fourier + the two reshaped `mul!`s (`ukq'`, `u_ph`).
+- [x] No new extension code (reuses `to_device` + `get_fourier_batched!`).
+- [x] Validated vs the per-k `get_eph_*!` reference: CPU drivers exact (`~1e-19`), GPU
+      `~3e-11` on the physical Pb model; covered in `test/test_gpu.jl` (synthetic model).
 
 ## Testing
 
@@ -230,18 +237,14 @@ CPU-only machines.
 - `src/wannier/WannierInterpolator.jl` — declare/export `to_device`.
 - `src/wannier/batched_interpolator.jl` — generalized over backend (buffers via `similar`,
   GEMM phase); new `get_fourier_batched!`. Per-k API unchanged. (Pure Fourier only.)
-- `src/wannier_to_bloch_gpu.jl` — **new**; `eigvals_batched`/`eigen_batched` (CPU) and the
-  `get_el_eigen[_valueonly]_batched` drivers. Included after `wannier_to_bloch.jl`.
+- `src/wannier_to_bloch_gpu.jl` — **new**; `eigvals_batched`/`eigen_batched` (CPU), the
+  `get_el_eigen[_valueonly]_batched` drivers, and the e-ph drivers
+  `get_eph_RR_to_kR_batched!` / `get_eph_kR_to_kq_batched!`. Included after
+  `wannier_to_bloch.jl`. All backend-generic (CPU or GPU).
 - `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`,
-  `eigvals_batched`/`eigen_batched` (`CuArray`).
+  `eigvals_batched`/`eigen_batched` (`CuArray`). (No e-ph-specific GPU code needed.)
 - `benchmark/bench_el_eigen_gpu.jl` — CPU-vs-GPU benchmark (same batched driver), valueonly + eigenvectors.
-- `test/test_gpu.jl` — GPU-guarded tests (skips when CUDA unavailable); wired into `runtests.jl`.
-
-Phase 2 (planned):
-
-- `ext/ElectronPhononCUDAExt.jl` — `get_eph_RR_to_kR!` (`gemm_strided_batched!`),
-  `get_eph_kR_to_kq!`.
-- `test/test_wannier.jl`, `test/test_epmat.jl` — GPU-guarded tests.
+- `test/test_gpu.jl` — GPU-guarded tests incl. e-ph (skips when CUDA unavailable); wired into `runtests.jl`.
 
 ## Git workflow
 
