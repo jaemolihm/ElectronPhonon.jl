@@ -270,6 +270,44 @@ CPU-only machines.
 - `benchmark/bench_eph_gpu.jl` — e-ph benchmark, per-(k,q) vs list-batched, CPU vs GPU.
 - `test/test_gpu.jl` — GPU-guarded tests incl. e-ph (skips when CUDA unavailable); wired into `runtests.jl`.
 
+## Design notes & follow-ups
+
+### Full bands (no energy window) on the GPU — intended
+
+The list-batched drivers (and the GPU path generally) are **full-band only**: every k-point
+in a batch shares the same `nband`, and `ep_ekpR_all` / `ep_kq_all` are sized exactly with no
+`nband_bound` slack. This is a deliberate choice for GPU calculations, which keep **all
+bands** rather than applying a per-k energy window:
+
+- On the GPU the extra bands are cheap, and batching wants uniform shapes across k/q anyway —
+  a per-k variable `nband` would break the single large GEMMs that make the GPU fast.
+- Energy windowing mainly saves work when only a few bands matter; that optimization stays on
+  the CPU per-k path (`get_eph_RR_to_kR!` etc.), which keeps its `nband < nband_bound` support.
+
+So when wiring the GPU path into a full calculation, pass full `nband` (= `nw` for the
+electron side); no window handling is needed.
+
+### Buffer reuse (open optimization)
+
+Each batched driver currently allocates scratch arrays per call and frees them — e.g.
+`get_eph_RR_to_kR_batched!` over 64 k allocates ~8 MiB of scratch (`g`, the `permutedims`
+copies `gp`/`out`, and the GEMM result `C`); `get_eph_kR_to_kq_batched!` allocates `g` + `tmp`
+on each of its ~`nk` calls; `get_fourier_batched!` allocates `kmat` per chunk; and every
+`permutedims` allocates a fresh array.
+
+**Buffer reuse** = allocate these once and write into them on every call (in-place
+`permutedims!` / `mul!` / broadcast), either via a small workspace struct or by storing them
+in the interpolator (as `BatchedWannierInterpolator` already does for
+`phase_batch`/`rdotk`/`cached_results`).
+
+- Bigger payoff on the **CPU** (avoids GC pauses); more **modest on the GPU**, where CUDA's
+  memory pool already recycles device buffers — there the win is mainly dropping the two
+  `permutedims` copies (memory-bound kernels).
+- **Recommended timing:** do this together with wiring the batched drivers into the
+  `run_eph_*` calculator loop, where a workspace allocated once at loop setup is reused across
+  all (k, q) and the end-to-end effect is measurable. Doing it on the standalone drivers in
+  isolation complicates their API for a benefit that can't be measured outside a real loop.
+
 ## Git workflow
 
 All GPU work is done on branch `gpu-interpolation` in the worktree
