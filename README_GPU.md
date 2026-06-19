@@ -241,6 +241,37 @@ the large e-ph operator (`nw²·nmodes·nr_ep × nr_el`) and is a clear GPU win;
 are tiny for Pb so the CPU is competitive — the GPU pulls ahead for larger `nw`/`nband`/`nmodes`.
 Produced by `benchmark/bench_eph_gpu.jl`.
 
+### Phase 3 — calculator integration (PLANNED)
+
+Wire the batched GPU e-ph drivers into the calculator loop `run_eph_over_k_and_kq`
+(`src/calculator/run_eph_over_k_and_kq.jl`), validated with the `EliashbergCalculator`
+(`MigdalEliashberg.jl/src/calculator.jl`).
+
+**First step — minimal scope (assert/disable the rest):**
+- Ignore long-range / polar: assert `model.polar_phonon` and `model.polar_eph` are
+  nothing/disabled; skip `set_eph_dipole_coeff!` / `epdata_compute_eph_dipole!` (ϵs = 1).
+- Full bands, no energy window (`window_* = (-Inf, Inf)`) → uniform shapes for batching.
+- Disable (assert) `covariant_derivative_of_g`, `screening_params`,
+  `symmetry`/`el_kq_from_unfolding`, nontrivial `energy_conservation`, MPI. Single node.
+- Add a **new** entry point (e.g. `run_eph_over_k_and_kq_gpu` or a `use_gpu` branch); do not
+  change the CPU loop or the per-k/q CPU e-ph functions.
+
+**Restructuring (where the GPU win + buffer reuse live):**
+1. `to_device(model.epmat)` once; build device batched interpolators.
+2. Per outer `ik`: GPU `get_eph_RR_to_kR_batched!` (single k) → device `ep_ekpR(k)`.
+3. Batch the inner `ikq` loop: stack `ukqs (nw,nw,nkq)`, `u_phs (nmodes,nmodes,nkq)`,
+   `qs = kqpts .- xk`; one `get_eph_kR_to_kq_batched!` → `ep_kq_all (nw,nw,nmodes,nkq)`; copy to host.
+4. Cheap host loop over `ikq`: write the slice into `epdata.ep`, run `epdata_set_g2!`, call
+   `run_calculator!(calc, epdata, ik, iq, ikq)` unchanged (calculator API untouched).
+5. Shared GPU **workspace** allocated once outside the `ik` loop and reused across all (k, q)
+   — this is the buffer-reuse follow-up; it belongs here, not in the standalone drivers.
+
+**Validation:** run an `EliashbergCalculator` through the CPU and GPU paths on a small
+commensurate full-BZ grid for the Pb model and assert `calc.g2` / `calc.ωq` match to ~1e-9;
+benchmark end-to-end. GPU-guarded test.
+
+Phase 4 (later): energy window (`nband < nband_bound`) and long-range/polar on the GPU.
+
 ## Testing
 
 ```julia
