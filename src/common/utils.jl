@@ -30,8 +30,10 @@ Occupation of a fermion at energy `e` and temperature `T`.
             # Gaussian smearing
             return erfc(x) / 2
 
-        elseif occ_type == :MethfesselPaxton || occ_type == :MP
-            throw(ArgumentError("Methfessel-Paxton occupation not implemented yet"))
+        elseif occ_type == :MP
+            # First-order Methfessel-Paxton smearing (Methfessel & Paxton, PRB 40, 3616 (1989)).
+            # Equals QE wgauss(-x, ngauss=1) = erfc(x)/2 - x·exp(-x²)/(2√π).
+            return erfc(x) / 2 - x * exp(-x^2) / (2 * sqrt(π))
 
         else
             throw(ArgumentError("unknown occ_type $occ_type"))
@@ -77,8 +79,11 @@ Approximation to minus the delta function divided by temperature.
         x = e / T
         return -exp(-x^2) / sqrt(π) / T
 
-    elseif occ_type == :MethfesselPaxton || occ_type == :MP
-        throw(ArgumentError("Methfessel-Paxton occupation not implemented yet"))
+    elseif occ_type == :MP
+        # First-order Methfessel-Paxton smearing (PRB 40, 3616 (1989)).
+        # d/de of erfc(x)/2 - x·exp(-x²)/(2√π) with x = e/T.
+        x = e / T
+        return -exp(-x^2) * (3 - 2 * x^2) / (2 * sqrt(π)) / T
 
     else
         throw(ArgumentError("unknown occ_type $occ_type"))
