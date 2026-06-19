@@ -160,10 +160,20 @@ recast as a **single** GEMM that works on any backend:
 `transpose(uk) * g`, then `permutedims` back — one cuBLAS/BLAS call, no batched-GEMM
 primitive. `get_eph_kR_to_kq!` is already two reshaped `mul!` calls and is reused verbatim.
 
-Consequently the e-ph GPU path needs **no new extension code**: the device Fourier reuses
-`get_fourier_batched!` and the rotations are generic GEMMs. The two drivers
-`get_eph_RR_to_kR_batched!` / `get_eph_kR_to_kq_batched!` (in `wannier_to_bloch_gpu.jl`) run
-on the CPU or GPU by the backend of the parent `op_r`.
+For the **per-k / per-q** drivers this needs **no new extension code**: the device Fourier
+reuses `get_fourier_batched!` and the single shared `uk` makes the rotation one generic GEMM.
+
+For the **list-batched** drivers (process many k or many q at once — the form that wins on
+the GPU), each k/q carries its *own* rotation matrix (`uk(k)`, `ukq(q)`, `u_ph(q)`). A stack
+of independent GEMMs with distinct operands is not an ordinary GEMM, so it uses
+`batched_gemm!(transA, transB, A, B, C)` — a `mul!` loop on the CPU, and
+`CUBLAS.gemm_strided_batched!` in the extension on the GPU. This is the *only* e-ph-related
+piece of extension code.
+
+All four drivers live in `wannier_to_bloch_gpu.jl` and run on the CPU or GPU by the backend
+of the parent `op_r`:
+- `get_eph_RR_to_kR_batched!(epobj, itp, xk, uk)` / `get_eph_kR_to_kq_batched!(ep_kq, itp, xq, u_ph, ukq)` — single k/q.
+- `get_eph_RR_to_kR_batched!(ep_all, itp, ks, uks)` / `get_eph_kR_to_kq_batched!(ep_kq_all, itp, qs, u_phs, ukqs)` — list-batched.
 
 ## Phased plan
 
@@ -211,12 +221,24 @@ batched on the GPU). For reference, the earlier *per-k* GPU `get_el_eigen!` was 
 
 ### Phase 2 — e-ph interpolation ✅ DONE
 
-- [x] `get_eph_RR_to_kR_batched!`: device Fourier (`get_fourier_batched!`) + rotation by `uk`
-      as one GEMM (permute + `transpose(uk)*g` + permute). Backend-generic.
-- [x] `get_eph_kR_to_kq_batched!`: device Fourier + the two reshaped `mul!`s (`ukq'`, `u_ph`).
-- [x] No new extension code (reuses `to_device` + `get_fourier_batched!`).
-- [x] Validated vs the per-k `get_eph_*!` reference: CPU drivers exact (`~1e-19`), GPU
-      `~3e-11` on the physical Pb model; covered in `test/test_gpu.jl` (synthetic model).
+- [x] Per-k/q drivers `get_eph_RR_to_kR_batched!` / `get_eph_kR_to_kq_batched!`: device Fourier
+      (`get_fourier_batched!`) + rotations as generic GEMMs. Backend-generic.
+- [x] List-batched drivers (over k / over q) + `batched_gemm!` primitive (CPU loop / GPU
+      `CUBLAS.gemm_strided_batched!`) for the per-k/q-distinct rotation matrices.
+- [x] Validated vs the per-k `get_eph_*!` reference: CPU exact (`0.0`–`1e-19`), GPU `~1e-16`
+      on Pb (Float64). Covered in `test/test_gpu.jl`.
+
+**Benchmark** (RTX A6000, Pb `nw=4 nmodes=3 nr_ep=43`, 64 k / 64 q):
+
+| op | per-pt GPU | **batched GPU** | batched CPU | batching speedup |
+|---|---|---|---|---|
+| RR→kR (64 k) | 12.1 ms | **0.64 ms** | 4.57 ms | ×19 (GPU 7× over CPU) |
+| kR→kq (64 q) | 11.3 ms | **0.19 ms** | 0.12 ms | ×60 (CPU ties — tiny `nw=4`) |
+
+Batching collapses thousands of per-point kernel launches into a few large ones. RR→kR moves
+the large e-ph operator (`nw²·nmodes·nr_ep × nr_el`) and is a clear GPU win; kR→kq's matrices
+are tiny for Pb so the CPU is competitive — the GPU pulls ahead for larger `nw`/`nband`/`nmodes`.
+Produced by `benchmark/bench_eph_gpu.jl`.
 
 ## Testing
 
@@ -238,12 +260,13 @@ CPU-only machines.
 - `src/wannier/batched_interpolator.jl` — generalized over backend (buffers via `similar`,
   GEMM phase); new `get_fourier_batched!`. Per-k API unchanged. (Pure Fourier only.)
 - `src/wannier_to_bloch_gpu.jl` — **new**; `eigvals_batched`/`eigen_batched` (CPU), the
-  `get_el_eigen[_valueonly]_batched` drivers, and the e-ph drivers
-  `get_eph_RR_to_kR_batched!` / `get_eph_kR_to_kq_batched!`. Included after
-  `wannier_to_bloch.jl`. All backend-generic (CPU or GPU).
+  `get_el_eigen[_valueonly]_batched` drivers, the e-ph drivers
+  `get_eph_RR_to_kR_batched!` / `get_eph_kR_to_kq_batched!` (per-k/q and list-batched), and
+  the `batched_gemm!` primitive. Included after `wannier_to_bloch.jl`. All backend-generic.
 - `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`,
-  `eigvals_batched`/`eigen_batched` (`CuArray`). (No e-ph-specific GPU code needed.)
-- `benchmark/bench_el_eigen_gpu.jl` — CPU-vs-GPU benchmark (same batched driver), valueonly + eigenvectors.
+  `eigvals_batched`/`eigen_batched`, and `batched_gemm!` (`CUBLAS.gemm_strided_batched!`).
+- `benchmark/bench_el_eigen_gpu.jl` — CPU-vs-GPU band-eigenvalue benchmark.
+- `benchmark/bench_eph_gpu.jl` — e-ph benchmark, per-(k,q) vs list-batched, CPU vs GPU.
 - `test/test_gpu.jl` — GPU-guarded tests incl. e-ph (skips when CUDA unavailable); wired into `runtests.jl`.
 
 ## Git workflow

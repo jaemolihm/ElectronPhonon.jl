@@ -15,6 +15,7 @@ using ElectronPhonon
 using ElectronPhonon: WannierObject
 using CUDA
 using CUDA.CUSOLVER: heevjBatched!
+using CUDA.CUBLAS: gemm_strided_batched!
 
 # Notes on `heevjBatched!` (cuSOLVER batched Jacobi eigensolver, `cusolverDn<t>heevjBatched`):
 #   - It is *tuned* for small matrices (the often-quoted "n ≤ 32" is a performance figure,
@@ -63,6 +64,17 @@ function ElectronPhonon.eigen_batched(Hk::CuArray{Complex{T},3}) where {T}
     # heevjBatched!('V', ...) returns (W, V), with V the (copied) input overwritten with the
     # eigenvectors, so the caller's Hk is left intact.
     heevjBatched!('V', 'U', copy(Hk))
+end
+
+"""
+    batched_gemm!(transA, transB, A::CuArray{T,3}, B, C) -> C
+
+GPU strided-batched GEMM (`CUBLAS.gemm_strided_batched!`), `α=1`, `β=0`.
+"""
+function ElectronPhonon.batched_gemm!(transA::Char, transB::Char,
+                                      A::CuArray{T,3}, B::CuArray{T,3}, C::CuArray{T,3}) where {T}
+    gemm_strided_batched!(transA, transB, one(T), A, B, zero(T), C)
+    C
 end
 
 end # module

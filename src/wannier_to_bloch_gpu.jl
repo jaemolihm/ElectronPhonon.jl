@@ -7,6 +7,7 @@ export get_el_eigen_batched
 export get_el_eigen_valueonly_batched
 export get_eph_RR_to_kR_batched!
 export get_eph_kR_to_kq_batched!
+export batched_gemm!
 
 # Batched Wannier -> Bloch diagonalization over a whole k-grid.
 #
@@ -175,4 +176,92 @@ function get_eph_kR_to_kq_batched!(ep_kq, ep_ekpR_itp::BatchedWannierInterpolato
     mul!(reshape(ep_kq, nbandkq * nbandk, nmodes),
          reshape(tmp, nbandkq * nbandk, nmodes), u_ph)
     ep_kq
+end
+
+# =============================================================================
+#  Batched (strided) GEMM: C[:,:,b] = op(A[:,:,b]) * op(B[:,:,b]) for all b.
+#  CPU method loops over `mul!`; the CUDA extension dispatches to
+#  `CUBLAS.gemm_strided_batched!`. This is the one primitive the *list-batched* e-ph
+#  drivers need beyond Fourier + plain GEMM (each k/q has its own rotation matrix).
+
+@inline _batched_op(t::Char, X) = t == 'N' ? X : (t == 'T' ? transpose(X) : adjoint(X))
+
+"""
+    batched_gemm!(transA, transB, A, B, C)
+
+`C[:,:,b] = op(transA, A[:,:,b]) * op(transB, B[:,:,b])` for every batch `b` (α=1, β=0),
+where `op('N',X)=X`, `op('T',X)=transpose(X)`, `op('C',X)=adjoint(X)`. The CPU method loops
+over `mul!`; the CUDA extension uses `CUBLAS.gemm_strided_batched!`.
+"""
+function batched_gemm!(transA::Char, transB::Char,
+                       A::AbstractArray{T,3}, B::AbstractArray{T,3}, C::AbstractArray{T,3}) where {T}
+    @assert size(A, 3) == size(B, 3) == size(C, 3)
+    @views for b in axes(C, 3)
+        mul!(C[:, :, b], _batched_op(transA, A[:, :, b]), _batched_op(transB, B[:, :, b]))
+    end
+    C
+end
+
+# =============================================================================
+#  List-batched e-ph drivers: process many k (RR->kR) / many q (kR->kq) at once.
+#  These collapse the per-k/q kernel launches into a few large kernels — the form that
+#  wins on the GPU. Rotation matrices are stacked along the batch dimension.
+
+"""
+    get_eph_RR_to_kR_batched!(ep_ekpR_all, epmat_itp::BatchedWannierInterpolator, ks, uks)
+
+Batched over a list of k-points `ks`. `uks` is `(nw, nband, nk)` (one `uk` per k).
+Writes `ep_ekpR_all`, shape `(nw*nband*nmodes, nr_ep, nk)` — column `k` is the `op_r` of the
+electron-Bloch / phonon-Wannier object at `ks[k]`.
+
+One batched Fourier (`get_fourier_batched!`) over `R_el`, then one `batched_gemm!` for the
+per-k rotation by `uk` (recast as `transpose(uk(k)) * permute(g(k))`).
+"""
+function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
+                                   epmat_itp::BatchedWannierInterpolator{T}, ks, uks) where {T}
+    epmat = epmat_itp.parent
+    nr_ep = length(epmat.irvec_next)
+    nw, nband, nk = size(uks)
+    nmodes = div(epmat.ndata, nw^2 * nr_ep)
+    M = nmodes * nr_ep
+    @assert length(ks) == nk
+    @assert size(ep_ekpR_all) == (nw * nband * nmodes, nr_ep, nk)
+
+    g = similar(epmat.op_r, Complex{T}, epmat.ndata, nk)
+    get_fourier_batched!(g, epmat_itp, ks)                              # (nw^2*nmodes*nr_ep, nk)
+
+    gp = permutedims(reshape(g, nw, nw, M, nk), (2, 1, 3, 4))           # (jw, iw, M, k)
+    C = similar(g, Complex{T}, nband, nw * M, nk)
+    batched_gemm!('T', 'N', uks, reshape(gp, nw, nw * M, nk), C)        # C(k)=transpose(uk(k))*gp(k)
+    out = permutedims(reshape(C, nband, nw, M, nk), (2, 1, 3, 4))       # (nw, nband, M, k)
+    copyto!(ep_ekpR_all, reshape(out, nw * nband * nmodes, nr_ep, nk))
+    ep_ekpR_all
+end
+
+"""
+    get_eph_kR_to_kq_batched!(ep_kq_all, ep_ekpR_itp::BatchedWannierInterpolator, qs, u_phs, ukqs)
+
+Batched over a list of q-points `qs` (for a fixed k). `ukqs` is `(nw, nbandkq, nq)` and
+`u_phs` is `(nmodes, nmodes, nq)`. Writes `ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nq)`.
+
+One batched Fourier over `R_ep`, then two `batched_gemm!`s for the per-q rotations
+(`ukq(q)'` on the left, `u_ph(q)` on the right).
+"""
+function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
+                                   ep_ekpR_itp::BatchedWannierInterpolator{T}, qs, u_phs, ukqs) where {T}
+    nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
+    nw = size(ukqs, 1)
+    @assert size(ukqs) == (nw, nbandkq, nq)
+    @assert size(u_phs) == (nmodes, nmodes, nq)
+    parent = ep_ekpR_itp.parent
+    @assert parent.ndata == nw * nbandk * nmodes
+
+    g = similar(parent.op_r, Complex{T}, parent.ndata, nq)
+    get_fourier_batched!(g, ep_ekpR_itp, qs)                           # (nw*nbandk*nmodes, nq)
+
+    tmp = similar(g, Complex{T}, nbandkq, nbandk * nmodes, nq)
+    batched_gemm!('C', 'N', ukqs, reshape(g, nw, nbandk * nmodes, nq), tmp)   # ukq(q)' * g(q)
+    batched_gemm!('N', 'N', reshape(tmp, nbandkq * nbandk, nmodes, nq), u_phs,
+                  reshape(ep_kq_all, nbandkq * nbandk, nmodes, nq))           # * u_ph(q)
+    ep_kq_all
 end

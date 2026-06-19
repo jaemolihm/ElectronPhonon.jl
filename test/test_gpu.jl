@@ -100,16 +100,31 @@ end
             get_eph_kR_to_kq_batched!(ep_c, get_interpolator(o_c; fourier_mode="batched"), xq, u_ph, ukq)
             @test ep_c ≈ ep_ref
 
-            # batched drivers — GPU
+            # batched drivers — GPU. Use CuArray (not cu) to keep Float64; cuBLAS only
+            # reorders the GEMM summations, so it matches the CPU to ~1e-12.
             o_g = to_device(WannierObject(irvec_ep, zeros(ComplexF64, nwe*nband*nmodes, nr_ep)))
-            get_eph_RR_to_kR_batched!(o_g, get_interpolator(to_device(epmat_obj); fourier_mode="batched"), xk, cu(uk))
+            get_eph_RR_to_kR_batched!(o_g, get_interpolator(to_device(epmat_obj); fourier_mode="batched"), xk, CuArray(uk))
             ep_g = CUDA.zeros(ComplexF64, nband, nband, nmodes)
-            get_eph_kR_to_kq_batched!(ep_g, get_interpolator(o_g; fourier_mode="batched"), xq, cu(u_ph), cu(ukq))
-            # rtol relaxed from the isapprox default: cuBLAS reorders the GEMM summations, so
-            # this cancellation-heavy random case differs from the CPU at ~1e-8 relative
-            # (physical data agrees far better). The algorithm is identical to the CPU path,
-            # which matches the per-k reference to ~1e-19.
-            @test isapprox(Array(ep_g), ep_ref; rtol=1e-6)
+            get_eph_kR_to_kq_batched!(ep_g, get_interpolator(o_g; fourier_mode="batched"), xq, CuArray(u_ph), CuArray(ukq))
+            @test isapprox(Array(ep_g), ep_ref; rtol=1e-9)
+
+            # list-batched drivers (many k / many q) vs the per-k reference
+            nk2, nq2 = 5, 6
+            ks = [Vec3(rand(3)...) for _ in 1:nk2]; ks[1] = xk
+            qs = [Vec3(rand(3)...) for _ in 1:nq2]; qs[1] = xq
+            uks  = cat([rand(ComplexF64, nwe, nband) for _ in 1:nk2]...; dims=3); uks[:, :, 1] .= uk
+            uphs = cat([rand(ComplexF64, nmodes, nmodes) for _ in 1:nq2]...; dims=3); uphs[:, :, 1] .= u_ph
+            ukqs = cat([rand(ComplexF64, nwe, nband) for _ in 1:nq2]...; dims=3); ukqs[:, :, 1] .= ukq
+
+            epmat_g = get_interpolator(to_device(epmat_obj); fourier_mode="batched", batch_size=nk2)
+            ep_all = CUDA.zeros(ComplexF64, nwe*nband*nmodes, nr_ep, nk2)
+            get_eph_RR_to_kR_batched!(ep_all, epmat_g, ks, CuArray(uks))
+            obj_k1 = to_device(WannierObject(irvec_ep, Array(ep_all[:, :, 1])))
+            ep_kq_all = CUDA.zeros(ComplexF64, nband, nband, nmodes, nq2)
+            get_eph_kR_to_kq_batched!(ep_kq_all, get_interpolator(obj_k1; fourier_mode="batched", batch_size=nq2),
+                                      qs, CuArray(uphs), CuArray(ukqs))
+            # q-index 1 used (xk, xq) → must match the reference
+            @test isapprox(Array(ep_kq_all)[:, :, :, 1], ep_ref; rtol=1e-9)
         end
     end
 end
