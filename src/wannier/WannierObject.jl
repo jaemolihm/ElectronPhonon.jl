@@ -19,10 +19,12 @@ function check_wannierobject(irvec::Vector{Vec3{Int}}, op_r)
 end
 
 "Data in coarse real-space grid for a single operator"
-Base.@kwdef mutable struct WannierObject{T} <: AbstractWannierObject{T}
+Base.@kwdef mutable struct WannierObject{T, AT <: AbstractMatrix{Complex{T}}} <: AbstractWannierObject{T}
     const nr::Int
     const irvec::Vector{Vec3{Int}}
-    const op_r::Array{Complex{T},2}
+    # `op_r` is an `AbstractMatrix` so that it may live on a device (e.g. a `CuMatrix` from
+    # the CUDA extension) as well as in host memory. `irvec` always stays on the host.
+    const op_r::AT
     ndata::Int # Size of the Fourier-transformed data matrix
                # By default, ndata = size(op_r, 1). If one only wants a part of op_r to be
                # transformed, one may use ndata to be smaller.
@@ -53,7 +55,7 @@ function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing, sort=
     end
     # FIXME: better type parameter for WannierObject
     T = eltype(op_r_).parameters[1]  # ComplexF64 -> Float64
-    WannierObject{T}(nr=nr, irvec=irvec_, op_r=op_r_, ndata=size(op_r_, 1),
+    WannierObject{T, typeof(op_r_)}(nr=nr, irvec=irvec_, op_r=op_r_, ndata=size(op_r_, 1),
         irvec_next=irvec_next, _id=0,
     )
 end
