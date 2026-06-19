@@ -54,17 +54,20 @@ t = (cput(()->rr_perk!(oc, epmat_cit, uks)),  gput(()->rr_perk!(og, epmat_git, u
 # ---- kR_to_kq over nq q-points (fixed k = ks[1]) ----
 obj_k1_c = WannierObject(model.epmat.irvec_next, ep_all_c[:, :, 1])
 obj_k1_g = to_device(WannierObject(model.epmat.irvec_next, Array(ep_all_g[:, :, 1])))
+itp_c_perq = get_interpolator(obj_k1_c; fourier_mode="batched")          # per-q Fourier
+itp_g_perq = get_interpolator(obj_k1_g; fourier_mode="batched")
 itp_c1 = get_interpolator(obj_k1_c; fourier_mode="batched", batch_size=nq)
 itp_g1 = get_interpolator(obj_k1_g; fourier_mode="batched", batch_size=nq)
 uphs_g = CuArray(uphs); ukqs_g = CuArray(ukqs)
 ep4c = zeros(ComplexF64, nw, nw, nmodes, nq); ep4g = CUDA.zeros(ComplexF64, nw, nw, nmodes, nq)
 
+# All interpolators are built once, outside the timed closures (matching the RR_to_kR section).
 kq_perq!(itp, EP, UPH, UKQ) = for iq in 1:nq
     get_eph_kR_to_kq_batched!(view(EP, :, :, :, iq), itp, qs[iq], @view(UPH[:, :, iq]), @view(UKQ[:, :, iq]))
 end
 
-t = (cput(()->kq_perq!(get_interpolator(obj_k1_c; fourier_mode="batched"), ep4c, uphs, ukqs)),
-     gput(()->kq_perq!(get_interpolator(obj_k1_g; fourier_mode="batched"), ep4g, uphs_g, ukqs_g)),
+t = (cput(()->kq_perq!(itp_c_perq, ep4c, uphs, ukqs)),
+     gput(()->kq_perq!(itp_g_perq, ep4g, uphs_g, ukqs_g)),
      cput(()->get_eph_kR_to_kq_batched!(ep4c, itp_c1, qs, uphs, ukqs)),
      gput(()->get_eph_kR_to_kq_batched!(ep4g, itp_g1, qs, uphs_g, ukqs_g)))
 @printf "kR_to_kq (%d q)   per-q:  CPU %6.2f  GPU %6.2f ms  |  batched:  CPU %6.2f  GPU %6.2f ms\n" nq (t.*1e3)...

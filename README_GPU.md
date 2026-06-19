@@ -225,15 +225,16 @@ batched on the GPU). For reference, the earlier *per-k* GPU `get_el_eigen!` was 
       (`get_fourier_batched!`) + rotations as generic GEMMs. Backend-generic.
 - [x] List-batched drivers (over k / over q) + `batched_gemm!` primitive (CPU loop / GPU
       `CUBLAS.gemm_strided_batched!`) for the per-k/q-distinct rotation matrices.
-- [x] Validated vs the per-k `get_eph_*!` reference: CPU exact (`0.0`–`1e-19`), GPU `~1e-16`
-      on Pb (Float64). Covered in `test/test_gpu.jl`.
+- [x] Validated vs the **independent per-k/q** `get_eph_*!` reference, every batch element,
+      on CPU (always-run testset) and GPU (`test/test_gpu.jl`): CPU exact (`~1e-16`), GPU `~1e-13`.
+- [x] List-batched drivers are **full-band only** (no energy window) — by design, confirmed OK.
 
 **Benchmark** (RTX A6000, Pb `nw=4 nmodes=3 nr_ep=43`, 64 k / 64 q):
 
 | op | per-pt GPU | **batched GPU** | batched CPU | batching speedup |
 |---|---|---|---|---|
-| RR→kR (64 k) | 12.1 ms | **0.64 ms** | 4.57 ms | ×19 (GPU 7× over CPU) |
-| kR→kq (64 q) | 11.3 ms | **0.19 ms** | 0.12 ms | ×60 (CPU ties — tiny `nw=4`) |
+| RR→kR (64 k) | 12.3 ms | **0.61 ms** | 3.11 ms | ×20 (GPU 5× over CPU) |
+| kR→kq (64 q) | 11.8 ms | **0.18 ms** | 0.12 ms | ×65 (CPU ties — tiny `nw=4`) |
 
 Batching collapses thousands of per-point kernel launches into a few large ones. RR→kR moves
 the large e-ph operator (`nw²·nmodes·nr_ep × nr_el`) and is a clear GPU win; kR→kq's matrices

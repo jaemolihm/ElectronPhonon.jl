@@ -131,6 +131,7 @@ function get_eph_RR_to_kR_batched!(epobj_ekpR::WannierObject{T}, epmat_itp::Batc
     nw, nband = size(uk)
     nmodes = div(epmat.ndata, nw^2 * nr_ep)
     ndata = nw * nband * nmodes
+    @assert nmodes * nw^2 * nr_ep == epmat.ndata
     @assert epobj_ekpR.nr == nr_ep
     @assert size(epobj_ekpR.op_r, 1) >= ndata
 
@@ -216,6 +217,10 @@ electron-Bloch / phonon-Wannier object at `ks[k]`.
 
 One batched Fourier (`get_fourier_batched!`) over `R_el`, then one `batched_gemm!` for the
 per-k rotation by `uk` (recast as `transpose(uk(k)) * permute(g(k))`).
+
+Full-band only: `ep_ekpR_all` is sized exactly `(nw*nband*nmodes, …)`. Unlike the per-k
+`get_eph_RR_to_kR!`, this list-batched path does not support an energy window
+(`nband < nband_bound`) — all `nk` k-points must share the same `nband`.
 """
 function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
                                    epmat_itp::BatchedWannierInterpolator{T}, ks, uks) where {T}
@@ -224,6 +229,7 @@ function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
     nw, nband, nk = size(uks)
     nmodes = div(epmat.ndata, nw^2 * nr_ep)
     M = nmodes * nr_ep
+    @assert nmodes * nw^2 * nr_ep == epmat.ndata
     @assert length(ks) == nk
     @assert size(ep_ekpR_all) == (nw * nband * nmodes, nr_ep, nk)
 

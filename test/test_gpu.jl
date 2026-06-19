@@ -12,6 +12,71 @@ catch
     false
 end
 
+"""
+Validate the batched e-ph drivers against the per-k/q reference (`get_eph_RR_to_kR!` /
+`get_eph_kR_to_kq!`) on a chosen backend. `to_dev` moves a `WannierObject` to the backend
+(`identity` for CPU, `to_device` for GPU) and `arr_dev` moves a plain array (`identity` /
+`CuArray`). Every batch element is checked. Full-band only (no energy window).
+"""
+function check_eph_batched(to_dev, arr_dev; rtol)
+    nwe, nmodes, nr_el, nr_ep = 3, 4, 20, 15
+    nband = nwe
+    irvec_el = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_el], by = x -> reverse(x))
+    irvec_ep = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_ep], by = x -> reverse(x))
+    epmat_obj = WannierObject(irvec_el, rand(ComplexF64, nwe^2*nmodes*nr_ep, nr_el); irvec_next = irvec_ep)
+
+    nk2, nq2 = 5, 6
+    ks   = [Vec3(rand(3)...) for _ in 1:nk2]
+    qs   = [Vec3(rand(3)...) for _ in 1:nq2]
+    uks  = cat([rand(ComplexF64, nwe, nband) for _ in 1:nk2]...; dims = 3)
+    uphs = cat([rand(ComplexF64, nmodes, nmodes) for _ in 1:nq2]...; dims = 3)
+    ukqs = cat([rand(ComplexF64, nwe, nband) for _ in 1:nq2]...; dims = 3)
+
+    # Independent per-k/q CPU references (ground truth). q-sweep uses k = ks[1].
+    refs_RR = map(1:nk2) do ik
+        r = WannierObject(irvec_ep, zeros(ComplexF64, nwe*nband*nmodes, nr_ep))
+        get_eph_RR_to_kR!(r, get_interpolator(epmat_obj; fourier_mode="normal"), ks[ik], uks[:, :, ik])
+        copy(r.op_r)
+    end
+    obj_ref1 = WannierObject(irvec_ep, copy(refs_RR[1]))
+    ep_ref = zeros(ComplexF64, nband, nband, nmodes, nq2)
+    for iq in 1:nq2
+        get_eph_kR_to_kq!(view(ep_ref, :, :, :, iq), get_interpolator(obj_ref1; fourier_mode="normal"),
+                          qs[iq], uphs[:, :, iq], ukqs[:, :, iq])
+    end
+
+    epmat_d = to_dev(epmat_obj)
+
+    # single-k / single-q drivers (element 1)
+    o1 = to_dev(WannierObject(irvec_ep, zeros(ComplexF64, nwe*nband*nmodes, nr_ep)))
+    get_eph_RR_to_kR_batched!(o1, get_interpolator(epmat_d; fourier_mode="batched"), ks[1], arr_dev(uks[:, :, 1]))
+    @test isapprox(Array(o1.op_r), refs_RR[1]; rtol)
+    ep1 = arr_dev(zeros(ComplexF64, nband, nband, nmodes))
+    get_eph_kR_to_kq_batched!(ep1, get_interpolator(o1; fourier_mode="batched"), qs[1], arr_dev(uphs[:, :, 1]), arr_dev(ukqs[:, :, 1]))
+    @test isapprox(Array(ep1), ep_ref[:, :, :, 1]; rtol)
+
+    # list-batched RR→kR over all k — check every column
+    ep_all = arr_dev(zeros(ComplexF64, nwe*nband*nmodes, nr_ep, nk2))
+    get_eph_RR_to_kR_batched!(ep_all, get_interpolator(epmat_d; fourier_mode="batched", batch_size=nk2), ks, arr_dev(uks))
+    ep_all_h = Array(ep_all)
+    for ik in 1:nk2
+        @test isapprox(ep_all_h[:, :, ik], refs_RR[ik]; rtol)
+    end
+
+    # list-batched kR→kq over all q (fixed k = ks[1]) — check every slice
+    obj_k1 = to_dev(WannierObject(irvec_ep, copy(refs_RR[1])))
+    ep_kq_all = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq2))
+    get_eph_kR_to_kq_batched!(ep_kq_all, get_interpolator(obj_k1; fourier_mode="batched", batch_size=nq2), qs, arr_dev(uphs), arr_dev(ukqs))
+    ep_kq_h = Array(ep_kq_all)
+    for iq in 1:nq2
+        @test isapprox(ep_kq_h[:, :, :, iq], ep_ref[:, :, :, iq]; rtol)
+    end
+end
+
+@testset "batched e-ph drivers (CPU)" begin
+    check_eph_batched(identity, identity; rtol=1e-10)
+end
+
 @testset "GPU batched Wannier interpolation" begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU tests"
@@ -75,56 +140,7 @@ end
             end
         end
 
-        # --- electron-phonon: batched drivers (CPU and GPU) vs per-k reference ---
-        let nwe = 3, nmodes = 4, nr_el = 20, nr_ep = 15
-            nband = nwe
-            irvec_el = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_el], by = x -> reverse(x))
-            irvec_ep = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_ep], by = x -> reverse(x))
-            epmat_or = rand(ComplexF64, nwe^2 * nmodes * nr_ep, nr_el)
-            epmat_obj = WannierObject(irvec_el, epmat_or; irvec_next = irvec_ep)
-            uk  = rand(ComplexF64, nwe, nband)
-            ukq = rand(ComplexF64, nwe, nband)
-            u_ph = rand(ComplexF64, nmodes, nmodes)
-            xk = Vec3(0.1, -0.4, 0.7); xq = Vec3(0.5, 0.2, -0.5)
-
-            # per-k reference
-            ref = WannierObject(irvec_ep, zeros(ComplexF64, nwe*nband*nmodes, nr_ep))
-            get_eph_RR_to_kR!(ref, get_interpolator(epmat_obj; fourier_mode="normal"), xk, uk)
-            ep_ref = zeros(ComplexF64, nband, nband, nmodes)
-            get_eph_kR_to_kq!(ep_ref, get_interpolator(ref; fourier_mode="normal"), xq, u_ph, ukq)
-
-            # batched drivers — CPU
-            o_c = WannierObject(irvec_ep, zeros(ComplexF64, nwe*nband*nmodes, nr_ep))
-            get_eph_RR_to_kR_batched!(o_c, get_interpolator(epmat_obj; fourier_mode="batched"), xk, uk)
-            ep_c = zeros(ComplexF64, nband, nband, nmodes)
-            get_eph_kR_to_kq_batched!(ep_c, get_interpolator(o_c; fourier_mode="batched"), xq, u_ph, ukq)
-            @test ep_c ≈ ep_ref
-
-            # batched drivers — GPU. Use CuArray (not cu) to keep Float64; cuBLAS only
-            # reorders the GEMM summations, so it matches the CPU to ~1e-12.
-            o_g = to_device(WannierObject(irvec_ep, zeros(ComplexF64, nwe*nband*nmodes, nr_ep)))
-            get_eph_RR_to_kR_batched!(o_g, get_interpolator(to_device(epmat_obj); fourier_mode="batched"), xk, CuArray(uk))
-            ep_g = CUDA.zeros(ComplexF64, nband, nband, nmodes)
-            get_eph_kR_to_kq_batched!(ep_g, get_interpolator(o_g; fourier_mode="batched"), xq, CuArray(u_ph), CuArray(ukq))
-            @test isapprox(Array(ep_g), ep_ref; rtol=1e-9)
-
-            # list-batched drivers (many k / many q) vs the per-k reference
-            nk2, nq2 = 5, 6
-            ks = [Vec3(rand(3)...) for _ in 1:nk2]; ks[1] = xk
-            qs = [Vec3(rand(3)...) for _ in 1:nq2]; qs[1] = xq
-            uks  = cat([rand(ComplexF64, nwe, nband) for _ in 1:nk2]...; dims=3); uks[:, :, 1] .= uk
-            uphs = cat([rand(ComplexF64, nmodes, nmodes) for _ in 1:nq2]...; dims=3); uphs[:, :, 1] .= u_ph
-            ukqs = cat([rand(ComplexF64, nwe, nband) for _ in 1:nq2]...; dims=3); ukqs[:, :, 1] .= ukq
-
-            epmat_g = get_interpolator(to_device(epmat_obj); fourier_mode="batched", batch_size=nk2)
-            ep_all = CUDA.zeros(ComplexF64, nwe*nband*nmodes, nr_ep, nk2)
-            get_eph_RR_to_kR_batched!(ep_all, epmat_g, ks, CuArray(uks))
-            obj_k1 = to_device(WannierObject(irvec_ep, Array(ep_all[:, :, 1])))
-            ep_kq_all = CUDA.zeros(ComplexF64, nband, nband, nmodes, nq2)
-            get_eph_kR_to_kq_batched!(ep_kq_all, get_interpolator(obj_k1; fourier_mode="batched", batch_size=nq2),
-                                      qs, CuArray(uphs), CuArray(ukqs))
-            # q-index 1 used (xk, xq) → must match the reference
-            @test isapprox(Array(ep_kq_all)[:, :, :, 1], ep_ref; rtol=1e-9)
-        end
+        # electron-phonon batched drivers on the GPU vs the per-k/q CPU reference
+        check_eph_batched(to_device, CuArray; rtol=1e-9)
     end
 end
