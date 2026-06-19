@@ -7,6 +7,7 @@ export get_el_eigen_batched
 export get_el_eigen_valueonly_batched
 export get_eph_RR_to_kR_batched!
 export get_eph_kR_to_kq_batched!
+export KRtoKQWorkspace
 export batched_gemm!
 
 # Batched Wannier -> Bloch diagonalization over a whole k-grid.
@@ -245,16 +246,37 @@ function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
 end
 
 """
-    get_eph_kR_to_kq_batched!(ep_kq_all, ep_ekpR_itp::BatchedWannierInterpolator, qs, u_phs, ukqs)
+    KRtoKQWorkspace(proto, ndata, nbandkq, nbandk, nmodes, nq)
+
+Preallocated scratch for [`get_eph_kR_to_kq_batched!`](@ref), reused across the per-k calls so the
+driver does no per-call `similar`. `proto` is an array on the target backend (e.g. `parent.op_r`);
+the buffers follow its backend and element type. `ndata = nw*nbandk*nmodes`.
+"""
+struct KRtoKQWorkspace{MT<:AbstractMatrix, AT<:AbstractArray}
+    g::MT      # (ndata, nq)                  — Fourier output g(k+R_ep) for all q
+    tmp::AT    # (nbandkq, nbandk*nmodes, nq) — after the ukq' rotation
+end
+function KRtoKQWorkspace(proto, ndata::Int, nbandkq::Int, nbandk::Int, nmodes::Int, nq::Int)
+    T = real(eltype(proto))
+    KRtoKQWorkspace(similar(proto, Complex{T}, ndata, nq),
+                    similar(proto, Complex{T}, nbandkq, nbandk * nmodes, nq))
+end
+
+"""
+    get_eph_kR_to_kq_batched!(ep_kq_all, ep_ekpR_itp::BatchedWannierInterpolator, qs, u_phs, ukqs; ws=nothing)
 
 Batched over a list of q-points `qs` (for a fixed k). `ukqs` is `(nw, nbandkq, nq)` and
 `u_phs` is `(nmodes, nmodes, nq)`. Writes `ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nq)`.
 
 One batched Fourier over `R_ep`, then two `batched_gemm!`s for the per-q rotations
 (`ukq(q)'` on the left, `u_ph(q)` on the right).
+
+Pass a [`KRtoKQWorkspace`](@ref) as `ws` (sized for this `nq`) to reuse the `g` / `tmp` scratch
+across calls instead of allocating it each call — the per-k hot path in the GPU loop does this.
 """
 function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
-                                   ep_ekpR_itp::BatchedWannierInterpolator{T}, qs, u_phs, ukqs) where {T}
+                                   ep_ekpR_itp::BatchedWannierInterpolator{T}, qs, u_phs, ukqs;
+                                   ws::Union{Nothing,KRtoKQWorkspace}=nothing) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
     @assert size(ukqs) == (nw, nbandkq, nq)
@@ -262,10 +284,16 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
     parent = ep_ekpR_itp.parent
     @assert parent.ndata == nw * nbandk * nmodes
 
-    g = similar(parent.op_r, Complex{T}, parent.ndata, nq)
-    get_fourier_batched!(g, ep_ekpR_itp, qs)                           # (nw*nbandk*nmodes, nq)
+    if ws === nothing
+        g   = similar(parent.op_r, Complex{T}, parent.ndata, nq)
+        tmp = similar(parent.op_r, Complex{T}, nbandkq, nbandk * nmodes, nq)
+    else
+        g, tmp = ws.g, ws.tmp
+        @assert size(g) == (parent.ndata, nq)
+        @assert size(tmp) == (nbandkq, nbandk * nmodes, nq)
+    end
 
-    tmp = similar(g, Complex{T}, nbandkq, nbandk * nmodes, nq)
+    get_fourier_batched!(g, ep_ekpR_itp, qs)                           # (nw*nbandk*nmodes, nq)
     batched_gemm!('C', 'N', ukqs, reshape(g, nw, nbandk * nmodes, nq), tmp)   # ukq(q)' * g(q)
     batched_gemm!('N', 'N', reshape(tmp, nbandkq * nbandk, nmodes, nq), u_phs,
                   reshape(ep_kq_all, nbandkq * nbandk, nmodes, nq))           # * u_ph(q)

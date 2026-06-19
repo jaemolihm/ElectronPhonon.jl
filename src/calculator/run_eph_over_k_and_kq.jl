@@ -18,7 +18,7 @@ function run_eph_over_k_and_kq(
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
         covariant_derivative_of_g = false,  # Compute cov. derivative of g
         use_gpu = false,   # Run the e-ph Wannier->Bloch interpolation on the GPU
-        q_batch_size = 1024,  # GPU: number of k+q points processed per batched kR->kq kernel
+        q_batch_size = nothing,  # GPU: k+q points per batched kR->kq kernel (nothing = all k+q in one chunk)
         k_batch_size = 256,   # GPU: number of outer k points processed per batched RR->kR kernel
     ) where {FT}
 
@@ -487,7 +487,7 @@ function _loop_eph_over_k_and_kq_gpu(
         energy_conservation = (:None, 0.0),
         screening_params = nothing,
         progress_print_step = 20,
-        q_batch_size = 1024,
+        q_batch_size = nothing,
         k_batch_size = 256,
         symmetry = nothing,
     ) where {FT}
@@ -505,18 +505,29 @@ function _loop_eph_over_k_and_kq_gpu(
         "use_gpu supports only energy_conservation = (:None, 0.0)."))
     screening_params === nothing || throw(ArgumentError("use_gpu does not support screening_params."))
     symmetry === nothing || throw(ArgumentError("use_gpu requires symmetry = nothing (full BZ)."))
-    all(el.nband == nw for el in el_k_save) || throw(ArgumentError(
-        "use_gpu is full-band only: window_k must be (-Inf, Inf) so nband == nw at every k."))
-    all(el.nband == nw for el in el_kq_save) || throw(ArgumentError(
-        "use_gpu is full-band only: window_kq must be (-Inf, Inf) so nband == nw at every k+q."))
 
-    qb = min(Int(q_batch_size), nkq)
+    # Default (q_batch_size === nothing): process all k+q in a single chunk per k. Fewer, larger
+    # kR->kq / calculator kernels — the GPU e-ph path is launch-bound for small nw/nmodes, so one
+    # big chunk is ~1.8× faster than the old 1024 default at 16³, and the per-chunk device buffers
+    # stay modest even at 50³ (≲ a few hundred MB). Pass an Int to cap the chunk if memory-limited.
+    qb = q_batch_size === nothing ? nkq : min(Int(q_batch_size), nkq)
     kb = min(Int(k_batch_size), nk)
 
     # Device-native calculator path: if every calculator implements the batched hook, the e-ph
     # matrix for a whole (k, {k+q}) chunk stays on the device and the calculator does its
     # reduction/scatter there — no per-(k,q) host callback, no host g2, no complex-ep D2H.
     batched = !isempty(calculators) && all(allow_eph_batched, calculators)
+
+    # Energy window support: the interpolation always runs full-band (uniform nw×nw, using the
+    # full eigenvectors `el.u_full`), so the batched kernels are unchanged. The window is applied
+    # only in the calculator scatter, where out-of-window states have imap == 0 and are skipped
+    # (see MigdalEliashberg's `run_calculator_batched!`). The host (non-batched) path writes into
+    # `epdata.ep` sized to the windowed `nband`, so it still requires full bands.
+    fullband = all(el.nband == nw for el in el_k_save) && all(el.nband == nw for el in el_kq_save)
+    if !batched && !fullband
+        throw(ArgumentError("use_gpu with a non-batched calculator is full-band only: " *
+            "window_k / window_kq must be (-Inf, Inf). Use a calculator with allow_eph_batched."))
+    end
 
     # ----- device interpolators (allocated once) -----
     epmat_dev = to_device(model.epmat)
@@ -542,10 +553,35 @@ function _loop_eph_over_k_and_kq_gpu(
     uphs_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, qb)
     epkq_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nmodes, qb)
 
-    ukqs_host = Array{Complex{FT}}(undef, nw, nw, qb)
+    # In-place scratch for the per-k kR->kq driver (g / tmp), reused across all (k, q) so the
+    # driver allocates nothing per call. The loop always hands it a full `qb`-sized (padded) chunk.
+    kRkq_ws = KRtoKQWorkspace(ep_ekpR_dev.op_r, ndata_ekpR, nw, nw, nmodes, qb)
+
+    # The k+q electron rotations (u_full of every k+q point) do NOT depend on the outer k, so
+    # build them on the device once and reuse across all k — no per-k host stack / H2D. Each chunk
+    # reads the contiguous slice `ukqs_all_dev[:, :, qstart:qend]` directly (full chunks); a partial
+    # final chunk is copied + padded into `ukqs_dev`.
+    ukqs_all_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nkq)
+    let ukqs_all_host = Array{Complex{FT}}(undef, nw, nw, nkq)
+        for ikq in 1:nkq
+            @views ukqs_all_host[:, :, ikq] .= el_kq_save[ikq].u_full
+        end
+        copyto!(ukqs_all_dev, ukqs_all_host)
+    end
     uphs_host = Array{Complex{FT}}(undef, nmodes, nmodes, qb)
     qs_chunk  = Vector{Vec3{FT}}(undef, qb)
     iq_chunk  = Vector{Int}(undef, qb)
+
+    # Dense q-grid → index map, replacing the per-(k,q) `xk_to_ik` Dict probe in the hot qbuild
+    # loop (that probe became the dominant, cache-missing cost at scale). `_hash_xk` maps a grid
+    # point to a unique linear index in 0:prod(ngrid)-1, so this returns exactly the same iq as
+    # `xk_to_ik`, via a contiguous-array read. The map has `prod(qpts.ngrid)` slots (0 = absent);
+    # `qpts` need not be a full grid (with a window it can be sparse) — every kq-k difference is in
+    # `qpts` by construction, so the looked-up slot is always filled. Built once, reused over (k,q).
+    qlookup = zeros(Int, prod(qpts.ngrid))
+    for iq in 1:qpts.n
+        qlookup[_hash_xk(qpts.vectors[iq], qpts) + 1] = iq
+    end
 
     # Device-native path: phonon frequencies and k+q indices per chunk, on the device.
     # Host path: host staging for the per-(k,q) epdata write.
@@ -568,7 +604,9 @@ function _loop_eph_over_k_and_kq_gpu(
         # Stack U(k) and the k list for this outer-k tile (pad the partial tail with valid
         # duplicated data so the batched RR->kR runs on dense `kb`-sized arrays).
         for (a, ik) in enumerate(kstart:kend)
-            @views uks_host[:, :, a] .= no_offset_view(el_k_save[ik].u)
+            # Full eigenvectors (nw×nw) so the batched RR->kR stays uniform; the window is
+            # applied later in the calculator scatter, not here.
+            @views uks_host[:, :, a] .= el_k_save[ik].u_full
             ks_tile[a] = kpts.vectors[ik]
         end
         for a in (nkt+1):kb
@@ -604,15 +642,15 @@ function _loop_eph_over_k_and_kq_gpu(
             nqc = qend - qstart + 1
 
             # Build the per-q rotation stacks and q list for this chunk.
-            for (j, ikq) in enumerate(qstart:qend)
+            for j in 1:nqc
+                ikq = qstart + j - 1
                 xkq = kqpts.vectors[ikq]
                 xq = xkq - xk
                 xq = normalize_kpoint_coordinate(xq .+ 1//2) .- 1//2
-                iq = xk_to_ik(xq, qpts)
-                iq === nothing && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
+                iq = qlookup[_hash_xk(xq, qpts) + 1]
+                iq == 0 && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
                 qs_chunk[j] = xq
                 iq_chunk[j] = iq
-                @views ukqs_host[:, :, j] .= no_offset_view(el_kq_save[ikq].u)
                 @views uphs_host[:, :, j] .= ph_save[iq].u
                 if batched
                     @views ωq_host[:, j] .= ph_save[iq].e
@@ -623,15 +661,24 @@ function _loop_eph_over_k_and_kq_gpu(
             # batched kernels run on dense `qb`-sized arrays; only 1:nqc is read back.
             for j in (nqc+1):qb
                 qs_chunk[j] = qs_chunk[nqc]
-                @views ukqs_host[:, :, j] .= ukqs_host[:, :, nqc]
                 @views uphs_host[:, :, j] .= uphs_host[:, :, nqc]
             end
 
-            copyto!(ukqs_dev, ukqs_host)
             copyto!(uphs_dev, uphs_host)
+            # k+q rotations: reuse the prebuilt device stack. Full chunk → contiguous view (no
+            # copy); partial final chunk → copy the slice and pad the tail (device→device).
+            if nqc == qb
+                ukqs_used = view(ukqs_all_dev, :, :, qstart:qend)
+            else
+                @views copyto!(ukqs_dev[:, :, 1:nqc], ukqs_all_dev[:, :, qstart:qend])
+                @views for j in (nqc+1):qb
+                    ukqs_dev[:, :, j] .= ukqs_dev[:, :, nqc]
+                end
+                ukqs_used = ukqs_dev
+            end
 
             # One batched Wannier->Bloch over all q in the chunk: ep_kq(q) (nw, nw, nmodes).
-            get_eph_kR_to_kq_batched!(epkq_dev, ep_ekpR_itp, qs_chunk, uphs_dev, ukqs_dev)
+            get_eph_kR_to_kq_batched!(epkq_dev, ep_ekpR_itp, qs_chunk, uphs_dev, ukqs_used; ws=kRkq_ws)
 
             if batched
                 # Device-native path: hand the whole chunk's e-ph matrix (still on the device)
