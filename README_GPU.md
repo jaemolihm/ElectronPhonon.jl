@@ -309,6 +309,59 @@ benchmark end-to-end. GPU-guarded test.
 
 Phase 4 (later): energy window (`nband < nband_bound`) and long-range/polar on the GPU.
 
+### Phase 3 profiling — where the time actually goes
+
+Instrumented end-to-end on the Pb model (RTX A6000, `nw=4 nmodes=3`, 8³ = 512 k = 512 k+q,
+CPU path on 32 threads). The GPU e-ph **kernels are not the bottleneck** — they are launch /
+allocation-bound on the tiny `nw=4` matrices, not compute-bound. Initial breakdown of the
+~1.5 s GPU run:
+
+| section | time | nature |
+|---|---|---|
+| setup (el/ph states) | 92 ms | mixed |
+| RR→kR (per-k Fourier) | 148 ms | GPU, launch-bound (512 single-k calls) |
+| kR→kq (batched) | 248 ms | GPU, launch + alloc-bound |
+| host stack build | 46 ms | host serial |
+| H2D + D2H copies | 76 ms | transfer |
+| g2 = \|ep\|²/2ω | 57 ms | host serial |
+| `run_calculator!` write | **730 ms** | host serial — *originally dominant* |
+
+Two tempting explanations for the 730 ms were measured and **rejected**: per-call overhead
+(a no-op calculator over all 262 k calls is 4.8 ms) and the `epdata.g2` `getproperty`
+rebuilding an `OffsetArray` 12.6 M times (hoisting it gives 0 %). The real cost was
+cache-hostile **scattered writes** into the `(n_i, n_f, nmodes)` output arrays, serial in the
+GPU loop (the CPU path `@threads`-es it — which is why CPU was only ~1.5× behind).
+
+**Fix applied (MigdalEliashberg `EliashbergCalculator`): mode-fastest layout
+`g2[ν, i, f]`.** Making `ν` the contiguous axis keeps each pair's `nmodes` values adjacent.
+This cut `run_calculator!` from **730 → 274 ms (2.7×)**, and — happily, no trade-off — also
+made the dominant solver kernel `build_interaction_tau_slice!` ~12 % faster (the random
+`D[idx]` gather dominates there, and the compact per-`f` block wins on locality). It helps the
+CPU path too. Validated: MigdalEliashberg test suite passes and CPU/GPU `calc.g2` still agree.
+(MigdalEliashberg.jl is not git-tracked in this checkout, so that edit lives outside this repo.)
+
+End-to-end after the layout change:
+
+| grid | nk = nkq | CPU (32 thr) | GPU | speedup |
+|---|---|---|---|---|
+| 4³ | 64  | 39 ms   | 42 ms   | 0.91× (setup-bound) |
+| 6³ | 216 | 344 ms  | 267 ms  | 1.29× |
+| 8³ | 512 | 1590 ms | 1043 ms | 1.52× |
+
+**In-place workspace drivers** (benchmarked, validated bit-identical): removing the per-call
+`similar()` scratch in the batched drivers gives **kR→kq −18 %**, RR→kR ~0 % (pure launch
+overhead, not allocation), total loop body **−8 %** (~3 % end-to-end) — modest on the GPU, as
+predicted; CUDA's pool already recycles the device buffers.
+
+**Remaining levers (priority order), now that the calculator no longer dominates:**
+1. **Device-native calculator** — compute `g2` on the device and scatter into `calc.g2` via the
+   imap on the GPU, eliminating the host `run_calculator!` (274 ms) + host g2 (57 ms) + the
+   complex-`ep` D2H. Biggest win; needs a non-scalar calculator API.
+2. **g2 on device** + copy back real `g2` (half the bytes) instead of complex `ep` — ~57 ms host
+   + halves D2H. Stepping stone to (1).
+3. **Batch RR→kR over a tile of outer-k** — collapse the 512 launch-bound single-k calls.
+4. **In-place workspace** — the ~3 % above; cheap once wiring the loop.
+
 ## Testing
 
 ```julia
