@@ -37,6 +37,7 @@ function run_eph_outer_q(
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
         eph_phonon_basis::Symbol = :eigenmode,  # :eigenmode or :cartesian
         verbosity::Int = 1,
+        eph_buffers::Union{Nothing, EphOuterQLoopBuffers} = nothing,
     ) where {FT}
 
     if model.epmat_outer_momentum != "ph"
@@ -75,15 +76,13 @@ function run_eph_outer_q(
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, precompute_el_kq, use_symmetry,
         keep_all_qpts, eph_phonon_basis, calculators, nchunks_threads,
-        verbosity,
+        verbosity, eph_buffers,
     )
 
     _loop_eph_outer_q(model,
         setup.kpts, setup.qpts, setup.kqpts,
         setup.el_k_save, setup.el_kq_save, setup.ph_save,
-        setup.precompute_el_kq,
-        setup.epdatas, setup.ep_eRpqs, setup.epmat, setup.ep_eRpq_obj,
-        setup.ham_threads, setup.vel_threads;
+        setup.precompute_el_kq, setup.eph_buffers;
         calculators, skip_eph, window_kq,
         energy_conservation, screening_params,
         progress_print_step, nchunks_threads,
@@ -115,6 +114,7 @@ function _setup_eph_outer_q(
         calculators = [],
         nchunks_threads = nthreads(),
         verbosity::Int = 1,
+        eph_buffers::Union{Nothing, EphOuterQLoopBuffers} = nothing,
     ) where {FT}
 
     (; nw, nmodes) = model
@@ -205,28 +205,9 @@ function _setup_eph_outer_q(
                                        maximum(el.nband for el in el_kq_save)) : nw
 
 
-    epdatas = Channel{ElPhData{FT}}(nthreads())
-    foreach(1:nthreads()) do _
-        put!(epdatas, ElPhData{FT}(nw, nmodes, nband_max))
-    end
-
-    # E-ph matrix in electron Bloch, phonon Wannier representation
-    ep_eRpq_obj = get_next_wannier_object(model.epmat)
-    ep_eRpqs = get_interpolator_channel(ep_eRpq_obj; fourier_mode)
-
-    epmat = get_interpolator(model.epmat; fourier_mode, threads = true)
-
-
-    if !precompute_el_kq
-        ham_threads = get_interpolator_channel(model.el_ham; fourier_mode)
-        vel_threads = if model.el_velocity_mode === :Direct
-            get_interpolator_channel(model.el_vel; fourier_mode)
-        else
-            get_interpolator_channel(model.el_ham_R; fourier_mode)
-        end
-    else
-        ham_threads = nothing
-        vel_threads = nothing
+    if eph_buffers === nothing
+        eph_buffers = EphOuterQLoopBuffers(model;
+            nchunks_threads, precompute_el_kq, fourier_mode, nband_max)
     end
 
     if verbosity > 0 && mpi_isroot()
@@ -246,8 +227,7 @@ function _setup_eph_outer_q(
         kpts, qpts, kqpts,
         el_k_save, el_kq_save, ph_save,
         precompute_el_kq, nband_max,
-        epdatas, ep_eRpqs, epmat, ep_eRpq_obj,
-        ham_threads, vel_threads,
+        eph_buffers,
         iband_min, iband_max,
         nelec_below_window_k, nelec_below_window_kq,
     )
@@ -259,8 +239,7 @@ function _loop_eph_outer_q(
         kpts, qpts, kqpts,
         el_k_save, el_kq_save, ph_save,
         precompute_el_kq,
-        epdatas, ep_eRpqs, epmat, ep_eRpq_obj,
-        ham_threads, vel_threads;
+        eph_buffers :: EphOuterQLoopBuffers{FT};
         calculators = [],
         skip_eph = false,
         window_kq = (-Inf, Inf),
@@ -272,6 +251,7 @@ function _loop_eph_outer_q(
         verbosity::Int = 1,
     ) where {FT}
 
+    (; epdatas, ep_eRpq_obj, ep_eRpqs, epmat, ham_threads, vel_threads) = eph_buffers
     (; nmodes) = model
     nk = kpts.n
     nq = qpts.n
