@@ -83,10 +83,6 @@ Compute electron inverse lifetime for given k and q point data in epdata
 """
 @timing "compute_τ_serta" function compute_lifetime_serta!(transdata::TransportSERTA,
         epdata, params::ElectronTransportParams, ik)
-    if params.smearing[1] !== :Gaussian
-        error("$(params.smearing[1]) not implemented. Only Gaussian smearing is implemented.")
-    end
-    inv_smear = 1 / params.smearing[2]
 
     el_kq_occ = epdata.el_kq.occupation
 
@@ -109,10 +105,16 @@ Compute electron inverse lifetime for given k and q point data in epdata
                 # 2: phonon emission.   e_k -> e_kq + phonon
                 delta_e1 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] - omega)
                 delta_e2 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] + omega)
-                delta1 = gaussian(delta_e1 * inv_smear) * inv_smear
-                delta2 = gaussian(delta_e2 * inv_smear) * inv_smear
+                delta1 = delta_smeared(delta_e1, params.smearing)
+                delta2 = delta_smeared(delta_e2, params.smearing)
                 fcoeff1 = occ_ph + el_kq_occ[jb]
-                fcoeff2 = occ_ph + 1.0 - el_kq_occ[jb]
+                fcoeff2 = occ_ph + 1 - el_kq_occ[jb]
+
+                # Uncomment below to use reciprocity-preserving occupation factors
+                # occ_ph_1 = occ_boson(epdata.el_kq.e[jb] - epdata.el_k.e[ib], T)
+                # fcoeff1 = occ_ph_1 + el_kq_occ[jb]
+                # occ_ph_2 = occ_boson(epdata.el_k.e[ib] - epdata.el_kq.e[jb], T)
+                # fcoeff2 = (occ_ph_2 + 1 - el_kq_occ[jb])
 
                 transdata.inv_τ[ib, ik, iT] += (2π * epdata.wtq * epdata.g2[jb, ib, imode]
                     * (fcoeff1 * delta1 + fcoeff2 * delta2))
