@@ -122,6 +122,23 @@ function epw_parse_structure(folder::String)
         end
     end
     wann_centers = reinterpret(Vec3{Float64}, reshape(w_centers_1d, 3, :))[:] * alat
+
+    # Smearing value and method used in the underlying DFT calculation
+    degauss = parse(Float64, readline(f))
+    ngauss = parse(Int, readline(f))
+
+    # New in EPW v6.2 : If present, Wigner-Seitz ndegen is pre-divided in the files.
+    # Otherwise, ndegen should be read from wigner.fmt and applied manually.
+    line = readline(f)
+    if length(split(line)) == 2
+        ws_method, idiv = parse.(Int, split(line))
+        idiv == 1 || throw(ArgumentError("idiv must be 1 in crystal.fmt"))
+    else
+        ws_method = -1  # Unknown
+        idiv = 0  # ndegen not divided
+    end
+    ndegen_pre_divided = (idiv == 1)
+
     close(f)
 
     # Convert to EP.jl convention
@@ -136,11 +153,17 @@ function epw_parse_structure(folder::String)
     # w_centers : Wannier centers in Cartesian bohr units
     # L : Length parameter for 2D polar
 
-    return Structure(alat, lattice, mass, atom_pos, atom_labels), wann_centers, L
+    return Structure(alat, lattice, mass, atom_pos, atom_labels), wann_centers, L, ws_method, ndegen_pre_divided
 end
 
 
 """
+    load_model_from_epw_new(
+        folder :: String, outdir :: String, prefix :: String; epmat_outer_momentum :: String = "el",
+        load_epmat :: Bool = true,
+        load_symmetry_operators :: Bool = false,
+        skip_eph_ndegen :: Bool = false
+    ) => Model
 - `skip_eph_ndegen:: Bool = false` : If true, skip applying Wigner-Seitz degeneracy correction
   when reading electron-phonon coupling matrix elements. Use for newer EPW versions
   that already apply the correction.
@@ -159,14 +182,34 @@ function load_model_from_epw_new(
     # el_velocity_mode = :Direct
     el_velocity_mode = :BerryConnection
 
-    structure, wann_centers, L = ElectronPhonon.epw_parse_structure(folder)
+    structure, wann_centers, L, ws_method, ndegen_pre_divided = ElectronPhonon.epw_parse_structure(folder)
 
     # Read Wigner-Seitz information
     f = open(joinpath(folder, "wigner.fmt"), "r")
-    nr_el, nr_ph, nr_ep, dims, dims2 = parse.(Int, split(readline(f)))
+    # Read first line for new format
+    ind_new, = parse.(Int, split(readline(f)))
+    if ind_new == -2
+        # New version (use_ws_v2)
+        @assert ndegen_pre_divided == true
+        seekstart(f)
+        ind_new, ws_method_, ndegen_pre_divided_ = parse.(Int, split(readline(f)))
+        @assert ws_method_ == ws_method
+        @assert ndegen_pre_divided_ == 1
+        skip_eph_ndegen = (ws_method == 3)  # SYMMETRIC
+
+        nw, nat = parse.(Int, split(readline(f)))
+        nr_el, nr_ph, nr_ep, dims, dims2 = parse.(Int, split(readline(f)))
+        nkc1, nkc2, nkc3, nqc1, nqc2, nqc3 = parse.(Int, split(readline(f)))
+
+    else
+        seekstart(f)
+        nr_el, nr_ph, nr_ep, dims, dims2 = parse.(Int, split(readline(f)))
+        skip_eph_ndegen = false
+    end
+
     irvec_el, ndegen_el, wslen_el = _parse_wigner(f, nr_el, dims,  dims)
     irvec_ph, ndegen_ph, wslen_ph = _parse_wigner(f, nr_ph, dims2, dims2)
-    irvec_ep, ndegen_ep, wslen_ep = _parse_wigner(f, nr_ep, dims,  dims2)
+    irvec_ep, ndegen_ep, wslen_ep = _parse_wigner(f, nr_ep, dims,  dims2; skip_ndegen = skip_eph_ndegen)
     close(f)
 
 
@@ -192,22 +235,24 @@ function load_model_from_epw_new(
             end
         end
     end
-    if size(ndegen_el, 1) == 1
-        for ir in 1:nr_el
-            if ndegen_el[1, 1, ir] == 0
-                ham[:, :, ir] .= 0
-            else
-                ham[:, :, ir] ./= ndegen_el[1, 1, ir]
+    if ! ndegen_pre_divided
+        if size(ndegen_el, 1) == 1
+            for ir in 1:nr_el
+                if ndegen_el[1, 1, ir] == 0
+                    ham[:, :, ir] .= 0
+                else
+                    ham[:, :, ir] ./= ndegen_el[1, 1, ir]
+                end
             end
-        end
-    else
-        for ir in 1:nr_el
-            for j in 1:nw
-                for i in 1:nw
-                    if ndegen_el[i, j, ir] == 0
-                        ham[i, j, ir] = 0
-                    else
-                        ham[i, j, ir] /= ndegen_el[i, j, ir]
+        else
+            for ir in 1:nr_el
+                for j in 1:nw
+                    for i in 1:nw
+                        if ndegen_el[i, j, ir] == 0
+                            ham[i, j, ir] = 0
+                        else
+                            ham[i, j, ir] /= ndegen_el[i, j, ir]
+                        end
                     end
                 end
             end
@@ -223,24 +268,26 @@ function load_model_from_epw_new(
         end
     end
 
-    if size(ndegen_ph, 1) == 1
-        @views for ir in 1:nr_ph
-            if ndegen_ph[1, 1, ir] == 0
-                dyn[:, :, ir] .= 0
-            else
-                dyn[:, :, ir] ./= ndegen_ph[1, 1, ir]
+    if ! ndegen_pre_divided
+        if size(ndegen_ph, 1) == 1
+            @views for ir in 1:nr_ph
+                if ndegen_ph[1, 1, ir] == 0
+                    dyn[:, :, ir] .= 0
+                else
+                    dyn[:, :, ir] ./= ndegen_ph[1, 1, ir]
+                end
             end
-        end
-    else
-        @views for ir in 1:nr_ph
-            for j in 1:div(nmodes, 3)
-                for i in 1:div(nmodes, 3)
-                    inds1 = (1+3(i-1)) : 3i
-                    inds2 = (1+3(j-1)) : 3j
-                    if ndegen_ph[i, j, ir] == 0
-                        dyn[inds1, inds2, ir] .= 0
-                    else
-                        dyn[inds1, inds2, ir] ./= ndegen_ph[i, j, ir]
+        else
+            @views for ir in 1:nr_ph
+                for j in 1:div(nmodes, 3)
+                    for i in 1:div(nmodes, 3)
+                        inds1 = (1+3(i-1)) : 3i
+                        inds2 = (1+3(j-1)) : 3j
+                        if ndegen_ph[i, j, ir] == 0
+                            dyn[inds1, inds2, ir] .= 0
+                        else
+                            dyn[inds1, inds2, ir] ./= ndegen_ph[i, j, ir]
+                        end
                     end
                 end
             end
@@ -330,26 +377,28 @@ function load_model_from_epw_new(
         vel .= 0
     end
 
-    if size(ndegen_el, 1) == 1
-        @views for ir in 1:nr_el
-            if ndegen_el[1, 1, ir] == 0
-                pos[:, :, :, ir] .= 0
-                vel[:, :, :, ir] .= 0
-            else
-                pos[:, :, :, ir] ./= ndegen_el[1, 1, ir]
-                vel[:, :, :, ir] ./= ndegen_el[1, 1, ir]
+    if ! ndegen_pre_divided
+        if size(ndegen_el, 1) == 1
+            @views for ir in 1:nr_el
+                if ndegen_el[1, 1, ir] == 0
+                    pos[:, :, :, ir] .= 0
+                    vel[:, :, :, ir] .= 0
+                else
+                    pos[:, :, :, ir] ./= ndegen_el[1, 1, ir]
+                    vel[:, :, :, ir] ./= ndegen_el[1, 1, ir]
+                end
             end
-        end
-    else
-        @views for ir in 1:nr_el
-            for j in 1:nw
-                for i in 1:nw
-                    if ndegen_el[i, j, ir] == 0
-                        pos[:, i, j, ir] .= 0
-                        vel[:, i, j, ir] .= 0
-                    else
-                        pos[:, i, j, ir] ./= ndegen_el[i, j, ir]
-                        vel[:, i, j, ir] ./= ndegen_el[i, j, ir]
+        else
+            @views for ir in 1:nr_el
+                for j in 1:nw
+                    for i in 1:nw
+                        if ndegen_el[i, j, ir] == 0
+                            pos[:, i, j, ir] .= 0
+                            vel[:, i, j, ir] .= 0
+                        else
+                            pos[:, i, j, ir] ./= ndegen_el[i, j, ir]
+                            vel[:, i, j, ir] ./= ndegen_el[i, j, ir]
+                        end
                     end
                 end
             end
@@ -401,7 +450,7 @@ function load_model_from_epw_new(
 
     if load_epmat
         filename = joinpath(folder, outdir, "$prefix.epmatwp")
-        ep = read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum; skip_ndegen_ep = skip_eph_ndegen)
+        ep = read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum; skip_ndegen_ep = skip_eph_ndegen, ndegen_pre_divided)
 
     else
         # Do not read epmat
@@ -431,9 +480,15 @@ function load_model_from_epw_new(
 end
 
 
-function read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum; skip_ndegen_ep = false)
+function read_epmat(
+    filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum;
+    skip_ndegen_ep = false,
+    ndegen_pre_divided = false,
+    )
     # skip_ndegen : Bool. If true, skip applying Wigner-Seitz degeneracy correction.
     #               Use for newer EPW versions that already apply the correction.
+    # ndegen_pre_divided : Bool. If true, both ndegen_el and ndegen_ep are already
+    #                      pre-divided in the files. This is for EPW v6.2 and afterwards.
 
     f = open(filename, "r")
     epmat = zeros(ComplexF64, nw, nw, nr_el, nmodes, nr_ep)
@@ -446,7 +501,7 @@ function read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_
     epmat = epmat[:, :, ind_el, :, ind_ep]
 
     # Apply Wigner-Seitz degeneracy
-    if ! skip_ndegen_ep
+    if ! (skip_ndegen_ep || ndegen_pre_divided)
         if size(ndegen_ep, 1) == 1
             @views for ir_ep in 1:nr_ep
                 if ndegen_ep[1, 1, ir_ep] == 0
@@ -468,22 +523,23 @@ function read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_
         end
     end
 
-
-    if size(ndegen_el, 1) == 1
-        @views for ir_el in 1:nr_el
-            if ndegen_el[1, 1, ir_el] == 0
-                epmat[:, :, ir_el, :, :] .= 0
-            else
-                epmat[:, :, ir_el, :, :] ./= ndegen_el[1, 1, ir_el]
+    if ! ndegen_pre_divided
+        if size(ndegen_el, 1) == 1
+            @views for ir_el in 1:nr_el
+                if ndegen_el[1, 1, ir_el] == 0
+                    epmat[:, :, ir_el, :, :] .= 0
+                else
+                    epmat[:, :, ir_el, :, :] ./= ndegen_el[1, 1, ir_el]
+                end
             end
-        end
 
-    else
-        @views for ir_el in 1:nr_el, jw in 1:nw, iw in 1:nw
-            if ndegen_el[iw, jw, ir_el] == 0
-                epmat[iw, jw, ir_el, :, :] .= 0
-            else
-                epmat[iw, jw, ir_el, :, :] ./= ndegen_el[iw, jw, ir_el]
+        else
+            @views for ir_el in 1:nr_el, jw in 1:nw, iw in 1:nw
+                if ndegen_el[iw, jw, ir_el] == 0
+                    epmat[iw, jw, ir_el, :, :] .= 0
+                else
+                    epmat[iw, jw, ir_el, :, :] ./= ndegen_el[iw, jw, ir_el]
+                end
             end
         end
     end
