@@ -351,16 +351,44 @@ End-to-end after the layout change:
 **In-place workspace drivers** (benchmarked, validated bit-identical): removing the per-call
 `similar()` scratch in the batched drivers gives **kR→kq −18 %**, RR→kR ~0 % (pure launch
 overhead, not allocation), total loop body **−8 %** (~3 % end-to-end) — modest on the GPU, as
-predicted; CUDA's pool already recycles the device buffers.
+predicted; CUDA's pool already recycles the device buffers. Deferred (small).
 
-**Remaining levers (priority order), now that the calculator no longer dominates:**
-1. **Device-native calculator** — compute `g2` on the device and scatter into `calc.g2` via the
-   imap on the GPU, eliminating the host `run_calculator!` (274 ms) + host g2 (57 ms) + the
-   complex-`ep` D2H. Biggest win; needs a non-scalar calculator API.
-2. **g2 on device** + copy back real `g2` (half the bytes) instead of complex `ep` — ~57 ms host
-   + halves D2H. Stepping stone to (1).
-3. **Batch RR→kR over a tile of outer-k** — collapse the 512 launch-bound single-k calls.
-4. **In-place workspace** — the ~3 % above; cheap once wiring the loop.
+### Device-native calculator ✅ DONE
+
+A calculator can now opt into a **batched device hook** so the e-ph matrix for a whole
+`(k, {k+q})` chunk stays on the device and the calculator does its reduction/scatter there —
+no per-`(k,q)` host `run_calculator!`, no host `g2`, no complex-`ep` D2H.
+
+- `AbstractCalculator`: new `allow_eph_batched(calc)` (default `false`) and
+  `run_calculator_batched!(calc, ep_kq, ωq, ik, ikqs)`. When every calculator returns `true`,
+  `_loop_eph_over_k_and_kq_gpu` keeps `ep_kq` on the device and calls the batched hook once per
+  chunk; otherwise it falls back to the per-`(k,q)` host path (unchanged).
+- `EliashbergCalculator` (MigdalEliashberg) implements it **backend-generically** — only
+  `similar` / `copyto!` / broadcast / scatter-assignment, so **no CUDA dependency is added** to
+  MigdalEliashberg. It forms `g2 = |ep|²/2ω` on the device and scatters into a device-resident
+  `g2[ν, i, f]` via the imap (linear-indexed `setindex!`, which is the vectorized GPU scatter —
+  indexing a `reshape(...)` view falls back to scalar); `g2`/`ωq` are copied to the host once in
+  `postprocess_calculator!`, so `EliashbergKernel(calc)` is unchanged. Full-band only (the GPU
+  loop guarantees `nband == nw`, so the imap targets are unique and the scatter is race-free).
+- Validated CPU-vs-GPU to ~1e-15 (single batch and chunked), under `CUDA.allowscalar(false)` so
+  any scalar fallback is a hard error. GPU-guarded test in `test/test_gpu.jl` (`_RecordCalcBatched`).
+
+End-to-end with the device-native `EliashbergCalculator` (8³, RTX A6000, Pb):
+
+| grid | CPU (32 thr) | GPU host-calc | GPU device-native | speedup vs CPU |
+|---|---|---|---|---|
+| 4³ | 52 ms   | 42 ms   | 53 ms  | 0.97× (setup-bound) |
+| 6³ | 331 ms  | 267 ms  | 251 ms | 1.32× |
+| 8³ | 1653 ms | 1043 ms | **818 ms** | **2.02×** |
+
+GPU 8³ progression: 1364 ms (original host calc) → 1043 ms (mode-fast layout) → **818 ms**
+(device-native). With the host calculator cost gone, the **GPU e-ph kernels (RR→kR + kR→kq,
+~400 ms) are now the dominant term** — so the next levers are the kernels themselves.
+
+**Remaining levers (priority order):**
+1. **Batch RR→kR over a tile of outer-k** — collapse the 512 launch-bound single-k calls (148 ms)
+   into a few via the list-batched driver.
+2. **In-place workspace** — the ~3 % above; cheap once batching RR over k reshapes the loop.
 
 ## Testing
 

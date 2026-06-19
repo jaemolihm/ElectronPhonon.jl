@@ -174,6 +174,38 @@ function ElectronPhonon.run_calculator!(c::_RecordCalc, epdata, ik, iq, ikq; kwa
     c
 end
 
+# Device-native counterpart of `_RecordCalc`: opts into the batched hook so the GPU loop keeps
+# the e-ph matrix on the device and calls `run_calculator_batched!` once per (k, chunk). It
+# records the same `g2 = |ep|²/2ω` and ωq as `_RecordCalc`, exercising the loop's device-native
+# branch (allow_eph_batched, ωq/ikqs staging, on-device g2) without MigdalEliashberg.
+mutable struct _RecordCalcBatched <: ElectronPhonon.AbstractCalculator
+    g2::Array{Float64,5}
+    ωq::Array{Float64,5}
+    _RecordCalcBatched() = new(zeros(0, 0, 0, 0, 0), zeros(0, 0, 0, 0, 0))
+end
+ElectronPhonon.allow_eph_outer_k(::_RecordCalcBatched) = true
+ElectronPhonon.allow_eph_batched(::_RecordCalcBatched) = true
+function ElectronPhonon.setup_calculator!(c::_RecordCalcBatched, kpts, qpts, el_states;
+        el_states_kq, kqpts, nw, nmodes, kwargs...)
+    c.g2 = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
+    c.ωq = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
+    c
+end
+ElectronPhonon.setup_calculator_inner!(c::_RecordCalcBatched; kwargs...) = c
+ElectronPhonon.postprocess_calculator_inner!(c::_RecordCalcBatched; kwargs...) = c
+ElectronPhonon.postprocess_calculator!(c::_RecordCalcBatched; kwargs...) = c
+function ElectronPhonon.run_calculator_batched!(c::_RecordCalcBatched, ep_kq, ωq, ik, ikqs)
+    nbandkq, nbandk, nm, nqc = size(ep_kq)
+    g2h = Array(abs2.(ep_kq) ./ (2 .* reshape(ωq, 1, 1, nm, nqc)))   # device → host (m,n,ν,j)
+    ωh = Array(ωq)
+    ikqsh = Array(ikqs)
+    @inbounds for j in 1:nqc, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
+        c.g2[m, n, ν, ik, ikqsh[j]] = g2h[m, n, ν, j]
+        c.ωq[m, n, ν, ik, ikqsh[j]] = ωh[ν, j]
+    end
+    c
+end
+
 @testset "GPU calculator loop (run_eph_over_k_and_kq use_gpu)" begin
     PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
     if !GPU_AVAILABLE
@@ -201,6 +233,19 @@ end
         ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
             calculators=[cg7], symmetry=nothing, use_gpu=true, q_batch_size=7, progress_print_step=10^9)
         @test maximum(abs, cc.g2 .- cg7.g2) < 1e-9 * scale
+
+        # Device-native path (batched hook: g2 formed and kept on the device) must match the
+        # host CPU path, both for a single batch and for chunked (partial final) batches.
+        cb = _RecordCalcBatched()
+        ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
+            calculators=[cb], symmetry=nothing, use_gpu=true, progress_print_step=10^9)
+        @test maximum(abs, cc.g2 .- cb.g2) < 1e-9 * scale
+        @test cc.ωq == cb.ωq
+
+        cb7 = _RecordCalcBatched()
+        ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
+            calculators=[cb7], symmetry=nothing, use_gpu=true, q_batch_size=7, progress_print_step=10^9)
+        @test maximum(abs, cc.g2 .- cb7.g2) < 1e-9 * scale
 
         # Scope guards: the GPU path must reject out-of-scope options it does not implement.
         @test_throws Exception ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;

@@ -510,6 +510,11 @@ function _loop_eph_over_k_and_kq_gpu(
 
     qb = min(Int(q_batch_size), nkq)
 
+    # Device-native calculator path: if every calculator implements the batched hook, the e-ph
+    # matrix for a whole (k, {k+q}) chunk stays on the device and the calculator does its
+    # reduction/scatter there — no per-(k,q) host callback, no host g2, no complex-ep D2H.
+    batched = !isempty(calculators) && all(allow_eph_batched, calculators)
+
     # ----- device interpolators (allocated once) -----
     epmat_dev = to_device(model.epmat)
     epmat_itp = BatchedWannierInterpolator(epmat_dev; batch_size = 1)
@@ -527,9 +532,20 @@ function _loop_eph_over_k_and_kq_gpu(
     uk_host   = Matrix{Complex{FT}}(undef, nw, nw)
     ukqs_host = Array{Complex{FT}}(undef, nw, nw, qb)
     uphs_host = Array{Complex{FT}}(undef, nmodes, nmodes, qb)
-    epkq_host = Array{Complex{FT}}(undef, nw, nw, nmodes, qb)
     qs_chunk  = Vector{Vec3{FT}}(undef, qb)
     iq_chunk  = Vector{Int}(undef, qb)
+
+    # Device-native path: phonon frequencies and k+q indices per chunk, on the device.
+    # Host path: host staging for the per-(k,q) epdata write.
+    if batched
+        ωq_host   = Array{FT}(undef, nmodes, qb)
+        ikqs_host = Vector{Int}(undef, qb)
+        ωq_dev    = similar(epmat_dev.op_r, FT, nmodes, qb)
+        ikqs_dev  = similar(epmat_dev.op_r, Int, qb)
+        epkq_host = Array{Complex{FT}}(undef, 0, 0, 0, 0)  # unused
+    else
+        epkq_host = Array{Complex{FT}}(undef, nw, nw, nmodes, qb)
+    end
 
     epdata = take!(epdatas)
 
@@ -567,6 +583,10 @@ function _loop_eph_over_k_and_kq_gpu(
                 iq_chunk[j] = iq
                 @views ukqs_host[:, :, j] .= no_offset_view(el_kq_save[ikq].u)
                 @views uphs_host[:, :, j] .= ph_save[iq].u
+                if batched
+                    @views ωq_host[:, j] .= ph_save[iq].e
+                    ikqs_host[j] = ikq
+                end
             end
             # Pad the tail of the final partial chunk with valid (duplicated) data so the
             # batched kernels run on dense `qb`-sized arrays; only 1:nqc is read back.
@@ -581,20 +601,34 @@ function _loop_eph_over_k_and_kq_gpu(
 
             # One batched Wannier->Bloch over all q in the chunk: ep_kq(q) (nw, nw, nmodes).
             get_eph_kR_to_kq_batched!(epkq_dev, ep_ekpR_itp, qs_chunk, uphs_dev, ukqs_dev)
-            copyto!(epkq_host, epkq_dev)
 
-            # Cheap host loop: write the slice into epdata, set g2, run the calculator (the
-            # calculator API is unchanged from the CPU path).
-            for (j, ikq) in enumerate(qstart:qend)
-                epdata.el_kq = el_kq_save[ikq]
-                epdata.ph = ph_save[iq_chunk[j]]
-                epdata.wtk = kpts.weights[ik]
-                epdata.wtq = kqpts.weights[ikq]
-                @views no_offset_view(epdata.ep) .= epkq_host[:, :, :, j]
-                epdata_set_g2!(epdata)
+            if batched
+                # Device-native path: hand the whole chunk's e-ph matrix (still on the device)
+                # to each calculator, which forms g2 / scatters on the device. Only 1:nqc is
+                # passed (the padded tail is dropped). No D2H of the e-ph matrix here.
+                # Full contiguous H2D copies (copying host↔device SubArray views falls back to
+                # scalar indexing); only the 1:nqc columns are read by the calculator below.
+                copyto!(ωq_dev, ωq_host)
+                copyto!(ikqs_dev, ikqs_host)
                 for calc in calculators
-                    run_calculator!(calc, epdata, ik, iq_chunk[j], ikq;
-                        xq = qs_chunk[j], xk, id_chunk = 1, epdata_dg = nothing)
+                    run_calculator_batched!(calc,
+                        view(epkq_dev, :, :, :, 1:nqc), view(ωq_dev, :, 1:nqc),
+                        ik, view(ikqs_dev, 1:nqc))
+                end
+            else
+                # Host path: copy the chunk back and run the per-(k,q) host calculator.
+                copyto!(epkq_host, epkq_dev)
+                for (j, ikq) in enumerate(qstart:qend)
+                    epdata.el_kq = el_kq_save[ikq]
+                    epdata.ph = ph_save[iq_chunk[j]]
+                    epdata.wtk = kpts.weights[ik]
+                    epdata.wtq = kqpts.weights[ikq]
+                    @views no_offset_view(epdata.ep) .= epkq_host[:, :, :, j]
+                    epdata_set_g2!(epdata)
+                    for calc in calculators
+                        run_calculator!(calc, epdata, ik, iq_chunk[j], ikq;
+                            xq = qs_chunk[j], xk, id_chunk = 1, epdata_dg = nothing)
+                    end
                 end
             end
 
