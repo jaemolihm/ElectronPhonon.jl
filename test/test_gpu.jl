@@ -247,6 +247,14 @@ end
             calculators=[cb7], symmetry=nothing, use_gpu=true, q_batch_size=7, progress_print_step=10^9)
         @test maximum(abs, cc.g2 .- cb7.g2) < 1e-9 * scale
 
+        # Outer-k tiling (k_batch_size=5 forces a partial final k-tile) must agree too,
+        # together with a partial q-chunk.
+        cbk = _RecordCalcBatched()
+        ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
+            calculators=[cbk], symmetry=nothing, use_gpu=true,
+            k_batch_size=5, q_batch_size=7, progress_print_step=10^9)
+        @test maximum(abs, cc.g2 .- cbk.g2) < 1e-9 * scale
+
         # Scope guards: the GPU path must reject out-of-scope options it does not implement.
         @test_throws Exception ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
             calculators=[_RecordCalc()], symmetry=nothing, use_gpu=true,

@@ -18,7 +18,8 @@ function run_eph_over_k_and_kq(
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
         covariant_derivative_of_g = false,  # Compute cov. derivative of g
         use_gpu = false,   # Run the e-ph Wannier->Bloch interpolation on the GPU
-        q_batch_size = 1024,  # GPU: number of k+q points processed per batched kernel
+        q_batch_size = 1024,  # GPU: number of k+q points processed per batched kR->kq kernel
+        k_batch_size = 256,   # GPU: number of outer k points processed per batched RR->kR kernel
     ) where {FT}
 
     if model.epmat_outer_momentum != "el"
@@ -51,7 +52,7 @@ function run_eph_over_k_and_kq(
             setup.epdatas;
             calculators,
             energy_conservation, screening_params,
-            progress_print_step, q_batch_size, symmetry,
+            progress_print_step, q_batch_size, k_batch_size, symmetry,
         )
     else
         _loop_eph_over_k_and_kq(model,
@@ -487,6 +488,7 @@ function _loop_eph_over_k_and_kq_gpu(
         screening_params = nothing,
         progress_print_step = 20,
         q_batch_size = 1024,
+        k_batch_size = 256,
         symmetry = nothing,
     ) where {FT}
 
@@ -509,6 +511,7 @@ function _loop_eph_over_k_and_kq_gpu(
         "use_gpu is full-band only: window_kq must be (-Inf, Inf) so nband == nw at every k+q."))
 
     qb = min(Int(q_batch_size), nkq)
+    kb = min(Int(k_batch_size), nk)
 
     # Device-native calculator path: if every calculator implements the batched hook, the e-ph
     # matrix for a whole (k, {k+q}) chunk stays on the device and the calculator does its
@@ -517,19 +520,28 @@ function _loop_eph_over_k_and_kq_gpu(
 
     # ----- device interpolators (allocated once) -----
     epmat_dev = to_device(model.epmat)
-    epmat_itp = BatchedWannierInterpolator(epmat_dev; batch_size = 1)
+    epmat_itp = BatchedWannierInterpolator(epmat_dev; batch_size = kb)
     ep_ekpR_dev = to_device(get_next_wannier_object(model.epmat))
     ep_ekpR_itp = BatchedWannierInterpolator(ep_ekpR_dev; batch_size = qb)
+    ndata_ekpR = nw * nw * nmodes
+    nr_ep = ep_ekpR_dev.nr
 
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
-    # All device staging is sized to the full chunk `qb` and used as plain CuArrays (not
+    # All device staging is sized to the full chunk and used as plain CuArrays (not
     # batch-sliced views), so the batched drivers' reshape/cuBLAS calls stay on dense arrays.
-    uk_dev   = similar(epmat_dev.op_r, Complex{FT}, nw, nw)
+
+    # RR->kR over a tile of `kb` outer-k at once: one batched kernel per tile instead of one
+    # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole tile; each
+    # k's slice is then copied into `ep_ekpR_dev` (device→device) for the inner kR->kq driver.
+    uks_dev     = similar(epmat_dev.op_r, Complex{FT}, nw, nw, kb)
+    uks_host    = Array{Complex{FT}}(undef, nw, nw, kb)
+    ep_ekpR_all = similar(epmat_dev.op_r, Complex{FT}, ndata_ekpR, nr_ep, kb)
+    ks_tile     = Vector{Vec3{FT}}(undef, kb)
+
     ukqs_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, qb)
     uphs_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, qb)
     epkq_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nmodes, qb)
 
-    uk_host   = Matrix{Complex{FT}}(undef, nw, nw)
     ukqs_host = Array{Complex{FT}}(undef, nw, nw, qb)
     uphs_host = Array{Complex{FT}}(undef, nmodes, nmodes, qb)
     qs_chunk  = Vector{Vec3{FT}}(undef, qb)
@@ -549,7 +561,26 @@ function _loop_eph_over_k_and_kq_gpu(
 
     epdata = take!(epdatas)
 
-    for ik in 1:nk
+    for kstart in 1:kb:nk
+        kend = min(kstart + kb - 1, nk)
+        nkt = kend - kstart + 1
+
+        # Stack U(k) and the k list for this outer-k tile (pad the partial tail with valid
+        # duplicated data so the batched RR->kR runs on dense `kb`-sized arrays).
+        for (a, ik) in enumerate(kstart:kend)
+            @views uks_host[:, :, a] .= no_offset_view(el_k_save[ik].u)
+            ks_tile[a] = kpts.vectors[ik]
+        end
+        for a in (nkt+1):kb
+            @views uks_host[:, :, a] .= uks_host[:, :, nkt]
+            ks_tile[a] = ks_tile[nkt]
+        end
+        copyto!(uks_dev, uks_host)
+
+        # One batched RR->kR over the whole tile: g(k, R_ep) for all k in the tile.
+        get_eph_RR_to_kR_batched!(ep_ekpR_all, epmat_itp, ks_tile, uks_dev)
+
+    for (a, ik) in enumerate(kstart:kend)
         if mod(ik, progress_print_step) == 0 && mpi_isroot()
             @info "$(now()) ik = $ik / $nk"
             flush(stdout); flush(stderr)
@@ -558,10 +589,10 @@ function _loop_eph_over_k_and_kq_gpu(
         el_k = el_k_save[ik]
         epdata.el_k = el_k
 
-        # g(k, R_ep) on the device: rotate the electron-k index by U(k) (single-k driver).
-        uk_host .= no_offset_view(el_k.u)
-        copyto!(uk_dev, uk_host)
-        get_eph_RR_to_kR_batched!(ep_ekpR_dev, epmat_itp, xk, uk_dev)
+        # Load this k's g(k, R_ep) into the interpolator's parent (cheap device→device copy);
+        # the inner kR->kq driver reads `ep_ekpR_dev.op_r` fresh.
+        copyto!(ep_ekpR_dev.op_r, view(ep_ekpR_all, :, :, a))
+        ep_ekpR_dev._id += 1
 
         for calc in calculators
             setup_calculator_inner!(calc; ik)
@@ -638,7 +669,8 @@ function _loop_eph_over_k_and_kq_gpu(
         for calc in calculators
             postprocess_calculator_inner!(calc; ik)
         end
-    end # ik
+    end # ik within tile
+    end # k tile
 
     put!(epdatas, epdata)
 

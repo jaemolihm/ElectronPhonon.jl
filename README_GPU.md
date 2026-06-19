@@ -381,14 +381,49 @@ End-to-end with the device-native `EliashbergCalculator` (8³, RTX A6000, Pb):
 | 6³ | 331 ms  | 267 ms  | 251 ms | 1.32× |
 | 8³ | 1653 ms | 1043 ms | **818 ms** | **2.02×** |
 
-GPU 8³ progression: 1364 ms (original host calc) → 1043 ms (mode-fast layout) → **818 ms**
-(device-native). With the host calculator cost gone, the **GPU e-ph kernels (RR→kR + kR→kq,
-~400 ms) are now the dominant term** — so the next levers are the kernels themselves.
+### RR→kR batched over outer-k ✅ DONE
+
+The per-`ik` RR→kR was 512 launch-bound single-k calls (148 ms). It now processes a **tile of
+`k_batch_size` outer-k at once** with the list-batched driver: `_loop_eph_over_k_and_kq_gpu`
+loops over k-tiles, does one `get_eph_RR_to_kR_batched!` over the tile into `ep_ekpR_all
+(nw·nw·nmodes, nr_ep, kb)`, then for each k copies its slice into the inner interpolator's
+parent (cheap device→device). RR→kR collapsed **148 → 4 ms** (~35×). The partial final tile is
+padded like the q-chunks; validated (incl. `k_batch_size=5`) to ~1e-15 under `allowscalar(false)`.
+
+### Results & current breakdown
+
+End-to-end (8³ = 512×512, RTX A6000, Pb). **CPU = `gridopt`, capped to 12 threads
+(`nchunks_threads=12`); GPU = device-native, batched-normal interpolation.**
+
+| grid | CPU (gridopt, 12 thr) | GPU (device-native) | speedup |
+|---|---|---|---|
+| 4³ | 41 ms   | 44 ms  | 0.93× (setup-bound) |
+| 6³ | 327 ms  | 173 ms | 1.89× |
+| 8³ | 1954 ms | **635 ms** | **3.08×** |
+
+GPU 8³ progression: 1364 ms (original host calc) → 1043 (mode-fast layout) → 818 (device-native)
+→ **635 ms** (RR→kR batched over k).
+
+GPU loop-body breakdown (8³, warm, synced):
+
+| section | time | note |
+|---|---|---|
+| setup (el/ph states) | ~92 ms | host (`gridopt`) |
+| RR→kR (batched over k-tile) | 4 ms | was 148 ms |
+| ep_ekpR slice copy (per k) | 10 ms | device→device |
+| host q-chunk stack build | 50 ms | host |
+| H2D (ukqs/uphs/ω/ikqs) | 34 ms | transfer |
+| **kR→kq (batched over q)** | **231 ms** | GPU, launch/alloc-bound (512 per-k calls) |
+| **calculator (g2 + scatter)** | **191 ms** | GPU device-native (per-k chunk) |
+| loop-body total | ~520 ms | + setup ≈ 635 ms |
+
+The two dominant terms are now **kR→kq (231 ms)** and the **device-native calculator g2+scatter
+(191 ms)**, both issued once per outer-k (512 calls of tiny `nw=4` work — launch/alloc-bound).
 
 **Remaining levers (priority order):**
-1. **Batch RR→kR over a tile of outer-k** — collapse the 512 launch-bound single-k calls (148 ms)
-   into a few via the list-batched driver.
-2. **In-place workspace** — the ~3 % above; cheap once batching RR over k reshapes the loop.
+1. **Batch kR→kq across multiple outer-k** (and fuse the calculator scatter) — collapse the 512
+   per-k inner calls the way RR→kR was collapsed over k. Targets the 231 + 191 ms.
+2. **In-place workspace** for kR→kq — the validated ~3 % (kR→kq −18 %); cheap, no API change.
 
 ## Testing
 
