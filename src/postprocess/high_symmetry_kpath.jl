@@ -5,6 +5,7 @@ import Bravais
 export high_symmetry_kpath
 
 """
+    high_symmetry_kpath(model; kline_density=40, is_2d = false) => (kpts, plot_xdata)
 Extract the high-symmetry ``k``-point path corresponding to the passed model
 using `Brillouin.jl`. Uses the conventions described in the reference work by
 Cracknell, Davies, Miller, and Love (CDML). Of note, this has minor differences to

@@ -15,9 +15,12 @@ function plot_bandstructure(model; kline_density=40, close_fig=true, εF=nothing
     e_ph = compute_eigenvalues_ph(model, kpts; fourier_mode="normal")
 
     # Plot band structure
-    fig, plotaxes = PyPlot.subplots(1, 2, figsize=(8, 3))
-    plot_band_data(plotaxes[1], e_el ./ unit_to_aru(:eV),  plot_xdata, ylabel="energy (eV)", title="Electron", fmt="k")
-    plot_band_data(plotaxes[2], e_ph ./ unit_to_aru(:meV), plot_xdata, ylabel="energy (meV)", title="Phonon", fmt="k")
+    # fig, plotaxes = PyPlot.subplots(1, 2, figsize=(8, 3))
+    # plot_band_data(plotaxes[1], e_el ./ unit_to_aru(:eV),  plot_xdata, ylabel="energy (eV)", title="Electron", fmt="k")
+    # plot_band_data(plotaxes[2], e_ph ./ unit_to_aru(:meV), plot_xdata, ylabel="energy (meV)", title="Phonon", fmt="k")
+    fig, plotaxes = PyPlot.subplots(1, 2, figsize=(8, 3) .* (0.9, 1.0))
+    plot_band_data(plotaxes[1], e_el ./ unit_to_aru(:eV),  plot_xdata, title="Electron dispersion (eV)", fmt="k")
+    plot_band_data(plotaxes[2], e_ph ./ unit_to_aru(:meV), plot_xdata, title="Phonon dispersion (meV)", fmt="k")
     plotaxes[2].axhline(0, c="gray", lw=1)
 
     # Plot Fermi level if given
