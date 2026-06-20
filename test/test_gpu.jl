@@ -289,3 +289,121 @@ end
             energy_conservation=(:Fixed, 0.1), progress_print_step=10^9)
     end
 end
+
+@testset "compute_electron_states velocity (use_gpu)" begin
+    PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
+    if !GPU_AVAILABLE
+        @info "CUDA not available/functional — skipping GPU compute_electron_states velocity test"
+    elseif !isdir(PB)
+        @info "Pb model data not found at $PB — skipping GPU compute_electron_states velocity test"
+    else
+        model = ElectronPhonon.load_model_from_epw_new(PB, "temp", "pb"; epmat_outer_momentum="el")
+        kpts = ElectronPhonon.kpoints_grid((8, 8, 8))
+        nk, nw = kpts.n, model.nw
+        @assert model.el_velocity_mode === :BerryConnection  # Pb model_new
+
+        qv = ["eigenvalue", "eigenvector", "velocity", "position"]
+        els_c = ElectronPhonon.compute_electron_states(model, kpts, qv, (-Inf, Inf); fourier_mode="gridopt")
+        els_g = ElectronPhonon.compute_electron_states(model, kpts, qv, (-Inf, Inf); use_gpu=true)
+
+        # Eigenvalues are gauge-independent → must match the CPU path to eigenvalue precision.
+        emax = maximum(maximum(abs, els_c[ik].e_full .- els_g[ik].e_full) for ik in 1:nk)
+        @test emax < 1e-10 * maximum(maximum(abs, els_c[ik].e_full) for ik in 1:nk)
+
+        # Strong, gauge-independent correctness gate: run the SAME device velocity path (el_ham_R
+        # rotation + Berry term im*(e_i-e_j)*rbar) on the CPU eigenvectors and compare to the CPU
+        # `get_el_velocity_berry_connection!`. Sharing the eigenvectors removes the degeneracy-gauge
+        # difference, so this must match to machine precision (validates rotation + Berry math).
+        ufc = zeros(ComplexF64, nw, nw, nk); ec = zeros(Float64, nw, nk)
+        for ik in 1:nk; ufc[:, :, ik] .= els_c[ik].u_full; ec[:, ik] .= els_c[ik].e_full; end
+        v_dev = ElectronPhonon.get_el_velocity_direct_batched(ElectronPhonon.to_device(model.el_ham_R), kpts.vectors, CuArray(ufc))
+        rbar_dev = ElectronPhonon.get_el_velocity_direct_batched(ElectronPhonon.to_device(model.el_pos), kpts.vectors, CuArray(ufc))
+        let W = CuArray(ec)
+            v_dev .+= im .* (reshape(W, nw, 1, 1, nk) .- reshape(W, 1, nw, 1, nk)) .* rbar_dev
+        end
+        v_anchor = Array(v_dev)  # (nw, nw, 3, nk)
+        gm = gs = 0.0
+        for ik in 1:nk
+            el = els_c[ik]
+            for jb in el.rng, ib in el.rng, idir in 1:3
+                gm = max(gm, abs(el.v[ib, jb][idir] - v_anchor[ib, jb, idir, ik]))
+                gs = max(gs, abs(el.v[ib, jb][idir]))
+            end
+        end
+        @test gm < 1e-11 * gs
+
+        # vdiag is gauge-invariant for NON-degenerate bands (within a degenerate subspace it depends
+        # on the gauge, which the batched GPU eigensolve does not fix). So compare CPU-vs-GPU vdiag
+        # only on bands with no other band within 1e-6 Ha; these must match closely.
+        vmax = vscale = 0.0; n_nondeg = 0
+        for ik in 1:nk
+            el = els_c[ik]; e = el.e_full
+            for i in el.rng
+                any(j -> j != i && abs(e[j] - e[i]) < 1e-6, el.rng) && continue
+                n_nondeg += 1
+                vmax = max(vmax, maximum(abs, els_c[ik].vdiag[i] .- els_g[ik].vdiag[i]))
+                vscale = max(vscale, maximum(abs, els_c[ik].vdiag[i]))
+            end
+        end
+        @test n_nondeg > 0
+        @test vmax < 1e-8 * vscale
+
+        # velocity_diagonal-only path: must equal the diagonal of the full-velocity result exactly,
+        # and match CPU on non-degenerate bands.
+        qd = ["eigenvalue", "eigenvector", "velocity_diagonal"]
+        els_gd = ElectronPhonon.compute_electron_states(model, kpts, qd, (-Inf, Inf); use_gpu=true)
+        els_cd = ElectronPhonon.compute_electron_states(model, kpts, qd, (-Inf, Inf); fourier_mode="gridopt")
+        ddiag = 0.0
+        for ik in 1:nk, i in els_g[ik].rng
+            ddiag = max(ddiag, maximum(abs, els_gd[ik].vdiag[i] .- els_g[ik].vdiag[i]))
+        end
+        @test ddiag < 1e-13  # identical to real(diag(v)) of the full-velocity path
+        vdm = vds = 0.0
+        for ik in 1:nk
+            el = els_cd[ik]; e = el.e_full
+            for i in el.rng
+                any(j -> j != i && abs(e[j] - e[i]) < 1e-6, el.rng) && continue
+                vdm = max(vdm, maximum(abs, els_cd[ik].vdiag[i] .- els_gd[ik].vdiag[i]))
+                vds = max(vds, maximum(abs, els_cd[ik].vdiag[i]))
+            end
+        end
+        @test vdm < 1e-8 * vds
+    end
+end
+
+@testset "compute_phonon_states velocity_diagonal (use_gpu)" begin
+    PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
+    if !GPU_AVAILABLE
+        @info "CUDA not available/functional — skipping GPU compute_phonon_states velocity test"
+    elseif !isdir(PB)
+        @info "Pb model data not found at $PB — skipping GPU compute_phonon_states velocity test"
+    else
+        model = ElectronPhonon.load_model_from_epw_new(PB, "temp", "pb"; epmat_outer_momentum="el")
+        kpts = ElectronPhonon.kpoints_grid((8, 8, 8))
+        nk, nm = kpts.n, model.nmodes
+
+        qp = ["eigenvalue", "eigenvector", "velocity_diagonal"]
+        pc = ElectronPhonon.compute_phonon_states(model, kpts, qp; fourier_mode="gridopt")
+        pg = ElectronPhonon.compute_phonon_states(model, kpts, qp; use_gpu=true)
+
+        # Phonon frequencies are gauge-independent → must match the CPU path.
+        wm = maximum(maximum(abs, pc[ik].e .- pg[ik].e) for ik in 1:nk)
+        @test wm < 1e-7 * maximum(maximum(abs, pc[ik].e) for ik in 1:nk)
+
+        # vdiag = real(diag(u'·dD/dk·u))/(2ω). Gauge-invariant for non-degenerate modes; compare CPU
+        # vs GPU on non-degenerate, non-Γ-acoustic modes (skip ω<1e-5 where /2ω blows up).
+        vm = vs = 0.0; n_ok = 0
+        for ik in 1:nk
+            e = pc[ik].e
+            for i in 1:nm
+                e[i] < 1e-5 && continue
+                any(j -> j != i && abs(e[j] - e[i]) < 1e-7, 1:nm) && continue
+                n_ok += 1
+                vm = max(vm, maximum(abs, pc[ik].vdiag[i] .- pg[ik].vdiag[i]))
+                vs = max(vs, maximum(abs, pc[ik].vdiag[i]))
+            end
+        end
+        @test n_ok > 0
+        @test vm < 1e-8 * vs
+    end
+end

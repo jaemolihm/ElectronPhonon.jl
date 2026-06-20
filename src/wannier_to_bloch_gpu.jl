@@ -5,6 +5,7 @@ export eigvals_batched
 export eigen_batched
 export get_el_eigen_batched
 export get_el_eigen_valueonly_batched
+export get_el_velocity_direct_batched
 export get_eph_RR_to_kR_batched!
 export get_eph_kR_to_kq_batched!
 export eph_apply_rotations!
@@ -107,6 +108,46 @@ eigenvector gauge caveat.
 """
 function get_el_eigen_batched(ham::WannierObject, xk_list; batch_size::Int=length(xk_list))
     eigen_batched(_fourier_hk_batched(ham, xk_list; batch_size))
+end
+
+"""
+    get_el_velocity_direct_batched(vel::WannierObject, xk_list, uks; batch_size=length(xk_list)) -> (nw, nw, 3, nk)
+
+Batched counterpart of [`get_el_velocity_direct!`](@ref): for a 3-direction Wannier operator
+`vel` (`ndata == nw^2 * 3`, e.g. `model.el_vel` (dH/dk) or `model.el_pos` (position A)), Fourier-
+interpolate over all k in `xk_list` and apply the per-k gauge rotation `uk' * M[:,:,idir] * uk`
+for each Cartesian direction. Runs on the backend of `vel.op_r`; `uks` is `(nw, nw, nk)` (full-band
+eigenvectors, one `uk` per k, on the same backend). Returns the full-band `(nw, nw, 3, nk)` rotated
+matrix; callers slice the in-window block (the in-window block equals the windowed-`uk` rotation).
+
+Used for the electron position matrix `rbar` (`vel = el_pos`) and the `:Direct`-mode velocity
+(`vel = el_vel`). The Fourier output is laid out `(nw, nw, 3, nk)` with `idir` the slowest of the
+three operator dims, matching the per-k `get_fourier!`'s `reshape(out, (nw, nw, 3))` convention.
+"""
+function get_el_velocity_direct_batched(vel::WannierObject{T}, xk_list,
+        uks::AbstractArray{Complex{T},3}; batch_size::Int=length(xk_list)) where {T}
+    nw = size(uks, 1)
+    @assert size(uks, 2) == nw
+    nk = length(xk_list)
+    @assert size(uks, 3) == nk
+    @assert vel.ndata == nw^2 * 3 "expected ndata = nw^2*3 for a 3-direction operator, got $(vel.ndata)"
+
+    itp = BatchedWannierInterpolator(vel; batch_size)
+    Vk = similar(vel.op_r, Complex{T}, vel.ndata, nk)
+    get_fourier_batched!(Vk, itp, xk_list)                  # (nw^2*3, nk)
+
+    # Batch the rotation over b = (idir, k): stack the operator as (nw, nw, 3*nk) and replicate
+    # uk across the three directions so each batch slice carries its own uk.
+    Vb = reshape(Vk, nw, nw, 3 * nk)
+    urep = similar(uks, nw, nw, 3, nk)
+    urep .= reshape(uks, nw, nw, 1, nk)                     # broadcast uk over idir (non-scalar)
+    ub = reshape(urep, nw, nw, 3 * nk)
+
+    tmp = similar(Vb)
+    batched_gemm!('N', 'N', Vb, ub, tmp)                    # tmp = M[:,:,idir] * uk
+    out = similar(Vb)
+    batched_gemm!('C', 'N', ub, tmp, out)                   # out = uk' * (M * uk)
+    reshape(out, nw, nw, 3, nk)
 end
 
 # =============================================================================
