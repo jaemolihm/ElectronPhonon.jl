@@ -26,6 +26,15 @@ using CUDA.CUBLAS: gemm_strided_batched!
 #     handle the requested size.
 #   - Being a Jacobi solver, it may differ from LAPACK at the level of `tol` (default
 #     `eps(T)`) for clustered/degenerate spectra.
+#   - EIGENVALUE vs EIGENVECTOR accuracy (ComplexF64/Float64 throughout — this is NOT a Float32
+#     effect): the Jacobi sweeps converge eigenVALUES to ~machine eps (measured heevj-vs-LAPACK
+#     2.9e-15 for the Pb Hamiltonian), but stop eigenVECTORS at the looser Jacobi tolerance —
+#     measured relative residual ‖H·u − u·e‖/‖H‖ ≈ 9e-9, vs LAPACK QR ~1e-15. So `eigvals_batched`
+#     (filter, eigenvalues only) is machine-precision, while `eigen_batched`'s eigenvectors carry a
+#     ~1e-8 floor that propagates into anything using them (e-ph matrix / g2, band velocities).
+#     Negligible for converged BZ-summed observables, but looser than the CPU path. To tighten it,
+#     lower the Jacobi tolerance / raise max-sweeps (cuSOLVER `cusolverDnXsyevjSetTolerance` /
+#     `SetMaxSweeps`, exposed via CUDA.jl's `heevjBatched!` info object) — not done here.
 
 """
     to_device(obj::WannierObject{T, <:Array}) -> WannierObject
