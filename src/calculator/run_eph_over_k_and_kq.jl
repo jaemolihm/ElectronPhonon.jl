@@ -99,7 +99,7 @@ function _setup_eph_over_k_and_kq(
     # Generate k points
     @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
         kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
-    @time el_k_save  = compute_electron_states(model, kpts,  ["eigenvalue", "eigenvector", "velocity", "position"], window_k;  fourier_mode)
+    @time el_k_save  = compute_electron_states(model, kpts,  ["eigenvalue", "eigenvector", "velocity", "position"], window_k;  fourier_mode, use_gpu)
     nk = kpts.n
 
     if el_kq_from_unfolding
@@ -110,7 +110,7 @@ function _setup_eph_over_k_and_kq(
 
         kqpts, ik_to_ikirr_isym_kq = unfold_kpoints(kqpts_irr, symmetry)
 
-        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
+        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode, use_gpu)
 
         el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
 
@@ -121,7 +121,7 @@ function _setup_eph_over_k_and_kq(
         @time kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
             kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode, use_gpu)
 
-        @time el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
+        @time el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode, use_gpu)
     end
 
 
@@ -186,7 +186,7 @@ function _setup_eph_over_k_and_kq(
 
     # Precompute phonon states if precompute_ph == true
     if precompute_ph
-        @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
+        @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, use_gpu)
         dyn_threads = nothing
     else
         qpts = nothing
