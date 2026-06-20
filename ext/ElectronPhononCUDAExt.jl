@@ -77,4 +77,72 @@ function ElectronPhonon.batched_gemm!(transA::Char, transB::Char,
     C
 end
 
+# ---- fused e-ph gauge rotation (replaces the two tiny cuBLAS strided-batched GEMMs) -----------
+#
+# For small nw / nmodes the rotations `ep_kq = ukq' * g * u_ph` are nw×nw and nmodes×nmodes
+# matmuls; cuBLAS strided-batched runs them at ~2% of FP64 peak (~11 GFLOP/s, flat ~135 ns/batch),
+# making them ~82% of the kR->kq cost for materials like Pb (nw=4, nmodes=3). A single fused
+# kernel — one thread per q, both rotations done from registers — is ~8× faster and bit-faithful
+# (rel err ~3e-16). It also optionally writes g2 = |ep|²/(2ω) in the same pass (no separate abs2).
+#
+# Above the threshold (large nw/nmodes) the matmuls are big enough that cuBLAS is efficient and
+# the per-thread loop would be slow, so we fall back to the two strided-batched GEMMs there.
+# The kernel's per-thread work grows ~nw³·nmodes², so we gate on a single criterion — the PRODUCT
+# nw·nmodes. A measured A6000 sweep (nq=8192, FP64) crosses over near nw·nmodes ≈ 24: (4,3),(6,3),
+# (8,3),(6,4),(4,6) favour the fused kernel (1.3–2.9×); (8,4),(4,8),(6,6),(8,6),(10,3) favour cuBLAS
+# (the old per-dim cap `nw≤8 && nmodes≤8` wrongly routed (8,8), where cuBLAS is ~5× faster). A
+# separate per-dim cap is unnecessary: nmodes = 3·N_atoms ≥ 3 physically, so the product bounds the
+# aspect ratio on its own. NOTE: assumes nbandk, nbandkq ≤ nw (true in the full-band loop: ep_kq is
+# (nw,nw,nmodes,·)). THIS THRESHOLD IS A6000-TUNED — retune on other GPUs (on an H100 the crossover
+# moves lower: better FP64 / batched-GEMM throughput makes cuBLAS competitive at smaller sizes).
+const _FUSED_ROT_MAX_NWNM = 24
+
+# g : (nw, nbandk, nmodes, nq) ; ukq : (nw, nbandkq, nq) ; uph : (nmodes, nmodes, nq)
+# ep : (nbandkq, nbandk, nmodes, nq) ; g2 / ωq optional (g2 : same as ep ; ωq : (nmodes, nq)).
+function _fused_eph_rot_kernel!(ep, g2, g, ukq, uph, ωq, nw, nbkq, nbk, nm, nq)
+    q = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    q <= nq || return
+    @inbounds for ibk in 1:nbk, im in 1:nm
+        for ibkq in 1:nbkq
+            acc = zero(eltype(ep))
+            for jm in 1:nm
+                tval = zero(eltype(ep))
+                for iw in 1:nw
+                    tval += conj(ukq[iw, ibkq, q]) * g[iw, ibk, jm, q]
+                end
+                acc += tval * uph[jm, im, q]
+            end
+            ep[ibkq, ibk, im, q] = acc
+            if g2 !== nothing
+                g2[ibkq, ibk, im, q] = abs2(acc) / (2 * ωq[im, q])
+            end
+        end
+    end
+    return
+end
+
+function ElectronPhonon.eph_apply_rotations!(ep_kq_all::CuArray{Complex{T},4}, g,
+        ukqs::CuArray, u_phs::CuArray, tmp; g2_out=nothing, ωq=nothing) where {T}
+    nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
+    nw = size(ukqs, 1)
+    if nw * nmodes <= _FUSED_ROT_MAX_NWNM
+        g4 = reshape(g, nw, nbandk, nmodes, nq)
+        threads = 128
+        blocks = cld(nq, threads)
+        @cuda threads=threads blocks=blocks _fused_eph_rot_kernel!(
+            ep_kq_all, g2_out, g4, ukqs, u_phs, ωq, nw, nbandkq, nbandk, nmodes, nq)
+    else
+        # Large nw/nmodes: cuBLAS strided-batched is efficient; keep the two-GEMM path.
+        gemm_strided_batched!('C', 'N', one(Complex{T}), ukqs,
+                              reshape(g, nw, nbandk * nmodes, nq), zero(Complex{T}), tmp)
+        gemm_strided_batched!('N', 'N', one(Complex{T}),
+                              reshape(tmp, nbandkq * nbandk, nmodes, nq), u_phs, zero(Complex{T}),
+                              reshape(ep_kq_all, nbandkq * nbandk, nmodes, nq))
+        if g2_out !== nothing
+            g2_out .= abs2.(ep_kq_all) ./ (2 .* reshape(ωq, 1, 1, nmodes, nq))
+        end
+    end
+    ep_kq_all
+end
+
 end # module

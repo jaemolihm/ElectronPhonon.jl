@@ -626,8 +626,13 @@ function _loop_eph_over_k_and_kq_gpu(
         ikqs_host = Vector{Int}(undef, qb)
         ωq_dev    = similar(epmat_dev.op_r, FT, nmodes, qb)
         ikqs_dev  = similar(epmat_dev.op_r, Int, qb)
+        # Stage 2: g2 = |ep|²/(2ω) is written by the fused kRkq kernel in the same pass that
+        # produces ep_kq (folds the calculator's abs2 broadcast). Real-valued, full qb (padded).
+        g2_dev    = similar(epmat_dev.op_r, FT, nw, nw, nmodes, qb)
         epkq_host = Array{Complex{FT}}(undef, 0, 0, 0, 0)  # unused
     else
+        ωq_dev    = nothing
+        g2_dev    = nothing
         epkq_host = Array{Complex{FT}}(undef, nw, nw, nmodes, qb)
     end
 
@@ -710,6 +715,9 @@ function _loop_eph_over_k_and_kq_gpu(
             # gather the phonon eigenvectors on the device: uphs_dev[:,:,j] = uph_all_dev[:,:,iq[j]].
             copyto!(iq_dev, iq_chunk)
             @views uphs_dev .= uph_all_dev[:, :, iq_dev]
+            # Phonon frequencies gathered here (before kRkq) so the fused kernel can fold
+            # g2 = |ep|²/(2ω) in the same pass (Stage 2). Padded tail is valid (duplicated iq).
+            batched && (@views ωq_dev .= ωq_all_dev[:, iq_dev])
             # k+q rotations: reuse the prebuilt device stack. Full chunk → contiguous view (no
             # copy); partial final chunk → copy the slice and pad the tail (device→device).
             if nqc == qb
@@ -723,7 +731,9 @@ function _loop_eph_over_k_and_kq_gpu(
             end
 
             # One batched Wannier->Bloch over all q in the chunk: ep_kq(q) (nw, nw, nmodes).
-            get_eph_kR_to_kq_batched!(epkq_dev, ep_ekpR_itp, qs_chunk, uphs_dev, ukqs_used; ws=kRkq_ws)
+            # Device-native path: also fold g2 = |ep|²/(2ω) into the same fused kernel pass.
+            get_eph_kR_to_kq_batched!(epkq_dev, ep_ekpR_itp, qs_chunk, uphs_dev, ukqs_used; ws=kRkq_ws,
+                g2_out = batched ? g2_dev : nothing, ωq = batched ? ωq_dev : nothing)
 
             if batched
                 # Device-native path: hand the whole chunk's e-ph matrix (still on the device)
@@ -731,12 +741,12 @@ function _loop_eph_over_k_and_kq_gpu(
                 # passed (the padded tail is dropped). No D2H of the e-ph matrix here.
                 # Full contiguous H2D copies (copying host↔device SubArray views falls back to
                 # scalar indexing); only the 1:nqc columns are read by the calculator below.
-                @views ωq_dev .= ωq_all_dev[:, iq_dev]
+                # ωq_dev was gathered above (before kRkq, for the g2 fold).
                 copyto!(ikqs_dev, ikqs_host)
                 for calc in calculators
                     run_calculator_batched!(calc,
                         view(epkq_dev, :, :, :, 1:nqc), view(ωq_dev, :, 1:nqc),
-                        ik, view(ikqs_dev, 1:nqc))
+                        ik, view(ikqs_dev, 1:nqc); g2 = view(g2_dev, :, :, :, 1:nqc))
                 end
             else
                 # Host path: copy the chunk back and run the per-(k,q) host calculator.

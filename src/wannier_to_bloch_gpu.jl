@@ -7,6 +7,7 @@ export get_el_eigen_batched
 export get_el_eigen_valueonly_batched
 export get_eph_RR_to_kR_batched!
 export get_eph_kR_to_kq_batched!
+export eph_apply_rotations!
 export KRtoKQWorkspace
 export batched_gemm!
 
@@ -276,7 +277,8 @@ across calls instead of allocating it each call — the per-k hot path in the GP
 """
 function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
                                    ep_ekpR_itp::BatchedWannierInterpolator{T}, qs, u_phs, ukqs;
-                                   ws::Union{Nothing,KRtoKQWorkspace}=nothing) where {T}
+                                   ws::Union{Nothing,KRtoKQWorkspace}=nothing,
+                                   g2_out=nothing, ωq=nothing) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
     @assert size(ukqs) == (nw, nbandkq, nq)
@@ -294,8 +296,32 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
     end
 
     get_fourier_batched!(g, ep_ekpR_itp, qs)                           # (nw*nbandk*nmodes, nq)
+    eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp; g2_out, ωq)
+    ep_kq_all
+end
+
+"""
+    eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp; g2_out=nothing, ωq=nothing)
+
+Apply the two e-ph gauge rotations to the Fourier-interpolated `g` (`(ndata, nq)`, reshaped to
+`(nw, nbandk, nmodes, nq)`), writing the eigenbasis e-ph matrix `ep_kq_all`
+`(nbandkq, nbandk, nmodes, nq)` = `ukq(q)' * g(q) * u_ph(q)`. If `g2_out !== nothing`, also write
+`g2 = |ep_kq|² / (2 ωq)` (with `ωq` `(nmodes, nq)`) in the same pass.
+
+Generic method: the two strided-batched GEMMs (`ukq'` on the left, `u_ph` on the right) plus an
+optional `g2` broadcast — identical to the previous inline code, so any backend works. The CUDA
+extension overrides this with a fused per-q kernel for small `nw*nmodes`, which avoids cuBLAS'
+tiny-matmul inefficiency (the 4×4 / nmodes×nmodes strided-batched GEMMs run at ~2% of FP64 peak).
+"""
+function eph_apply_rotations!(ep_kq_all::AbstractArray{Complex{T},4}, g,
+                              ukqs, u_phs, tmp; g2_out=nothing, ωq=nothing) where {T}
+    nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
+    nw = size(ukqs, 1)
     batched_gemm!('C', 'N', ukqs, reshape(g, nw, nbandk * nmodes, nq), tmp)   # ukq(q)' * g(q)
     batched_gemm!('N', 'N', reshape(tmp, nbandkq * nbandk, nmodes, nq), u_phs,
                   reshape(ep_kq_all, nbandkq * nbandk, nmodes, nq))           # * u_ph(q)
+    if g2_out !== nothing
+        g2_out .= abs2.(ep_kq_all) ./ (2 .* reshape(ωq, 1, 1, nmodes, nq))
+    end
     ep_kq_all
 end

@@ -71,6 +71,17 @@ function check_eph_batched(to_dev, arr_dev; rtol)
     for iq in 1:nq2
         @test isapprox(ep_kq_h[:, :, :, iq], ep_ref[:, :, :, iq]; rtol)
     end
+
+    # g2 fold: the driver can also write g2 = |ep|²/(2ω) in the same pass — the GPU fused kernel
+    # writes it from registers, the CPU / large-nw path uses the generic broadcast. Check against
+    # the independent per-q reference ep_ref. (Exercises both `eph_apply_rotations!` g2 paths.)
+    ωq_g2  = rand(nmodes, nq2) .+ 0.5
+    g2_out = arr_dev(zeros(nband, nband, nmodes, nq2))
+    ep_g2  = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq2))
+    get_eph_kR_to_kq_batched!(ep_g2, get_interpolator(obj_k1; fourier_mode="batched", batch_size=nq2),
+        qs, arr_dev(uphs), arr_dev(ukqs); g2_out, ωq=arr_dev(ωq_g2))
+    g2_ref = abs2.(ep_ref) ./ (2 .* reshape(ωq_g2, 1, 1, nmodes, nq2))
+    @test isapprox(Array(g2_out), g2_ref; rtol)
 end
 
 @testset "batched e-ph drivers (CPU)" begin
@@ -194,9 +205,14 @@ end
 ElectronPhonon.setup_calculator_inner!(c::_RecordCalcBatched; kwargs...) = c
 ElectronPhonon.postprocess_calculator_inner!(c::_RecordCalcBatched; kwargs...) = c
 ElectronPhonon.postprocess_calculator!(c::_RecordCalcBatched; kwargs...) = c
-function ElectronPhonon.run_calculator_batched!(c::_RecordCalcBatched, ep_kq, ωq, ik, ikqs)
+# Computes g2 from `ep_kq` itself (independent check of the fused-kernel ep_kq output). The GPU
+# loop now also folds g2 into the kRkq kernel and passes it as `g2=`; when present, assert it
+# matches the abs2/(2ω) recomputation — this guards the production g2 output in-package.
+function ElectronPhonon.run_calculator_batched!(c::_RecordCalcBatched, ep_kq, ωq, ik, ikqs; g2=nothing)
     nbandkq, nbandk, nm, nqc = size(ep_kq)
-    g2h = Array(abs2.(ep_kq) ./ (2 .* reshape(ωq, 1, 1, nm, nqc)))   # device → host (m,n,ν,j)
+    g2dev = abs2.(ep_kq) ./ (2 .* reshape(ωq, 1, 1, nm, nqc))
+    g2 === nothing || @assert maximum(abs, Array(g2 .- g2dev)) <= 1e-10 * maximum(abs, Array(g2dev))
+    g2h = Array(g2dev)   # device → host (m,n,ν,j)
     ωh = Array(ωq)
     ikqsh = Array(ikqs)
     @inbounds for j in 1:nqc, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
