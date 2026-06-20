@@ -23,10 +23,10 @@ inside_window(e, window_min, window_max) = searchsortedfirst(e, window_min):sear
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(kpoints::AbstractKpoints, nw, el_ham, window; fourier_mode="normal", symmetry=nothing, shift=nothing)
+function filter_kpoints(kpoints::AbstractKpoints, nw, el_ham, window; fourier_mode="normal", symmetry=nothing, shift=nothing, use_gpu=false)
     # If the window is trivial, return the original kpoints
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
-    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode)
+    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, use_gpu)
     get_filtered_kpoints(kpoints, ik_keep), band_min, band_max, nelec_below_window
 end
 
@@ -39,7 +39,7 @@ Generate k grid of size nk1 * nk2 * nk3 and filter the k points, where nks = (nk
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode="gridopt", symmetry=nothing, shift=(0, 0, 0))
+function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode="gridopt", symmetry=nothing, shift=(0, 0, 0), use_gpu=false)
     if symmetry !== nothing && (! all(shift .== 0))
         error("nonzero shift and symmetry incompatible (not implemented)")
     end
@@ -48,7 +48,7 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode
     # If the window is trivial, return the whole grid
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
 
-    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode)
+    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, use_gpu)
     get_filtered_kpoints(kpoints, ik_keep), band_min, band_max, nelec_below_window
 end
 
@@ -86,11 +86,29 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MP
     new_kpoints, band_min, band_max, nelec_below_window
 end
 
-function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal")
+function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", use_gpu=false)
     ik_keep = zeros(Bool, kpoints.n)
     nelec_below_window_ = zeros(eltype(window), kpoints.n)
     band_min_ = zeros(Int, kpoints.n)
     band_max_ = zeros(Int, kpoints.n)
+
+    if use_gpu
+        # GPU: one batched valueonly eigensolve over the whole grid (the band-eigenvalues are the
+        # expensive part of filtering); the cheap window test stays on the host. `to_device` /
+        # `get_el_eigen_valueonly_batched` come from the base + CUDA extension.
+        W = Array(get_el_eigen_valueonly_batched(to_device(el_ham), kpoints.vectors))  # (nw, nk)
+        @views for ik in 1:kpoints.n
+            bands_in_window = inside_window(W[:, ik], window...)
+            nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
+            if !isempty(bands_in_window)
+                ik_keep[ik] = true
+                band_min_[ik] = bands_in_window[1]
+                band_max_[ik] = bands_in_window[end]
+            end
+        end
+        nelec_below_window = sum(nelec_below_window_)
+        return (; ik_keep, band_min = minimum(band_min_), band_max = maximum(band_max_), nelec_below_window)
+    end
 
     @threads for iks in chunks(kpoints.vectors; n=2*nthreads())
         ham = get_interpolator(el_ham; fourier_mode)

@@ -37,7 +37,7 @@ function run_eph_over_k_and_kq(
     setup = _setup_eph_over_k_and_kq(model, kpts_input, kqpts_input;
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, symmetry, calculators, nchunks_threads,
-        covariant_derivative_of_g,
+        covariant_derivative_of_g, use_gpu,
     )
 
     if use_gpu
@@ -91,13 +91,14 @@ function _setup_eph_over_k_and_kq(
         calculators = [],
         nchunks_threads = nthreads(),
         covariant_derivative_of_g = false,
+        use_gpu = false,
     ) where {FT}
 
     (; nw, nmodes) = model
 
     # Generate k points
     @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
-        kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
+        kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
     @time el_k_save  = compute_electron_states(model, kpts,  ["eigenvalue", "eigenvector", "velocity", "position"], window_k;  fourier_mode)
     nk = kpts.n
 
@@ -105,7 +106,7 @@ function _setup_eph_over_k_and_kq(
         # To ensure gauge consistency between symmetry-equivalent k points, we explicitly compute
         # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
         @time kqpts_irr, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
-            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; symmetry, fourier_mode)
+            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; symmetry, fourier_mode, use_gpu)
 
         kqpts, ik_to_ikirr_isym_kq = unfold_kpoints(kqpts_irr, symmetry)
 
@@ -118,7 +119,7 @@ function _setup_eph_over_k_and_kq(
 
     else
         @time kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
-            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode)
+            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode, use_gpu)
 
         @time el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
     end
