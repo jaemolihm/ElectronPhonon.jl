@@ -269,29 +269,48 @@ function combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
         "ngrid_kq = $ngrid_kq must be divisible by qpts.ngrid = $(qpts.ngrid)"))
 
     T = eltype(kpts.weights)
-    xkqs = Vector{Vec3{T}}()
-    xkq_hash_to_ikq = Dict{Int, Int}()
+    ng1, ng2, ng3 = ngrid_kq
     shift_k = kpts.vectors[1]
     shift_q = qpts.vectors[1]
     shift_kq = op(shift_k, shift_q)
+    sgn = Symbol(op) === :+ ? 1 : -1
 
+    # Work in integer grid coordinates on the common ngrid_kq grid. Each input point is exactly
+    # `shift + b / ngrid` with integer `b = round((xk - shift) * ngrid)`; rescaled onto ngrid_kq
+    # (an integer multiple of both input grids, checked above) the coordinate is `b * (ngrid_kq ÷
+    # ngrid)`. Then `op(k, q)` folded into the cell is plain integer arithmetic
+    #   c = mod(b_k ± b_q, ngrid_kq)  ∈ [0, ngrid_kq),
+    # which is exact and gcd-free (the old Rational arithmetic was the bottleneck), and recomputing
+    # `b` once per point (not per pair) avoids O(nk·nkq) redundant work. The packed index
+    # `(c1*ng2 + c2)*ng3 + c3` equals `_hash_xk(xkq)` and is a bijection on the grid, so it doubles
+    # as the de-duplication key. Stays a sparse Dict (one entry per unique point), never O(prod(ngrid)).
+    fk = ngrid_kq .÷ kpts.ngrid
+    fq = ngrid_kq .÷ qpts.ngrid
+    BkS = [Vec3(round.(Int, (xk - shift_k).data .* kpts.ngrid) .* fk) for xk in kpts.vectors]
+    BqS = [Vec3(round.(Int, (xq - shift_q).data .* qpts.ngrid) .* fq) for xq in qpts.vectors]
+
+    xkqs = Vector{Vec3{T}}()
+    cs = Vector{NTuple{3,Int}}()          # integer coords per stored point, for the collision guard
+    xkq_hash_to_ikq = Dict{Int, Int}()
     ikq = 0
-    for iq in 1:qpts.n
-        xq = qpts.vectors[iq]
-        xq_rational = round.(Int, (xq - shift_q) .* qpts.ngrid) .// qpts.ngrid
-        for ik in 1:kpts.n
-            xk = kpts.vectors[ik]
-            xk_rational = round.(Int, (xk - shift_k) .* kpts.ngrid) .// kpts.ngrid
-            xkq = mod.(op(xk_rational, xq_rational), 1) + shift_kq
+    for bq in BqS
+        for bk in BkS
+            c1 = mod(bk[1] + sgn * bq[1], ng1)
+            c2 = mod(bk[2] + sgn * bq[2], ng2)
+            c3 = mod(bk[3] + sgn * bq[3], ng3)
+            xk_hash_value = (c1 * ng2 + c2) * ng3 + c3
 
             # Find new k+q points, append to xkq_hash_to_ikq and xkqs
-            xk_hash_value = _hash_xk(xkq, ngrid_kq, shift_kq)
-            if xk_hash_value ∉ keys(xkq_hash_to_ikq)
+            ikq_found = get(xkq_hash_to_ikq, xk_hash_value, 0)
+            if ikq_found == 0
                 ikq += 1
                 xkq_hash_to_ikq[xk_hash_value] = ikq
-                push!(xkqs, xkq)
+                push!(cs, (c1, c2, c3))
+                push!(xkqs, Vec3(c1 / ng1, c2 / ng2, c3 / ng3) + shift_kq)
             else
-                @assert xkq ≈ xkqs[xkq_hash_to_ikq[xk_hash_value]]
+                # A hash hit must be the same grid point. A mismatch here means an off-grid input
+                # or a hash that overflowed Int (prod(ngrid_kq) too large) — fail loudly.
+                @assert cs[ikq_found] == (c1, c2, c3)
             end
         end
     end
