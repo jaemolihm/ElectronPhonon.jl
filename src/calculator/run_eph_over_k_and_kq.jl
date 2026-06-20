@@ -568,25 +568,61 @@ function _loop_eph_over_k_and_kq_gpu(
         end
         copyto!(ukqs_all_dev, ukqs_all_host)
     end
-    uphs_host = Array{Complex{FT}}(undef, nmodes, nmodes, qb)
+    # The phonon eigenvector `u` (nmodes×nmodes) and frequency `e` of every q-grid point depend
+    # only on iq, not on the outer k — so (like ukqs_all_dev above) hoist the full nq stacks onto
+    # the device ONCE here, instead of gathering `ph_save[iq].u` per (k,q) on the host and
+    # re-uploading the same nq matrices ~nk times. Per chunk we then upload only the qb-int `iq`
+    # vector and gather these stacks on the device by index (see the qbuild loop below).
+    uph_all_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, qpts.n)
+    let uph_all_host = Array{Complex{FT}}(undef, nmodes, nmodes, qpts.n)
+        for iq in 1:qpts.n
+            @views uph_all_host[:, :, iq] .= ph_save[iq].u
+        end
+        copyto!(uph_all_dev, uph_all_host)
+    end
+
     qs_chunk  = Vector{Vec3{FT}}(undef, qb)
     iq_chunk  = Vector{Int}(undef, qb)
+    iq_dev    = similar(epmat_dev.op_r, Int, qb)
 
-    # Dense q-grid → index map, replacing the per-(k,q) `xk_to_ik` Dict probe in the hot qbuild
-    # loop (that probe became the dominant, cache-missing cost at scale). `_hash_xk` maps a grid
-    # point to a unique linear index in 0:prod(ngrid)-1, so this returns exactly the same iq as
-    # `xk_to_ik`, via a contiguous-array read. The map has `prod(qpts.ngrid)` slots (0 = absent);
-    # `qpts` need not be a full grid (with a window it can be sparse) — every kq-k difference is in
-    # `qpts` by construction, so the looked-up slot is always filled. Built once, reused over (k,q).
-    qlookup = zeros(Int, prod(qpts.ngrid))
-    for iq in 1:qpts.n
-        qlookup[_hash_xk(qpts.vectors[iq], qpts) + 1] = iq
+    # q-index lookup WITHOUT an O(prod(ngrid)) = O(ngrid³) dense array (unaffordable for non-uniform
+    # grids where ngrid can be ~1e6 per dim with only a few actual points). `combine_kpoint_grids`
+    # sort!s `qpts` by hash, so for a FULL grid iq == hash+1 — pure arithmetic, no table. Otherwise
+    # fall back to the O(n) hash Dict that GridKpoints already carries (`_xk_hash_to_ik`). Decide once:
+    qpts_is_full = qpts.n == prod(qpts.ngrid) &&
+        all(_hash_xk(qpts.vectors[iq], qpts) == iq - 1 for iq in 1:qpts.n)
+
+    # O3: integer grid-coord arithmetic for iq, replacing the per-(k,q) float
+    # `normalize_kpoint_coordinate` + `_hash_xk`. For commensurate grids the q hash-coordinate is
+    #   hc_i = mod(round((xkq - xk - shift_q)·ng)_i, ng_i) = mod(Bkq[i,ikq] - Bk[i,ik], ng_i),
+    # where Bkq / Bk are the integer coords of every k+q / k vector on the q-grid (exact for grid
+    # points, precomputed once here). The linear hash `(hc1*ng2 + hc2)*ng3 + hc3` then reproduces
+    # `_hash_xk` bit-identically (verified over all pairs) with no Float64 / round / rationals in
+    # the hot loop. `qs_chunk` is read straight from `qpts.vectors[iq]`, which equals (xkq - xk)
+    # up to a reciprocal-lattice vector G — the Fourier phase cispi(2·R·q) is periodic in q→q+G,
+    # so the interpolated e-ph matrix is unchanged (the batched calculator never consumes xq).
+    ng1, ng2, ng3 = qpts.ngrid
+    shq = qpts.shift
+    Bkq = Matrix{Int}(undef, 3, nkq)
+    Bk  = Matrix{Int}(undef, 3, nk)
+    for ikq in 1:nkq, d in 1:3
+        Bkq[d, ikq] = round(Int, (kqpts.vectors[ikq][d] - shq[d]) * qpts.ngrid[d])
+    end
+    for ik in 1:nk, d in 1:3
+        Bk[d, ik] = round(Int, kpts.vectors[ik][d] * qpts.ngrid[d])
     end
 
     # Device-native path: phonon frequencies and k+q indices per chunk, on the device.
     # Host path: host staging for the per-(k,q) epdata write.
     if batched
-        ωq_host   = Array{FT}(undef, nmodes, qb)
+        # Phonon frequencies hoisted once (analog of uph_all_dev), gathered per chunk by iq.
+        ωq_all_dev = similar(epmat_dev.op_r, FT, nmodes, qpts.n)
+        let ωq_all_host = Array{FT}(undef, nmodes, qpts.n)
+            for iq in 1:qpts.n
+                @views ωq_all_host[:, iq] .= ph_save[iq].e
+            end
+            copyto!(ωq_all_dev, ωq_all_host)
+        end
         ikqs_host = Vector{Int}(undef, qb)
         ωq_dev    = similar(epmat_dev.op_r, FT, nmodes, qb)
         ikqs_dev  = similar(epmat_dev.op_r, Int, qb)
@@ -624,6 +660,7 @@ function _loop_eph_over_k_and_kq_gpu(
             flush(stdout); flush(stderr)
         end
         xk = kpts.vectors[ik]
+        bk1, bk2, bk3 = Bk[1, ik], Bk[2, ik], Bk[3, ik]   # this k's integer q-grid coords (O3)
         el_k = el_k_save[ik]
         epdata.el_k = el_k
 
@@ -641,30 +678,38 @@ function _loop_eph_over_k_and_kq_gpu(
             qend = min(qstart + qb - 1, nkq)
             nqc = qend - qstart + 1
 
-            # Build the per-q rotation stacks and q list for this chunk.
+            # Build the per-q index list for this chunk — the HOST does integers only now. The
+            # phonon eigenvector `u` and frequency `e` are gathered on the device from the
+            # once-hoisted uph_all_dev / ωq_all_dev by iq (below), so the host no longer gathers
+            # ph_save[iq].u per (k,q) nor re-uploads the nmodes²·qb complex stack each chunk.
             for j in 1:nqc
                 ikq = qstart + j - 1
-                xkq = kqpts.vectors[ikq]
-                xq = xkq - xk
-                xq = normalize_kpoint_coordinate(xq .+ 1//2) .- 1//2
-                iq = qlookup[_hash_xk(xq, qpts) + 1]
-                iq == 0 && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
-                qs_chunk[j] = xq
+                # O3: integer grid-coord hash for iq (no Float64 normalize/_hash_xk per pair).
+                h1 = mod(Bkq[1, ikq] - bk1, ng1)
+                h2 = mod(Bkq[2, ikq] - bk2, ng2)
+                h3 = mod(Bkq[3, ikq] - bk3, ng3)
+                hash = (h1 * ng2 + h2) * ng3 + h3
+                # Full sorted grid → iq = hash+1 (no table); else O(n) Dict (no ngrid³ array).
+                iq = qpts_is_full ? hash + 1 : get(qpts._xk_hash_to_ik, hash, 0)
+                # Guard both paths: Dict miss → iq==0; full-grid fast path → iq>qpts.n if off-grid.
+                (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
+                # q-vector from the O(n) qpts.vectors (a cached gather — cheaper than recomputing it
+                # with 3 float divisions; qpts.vectors is O(n), never ngrid³). ≡ (xkq-xk) mod G.
+                qs_chunk[j] = qpts.vectors[iq]
                 iq_chunk[j] = iq
-                @views uphs_host[:, :, j] .= ph_save[iq].u
-                if batched
-                    @views ωq_host[:, j] .= ph_save[iq].e
-                    ikqs_host[j] = ikq
-                end
+                batched && (ikqs_host[j] = ikq)
             end
             # Pad the tail of the final partial chunk with valid (duplicated) data so the
             # batched kernels run on dense `qb`-sized arrays; only 1:nqc is read back.
             for j in (nqc+1):qb
                 qs_chunk[j] = qs_chunk[nqc]
-                @views uphs_host[:, :, j] .= uphs_host[:, :, nqc]
+                iq_chunk[j] = iq_chunk[nqc]
             end
 
-            copyto!(uphs_dev, uphs_host)
+            # Upload only the qb-int iq vector (was: the nmodes²·qb complex `uphs` stack), then
+            # gather the phonon eigenvectors on the device: uphs_dev[:,:,j] = uph_all_dev[:,:,iq[j]].
+            copyto!(iq_dev, iq_chunk)
+            @views uphs_dev .= uph_all_dev[:, :, iq_dev]
             # k+q rotations: reuse the prebuilt device stack. Full chunk → contiguous view (no
             # copy); partial final chunk → copy the slice and pad the tail (device→device).
             if nqc == qb
@@ -686,7 +731,7 @@ function _loop_eph_over_k_and_kq_gpu(
                 # passed (the padded tail is dropped). No D2H of the e-ph matrix here.
                 # Full contiguous H2D copies (copying host↔device SubArray views falls back to
                 # scalar indexing); only the 1:nqc columns are read by the calculator below.
-                copyto!(ωq_dev, ωq_host)
+                @views ωq_dev .= ωq_all_dev[:, iq_dev]
                 copyto!(ikqs_dev, ikqs_host)
                 for calc in calculators
                     run_calculator_batched!(calc,
