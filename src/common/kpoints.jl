@@ -1,4 +1,3 @@
-
 # Data and functions for k points
 using MPI
 using Printf
@@ -247,19 +246,27 @@ function kpoints_create_subgrid(k::Kpoints, nsubgrid)
 end
 
 """
-    add_two_kpoint_grids(kpts, qpts, op, ngrid_kq)
-For k and q in kpts and qpts, return Kpoint with `kq = op(k, q)`.
+    combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
+For k and q in kpts and qpts, return a `GridKpoints` with `kq = op(k, q)`.
+`kpts` and `qpts` must lie on regular grids (they are converted to `GridKpoints`).
+The returned points are folded into [-0.5, 0.5)^3 and sorted in grid order.
 ngrid_kq: ngrid for kq points
 op: function from (k, q) to kq. Only + and -.
-TODO: a better name is needed. Not limited to "add"ing.
-TODO: Add test.
 """
-function add_two_kpoint_grids(kpts, qpts, op, ngrid_kq)
+function combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
     if Symbol(op) !== :+ && Symbol(op) !== :-
         error("op must be + or -")
     end
-    @assert all(kpts.ngrid .> 0)
-    @assert all(qpts.ngrid .> 0)
+    # This function requires the inputs to lie on a regular grid.
+    # So convert them to GridKpoints if they are not already.
+    kpts = GridKpoints(kpts)
+    qpts = GridKpoints(qpts)
+
+    # op(k, q) lies on the ngrid_kq grid only if ngrid_kq is a multiple of both input grids.
+    all(mod.(ngrid_kq, kpts.ngrid) .== 0) || throw(ArgumentError(
+        "ngrid_kq = $ngrid_kq must be divisible by kpts.ngrid = $(kpts.ngrid)"))
+    all(mod.(ngrid_kq, qpts.ngrid) .== 0) || throw(ArgumentError(
+        "ngrid_kq = $ngrid_kq must be divisible by qpts.ngrid = $(qpts.ngrid)"))
 
     T = eltype(kpts.weights)
     xkqs = Vector{Vec3{T}}()
@@ -288,8 +295,18 @@ function add_two_kpoint_grids(kpts, qpts, op, ngrid_kq)
             end
         end
     end
+
     nkq = length(xkqs)
-    GridKpoints{T}(nkq, xkqs, ones(T, nkq) ./ prod(ngrid_kq), ngrid_kq, shift_kq, xkq_hash_to_ikq)
+    weights = ones(T, nkq) ./ prod(ngrid_kq)
+    kqpts = GridKpoints(Kpoints{T}(nkq, xkqs, weights, ngrid_kq))
+    shift_center!(kqpts, (0, 0, 0))  # Fold the points into [-0.5, 0.5)^3.
+    sort!(kqpts)  # Sort so the points are ordered
+    kqpts
+end
+
+function add_two_kpoint_grids(kpts, qpts, op, ngrid_kq)
+    Base.depwarn("add_two_kpoint_grids is deprecated, use combine_kpoint_grids instead", :add_two_kpoint_grids, force=true)
+    combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
 end
 
 """k points that form a subset of a regular grid.
@@ -316,6 +333,10 @@ end
 
 function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; atol = sqrt(eps(T))) where {T}
     all(ngrid .> 0) || throw(ArgumentError("ngrid must be set or provided to make GridKpoints"))
+    # `_hash_xk` packs the grid index into a single Int and can reach prod(ngrid) - 1, so
+    # prod(ngrid) must fit in Int. Widen the product so prod(ngrid) itself cannot overflow.
+    prod(Int128.(ngrid)) < typemax(Int) || throw(ArgumentError(
+        "prod(ngrid) = $(prod(Int128.(ngrid))) must be < typemax(Int) to avoid overflow in the k-point hash"))
     if kpts.n == 0
         return GridKpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), ngrid, zero(Vec3{T}), Dict{Int,Int}())
     end

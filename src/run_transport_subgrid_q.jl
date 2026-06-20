@@ -54,8 +54,7 @@ function run_transport_subgrid_q(
 
     # Map k and q points to k+q points
     mpi_isroot() && println("Finding the list of k+q points")
-    kqpts = add_two_kpoint_grids(kpts, qpts, +, qpts.ngrid)
-    sort!(kqpts)
+    kqpts = combine_kpoint_grids(kpts, qpts, +, qpts.ngrid)
 
     btedata_prefix = joinpath(folder, "btedata_subgrid")
 

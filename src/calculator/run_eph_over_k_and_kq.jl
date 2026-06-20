@@ -109,12 +109,12 @@ function _setup_eph_over_k_and_kq(
     if all(kpts.ngrid .> 0) && all(mod.(kqpts.ngrid, kpts.ngrid) .== 0)
         # kqpts is denser than kpts
         precompute_ph = true
-        qpts = add_two_kpoint_grids(kqpts, kpts, -, kqpts.ngrid)
+        qpts = combine_kpoint_grids(kqpts, kpts, -, kqpts.ngrid)
 
     elseif all(kpts.ngrid .> 0) && all(mod.(kpts.ngrid, kqpts.ngrid) .== 0)
         # kpts is denser than kqpts
         precompute_ph = true
-        qpts = add_two_kpoint_grids(kqpts, kpts, -, kpts.ngrid)
+        qpts = combine_kpoint_grids(kqpts, kpts, -, kpts.ngrid)
 
     else
         precompute_ph = false

@@ -101,3 +101,76 @@ end
     @test sum([k.n for k in kpts_split]) == gridkpts.n
     @test all([k isa GridKpoints for k in kpts_split])
 end
+
+@testset "kpoints: combine_kpoint_grids" begin
+    using ElectronPhonon: kpoints_grid, combine_kpoint_grids, add_two_kpoint_grids
+
+    # Check that op(k, q) for all (k, q) pairs is found in the combined grid, and that
+    # the combined points are folded into [-0.5, 0.5)^3 and sorted in grid order.
+    function test_combine(kpts, qpts, op, ngrid_kq)
+        kqpts = combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
+        @test kqpts.ngrid == ngrid_kq
+
+        # All op(k, q) can be found, and the combined grid contains no other points.
+        found = Set{Int}()
+        for xk in kpts.vectors, xq in qpts.vectors
+            ikq = xk_to_ik(op(xk, xq), kqpts)
+            @test ikq !== nothing
+            push!(found, ikq)
+        end
+        @test length(found) == kqpts.n
+
+        # Points are folded into [-0.5, 0.5)^3.
+        for xkq in kqpts.vectors
+            @test all(-0.5 - 1e-8 .≤ xkq .< 0.5 + 1e-8)
+        end
+
+        # Points are sorted in grid order, and the hash table is consistent.
+        @test sortperm(kqpts) == 1:kqpts.n
+        @test all(xk_to_ik.(kqpts.vectors, Ref(kqpts)) .== 1:kqpts.n)
+
+        # Weights are uniform.
+        @test all(kqpts.weights .≈ 1 / prod(ngrid_kq))
+
+        kqpts
+    end
+
+    # Equal grids, no shift.
+    kpts = GridKpoints(kpoints_grid((3, 3, 3)))
+    qpts = GridKpoints(kpoints_grid((3, 3, 3)))
+    test_combine(kpts, qpts, +, (3, 3, 3))
+    test_combine(kpts, qpts, -, (3, 3, 3))
+
+    # Commensurate grids (qpts denser); result lives on the denser grid.
+    kpts = GridKpoints(kpoints_grid((2, 2, 2)))
+    qpts = GridKpoints(kpoints_grid((4, 4, 4)))
+    test_combine(kpts, qpts, +, (4, 4, 4))
+    test_combine(kpts, qpts, -, (4, 4, 4))
+
+    # Shifted q grid, and plain Kpoints input (converted to GridKpoints internally).
+    shift = (0, 1//2, 1//2) ./ 3
+    kpts = kpoints_grid((3, 3, 3))            # plain Kpoints, no shift
+    qpts = kpoints_grid((3, 3, 3); shift)     # plain Kpoints, shifted
+    kqpts = test_combine(kpts, qpts, +, (3, 3, 3))
+    @test kqpts.shift ≈ Vec3(shift)           # shift of combined grid is shift_k + shift_q
+
+    # Deprecated alias warns and still returns the same result.
+    kpts = GridKpoints(kpoints_grid((2, 2, 2)))
+    qpts = GridKpoints(kpoints_grid((2, 2, 2)))
+    deprecated = @test_deprecated add_two_kpoint_grids(kpts, qpts, +, (2, 2, 2))
+    @test deprecated == combine_kpoint_grids(kpts, qpts, +, (2, 2, 2))
+
+    # ngrid_kq must be divisible by both input grids.
+    kpts = GridKpoints(kpoints_grid((2, 2, 2)))
+    qpts = GridKpoints(kpoints_grid((3, 3, 3)))
+    @test_throws ArgumentError combine_kpoint_grids(kpts, qpts, +, (3, 3, 3))  # not divisible by kpts
+    @test_throws ArgumentError combine_kpoint_grids(kpts, qpts, +, (2, 2, 2))  # not divisible by qpts
+    @test combine_kpoint_grids(kpts, qpts, +, (6, 6, 6)) isa GridKpoints       # divisible by both
+
+    # Overflow guard: prod(ngrid) must fit in Int (checked in the GridKpoints constructor).
+    @test GridKpoints(kpoints_grid((1, 1, 1)), (1000, 1000, 1000)) isa GridKpoints
+    @test_throws ArgumentError GridKpoints(kpoints_grid((1, 1, 1)), (10^7, 10^7, 10^7))
+    # combine_kpoint_grids routes through that constructor, so the guard applies to ngrid_kq.
+    single = GridKpoints(kpoints_grid((1, 1, 1)))
+    @test_throws ArgumentError combine_kpoint_grids(single, single, +, (10^7, 10^7, 10^7))
+end

@@ -84,8 +84,7 @@ end
 function gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, params, window_kq, nband; do_print=false)
     # Map k and q points to k+q points
     mpi_isroot() && println("Finding the list of k+q points")
-    kqpts = add_two_kpoint_grids(kpts, qpts, +, qpts.ngrid)
-    sort!(kqpts)
+    kqpts = combine_kpoint_grids(kpts, qpts, +, qpts.ngrid)
 
     println("MPI-k rank $(mpi_myrank(nothing)), Number of k   points = $(kpts.n)")
     println("MPI-k rank $(mpi_myrank(nothing)), Number of k+q points = $(kqpts.n)")

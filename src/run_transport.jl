@@ -93,11 +93,8 @@ using HDF5
         end
     end
 
-    qpts = add_two_kpoint_grids(kqpts, kpts, -, kqpts.ngrid)
-
-    # Move xq inside [-0.5, 0.5]^3. This doesn't change the Fourier transform but
-    # makes the long-range part more robust.
-    sort!(shift_center!(qpts, (0, 0, 0)))
+    # combine_kpoint_grids folds xq into [-0.5, 0.5)^3 and sorts the points.
+    qpts = combine_kpoint_grids(kqpts, kpts, -, kqpts.ngrid)
 
     if run_for_qme
         btedata_prefix = joinpath(folder, "btedata_coherence")
