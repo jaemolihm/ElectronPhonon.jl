@@ -323,6 +323,36 @@ end
     end
 end
 
+@testset "GPU compute_electron_states on the IBZ set (windowed)" begin
+    PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
+    if !GPU_AVAILABLE
+        @info "CUDA not available/functional — skipping GPU IBZ compute_electron_states test"
+    elseif !isdir(PB)
+        @info "Pb model data not found at $PB — skipping GPU IBZ compute_electron_states test"
+    else
+        model = ElectronPhonon.load_model_from_epw_new(PB, "temp", "pb"; epmat_outer_momentum="el")
+        ef = 11.682221647 * ElectronPhonon.unit_to_aru(:eV)
+        window = (ef - 0.3 * ElectronPhonon.unit_to_aru(:eV), ef + 0.3 * ElectronPhonon.unit_to_aru(:eV))
+        # The anisotropic-ME outer states are the IBZ k-points from filter_kpoints (cf. the R1 test);
+        # feed exactly that set to compute_electron_states and confirm the GPU eigensolve agrees with
+        # CPU. Eigenvalues and the in-window band range are gauge-independent and must match to
+        # eigenvalue precision. Eigenvectors (u_full) are NOT compared: the batched GPU eigensolve
+        # does not apply the per-k EPW degeneracy gauge-fixing, so within Pb's cubic-degenerate
+        # subspaces u_full differs by a (physically equivalent) unitary rotation — same caveat as the
+        # velocity test below and the g2 gauge note in the calculator-loop test.
+        kpts_ibz = filter_kpoints((24, 24, 24), model.nw, model.el_ham, window;
+            symmetry = model.symmetry, use_gpu = false)[1]
+        qv = ["eigenvalue", "eigenvector", "velocity", "position"]
+        els_c = ElectronPhonon.compute_electron_states(model, kpts_ibz, qv, window; fourier_mode="gridopt")
+        els_g = ElectronPhonon.compute_electron_states(model, kpts_ibz, qv, window; use_gpu=true)
+        @test length(els_g) == length(els_c) == kpts_ibz.n
+        demax = maximum(maximum(abs, els_c[ik].e_full .- els_g[ik].e_full) for ik in 1:kpts_ibz.n)
+        escale = maximum(maximum(abs, els_c[ik].e_full) for ik in 1:kpts_ibz.n)
+        @test demax < 1e-10 * escale
+        @test all(els_c[ik].rng == els_g[ik].rng for ik in 1:kpts_ibz.n)
+    end
+end
+
 @testset "compute_electron_states velocity (use_gpu)" begin
     PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
     if !GPU_AVAILABLE
