@@ -14,6 +14,7 @@ using LinearAlgebra
 export Symmetry
 export symmetry_operations
 export symmetry_is_subset
+export symmetry_small_group_of_q
 export symmetrize
 export symmetrize_array
 export symmetrize_array!
@@ -263,6 +264,19 @@ struct Symmetry{FT}
     time_reversal::Bool
 end
 
+"""
+    Symmetry(nsym, S, τ, Scart, τcart, is_inv, is_tr)
+Construct a `Symmetry`, deriving the `time_reversal` flag from the operations: it is `true`
+iff the operations form a grey group, i.e. every spatial operation `S` (`is_tr == false`) is
+accompanied by its time-reversal partner (`S`, `is_tr == true`).
+"""
+function Symmetry(nsym, S, τ, Scart, τcart, is_inv, is_tr)
+    spatial_S = Set(S[i] for i in 1:nsym if !is_tr[i])
+    tr_S = Set(S[i] for i in 1:nsym if is_tr[i])
+    time_reversal = spatial_S == tr_S
+    Symmetry(nsym, S, τ, Scart, τcart, is_inv, is_tr, time_reversal)
+end
+
 function Symmetry(Ss_, τs_, time_reversal, lattice_)
     # FIXME: Complicated magnetic symmetry operations not implemented. Only grey groups
     # (time_reversal = true) or colorless groups (time_reversal = false)
@@ -284,7 +298,7 @@ function Symmetry(Ss_, τs_, time_reversal, lattice_)
         append!(is_tr, [true for _ in 1:nsym])
         nsym *= 2
     end
-    Symmetry(nsym, Ss, τs, Scarts, τcarts, is_inv, is_tr, time_reversal)
+    Symmetry(nsym, Ss, τs, Scarts, τcarts, is_inv, is_tr)
 end
 
 function Base.show(io::IO, obj::Symmetry)
@@ -304,7 +318,7 @@ Base.keys(sym::Symmetry) = LinearIndices(1:sym.nsym)
 
 """Create symmetry object containing only identity"""
 function identity_symmetry(::Type{FT}=Float64) where FT
-    Symmetry(1, [Mat3{Int}(I)], [zeros(Vec3{FT})], [Mat3{FT}(I)], [zeros(Vec3{FT})], [false], [false], false)
+    Symmetry(1, [Mat3{Int}(I)], [zeros(Vec3{FT})], [Mat3{FT}(I)], [zeros(Vec3{FT})], [false], [false])
 end
 
 # Check whether sym1 is a subset of sym2
@@ -330,6 +344,45 @@ function check_group(symops)
         end
     end
     symops
+end
+
+"""
+    symmetry_small_group_of_q(symmetry::Symmetry, xq::Vec3; keep_trs=false, atol=sqrt(eps(Float64)))
+Find the small group (little group) of `xq`: the subgroup of `symmetry` whose operations
+satisfy `S * xq ≡ xq (mod G)`. The action of a symmetry operation on `xq` is
+`sxq = is_tr ? -S * xq : S * xq`.
+- `keep_trs`: if `true`, operations involving time reversal (`is_tr == true`) are considered
+  and may appear in the returned subgroup. If `false` (default), only spatial operations
+  (`is_tr == false`) are kept.
+- `atol`: tolerance for testing that `sxq - xq` is an integer (reciprocal lattice) vector.
+
+Returns `(small_symmetry::Symmetry, inds::Vector{Int})`, where `inds` are the indices of the
+kept operations into `symmetry`. The `time_reversal` flag of `small_symmetry` is derived by
+its constructor.
+"""
+function symmetry_small_group_of_q(symmetry::Symmetry, xq::Vec3; keep_trs=false, atol=sqrt(eps(Float64)))
+    inds = Int[]
+    for (isym, symop) in enumerate(symmetry)
+        # If keep_trs is false, skip symmetry involving time reversal (is_tr == true)
+        (!keep_trs && symop.is_tr) && continue
+
+        sxq = apply_symop(symop, xq, :momentum)
+        Δxq = sxq - xq
+        if isapprox(Δxq, round.(Δxq); atol)
+            push!(inds, isym)
+        end
+    end
+
+    small_symmetry = Symmetry(
+        length(inds),
+        symmetry.S[inds],
+        symmetry.τ[inds],
+        symmetry.Scart[inds],
+        symmetry.τcart[inds],
+        symmetry.is_inv[inds],
+        symmetry.is_tr[inds],
+    )
+    small_symmetry, inds
 end
 
 """

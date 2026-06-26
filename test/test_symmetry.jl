@@ -68,6 +68,68 @@ using Test
     @test kpts.n == 20
 end
 
+@testset "small group of q" begin
+    # Silicon (diamond) structure: full cubic point group + time reversal.
+    lattice = 2.0 * [[0 1 1.];
+                     [1 0 1.];
+                     [1 1 0.]]
+    atoms = ["Si" => [ones(3)/8, -ones(3)/8]]
+    symmetry = symmetry_operations(lattice, atoms)
+    @test symmetry.nsym == 96
+
+    # Every kept op must map xq onto xq modulo a reciprocal lattice vector.
+    fixes_q(sym, xq) = all(sym) do s
+        sxq = s.is_tr ? -s.S * xq : s.S * xq
+        isapprox(sxq - xq, round.(sxq - xq); atol=sqrt(eps(Float64)))
+    end
+
+    # Γ point: the whole group is the little group.
+    xq = Vec3(0., 0., 0.)
+    small, inds = symmetry_small_group_of_q(symmetry, xq)
+    @test small.nsym == 48
+    @test small.time_reversal == false
+    @test all(.!small.is_tr)
+    small_tr, inds_tr = symmetry_small_group_of_q(symmetry, xq; keep_trs=true)
+    @test small_tr.nsym == 96
+    @test small_tr.time_reversal == true
+
+    # General low-symmetry q: only the identity survives without time reversal.
+    # With TR the little group is {(I, is_tr=false), (-I, is_tr=true)}, which contains
+    # a time-reversal op but is NOT a grey group, so time_reversal must be false.
+    xq = Vec3(0.13, 0.27, 0.41)
+    small, inds = symmetry_small_group_of_q(symmetry, xq)
+    @test small.nsym == 1
+    @test isone(small[1])
+    small_tr, inds_tr = symmetry_small_group_of_q(symmetry, xq; keep_trs=true)
+    @test small_tr.nsym == 2
+    @test any(small_tr.is_tr)
+    @test small_tr.time_reversal == false
+
+    # Zone-boundary (TRIM) q: requires the mod-G comparison (S*q = q - G with G ≠ 0).
+    # At a TRIM point the little group is a grey group, so time_reversal is true.
+    xq = Vec3(0.5, 0.0, 0.5)
+    small, inds = symmetry_small_group_of_q(symmetry, xq)
+    @test small.nsym == 16
+    small_tr, inds_tr = symmetry_small_group_of_q(symmetry, xq; keep_trs=true)
+    @test small_tr.nsym == 32
+    @test small_tr.time_reversal == true
+    # At least one kept op shifts q by a nonzero reciprocal lattice vector.
+    @test any(s -> !isapprox(s.is_tr ? -s.S * xq : s.S * xq, xq), small_tr)
+
+    # Returned indices are consistent and the result is a genuine subgroup.
+    for xq in (Vec3(0., 0., 0.), Vec3(0.5, 0., 0.5), Vec3(0.13, 0.27, 0.41))
+        for keep_trs in (false, true)
+            small, inds = symmetry_small_group_of_q(symmetry, xq; keep_trs)
+            @test small.S == symmetry.S[inds]
+            @test small.is_tr == symmetry.is_tr[inds]
+            @test fixes_q(small, xq)
+            @test symmetry_is_subset(small, symmetry)
+            ElectronPhonon.check_group(small)
+            keep_trs || @test all(.!small.is_tr)
+        end
+    end
+end
+
 @testset "symmetrize" begin
     Random.seed!(123)
 
