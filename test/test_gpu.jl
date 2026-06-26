@@ -290,6 +290,39 @@ end
     end
 end
 
+@testset "GPU filter_kpoints with symmetry (IBZ reduction × use_gpu)" begin
+    PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
+    if !GPU_AVAILABLE
+        @info "CUDA not available/functional — skipping GPU filter_kpoints symmetry test"
+    elseif !isdir(PB)
+        @info "Pb model data not found at $PB — skipping GPU filter_kpoints symmetry test"
+    else
+        model = ElectronPhonon.load_model_from_epw_new(PB, "temp", "pb"; epmat_outer_momentum="el")
+        # Fine-mesh Fermi level / 0.3 eV window, as in the anisotropic-ME (mp_mesh_k) pipeline.
+        ef = 11.682221647 * ElectronPhonon.unit_to_aru(:eV)
+        window = (ef - 0.3 * ElectronPhonon.unit_to_aru(:eV), ef + 0.3 * ElectronPhonon.unit_to_aru(:eV))
+        # In filter_kpoints, `symmetry` (IBZ reduction, in kpoints_grid) and `use_gpu` (batched
+        # eigensolve for the window test) are orthogonal: the IBZ k-set is built backend-independently,
+        # and use_gpu only changes how the band eigenvalues are computed. The window test is discrete
+        # (which bands fall inside), so it is robust to the ~1e-12 eigenvalue difference between the
+        # cuSOLVER and CPU eigensolvers ⇒ identical ik_keep / band range / nelec_below, hence an
+        # identical IBZ Kpoints object. (Eigenvectors / gauge are not involved here; cf. the g2
+        # gauge caveat in the calculator-loop test above.)
+        for nk in (12, 24)
+            rk, rbmin, rbmax, rnel = filter_kpoints((nk, nk, nk), model.nw, model.el_ham, window;
+                symmetry = model.symmetry, use_gpu = false)
+            gk, gbmin, gbmax, gnel = filter_kpoints((nk, nk, nk), model.nw, model.el_ham, window;
+                symmetry = model.symmetry, use_gpu = true)
+            @test gk.n == rk.n
+            @test gk.ngrid == rk.ngrid
+            @test gk.vectors == rk.vectors
+            @test gk.weights == rk.weights
+            @test (gbmin, gbmax) == (rbmin, rbmax)
+            @test gnel == rnel
+        end
+    end
+end
+
 @testset "compute_electron_states velocity (use_gpu)" begin
     PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
     if !GPU_AVAILABLE
