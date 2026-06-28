@@ -154,4 +154,53 @@ function ElectronPhonon.eph_apply_rotations!(ep_kq_all::CuArray{Complex{T},4}, g
     ep_kq_all
 end
 
+ElectronPhonon.device_free_bytes(::CuArray) = CUDA.available_memory()
+ElectronPhonon.device_synchronize(::CuArray) = CUDA.synchronize()
+
+# ---- device-resident scatter (calculator keeps g2/ωq on the device, no host streaming) --------
+#
+# One thread per (m,n,ν,j) entry: look up i = imap_i_col[n], f = imap_f[m, ikqs[j]]; if both
+# in-window, write the value straight into the flat device g2_out / ωq_out at the mode-fastest
+# linear slot. The target `lin` indices are unique across the whole run (distinct k → distinct i,
+# distinct k+q → distinct f), so the writes never collide — no atomics, no compaction. Removes the
+# per-chunk D2H + host scatter (the calculator's g2/ωq stay resident on the device).
+function _window_scatter_kernel!(g2_out, ωq_out, g2vals, imap_i_col, imap_f,
+                                 ikqs, ωq, nbandkq, nbandk, nm, nqc, n_i)
+    e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    N = nbandkq * nbandk * nm * nqc
+    e <= N || return
+    @inbounds begin
+        m = (e - 1) % nbandkq + 1
+        t = (e - 1) ÷ nbandkq
+        n = t % nbandk + 1
+        t2 = t ÷ nbandk
+        ν = t2 % nm + 1
+        j = t2 ÷ nm + 1
+        i = imap_i_col[n]
+        f = imap_f[m, ikqs[j]]
+        if i > 0 && f > 0
+            lin = ν + nm * (i - 1) + nm * n_i * (f - 1)
+            g2_out[lin] = g2vals[m, n, ν, j]
+            ωq_out[lin] = ωq[ν, j]
+        end
+    end
+    return
+end
+
+# Dispatch on the device-resident output arrays only: `g2vals` / `ωq` / `ikqs` / `imap_*` are
+# strided device VIEWS (e.g. `view(g2_dev, :,:,:,1:nqc)`, `view(imap_i_dev,:,ik)`), i.e. SubArrays
+# of CuArrays, not plain `CuArray`s — typing them `::CuArray` would miss this method. cudaconvert
+# handles the contiguous/strided views inside the kernel.
+function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, ωq_out::CuArray, g2vals,
+        imap_i_col, imap_f, ikqs, ωq,
+        nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, n_i::Int)
+    N = nbandkq * nbandk * nm * nqc
+    threads = 256
+    blocks = cld(N, threads)
+    @cuda threads=threads blocks=blocks _window_scatter_kernel!(
+        g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
+        nbandkq, nbandk, nm, nqc, n_i)
+    nothing
+end
+
 end # module

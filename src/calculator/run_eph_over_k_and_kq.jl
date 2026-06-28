@@ -782,6 +782,12 @@ function _loop_eph_over_k_and_kq_gpu(
             postprocess_calculator_inner!(calc; ik)
         end
     end # ik within tile
+
+    # Bound the host look-ahead to one k-tile: a device-resident calculator never D2H-syncs per k,
+    # so without this the host can race across all tiles, keeping every tile's RR->kR scratch +
+    # per-k transients live in the memory pool at once. Draining at each tile boundary caps the
+    # transient working set with negligible utilization cost. No-op on the CPU backend.
+    device_synchronize(epmat_dev.op_r)
     end # k tile
 
     put!(epdatas, epdata)

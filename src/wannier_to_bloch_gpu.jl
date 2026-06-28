@@ -11,6 +11,9 @@ export get_eph_kR_to_kq_batched!
 export eph_apply_rotations!
 export KRtoKQWorkspace
 export batched_gemm!
+export eph_window_scatter!
+export device_free_bytes
+export device_synchronize
 
 # Batched Wannier -> Bloch diagonalization over a whole k-grid.
 #
@@ -339,6 +342,52 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
     get_fourier_batched!(g, ep_ekpR_itp, qs)                           # (nw*nbandk*nmodes, nq)
     eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp; g2_out, ωq)
     ep_kq_all
+end
+
+"""
+    device_free_bytes(proto) -> Int
+
+Free memory (bytes) on the backend `proto` lives on, used to decide whether a large buffer fits
+on the device. Generic fallback returns `typemax(Int)` (host memory: assume it always fits — the
+caller's host allocation is governed by RAM, not this check). The CUDA extension returns
+`CUDA.available_memory()` for a `CuArray` proto.
+"""
+device_free_bytes(proto) = typemax(Int)
+
+"""
+    device_synchronize(proto)
+
+Block until queued device work on `proto`'s backend completes. Generic fallback is a no-op
+(host work is synchronous); the CUDA extension calls `CUDA.synchronize()`. Used to bound the
+host look-ahead in the GPU e-ph loop so per-tile scratch does not pile up in the memory pool.
+"""
+device_synchronize(proto) = nothing
+
+"""
+    eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
+                        nbandkq, nbandk, nm, nqc, n_i)
+
+Device-resident scatter for a calculator that keeps `g2`/`ωq` on the device (no per-chunk
+host streaming). For every `(m, n, ν, j)` entry of `g2vals` `(nbandkq, nbandk, nm, nqc)`, look
+up the state indices `i = imap_i_col[n]` and `f = imap_f[m, ikqs[j]]`; if both are in-window
+(`> 0`), write the value into the mode-fastest linear slot
+`lin = ν + nm·(i−1) + nm·n_i·(f−1)` of the flat `g2_out` / `ωq_out`
+(`ω = ωq[ν, j]`). The target `lin` indices are unique across the run (distinct k → distinct i,
+distinct k+q → distinct f), so the writes never collide (no atomics needed). Generic
+(CPU/fallback) method; the CUDA extension provides a one-kernel `CuArray` method.
+"""
+function eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
+                             nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, n_i::Int)
+    @inbounds for j in 1:nqc, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
+        i = imap_i_col[n]
+        f = imap_f[m, ikqs[j]]
+        if i > 0 && f > 0
+            lin = ν + nm * (i - 1) + nm * n_i * (f - 1)
+            g2_out[lin] = g2vals[m, n, ν, j]
+            ωq_out[lin] = ωq[ν, j]
+        end
+    end
+    nothing
 end
 
 """
