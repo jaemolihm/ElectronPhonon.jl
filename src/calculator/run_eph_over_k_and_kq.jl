@@ -34,6 +34,13 @@ function run_eph_over_k_and_kq(
     mpi_comm_k === nothing || error("mpi_comm_k not implemented")
     mpi_comm_q === nothing || error("mpi_comm_q not implemented")
 
+    # Symmetry (IBZ outer k) is supported on the GPU path, but only with directly-computed k+q
+    # (el_kq_from_unfolding = false): the IBZ reduction happens in the shared setup and the GPU loop
+    # is symmetry-agnostic (validated: filter/states/scatter match CPU). GPU unfolding of the k+q
+    # electron states is not implemented. Checked before setup so the unfolding branch is not entered.
+    (!use_gpu || symmetry === nothing || !el_kq_from_unfolding) || throw(ArgumentError(
+        "use_gpu supports symmetry only with el_kq_from_unfolding = false (GPU k+q unfolding not implemented)."))
+
     setup = _setup_eph_over_k_and_kq(model, kpts_input, kqpts_input;
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, symmetry, calculators, nchunks_threads,
@@ -505,7 +512,9 @@ function _loop_eph_over_k_and_kq_gpu(
     energy_conservation === (:None, 0.0) || throw(ArgumentError(
         "use_gpu supports only energy_conservation = (:None, 0.0)."))
     screening_params === nothing || throw(ArgumentError("use_gpu does not support screening_params."))
-    symmetry === nothing || throw(ArgumentError("use_gpu requires symmetry = nothing (full BZ)."))
+    # symmetry (IBZ outer k) is allowed: the reduction is done in the shared setup and this loop is
+    # symmetry-agnostic (only the no-op postprocess uses it). The dispatcher gates the unsupported
+    # el_kq_from_unfolding = true case. (`symmetry` is still accepted for postprocess_calculator!.)
 
     # Default (q_batch_size === nothing): process all k+q in a single chunk per k. Fewer, larger
     # kR->kq / calculator kernels — the GPU e-ph path is launch-bound for small nw/nmodes, so one
