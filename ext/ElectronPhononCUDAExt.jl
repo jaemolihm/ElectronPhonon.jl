@@ -54,8 +54,22 @@ ElectronPhonon.device_synchronize(::CuArray) = CUDA.synchronize()
 Eigenvalues `(nw, nk)` of a stack of Hermitian matrices `(nw, nw, nk)` in a single batched
 Jacobi eigensolve, on the device. Best suited to small `nw` (see module notes).
 """
+# cuSOLVER's `<t>heevjBatched` returns its workspace size as a 32-bit int; past ~2.1M batched
+# 4×4 solves that int overflows and the bufferSize query throws CUSOLVER_STATUS_INVALID_VALUE
+# (128³ = 2.097M k-points is the first grid that trips it). Chunk the batch under this so the
+# batched eigensolve works at any grid size. The split is exact — results are batch-position
+# independent — so all callers (filter, compute_states) are transparently covered.
+const HEEVJ_BATCH_MAX = 1 << 20   # 1,048,576; well under the ~2.1M overflow, 2 chunks at 128³
+
 function ElectronPhonon.eigvals_batched(Hk::CuArray{Complex{T},3}) where {T}
-    heevjBatched!('N', 'U', Hk)   # overwrites Hk (destroy-input contract; see the CPU method)
+    nw, _, nk = size(Hk)
+    # heevjBatched! overwrites Hk (destroy-input contract; see the CPU method).
+    nk <= HEEVJ_BATCH_MAX && return heevjBatched!('N', 'U', Hk)
+    W = similar(Hk, T, nw, nk)
+    for c in Iterators.partition(1:nk, HEEVJ_BATCH_MAX)
+        @views W[:, c] .= heevjBatched!('N', 'U', Hk[:, :, c])   # Hk[:,:,c] is already a fresh copy
+    end
+    W
 end
 
 """
@@ -65,8 +79,18 @@ Eigenvalues `(nw, nk)` and eigenvectors `(nw, nw, nk)` of a stack of Hermitian m
 single batched Jacobi eigensolve, on the device. Best suited to small `nw` (see module notes).
 """
 function ElectronPhonon.eigen_batched(Hk::CuArray{Complex{T},3}) where {T}
-    # heevjBatched!('V', ...) returns (E, U) with U being Hk overwritten with the eigenvectors.
-    heevjBatched!('V', 'U', Hk)
+    nw, _, nk = size(Hk)
+    # heevjBatched!('V', ...) returns (E, U) with U being Hk overwritten with the eigenvectors
+    # (destroy-input contract; see the CPU method).
+    nk <= HEEVJ_BATCH_MAX && return heevjBatched!('V', 'U', Hk)
+    W = similar(Hk, T, nw, nk)
+    V = similar(Hk, nw, nw, nk)
+    for c in Iterators.partition(1:nk, HEEVJ_BATCH_MAX)
+        Wc, Vc = heevjBatched!('V', 'U', Hk[:, :, c])            # Hk[:,:,c] is already a fresh copy
+        @views W[:, c] .= Wc
+        @views V[:, :, c] .= Vc
+    end
+    (W, V)
 end
 
 """
