@@ -64,7 +64,7 @@ Obtained k points are distributed over the MPI communicator mpi_comm.
 - `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
 - `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MPI.Comm; fourier_mode="gridopt", symmetry=nothing, shift=[0, 0, 0])
+function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MPI.Comm; fourier_mode="gridopt", symmetry=nothing, shift=(0, 0, 0), use_gpu=false)
     if symmetry !== nothing && (! all(shift .== 0))
         error("nonzero shift and symmetry incompatible (not implemented)")
     end
@@ -74,7 +74,7 @@ function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MP
     # If the window is trivial, return the whole grid
     window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
 
-    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode)
+    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, use_gpu)
 
     k_filtered = get_filtered_kpoints(kpoints, ik_keep)
 

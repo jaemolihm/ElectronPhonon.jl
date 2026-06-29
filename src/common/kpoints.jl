@@ -106,9 +106,12 @@ function kpoints_grid(ngrid, mpi_comm::Union{MPI.Comm, Nothing}=nothing; shift=(
             error("kpoints_grid with symmetry incompatible with shift")
         end
         if mpi_comm isa MPI.Comm
-            # Create the irreducible k points in the root. Then redistribute.
+            # Create the irreducible k points in the root. Then redistribute. Reduce the root's
+            # `GridKpoints` to a plain `Kpoints` first so every rank holds the same type for the
+            # collective `mpi_scatter` (which has a `Kpoints` method) and returns `Kpoints` — the
+            # same type the non-symmetry MPI branch (`kpoints_grid_range`) returns.
             kpoints = if mpi_isroot(mpi_comm)
-                kpoints_grid_symmetry(ngrid, symmetry; ignore_time_reversal)
+                Kpoints(kpoints_grid_symmetry(ngrid, symmetry; ignore_time_reversal))
             else
                 Kpoints{Float64}()
             end

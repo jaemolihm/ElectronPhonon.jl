@@ -31,8 +31,18 @@ function run_eph_over_k_and_kq(
         end
     end
 
-    mpi_comm_k === nothing || error("mpi_comm_k not implemented")
-    mpi_comm_q === nothing || error("mpi_comm_q not implemented")
+    # Outer-k MPI decomposition (multi-CPU/GPU): `mpi_comm_k` splits the OUTER k-points across ranks
+    # — each rank computes the e-ph coupling only for its k-slice, yielding a rank-local
+    # `calc.g2[:, i_local, :]` / `el_i`. k+q, the q-grid, and the phonon states stay FULL on every
+    # rank (so any k can scatter to any k+q). `filter_kpoints` does the split + load-balance in the
+    # shared `_setup`; the EliashbergCalculator is already rank-local; and the CPU and GPU inner
+    # loops are UNCHANGED (they iterate whatever `kpts` they are handed). The solver then decomposes
+    # over the matching outer states i (see MigdalEliashberg). q-decomposition (mpi_comm_q) is a
+    # separate, not-yet-implemented scheme. See GPU_PROGRESS.md "Multi-GPU / MPI".
+    mpi_comm_q === nothing || error("mpi_comm_q not implemented (use mpi_comm_k for outer-k decomposition)")
+    (mpi_comm_k === nothing || !el_kq_from_unfolding) || throw(ArgumentError(
+        "mpi_comm_k requires el_kq_from_unfolding = false (k+q stays full per rank; the unfolding " *
+        "path is not split-aware)."))
 
     # Symmetry (IBZ outer k) is supported on the GPU path, but only with directly-computed k+q
     # (el_kq_from_unfolding = false): the IBZ reduction happens in the shared setup and the GPU loop
