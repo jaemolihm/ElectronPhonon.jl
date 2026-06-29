@@ -233,4 +233,56 @@ function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, ωq_out::CuArray, g
     nothing
 end
 
+# ---- device-resident BTE scatter (GPUBoltzmannCalculator) -------------------------------------
+#
+# One thread per (m, n, j): look up the outer/inner states i, f; sum the shared per-mode physics
+# (`bte_scattering_increments` — the SAME function the CPU path calls) over the nm modes for each
+# temperature; atomic-add the scattering-out term into Sₒ (many (m,j) share an i) and write the
+# scattering-in term into Sᵢ (each (i,f) is hit by a unique thread across the whole run → no atomic).
+function _bte_window_scatter_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col, imap_f, ikqs,
+        e_i, e_f, wq, μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nm, nqc, nT, i0)
+    e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    N = nbandkq * nbandk * nqc
+    e <= N || return
+    @inbounds begin
+        m = (e - 1) % nbandkq + 1
+        t = (e - 1) ÷ nbandkq
+        n = t % nbandk + 1
+        j = t ÷ nbandk + 1
+        i = imap_i_col[n]
+        i > 0 || return
+        ikq = ikqs[j]
+        f = imap_f[m, ikq]
+        f > 0 || return
+        ek = e_i[i]; ekq = e_f[f]; wtq = wq[ikq]
+        il = i - i0
+        for iocc in 1:nT
+            μ = μs[iocc]; T = Ts[iocc]; η = ηs[iocc]
+            sₒ = zero(eltype(Sₒ_out)); sᵢ = sₒ
+            for ν in 1:nm
+                ωq = ωqmat[ν, j]
+                ωq < ω_cutoff && continue
+                so, si = ElectronPhonon.bte_scattering_increments(
+                    method, ek, ekq, ωq, g2vals[m, n, ν, j], wtq, μ, T, η)
+                sₒ += so; sᵢ += si
+            end
+            CUDA.@atomic Sₒ_out[i, iocc] += sₒ
+            Sᵢ_out[il, f, iocc] = sᵢ
+        end
+    end
+    return
+end
+
+function ElectronPhonon.bte_window_scatter!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
+        imap_i_col, imap_f, ikqs, e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
+        nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, nT::Int, ni_stride::Int; i0::Int = 0)
+    N = nbandkq * nbandk * nqc
+    threads = 256
+    blocks = cld(N, threads)
+    @cuda threads=threads blocks=blocks _bte_window_scatter_kernel!(
+        Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col, imap_f, ikqs, e_i, e_f, wq,
+        μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nm, nqc, nT, i0)
+    nothing
+end
+
 end # module

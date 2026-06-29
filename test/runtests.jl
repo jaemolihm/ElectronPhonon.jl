@@ -30,6 +30,7 @@ include("common_models_from_artifacts.jl")
     # Boltzmann routines
     include("boltzmann/test_hdf5.jl")
     include("boltzmann/test_QMEVector.jl")
+    include("boltzmann/test_gpu_boltzmann_calculator.jl")  # GPU BTE scatter; GPU part skips w/o CUDA
     # include("boltzmann/test_QMEModel.jl")
     # include("boltzmann/test_covariant_derivative.jl")
     # include("boltzmann/test_el_constant_rta.jl")

@@ -6,13 +6,32 @@ using Interpolations
 using Interpolations: WeightedArbIndex, coordslookup, value_weights, weightedindexes
 using Dictionaries
 
+# --- Unified state accessors (BTStates legacy + BandStates) ---------------------------------
+# The transport solvers below work on either the legacy `BTStates` (k-properties cached as
+# fields) or the newer `BandStates` (k-properties derived through `ik`). These accessors return
+# the per-state arrays for both; for `BTStates` they alias the stored fields (no copy, identical
+# numerics), for `BandStates` they materialize a dense length-n array (gather), so callers must
+# hoist them out of hot loops. `BTStates` will be deprecated once `BandStates` is everywhere.
+const BTorBandStates{FT} = Union{BTStates{FT}, BandStates{FT}}
+
+bt_velocities(el::BTStates) = el.vdiag
+bt_velocities(el::BandStates) = el.v
+bt_weights(el::BTStates) = el.k_weight
+bt_weights(el::BandStates) = state_weights(el)
+bt_xks(el::BTStates) = el.xks
+bt_xks(el::BandStates) = state_xks(el)
+bt_ngrid(el::BTStates) = el.ngrid
+bt_ngrid(el::BandStates) = el.kpts.ngrid
+
 """
-    occupation_to_conductivity(δf, el::BTStates, params)
-Compute electron conductivity using the occupation `δf`.
+    occupation_to_conductivity(δf, el, params)
+Compute electron conductivity using the occupation `δf`. Accepts `BTStates` or `BandStates`.
 """
-function occupation_to_conductivity(δf, el::BTStates, params)
+function occupation_to_conductivity(δf, el::BTorBandStates, params)
     @assert length(δf) == el.n
-    σ = mapreduce(i -> el.k_weight[i] .* (δf[i] * el.vdiag[i]'), +, 1:el.n)
+    w = bt_weights(el)
+    v = bt_velocities(el)
+    σ = mapreduce(i -> w[i] .* (δf[i] * v[i]'), +, 1:el.n)
     return σ * params.spin_degeneracy / params.volume
 end
 
@@ -118,7 +137,7 @@ Solve Boltzmann transport equation for electrons.
 scat_mat is a rectangular matrix, mapping states in `el_f` to states in `el_i`.
 δf[j] is the occupations for states `el_f` and is calculated by unfolding `δf_i`.
 """
-function solve_electron_bte(el_i::BTStates{FT}, el_f::BTStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; max_iter=100, rtol=1e-10, mixing = 1.0) where {FT}
+function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; max_iter=100, rtol=1e-10, mixing = 1.0) where {FT}
     output = (σ_serta = zeros(FT, 3, 3, length(params.Tlist)),
               σ = zeros(FT, 3, 3, length(params.Tlist)),
               δf_i_serta = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
@@ -127,11 +146,12 @@ function solve_electron_bte(el_i::BTStates{FT}, el_f::BTStates{FT}, scat_mat, in
     )
 
     map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
+    vdiag_i = bt_velocities(el_i)
 
     for iT in 1:length(params.Tlist)
         μ = params.μlist[iT]
         T = params.Tlist[iT]
-        δf_i_serta = @. -occ_fermion_derivative(el_i.e - μ, T) / inv_τ_i[:, iT] * el_i.vdiag
+        δf_i_serta = @. -occ_fermion_derivative(el_i.e - μ, T) / inv_τ_i[:, iT] * vdiag_i
         σ_serta = symmetrize(occupation_to_conductivity(δf_i_serta, el_i, params), symmetry)
 
         obs = δf -> symmetrize(occupation_to_conductivity(δf, el_i, params), symmetry)
@@ -158,17 +178,18 @@ Construct a sparse matrix that unfolds a vector field defined on `state` using `
 Assume the vector field is polar (i.e. not a pseudovector) and odd under time reversal.
 For the unfolded states, `indmap[(xk_int..., iband)] = i` holds.
 """
-function unfold_data_map(state::BTStates{FT}, symmetry) where {FT}
+function unfold_data_map(state::BTorBandStates{FT}, symmetry) where {FT}
     inds_i = Int[]
     inds_unfold = Int[]
     values = Mat3{FT}[]
 
     indmap = Dictionary{CI{4}, Int}()
-    ngrid = state.ngrid
+    ngrid = bt_ngrid(state)
+    xks = bt_xks(state)
     n_unfold = 0
     ndegen_unfold = Int[]
     for i in 1:state.n
-        xk = state.xks[i]
+        xk = xks[i]
         iband = state.iband[i]
         for (S, is_tr, Scart) in zip(symmetry.S, symmetry.is_tr, symmetry.Scart)
             Sk = is_tr ? -S * xk : S * xk
@@ -194,14 +215,15 @@ function unfold_data_map(state::BTStates{FT}, symmetry) where {FT}
     sparse(inds_unfold, inds_i, values), indmap
 end
 
-function unfold_data_map(state::BTStates{FT}, ::Nothing) where {FT}
+function unfold_data_map(state::BTorBandStates{FT}, ::Nothing) where {FT}
     # Special case where no symmetry is used. Unfolding matrix is identity.
     # One just needs to compute indmap.
     indmap = Dictionary{CI{4}, Int}()
-    ngrid = state.ngrid
+    ngrid = bt_ngrid(state)
+    xks = bt_xks(state)
     for i in 1:state.n
         # FIXME: using shift in xk
-        xk = state.xks[i]
+        xk = xks[i]
         xk_int = mod.(round.(Int, xk .* ngrid), ngrid)
         iband = state.iband[i]
         key = CI(xk_int.data..., iband)
@@ -218,16 +240,17 @@ polar (i.e. not a pseudovector) and even under time reversal.
 For vector fields ``f_i`` and ``f_f`` (defined on `el_i` and `el_f`, respectively),
 ``f_f = map_i_to_f * f_i`` holds.
 """
-function vector_field_unfold_and_interpolate_map(el_i::BTStates{FT}, el_f, symmetry) where FT
+function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f, symmetry) where FT
     map_unfold, indmap_unfold = unfold_data_map(el_i, symmetry)
 
-    ranges = map(n -> range(0, 1, length=n+1)[1:end-1], el_i.ngrid)
+    ranges = map(n -> range(0, 1, length=n+1)[1:end-1], bt_ngrid(el_i))
     inds_f = Int[]
     inds_unfold = Int[]
     weights_all = FT[]
 
+    xks_f = bt_xks(el_f)
     for i_f in 1:el_f.n
-        xk = el_f.xks[i_f]
+        xk = xks_f[i_f]
         iband = el_f.iband[i_f]
 
         indexes, weights = linear_interpolation_weights(ranges, xk.data)

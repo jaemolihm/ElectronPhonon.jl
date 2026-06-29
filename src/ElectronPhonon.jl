@@ -57,6 +57,8 @@ include("wfpt.jl")
 
 include("boltzmann/BTData.jl")
 include("boltzmann/BTStates.jl")
+include("boltzmann/band_states.jl")
+include("boltzmann/bte_scattering_core.jl")
 include("boltzmann/BTScatterings.jl")
 
 # Quantum master equation transport
@@ -99,6 +101,7 @@ include("calculator/run_eph_outer_k.jl")
 include("calculator/run_eph_over_k_and_kq.jl")
 include("calculator/eph_loop_buffers.jl")
 include("calculator/run_eph_outer_q.jl")
+include("boltzmann/gpu_boltzmann_calculator.jl")
 
 export ElectronOccupationParams
 

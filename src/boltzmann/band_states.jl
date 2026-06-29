@@ -1,0 +1,216 @@
+# BandStates: a set of single-particle states indexed by (k-point, band) — the electronic
+# (or phononic) states on which transport / Eliashberg kernels and Green's functions live.
+#
+# Designed to supersede `BTStates` (see STATES_REFACTOR.md). Differences, by design:
+#   * The k-grid is embedded as a `kpts::AbstractKpoints` (carrying vectors, weights, ngrid,
+#     and — for `GridKpoints` — the integer-grid hash). No more carrying `xks` + `ngrid`
+#     separately, and per-state weights are `kpts.weights[ik]` rather than a `k_weight` field.
+#   * A per-state k-index `ik` into `kpts` is stored (so the k-point of a state is known
+#     directly, never recovered via `xk_to_ik`). Pure k-properties (k-vector, weight) are
+#     NOT cached per-state — they are derived via `kpts.*[ik]`; only intrinsic per-state
+#     quantities (`e`, `v`) are stored as length-n arrays. Use `state_xks`/`state_weights`
+#     to materialize a dense length-n array on demand for a hot/GPU loop.
+#   * An eager `indmap` gives O(1) `(ik, iband) → state` reverse lookup (no O(n) scans).
+#   * A full iterator: `for st in states` yields a non-allocating per-state NamedTuple.
+#   * Generic over `Kpoints`/`GridKpoints`; only k-vector→state queries need the hash.
+#
+# Moved here from MigdalEliashberg.jl (which originally defined it) so transport and
+# superconductivity share one states type. The `ElectronPhonon.`-qualified references in the
+# original were dropped now that this lives in-package.
+
+export BandStates, state_index, state_weights, state_xks, electron_states_to_BandStates
+
+"""
+    BandStates{T, KT<:AbstractKpoints{T}}
+
+Single-particle states indexed by `(k-point, band)`, `i = 1…n`. Aligned per-state arrays
+`ik`, `iband`, `e`, (optionally `v`) all have length `n`; the k-grid `kpts` (its `vectors`,
+`weights`, `ngrid`) is shared. The same k-point repeats once per band.
+
+State `i` is `(kpts.vectors[ik[i]], iband[i])`, with energy `e[i]`, velocity `v[i]` (if `v`
+is non-empty), and BZ weight `kpts.weights[ik[i]]`. For phonons `iband` is the mode index.
+
+Pure k-properties (k-vector, weight) are derived through `ik` rather than cached per-state;
+`state_xks`/`state_weights` materialize a dense length-n array when a hot/GPU loop needs one.
+"""
+struct BandStates{T, KT <: AbstractKpoints{T}}
+    n::Int                  # number of states
+    nband::Int              # number of indexed bands (indmap stride)
+    nband_ignore::Int       # bands below the lowest indexed band (indmap offset)
+    kpts::KT                # k-grid: vectors, weights, ngrid (+ hash if GridKpoints)
+    ik::Vector{Int}         # per-state k index into kpts (k-vector/weight derived via this)
+    iband::Vector{Int}      # per-state band index (mode index for phonons)
+    e::Vector{T}            # per-state energy (intrinsic: depends on band + k)
+    v::Vector{Vec3{T}}      # per-state band velocity (intrinsic); empty if not computed
+    nstates_base::T         # occupied states per cell below the window (electron counting)
+    indmap::Vector{Int}     # flat (iband, ik) → state index; 0 where absent
+end
+
+function _build_indmap(n, nk, nband, nband_ignore, ik, iband)
+    indmap = zeros(Int, nband * nk)
+    @inbounds for i in 1:n
+        indmap[(ik[i] - 1) * nband + (iband[i] - nband_ignore)] = i
+    end
+    indmap
+end
+
+"""
+    BandStates(kpts, ik, iband, e; v, nstates_base)
+
+Primary constructor: `kpts` is the (shared) k-grid, `ik[i]` the k-index of state `i`,
+`iband[i]` its band, `e[i]` its energy. `v` (per-state velocity) defaults to empty.
+"""
+function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
+        iband::AbstractVector{<:Integer}, e::AbstractVector;
+        v::AbstractVector = Vec3{T}[], nstates_base = zero(T)) where {T}
+    n = length(ik)
+    n == length(iband) == length(e) || error("BandStates: ik, iband, e must have equal length")
+    (isempty(v) || length(v) == n) || error("BandStates: v must be empty or length n")
+    nband_ignore = minimum(iband) - 1
+    nband = maximum(iband) - nband_ignore
+    indmap = _build_indmap(n, kpts.n, nband, nband_ignore, ik, iband)
+    BandStates{T, typeof(kpts)}(n, nband, nband_ignore, kpts, collect(Int, ik),
+        collect(Int, iband), collect(T, e), collect(Vec3{T}, v),
+        T(nstates_base), indmap)
+end
+
+# Internal: dedup a per-state list of k-vectors into a unique k-grid + per-state k-index.
+function _dedup_kpoints(xks::Vector{Vec3{T}}, weight::AbstractVector,
+        ngrid::NTuple{3,Int}; as_grid = true) where {T}
+    seen = Dict{Vec3{T},Int}()
+    uxk = Vec3{T}[]
+    uw = T[]
+    ik = Vector{Int}(undef, length(xks))
+    for j in eachindex(xks)
+        ik[j] = get!(seen, xks[j]) do
+            push!(uxk, xks[j]); push!(uw, T(weight[j])); length(uxk)
+        end
+    end
+    kpts = Kpoints{T}(length(uxk), uxk, uw, ngrid)
+    (as_grid ? GridKpoints(kpts, ngrid) : kpts), ik
+end
+
+"""
+    BandStates(xks, iband, e, weight, ngrid; v, nstates_base, as_grid=true)
+
+Convenience constructor from per-state arrays (k-vectors with one entry per state). The
+distinct k-points are deduplicated into the embedded `kpts` (a `GridKpoints` by default),
+and the per-state weights are taken from each k-point's first occurrence.
+"""
+function BandStates(xks::Vector{Vec3{T}}, iband::AbstractVector{<:Integer},
+        e::AbstractVector, weight::AbstractVector, ngrid::NTuple{3,Int};
+        v::AbstractVector = Vec3{T}[], nstates_base = zero(T),
+        as_grid = true) where {T}
+    length(xks) == length(weight) || error("BandStates: xks and weight must have equal length")
+    kpts, ik = _dedup_kpoints(xks, weight, ngrid; as_grid)
+    BandStates(kpts, ik, iband, e; v, nstates_base)
+end
+
+"""
+    electron_states_to_BandStates(el_states, kpts, nstates_base=0) -> (BandStates, imap)
+
+Flatten a per-k vector of `ElectronState` onto `kpts` into a `BandStates`, storing the
+per-state k-index `ik` directly (no deduplication: `kpts` already holds the distinct
+k-points). `kpts` is promoted to a `GridKpoints` if it isn't one. Also returns
+`imap[ib, ik]` = state index, for scattering the e-ph coupling during the loop.
+
+This is the `BandStates` replacement for `electron_states_to_BTStates`.
+"""
+function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
+        kpts::AbstractKpoints{T}, nstates_base = zero(T)) where {T}
+    gkpts = kpts isa GridKpoints ? kpts : GridKpoints(kpts)
+    nk = length(el_states)
+    n = sum(el.nband for el in el_states)
+    iband_min = minimum(el.rng.start for el in el_states if el.nband > 0)
+    iband_max = maximum(el.rng.stop for el in el_states if el.nband > 0)
+    imap = OffsetArray(zeros(Int, iband_max - iband_min + 1, nk), iband_min:iband_max, :)
+
+    ik = zeros(Int, n)
+    iband = zeros(Int, n)
+    e = zeros(T, n)
+    v = zeros(Vec3{T}, n)
+    istate = 0
+    for jk in 1:nk
+        el = el_states[jk]
+        el.nband == 0 && continue
+        for ib in el.rng
+            istate += 1
+            ik[istate] = jk
+            iband[istate] = ib
+            e[istate] = el.e[ib]
+            v[istate] = el.vdiag[ib]
+            imap[ib, jk] = istate
+        end
+    end
+    BandStates(gkpts, ik, iband, e; v, nstates_base), imap
+end
+
+"""
+    find_unfolding_indices(el_i::BandStates, el_f::BandStates, symmetry) -> Vector{NTuple{2,Int}}
+
+For each inner (full-BZ) state `f`, find the outer (IBZ) state `i` and symmetry index `isym`
+such that `S_isym · k_i ≡ k_f` (mod reciprocal lattice) with the same band. Runs once at
+kernel assembly (not a hot loop). Errors if any inner state has no representative.
+`BandStates` replacement for the `BTStates` method (same semantics).
+"""
+function find_unfolding_indices(el_i::BandStates, el_f::BandStates, symmetry)
+    xks_i = state_xks(el_i)   # dense gather once (setup, not a hot loop)
+    xks_f = state_xks(el_f)
+    ind_and_isym = fill((0, 0), el_f.n)
+    for f in 1:el_f.n
+        xk_f = xks_f[f]
+        ib = el_f.iband[f]
+        found = false
+        for (isym, S) in enumerate(symmetry)
+            for j in 1:el_i.n
+                el_i.iband[j] == ib || continue
+                Sk = apply_symop(S, xks_i[j], :momentum)
+                dk = Sk - xk_f
+                if all(abs.(dk .- round.(dk)) .< 1e-6)
+                    ind_and_isym[f] = (j, isym)
+                    found = true
+                    break
+                end
+            end
+            found && break
+        end
+        found || error("find_unfolding_indices: no IBZ representative for inner state $f " *
+                       "(k = $xk_f, band = $ib)")
+    end
+    ind_and_isym
+end
+
+# --- iteration / indexing (non-allocating; only plain array indexing, no hash lookup) ---
+Base.length(s::BandStates) = s.n
+Base.firstindex(::BandStates) = 1
+Base.lastindex(s::BandStates) = s.n
+@inline Base.getindex(s::BandStates, i::Int) =
+    (; ik = s.ik[i], iband = s.iband[i], xk = s.kpts.vectors[s.ik[i]], e = s.e[i],
+       weight = s.kpts.weights[s.ik[i]])
+Base.iterate(s::BandStates, i::Int = 1) = i > s.n ? nothing : (s[i], i + 1)
+Base.eltype(::Type{<:BandStates{T}}) where {T} =
+    NamedTuple{(:ik, :iband, :xk, :e, :weight), Tuple{Int, Int, Vec3{T}, T, T}}
+
+"Per-state BZ weights, gathered from `kpts.weights` (dense length-`n` array)."
+state_weights(s::BandStates) = s.kpts.weights[s.ik]
+
+"Per-state k-vectors, gathered from `kpts.vectors` (dense length-`n` array)."
+state_xks(s::BandStates) = s.kpts.vectors[s.ik]
+
+"""
+    state_index(s, ik::Int, iband::Int) -> Int
+    state_index(s, xk, iband::Int) -> Int   # GridKpoints only (uses the k-grid hash)
+
+O(1) reverse lookup of the state index for `(ik, iband)`, or `0` if absent. The k-vector
+form resolves `ik = xk_to_ik(xk, s.kpts)` first and requires `kpts isa GridKpoints`.
+"""
+@inline function state_index(s::BandStates, ik::Int, iband::Int)
+    b = iband - s.nband_ignore
+    (1 <= b <= s.nband && 1 <= ik <= s.kpts.n) || return 0
+    @inbounds s.indmap[(ik - 1) * s.nband + b]
+end
+function state_index(s::BandStates{T, <:GridKpoints},
+        xk::Vec3, iband::Int) where {T}
+    ik = xk_to_ik(xk, s.kpts)
+    ik === nothing ? 0 : state_index(s, ik, iband)
+end
