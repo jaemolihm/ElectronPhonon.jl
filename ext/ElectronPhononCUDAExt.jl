@@ -67,7 +67,10 @@ function ElectronPhonon.eigvals_batched(Hk::CuArray{Complex{T},3}) where {T}
     nk <= HEEVJ_BATCH_MAX && return heevjBatched!('N', 'U', Hk)
     W = similar(Hk, T, nw, nk)
     for c in Iterators.partition(1:nk, HEEVJ_BATCH_MAX)
-        @views W[:, c] .= heevjBatched!('N', 'U', Hk[:, :, c])   # Hk[:,:,c] is already a fresh copy
+        # `Hk[:,:,c]` is a fresh getindex copy that heevjBatched! may overwrite — do NOT wrap the
+        # source in @views (a CuArray trailing-range view aliases Hk). `W[:,c] .=` is already an
+        # in-place broadcast assignment (dotview), so it needs no @views.
+        W[:, c] .= heevjBatched!('N', 'U', Hk[:, :, c])
     end
     W
 end
@@ -86,7 +89,7 @@ function ElectronPhonon.eigen_batched(Hk::CuArray{Complex{T},3}) where {T}
     W = similar(Hk, T, nw, nk)
     V = similar(Hk, nw, nw, nk)
     for c in Iterators.partition(1:nk, HEEVJ_BATCH_MAX)
-        Wc, Vc = heevjBatched!('V', 'U', Hk[:, :, c])            # Hk[:,:,c] is already a fresh copy
+        Wc, Vc = heevjBatched!('V', 'U', Hk[:, :, c])   # Hk[:,:,c]: fresh getindex copy ('V' overwrites it)
         @views W[:, c] .= Wc
         @views V[:, :, c] .= Vc
     end
