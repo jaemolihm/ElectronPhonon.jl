@@ -94,3 +94,13 @@ end
 function postprocess_calculator!(::AbstractCalculator; kwargs...)
     error("postprocess_calculator! has to be implemented")
 end
+
+# Optional per-outer-k-tile hooks for the batched GPU loop (`run_eph_over_k_and_kq`, use_gpu).
+# A *block-device-resident* calculator uses them to keep only ONE k-tile of its output on the
+# device (bounded memory): `setup_calculator_tile!` (re)points/zeros a tile-sized device buffer at
+# the start of each outer-k tile, `flush_calculator_tile!` copies it to the host at the tile's end.
+# Both are no-ops by default, so calculators that hold the whole output (resident or host-streamed)
+# ignore them. `proto` is a device array (the e-ph matrix backend) for the buffer allocation /
+# free-memory query; `kstart`/`kend` are the tile's outer-k index range.
+setup_calculator_tile!(::AbstractCalculator; kwargs...) = nothing
+flush_calculator_tile!(::AbstractCalculator; kwargs...) = nothing
