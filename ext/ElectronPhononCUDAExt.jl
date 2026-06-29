@@ -176,7 +176,7 @@ end
 # distinct k+q → distinct f), so the writes never collide — no atomics, no compaction. Removes the
 # per-chunk D2H + host scatter (the calculator's g2/ωq stay resident on the device).
 function _window_scatter_kernel!(g2_out, ωq_out, g2vals, imap_i_col, imap_f,
-                                 ikqs, ωq, nbandkq, nbandk, nm, nqc, n_i)
+                                 ikqs, ωq, nbandkq, nbandk, nm, nqc, ni_stride, i0)
     e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     N = nbandkq * nbandk * nm * nqc
     e <= N || return
@@ -190,7 +190,7 @@ function _window_scatter_kernel!(g2_out, ωq_out, g2vals, imap_i_col, imap_f,
         i = imap_i_col[n]
         f = imap_f[m, ikqs[j]]
         if i > 0 && f > 0
-            lin = ν + nm * (i - 1) + nm * n_i * (f - 1)
+            lin = ν + nm * (i - i0 - 1) + nm * ni_stride * (f - 1)
             g2_out[lin] = g2vals[m, n, ν, j]
             ωq_out[lin] = ωq[ν, j]
         end
@@ -204,13 +204,13 @@ end
 # handles the contiguous/strided views inside the kernel.
 function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, ωq_out::CuArray, g2vals,
         imap_i_col, imap_f, ikqs, ωq,
-        nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, n_i::Int)
+        nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, ni_stride::Int; i0::Int = 0)
     N = nbandkq * nbandk * nm * nqc
     threads = 256
     blocks = cld(N, threads)
     @cuda threads=threads blocks=blocks _window_scatter_kernel!(
         g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
-        nbandkq, nbandk, nm, nqc, n_i)
+        nbandkq, nbandk, nm, nqc, ni_stride, i0)
     nothing
 end
 
