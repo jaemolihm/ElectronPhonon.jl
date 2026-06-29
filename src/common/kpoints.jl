@@ -149,8 +149,12 @@ function kpoints_grid_range(ngrid::NTuple{3, Int}, rng::UnitRange{Int}, ::Type{F
         i = mod(div(ik-1 - k - j*nk3, nk2*nk3), nk1)
         push!(kvecs, Vec3{FT}(i/nk1, j/nk2, k/nk3) .+ shift)
     end
-    nk = length(kvecs)
-    Kpoints(nk, kvecs, fill(1/nk, (nk,)), (nk1, nk2, nk3))
+    # BZ weight is the grid fraction 1/prod(ngrid) per point — NOT 1/length(rng). They coincide for
+    # the full range (rng = 1:prod(ngrid)), but for an MPI sub-range each rank must still carry the
+    # global BZ fraction so the distributed Σ_k w_k = 1 (a per-range 1/length would over-count by the
+    # number of ranks). Only the sub-range (MPI) case changes; the full-grid/serial result is identical.
+    nrange = length(kvecs)
+    Kpoints(nrange, kvecs, fill(one(FT) / (nk1 * nk2 * nk3), nrange), (nk1, nk2, nk3))
 end
 
 "Filter kpoints using a Boolean vector ik_keep. Retern Kpoints object where
