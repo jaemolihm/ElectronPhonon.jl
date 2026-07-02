@@ -719,9 +719,12 @@ function _loop_eph_over_k_and_kq_gpu(
             # H2D copy of just the first nq_batch indices (5-arg contiguous copy — copying a host↔
             # device SubArray view instead would fall back to scalar indexing); the device gather
             # then reads only `view(iqs_batch_dev, rng_q)`, so the untouched tail is never used.
+            # `@inbounds`: bounds-checking a device INDEX ARRAY costs a Bool map+reduce kernel and
+            # a D2H round trip of the result per (k, batch); `iq` is already validated on the host
+            # (the guard above), so the device-side re-check is pure overhead.
             copyto!(iqs_batch_dev, 1, iqs_batch, 1, nq_batch)
-            @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, view(iqs_batch_dev, rng_q)]
-            @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, view(iqs_batch_dev, rng_q)]
+            @inbounds @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, view(iqs_batch_dev, rng_q)]
+            @inbounds @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, view(iqs_batch_dev, rng_q)]
             # k+q rotations: a contiguous slice of the prebuilt device stack (no copy).
             ukqs_used = view(ukqs_all_dev, :, :, qstart:qend)
 
