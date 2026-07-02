@@ -125,11 +125,20 @@ const _FUSED_ROT_MAX_NWNM = 24
 
 # g : (nw, nbandk, nmodes, nq) ; ukq : (nw, nbandkq, nq) ; uph : (nmodes, nmodes, nq)
 # ep : (nbandkq, nbandk, nmodes, nq) ; g2 / ωq optional (g2 : same as ep ; ωq : (nmodes, nq)).
+# One thread per (ibkq, ibk, q) — NOT per q: a per-q thread leaves the GPU idle at production
+# chunk sizes (nq ~ 2·10³–2·10⁴ threads is a handful of blocks on ~100 SMs; the (band², q) grid
+# is nbandkq·nbandk× larger). The scalar accumulation below is the previous per-q kernel body
+# verbatim (with the ibk/ibkq loops hoisted into the thread index), so results are bit-identical;
+# the redundant per-im re-read of g/ukq is L1-served (the kernel is occupancy-, not flop-bound).
 function _fused_eph_rot_kernel!(ep, g2, g, ukq, uph, ωq, nw, nbkq, nbk, nm, nq)
-    q = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    q <= nq || return
-    @inbounds for ibk in 1:nbk, im in 1:nm
-        for ibkq in 1:nbkq
+    t = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    t <= nbkq * nbk * nq || return
+    @inbounds begin
+        ibkq = (t - 1) % nbkq + 1
+        r = (t - 1) ÷ nbkq
+        ibk = r % nbk + 1
+        q = r ÷ nbk + 1
+        for im in 1:nm
             acc = zero(eltype(ep))
             for jm in 1:nm
                 tval = zero(eltype(ep))
@@ -157,8 +166,8 @@ function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},
     nw = size(ukqs, 1)
     if nw * nmodes <= _FUSED_ROT_MAX_NWNM
         g4 = reshape(g, nw, nbandk, nmodes, nq)
-        threads = 128
-        blocks = cld(nq, threads)
+        threads = 256
+        blocks = cld(nbandkq * nbandk * nq, threads)
         @cuda threads=threads blocks=blocks _fused_eph_rot_kernel!(
             ep_kq_all, g2_out, g4, ukqs, u_phs, ωq, nw, nbandkq, nbandk, nmodes, nq)
     else
