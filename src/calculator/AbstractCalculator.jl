@@ -62,7 +62,7 @@ opts out, so calculators keep using the host `run_calculator!` path.
 allow_eph_batched(::AbstractCalculator) = false
 
 """
-    run_calculator_batched!(calc, ep_kq, ωq, ik, ikqs; kwargs...)
+    run_calculator_batched!(calc, ep_kq, ωq, ik, ikqs; g2=nothing, nbk0=0, kwargs...)
 
 Batched hook invoked by `run_eph_over_k_and_kq` when `use_gpu = true`. That loop is an outer-k
 loop with the inner k+q points batched, so this is called once per outer k-point `ik` with all
@@ -74,10 +74,13 @@ the e-ph matrix for the list of k+q points:
 - `ikqs`  :: the `nq` k+q point indices of this batch (so the calculator can address its inner
   states).
 
-Keyword argument:
-- `g2` :: same shape as `ep_kq` — the loop passes `g2 = |ep|²/(2ω)` already formed (the GPU path
+Keyword arguments:
+- `g2`   :: same shape as `ep_kq` — the loop passes `g2 = |ep|²/(2ω)` already formed (the GPU path
   folds it into the rotation kernel for free), so a calculator that needs `g2` should use this
   rather than recomputing it from `ep_kq`.
+- `nbk0` :: k-side window-projection band offset — `ep_kq`'s band-of-k axis `n` corresponds to
+  PHYSICAL band `nbk0 + n` (the loop rotates only an `nbandk`-wide contiguous eigenvector window
+  around the in-window bands; 0 for full-band runs).
 
 Runs on the backend of `ep_kq` (CPU or GPU); implementations should stay backend-generic
 (`similar`, `copyto!`, broadcasting, scatter assignment) so no CUDA dependency leaks into the
