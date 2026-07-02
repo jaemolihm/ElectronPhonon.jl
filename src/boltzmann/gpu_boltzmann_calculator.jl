@@ -260,12 +260,16 @@ function ElectronPhonon.flush_calculator_outer_batch!(calc::GPUBoltzmannCalculat
 end
 
 function ElectronPhonon.run_calculator_batched!(calc::GPUBoltzmannCalculator{FT},
-        ep_kq, ωq, ik, ikqs; g2=nothing) where {FT}
+        ep_kq, ωq, ik, ikqs; g2=nothing, ibandk_offset=0) where {FT}
     nbandkq, nbandk, nm, nqc = size(ep_kq)
     n_i, n_f, nT = calc.el_i.n, calc.el_f.n, length(calc.occ)
 
     if calc.imap_i_dev === nothing
-        calc.imap_i_dev = _imap_to_device_bte(ep_kq, calc.imap_el_i, nbandk)
+        # imap_i spans ALL physical bands (nphys = nw = nbandkq, the un-projected k+q band count):
+        # under the loop's k-side window projection the ep_kq band axis covers only nbandk bands
+        # starting at physical band ibandk_offset+1, addressed below by a shifted view (ibandk_offset+nbandk ≤ nw
+        # by construction). Full-band runs have ibandk_offset = 0, nbandk = nw — identical to before.
+        calc.imap_i_dev = _imap_to_device_bte(ep_kq, calc.imap_el_i, nbandkq)
         calc.imap_f_dev = _imap_to_device_bte(ep_kq, calc.imap_el_f, nbandkq)
         calc.e_i_dev = copyto!(similar(ep_kq, FT, n_i), calc.el_i.e)
         calc.e_f_dev = copyto!(similar(ep_kq, FT, n_f), calc.el_f.e)
@@ -277,7 +281,8 @@ function ElectronPhonon.run_calculator_batched!(calc::GPUBoltzmannCalculator{FT}
     end
 
     g2vals = g2 === nothing ? abs2.(ep_kq) ./ (2 .* reshape(ωq, 1, 1, nm, nqc)) : g2
-    imap_i_col = view(calc.imap_i_dev, :, ik)
+    # Shifted by the k-side projection offset: ep_kq band n ↔ physical band ibandk_offset + n.
+    imap_i_col = view(calc.imap_i_dev, ibandk_offset+1:ibandk_offset+nbandk, ik)
 
     if calc.gpu_block
         ElectronPhonon.bte_window_scatter!(calc.Sₒ_dev, calc.Sᵢ_tile_dev, g2vals, ωq,
