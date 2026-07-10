@@ -14,6 +14,8 @@ the ``k``-path reference
 underlying the path-choices of `Brillouin.jl`, specifically for oA and mC Bravais types.
 The `kline_density` is given in number of ``k``-points per inverse bohrs (i.e.
 overall in units of length).
+`plot_xdata` also contains `kpts_by_label`, a `Dict` mapping each high-symmetry label
+(`String`) to its ``k`` point in crystal (fractional reciprocal) coordinates (`Vec3`).
 (Adapted from DFTK.jl)
 """
 function high_symmetry_kpath(model; kline_density=40, is_2d = false)
@@ -38,7 +40,10 @@ function kpath_truncate_to_2d(kpts, plot_xdata)
     nlabels = findlast(plot_xdata.xticks .<= plot_xdata.x[nk_2d])
 
     kpts = Kpoints(nk_2d, kpts.vectors[1:nk_2d], kpts.weights[1:nk_2d], kpts.ngrid)
-    plot_xdata = (; x = plot_xdata.x[1:nk_2d], xlabels = plot_xdata.xlabels[1:nlabels], xticks = plot_xdata.xticks[1:nlabels])
+    xlabels = plot_xdata.xlabels[1:nlabels]
+    kept = Set(String.(reduce(vcat, split.(xlabels, "|"))))
+    kpts_by_label = filter(p -> first(p) in kept, plot_xdata.kpts_by_label)
+    plot_xdata = (; x = plot_xdata.x[1:nk_2d], xlabels, xticks = plot_xdata.xticks[1:nlabels], kpts_by_label)
 
     (; kpts, plot_xdata)
 end
@@ -47,17 +52,22 @@ end
     get_band_plot_xdata(kinter)
 `kinter`` is in different branches (discontinuous k paths). Merge these into a single line,
 and set appropriate the xticks and xlabels.
+`kpts_by_label` maps each high-symmetry label (as a `String`) to its `k` point in crystal
+(fractional reciprocal) coordinates.
 """
 function get_band_plot_xdata(kinter)
     kinter_cart = Brillouin.cartesianize(kinter)
     xticks = Float64[]
     xlabels = String[]
+    kpts_by_label = Dict{String, Vec3{Float64}}()
     xs = Brillouin.cumdists.(kinter_cart.kpaths)
     xshift = zero(xs[1][1])
     for (ibranch, labels) in enumerate(kinter_cart.labels)
         xs[ibranch] .+= xshift
         for (ilab, x_idx) in enumerate(sort(collect(keys(labels))))
             label = labels[x_idx]
+            # kinter (not cartesianized) holds the k point in crystal coordinates.
+            kpts_by_label[String(label)] = Vec3{Float64}(kinter.kpaths[ibranch][x_idx])
             if ibranch > 1 && ilab == 1
                 # This branch is not continuous from the previous
                 xlabels[end] *= "|" * String(label)
@@ -70,7 +80,7 @@ function get_band_plot_xdata(kinter)
         xshift = xs[ibranch][end]
     end
     x = vcat(xs...)
-    (;x, xticks, xlabels)
+    (; x, xticks, xlabels, kpts_by_label)
 end
 
 

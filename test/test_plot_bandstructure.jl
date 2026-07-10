@@ -74,6 +74,13 @@ using PyPlot
     @test plot_xdata.xticks ≈ ref_xticks
     @test plot_xdata.xlabels == ref_xlabels
 
+    # kpts_by_label maps each high-symmetry label to its crystal-coordinate k point
+    @test Set(keys(plot_xdata.kpts_by_label)) == Set(["Γ", "X", "U", "K", "L", "W"])
+    @test plot_xdata.kpts_by_label["Γ"] ≈ [0.0, 0.0, 0.0]
+    for v in values(plot_xdata.kpts_by_label)
+        @test any(vk -> vk ≈ v, kpts.vectors)
+    end
+
     # Test whether plot_bandstructure runs
     out = plot_bandstructure(model, kline_density=10)
     @test out.fig isa PyPlot.Figure
