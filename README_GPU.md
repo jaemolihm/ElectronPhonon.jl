@@ -119,18 +119,18 @@ list-batched forms) live in `wannier_to_bloch_batched.jl` and pick CPU/GPU by th
 
 ### Calculator integration
 
-`run_eph_over_k_and_kq` gains a `use_gpu` keyword (with `q_batch_size` / `k_batch_size`) that
+`run_eph_over_k_and_kq` gains a `use_gpu` keyword (with `nq_batch_max` / `nk_batch_max`) that
 branches to a backend-generic `_loop_eph_over_k_and_kq_gpu`. The CPU loop and per-k/q CPU e-ph
-functions are unchanged. The GPU loop: `to_device(model.epmat)` once; processes a tile of
-outer-k with one list-batched `get_eph_RR_to_kR_batched!`; batches the inner `ikq` loop (chunked
-by `q_batch_size`) through one `get_eph_kR_to_kq_batched!`.
+functions are unchanged. The GPU loop: `to_device(model.epmat)` once; processes a batch of
+outer-k with one list-batched `get_eph_RR_to_kR_batched!`; batches the inner `ikq` loop (in
+batches of `nq_batch_max`) through one `get_eph_kR_to_kq_batched!`.
 
 A calculator can opt into a **device-native hook** so the e-ph matrix for a whole `(k, {k+q})`
-chunk stays on the device and the reduction/scatter happens there:
+batch stays on the device and the reduction/scatter happens there:
 
 - **To run on the GPU, a calculator must (1) define `allow_eph_batched(calc) = true` and (2)
   implement `run_calculator_batched!(calc, ep_kq, ωq, ik, ikqs)`.** The GPU path is batched-only:
-  the loop keeps `ep_kq` on the device and calls the batched hook once per chunk. A calculator that
+  the loop keeps `ep_kq` on the device and calls the batched hook once per batch. A calculator that
   does not opt in is rejected with an error — there is no silent fallback to the per-`(k,q)` host
   path.
 - A calculator can implement this backend-generically (only `similar`/`copyto!`/broadcast/
@@ -167,7 +167,7 @@ is needed.
   the whole `Model` on the device is *not* obviously right: `Model` is large, and one may want
   it resident on the CPU while only the calculation runs on the GPU.
 - **A memory-estimate helper (future).** A utility that reports the device memory a run needs
-  (given the model and `q_batch_size` / `k_batch_size`) would make it easier to pick chunk sizes
+  (given the model and `nq_batch_max` / `nk_batch_max`) would make it easier to pick batch sizes
   and to fail early instead of OOM-ing mid-run.
 - **Keep `el_kq_save` (k+q electron states) on the device (future).** The GPU loop already hoists
   every k+q eigenvector onto the device once (`ukqs_all_dev`); keeping the `el_kq_save` states
@@ -206,7 +206,7 @@ is needed.
 - `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`, `eigvals_batched`/
   `eigen_batched` (`heevjBatched!`), `batched_gemm!` (`gemm_strided_batched!`), and the fused
   rotation / window-scatter kernels.
-- `src/calculator/run_eph_over_k_and_kq.jl` — `use_gpu` / `q_batch_size` / `k_batch_size`
+- `src/calculator/run_eph_over_k_and_kq.jl` — `use_gpu` / `nq_batch_max` / `nk_batch_max`
   keywords; backend-generic `_loop_eph_over_k_and_kq_gpu` and the device-native calculator hook.
   CPU path unchanged.
 - `benchmark/bench_el_eigen_gpu.jl`, `benchmark/bench_eph_gpu.jl`,

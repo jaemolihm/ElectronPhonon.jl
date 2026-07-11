@@ -177,8 +177,8 @@ end
     end
 end
 
-# Partial final q-chunk: the GPU loop runs a chunk narrower than the preallocated `q_batch_size`
-# by passing contiguous device VIEWS (`view(buf, :,:,:, 1:nq_chunk)`) into
+# Partial final q-batch: the GPU loop runs a batch narrower than the preallocated `nq_batch_max`
+# by passing contiguous device VIEWS (`view(buf, :,:,:, 1:nq_batch)`) into
 # `get_eph_kR_to_kq_batched!` and reusing the max-width workspace. This checks that path directly:
 # the sliced-view result must match the full-width result, through BOTH `eph_apply_rotations!`
 # branches — the fused kernel (`nw*nmodes ≤ _FUSED_ROT_MAX_NWNM`) and the cuBLAS
@@ -203,9 +203,9 @@ function check_eph_partial_view(nw, nmodes; rtol)
     @test isapprox(Array(view(part, :, :, :, 1:m)), Array(view(full, :, :, :, 1:m)); rtol)
 end
 
-@testset "GPU partial q-chunk (views into max-width buffers)" begin
+@testset "GPU partial q-batch (views into max-width buffers)" begin
     if !GPU_AVAILABLE
-        @info "CUDA not available/functional — skipping GPU partial-chunk test"
+        @info "CUDA not available/functional — skipping GPU partial-batch test"
     else
         check_eph_partial_view(3, 4; rtol=1e-9)   # nw*nmodes = 12 ≤ 24 → fused kernel path
         check_eph_partial_view(6, 6; rtol=1e-9)   # nw*nmodes = 36 > 24 → cuBLAS strided path
@@ -242,7 +242,7 @@ function ElectronPhonon.run_calculator!(c::_RecordCalc, epdata, ik, iq, ikq; kwa
 end
 
 # Device-native counterpart of `_RecordCalc`: opts into the batched hook so the GPU loop keeps
-# the e-ph matrix on the device and calls `run_calculator_batched!` once per (k, chunk). It
+# the e-ph matrix on the device and calls `run_calculator_batched!` once per (k, batch). It
 # records the same `g2 = |ep|²/2ω` and ωq as `_RecordCalc`, exercising the loop's device-native
 # branch (allow_eph_batched, ωq/ikqs staging, on-device g2) without MigdalEliashberg.
 mutable struct _RecordCalcBatched <: ElectronPhonon.AbstractCalculator
@@ -310,20 +310,20 @@ end
         # Phonon frequencies are gauge-independent → must match the CPU path (eigenvalue precision).
         @test maximum(abs, cc.ωq .- cg.ωq) < 1e-6 * maximum(abs, cc.ωq)
 
-        # GPU bit-faithfulness (shared gauge): chunked q-batches (q_batch_size=7 → partial final
-        # chunk) must reproduce the single-batch GPU result exactly.
+        # GPU bit-faithfulness (shared gauge): multiple q-batches (nq_batch_max=7 → partial final
+        # batch) must reproduce the single-batch GPU result exactly.
         cg7 = _RecordCalcBatched()
         ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
-            calculators=[cg7], symmetry=nothing, use_gpu=true, q_batch_size=7, progress_print_step=10^9)
+            calculators=[cg7], symmetry=nothing, use_gpu=true, nq_batch_max=7, progress_print_step=10^9)
         @test maximum(abs, cg.g2 .- cg7.g2) < 1e-9 * scale
         @test cg.ωq == cg7.ωq
 
-        # Outer-k tiling (k_batch_size=5 forces a partial final k-tile) must agree too,
-        # together with a partial q-chunk.
+        # Outer-k batching (nk_batch_max=5 forces a partial final k-batch) must agree too,
+        # together with a partial q-batch.
         cbk = _RecordCalcBatched()
         ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
             calculators=[cbk], symmetry=nothing, use_gpu=true,
-            k_batch_size=5, q_batch_size=7, progress_print_step=10^9)
+            nk_batch_max=5, nq_batch_max=7, progress_print_step=10^9)
         @test maximum(abs, cg.g2 .- cbk.g2) < 1e-9 * scale
 
         # Fully-GPU policy: a non-batched calculator (no allow_eph_batched) must be rejected, not

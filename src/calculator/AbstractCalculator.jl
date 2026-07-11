@@ -54,8 +54,8 @@ end
 
 Whether the calculator implements the batched device hook [`run_calculator_batched!`] used by
 the GPU loop (`run_eph_over_k_and_kq` with `use_gpu = true`). When every calculator in a run
-returns `true`, the GPU loop keeps the e-ph matrix for a whole `(k, {k+q})` chunk on the
-device and calls `run_calculator_batched!` once per chunk — skipping the per-`(k,q)` host
+returns `true`, the GPU loop keeps the e-ph matrix for a whole `(k, {k+q})` batch on the
+device and calls `run_calculator_batched!` once per batch — skipping the per-`(k,q)` host
 `run_calculator!` callback and the device→host copy of the complex e-ph matrix. The default
 opts out, so calculators keep using the host `run_calculator!` path.
 """
@@ -69,9 +69,9 @@ loop with the inner k+q points batched, so this is called once per outer k-point
 of that k's k+q points at once (the outer-q loop `run_eph_outer_q` has no batched hook). Consume
 the e-ph matrix for the list of k+q points:
 - `ep_kq` :: `(nbandkq, nbandk, nmodes, nq)` — eigenbasis e-ph matrix (the raw matrix elements).
-- `ωq`    :: `(nmodes, nq)` — phonon frequencies for each q in the chunk.
+- `ωq`    :: `(nmodes, nq)` — phonon frequencies for each q in the batch.
 - `ik`    :: outer k-point index.
-- `ikqs`  :: the `nq` k+q point indices of this chunk (so the calculator can address its inner
+- `ikqs`  :: the `nq` k+q point indices of this batch (so the calculator can address its inner
   states).
 
 Keyword argument:
@@ -95,14 +95,14 @@ function postprocess_calculator!(::AbstractCalculator; kwargs...)
     error("postprocess_calculator! has to be implemented")
 end
 
-# Optional per-tile hooks for the batched GPU loop (`run_eph_over_k_and_kq`, use_gpu). That loop
-# processes the outer-k points in consecutive TILES of `k_batch_size` points (one batched
-# interpolation per tile). These hooks let a calculator bound its device memory: rather than hold
-# output for all outer-k states at once (device memory ∝ grid size), a *block-device-resident*
-# calculator keeps only the CURRENT tile's output on the device and copies it to the host each tile.
-# `setup_calculator_tile!` (re)points/zeros the tile-sized device buffer at the start of a tile;
-# `flush_calculator_tile!` copies it to the host at the tile's end. Both are no-ops by default — a
-# calculator that holds its whole output ignores them. `proto` is a device array (the e-ph matrix
-# backend) for buffer allocation / free-memory queries; `kstart`/`kend` are the tile's outer-k range.
-setup_calculator_tile!(::AbstractCalculator; kwargs...) = nothing
-flush_calculator_tile!(::AbstractCalculator; kwargs...) = nothing
+# Optional per-outer-batch hooks for the batched GPU loop (`run_eph_over_k_and_kq`, use_gpu). That
+# loop processes the outer-k points in consecutive BATCHES of `nk_batch_max` points (one batched
+# interpolation per batch). These hooks let a calculator bound its device memory: rather than hold
+# output for all outer-k states at once (device memory ∝ grid size), an *outer-batch-resident*
+# calculator keeps only the CURRENT batch's output on the device and copies it to the host each batch.
+# `setup_calculator_outer_batch!` (re)points/zeros the batch-sized device buffer at the start of a
+# batch; `flush_calculator_outer_batch!` copies it to the host at the batch's end. Both are no-ops by
+# default — a calculator that holds its whole output ignores them. `proto` is a device array (the e-ph
+# matrix backend) for buffer allocation / free-memory queries; `kstart`/`kend` are the batch's outer-k range.
+setup_calculator_outer_batch!(::AbstractCalculator; kwargs...) = nothing
+flush_calculator_outer_batch!(::AbstractCalculator; kwargs...) = nothing
