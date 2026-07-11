@@ -96,11 +96,10 @@ end
 # TODO: this solves all kpts.n k-points in one batch — the device H(k)/U stacks (nw²·nk) are not
 # bounded, so a very large k-grid can OOM. Chunk over k like `_filter_kpoints` (which caps the
 # per-chunk stack) if that becomes a problem.
-# NOTE: the batched solver does NOT apply the EPW
-# degeneracy gauge-fixing of the per-k get_el_eigen!, so for degenerate bands the eigenvectors
-# (and e-ph matrix elements / g2 for those band pairs) can differ from the CPU path by a unitary
-# rotation within the degenerate subspace — small numerical differences, most visible on COARSE k
-# grids; they shrink as the grid is refined and BZ-summed results converge.
+# NOTE: the batched solver does NOT apply the EPW degeneracy gauge-fixing of the per-k
+# get_el_eigen!, so for degenerate bands the eigenvectors (and per-band-pair e-ph matrix elements /
+# g2) can differ from the CPU path by a unitary rotation within the degenerate subspace. Gauge-
+# independent quantities (eigenvalues, ωq, BZ-summed observables) are unaffected.
 function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantities, window) where FT
     (; nw, el_velocity_mode) = model
     (; need_vfull, need_vdiag, need_position) = _electron_state_needs(model, quantities)

@@ -134,6 +134,9 @@ end
         @test sort(Array(E_gpu), dims=1) ≈ sort(E_ref, dims=1)
 
         # --- eigenvalues + eigenvectors ---
+        # TODO: the CPU `eigen_batched` / `get_el_eigen_batched` (eigenvector) path is only the
+        # generic reference the backend-generic design rests on and is not exercised here (only the
+        # GPU variant is). Add a CPU-side eigenvector reconstruction check (H ≈ U·diag(E)·U').
         Ev_gpu, U_gpu = get_el_eigen_batched(get_interpolator(obj_gpu; fourier_mode="batched"), kpts)
         @test sort(Array(Ev_gpu), dims=1) ≈ sort(E_ref, dims=1)
         # Eigenvectors are gauge-dependent, so check the gauge-invariant reconstruction

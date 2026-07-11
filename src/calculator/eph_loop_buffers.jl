@@ -13,7 +13,7 @@ Create once and pass via the `eph_buffers` keyword argument to `run_eph_outer_q`
 """
 struct EphOuterQLoopBuffers{FT, IT <: AbstractWannierInterpolator}
     epdatas::Channel{ElPhData{FT}}
-    ep_eRpq_obj::WannierObject{FT}
+    ep_eRpq_obj::HostWannierObject{FT}
     ep_eRpqs::Channel{AbstractWannierInterpolator{FT}}
     epmat::IT
     ham_threads::Union{Nothing, Channel{AbstractWannierInterpolator{FT}}}

@@ -231,6 +231,9 @@ function _compute_phase_batch!(obj::BatchedWannierInterpolator{T}, batch_start::
     # k-point matrix (3 × batch_len), built on the host then copied to the backend. For a CPU
     # parent this copy is a redundant host→host move, but it is what lets the same code feed a
     # GPU parent (host→device); CPU batching is rarely used, so this is not specialized away.
+    # TODO: `xkmat_host` and `xkmat` allocate a 3×batch_len host+device buffer on every call (once
+    # per k-tile / q-chunk in the hot GPU loop); hoist them into the interpolator's persistent
+    # buffers so this driver is allocation-free like the rest of `KRtoKQWorkspace`.
     xkmat_host = Matrix{T}(undef, 3, batch_len)
     for (ik_local, ik_global) in enumerate(batch_start:batch_end)
         xkmat_host[:, ik_local] .= registered_kpoints[ik_global]

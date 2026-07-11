@@ -68,12 +68,16 @@ Batched hook invoked by `run_eph_over_k_and_kq` when `use_gpu = true`. That loop
 loop with the inner k+q points batched, so this is called once per outer k-point `ik` with all
 of that k's k+q points at once (the outer-q loop `run_eph_outer_q` has no batched hook). Consume
 the e-ph matrix for the list of k+q points:
-- `ep_kq` :: `(nbandkq, nbandk, nmodes, nq)` — eigenbasis e-ph matrix (the raw matrix elements,
-  *not* `g2`; the calculator forms `g2 = |ep|²/2ω` itself if it needs it).
+- `ep_kq` :: `(nbandkq, nbandk, nmodes, nq)` — eigenbasis e-ph matrix (the raw matrix elements).
 - `ωq`    :: `(nmodes, nq)` — phonon frequencies for each q in the chunk.
 - `ik`    :: outer k-point index.
 - `ikqs`  :: the `nq` k+q point indices of this chunk (so the calculator can address its inner
   states).
+
+Keyword argument:
+- `g2` :: same shape as `ep_kq` — the loop passes `g2 = |ep|²/(2ω)` already formed (the GPU path
+  folds it into the rotation kernel for free), so a calculator that needs `g2` should use this
+  rather than recomputing it from `ep_kq`.
 
 Runs on the backend of `ep_kq` (CPU or GPU); implementations should stay backend-generic
 (`similar`, `copyto!`, broadcasting, scatter assignment) so no CUDA dependency leaks into the

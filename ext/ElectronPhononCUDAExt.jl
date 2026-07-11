@@ -18,23 +18,16 @@ using CUDA.CUSOLVER: heevjBatched!
 using CUDA.CUBLAS: gemm_strided_batched!
 
 # Notes on `heevjBatched!` (cuSOLVER batched Jacobi eigensolver, `cusolverDn<t>heevjBatched`):
-#   - It is *tuned* for small matrices (the often-quoted "n ≤ 32" is a performance figure,
-#     not a correctness bound). Verified on cuSOLVER 13.3: it solves correctly well past 32
-#     (tested to n=256, agreeing with LAPACK to ~1e-11); accuracy degrades gracefully with n.
-#   - Some older cuSOLVER versions returned CUSOLVER_STATUS_INVALID_VALUE for large n. We do
-#     not guard on size here — CUDA.jl/cuSOLVER raises its own error if a version cannot
-#     handle the requested size.
-#   - Being a Jacobi solver, it may differ from LAPACK at the level of `tol` (default
-#     `eps(T)`) for clustered/degenerate spectra.
-#   - EIGENVALUE vs EIGENVECTOR accuracy (ComplexF64/Float64 throughout — this is NOT a Float32
-#     effect): the Jacobi sweeps converge eigenVALUES to ~machine eps (measured heevj-vs-LAPACK
-#     2.9e-15 for the Pb Hamiltonian), but stop eigenVECTORS at the looser Jacobi tolerance —
-#     measured relative residual ‖H·u − u·e‖/‖H‖ ≈ 9e-9, vs LAPACK QR ~1e-15. So `eigvals_batched`
-#     (filter, eigenvalues only) is machine-precision, while `eigen_batched`'s eigenvectors carry a
-#     ~1e-8 floor that propagates into anything using them (e-ph matrix / g2, band velocities).
-#     Negligible for converged BZ-summed observables, but looser than the CPU path. To tighten it,
-#     lower the Jacobi tolerance / raise max-sweeps (cuSOLVER `cusolverDnXsyevjSetTolerance` /
-#     `SetMaxSweeps`, exposed via CUDA.jl's `heevjBatched!` info object) — not done here.
+#   - The often-quoted "n ≤ 32" is a performance figure, not a correctness bound; it solves
+#     correctly well past 32. We do not guard on size — cuSOLVER raises its own error if a
+#     particular version cannot handle the requested n.
+#   - EIGENVALUE vs EIGENVECTOR accuracy (ComplexF64/Float64 throughout — NOT a Float32 effect):
+#     the Jacobi sweeps converge eigenVALUES to ~machine eps but stop eigenVECTORS at the looser
+#     Jacobi tolerance (~1e-8 residual floor, vs LAPACK QR ~1e-15). So `eigvals_batched` (filter,
+#     eigenvalues only) is machine-precision, while `eigen_batched`'s eigenvectors carry that floor
+#     into anything using them (e-ph matrix / g2, band velocities) — negligible for converged
+#     BZ-summed observables, but looser than the CPU path. Tightenable via the cuSOLVER Jacobi
+#     tolerance / max-sweeps knobs; not done here.
 
 """
     to_device(obj::WannierObject{T, <:Array}) -> WannierObject

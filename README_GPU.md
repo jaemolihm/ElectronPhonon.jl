@@ -180,6 +180,13 @@ is needed.
 - **A QR-based batched eigensolve (future).** The batched eigensolve uses `CUSOLVER.heevjBatched!`
   (Jacobi). A QR-based `HEEV` (e.g. via cuSolverDx) may be faster/more accurate for the small
   matrices here; worth evaluating, but not in this PR.
+- **Parametrize `Model` over its `WannierObject` array type (future).** Widening `WannierObject`
+  to `WannierObject{T, AT}` turned `WannierObject{FT}` into a `UnionAll`, so `Model`'s Wannier
+  fields (`el_ham`, `el_pos`, …) are currently pinned to the concrete host type
+  `HostWannierObject{FT} = WannierObject{FT, Matrix{Complex{FT}}}` to stay type-stable. That
+  hard-codes host storage; if a device-resident `Model` is ever wanted, add a per-field (or a
+  shared) array-type parameter to `Model` instead of the host pin. Tied to the backend-as-a-type
+  item above.
 
 ## Conventions
 

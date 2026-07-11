@@ -37,6 +37,12 @@ Base.@kwdef mutable struct WannierObject{T, AT <: AbstractMatrix{Complex{T}}} <:
     _id::Int
 end
 
+# In-memory (host) `WannierObject`: `op_r` is a plain `Matrix`. `Model` stores only host
+# objects (device, e.g. `CuMatrix`-backed, objects are created transiently by `to_device` and
+# never stored back), so its fields use this concrete type to stay type-stable — the widened
+# `WannierObject{T, AT}` would otherwise leave them as an abstract `UnionAll`.
+const HostWannierObject{T} = WannierObject{T, Matrix{Complex{T}}}
+
 function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing, sort=false)
     nr = length(irvec)
 
