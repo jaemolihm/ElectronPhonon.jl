@@ -94,6 +94,7 @@ include("postprocess/plot_decay.jl")
 
 include("model_new.jl")
 include("calculator/AbstractCalculator.jl")
+include("calculator/calculator_utils.jl")
 include("calculator/run_eph_outer_k.jl")
 include("calculator/run_eph_over_k_and_kq.jl")
 include("calculator/eph_loop_buffers.jl")
