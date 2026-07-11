@@ -20,9 +20,8 @@ end
 # GPU method) must fail loudly rather than silently limp — forbid scalar indexing on the device.
 GPU_AVAILABLE && CUDA.allowscalar(false)
 
-# Path to the Pb EPW test model. Set EP_PB_TEST_DIR to point at a local copy; empty (the default)
-# skips the model-dependent GPU tests. Keeps machine-specific paths out of the repo.
-const PB = get(ENV, "EP_PB_TEST_DIR", "")
+# Pb EPW model comes from a downloaded test artifact (see test/Artifacts.toml).
+isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
 
 """
 Validate the batched e-ph drivers against the per-k/q reference (`get_eph_RR_to_kR!` /
@@ -264,10 +263,8 @@ end
 @testset "GPU calculator loop (run_eph_over_k_and_kq use_gpu)" begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU calculator-loop test"
-    elseif !isdir(PB)
-        @info "Pb model data not found at $PB — skipping GPU calculator-loop test"
     else
-        model = ElectronPhonon.load_model_from_epw_new(PB, "temp", "pb"; epmat_outer_momentum="el")
+        model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
         grid = (4, 4, 4)
 
         # NOTE on CPU-vs-GPU comparison: with use_gpu=true the SETUP eigensolve also runs on the
@@ -330,10 +327,8 @@ end
 @testset "GPU filter_kpoints with symmetry (IBZ reduction × use_gpu)" begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU filter_kpoints symmetry test"
-    elseif !isdir(PB)
-        @info "Pb model data not found at $PB — skipping GPU filter_kpoints symmetry test"
     else
-        model = ElectronPhonon.load_model_from_epw_new(PB, "temp", "pb"; epmat_outer_momentum="el")
+        model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
         # Fine-mesh Fermi level / 0.3 eV window, as in the anisotropic-ME (mp_mesh_k) pipeline.
         ef = 11.682221647 * ElectronPhonon.unit_to_aru(:eV)
         window = (ef - 0.3 * ElectronPhonon.unit_to_aru(:eV), ef + 0.3 * ElectronPhonon.unit_to_aru(:eV))
@@ -362,10 +357,8 @@ end
 @testset "GPU compute_electron_states on the IBZ set (windowed)" begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU IBZ compute_electron_states test"
-    elseif !isdir(PB)
-        @info "Pb model data not found at $PB — skipping GPU IBZ compute_electron_states test"
     else
-        model = ElectronPhonon.load_model_from_epw_new(PB, "temp", "pb"; epmat_outer_momentum="el")
+        model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
         ef = 11.682221647 * ElectronPhonon.unit_to_aru(:eV)
         window = (ef - 0.3 * ElectronPhonon.unit_to_aru(:eV), ef + 0.3 * ElectronPhonon.unit_to_aru(:eV))
         # The anisotropic-ME outer states are the IBZ k-points from filter_kpoints (cf. the R1 test);
@@ -391,10 +384,8 @@ end
 @testset "compute_electron_states velocity (use_gpu)" begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU compute_electron_states velocity test"
-    elseif !isdir(PB)
-        @info "Pb model data not found at $PB — skipping GPU compute_electron_states velocity test"
     else
-        model = ElectronPhonon.load_model_from_epw_new(PB, "temp", "pb"; epmat_outer_momentum="el")
+        model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
         kpts = ElectronPhonon.kpoints_grid((8, 8, 8))
         nk, nw = kpts.n, model.nw
         @assert model.el_velocity_mode === :BerryConnection  # Pb model_new
@@ -473,10 +464,8 @@ end
 @testset "compute_phonon_states velocity_diagonal (use_gpu)" begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU compute_phonon_states velocity test"
-    elseif !isdir(PB)
-        @info "Pb model data not found at $PB — skipping GPU compute_phonon_states velocity test"
     else
-        model = ElectronPhonon.load_model_from_epw_new(PB, "temp", "pb"; epmat_outer_momentum="el")
+        model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
         kpts = ElectronPhonon.kpoints_grid((8, 8, 8))
         nk, nm = kpts.n, model.nmodes
 
