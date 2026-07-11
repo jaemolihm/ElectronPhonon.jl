@@ -32,13 +32,11 @@ function run_eph_over_k_and_kq(
     end
 
     # Outer-k MPI decomposition (multi-CPU/GPU): `mpi_comm_k` splits the OUTER k-points across ranks
-    # — each rank computes the e-ph coupling only for its k-slice, yielding a rank-local
-    # `calc.g2[:, i_local, :]` / `el_i`. k+q, the q-grid, and the phonon states stay FULL on every
-    # rank (so any k can scatter to any k+q). `filter_kpoints` does the split + load-balance in the
-    # shared `_setup`; the EliashbergCalculator is already rank-local; and the CPU and GPU inner
-    # loops are UNCHANGED (they iterate whatever `kpts` they are handed). The solver then decomposes
-    # over the matching outer states i (see MigdalEliashberg). q-decomposition (mpi_comm_q) is a
-    # separate, not-yet-implemented scheme. See GPU_PROGRESS.md "Multi-GPU / MPI".
+    # — each rank computes the e-ph coupling for its k-slice only (rank-local `calc.g2` / `el_i`),
+    # while k+q, the q-grid, and the phonon states stay FULL per rank (so any k can scatter to any
+    # k+q). `filter_kpoints` does the split + load-balance in `_setup`; the CPU and GPU inner loops
+    # are unchanged (they iterate whatever `kpts` they receive). `mpi_comm_q` is a separate scheme,
+    # not yet implemented.
     mpi_comm_q === nothing || error("mpi_comm_q not implemented (use mpi_comm_k for outer-k decomposition)")
     (mpi_comm_k === nothing || !el_kq_from_unfolding) || throw(ArgumentError(
         "mpi_comm_k requires el_kq_from_unfolding = false (k+q stays full per rank; the unfolding " *
@@ -487,8 +485,10 @@ end
 #    * no polar / long-range terms (so ϵs = 1, no dipole correction)
 #    * full bands, no energy window  ->  nband == nw at every k / k+q (uniform batch shapes)
 #    * commensurate k / k+q grids (precompute_ph) so phonon states are precomputed
-#    * no covariant derivative of g, no screening, no symmetry/unfolding, single node (no MPI),
+#    * no covariant derivative of g, no screening, no el_kq_from_unfolding,
 #      and energy_conservation = (:None, 0.0)
+#  (IBZ outer-k symmetry and outer-k MPI decomposition ARE supported — both are handled upstream
+#   in the shared `_setup`, so this loop stays symmetry- and MPI-agnostic.)
 #
 #  Buffer reuse: device buffers are allocated once before the k loop and reused for every
 #  (k, q), so the loop itself allocates almost nothing.
