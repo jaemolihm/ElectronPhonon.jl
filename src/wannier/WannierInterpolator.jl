@@ -3,16 +3,9 @@ using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV
 export get_interpolator
 export get_interpolator_channel
 export get_fourier!
-export to_device
 
-"""
-    to_device(obj)
-Move a Wannier object / interpolator to a compute device (e.g. a GPU).
-Methods are provided by package extensions (e.g. `ElectronPhononCUDAExt` for CUDA).
-The base package defines no method, so calling this without the relevant extension
-loaded raises a `MethodError`.
-"""
-function to_device end
+# `to_device` is declared in common/utils.jl (a low-level generic operation); methods come from
+# package extensions such as ElectronPhononCUDAExt.
 
 abstract type AbstractWannierInterpolator{T} end
 Base.eltype(::Type{<:AbstractWannierInterpolator{T}}) where {T} = Complex{T}

@@ -1,6 +1,6 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: WannierObject, Vec3, get_eph_RR_to_kR!, get_eph_kR_to_kq!
+using ElectronPhonon: WannierObject, Vec3, get_eph_RR_to_kR!, get_eph_kR_to_kq!, to_device
 using LinearAlgebra
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU

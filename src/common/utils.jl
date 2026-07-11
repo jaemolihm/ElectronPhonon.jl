@@ -1,6 +1,15 @@
 # TODO: separate to smearing.jl and kpoints.jl
 using SpecialFunctions: erf, erfc
 
+"""
+    to_device(obj)
+Move an object (e.g. a Wannier object / interpolator) to a compute device such as a GPU.
+Methods are provided by package extensions (e.g. `ElectronPhononCUDAExt` for CUDA); the base
+package defines no method, so calling this without the relevant extension loaded raises a
+`MethodError`. Not exported (the name is generic); use `ElectronPhonon.to_device`.
+"""
+function to_device end
+
 # module Utils
 export occ_fermion
 export occ_fermion_derivative

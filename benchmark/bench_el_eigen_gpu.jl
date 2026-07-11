@@ -10,6 +10,7 @@
 #   julia --project=<env> benchmark/bench_el_eigen_gpu.jl
 
 using ElectronPhonon
+using ElectronPhonon: to_device
 using CUDA
 using LinearAlgebra
 using Printf

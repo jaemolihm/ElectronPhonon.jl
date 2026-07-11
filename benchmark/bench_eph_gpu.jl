@@ -12,7 +12,7 @@
 using ElectronPhonon
 using CUDA
 using LinearAlgebra
-using ElectronPhonon: WannierObject, Vec3
+using ElectronPhonon: WannierObject, Vec3, to_device
 using Printf
 
 const PB_FOLDER = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
