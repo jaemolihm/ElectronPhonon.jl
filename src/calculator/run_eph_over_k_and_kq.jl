@@ -621,7 +621,8 @@ function _loop_eph_over_k_and_kq_gpu(
     epdata = take!(epdatas)
 
     for kstart in 1:k_batch_size:nk
-        iks_batch = kstart:min(kstart + k_batch_size - 1, nk)
+        kend = min(kstart + k_batch_size - 1, nk)
+        iks_batch = kstart:kend
         nk_batch = length(iks_batch)
 
         # Stack U(k) and the k list for this outer-k tile (pad the partial tail with valid
@@ -644,7 +645,7 @@ function _loop_eph_over_k_and_kq_gpu(
         # Block-device-resident calculators (re)point/zero their per-tile device buffer here, before
         # this tile's scatters; no-op (default hooks) for calculators that hold their whole output.
         for calc in calculators
-            setup_calculator_tile!(calc; kstart, kend = last(iks_batch), proto = epmat_dev.op_r)
+            setup_calculator_tile!(calc; kstart, kend, proto = epmat_dev.op_r)
         end
 
     for (ik_ind, ik) in enumerate(iks_batch)
@@ -730,7 +731,7 @@ function _loop_eph_over_k_and_kq_gpu(
     # Block-device-resident calculators D2H this tile's device buffer into their host output here
     # (one contiguous copy per tile, not per k); no-op (default hooks) for full-resident calculators.
     for calc in calculators
-        flush_calculator_tile!(calc; kstart, kend = last(iks_batch))
+        flush_calculator_tile!(calc; kstart, kend)
     end
 
     # Bound the host look-ahead to one k-tile: a device-resident calculator never D2H-syncs per k,

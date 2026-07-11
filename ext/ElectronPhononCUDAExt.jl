@@ -54,25 +54,28 @@ ElectronPhonon.device_synchronize(::CuArray) = CUDA.synchronize()
 Eigenvalues `(nw, nk)` of a stack of Hermitian matrices `(nw, nw, nk)` in a single batched
 Jacobi eigensolve, on the device. Best suited to small `nw` (see module notes).
 """
-# cuSOLVER's `<t>heevjBatched` returns its workspace size as a 32-bit int; past ~2.1M batched
-# 4×4 solves that int overflows and the bufferSize query throws CUSOLVER_STATUS_INVALID_VALUE
-# (128³ = 2.097M k-points is the first grid that trips it). Chunk the batch under this so the
-# batched eigensolve works at any grid size. The split is exact — results are batch-position
-# independent — so all callers (filter, compute_states) are transparently covered.
-const HEEVJ_BATCH_MAX = 1 << 20   # 1,048,576; well under the ~2.1M overflow, 2 chunks at 128³
+# cuSOLVER's `<t>heevjBatched` returns its workspace size as a 32-bit int; the requirement grows as
+# batchSize·nw², so above a batch-size threshold the bufferSize query overflows and throws
+# CUSOLVER_STATUS_INVALID_VALUE (128³ = 2.097M k-points first trips it at nw=4). Cap the per-chunk
+# batch to keep batchSize·nw² under budget (2^20 is validated safe at nw=4, and is the hard cap for
+# small nw), then chunk above it. The split is exact — results are batch-position independent — so
+# all callers (filter, compute_states) are transparently covered.
+# TODO: switch to the 64-bit-workspace `XsyevBatched!` solver, which removes the need to chunk.
+heevj_batch_max(nw::Int) = min(2^20, 2^24 ÷ nw^2)   # 2^24 = 2^20·4²: the nw=4 budget
 
 function ElectronPhonon.eigvals_batched(Hk::CuArray{Complex{T},3}) where {T}
     nw, _, nk = size(Hk)
+    batch_max = heevj_batch_max(nw)
     # heevjBatched! overwrites Hk (destroy-input contract; see the CPU method).
-    nk <= HEEVJ_BATCH_MAX && return heevjBatched!('N', 'U', Hk)
-    W = similar(Hk, T, nw, nk)
-    for c in Iterators.partition(1:nk, HEEVJ_BATCH_MAX)
+    nk <= batch_max && return heevjBatched!('N', 'U', Hk)
+    E = similar(Hk, T, nw, nk)
+    for c in Iterators.partition(1:nk, batch_max)
         # `Hk[:,:,c]` is a fresh getindex copy that heevjBatched! may overwrite — do NOT wrap the
-        # source in @views (a CuArray trailing-range view aliases Hk). `W[:,c] .=` is already an
+        # source in @views (a CuArray trailing-range view aliases Hk). `E[:,c] .=` is already an
         # in-place broadcast assignment (dotview), so it needs no @views.
-        W[:, c] .= heevjBatched!('N', 'U', Hk[:, :, c])
+        E[:, c] .= heevjBatched!('N', 'U', Hk[:, :, c])
     end
-    W
+    E
 end
 
 """
@@ -83,17 +86,18 @@ single batched Jacobi eigensolve, on the device. Best suited to small `nw` (see 
 """
 function ElectronPhonon.eigen_batched(Hk::CuArray{Complex{T},3}) where {T}
     nw, _, nk = size(Hk)
+    batch_max = heevj_batch_max(nw)
     # heevjBatched!('V', ...) returns (E, U) with U being Hk overwritten with the eigenvectors
     # (destroy-input contract; see the CPU method).
-    nk <= HEEVJ_BATCH_MAX && return heevjBatched!('V', 'U', Hk)
-    W = similar(Hk, T, nw, nk)
-    V = similar(Hk, nw, nw, nk)
-    for c in Iterators.partition(1:nk, HEEVJ_BATCH_MAX)
-        Wc, Vc = heevjBatched!('V', 'U', Hk[:, :, c])   # Hk[:,:,c]: fresh getindex copy ('V' overwrites it)
-        @views W[:, c] .= Wc
-        @views V[:, :, c] .= Vc
+    nk <= batch_max && return heevjBatched!('V', 'U', Hk)
+    E = similar(Hk, T, nw, nk)
+    U = similar(Hk, nw, nw, nk)
+    for c in Iterators.partition(1:nk, batch_max)
+        Ec, Uc = heevjBatched!('V', 'U', Hk[:, :, c])   # Hk[:,:,c]: fresh getindex copy ('V' overwrites it)
+        E[:, c] .= Ec
+        U[:, :, c] .= Uc
     end
-    (W, V)
+    (E, U)
 end
 
 """
