@@ -141,16 +141,15 @@ function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantitie
                 @views el.u_full .= U[:, :, ik]
                 el.nband = 0; el.rng = 1:0
                 set_window!(el, window)
+                r = el.rng
                 if need_position
                     rbar_w = reshape(reinterpret(Complex{FT}, no_offset_view(el.rbar)), 3, el.nband, el.nband)
-                    r = el.rng
                     @views for idir in 1:3
                         rbar_w[idir, :, :] .= rbar[r, r, idir, ik]
                     end
                 end
                 if want_velocity
                     v_w = reshape(reinterpret(Complex{FT}, no_offset_view(el.v)), 3, el.nband, el.nband)
-                    r = el.rng
                     @views for idir in 1:3
                         v_w[idir, :, :] .= vel[r, r, idir, ik]
                     end

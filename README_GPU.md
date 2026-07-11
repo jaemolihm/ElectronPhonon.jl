@@ -11,9 +11,9 @@ On the GPU:
 
 - `get_fourier!` (normal and batched) — `src/wannier/WannierInterpolator.jl`,
   `src/wannier/batched_interpolator.jl`.
-- Batched band eigenvalues/eigenvectors — `src/wannier_to_bloch_gpu.jl`.
+- Batched band eigenvalues/eigenvectors — `src/wannier_to_bloch_batched.jl`.
 - e-ph interpolation `get_eph_RR_to_kR!` / `get_eph_kR_to_kq!` (per-k/q and list-batched
-  forms) — `src/wannier_to_bloch_gpu.jl`.
+  forms) — `src/wannier_to_bloch_batched.jl`.
 - The e-ph calculator loop `run_eph_over_k_and_kq` via a `use_gpu` branch, including a
   device-native calculator hook.
 
@@ -90,7 +90,7 @@ batching mechanism for CPU and GPU:
 
 ### Batched Hermitian eigensolve + band-eigenvalue drivers
 
-Diagonalization lives in `src/wannier_to_bloch_gpu.jl` (keeping `src/wannier/` pure Fourier).
+Diagonalization lives in `src/wannier_to_bloch_batched.jl` (keeping `src/wannier/` pure Fourier).
 Two batched eigensolves over a stack `Hk :: (nw, nw, nk)`: `eigvals_batched` (values) and
 `eigen_batched` (values + vectors). CPU methods loop over LAPACK `syev!`; the extension uses
 `CUSOLVER.heevjBatched!` (batched Jacobi). The `nw ≤ 32` figure often quoted for that solver is
@@ -114,7 +114,7 @@ This uses `batched_gemm!(transA, transB, A, B, C)` — a `mul!` loop on the CPU 
 `CUBLAS.gemm_strided_batched!` in the extension. This is the only e-ph-related extension code.
 
 All four drivers (`get_eph_RR_to_kR_batched!` / `get_eph_kR_to_kq_batched!`, each in single and
-list-batched forms) live in `wannier_to_bloch_gpu.jl` and pick CPU/GPU by the backend of
+list-batched forms) live in `wannier_to_bloch_batched.jl` and pick CPU/GPU by the backend of
 `parent.op_r`.
 
 ### Calculator integration
@@ -173,6 +173,9 @@ is needed.
   to allow huge `ngrid` with few points). A dedicated type for the common case — `ngrid` small
   enough that a `prod(ngrid)` array fits — could carry an `is_full` field and use a simple integer
   hash, replacing the special-casing here.
+- **A QR-based batched eigensolve (future).** The batched eigensolve uses `CUSOLVER.heevjBatched!`
+  (Jacobi). A QR-based `HEEV` (e.g. via cuSolverDx) may be faster/more accurate for the small
+  matrices here; worth evaluating, but not in this PR.
 
 ## Conventions
 
@@ -186,7 +189,7 @@ is needed.
 - `src/wannier/WannierInterpolator.jl` — declare/export `to_device`.
 - `src/wannier/batched_interpolator.jl` — backend-generic buffers + GEMM phase; new
   `get_fourier_batched!`. Per-k API unchanged. Pure Fourier only.
-- `src/wannier_to_bloch_gpu.jl` — **new**; `eigvals_batched`/`eigen_batched` (CPU), the
+- `src/wannier_to_bloch_batched.jl` — **new**; `eigvals_batched`/`eigen_batched` (CPU), the
   `get_el_eigen[_valueonly]_batched` and e-ph drivers (per-k/q and list-batched), and the
   `batched_gemm!` primitive. Included after `wannier_to_bloch.jl`. All backend-generic.
 - `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`, `eigvals_batched`/

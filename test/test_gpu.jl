@@ -1,6 +1,10 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: WannierObject, Vec3, get_eph_RR_to_kR!, get_eph_kR_to_kq!, to_device
+# Batched drivers / primitives are internal (unexported); import the ones the tests use.
+using ElectronPhonon: eigvals_batched, get_el_eigen_batched, get_el_eigen_valueonly_batched,
+    get_el_velocity_direct_batched, get_eph_RR_to_kR_batched!, get_eph_kR_to_kq_batched!,
+    eph_apply_rotations!, KRtoKQWorkspace, batched_gemm!
 using LinearAlgebra
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU

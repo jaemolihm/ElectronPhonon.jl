@@ -1,19 +1,8 @@
 using LinearAlgebra
 using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV, syev!
 
-export eigvals_batched
-export eigen_batched
-export get_el_eigen_batched
-export get_el_eigen_valueonly_batched
-export get_el_velocity_direct_batched
-export get_eph_RR_to_kR_batched!
-export get_eph_kR_to_kq_batched!
-export eph_apply_rotations!
-export KRtoKQWorkspace
-export batched_gemm!
-export eph_window_scatter!
-export device_free_bytes
-export device_synchronize
+# These are internal (used within the package and by the CUDA extension via `ElectronPhonon.`),
+# so nothing here is exported; tests import the specific names they use.
 
 # Batched Wannier -> Bloch diagonalization over a whole k-grid.
 #
@@ -30,7 +19,7 @@ export device_synchronize
 #  Batched Hermitian eigensolves (CPU methods; CUDA extension adds CuArray methods)
 
 """
-    eigvals_batched(Hk) -> W
+    eigvals_batched(Hk) -> E
 
 Eigenvalues of a stack of Hermitian matrices `Hk` of size `(nw, nw, nk)`, returned as
 `(nw, nk)`. CPU method loops over LAPACK `syev!`; the CUDA extension provides a batched
@@ -39,20 +28,20 @@ Eigenvalues of a stack of Hermitian matrices `Hk` of size `(nw, nw, nk)`, return
 function eigvals_batched(Hk::AbstractArray{Complex{T},3}) where {T}
     nw, n2, nk = size(Hk)
     @assert nw == n2
-    W = Matrix{T}(undef, nw, nk)
+    E = Matrix{T}(undef, nw, nk)
     ws = HermitianEigenWsSYEV{Complex{T},T}()
     A = Matrix{Complex{T}}(undef, nw, nw)
     @views for ik in 1:nk
         A .= Hk[:, :, ik]
-        W[:, ik] .= syev!(ws, 'N', 'U', A)[1]
+        E[:, ik] .= syev!(ws, 'N', 'U', A)[1]
     end
-    W
+    E
 end
 
 """
-    eigen_batched(Hk) -> (W, V)
+    eigen_batched(Hk) -> (E, U)
 
-Eigenvalues `W` `(nw, nk)` and eigenvectors `V` `(nw, nw, nk)` of a stack of Hermitian
+Eigenvalues `E` `(nw, nk)` and eigenvectors `U` `(nw, nw, nk)` of a stack of Hermitian
 matrices `Hk` of size `(nw, nw, nk)`. CPU method loops over LAPACK `syev!`; the CUDA
 extension provides a batched `heevjBatched!` method for `CuArray`s.
 
@@ -63,16 +52,16 @@ eigenvalues, and the eigen-decomposition, are unaffected).
 function eigen_batched(Hk::AbstractArray{Complex{T},3}) where {T}
     nw, n2, nk = size(Hk)
     @assert nw == n2
-    W = Matrix{T}(undef, nw, nk)
-    V = Array{Complex{T},3}(undef, nw, nw, nk)
+    E = Matrix{T}(undef, nw, nk)
+    U = Array{Complex{T},3}(undef, nw, nw, nk)
     ws = HermitianEigenWsSYEV{Complex{T},T}()
     A = Matrix{Complex{T}}(undef, nw, nw)
     @views for ik in 1:nk
         A .= Hk[:, :, ik]
-        W[:, ik] .= syev!(ws, 'V', 'U', A)[1]   # A is overwritten with the eigenvectors
-        V[:, :, ik] .= A
+        E[:, ik] .= syev!(ws, 'V', 'U', A)[1]   # A is overwritten with the eigenvectors
+        U[:, :, ik] .= A
     end
-    W, V
+    E, U
 end
 
 # =============================================================================
@@ -141,6 +130,9 @@ function get_el_velocity_direct_batched(vel::WannierObject{T}, xk_list,
 
     # Batch the rotation over b = (idir, k): stack the operator as (nw, nw, 3*nk) and replicate
     # uk across the three directions so each batch slice carries its own uk.
+    # TODO: `urep`, `tmp`, and `out` each allocate a full (nw, nw, 3*nk) buffer here. Fine for the
+    # one-shot setup use, but make this non-allocating (caller-provided scratch) if it moves to a
+    # hot path.
     Vb = reshape(Vk, nw, nw, 3 * nk)
     urep = similar(uks, nw, nw, 3, nk)
     urep .= reshape(uks, nw, nw, 1, nk)                     # broadcast uk over idir (non-scalar)
@@ -346,52 +338,6 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
     get_fourier_batched!(g, ep_ekpR_itp, qs)                           # (nw*nbandk*nmodes, nq)
     eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp; g2_out, ωq)
     ep_kq_all
-end
-
-"""
-    device_free_bytes(proto) -> Int
-
-Free memory (bytes) on the backend `proto` lives on, used to decide whether a large buffer fits
-on the device. Generic fallback returns `typemax(Int)` (host memory: assume it always fits — the
-caller's host allocation is governed by RAM, not this check). The CUDA extension returns
-`CUDA.available_memory()` for a `CuArray` proto.
-"""
-device_free_bytes(proto) = typemax(Int)
-
-"""
-    device_synchronize(proto)
-
-Block until queued device work on `proto`'s backend completes. Generic fallback is a no-op
-(host work is synchronous); the CUDA extension calls `CUDA.synchronize()`. Used to bound the
-host look-ahead in the GPU e-ph loop so per-tile scratch does not pile up in the memory pool.
-"""
-device_synchronize(proto) = nothing
-
-"""
-    eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
-                        nbandkq, nbandk, nm, nqc, n_i)
-
-Device-resident scatter for a calculator that keeps `g2`/`ωq` on the device (no per-chunk
-host streaming). For every `(m, n, ν, j)` entry of `g2vals` `(nbandkq, nbandk, nm, nqc)`, look
-up the state indices `i = imap_i_col[n]` and `f = imap_f[m, ikqs[j]]`; if both are in-window
-(`> 0`), write the value into the mode-fastest linear slot
-`lin = ν + nm·(i−1) + nm·n_i·(f−1)` of the flat `g2_out` / `ωq_out`
-(`ω = ωq[ν, j]`). The target `lin` indices are unique across the run (distinct k → distinct i,
-distinct k+q → distinct f), so the writes never collide (no atomics needed). Generic
-(CPU/fallback) method; the CUDA extension provides a one-kernel `CuArray` method.
-"""
-function eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
-                             nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, n_i::Int)
-    @inbounds for j in 1:nqc, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
-        i = imap_i_col[n]
-        f = imap_f[m, ikqs[j]]
-        if i > 0 && f > 0
-            lin = ν + nm * (i - 1) + nm * n_i * (f - 1)
-            g2_out[lin] = g2vals[m, n, ν, j]
-            ωq_out[lin] = ωq[ν, j]
-        end
-    end
-    nothing
 end
 
 """

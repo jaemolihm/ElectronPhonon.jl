@@ -466,7 +466,7 @@ end
 #  GPU calculator loop (see README_GPU.md).
 #
 #  This mirrors `_loop_eph_over_k_and_kq` but moves the e-ph Wannier->Bloch interpolation
-#  onto the device using the batched drivers from `wannier_to_bloch_gpu.jl`. The code here is
+#  onto the device using the batched drivers from `wannier_to_bloch_batched.jl`. The code here is
 #  backend-generic: it only calls `to_device` and the generic batched drivers, so no CUDA
 #  code lives in the base package (the device methods are provided by the CUDA extension). It
 #  is a separate function from the CPU `_loop_eph_over_k_and_kq` because its control flow —
@@ -652,8 +652,6 @@ function _loop_eph_over_k_and_kq_gpu(
             @info "$(now()) ik = $ik / $nk"
             flush(stdout); flush(stderr)
         end
-        xk = kpts.vectors[ik]
-        xk_int1, xk_int2, xk_int3 = xks_int[1, ik], xks_int[2, ik], xks_int[3, ik]   # this k's integer q-grid coords
         el_k = el_k_save[ik]
         epdata.el_k = el_k
 
@@ -676,9 +674,9 @@ function _loop_eph_over_k_and_kq_gpu(
             for j in 1:nq_chunk
                 ikq = qstart + j - 1
                 # Integer grid-coord hash for iq (no Float64 normalize/_hash_xk per pair).
-                h1 = mod(xkqs_int[1, ikq] - xk_int1, ng1)
-                h2 = mod(xkqs_int[2, ikq] - xk_int2, ng2)
-                h3 = mod(xkqs_int[3, ikq] - xk_int3, ng3)
+                h1 = mod(xkqs_int[1, ikq] - xks_int[1, ik], ng1)
+                h2 = mod(xkqs_int[2, ikq] - xks_int[2, ik], ng2)
+                h3 = mod(xkqs_int[3, ikq] - xks_int[3, ik], ng3)
                 hash = (h1 * ng2 + h2) * ng3 + h3
                 # Full sorted grid → iq = hash+1 (no table); else O(n) Dict (no ngrid³ array).
                 iq = qpts_is_full ? hash + 1 : get(qpts._xk_hash_to_ik, hash, 0)
@@ -690,7 +688,7 @@ function _loop_eph_over_k_and_kq_gpu(
                 iqs_chunk[j] = iq
                 ikqs_host[j] = ikq
             end
-            r = 1:nq_chunk   # this chunk's columns within the q_batch_size-sized device buffers
+            rng_q = 1:nq_chunk   # this chunk's columns within the q_batch_size-sized device buffers
 
             # Gather this chunk's phonon eigenvectors/frequencies on the device by iq
             # (uphs_dev[:,:,j] = uph_all_dev[:,:,iq[j]]); ωq gathered here too so the fused kernel
@@ -698,18 +696,18 @@ function _loop_eph_over_k_and_kq_gpu(
             # via views into the q_batch_size-sized buffers, so there is no padded tail.
             # H2D copy of just the first nq_chunk indices (5-arg contiguous copy — copying a host↔
             # device SubArray view instead would fall back to scalar indexing); the device gather
-            # then reads only `view(iqs_chunk_dev, r)`, so the untouched tail is never used.
+            # then reads only `view(iqs_chunk_dev, rng_q)`, so the untouched tail is never used.
             copyto!(iqs_chunk_dev, 1, iqs_chunk, 1, nq_chunk)
-            @views uphs_dev[:, :, r] .= uph_all_dev[:, :, view(iqs_chunk_dev, r)]
-            @views ωq_dev[:, r]      .= ωq_all_dev[:, view(iqs_chunk_dev, r)]
+            @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, view(iqs_chunk_dev, rng_q)]
+            @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, view(iqs_chunk_dev, rng_q)]
             # k+q rotations: a contiguous slice of the prebuilt device stack (no copy).
             ukqs_used = view(ukqs_all_dev, :, :, qstart:qend)
 
             # One batched Wannier->Bloch over this chunk's q: ep_kq(q) (nw, nw, nmodes), folding
             # g2 = |ep|²/(2ω) into the same fused kernel pass.
-            get_eph_kR_to_kq_batched!(view(epkq_dev, :, :, :, r), ep_ekpR_itp, view(qs_chunk, r),
-                view(uphs_dev, :, :, r), ukqs_used; ws=kRkq_ws,
-                g2_out = view(g2_dev, :, :, :, r), ωq = view(ωq_dev, :, r))
+            get_eph_kR_to_kq_batched!(view(epkq_dev, :, :, :, rng_q), ep_ekpR_itp, view(qs_chunk, rng_q),
+                view(uphs_dev, :, :, rng_q), ukqs_used; ws=kRkq_ws,
+                g2_out = view(g2_dev, :, :, :, rng_q), ωq = view(ωq_dev, :, rng_q))
 
             # Hand the chunk's e-ph matrix (still on the device) to each calculator, which forms
             # g2 / scatters it on the device; no D2H of the e-ph matrix here. 5-arg contiguous H2D
@@ -717,8 +715,8 @@ function _loop_eph_over_k_and_kq_gpu(
             copyto!(ikqs_dev, 1, ikqs_host, 1, nq_chunk)
             for calc in calculators
                 run_calculator_batched!(calc,
-                    view(epkq_dev, :, :, :, r), view(ωq_dev, :, r),
-                    ik, view(ikqs_dev, r); g2 = view(g2_dev, :, :, :, r))
+                    view(epkq_dev, :, :, :, rng_q), view(ωq_dev, :, rng_q),
+                    ik, view(ikqs_dev, rng_q); g2 = view(g2_dev, :, :, :, rng_q))
             end
 
             qstart = qend + 1

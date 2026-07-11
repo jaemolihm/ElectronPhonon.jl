@@ -90,3 +90,30 @@ end
 function postprocess_calculator!(::AbstractCalculator; kwargs...)
     error("postprocess_calculator! has to be implemented")
 end
+
+"""
+    eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
+                        nbandkq, nbandk, nm, nqc, n_i)
+
+Device-resident scatter for a calculator that keeps `g2`/`ωq` on the device (no per-chunk
+host streaming). For every `(m, n, ν, j)` entry of `g2vals` `(nbandkq, nbandk, nm, nqc)`, look
+up the state indices `i = imap_i_col[n]` and `f = imap_f[m, ikqs[j]]`; if both are in-window
+(`> 0`), write the value into the mode-fastest linear slot
+`lin = ν + nm·(i−1) + nm·n_i·(f−1)` of the flat `g2_out` / `ωq_out`
+(`ω = ωq[ν, j]`). The target `lin` indices are unique across the run (distinct k → distinct i,
+distinct k+q → distinct f), so the writes never collide (no atomics needed). Generic
+(CPU/fallback) method; the CUDA extension provides a one-kernel `CuArray` method.
+"""
+function eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
+                             nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, n_i::Int)
+    @inbounds for j in 1:nqc, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
+        i = imap_i_col[n]
+        f = imap_f[m, ikqs[j]]
+        if i > 0 && f > 0
+            lin = ν + nm * (i - 1) + nm * n_i * (f - 1)
+            g2_out[lin] = g2vals[m, n, ν, j]
+            ωq_out[lin] = ωq[ν, j]
+        end
+    end
+    nothing
+end
