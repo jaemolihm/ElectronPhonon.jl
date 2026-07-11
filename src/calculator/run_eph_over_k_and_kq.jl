@@ -463,28 +463,25 @@ end
 
 
 # =============================================================================
-#  GPU calculator loop (Phase 3, see README_GPU.md "Phase 3 — calculator integration").
+#  GPU calculator loop (see README_GPU.md).
 #
 #  This mirrors `_loop_eph_over_k_and_kq` but moves the e-ph Wannier->Bloch interpolation
 #  onto the device using the batched drivers from `wannier_to_bloch_gpu.jl`. The code here is
 #  backend-generic: it only calls `to_device` and the generic batched drivers, so no CUDA
-#  code lives in the base package (the device methods are provided by the CUDA extension).
+#  code lives in the base package (the device methods are provided by the CUDA extension). It
+#  is a separate function from the CPU `_loop_eph_over_k_and_kq` because its control flow —
+#  batched over k-tiles and q-chunks with device staging — differs from the per-(k,q) CPU loop,
+#  not because it holds any device-specific code.
 #
-#  Design note: the backend is selected here by the `use_gpu` keyword and `to_device`. A
-#  cleaner long-term design would carry the backend as a `Model` type parameter (or a
-#  `ModelGPU`) and dispatch the whole loop on it, rather than branching on a keyword.
-#
-#  Minimal first step — the rest is asserted off (handled by the CPU path instead):
+#  Minimal first step — the rest is asserted off (not implemented on the GPU path):
 #    * no polar / long-range terms (so ϵs = 1, no dipole correction)
 #    * full bands, no energy window  ->  nband == nw at every k / k+q (uniform batch shapes)
 #    * commensurate k / k+q grids (precompute_ph) so phonon states are precomputed
 #    * no covariant derivative of g, no screening, no symmetry/unfolding, single node (no MPI),
 #      and energy_conservation = (:None, 0.0)
 #
-#  Buffer reuse: the device interpolators and the per-(k,q) staging arrays are allocated once
-#  outside the `ik` loop and reused across all (k, q). The batched drivers still allocate their
-#  internal scratch per call (recycled by CUDA's memory pool); pushing that reuse into the
-#  drivers is a possible follow-up (see README_GPU.md "Buffer reuse").
+#  Buffer reuse: device buffers are allocated once before the k loop and reused for every
+#  (k, q), so the loop itself allocates almost nothing.
 function _loop_eph_over_k_and_kq_gpu(
         model       :: Model{FT},
         kpts, qpts, kqpts,
@@ -513,8 +510,8 @@ function _loop_eph_over_k_and_kq_gpu(
         "use_gpu supports only energy_conservation = (:None, 0.0)."))
     screening_params === nothing || throw(ArgumentError("use_gpu does not support screening_params."))
     # symmetry (IBZ outer k) is allowed: the reduction is done in the shared setup and this loop is
-    # symmetry-agnostic (only the no-op postprocess uses it). The dispatcher gates the unsupported
-    # el_kq_from_unfolding = true case. (`symmetry` is still accepted for postprocess_calculator!.)
+    # symmetry-agnostic — `symmetry` is only passed through to `postprocess_calculator!`. The
+    # dispatcher gates the unsupported el_kq_from_unfolding = true case.
 
     # Default (q_batch_size === nothing): process all k+q in a single chunk per k. Fewer, larger
     # kR->kq / calculator kernels — the GPU e-ph path is launch-bound for small nw/nmodes, so one
@@ -530,9 +527,9 @@ function _loop_eph_over_k_and_kq_gpu(
 
     # Energy window support: the interpolation always runs full-band (uniform nw×nw, using the
     # full eigenvectors `el.u_full`), so the batched kernels are unchanged. The window is applied
-    # only in the calculator scatter, where out-of-window states have imap == 0 and are skipped
-    # (see MigdalEliashberg's `run_calculator_batched!`). The host (non-batched) path writes into
-    # `epdata.ep` sized to the windowed `nband`, so it still requires full bands.
+    # only in the calculator scatter, where out-of-window states have imap == 0 and are skipped.
+    # The host (non-batched) path writes into `epdata.ep` sized to the windowed `nband`, so it
+    # still requires full bands.
     fullband = all(el.nband == nw for el in el_k_save) && all(el.nband == nw for el in el_kq_save)
     if !batched && !fullband
         throw(ArgumentError("use_gpu with a non-batched calculator is full-band only: " *
@@ -567,10 +564,9 @@ function _loop_eph_over_k_and_kq_gpu(
     # driver allocates nothing per call. The loop always hands it a full `qb`-sized (padded) chunk.
     kRkq_ws = KRtoKQWorkspace(ep_ekpR_dev.op_r, ndata_ekpR, nw, nw, nmodes, qb)
 
-    # The k+q electron rotations (u_full of every k+q point) do NOT depend on the outer k, so
-    # build them on the device once and reuse across all k — no per-k host stack / H2D. Each chunk
-    # reads the contiguous slice `ukqs_all_dev[:, :, qstart:qend]` directly (full chunks); a partial
-    # final chunk is copied + padded into `ukqs_dev`.
+    # Collect the k+q electron eigenvectors on the host and copy to the device once (they do not
+    # depend on the outer k), reused across all k. Full chunks read a contiguous slice directly;
+    # a partial final chunk is copied + padded into `ukqs_dev`.
     ukqs_all_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nkq)
     let ukqs_all_host = Array{Complex{FT}}(undef, nw, nw, nkq)
         for ikq in 1:nkq
@@ -578,11 +574,9 @@ function _loop_eph_over_k_and_kq_gpu(
         end
         copyto!(ukqs_all_dev, ukqs_all_host)
     end
-    # The phonon eigenvector `u` (nmodes×nmodes) and frequency `e` of every q-grid point depend
-    # only on iq, not on the outer k — so (like ukqs_all_dev above) hoist the full nq stacks onto
-    # the device ONCE here, instead of gathering `ph_save[iq].u` per (k,q) on the host and
-    # re-uploading the same nq matrices ~nk times. Per chunk we then upload only the qb-int `iq`
-    # vector and gather these stacks on the device by index (see the qbuild loop below).
+    # Phonon eigenvectors `u` and frequencies `e` depend only on iq, so (like ukqs_all_dev above)
+    # collect the full q-grid stacks on the host and copy to the device once, then gather per
+    # chunk on the device by index (see the qbuild loop below).
     uph_all_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, qpts.n)
     let uph_all_host = Array{Complex{FT}}(undef, nmodes, nmodes, qpts.n)
         for iq in 1:qpts.n
@@ -602,7 +596,7 @@ function _loop_eph_over_k_and_kq_gpu(
     qpts_is_full = qpts.n == prod(qpts.ngrid) &&
         all(_hash_xk(qpts.vectors[iq], qpts) == iq - 1 for iq in 1:qpts.n)
 
-    # O3: integer grid-coord arithmetic for iq, replacing the per-(k,q) float
+    # Integer grid-coord arithmetic for iq, replacing the per-(k,q) float
     # `normalize_kpoint_coordinate` + `_hash_xk`. For commensurate grids the q hash-coordinate is
     #   hc_i = mod(round((xkq - xk - shift_q)·ng)_i, ng_i) = mod(Bkq[i,ikq] - Bk[i,ik], ng_i),
     # where Bkq / Bk are the integer coords of every k+q / k vector on the q-grid (exact for grid
@@ -699,7 +693,7 @@ function _loop_eph_over_k_and_kq_gpu(
             # ph_save[iq].u per (k,q) nor re-uploads the nmodes²·qb complex stack each chunk.
             for j in 1:nqc
                 ikq = qstart + j - 1
-                # O3: integer grid-coord hash for iq (no Float64 normalize/_hash_xk per pair).
+                # Integer grid-coord hash for iq (no Float64 normalize/_hash_xk per pair).
                 h1 = mod(Bkq[1, ikq] - bk1, ng1)
                 h2 = mod(Bkq[2, ikq] - bk2, ng2)
                 h3 = mod(Bkq[3, ikq] - bk3, ng3)

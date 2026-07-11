@@ -33,6 +33,10 @@ Deliberately **not** on the GPU (stays on the CPU per-k path):
   CI without CUDA installed.
 - **`op_r` fits in GPU memory.** No streaming/chunking of the Wannier operator itself.
 - **Full-band on the GPU.** No per-k energy window; see the design note.
+- **The GPU path is fully GPU — no silent fallback.** The GPU calculator loop requires every
+  calculator to implement the batched device hook (`allow_eph_batched`). It must not silently
+  fall back to the per-`(k,q)` host `run_calculator!` path, which would be a hard-to-spot
+  performance cliff — a calculator that forgets to opt in should fail loudly instead.
 
 ## Strategy
 
@@ -153,6 +157,14 @@ is needed.
   one workspace allocated at loop setup is reused across all (k, q).
 - **Energy window and long-range/polar on the GPU** — left on the CPU per-k path for now.
 - **MPI / multi-GPU** for the GPU loop — not in this foundation.
+- **Backend as a type parameter instead of a `use_gpu` keyword (future).** The backend is
+  currently selected by the `use_gpu` keyword + `to_device`. A cleaner long-term design might
+  carry it as a type (e.g. dispatch the loop on the array backend). Note a `ModelGPU` that puts
+  the whole `Model` on the device is *not* obviously right: `Model` is large, and one may want
+  it resident on the CPU while only the calculation runs on the GPU.
+- **A memory-estimate helper (future).** A utility that reports the device memory a run needs
+  (given the model and `q_batch_size` / `k_batch_size`) would make it easier to pick chunk sizes
+  and to fail early instead of OOM-ing mid-run.
 
 ## Files
 
