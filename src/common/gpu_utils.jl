@@ -61,8 +61,9 @@ up the state indices `i = imap_i_col[n]` and `f = imap_f[m, ikqs[j]]`; if both a
 distinct k+q → distinct f), so the writes never collide (no atomics needed). Generic
 (CPU/fallback) method; the CUDA extension provides a one-kernel `CuArray` method.
 
-Used by device-resident calculators (e.g. `MigdalEliashberg.jl`'s `run_calculator_batched!`) to
-scatter each e-ph chunk's `g2`/`ωq` into their window-mapped device accumulators.
+A helper for downstream device-resident calculators: from their `run_calculator_batched!` hook
+they call this to scatter each e-ph chunk's `g2`/`ωq` into their own window-mapped device
+accumulators. The library itself stays agnostic to any particular calculator.
 """
 function eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
                              nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, n_i::Int)

@@ -24,6 +24,8 @@ using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV, syev!
 Eigenvalues of a stack of Hermitian matrices `Hk` of size `(nw, nw, nk)`, returned as
 `(nw, nk)`. CPU method loops over LAPACK `syev!`; the CUDA extension provides a batched
 `heevjBatched!` method for `CuArray`s.
+
+Overwrites (destroys) `Hk`; a caller that still needs `Hk` afterwards must copy it first.
 """
 function eigvals_batched(Hk::AbstractArray{Complex{T},3}) where {T}
     # CPU method; the CuArray method (CUSOLVER heevjBatched!) lives in ext/ElectronPhononCUDAExt.jl.
@@ -31,10 +33,8 @@ function eigvals_batched(Hk::AbstractArray{Complex{T},3}) where {T}
     @assert nw == n2
     E = Matrix{T}(undef, nw, nk)
     ws = HermitianEigenWsSYEV{Complex{T},T}()
-    A = Matrix{Complex{T}}(undef, nw, nw)
     @views for ik in 1:nk
-        A .= Hk[:, :, ik]
-        E[:, ik] .= syev!(ws, 'N', 'U', A)[1]
+        E[:, ik] .= syev!(ws, 'N', 'U', Hk[:, :, ik])[1]   # syev! overwrites the slice
     end
     E
 end
@@ -46,6 +46,8 @@ Eigenvalues `E` `(nw, nk)` and eigenvectors `U` `(nw, nw, nk)` of a stack of Her
 matrices `Hk` of size `(nw, nw, nk)`. CPU method loops over LAPACK `syev!`; the CUDA
 extension provides a batched `heevjBatched!` method for `CuArray`s.
 
+Overwrites `Hk`: the returned `U` is `Hk` itself, overwritten in place with the eigenvectors.
+
 Note: unlike the per-k `get_el_eigen!`, no EPW degeneracy gauge-fixing is applied, so for
 degenerate bands the eigenvectors may differ from `get_el_eigen!` by a gauge (the
 eigenvalues, and the eigen-decomposition, are unaffected).
@@ -55,15 +57,11 @@ function eigen_batched(Hk::AbstractArray{Complex{T},3}) where {T}
     nw, n2, nk = size(Hk)
     @assert nw == n2
     E = Matrix{T}(undef, nw, nk)
-    U = Array{Complex{T},3}(undef, nw, nw, nk)
     ws = HermitianEigenWsSYEV{Complex{T},T}()
-    A = Matrix{Complex{T}}(undef, nw, nw)
     @views for ik in 1:nk
-        A .= Hk[:, :, ik]
-        E[:, ik] .= syev!(ws, 'V', 'U', A)[1]   # A is overwritten with the eigenvectors
-        U[:, :, ik] .= A
+        E[:, ik] .= syev!(ws, 'V', 'U', Hk[:, :, ik])[1]   # slice overwritten with the eigenvectors
     end
-    E, U
+    E, Hk
 end
 
 # =============================================================================

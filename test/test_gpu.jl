@@ -147,8 +147,8 @@ end
         let nw2 = 40, nk2 = 4
             H = CUDA.rand(ComplexF64, nw2, nw2, nk2)
             for k in 1:nk2; @views H[:, :, k] .= (H[:, :, k] + H[:, :, k]') / 2; end
+            Hh = Array(H)   # eigvals_batched overwrites H, so snapshot it first
             Ebig = Array(eigvals_batched(H))
-            Hh = Array(H)
             for k in 1:nk2
                 @test sort(Ebig[:, k]) ≈ sort(real(eigvals(Hermitian(Hh[:, :, k]))))
             end

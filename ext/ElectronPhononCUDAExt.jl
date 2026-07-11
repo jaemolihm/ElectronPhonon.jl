@@ -52,6 +52,9 @@ function ElectronPhonon.to_device(obj::WannierObject{T, <:Array{Complex{T}}}) wh
     dev
 end
 
+ElectronPhonon.device_free_bytes(::CuArray) = CUDA.available_memory()
+ElectronPhonon.device_synchronize(::CuArray) = CUDA.synchronize()
+
 """
     eigvals_batched(Hk::CuArray{Complex{T},3}) -> CuMatrix
 
@@ -59,8 +62,7 @@ Eigenvalues `(nw, nk)` of a stack of Hermitian matrices `(nw, nw, nk)` in a sing
 Jacobi eigensolve, on the device. Best suited to small `nw` (see module notes).
 """
 function ElectronPhonon.eigvals_batched(Hk::CuArray{Complex{T},3}) where {T}
-    # heevjBatched! overwrites its argument; copy to keep Hk intact for the caller.
-    heevjBatched!('N', 'U', copy(Hk))
+    heevjBatched!('N', 'U', Hk)   # overwrites Hk (destroy-input contract; see the CPU method)
 end
 
 """
@@ -70,9 +72,8 @@ Eigenvalues `(nw, nk)` and eigenvectors `(nw, nw, nk)` of a stack of Hermitian m
 single batched Jacobi eigensolve, on the device. Best suited to small `nw` (see module notes).
 """
 function ElectronPhonon.eigen_batched(Hk::CuArray{Complex{T},3}) where {T}
-    # heevjBatched!('V', ...) returns (W, V), with V the (copied) input overwritten with the
-    # eigenvectors, so the caller's Hk is left intact.
-    heevjBatched!('V', 'U', copy(Hk))
+    # heevjBatched!('V', ...) returns (E, U) with U being Hk overwritten with the eigenvectors.
+    heevjBatched!('V', 'U', Hk)
 end
 
 """
@@ -149,9 +150,6 @@ function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},
     end
     ep_kq_all
 end
-
-ElectronPhonon.device_free_bytes(::CuArray) = CUDA.available_memory()
-ElectronPhonon.device_synchronize(::CuArray) = CUDA.synchronize()
 
 # ---- device-resident scatter (calculator keeps g2/ωq on the device, no host streaming) --------
 #
