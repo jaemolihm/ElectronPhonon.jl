@@ -55,8 +55,8 @@ function bench(name, driver, eigvals_of)
 end
 
 println("Band eigenvalues over $(length(kpts)) k-points:")
-bench("valueonly", ham -> get_el_eigen_valueonly_batched(ham, kpts), E -> E);
-bench("eigen",     ham -> get_el_eigen_batched(ham, kpts),           EU -> first(EU));
+bench("valueonly", ham -> get_el_eigen_valueonly_batched(get_interpolator(ham; fourier_mode="batched"), kpts), E -> E);
+bench("eigen",     ham -> get_el_eigen_batched(get_interpolator(ham; fourier_mode="batched"), kpts),           EU -> first(EU));
 
 # NOTE: For Pb (nw=4) the operators are tiny; the GPU advantage grows with band count and
 # k-count, and is largest when eigenvectors are needed and for the e-ph matrix (Phase 2).

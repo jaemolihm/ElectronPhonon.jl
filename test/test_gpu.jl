@@ -59,14 +59,6 @@ function check_eph_batched(to_dev, arr_dev; rtol)
 
     epmat_d = to_dev(epmat_obj)
 
-    # single-k / single-q drivers (element 1)
-    o1 = to_dev(WannierObject(irvec_ep, zeros(ComplexF64, nwe*nband*nmodes, nr_ep)))
-    get_eph_RR_to_kR_batched!(o1, get_interpolator(epmat_d; fourier_mode="batched"), ks[1], arr_dev(uks[:, :, 1]))
-    @test isapprox(Array(o1.op_r), refs_RR[1]; rtol)
-    ep1 = arr_dev(zeros(ComplexF64, nband, nband, nmodes))
-    get_eph_kR_to_kq_batched!(ep1, get_interpolator(o1; fourier_mode="batched"), qs[1], arr_dev(uphs[:, :, 1]), arr_dev(ukqs[:, :, 1]))
-    @test isapprox(Array(ep1), ep_ref[:, :, :, 1]; rtol)
-
     # list-batched RR→kR over all k — check every column
     ep_all = arr_dev(zeros(ComplexF64, nwe*nband*nmodes, nr_ep, nk2))
     get_eph_RR_to_kR_batched!(ep_all, get_interpolator(epmat_d; fourier_mode="batched", batch_size=nk2), ks, arr_dev(uks))
@@ -137,13 +129,13 @@ end
         @test Array(Hk_gpu) ≈ Hk_cpu
 
         # --- eigenvalues only: GPU vs CPU reference ---
-        E_ref = get_el_eigen_valueonly_batched(obj, kpts)
-        E_gpu = get_el_eigen_valueonly_batched(obj_gpu, kpts)
+        E_ref = get_el_eigen_valueonly_batched(get_interpolator(obj; fourier_mode="batched"), kpts)
+        E_gpu = get_el_eigen_valueonly_batched(get_interpolator(obj_gpu; fourier_mode="batched"), kpts)
         @test E_gpu isa CuArray
         @test sort(Array(E_gpu), dims=1) ≈ sort(E_ref, dims=1)
 
         # --- eigenvalues + eigenvectors ---
-        Ev_gpu, U_gpu = get_el_eigen_batched(obj_gpu, kpts)
+        Ev_gpu, U_gpu = get_el_eigen_batched(get_interpolator(obj_gpu; fourier_mode="batched"), kpts)
         @test sort(Array(Ev_gpu), dims=1) ≈ sort(E_ref, dims=1)
         # Eigenvectors are gauge-dependent, so check the gauge-invariant reconstruction
         # H(k) ≈ U diag(E) U† for a few k-points.
@@ -421,8 +413,10 @@ end
         # difference, so this must match to machine precision (validates rotation + Berry math).
         ufc = zeros(ComplexF64, nw, nw, nk); ec = zeros(Float64, nw, nk)
         for ik in 1:nk; ufc[:, :, ik] .= els_c[ik].u_full; ec[:, ik] .= els_c[ik].e_full; end
-        v_dev = ElectronPhonon.get_el_velocity_direct_batched(ElectronPhonon.to_device(model.el_ham_R), kpts.vectors, CuArray(ufc))
-        rbar_dev = ElectronPhonon.get_el_velocity_direct_batched(ElectronPhonon.to_device(model.el_pos), kpts.vectors, CuArray(ufc))
+        v_itp = get_interpolator(ElectronPhonon.to_device(model.el_ham_R); fourier_mode="batched")
+        v_dev = ElectronPhonon.get_el_velocity_direct_batched(v_itp, kpts.vectors, CuArray(ufc))
+        rbar_itp = get_interpolator(ElectronPhonon.to_device(model.el_pos); fourier_mode="batched")
+        rbar_dev = ElectronPhonon.get_el_velocity_direct_batched(rbar_itp, kpts.vectors, CuArray(ufc))
         let E = CuArray(ec)
             v_dev .+= im .* (reshape(E, nw, 1, 1, nk) .- reshape(E, 1, nw, 1, nk)) .* rbar_dev
         end

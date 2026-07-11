@@ -67,64 +67,66 @@ end
 # =============================================================================
 #  Band-eigenvalue drivers over a k-grid
 
-# Interpolate H(k) for all k into an (ndata, nk) array on `ham.op_r`'s backend.
-function _fourier_hk_batched(ham::WannierObject{T}, xk_list; batch_size::Int) where {T}
+# Like the per-k `wannier_to_bloch` drivers, the batched electron drivers take a Wannier
+# interpolator (build it with `get_interpolator(ham; fourier_mode="batched", batch_size=…)`), not a
+# raw `WannierObject`; `batch_size` is baked into the interpolator at construction.
+
+# Interpolate H(k) for all k into an (ndata, nk) array on the interpolator's backend.
+function _fourier_hk_batched(itp::BatchedWannierInterpolator{T}, xk_list) where {T}
+    ham = itp.parent
     nw = isqrt(ham.ndata)
     nw^2 == ham.ndata || throw(ArgumentError(
         "ndata=$(ham.ndata) is not a perfect square; expected nw^2 for a Hamiltonian"))
     nk = length(xk_list)
-    itp = BatchedWannierInterpolator(ham; batch_size)
     Hk = similar(ham.op_r, Complex{T}, ham.ndata, nk)
     get_fourier_batched!(Hk, itp, xk_list)
     reshape(Hk, nw, nw, nk)
 end
 
 """
-    get_el_eigen_valueonly_batched(ham::WannierObject, xk_list; batch_size=length(xk_list)) -> E
+    get_el_eigen_valueonly_batched(itp::BatchedWannierInterpolator, xk_list) -> E
 
 Electron band eigenvalues `(nw, nk)` at every k-point in `xk_list`. Batched counterpart of
-[`get_el_eigen_valueonly!`](@ref). Runs on the backend of `ham.op_r`; the result is on that
-same backend. `batch_size` controls the Fourier chunking (default: a single batch).
+[`get_el_eigen_valueonly!`](@ref). Runs on, and returns on, the backend of `itp.parent.op_r`.
 """
-function get_el_eigen_valueonly_batched(ham::WannierObject, xk_list; batch_size::Int=length(xk_list))
-    eigvals_batched(_fourier_hk_batched(ham, xk_list; batch_size))
+function get_el_eigen_valueonly_batched(itp::BatchedWannierInterpolator, xk_list)
+    eigvals_batched(_fourier_hk_batched(itp, xk_list))
 end
 
 """
-    get_el_eigen_batched(ham::WannierObject, xk_list; batch_size=length(xk_list)) -> (E, U)
+    get_el_eigen_batched(itp::BatchedWannierInterpolator, xk_list) -> (E, U)
 
 Electron band eigenvalues `(nw, nk)` and eigenvectors `(nw, nw, nk)` at every k-point in
-`xk_list`. Batched counterpart of [`get_el_eigen!`](@ref). Runs on the backend of
-`ham.op_r`; the results are on that same backend. See [`eigen_batched`](@ref) for the
-eigenvector gauge caveat.
+`xk_list`. Batched counterpart of [`get_el_eigen!`](@ref). Runs on, and returns on, the backend
+of `itp.parent.op_r`. See [`eigen_batched`](@ref) for the eigenvector gauge caveat.
 """
-function get_el_eigen_batched(ham::WannierObject, xk_list; batch_size::Int=length(xk_list))
-    eigen_batched(_fourier_hk_batched(ham, xk_list; batch_size))
+function get_el_eigen_batched(itp::BatchedWannierInterpolator, xk_list)
+    eigen_batched(_fourier_hk_batched(itp, xk_list))
 end
 
 """
-    get_el_velocity_direct_batched(vel::WannierObject, xk_list, uks; batch_size=length(xk_list)) -> (nw, nw, 3, nk)
+    get_el_velocity_direct_batched(itp::BatchedWannierInterpolator, xk_list, uks) -> (nw, nw, 3, nk)
 
 Batched counterpart of [`get_el_velocity_direct!`](@ref): for a 3-direction Wannier operator
-`vel` (`ndata == nw^2 * 3`, e.g. `model.el_vel` (dH/dk) or `model.el_pos` (position A)), Fourier-
-interpolate over all k in `xk_list` and apply the per-k gauge rotation `uk' * M[:,:,idir] * uk`
-for each Cartesian direction. Runs on the backend of `vel.op_r`; `uks` is `(nw, nw, nk)` (full-band
-eigenvectors, one `uk` per k, on the same backend). Returns the full-band `(nw, nw, 3, nk)` rotated
-matrix; callers slice the in-window block (the in-window block equals the windowed-`uk` rotation).
+(`itp.parent.ndata == nw^2 * 3`, e.g. `model.el_vel` (dH/dk) or `model.el_pos` (position A)),
+Fourier-interpolate over all k in `xk_list` and apply the per-k gauge rotation `uk' * M[:,:,idir] * uk`
+for each Cartesian direction. Runs on the backend of `itp.parent.op_r`; `uks` is `(nw, nw, nk)`
+(full-band eigenvectors, one `uk` per k, on the same backend). Returns the full-band `(nw, nw, 3, nk)`
+rotated matrix; callers slice the in-window block (which equals the windowed-`uk` rotation).
 
-Used for the electron position matrix `rbar` (`vel = el_pos`) and the `:Direct`-mode velocity
-(`vel = el_vel`). The Fourier output is laid out `(nw, nw, 3, nk)` with `idir` the slowest of the
-three operator dims, matching the per-k `get_fourier!`'s `reshape(out, (nw, nw, 3))` convention.
+Used for the electron position matrix `rbar` (`el_pos`) and the `:Direct`-mode velocity (`el_vel`).
+The Fourier output is laid out `(nw, nw, 3, nk)` with `idir` the slowest of the three operator dims,
+matching the per-k `get_fourier!`'s `reshape(out, (nw, nw, 3))` convention.
 """
-function get_el_velocity_direct_batched(vel::WannierObject{T}, xk_list,
-        uks::AbstractArray{Complex{T},3}; batch_size::Int=length(xk_list)) where {T}
+function get_el_velocity_direct_batched(itp::BatchedWannierInterpolator{T}, xk_list,
+        uks::AbstractArray{Complex{T},3}) where {T}
+    vel = itp.parent
     nw = size(uks, 1)
     @assert size(uks, 2) == nw
     nk = length(xk_list)
     @assert size(uks, 3) == nk
     @assert vel.ndata == nw^2 * 3 "expected ndata = nw^2*3 for a 3-direction operator, got $(vel.ndata)"
 
-    itp = BatchedWannierInterpolator(vel; batch_size)
     Vk = similar(vel.op_r, Complex{T}, vel.ndata, nk)
     get_fourier_batched!(Vk, itp, xk_list)                  # (nw^2*3, nk)
 
@@ -143,78 +145,6 @@ function get_el_velocity_direct_batched(vel::WannierObject{T}, xk_list,
     out = similar(Vb)
     batched_gemm!('C', 'N', ub, tmp, out)                   # out = uk' * (M * uk)
     reshape(out, nw, nw, 3, nk)
-end
-
-# =============================================================================
-#  Electron-phonon Wannier -> Bloch (backend-generic)
-#
-#  Counterparts of the per-k `get_eph_RR_to_kR!` / `get_eph_kR_to_kq!`
-#  (wannier_to_bloch.jl). The Fourier step reuses `get_fourier_batched!`, and the gauge
-#  rotations are plain GEMMs, so the same code runs on the CPU or GPU according to the
-#  backend of the parent `op_r`. No CUDA-specific code is needed.
-
-"""
-    get_eph_RR_to_kR_batched!(epobj_ekpR::WannierObject, epmat_itp::BatchedWannierInterpolator, xk, uk)
-
-Electron-phonon matrix in electron Bloch, phonon Wannier basis at `xk`. Counterpart of
-[`get_eph_RR_to_kR!`](@ref) that runs on the backend of `epmat_itp.parent.op_r`.
-
-The electron-k index of the Fourier-interpolated `g(k, R_ep)` is rotated by `uk` as a single
-GEMM (`out[iw,ib,b] = Σ_jw g[iw,jw,b] uk[jw,ib]`, batched over `b = (imode, ir_ep)`),
-implemented as `permutedims` + `transpose(uk) * g` + `permutedims`.
-"""
-function get_eph_RR_to_kR_batched!(epobj_ekpR::WannierObject{T}, epmat_itp::BatchedWannierInterpolator{T}, xk, uk) where {T}
-    epmat = epmat_itp.parent
-    nr_ep = length(epmat.irvec_next)
-    nw, nband = size(uk)
-    nmodes = div(epmat.ndata, nw^2 * nr_ep)
-    ndata = nw * nband * nmodes
-    @assert nmodes * nw^2 * nr_ep == epmat.ndata
-    @assert epobj_ekpR.nr == nr_ep
-    @assert size(epobj_ekpR.op_r, 1) >= ndata
-
-    # Fourier over R_el at xk -> g(k, R_ep) in (nw, nw, nmodes*nr_ep)
-    g_flat = similar(epmat.op_r, Complex{T}, epmat.ndata, 1)
-    get_fourier_batched!(g_flat, epmat_itp, [xk])
-    nbatch = nmodes * nr_ep
-    g = reshape(g_flat, nw, nw, nbatch)
-
-    # Rotate electron-k index by uk: one GEMM via permute. (uk is applied un-conjugated.)
-    gp = permutedims(g, (2, 1, 3))                                   # (jw, iw, b)
-    M  = transpose(uk) * reshape(gp, nw, nw * nbatch)                # (nband, nw*nbatch)
-    out = permutedims(reshape(M, nband, nw, nbatch), (2, 1, 3))      # (nw, nband, nbatch)
-
-    copyto!(view(epobj_ekpR.op_r, 1:ndata, :), reshape(out, ndata, nr_ep))
-    epobj_ekpR.ndata = ndata
-    epobj_ekpR._id += 1
-    epobj_ekpR
-end
-
-"""
-    get_eph_kR_to_kq_batched!(ep_kq, ep_ekpR_itp::BatchedWannierInterpolator, xq, u_ph, ukq)
-
-Electron-phonon matrix in electron and phonon Bloch basis at `xq` (electron at `k` already
-in the eigenstate basis). Counterpart of [`get_eph_kR_to_kq!`](@ref) that runs on the backend
-of `ep_ekpR_itp.parent.op_r`. The two gauge rotations are the same reshaped GEMMs as the CPU
-version (`ukq'` on the left, `u_ph` on the right).
-"""
-function get_eph_kR_to_kq_batched!(ep_kq, ep_ekpR_itp::BatchedWannierInterpolator{T}, xq, u_ph, ukq) where {T}
-    nbandkq, nbandk, nmodes = size(ep_kq)
-    nw = size(ukq, 1)
-    @assert size(u_ph) == (nmodes, nmodes)
-    @assert size(ukq, 2) == nbandkq
-    parent = ep_ekpR_itp.parent
-    @assert parent.ndata == nw * nbandk * nmodes
-
-    # Fourier over R_ep at xq -> g(k+R_ep) in (nw, nbandk, nmodes)
-    g_flat = similar(parent.op_r, Complex{T}, parent.ndata, 1)
-    get_fourier_batched!(g_flat, ep_ekpR_itp, [xq])
-
-    # ep_kq[ibkq, ibk, imode] = ukq'[ibkq, iw] * g[iw, ibk, jmode] * u_ph[jmode, imode]
-    tmp = ukq' * reshape(g_flat, nw, nbandk * nmodes)               # (nbandkq, nbandk*nmodes)
-    mul!(reshape(ep_kq, nbandkq * nbandk, nmodes),
-         reshape(tmp, nbandkq * nbandk, nmodes), u_ph)
-    ep_kq
 end
 
 # =============================================================================

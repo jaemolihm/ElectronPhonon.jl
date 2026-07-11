@@ -98,12 +98,12 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", use
         # `get_el_eigen_valueonly_batched` come from the base + CUDA extension. Chunk over k so the
         # per-chunk device H(k) stack (nw*nw*kchunk complex) stays bounded — a single all-nk solve
         # can exhaust GPU memory on large grids. kchunk caps that stack at ~1 GiB (nk if smaller).
-        elham_dev = to_device(el_ham)
         kchunk = clamp(fld(2^30, nw * nw * 16), 1, kpoints.n)
+        elham_itp = get_interpolator(to_device(el_ham); fourier_mode="batched", batch_size=kchunk)
         kstart = 1
         while kstart <= kpoints.n
             kstop = min(kstart + kchunk - 1, kpoints.n)
-            E = Array(get_el_eigen_valueonly_batched(elham_dev, view(kpoints.vectors, kstart:kstop)))  # (nw, kchunk)
+            E = Array(get_el_eigen_valueonly_batched(elham_itp, view(kpoints.vectors, kstart:kstop)))  # (nw, kchunk)
             @views for (jl, ik) in enumerate(kstart:kstop)
                 bands_in_window = inside_window(E[:, jl], window...)
                 nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
