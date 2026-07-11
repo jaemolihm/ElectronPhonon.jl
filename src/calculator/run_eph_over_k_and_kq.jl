@@ -17,6 +17,9 @@ function run_eph_over_k_and_kq(
         progress_print_step = 20,
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
         covariant_derivative_of_g = false,  # Compute cov. derivative of g
+        use_gpu = false,   # Run the e-ph Wannier->Bloch interpolation on the GPU
+        q_batch_size = nothing,  # GPU: k+q points per batched kR->kq kernel (nothing = all k+q in one chunk)
+        k_batch_size = 256,   # GPU: number of outer k points processed per batched RR->kR kernel
     ) where {FT}
 
     if model.epmat_outer_momentum != "el"
@@ -31,24 +34,47 @@ function run_eph_over_k_and_kq(
     mpi_comm_k === nothing || error("mpi_comm_k not implemented")
     mpi_comm_q === nothing || error("mpi_comm_q not implemented")
 
+    # Symmetry (IBZ outer k) is supported on the GPU path, but only with directly-computed k+q
+    # (el_kq_from_unfolding = false): the IBZ reduction happens in the shared setup and the GPU loop
+    # is symmetry-agnostic (validated: filter/states/scatter match CPU). GPU unfolding of the k+q
+    # electron states is not implemented. Checked before setup so the unfolding branch is not entered.
+    (!use_gpu || symmetry === nothing || !el_kq_from_unfolding) || throw(ArgumentError(
+        "use_gpu supports symmetry only with el_kq_from_unfolding = false (GPU k+q unfolding not implemented)."))
+
     setup = _setup_eph_over_k_and_kq(model, kpts_input, kqpts_input;
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, symmetry, calculators, nchunks_threads,
-        covariant_derivative_of_g,
+        covariant_derivative_of_g, use_gpu,
     )
 
-    _loop_eph_over_k_and_kq(model,
-        setup.kpts, setup.qpts, setup.kqpts,
-        setup.el_k_save, setup.el_kq_save,
-        setup.ph_save, setup.precompute_ph,
-        setup.epdatas, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
-        setup.dyn_threads,
-        setup.epmat_R, setup.epobj_ekpR_R, setup.ep_ekpR_Rs;
-        calculators, skip_eph,
-        energy_conservation, screening_params,
-        progress_print_step, nchunks_threads,
-        covariant_derivative_of_g, symmetry,
-    )
+    if use_gpu
+        # GPU path: minimal scope. Extra flags must be off; the loop asserts the
+        # rest (no polar, full bands, commensurate grids, no symmetry/screening/MPI).
+        covariant_derivative_of_g && throw(ArgumentError("use_gpu does not support covariant_derivative_of_g"))
+        skip_eph && throw(ArgumentError("use_gpu requires skip_eph = false"))
+        _loop_eph_over_k_and_kq_gpu(model,
+            setup.kpts, setup.qpts, setup.kqpts,
+            setup.el_k_save, setup.el_kq_save,
+            setup.ph_save, setup.precompute_ph,
+            setup.epdatas;
+            calculators,
+            energy_conservation, screening_params,
+            progress_print_step, q_batch_size, k_batch_size, symmetry,
+        )
+    else
+        _loop_eph_over_k_and_kq(model,
+            setup.kpts, setup.qpts, setup.kqpts,
+            setup.el_k_save, setup.el_kq_save,
+            setup.ph_save, setup.precompute_ph,
+            setup.epdatas, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
+            setup.dyn_threads,
+            setup.epmat_R, setup.epobj_ekpR_R, setup.ep_ekpR_Rs;
+            calculators, skip_eph,
+            energy_conservation, screening_params,
+            progress_print_step, nchunks_threads,
+            covariant_derivative_of_g, symmetry,
+        )
+    end
 
     (; setup.kpts, setup.qpts, setup.el_k_save, setup.el_kq_save, setup.ph_save)
 end
@@ -72,25 +98,26 @@ function _setup_eph_over_k_and_kq(
         calculators = [],
         nchunks_threads = nthreads(),
         covariant_derivative_of_g = false,
+        use_gpu = false,
     ) where {FT}
 
     (; nw, nmodes) = model
 
     # Generate k points
     @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
-        kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
-    @time el_k_save  = compute_electron_states(model, kpts,  ["eigenvalue", "eigenvector", "velocity", "position"], window_k;  fourier_mode)
+        kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
+    @time el_k_save  = compute_electron_states(model, kpts,  ["eigenvalue", "eigenvector", "velocity", "position"], window_k;  fourier_mode, use_gpu)
     nk = kpts.n
 
     if el_kq_from_unfolding
         # To ensure gauge consistency between symmetry-equivalent k points, we explicitly compute
         # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
         @time kqpts_irr, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
-            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; symmetry, fourier_mode)
+            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; symmetry, fourier_mode, use_gpu)
 
         kqpts, ik_to_ikirr_isym_kq = unfold_kpoints(kqpts_irr, symmetry)
 
-        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
+        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode, use_gpu)
 
         el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
 
@@ -99,9 +126,9 @@ function _setup_eph_over_k_and_kq(
 
     else
         @time kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
-            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode)
+            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode, use_gpu)
 
-        @time el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
+        @time el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode, use_gpu)
     end
 
 
@@ -166,7 +193,7 @@ function _setup_eph_over_k_and_kq(
 
     # Precompute phonon states if precompute_ph == true
     if precompute_ph
-        @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
+        @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, use_gpu)
         dyn_threads = nothing
     else
         qpts = nothing
@@ -432,4 +459,278 @@ function _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, el_kq_save,
         end
 
     end # ikq
+end
+
+
+# =============================================================================
+#  GPU calculator loop (see README_GPU.md).
+#
+#  This mirrors `_loop_eph_over_k_and_kq` but moves the e-ph Wannier->Bloch interpolation
+#  onto the device using the batched drivers from `wannier_to_bloch_batched.jl`. The code here is
+#  backend-generic: it only calls `to_device` and the generic batched drivers, so no CUDA
+#  code lives in the base package (the device methods are provided by the CUDA extension). It
+#  is a separate function from the CPU `_loop_eph_over_k_and_kq` because its control flow —
+#  batched over k-tiles and q-chunks with device staging — differs from the per-(k,q) CPU loop,
+#  not because it holds any device-specific code.
+#
+#  Minimal first step — the rest is asserted off (not implemented on the GPU path):
+#    * no polar / long-range terms (so ϵs = 1, no dipole correction)
+#    * full bands, no energy window  ->  nband == nw at every k / k+q (uniform batch shapes)
+#    * commensurate k / k+q grids (precompute_ph) so phonon states are precomputed
+#    * no covariant derivative of g, no screening, no symmetry/unfolding, single node (no MPI),
+#      and energy_conservation = (:None, 0.0)
+#
+#  Buffer reuse: device buffers are allocated once before the k loop and reused for every
+#  (k, q), so the loop itself allocates almost nothing.
+function _loop_eph_over_k_and_kq_gpu(
+        model       :: Model{FT},
+        kpts, qpts, kqpts,
+        el_k_save, el_kq_save,
+        ph_save, precompute_ph,
+        epdatas;
+        calculators = [],
+        energy_conservation = (:None, 0.0),
+        screening_params = nothing,
+        progress_print_step = 20,
+        q_batch_size::Union{Int, Nothing} = nothing,
+        k_batch_size::Int = 256,
+        symmetry = nothing,
+    ) where {FT}
+
+    (; nw, nmodes) = model
+    nk = kpts.n
+    nkq = kqpts.n
+
+    # ----- scope asserts (minimal GPU step) -----
+    precompute_ph || throw(ArgumentError(
+        "use_gpu requires commensurate k / k+q grids so phonon states are precomputed (precompute_ph)."))
+    (!model.polar_phonon.use && !model.polar_eph.use) || throw(ArgumentError(
+        "use_gpu does not support polar / long-range terms. Use the CPU path."))
+    energy_conservation === (:None, 0.0) || throw(ArgumentError(
+        "use_gpu supports only energy_conservation = (:None, 0.0)."))
+    screening_params === nothing || throw(ArgumentError("use_gpu does not support screening_params."))
+    # symmetry (IBZ outer k) is allowed: the reduction is done in the shared setup and this loop is
+    # symmetry-agnostic — `symmetry` is only passed through to `postprocess_calculator!`. The
+    # dispatcher gates the unsupported el_kq_from_unfolding = true case.
+
+    # Default (q_batch_size === nothing): process all k+q in a single chunk per k. Fewer, larger
+    # kR->kq / calculator kernels — the GPU e-ph path is launch-bound for small nw/nmodes, so one
+    # big chunk is ~1.8× faster than the old 1024 default at 16³, and the per-chunk device buffers
+    # stay modest even at 50³ (≲ a few hundred MB). Pass an Int to cap the chunk if memory-limited.
+    q_batch_size = q_batch_size === nothing ? nkq : min(q_batch_size, nkq)
+    k_batch_size = min(k_batch_size, nk)
+
+    # The GPU path is always device-native/batched: the e-ph matrix for a whole (k, {k+q}) chunk
+    # stays on the device and each calculator does its reduction/scatter there (no per-(k,q) host
+    # callback, no host g2, no complex-ep D2H). Every calculator must therefore implement the
+    # batched device hook; a non-batched calculator fails loudly rather than silently falling back
+    # to a slow host path — a hard-to-spot performance cliff (see README_GPU.md "Decisions").
+    isempty(calculators) && throw(ArgumentError("use_gpu requires at least one calculator."))
+    all(allow_eph_batched, calculators) || throw(ArgumentError(
+        "use_gpu requires every calculator to implement the batched device hook " *
+        "(allow_eph_batched = true); the GPU path does not fall back to the host run_calculator! loop."))
+
+    # The interpolation always runs full-band (uniform nw×nw, using the full eigenvectors
+    # `el.u_full`); the energy window is applied in the calculator scatter, where out-of-window
+    # states have imap == 0 and are skipped, so a windowed run needs no special handling here.
+
+    # ----- device interpolators (allocated once) -----
+    epmat_dev = to_device(model.epmat)
+    epmat_itp = BatchedWannierInterpolator(epmat_dev; batch_size = k_batch_size)
+    ep_ekpR_dev = to_device(get_next_wannier_object(model.epmat))
+    ep_ekpR_itp = BatchedWannierInterpolator(ep_ekpR_dev; batch_size = q_batch_size)
+    ndata_ekpR = nw * nw * nmodes
+    nr_ep = ep_ekpR_dev.nr
+
+    # ----- persistent workspace (allocated once, reused across all (k, q)) -----
+    # All device staging is sized to the full chunk and used as plain CuArrays (not
+    # batch-sliced views), so the batched drivers' reshape/cuBLAS calls stay on dense arrays.
+
+    # RR->kR over a tile of `k_batch_size` outer-k at once: one batched kernel per tile instead of one
+    # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole tile; each
+    # k's slice is then copied into `ep_ekpR_dev` (device→device) for the inner kR->kq driver.
+    uks_dev     = similar(epmat_dev.op_r, Complex{FT}, nw, nw, k_batch_size)
+    uks_host    = Array{Complex{FT}}(undef, nw, nw, k_batch_size)
+    ep_ekpR_all = similar(epmat_dev.op_r, Complex{FT}, ndata_ekpR, nr_ep, k_batch_size)
+    ks_tile     = Vector{Vec3{FT}}(undef, k_batch_size)
+
+    uphs_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, q_batch_size)
+    epkq_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nmodes, q_batch_size)
+
+    # In-place scratch for the per-k kR->kq driver (g / tmp), reused across all (k, q) so the
+    # driver allocates nothing per call. Sized for the max chunk width `q_batch_size`; the driver
+    # uses the first `nq_chunk` columns for a partial final chunk.
+    kRkq_ws = KRtoKQWorkspace(ep_ekpR_dev.op_r, ndata_ekpR, nw, nw, nmodes, q_batch_size)
+
+    # Collect the k+q electron eigenvectors on the host and copy to the device once (they do not
+    # depend on the outer k), reused across all k. Each q-chunk reads a contiguous slice directly.
+    ukqs_all_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nkq)
+    let ukqs_all_host = Array{Complex{FT}}(undef, nw, nw, nkq)
+        for ikq in 1:nkq
+            @views ukqs_all_host[:, :, ikq] .= el_kq_save[ikq].u_full
+        end
+        copyto!(ukqs_all_dev, ukqs_all_host)
+    end
+    # Phonon eigenvectors `u` and frequencies `e` depend only on iq, so (like ukqs_all_dev above)
+    # collect the full q-grid stacks on the host and copy to the device once, then gather per
+    # chunk on the device by index (below).
+    uph_all_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, qpts.n)
+    ωq_all_dev  = similar(epmat_dev.op_r, FT, nmodes, qpts.n)
+    let uph_all_host = Array{Complex{FT}}(undef, nmodes, nmodes, qpts.n),
+        ωq_all_host  = Array{FT}(undef, nmodes, qpts.n)
+        for iq in 1:qpts.n
+            @views uph_all_host[:, :, iq] .= ph_save[iq].u
+            @views ωq_all_host[:, iq]     .= ph_save[iq].e
+        end
+        copyto!(uph_all_dev, uph_all_host)
+        copyto!(ωq_all_dev, ωq_all_host)
+    end
+
+    qs_chunk  = Vector{Vec3{FT}}(undef, q_batch_size)
+    iqs_chunk  = Vector{Int}(undef, q_batch_size)
+    iqs_chunk_dev    = similar(epmat_dev.op_r, Int, q_batch_size)
+
+    # q-index lookup without an O(prod(ngrid)) dense table (ngrid can be ~1e6/dim with few points).
+    # `combine_kpoint_grids` sorts `qpts` by hash, so a FULL grid has iq == hash+1 (pure arithmetic);
+    # otherwise fall back to the O(n) hash Dict `GridKpoints` carries. Decide once:
+    qpts_is_full = qpts.n == prod(qpts.ngrid) &&
+        all(_hash_xk(qpts.vectors[iq], qpts) == iq - 1 for iq in 1:qpts.n)
+
+    # Integer grid-coord hash for iq, replacing the per-(k,q) float normalize + `_hash_xk`:
+    #   hc_i = mod(xkqs_int[i,ikq] - xks_int[i,ik], ng_i),  hash = (hc1*ng2 + hc2)*ng3 + hc3,
+    # reproducing `_hash_xk` bit-identically with no Float64 in the hot loop. Requires every k and
+    # k+q to lie exactly on the q-grid (ngrid a multiple of both meshes) — guaranteed by precompute_ph,
+    # asserted above. `qs_chunk` reads qpts.vectors[iq] ≡ (xkq-xk) mod G; the Fourier phase is periodic
+    # in q→q+G, so the interpolated e-ph matrix is unchanged.
+    ng1, ng2, ng3 = qpts.ngrid
+    shq = qpts.shift
+    xkqs_int = Matrix{Int}(undef, 3, nkq)
+    xks_int  = Matrix{Int}(undef, 3, nk)
+    for ikq in 1:nkq, d in 1:3
+        xkqs_int[d, ikq] = round(Int, (kqpts.vectors[ikq][d] - shq[d]) * qpts.ngrid[d])
+    end
+    for ik in 1:nk, d in 1:3
+        xks_int[d, ik] = round(Int, kpts.vectors[ik][d] * qpts.ngrid[d])
+    end
+
+    ikqs_host = Vector{Int}(undef, q_batch_size)
+    ωq_dev    = similar(epmat_dev.op_r, FT, nmodes, q_batch_size)
+    ikqs_dev  = similar(epmat_dev.op_r, Int, q_batch_size)
+    g2_dev    = similar(epmat_dev.op_r, FT, nw, nw, nmodes, q_batch_size)
+
+    epdata = take!(epdatas)
+
+    for kstart in 1:k_batch_size:nk
+        iks_batch = kstart:min(kstart + k_batch_size - 1, nk)
+        nk_batch = length(iks_batch)
+
+        # Stack U(k) and the k list for this outer-k tile (pad the partial tail with valid
+        # duplicated data so the batched RR->kR runs on dense `k_batch_size`-sized arrays).
+        for (ik_ind, ik) in enumerate(iks_batch)
+            # Full eigenvectors (nw×nw) so the batched RR->kR stays uniform; the window is
+            # applied later in the calculator scatter, not here.
+            @views uks_host[:, :, ik_ind] .= el_k_save[ik].u_full
+            ks_tile[ik_ind] = kpts.vectors[ik]
+        end
+        for ik_ind in (nk_batch+1):k_batch_size
+            @views uks_host[:, :, ik_ind] .= uks_host[:, :, nk_batch]
+            ks_tile[ik_ind] = ks_tile[nk_batch]
+        end
+        copyto!(uks_dev, uks_host)
+
+        # One batched RR->kR over the whole tile: g(k, R_ep) for all k in the tile.
+        get_eph_RR_to_kR_batched!(ep_ekpR_all, epmat_itp, ks_tile, uks_dev)
+
+    for (ik_ind, ik) in enumerate(iks_batch)
+        if mod(ik, progress_print_step) == 0 && mpi_isroot()
+            @info "$(now()) ik = $ik / $nk"
+            flush(stdout); flush(stderr)
+        end
+        el_k = el_k_save[ik]
+        epdata.el_k = el_k
+
+        # Load this k's g(k, R_ep) into the interpolator's parent (cheap device→device copy);
+        # the inner kR->kq driver reads `ep_ekpR_dev.op_r` fresh.
+        copyto!(ep_ekpR_dev.op_r, view(ep_ekpR_all, :, :, ik_ind))
+        ep_ekpR_dev._id += 1
+
+        for calc in calculators
+            setup_calculator_inner!(calc; ik)
+        end
+
+        qstart = 1
+        while qstart <= nkq
+            qend = min(qstart + q_batch_size - 1, nkq)
+            nq_chunk = qend - qstart + 1
+
+            # Build the per-q index list for this chunk (host-side integers only); the phonon
+            # eigenvectors `u` and frequencies `e` are gathered on the device by iq below.
+            for j in 1:nq_chunk
+                ikq = qstart + j - 1
+                # Integer grid-coord hash for iq (no Float64 normalize/_hash_xk per pair).
+                h1 = mod(xkqs_int[1, ikq] - xks_int[1, ik], ng1)
+                h2 = mod(xkqs_int[2, ikq] - xks_int[2, ik], ng2)
+                h3 = mod(xkqs_int[3, ikq] - xks_int[3, ik], ng3)
+                hash = (h1 * ng2 + h2) * ng3 + h3
+                # Full sorted grid → iq = hash+1 (no table); else O(n) Dict (no ngrid³ array).
+                iq = qpts_is_full ? hash + 1 : get(qpts._xk_hash_to_ik, hash, 0)
+                # Guard both paths: Dict miss → iq==0; full-grid fast path → iq>qpts.n if off-grid.
+                (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
+                # q-vector from the O(n) qpts.vectors (a cached gather — cheaper than recomputing it
+                # with 3 float divisions; qpts.vectors is O(n), never ngrid³). ≡ (xkq-xk) mod G.
+                qs_chunk[j] = qpts.vectors[iq]
+                iqs_chunk[j] = iq
+                ikqs_host[j] = ikq
+            end
+            rng_q = 1:nq_chunk   # this chunk's columns within the q_batch_size-sized device buffers
+
+            # Gather this chunk's phonon eigenvectors/frequencies on the device by iq
+            # (uphs_dev[:,:,j] = uph_all_dev[:,:,iq[j]]); ωq gathered here too so the fused kernel
+            # can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs at width nq_chunk
+            # via views into the q_batch_size-sized buffers, so there is no padded tail.
+            # H2D copy of just the first nq_chunk indices (5-arg contiguous copy — copying a host↔
+            # device SubArray view instead would fall back to scalar indexing); the device gather
+            # then reads only `view(iqs_chunk_dev, rng_q)`, so the untouched tail is never used.
+            copyto!(iqs_chunk_dev, 1, iqs_chunk, 1, nq_chunk)
+            @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, view(iqs_chunk_dev, rng_q)]
+            @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, view(iqs_chunk_dev, rng_q)]
+            # k+q rotations: a contiguous slice of the prebuilt device stack (no copy).
+            ukqs_used = view(ukqs_all_dev, :, :, qstart:qend)
+
+            # One batched Wannier->Bloch over this chunk's q: ep_kq(q) (nw, nw, nmodes), folding
+            # g2 = |ep|²/(2ω) into the same fused kernel pass.
+            get_eph_kR_to_kq_batched!(view(epkq_dev, :, :, :, rng_q), ep_ekpR_itp, view(qs_chunk, rng_q),
+                view(uphs_dev, :, :, rng_q), ukqs_used; ws=kRkq_ws,
+                g2_out = view(g2_dev, :, :, :, rng_q), ωq = view(ωq_dev, :, rng_q))
+
+            # Hand the chunk's e-ph matrix (still on the device) to each calculator, which forms
+            # g2 / scatters it on the device; no D2H of the e-ph matrix here. 5-arg contiguous H2D
+            # copy of the first nq_chunk k+q indices (a SubArray-view copy would go scalar).
+            copyto!(ikqs_dev, 1, ikqs_host, 1, nq_chunk)
+            for calc in calculators
+                run_calculator_batched!(calc,
+                    view(epkq_dev, :, :, :, rng_q), view(ωq_dev, :, rng_q),
+                    ik, view(ikqs_dev, rng_q); g2 = view(g2_dev, :, :, :, rng_q))
+            end
+
+            qstart = qend + 1
+        end # q chunk
+
+        for calc in calculators
+            postprocess_calculator_inner!(calc; ik)
+        end
+    end # ik within tile
+
+    # Bound the host look-ahead to one k-tile: a device-resident calculator never D2H-syncs per k,
+    # so without this the host can race across all tiles, keeping every tile's RR->kR scratch +
+    # per-k transients live in the memory pool at once. Draining at each tile boundary caps the
+    # transient working set with negligible utilization cost. No-op on the CPU backend.
+    device_synchronize(epmat_dev.op_r)
+    end # k tile
+
+    put!(epdatas, epdata)
+
+    for calc in calculators
+        postprocess_calculator!(calc; qpts, symmetry)
+    end
 end

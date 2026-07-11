@@ -54,12 +54,12 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
     polar_phonon::Polar
     polar_eph::Polar
 
-    el_ham::WannierObject{FT} # ELectron Hamiltonian
+    el_ham::HostWannierObject{FT} # ELectron Hamiltonian
     # TODO: Use Hermiticity of hk
 
-    el_ham_R::WannierObject{FT} # Electron Hamiltonian times R
-    el_pos::WannierObject{FT} # Electron position (dipole)
-    el_vel::Union{WannierObject{FT},Nothing} # ELectron velocity matrix
+    el_ham_R::HostWannierObject{FT} # Electron Hamiltonian times R
+    el_pos::HostWannierObject{FT} # Electron position (dipole)
+    el_vel::Union{HostWannierObject{FT},Nothing} # ELectron velocity matrix
     el_velocity_mode::Symbol # :Direct or :BerryConnection. Default: :Direct
     # Two different ways to compute the velocity matrix.
     # If :Direct, use direct interpolation of dH/dk matrix elements (stored in el_vel).
@@ -68,8 +68,8 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
     # el_velocity_mode = :Direct          corresponds to vme = "dipole"  of
     # el_velocity_mode = :BerryConnection corresponds to vme = "wannier" of
 
-    ph_dyn::WannierObject{FT} # Phonon dynamical matrix
-    ph_dyn_R::WannierObject{FT} # Phonon dynamical matrix
+    ph_dyn::HostWannierObject{FT} # Phonon dynamical matrix
+    ph_dyn_R::HostWannierObject{FT} # Phonon dynamical matrix
     # TODO: Use real-valuedness of dyn_r
     # TODO: Use Hermiticity of dyn_q
 
@@ -81,7 +81,7 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
     # epmat_outer_momentum == :ph : epmat.op_r is indexed as (i, j, nmodes, Rₑ, Rₚ)
 
     # Symmetry operators for Wannier functions
-    el_sym::Union{SymmetryOperators{FT, WannierObject{FT}}, Nothing} = nothing
+    el_sym::Union{SymmetryOperators{FT, HostWannierObject{FT}}, Nothing} = nothing
 end
 
 "Read file and create Model object in the MPI root.
@@ -390,7 +390,7 @@ function load_symmetry_operators_from_epw(folder)
     ind_el = sortperm(irvec, by=x->reverse(x))
     irvec = irvec[ind_el]
 
-    operators = Vector{WannierObject{Float64}}()
+    operators = Vector{HostWannierObject{Float64}}()
     @views for isym = 1:symmetry.nsym
         symmetry_mel = read(f, (ComplexF64, nw, nw, nrr))
         symmetry_mel .= symmetry_mel[:, :, ind_el]

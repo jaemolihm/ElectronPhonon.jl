@@ -36,7 +36,14 @@ TetrahedronIntegration = "0f92f267-01b4-444d-9255-64945246b180"
 TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 spglib_jll = "ac4a9f1e-bdb2-5204-990c-47c8b2f70d4e"
 
+[weakdeps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+
+[extensions]
+ElectronPhononCUDAExt = "CUDA"
+
 [compat]
+CUDA = "5"
 ChunkSplitters = "2"
 Spglib = "0.8"
 julia = "1"

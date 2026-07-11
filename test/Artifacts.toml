@@ -4,3 +4,10 @@ git-tree-sha1 = "a2e562e693f5428ea21d8928afc9d2efd780b3a7"
     [[cubicBN.download]]
     sha256 = "5d1d716c7270902cf865c192da6d779c7ff13d18aab058dd7dff28f94e347744"
     url = "https://github.com/jaemolihm/ElectronPhonon.jl-testdata/raw/main/cubicBN.tar.gz"
+
+[pb]
+git-tree-sha1 = "957ff4cc753c8bad4750f2a126a324ee0460a2bf"
+
+    [[pb.download]]
+    sha256 = "e4eba0c0bd0f526dfc60a877165784880a134e616c8d6b027bfe06965450e0ee"
+    url = "https://github.com/jaemolihm/ElectronPhonon.jl-testdata/raw/main/pb.tar.gz"
