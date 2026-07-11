@@ -12,6 +12,10 @@ catch
     false
 end
 
+# A mis-dispatch (a device view falling back to the generic scalar `batched_gemm!` instead of the
+# GPU method) must fail loudly rather than silently limp — forbid scalar indexing on the device.
+GPU_AVAILABLE && CUDA.allowscalar(false)
+
 """
 Validate the batched e-ph drivers against the per-k/q reference (`get_eph_RR_to_kR!` /
 `get_eph_kR_to_kq!`) on a chosen backend. `to_dev` moves a `WannierObject` to the backend
@@ -153,6 +157,41 @@ end
 
         # electron-phonon batched drivers on the GPU vs the per-k/q CPU reference
         check_eph_batched(to_device, CuArray; rtol=1e-9)
+    end
+end
+
+# Partial final q-chunk: the GPU loop runs a chunk narrower than the preallocated `q_batch_size`
+# by passing contiguous device VIEWS (`view(buf, :,:,:, 1:nq_chunk)`) into
+# `get_eph_kR_to_kq_batched!` and reusing the max-width workspace. This checks that path directly:
+# the sliced-view result must match the full-width result, through BOTH `eph_apply_rotations!`
+# branches — the fused kernel (`nw*nmodes ≤ _FUSED_ROT_MAX_NWNM`) and the cuBLAS
+# `gemm_strided_batched!` path (above it), where a reshape of a view must stay a strided CuArray.
+function check_eph_partial_view(nw, nmodes; rtol)
+    nband, nr_ep, nq, m = nw, 8, 10, 7   # slice width m < full width nq
+    irvec_ep = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_ep], by = x -> reverse(x))
+    obj  = to_device(WannierObject(irvec_ep, rand(ComplexF64, nw*nband*nmodes, nr_ep)))
+    qs   = [Vec3(rand(3)...) for _ in 1:nq]
+    uphs = CuArray(rand(ComplexF64, nmodes, nmodes, nq))
+    ukqs = CuArray(rand(ComplexF64, nw, nband, nq))
+    ws   = ElectronPhonon.KRtoKQWorkspace(obj.op_r, nw*nband*nmodes, nband, nband, nmodes, nq)
+
+    full = CuArray(zeros(ComplexF64, nband, nband, nmodes, nq))
+    get_eph_kR_to_kq_batched!(full, get_interpolator(obj; fourier_mode="batched", batch_size=nq),
+                              qs, uphs, ukqs; ws)
+    # Same call restricted to the first m q-points via views into the max-width buffers, reusing ws.
+    part = CuArray(zeros(ComplexF64, nband, nband, nmodes, nq))
+    get_eph_kR_to_kq_batched!(view(part, :, :, :, 1:m),
+        get_interpolator(obj; fourier_mode="batched", batch_size=nq),
+        view(qs, 1:m), view(uphs, :, :, 1:m), view(ukqs, :, :, 1:m); ws)
+    @test isapprox(Array(view(part, :, :, :, 1:m)), Array(view(full, :, :, :, 1:m)); rtol)
+end
+
+@testset "GPU partial q-chunk (views into max-width buffers)" begin
+    if !GPU_AVAILABLE
+        @info "CUDA not available/functional — skipping GPU partial-chunk test"
+    else
+        check_eph_partial_view(3, 4; rtol=1e-9)   # nw*nmodes = 12 ≤ 24 → fused kernel path
+        check_eph_partial_view(6, 6; rtol=1e-9)   # nw*nmodes = 36 > 24 → cuBLAS strided path
     end
 end
 
