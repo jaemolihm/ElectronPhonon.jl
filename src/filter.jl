@@ -93,18 +93,27 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", use
     band_max_ = zeros(Int, kpoints.n)
 
     if use_gpu
-        # GPU: one batched valueonly eigensolve over the whole grid (the band-eigenvalues are the
-        # expensive part of filtering); the cheap window test stays on the host. `to_device` /
-        # `get_el_eigen_valueonly_batched` come from the base + CUDA extension.
-        W = Array(get_el_eigen_valueonly_batched(to_device(el_ham), kpoints.vectors))  # (nw, nk)
-        @views for ik in 1:kpoints.n
-            bands_in_window = inside_window(W[:, ik], window...)
-            nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
-            if !isempty(bands_in_window)
-                ik_keep[ik] = true
-                band_min_[ik] = bands_in_window[1]
-                band_max_[ik] = bands_in_window[end]
+        # GPU: batched valueonly eigensolve (the band-eigenvalues are the expensive part of
+        # filtering); the cheap window test stays on the host. `to_device` /
+        # `get_el_eigen_valueonly_batched` come from the base + CUDA extension. Chunk over k so the
+        # per-chunk device H(k) stack (nw*nw*kchunk complex) stays bounded — a single all-nk solve
+        # can exhaust GPU memory on large grids. kchunk caps that stack at ~1 GiB (nk if smaller).
+        elham_dev = to_device(el_ham)
+        kchunk = clamp(fld(1 << 30, nw * nw * 16), 1, kpoints.n)
+        kstart = 1
+        while kstart <= kpoints.n
+            kstop = min(kstart + kchunk - 1, kpoints.n)
+            W = Array(get_el_eigen_valueonly_batched(elham_dev, view(kpoints.vectors, kstart:kstop)))  # (nw, kchunk)
+            @views for (jl, ik) in enumerate(kstart:kstop)
+                bands_in_window = inside_window(W[:, jl], window...)
+                nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
+                if !isempty(bands_in_window)
+                    ik_keep[ik] = true
+                    band_min_[ik] = bands_in_window[1]
+                    band_max_[ik] = bands_in_window[end]
+                end
             end
+            kstart = kstop + 1
         end
         nelec_below_window = sum(nelec_below_window_)
         return (; ik_keep, band_min = minimum(band_min_), band_max = maximum(band_max_), nelec_below_window)
