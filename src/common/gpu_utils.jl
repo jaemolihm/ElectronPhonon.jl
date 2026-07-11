@@ -57,15 +57,21 @@ end
 
 Device-resident scatter for a calculator that keeps `g2`/`ωq` on the device (no per-chunk
 host streaming). For every `(m, n, ν, j)` entry of `g2vals` `(nbandkq, nbandk, nm, nqc)`, look
-up the state indices `i = imap_i_col[n]` and `f = imap_f[m, ikqs[j]]`; if both are in-window
-(`> 0`), write the value into the mode-fastest linear slot
-`lin = ν + nm·(i−i0−1) + nm·ni_stride·(f−1)` of the flat `g2_out` / `ωq_out`. For the full
-device-resident buffer pass `ni_stride = n_i`, `i0 = 0`. For a *block* buffer holding only one
-outer-k tile, pass the buffer's i-extent as `ni_stride` and the tile's global-i offset as `i0`
-(so global state `i` lands at local row `i − i0`)
-(`ω = ωq[ν, j]`). The target `lin` indices are unique across the run (distinct k → distinct i,
-distinct k+q → distinct f), so the writes never collide (no atomics needed). Generic
-(CPU/fallback) method; the CUDA extension provides a one-kernel `CuArray` method.
+up the state indices `i = imap_i_col[n]` (in-window outer-k state) and `f = imap_f[m, ikqs[j]]`
+(in-window k+q state); if both are in-window (`> 0`), write the value (`ω = ωq[ν, j]`) into the
+mode-fastest linear slot `lin = ν + nm·(i−i0−1) + nm·ni_stride·(f−1)` of the flat `g2_out`/`ωq_out`.
+
+The output buffer indexes outer-k states along `i`, and there are two ways to size it:
+- **Full buffer** — holds all `n_i` outer states at once: pass `ni_stride = n_i`, `i0 = 0`.
+- **Block buffer** — the GPU e-ph loop walks the outer-k points in tiles; a memory-bounded caller
+  keeps only the CURRENT tile's outer states on the device (device use ∝ tile, not the whole grid)
+  and flushes each tile to the host. Then the buffer's i-extent is the tile size, not `n_i`: pass
+  `ni_stride =` that extent and `i0 =` the tile's global-i offset, so global state `i` writes to
+  local row `i − i0`.
+
+The target `lin` indices are unique across the run (distinct k → distinct i, distinct k+q →
+distinct f), so the writes never collide (no atomics needed). Generic (CPU/fallback) method; the
+CUDA extension provides a one-kernel `CuArray` method.
 
 A helper for downstream device-resident calculators: from their `run_calculator_batched!` hook
 they call this to scatter each e-ph chunk's `g2`/`ωq` into their own window-mapped device
