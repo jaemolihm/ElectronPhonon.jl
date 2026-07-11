@@ -264,7 +264,8 @@ ElectronPhonon.postprocess_calculator!(c::_RecordCalcBatched; kwargs...) = c
 # Computes g2 from `ep_kq` itself (independent check of the fused-kernel ep_kq output). The GPU
 # loop now also folds g2 into the kRkq kernel and passes it as `g2=`; when present, assert it
 # matches the abs2/(2ω) recomputation — this guards the production g2 output in-package.
-function ElectronPhonon.run_calculator_batched!(c::_RecordCalcBatched, ep_kq, ωq, ik, ikqs; g2=nothing)
+function ElectronPhonon.run_calculator_batched!(c::_RecordCalcBatched, ep_kq, ωq, ik, ikqs;
+        g2=nothing, ibandk_offset=0)
     nbandkq, nbandk, nm, nqc = size(ep_kq)
     g2dev = abs2.(ep_kq) ./ (2 .* reshape(ωq, 1, 1, nm, nqc))
     g2 === nothing || @assert maximum(abs, Array(g2 .- g2dev)) <= 1e-10 * maximum(abs, Array(g2dev))
@@ -272,8 +273,9 @@ function ElectronPhonon.run_calculator_batched!(c::_RecordCalcBatched, ep_kq, ω
     ωh = Array(ωq)
     ikqsh = Array(ikqs)
     for j in 1:nqc, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
-        c.g2[m, n, ν, ik, ikqsh[j]] = g2h[m, n, ν, j]
-        c.ωq[m, n, ν, ik, ikqsh[j]] = ωh[ν, j]
+        # ibandk_offset: the loop's k-side window projection offset (ep_kq band n ↔ physical band ibandk_offset+n).
+        c.g2[m, ibandk_offset + n, ν, ik, ikqsh[j]] = g2h[m, n, ν, j]
+        c.ωq[m, ibandk_offset + n, ν, ik, ikqsh[j]] = ωh[ν, j]
     end
     c
 end

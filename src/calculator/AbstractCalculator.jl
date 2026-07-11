@@ -62,7 +62,7 @@ opts out, so calculators keep using the host `run_calculator!` path.
 allow_eph_batched(::AbstractCalculator) = false
 
 """
-    run_calculator_batched!(calc, ep_kq, ωq, ik, ikqs; kwargs...)
+    run_calculator_batched!(calc, ep_kq, ωq, ik, ikqs; g2=nothing, ibandk_offset=0, kwargs...)
 
 Batched hook invoked by `run_eph_over_k_and_kq` when `use_gpu = true`. That loop is an outer-k
 loop with the inner k+q points batched, so this is called once per outer k-point `ik` with all
@@ -74,10 +74,14 @@ the e-ph matrix for the list of k+q points:
 - `ikqs`  :: the `nq` k+q point indices of this batch (so the calculator can address its inner
   states).
 
-Keyword argument:
-- `g2` :: same shape as `ep_kq` — the loop passes `g2 = |ep|²/(2ω)` already formed (the GPU path
+Keyword arguments:
+- `g2`   :: same shape as `ep_kq` — the loop passes `g2 = |ep|²/(2ω)` already formed (the GPU path
   folds it into the rotation kernel for free), so a calculator that needs `g2` should use this
   rather than recomputing it from `ep_kq`.
+- `ibandk_offset` :: k-side window-projection band offset, **0-based** — `ep_kq`'s band-of-k axis `n`
+  (1-based, `1:nbandk`) corresponds to PHYSICAL band `ibandk_offset + n` (so `n = 1` is physical band
+  `ibandk_offset + 1`). The loop rotates only an `nbandk`-wide contiguous eigenvector window around the
+  in-window bands; `ibandk_offset = 0` for full-band runs (then physical band `= n`).
 
 Runs on the backend of `ep_kq` (CPU or GPU); implementations should stay backend-generic
 (`similar`, `copyto!`, broadcasting, scatter assignment) so no CUDA dependency leaks into the

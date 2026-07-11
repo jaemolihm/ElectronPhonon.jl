@@ -49,3 +49,35 @@ Eliashberg gaps were previously validated CPU-vs-GPU to 1e-5 meV. The in-repo lo
 (`check_eph_batched`, identical fixed eigenvectors on both backends) matches to 1e-9. The
 bench's element-wise `g2` comparison is simply not a valid check across two eigensolvers for a
 degenerate system.
+
+---
+
+## 2026-07-11 — `71f90e0` (gpu-2b-shared-opts, Stage 2b: 3 consolidated GPU opts)
+
+**Hardware:** NVIDIA RTX A6000 (48 GB), host `ccqlin059`.
+**Software:** Julia 1.11.7, CUDA.jl functional. GPU tests: 81/81 green.
+
+Stage 2b adds three GPU optimizations on top of Stage 2a: fused e-ph rotation kernel
+parallelized over (band, band, q); k-side window projection of the batched interpolation
+(the k side carries only `nbk_max` in-window bands, not all `nw`); and `@inbounds` on the
+per-batch device iq gathers.
+
+**End-to-end e-ph loop** (`bench_eliashberg_loop_gpu.jl`, EliashbergCalculator, window E_F±0.3 eV):
+
+| grid | n_i | CPU | GPU | speedup |
+|-|-|-|-|-|
+| 16³ | 432  | 0.58 s | 0.55 s | 1.05× |
+| 24³ | 1716 | 7.12 s | 2.94 s | 2.42× |
+| 32³ | 4052 | 41.1 s | 8.83 s | 4.66× |
+
+**No GPU regression — the reliable 32³ GPU signal improved 11.2 s → 8.83 s (1.27×) vs the Stage 1
+baseline row above.** The 24³ GPU also improved (3.55 → 2.94 s). The window-projection win is
+modest here because Pb has `nw = 4` (little to project away); the large speedups it targets
+(2.9–4.9× measured in EP `15d2570` on TaAs `nw = 32`, ±0.1 eV) need a wide-band, narrow-window
+system. The **CPU** times dropped vs the baseline row too (e.g. 78.8 → 41.1 s at 32³), which
+reflects the current MigdalEliashberg working-tree state rather than a GPU change — so the
+cross-row *speedup ratio* is not directly comparable; trend the GPU wall-time column instead.
+
+`relerr(g2)=0.76` / `ωq=false`: same degenerate-gauge artifact documented in the Stage 1 entry
+above (two eigensolvers pick different gauges for Pb's degenerate bands), not a correctness
+regression — the 81/81 GPU tests use gauge-invariant / fixed-eigenvector checks.

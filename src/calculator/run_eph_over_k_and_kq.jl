@@ -530,16 +530,39 @@ function _loop_eph_over_k_and_kq_gpu(
         "use_gpu requires every calculator to implement the batched device hook " *
         "(allow_eph_batched = true); the GPU path does not fall back to the host run_calculator! loop."))
 
-    # The interpolation always runs full-band (uniform nw×nw, using the full eigenvectors
+    # The k+q side of the interpolation runs full-band (uniform nw×nw, using the full eigenvectors
     # `el.u_full`); the energy window is applied in the calculator scatter, where out-of-window
-    # states have imap == 0 and are skipped, so a windowed run needs no special handling here.
+    # states have imap == 0 and are skipped, so a windowed run needs no special handling there.
+    fullband = all(el.nband == nw for el in el_k_save) && all(el.nband == nw for el in el_kq_save)
+
+    # ----- k-side window projection -----
+    # The OUTER-k side does NOT need all nw bands: the calculator scatter keeps only in-window
+    # (band, k) pairs, so rotate the k side by only an `nbandk_max`-wide CONTIGUOUS window of
+    # eigenvector columns per k (`u_full[:, nb0+1 : nb0+nbandk_max]`, positioned to contain that k's
+    # in-window range `rng`). Every downstream per-(k,q) object — the kR→kq GEMM, both gauge
+    # rotations, g2, and the scatter — shrinks by nw/nbandk_max, the dominant ∝ nk·nq cost at narrow
+    # windows (e.g. TaAs ±0.1 eV: nbandk_max ≈ 4 of nw = 32). Out-of-window bands inside the projected
+    # window scatter to imap == 0 and are skipped exactly as before; the calculators only need the
+    # per-k physical-band offset `ibandk_offset` (0-based: ep_kq band n ↔ physical band
+    # ibandk_offset + n) to address their imaps. Full-band runs have
+    # nbandk_max = nw, ibandk_offset = 0 — the path (shapes, GEMMs, results) is unchanged.
+    # ibandk_offsets[ik]: 0-based window start = (first in-window band − 1), clamped so the
+    # nbandk_max-wide window [offset+1, offset+nbandk_max] stays within [1, nw]. The clamp only
+    # bites when a k's bands sit near the top edge: e.g. nw=4, nbandk_max=3, rng=3:4 → first−1=2
+    # exceeds nw−nbandk_max=1, so offset=1 (window 2:4 ⊇ 3:4); offset=2 would give 3:5, off the top.
+    nbandk_max = fullband ? nw : max(maximum(el -> el.nband, el_k_save; init = 1), 1)
+    ibandk_offsets = fullband ? zeros(Int, nk) :
+        [clamp(first(el.rng) - 1, 0, nw - nbandk_max) for el in el_k_save]
 
     # ----- device interpolators (allocated once) -----
     epmat_dev = to_device(model.epmat)
     epmat_itp = BatchedWannierInterpolator(epmat_dev; batch_size = nk_batch_max)
     ep_ekpR_dev = to_device(get_next_wannier_object(model.epmat))
+    ndata_ekpR = nw * nbandk_max * nmodes
+    # Set ndata BEFORE building the interpolator (its Fourier cache is sized to parent.ndata):
+    # under the k-side projection only the first nw·nbandk_max·nmodes rows of op_r are filled/read.
+    ep_ekpR_dev.ndata = ndata_ekpR
     ep_ekpR_itp = BatchedWannierInterpolator(ep_ekpR_dev; batch_size = nq_batch_max)
-    ndata_ekpR = nw * nw * nmodes
     nr_ep = ep_ekpR_dev.nr
 
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
@@ -549,18 +572,18 @@ function _loop_eph_over_k_and_kq_gpu(
     # RR->kR over a batch of `nk_batch_max` outer-k at once: one batched kernel per batch instead of one
     # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole batch; each
     # k's slice is then copied into `ep_ekpR_dev` (device→device) for the inner kR->kq driver.
-    uks_dev     = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nk_batch_max)
-    uks_host    = Array{Complex{FT}}(undef, nw, nw, nk_batch_max)
+    uks_dev     = similar(epmat_dev.op_r, Complex{FT}, nw, nbandk_max, nk_batch_max)
+    uks_host    = Array{Complex{FT}}(undef, nw, nbandk_max, nk_batch_max)
     ep_ekpR_all = similar(epmat_dev.op_r, Complex{FT}, ndata_ekpR, nr_ep, nk_batch_max)
     ks_batch     = Vector{Vec3{FT}}(undef, nk_batch_max)
 
     uphs_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, nq_batch_max)
-    epkq_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nmodes, nq_batch_max)
+    epkq_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nbandk_max, nmodes, nq_batch_max)
 
     # In-place scratch for the per-k kR->kq driver (g / tmp), reused across all (k, q) so the
     # driver allocates nothing per call. Sized for the max batch width `nq_batch_max`; the driver
     # uses the first `nq_batch` columns for a partial final batch.
-    kRkq_ws = KRtoKQWorkspace(ep_ekpR_dev.op_r, ndata_ekpR, nw, nw, nmodes, nq_batch_max)
+    kRkq_ws = KRtoKQWorkspace(ep_ekpR_dev.op_r, ndata_ekpR, nw, nbandk_max, nmodes, nq_batch_max)
 
     # Collect the k+q electron eigenvectors on the host and copy to the device once (they do not
     # depend on the outer k), reused across all k. Each q-batch reads a contiguous slice directly.
@@ -616,7 +639,7 @@ function _loop_eph_over_k_and_kq_gpu(
     ikqs_host = Vector{Int}(undef, nq_batch_max)
     ωq_dev    = similar(epmat_dev.op_r, FT, nmodes, nq_batch_max)
     ikqs_dev  = similar(epmat_dev.op_r, Int, nq_batch_max)
-    g2_dev    = similar(epmat_dev.op_r, FT, nw, nw, nmodes, nq_batch_max)
+    g2_dev    = similar(epmat_dev.op_r, FT, nw, nbandk_max, nmodes, nq_batch_max)
 
     epdata = take!(epdatas)
 
@@ -628,9 +651,11 @@ function _loop_eph_over_k_and_kq_gpu(
         # Stack U(k) and the k list for this outer-k batch (pad the partial tail with valid
         # duplicated data so the batched RR->kR runs on dense `nk_batch_max`-sized arrays).
         for (ik_ind, ik) in enumerate(iks_batch)
-            # Full eigenvectors (nw×nw) so the batched RR->kR stays uniform; the window is
-            # applied later in the calculator scatter, not here.
-            @views uks_host[:, :, ik_ind] .= el_k_save[ik].u_full
+            # k-side window projection: the `nbandk_max` contiguous eigenvector columns around this
+            # k's in-window range (all nw columns when full-band). The window selection itself
+            # still happens in the calculator scatter (imap == 0 outside), offset by ibandk_offsets[ik].
+            nb0 = ibandk_offsets[ik]
+            @views uks_host[:, :, ik_ind] .= el_k_save[ik].u_full[:, nb0+1:nb0+nbandk_max]
             ks_batch[ik_ind] = kpts.vectors[ik]
         end
         for ik_ind in (nk_batch+1):nk_batch_max
@@ -657,8 +682,9 @@ function _loop_eph_over_k_and_kq_gpu(
         epdata.el_k = el_k
 
         # Load this k's g(k, R_ep) into the interpolator's parent (cheap device→device copy);
-        # the inner kR->kq driver reads `ep_ekpR_dev.op_r` fresh.
-        copyto!(ep_ekpR_dev.op_r, view(ep_ekpR_all, :, :, ik_ind))
+        # the inner kR->kq driver reads `ep_ekpR_dev.op_r` fresh. Under the k-side projection
+        # only the first ndata_ekpR rows are used (op_r itself is full-band-sized).
+        @views ep_ekpR_dev.op_r[1:ndata_ekpR, :] .= ep_ekpR_all[:, :, ik_ind]
         ep_ekpR_dev._id += 1
 
         for calc in calculators
@@ -698,9 +724,12 @@ function _loop_eph_over_k_and_kq_gpu(
             # H2D copy of just the first nq_batch indices (5-arg contiguous copy — copying a host↔
             # device SubArray view instead would fall back to scalar indexing); the device gather
             # then reads only `view(iqs_batch_dev, rng_q)`, so the untouched tail is never used.
+            # `@inbounds`: bounds-checking a device INDEX ARRAY costs a Bool map+reduce kernel and
+            # a D2H round trip of the result per (k, batch); `iq` is already validated on the host
+            # (the guard above), so the device-side re-check is pure overhead.
             copyto!(iqs_batch_dev, 1, iqs_batch, 1, nq_batch)
-            @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, view(iqs_batch_dev, rng_q)]
-            @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, view(iqs_batch_dev, rng_q)]
+            @inbounds @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, view(iqs_batch_dev, rng_q)]
+            @inbounds @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, view(iqs_batch_dev, rng_q)]
             # k+q rotations: a contiguous slice of the prebuilt device stack (no copy).
             ukqs_used = view(ukqs_all_dev, :, :, qstart:qend)
 
@@ -717,7 +746,8 @@ function _loop_eph_over_k_and_kq_gpu(
             for calc in calculators
                 run_calculator_batched!(calc,
                     view(epkq_dev, :, :, :, rng_q), view(ωq_dev, :, rng_q),
-                    ik, view(ikqs_dev, rng_q); g2 = view(g2_dev, :, :, :, rng_q))
+                    ik, view(ikqs_dev, rng_q); g2 = view(g2_dev, :, :, :, rng_q),
+                    ibandk_offset = ibandk_offsets[ik])
             end
 
             qstart = qend + 1
