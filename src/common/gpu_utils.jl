@@ -82,9 +82,7 @@ function eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, 
         i = imap_i_col[n]
         f = imap_f[m, ikqs[j]]
         if i > 0 && f > 0
-            # Block-resident buffer: write the global outer state `i` at local row `i − i0`
-            # (i0 = the tile's i offset, 0 for the full-resident buffer) with i-stride `ni_stride`
-            # (= the buffer's i-extent; = total n_i for the full buffer).
+            # global outer state `i` lands at local row `i − i0` (see docstring for i0/ni_stride).
             lin = ν + nm * (i - i0 - 1) + nm * ni_stride * (f - 1)
             g2_out[lin] = g2vals[m, n, ν, j]
             ωq_out[lin] = ωq[ν, j]
