@@ -103,9 +103,9 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", use
         kstart = 1
         while kstart <= kpoints.n
             kstop = min(kstart + kchunk - 1, kpoints.n)
-            W = Array(get_el_eigen_valueonly_batched(elham_dev, view(kpoints.vectors, kstart:kstop)))  # (nw, kchunk)
+            E = Array(get_el_eigen_valueonly_batched(elham_dev, view(kpoints.vectors, kstart:kstop)))  # (nw, kchunk)
             @views for (jl, ik) in enumerate(kstart:kstop)
-                bands_in_window = inside_window(W[:, jl], window...)
+                bands_in_window = inside_window(E[:, jl], window...)
                 nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
                 if !isempty(bands_in_window)
                     ik_keep[ik] = true

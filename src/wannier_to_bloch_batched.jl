@@ -80,7 +80,7 @@ function _fourier_hk_batched(ham::WannierObject{T}, xk_list; batch_size::Int) wh
 end
 
 """
-    get_el_eigen_valueonly_batched(ham::WannierObject, xk_list; batch_size=length(xk_list)) -> W
+    get_el_eigen_valueonly_batched(ham::WannierObject, xk_list; batch_size=length(xk_list)) -> E
 
 Electron band eigenvalues `(nw, nk)` at every k-point in `xk_list`. Batched counterpart of
 [`get_el_eigen_valueonly!`](@ref). Runs on the backend of `ham.op_r`; the result is on that
@@ -91,7 +91,7 @@ function get_el_eigen_valueonly_batched(ham::WannierObject, xk_list; batch_size:
 end
 
 """
-    get_el_eigen_batched(ham::WannierObject, xk_list; batch_size=length(xk_list)) -> (W, V)
+    get_el_eigen_batched(ham::WannierObject, xk_list; batch_size=length(xk_list)) -> (E, U)
 
 Electron band eigenvalues `(nw, nk)` and eigenvectors `(nw, nw, nk)` at every k-point in
 `xk_list`. Batched counterpart of [`get_el_eigen!`](@ref). Runs on the backend of

@@ -48,7 +48,7 @@ function run_eph_over_k_and_kq(
     )
 
     if use_gpu
-        # GPU path (Phase 3): minimal scope. Extra flags must be off; the loop asserts the
+        # GPU path: minimal scope. Extra flags must be off; the loop asserts the
         # rest (no polar, full bands, commensurate grids, no symmetry/screening/MPI).
         covariant_derivative_of_g && throw(ArgumentError("use_gpu does not support covariant_derivative_of_g"))
         skip_eph && throw(ArgumentError("use_gpu requires skip_eph = false"))
@@ -590,24 +590,18 @@ function _loop_eph_over_k_and_kq_gpu(
     iqs_chunk  = Vector{Int}(undef, q_batch_size)
     iqs_chunk_dev    = similar(epmat_dev.op_r, Int, q_batch_size)
 
-    # q-index lookup WITHOUT an O(prod(ngrid)) = O(ngrid³) dense array (unaffordable for non-uniform
-    # grids where ngrid can be ~1e6 per dim with only a few actual points). `combine_kpoint_grids`
-    # sort!s `qpts` by hash, so for a FULL grid iq == hash+1 — pure arithmetic, no table. Otherwise
-    # fall back to the O(n) hash Dict that GridKpoints already carries (`_xk_hash_to_ik`). Decide once:
+    # q-index lookup without an O(prod(ngrid)) dense table (ngrid can be ~1e6/dim with few points).
+    # `combine_kpoint_grids` sorts `qpts` by hash, so a FULL grid has iq == hash+1 (pure arithmetic);
+    # otherwise fall back to the O(n) hash Dict `GridKpoints` carries. Decide once:
     qpts_is_full = qpts.n == prod(qpts.ngrid) &&
         all(_hash_xk(qpts.vectors[iq], qpts) == iq - 1 for iq in 1:qpts.n)
 
-    # Integer grid-coord arithmetic for iq, replacing the per-(k,q) float
-    # `normalize_kpoint_coordinate` + `_hash_xk`. For commensurate grids the q hash-coordinate is
-    #   hc_i = mod(round((xkq - xk - shift_q)·ng)_i, ng_i) = mod(xkqs_int[i,ikq] - xks_int[i,ik], ng_i),
-    # where xkqs_int / xks_int are the integer coords of every k+q / k vector on the q-grid (exact for grid
-    # points, precomputed once here). The linear hash `(hc1*ng2 + hc2)*ng3 + hc3` then reproduces
-    # `_hash_xk` bit-identically (verified over all pairs) with no Float64 / round / rationals in
-    # the hot loop. `qs_chunk` is read straight from `qpts.vectors[iq]`, which equals (xkq - xk)
-    # up to a reciprocal-lattice vector G — the Fourier phase cispi(2·R·q) is periodic in q→q+G,
-    # so the interpolated e-ph matrix is unchanged (the batched calculator never consumes xq).
-    # This needs every k and k+q to lie exactly on the q-grid (qpts.ngrid a multiple of both
-    # meshes, so xks_int / xkqs_int are exact integers) — guaranteed by precompute_ph, asserted above.
+    # Integer grid-coord hash for iq, replacing the per-(k,q) float normalize + `_hash_xk`:
+    #   hc_i = mod(xkqs_int[i,ikq] - xks_int[i,ik], ng_i),  hash = (hc1*ng2 + hc2)*ng3 + hc3,
+    # reproducing `_hash_xk` bit-identically with no Float64 in the hot loop. Requires every k and
+    # k+q to lie exactly on the q-grid (ngrid a multiple of both meshes) — guaranteed by precompute_ph,
+    # asserted above. `qs_chunk` reads qpts.vectors[iq] ≡ (xkq-xk) mod G; the Fourier phase is periodic
+    # in q→q+G, so the interpolated e-ph matrix is unchanged.
     ng1, ng2, ng3 = qpts.ngrid
     shq = qpts.shift
     xkqs_int = Matrix{Int}(undef, 3, nkq)

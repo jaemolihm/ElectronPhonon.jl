@@ -88,22 +88,14 @@ end
 
 # ---- fused e-ph gauge rotation (replaces the two tiny cuBLAS strided-batched GEMMs) -----------
 #
-# For small nw / nmodes the rotations `ep_kq = ukq' * g * u_ph` are nw×nw and nmodes×nmodes
-# matmuls; cuBLAS strided-batched runs them at ~2% of FP64 peak (~11 GFLOP/s, flat ~135 ns/batch),
-# making them ~82% of the kR->kq cost for materials like Pb (nw=4, nmodes=3). A single fused
-# kernel — one thread per q, both rotations done from registers — is ~8× faster and bit-faithful
-# (rel err ~3e-16). It also optionally writes g2 = |ep|²/(2ω) in the same pass (no separate abs2).
-#
-# Above the threshold (large nw/nmodes) the matmuls are big enough that cuBLAS is efficient and
-# the per-thread loop would be slow, so we fall back to the two strided-batched GEMMs there.
-# The kernel's per-thread work grows ~nw³·nmodes², so we gate on a single criterion — the PRODUCT
-# nw·nmodes. A measured A6000 sweep (nq=8192, FP64) crosses over near nw·nmodes ≈ 24: (4,3),(6,3),
-# (8,3),(6,4),(4,6) favour the fused kernel (1.3–2.9×); (8,4),(4,8),(6,6),(8,6),(10,3) favour cuBLAS
-# (the old per-dim cap `nw≤8 && nmodes≤8` wrongly routed (8,8), where cuBLAS is ~5× faster). A
-# separate per-dim cap is unnecessary: nmodes = 3·N_atoms ≥ 3 physically, so the product bounds the
-# aspect ratio on its own. NOTE: assumes nbandk, nbandkq ≤ nw (true in the full-band loop: ep_kq is
-# (nw,nw,nmodes,·)). THIS THRESHOLD IS A6000-TUNED — retune on other GPUs (on an H100 the crossover
-# moves lower: better FP64 / batched-GEMM throughput makes cuBLAS competitive at smaller sizes).
+# For small nw/nmodes the rotations `ep_kq = ukq' * g * u_ph` are tiny matmuls that cuBLAS
+# strided-batched runs far below FP64 peak. A single fused kernel (one thread per q, both rotations
+# from registers) is faster and bit-faithful, and can also fold g2 = |ep|²/(2ω) into the same pass.
+# Above a threshold the matmuls are large enough that cuBLAS wins, so we fall back to the two GEMMs.
+# Per-thread work grows ~nw³·nmodes², so we gate on the single product nw·nmodes (nmodes = 3·N_atoms
+# ≥ 3, so the product bounds the aspect ratio — no separate per-dim cap needed). Assumes nbandk,
+# nbandkq ≤ nw (true in the full-band loop). The crossover is hardware-dependent: the value below
+# was tuned on one GPU and should be retuned elsewhere.
 const _FUSED_ROT_MAX_NWNM = 24
 
 # g : (nw, nbandk, nmodes, nq) ; ukq : (nw, nbandkq, nq) ; uph : (nmodes, nmodes, nq)

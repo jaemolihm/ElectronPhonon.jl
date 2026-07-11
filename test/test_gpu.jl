@@ -20,6 +20,10 @@ end
 # GPU method) must fail loudly rather than silently limp — forbid scalar indexing on the device.
 GPU_AVAILABLE && CUDA.allowscalar(false)
 
+# Path to the Pb EPW test model. Set EP_PB_TEST_DIR to point at a local copy; empty (the default)
+# skips the model-dependent GPU tests. Keeps machine-specific paths out of the repo.
+const PB = get(ENV, "EP_PB_TEST_DIR", "")
+
 """
 Validate the batched e-ph drivers against the per-k/q reference (`get_eph_RR_to_kR!` /
 `get_eph_kR_to_kq!`) on a chosen backend. `to_dev` moves a `WannierObject` to the backend
@@ -133,29 +137,29 @@ end
         @test Array(Hk_gpu) ≈ Hk_cpu
 
         # --- eigenvalues only: GPU vs CPU reference ---
-        W_ref = get_el_eigen_valueonly_batched(obj, kpts)
-        W_gpu = get_el_eigen_valueonly_batched(obj_gpu, kpts)
-        @test W_gpu isa CuArray
-        @test sort(Array(W_gpu), dims=1) ≈ sort(W_ref, dims=1)
+        E_ref = get_el_eigen_valueonly_batched(obj, kpts)
+        E_gpu = get_el_eigen_valueonly_batched(obj_gpu, kpts)
+        @test E_gpu isa CuArray
+        @test sort(Array(E_gpu), dims=1) ≈ sort(E_ref, dims=1)
 
         # --- eigenvalues + eigenvectors ---
-        Wv_gpu, V_gpu = get_el_eigen_batched(obj_gpu, kpts)
-        @test sort(Array(Wv_gpu), dims=1) ≈ sort(W_ref, dims=1)
+        Ev_gpu, U_gpu = get_el_eigen_batched(obj_gpu, kpts)
+        @test sort(Array(Ev_gpu), dims=1) ≈ sort(E_ref, dims=1)
         # Eigenvectors are gauge-dependent, so check the gauge-invariant reconstruction
-        # H(k) ≈ V diag(w) V† for a few k-points.
-        Wv = Array(Wv_gpu); V = Array(V_gpu); H = reshape(Hk_cpu, nw, nw, length(kpts))
+        # H(k) ≈ U diag(E) U† for a few k-points.
+        Ev = Array(Ev_gpu); U = Array(U_gpu); H = reshape(Hk_cpu, nw, nw, length(kpts))
         for ik in (1, 17, 50)
-            @test V[:, :, ik] * Diagonal(Wv[:, ik]) * V[:, :, ik]' ≈ H[:, :, ik]
+            @test U[:, :, ik] * Diagonal(Ev[:, ik]) * U[:, :, ik]' ≈ H[:, :, ik]
         end
 
         # --- batched eigensolve is not limited to nw ≤ 32 on this cuSOLVER ---
         let nw2 = 40, nk2 = 4
             H = CUDA.rand(ComplexF64, nw2, nw2, nk2)
             for k in 1:nk2; @views H[:, :, k] .= (H[:, :, k] + H[:, :, k]') / 2; end
-            Wbig = Array(eigvals_batched(H))
+            Ebig = Array(eigvals_batched(H))
             Hh = Array(H)
             for k in 1:nk2
-                @test sort(Wbig[:, k]) ≈ sort(real(eigvals(Hermitian(Hh[:, :, k]))))
+                @test sort(Ebig[:, k]) ≈ sort(real(eigvals(Hermitian(Hh[:, :, k]))))
             end
         end
 
@@ -266,7 +270,6 @@ function ElectronPhonon.run_calculator_batched!(c::_RecordCalcBatched, ep_kq, ω
 end
 
 @testset "GPU calculator loop (run_eph_over_k_and_kq use_gpu)" begin
-    PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU calculator-loop test"
     elseif !isdir(PB)
@@ -333,7 +336,6 @@ end
 end
 
 @testset "GPU filter_kpoints with symmetry (IBZ reduction × use_gpu)" begin
-    PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU filter_kpoints symmetry test"
     elseif !isdir(PB)
@@ -366,7 +368,6 @@ end
 end
 
 @testset "GPU compute_electron_states on the IBZ set (windowed)" begin
-    PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU IBZ compute_electron_states test"
     elseif !isdir(PB)
@@ -396,7 +397,6 @@ end
 end
 
 @testset "compute_electron_states velocity (use_gpu)" begin
-    PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU compute_electron_states velocity test"
     elseif !isdir(PB)
@@ -423,8 +423,8 @@ end
         for ik in 1:nk; ufc[:, :, ik] .= els_c[ik].u_full; ec[:, ik] .= els_c[ik].e_full; end
         v_dev = ElectronPhonon.get_el_velocity_direct_batched(ElectronPhonon.to_device(model.el_ham_R), kpts.vectors, CuArray(ufc))
         rbar_dev = ElectronPhonon.get_el_velocity_direct_batched(ElectronPhonon.to_device(model.el_pos), kpts.vectors, CuArray(ufc))
-        let W = CuArray(ec)
-            v_dev .+= im .* (reshape(W, nw, 1, 1, nk) .- reshape(W, 1, nw, 1, nk)) .* rbar_dev
+        let E = CuArray(ec)
+            v_dev .+= im .* (reshape(E, nw, 1, 1, nk) .- reshape(E, 1, nw, 1, nk)) .* rbar_dev
         end
         v_anchor = Array(v_dev)  # (nw, nw, 3, nk)
         gm = gs = 0.0
@@ -477,7 +477,6 @@ end
 end
 
 @testset "compute_phonon_states velocity_diagonal (use_gpu)" begin
-    PB = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU compute_phonon_states velocity test"
     elseif !isdir(PB)

@@ -129,9 +129,9 @@ A calculator can opt into a **device-native hook** so the e-ph matrix for a whol
 chunk stays on the device and the reduction/scatter happens there:
 
 - `AbstractCalculator` gains `allow_eph_batched(calc)` (default `false`) and
-  `run_calculator_batched!(calc, ep_kq, ωq, ik, ikqs)`. If every calculator opts in, the GPU loop
-  keeps `ep_kq` on the device and calls the batched hook once per chunk; otherwise it falls back
-  to the per-`(k,q)` host path (unchanged).
+  `run_calculator_batched!(calc, ep_kq, ωq, ik, ikqs)`. Every calculator must opt in: the GPU loop
+  keeps `ep_kq` on the device and calls the batched hook once per chunk, and a calculator that does
+  not implement it is rejected with an error — there is no silent fallback to the host path.
 - A calculator can implement this backend-generically (only `similar`/`copyto!`/broadcast/
   scatter-assignment) and add no CUDA dependency of its own.
 

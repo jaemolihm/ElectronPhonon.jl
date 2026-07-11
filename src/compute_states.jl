@@ -86,7 +86,11 @@ end
 # GPU: one batched eigensolve on the device replaces the per-k solve, then a host loop copies the
 # results into the states. The energy window is applied by set_window! after the full-band
 # eigenpair is copied in (e_full/u_full); windowed quantities (rbar/velocity) then read the
-# in-window block of the full-band device result. NOTE: the batched solver does NOT apply the EPW
+# in-window block of the full-band device result.
+# TODO: this solves all kpts.n k-points in one batch — the device H(k)/U stacks (nw²·nk) are not
+# bounded, so a very large k-grid can OOM. Chunk over k like `_filter_kpoints` (which caps the
+# per-chunk stack) if that becomes a problem.
+# NOTE: the batched solver does NOT apply the EPW
 # degeneracy gauge-fixing of the per-k get_el_eigen!, so for degenerate bands the eigenvectors
 # (and e-ph matrix elements / g2 for those band pairs) can differ from the CPU path by a unitary
 # rotation within the degenerate subspace — small numerical differences, most visible on COARSE k
