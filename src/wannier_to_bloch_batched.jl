@@ -59,9 +59,9 @@ function eigen_batched(Hk::AbstractArray{Complex{T},3}) where {T}
     E = Matrix{T}(undef, nw, nk)
     ws = HermitianEigenWsSYEV{Complex{T},T}()
     @views for ik in 1:nk
-        E[:, ik] .= syev!(ws, 'V', 'U', Hk[:, :, ik])[1]   # slice overwritten with the eigenvectors
+        E[:, ik] .= syev!(ws, 'V', 'U', Hk[:, :, ik])[1]
     end
-    E, Hk
+    E, Hk   # eigenvectors overwritten into Hk
 end
 
 # =============================================================================
