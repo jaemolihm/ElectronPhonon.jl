@@ -239,11 +239,17 @@ end
         # bit-identical, and largest on COARSE grids (more exact high-symmetry degeneracies; this
         # 4³ Pb grid is such a case). Eigenvalues are gauge-independent, so we compare ωq against
         # CPU; g2 correctness is checked GPU-vs-GPU, where all paths share the same GPU gauge.
+        # CPU reference (gauge-independent ωq). Uses the non-batched host record calculator.
         cc = _RecordCalc()
         ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
             calculators=[cc], symmetry=nothing, progress_print_step=10^9)
 
-        cg = _RecordCalc()
+        # GPU reference: the device-native batched calculator (single q-batch). The GPU path is
+        # fully GPU (a non-batched calculator is rejected — see below), so the batched hook is the
+        # GPU reference for the g2 comparisons. `_RecordCalcBatched` also independently recomputes
+        # g2 = |ep|²/2ω from ep_kq and cross-checks the loop's folded g2, and `check_eph_batched`
+        # above validates ep_kq itself — so the device g2 output is covered without a host path.
+        cg = _RecordCalcBatched()
         ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
             calculators=[cg], symmetry=nothing, use_gpu=true, progress_print_step=10^9)
 
@@ -253,24 +259,11 @@ end
 
         # GPU bit-faithfulness (shared gauge): chunked q-batches (q_batch_size=7 → partial final
         # chunk) must reproduce the single-batch GPU result exactly.
-        cg7 = _RecordCalc()
+        cg7 = _RecordCalcBatched()
         ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
             calculators=[cg7], symmetry=nothing, use_gpu=true, q_batch_size=7, progress_print_step=10^9)
         @test maximum(abs, cg.g2 .- cg7.g2) < 1e-9 * scale
         @test cg.ωq == cg7.ωq
-
-        # Device-native path (batched hook: g2 formed/folded on the device) must match the
-        # host-record GPU path (same gauge), single batch and chunked (partial final) batches.
-        cb = _RecordCalcBatched()
-        ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
-            calculators=[cb], symmetry=nothing, use_gpu=true, progress_print_step=10^9)
-        @test maximum(abs, cg.g2 .- cb.g2) < 1e-9 * scale
-        @test cg.ωq == cb.ωq
-
-        cb7 = _RecordCalcBatched()
-        ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
-            calculators=[cb7], symmetry=nothing, use_gpu=true, q_batch_size=7, progress_print_step=10^9)
-        @test maximum(abs, cg.g2 .- cb7.g2) < 1e-9 * scale
 
         # Outer-k tiling (k_batch_size=5 forces a partial final k-tile) must agree too,
         # together with a partial q-chunk.
@@ -280,12 +273,18 @@ end
             k_batch_size=5, q_batch_size=7, progress_print_step=10^9)
         @test maximum(abs, cg.g2 .- cbk.g2) < 1e-9 * scale
 
-        # Scope guards: the GPU path must reject out-of-scope options it does not implement.
+        # Fully-GPU policy: a non-batched calculator (no allow_eph_batched) must be rejected, not
+        # silently run on the host path.
         @test_throws Exception ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
-            calculators=[_RecordCalc()], symmetry=nothing, use_gpu=true,
+            calculators=[_RecordCalc()], symmetry=nothing, use_gpu=true, progress_print_step=10^9)
+
+        # Scope guards: the GPU path must reject out-of-scope options it does not implement (use a
+        # batched calculator so the rejection is the scope guard, not the fully-GPU policy above).
+        @test_throws Exception ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
+            calculators=[_RecordCalcBatched()], symmetry=nothing, use_gpu=true,
             covariant_derivative_of_g=true, progress_print_step=10^9)
         @test_throws Exception ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
-            calculators=[_RecordCalc()], symmetry=nothing, use_gpu=true,
+            calculators=[_RecordCalcBatched()], symmetry=nothing, use_gpu=true,
             energy_conservation=(:Fixed, 0.1), progress_print_step=10^9)
     end
 end

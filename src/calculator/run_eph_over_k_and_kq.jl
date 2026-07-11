@@ -520,20 +520,29 @@ function _loop_eph_over_k_and_kq_gpu(
     qb = q_batch_size === nothing ? nkq : min(Int(q_batch_size), nkq)
     kb = min(Int(k_batch_size), nk)
 
-    # Device-native calculator path: if every calculator implements the batched hook, the e-ph
-    # matrix for a whole (k, {k+q}) chunk stays on the device and the calculator does its
-    # reduction/scatter there — no per-(k,q) host callback, no host g2, no complex-ep D2H.
+    # Fully-GPU: every calculator must implement the batched device hook. The GPU path does NOT
+    # fall back to the per-(k,q) host `run_calculator!` loop — that would be a silent, hard-to-spot
+    # performance cliff (see README_GPU.md "Decisions"). A non-batched calculator fails loudly here.
+    if !isempty(calculators) && !all(allow_eph_batched, calculators)
+        throw(ArgumentError("use_gpu requires every calculator to implement the batched device " *
+            "hook (allow_eph_batched = true); the GPU path does not fall back to the per-(k,q) " *
+            "host run_calculator! loop."))
+    end
+
+    # Device-native calculator path: the e-ph matrix for a whole (k, {k+q}) chunk stays on the
+    # device and the calculator does its reduction/scatter there — no per-(k,q) host callback,
+    # no host g2, no complex-ep D2H.
     batched = !isempty(calculators) && all(allow_eph_batched, calculators)
 
     # Energy window support: the interpolation always runs full-band (uniform nw×nw, using the
     # full eigenvectors `el.u_full`), so the batched kernels are unchanged. The window is applied
     # only in the calculator scatter, where out-of-window states have imap == 0 and are skipped.
-    # The host (non-batched) path writes into `epdata.ep` sized to the windowed `nband`, so it
-    # still requires full bands.
+    # With no calculators the loop uses the host path (`epdata.ep` sized to the windowed `nband`),
+    # so that case still requires full bands (a non-batched calculator was already rejected above).
     fullband = all(el.nband == nw for el in el_k_save) && all(el.nband == nw for el in el_kq_save)
     if !batched && !fullband
-        throw(ArgumentError("use_gpu with a non-batched calculator is full-band only: " *
-            "window_k / window_kq must be (-Inf, Inf). Use a calculator with allow_eph_batched."))
+        throw(ArgumentError("use_gpu without a batched calculator is full-band only: " *
+            "window_k / window_kq must be (-Inf, Inf)."))
     end
 
     # ----- device interpolators (allocated once) -----
