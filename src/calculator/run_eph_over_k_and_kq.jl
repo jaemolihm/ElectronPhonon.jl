@@ -18,8 +18,8 @@ function run_eph_over_k_and_kq(
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
         covariant_derivative_of_g = false,  # Compute cov. derivative of g
         use_gpu = false,   # Run the e-ph Wannier->Bloch interpolation on the GPU
-        q_batch_size = nothing,  # GPU: k+q points per batched kR->kq kernel (nothing = all k+q in one chunk)
-        k_batch_size = 256,   # GPU: number of outer k points processed per batched RR->kR kernel
+        nq_batch_max = nothing,  # GPU: k+q points per batched kR->kq kernel (nothing = all k+q in one batch)
+        nk_batch_max = 256,   # GPU: number of outer k points processed per batched RR->kR kernel
     ) where {FT}
 
     if model.epmat_outer_momentum != "el"
@@ -59,7 +59,7 @@ function run_eph_over_k_and_kq(
             setup.epdatas;
             calculators,
             energy_conservation, screening_params,
-            progress_print_step, q_batch_size, k_batch_size, symmetry,
+            progress_print_step, nq_batch_max, nk_batch_max, symmetry,
         )
     else
         _loop_eph_over_k_and_kq(model,
@@ -470,7 +470,7 @@ end
 #  backend-generic: it only calls `to_device` and the generic batched drivers, so no CUDA
 #  code lives in the base package (the device methods are provided by the CUDA extension). It
 #  is a separate function from the CPU `_loop_eph_over_k_and_kq` because its control flow —
-#  batched over k-tiles and q-chunks with device staging — differs from the per-(k,q) CPU loop,
+#  batched over k-batches and q-batches with device staging — differs from the per-(k,q) CPU loop,
 #  not because it holds any device-specific code.
 #
 #  Minimal first step — the rest is asserted off (not implemented on the GPU path):
@@ -492,8 +492,8 @@ function _loop_eph_over_k_and_kq_gpu(
         energy_conservation = (:None, 0.0),
         screening_params = nothing,
         progress_print_step = 20,
-        q_batch_size::Union{Int, Nothing} = nothing,
-        k_batch_size::Int = 256,
+        nq_batch_max::Union{Int, Nothing} = nothing,
+        nk_batch_max::Int = 256,
         symmetry = nothing,
     ) where {FT}
 
@@ -513,14 +513,14 @@ function _loop_eph_over_k_and_kq_gpu(
     # symmetry-agnostic — `symmetry` is only passed through to `postprocess_calculator!`. The
     # dispatcher gates the unsupported el_kq_from_unfolding = true case.
 
-    # Default (q_batch_size === nothing): process all k+q in a single chunk per k. Fewer, larger
+    # Default (nq_batch_max === nothing): process all k+q in a single batch per k. Fewer, larger
     # kR->kq / calculator kernels — the GPU e-ph path is launch-bound for small nw/nmodes, so one
-    # big chunk is ~1.8× faster than the old 1024 default at 16³, and the per-chunk device buffers
-    # stay modest even at 50³ (≲ a few hundred MB). Pass an Int to cap the chunk if memory-limited.
-    q_batch_size = q_batch_size === nothing ? nkq : min(q_batch_size, nkq)
-    k_batch_size = min(k_batch_size, nk)
+    # big batch is ~1.8× faster than the old 1024 default at 16³, and the per-batch device buffers
+    # stay modest even at 50³ (≲ a few hundred MB). Pass an Int to cap the batch if memory-limited.
+    nq_batch_max = nq_batch_max === nothing ? nkq : min(nq_batch_max, nkq)
+    nk_batch_max = min(nk_batch_max, nk)
 
-    # The GPU path is always device-native/batched: the e-ph matrix for a whole (k, {k+q}) chunk
+    # The GPU path is always device-native/batched: the e-ph matrix for a whole (k, {k+q}) batch
     # stays on the device and each calculator does its reduction/scatter there (no per-(k,q) host
     # callback, no host g2, no complex-ep D2H). Every calculator must therefore implement the
     # batched device hook; a non-batched calculator fails loudly rather than silently falling back
@@ -536,34 +536,34 @@ function _loop_eph_over_k_and_kq_gpu(
 
     # ----- device interpolators (allocated once) -----
     epmat_dev = to_device(model.epmat)
-    epmat_itp = BatchedWannierInterpolator(epmat_dev; batch_size = k_batch_size)
+    epmat_itp = BatchedWannierInterpolator(epmat_dev; batch_size = nk_batch_max)
     ep_ekpR_dev = to_device(get_next_wannier_object(model.epmat))
-    ep_ekpR_itp = BatchedWannierInterpolator(ep_ekpR_dev; batch_size = q_batch_size)
+    ep_ekpR_itp = BatchedWannierInterpolator(ep_ekpR_dev; batch_size = nq_batch_max)
     ndata_ekpR = nw * nw * nmodes
     nr_ep = ep_ekpR_dev.nr
 
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
-    # All device staging is sized to the full chunk and used as plain CuArrays (not
+    # All device staging is sized to the full batch and used as plain CuArrays (not
     # batch-sliced views), so the batched drivers' reshape/cuBLAS calls stay on dense arrays.
 
-    # RR->kR over a tile of `k_batch_size` outer-k at once: one batched kernel per tile instead of one
-    # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole tile; each
+    # RR->kR over a batch of `nk_batch_max` outer-k at once: one batched kernel per batch instead of one
+    # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole batch; each
     # k's slice is then copied into `ep_ekpR_dev` (device→device) for the inner kR->kq driver.
-    uks_dev     = similar(epmat_dev.op_r, Complex{FT}, nw, nw, k_batch_size)
-    uks_host    = Array{Complex{FT}}(undef, nw, nw, k_batch_size)
-    ep_ekpR_all = similar(epmat_dev.op_r, Complex{FT}, ndata_ekpR, nr_ep, k_batch_size)
-    ks_tile     = Vector{Vec3{FT}}(undef, k_batch_size)
+    uks_dev     = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nk_batch_max)
+    uks_host    = Array{Complex{FT}}(undef, nw, nw, nk_batch_max)
+    ep_ekpR_all = similar(epmat_dev.op_r, Complex{FT}, ndata_ekpR, nr_ep, nk_batch_max)
+    ks_batch     = Vector{Vec3{FT}}(undef, nk_batch_max)
 
-    uphs_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, q_batch_size)
-    epkq_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nmodes, q_batch_size)
+    uphs_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, nq_batch_max)
+    epkq_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nmodes, nq_batch_max)
 
     # In-place scratch for the per-k kR->kq driver (g / tmp), reused across all (k, q) so the
-    # driver allocates nothing per call. Sized for the max chunk width `q_batch_size`; the driver
-    # uses the first `nq_chunk` columns for a partial final chunk.
-    kRkq_ws = KRtoKQWorkspace(ep_ekpR_dev.op_r, ndata_ekpR, nw, nw, nmodes, q_batch_size)
+    # driver allocates nothing per call. Sized for the max batch width `nq_batch_max`; the driver
+    # uses the first `nq_batch` columns for a partial final batch.
+    kRkq_ws = KRtoKQWorkspace(ep_ekpR_dev.op_r, ndata_ekpR, nw, nw, nmodes, nq_batch_max)
 
     # Collect the k+q electron eigenvectors on the host and copy to the device once (they do not
-    # depend on the outer k), reused across all k. Each q-chunk reads a contiguous slice directly.
+    # depend on the outer k), reused across all k. Each q-batch reads a contiguous slice directly.
     ukqs_all_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nkq)
     let ukqs_all_host = Array{Complex{FT}}(undef, nw, nw, nkq)
         for ikq in 1:nkq
@@ -573,7 +573,7 @@ function _loop_eph_over_k_and_kq_gpu(
     end
     # Phonon eigenvectors `u` and frequencies `e` depend only on iq, so (like ukqs_all_dev above)
     # collect the full q-grid stacks on the host and copy to the device once, then gather per
-    # chunk on the device by index (below).
+    # batch on the device by index (below).
     uph_all_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, qpts.n)
     ωq_all_dev  = similar(epmat_dev.op_r, FT, nmodes, qpts.n)
     let uph_all_host = Array{Complex{FT}}(undef, nmodes, nmodes, qpts.n),
@@ -586,9 +586,9 @@ function _loop_eph_over_k_and_kq_gpu(
         copyto!(ωq_all_dev, ωq_all_host)
     end
 
-    qs_chunk  = Vector{Vec3{FT}}(undef, q_batch_size)
-    iqs_chunk  = Vector{Int}(undef, q_batch_size)
-    iqs_chunk_dev    = similar(epmat_dev.op_r, Int, q_batch_size)
+    qs_batch  = Vector{Vec3{FT}}(undef, nq_batch_max)
+    iqs_batch  = Vector{Int}(undef, nq_batch_max)
+    iqs_batch_dev    = similar(epmat_dev.op_r, Int, nq_batch_max)
 
     # q-index lookup without an O(prod(ngrid)) dense table (ngrid can be ~1e6/dim with few points).
     # `combine_kpoint_grids` sorts `qpts` by hash, so a FULL grid has iq == hash+1 (pure arithmetic);
@@ -600,7 +600,7 @@ function _loop_eph_over_k_and_kq_gpu(
     #   hc_i = mod(xkqs_int[i,ikq] - xks_int[i,ik], ng_i),  hash = (hc1*ng2 + hc2)*ng3 + hc3,
     # reproducing `_hash_xk` bit-identically with no Float64 in the hot loop. Requires every k and
     # k+q to lie exactly on the q-grid (ngrid a multiple of both meshes) — guaranteed by precompute_ph,
-    # asserted above. `qs_chunk` reads qpts.vectors[iq] ≡ (xkq-xk) mod G; the Fourier phase is periodic
+    # asserted above. `qs_batch` reads qpts.vectors[iq] ≡ (xkq-xk) mod G; the Fourier phase is periodic
     # in q→q+G, so the interpolated e-ph matrix is unchanged.
     ng1, ng2, ng3 = qpts.ngrid
     shq = qpts.shift
@@ -613,39 +613,39 @@ function _loop_eph_over_k_and_kq_gpu(
         xks_int[d, ik] = round(Int, kpts.vectors[ik][d] * qpts.ngrid[d])
     end
 
-    ikqs_host = Vector{Int}(undef, q_batch_size)
-    ωq_dev    = similar(epmat_dev.op_r, FT, nmodes, q_batch_size)
-    ikqs_dev  = similar(epmat_dev.op_r, Int, q_batch_size)
-    g2_dev    = similar(epmat_dev.op_r, FT, nw, nw, nmodes, q_batch_size)
+    ikqs_host = Vector{Int}(undef, nq_batch_max)
+    ωq_dev    = similar(epmat_dev.op_r, FT, nmodes, nq_batch_max)
+    ikqs_dev  = similar(epmat_dev.op_r, Int, nq_batch_max)
+    g2_dev    = similar(epmat_dev.op_r, FT, nw, nw, nmodes, nq_batch_max)
 
     epdata = take!(epdatas)
 
-    for kstart in 1:k_batch_size:nk
-        kend = min(kstart + k_batch_size - 1, nk)
+    for kstart in 1:nk_batch_max:nk
+        kend = min(kstart + nk_batch_max - 1, nk)
         iks_batch = kstart:kend
         nk_batch = length(iks_batch)
 
-        # Stack U(k) and the k list for this outer-k tile (pad the partial tail with valid
-        # duplicated data so the batched RR->kR runs on dense `k_batch_size`-sized arrays).
+        # Stack U(k) and the k list for this outer-k batch (pad the partial tail with valid
+        # duplicated data so the batched RR->kR runs on dense `nk_batch_max`-sized arrays).
         for (ik_ind, ik) in enumerate(iks_batch)
             # Full eigenvectors (nw×nw) so the batched RR->kR stays uniform; the window is
             # applied later in the calculator scatter, not here.
             @views uks_host[:, :, ik_ind] .= el_k_save[ik].u_full
-            ks_tile[ik_ind] = kpts.vectors[ik]
+            ks_batch[ik_ind] = kpts.vectors[ik]
         end
-        for ik_ind in (nk_batch+1):k_batch_size
+        for ik_ind in (nk_batch+1):nk_batch_max
             @views uks_host[:, :, ik_ind] .= uks_host[:, :, nk_batch]
-            ks_tile[ik_ind] = ks_tile[nk_batch]
+            ks_batch[ik_ind] = ks_batch[nk_batch]
         end
         copyto!(uks_dev, uks_host)
 
-        # One batched RR->kR over the whole tile: g(k, R_ep) for all k in the tile.
-        get_eph_RR_to_kR_batched!(ep_ekpR_all, epmat_itp, ks_tile, uks_dev)
+        # One batched RR->kR over the whole batch: g(k, R_ep) for all k in the batch.
+        get_eph_RR_to_kR_batched!(ep_ekpR_all, epmat_itp, ks_batch, uks_dev)
 
-        # Block-device-resident calculators (re)point/zero their per-tile device buffer here, before
-        # this tile's scatters; no-op (default hooks) for calculators that hold their whole output.
+        # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
+        # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
         for calc in calculators
-            setup_calculator_tile!(calc; kstart, kend, proto = epmat_dev.op_r)
+            setup_calculator_outer_batch!(calc; kstart, kend, proto = epmat_dev.op_r)
         end
 
     for (ik_ind, ik) in enumerate(iks_batch)
@@ -667,12 +667,12 @@ function _loop_eph_over_k_and_kq_gpu(
 
         qstart = 1
         while qstart <= nkq
-            qend = min(qstart + q_batch_size - 1, nkq)
-            nq_chunk = qend - qstart + 1
+            qend = min(qstart + nq_batch_max - 1, nkq)
+            nq_batch = qend - qstart + 1
 
-            # Build the per-q index list for this chunk (host-side integers only); the phonon
+            # Build the per-q index list for this batch (host-side integers only); the phonon
             # eigenvectors `u` and frequencies `e` are gathered on the device by iq below.
-            for j in 1:nq_chunk
+            for j in 1:nq_batch
                 ikq = qstart + j - 1
                 # Integer grid-coord hash for iq (no Float64 normalize/_hash_xk per pair).
                 h1 = mod(xkqs_int[1, ikq] - xks_int[1, ik], ng1)
@@ -685,35 +685,35 @@ function _loop_eph_over_k_and_kq_gpu(
                 (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
                 # q-vector from the O(n) qpts.vectors (a cached gather — cheaper than recomputing it
                 # with 3 float divisions; qpts.vectors is O(n), never ngrid³). ≡ (xkq-xk) mod G.
-                qs_chunk[j] = qpts.vectors[iq]
-                iqs_chunk[j] = iq
+                qs_batch[j] = qpts.vectors[iq]
+                iqs_batch[j] = iq
                 ikqs_host[j] = ikq
             end
-            rng_q = 1:nq_chunk   # this chunk's columns within the q_batch_size-sized device buffers
+            rng_q = 1:nq_batch   # this batch's columns within the nq_batch_max-sized device buffers
 
-            # Gather this chunk's phonon eigenvectors/frequencies on the device by iq
+            # Gather this batch's phonon eigenvectors/frequencies on the device by iq
             # (uphs_dev[:,:,j] = uph_all_dev[:,:,iq[j]]); ωq gathered here too so the fused kernel
-            # can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs at width nq_chunk
-            # via views into the q_batch_size-sized buffers, so there is no padded tail.
-            # H2D copy of just the first nq_chunk indices (5-arg contiguous copy — copying a host↔
+            # can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs at width nq_batch
+            # via views into the nq_batch_max-sized buffers, so there is no padded tail.
+            # H2D copy of just the first nq_batch indices (5-arg contiguous copy — copying a host↔
             # device SubArray view instead would fall back to scalar indexing); the device gather
-            # then reads only `view(iqs_chunk_dev, rng_q)`, so the untouched tail is never used.
-            copyto!(iqs_chunk_dev, 1, iqs_chunk, 1, nq_chunk)
-            @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, view(iqs_chunk_dev, rng_q)]
-            @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, view(iqs_chunk_dev, rng_q)]
+            # then reads only `view(iqs_batch_dev, rng_q)`, so the untouched tail is never used.
+            copyto!(iqs_batch_dev, 1, iqs_batch, 1, nq_batch)
+            @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, view(iqs_batch_dev, rng_q)]
+            @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, view(iqs_batch_dev, rng_q)]
             # k+q rotations: a contiguous slice of the prebuilt device stack (no copy).
             ukqs_used = view(ukqs_all_dev, :, :, qstart:qend)
 
-            # One batched Wannier->Bloch over this chunk's q: ep_kq(q) (nw, nw, nmodes), folding
+            # One batched Wannier->Bloch over this batch's q: ep_kq(q) (nw, nw, nmodes), folding
             # g2 = |ep|²/(2ω) into the same fused kernel pass.
-            get_eph_kR_to_kq_batched!(view(epkq_dev, :, :, :, rng_q), ep_ekpR_itp, view(qs_chunk, rng_q),
+            get_eph_kR_to_kq_batched!(view(epkq_dev, :, :, :, rng_q), ep_ekpR_itp, view(qs_batch, rng_q),
                 view(uphs_dev, :, :, rng_q), ukqs_used; ws=kRkq_ws,
                 g2_out = view(g2_dev, :, :, :, rng_q), ωq = view(ωq_dev, :, rng_q))
 
-            # Hand the chunk's e-ph matrix (still on the device) to each calculator, which forms
+            # Hand the batch's e-ph matrix (still on the device) to each calculator, which forms
             # g2 / scatters it on the device; no D2H of the e-ph matrix here. 5-arg contiguous H2D
-            # copy of the first nq_chunk k+q indices (a SubArray-view copy would go scalar).
-            copyto!(ikqs_dev, 1, ikqs_host, 1, nq_chunk)
+            # copy of the first nq_batch k+q indices (a SubArray-view copy would go scalar).
+            copyto!(ikqs_dev, 1, ikqs_host, 1, nq_batch)
             for calc in calculators
                 run_calculator_batched!(calc,
                     view(epkq_dev, :, :, :, rng_q), view(ωq_dev, :, rng_q),
@@ -721,25 +721,25 @@ function _loop_eph_over_k_and_kq_gpu(
             end
 
             qstart = qend + 1
-        end # q chunk
+        end # q batch
 
         for calc in calculators
             postprocess_calculator_inner!(calc; ik)
         end
-    end # ik within tile
+    end # ik within batch
 
-    # Block-device-resident calculators D2H this tile's device buffer into their host output here
-    # (one contiguous copy per tile, not per k); no-op (default hooks) for full-resident calculators.
+    # Outer-batch-resident calculators D2H this batch's device buffer into their host output here
+    # (one contiguous copy per batch, not per k); no-op (default hooks) for full-resident calculators.
     for calc in calculators
-        flush_calculator_tile!(calc; kstart, kend)
+        flush_calculator_outer_batch!(calc; kstart, kend)
     end
 
-    # Bound the host look-ahead to one k-tile: a device-resident calculator never D2H-syncs per k,
-    # so without this the host can race across all tiles, keeping every tile's RR->kR scratch +
-    # per-k transients live in the memory pool at once. Draining at each tile boundary caps the
+    # Bound the host look-ahead to one k-batch: a device-resident calculator never D2H-syncs per k,
+    # so without this the host can race across all batches, keeping every batch's RR->kR scratch +
+    # per-k transients live in the memory pool at once. Draining at each batch boundary caps the
     # transient working set with negligible utilization cost. No-op on the CPU backend.
     device_synchronize(epmat_dev.op_r)
-    end # k tile
+    end # k batch
 
     put!(epdatas, epdata)
 

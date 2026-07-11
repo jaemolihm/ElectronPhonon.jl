@@ -148,7 +148,7 @@ function _fused_eph_rot_kernel!(ep, g2, g, ukq, uph, ωq, nw, nbkq, nbk, nm, nq)
 end
 
 # `DenseCuArray` (not `CuArray`): the GPU e-ph loop passes contiguous device VIEWS
-# (e.g. `view(epkq_dev, :,:,:, 1:nq_chunk)`) for a partial final q-chunk. The fused kernel takes
+# (e.g. `view(epkq_dev, :,:,:, 1:nq_batch)`) for a partial final q-batch. The fused kernel takes
 # them through `@cuda` (cudaconvert handles strided views) and the cuBLAS path takes their
 # reshapes (strided), so no padding to a fixed batch width is needed.
 function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},4}, g,
@@ -181,10 +181,10 @@ end
 # in-window, write the value straight into the flat device g2_out / ωq_out at the mode-fastest
 # linear slot. The target `lin` indices are unique across the whole run (distinct k → distinct i,
 # distinct k+q → distinct f), so the writes never collide — no atomics, no compaction. Removes the
-# per-chunk D2H + host scatter (the calculator's g2/ωq stay resident on the device).
+# per-batch D2H + host scatter (the calculator's g2/ωq stay resident on the device).
 # `ni_stride` = the output buffer's outer-k (i) extent, `i0` = its global-i offset, so global state
-# i writes to local row (i − i0): full buffer → ni_stride = n_i, i0 = 0; block (per-tile) buffer →
-# ni_stride = tile i-extent, i0 = tile offset. See `eph_window_scatter!` in common/gpu_utils.jl.
+# i writes to local row (i − i0): full buffer → ni_stride = n_i, i0 = 0; per-batch buffer →
+# ni_stride = batch i-extent, i0 = batch offset. See `eph_window_scatter!` in calculator/calculator_utils.jl.
 function _window_scatter_kernel!(g2_out, ωq_out, g2vals, imap_i_col, imap_f,
                                  ikqs, ωq, nbandkq, nbandk, nm, nqc, ni_stride, i0)
     e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
