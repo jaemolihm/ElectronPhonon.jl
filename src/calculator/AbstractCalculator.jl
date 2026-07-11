@@ -78,9 +78,10 @@ Keyword arguments:
 - `g2`   :: same shape as `ep_kq` — the loop passes `g2 = |ep|²/(2ω)` already formed (the GPU path
   folds it into the rotation kernel for free), so a calculator that needs `g2` should use this
   rather than recomputing it from `ep_kq`.
-- `ibandk_offset` :: k-side window-projection band offset — `ep_kq`'s band-of-k axis `n` corresponds to
-  PHYSICAL band `ibandk_offset + n` (the loop rotates only an `nbandk`-wide contiguous eigenvector window
-  around the in-window bands; 0 for full-band runs).
+- `ibandk_offset` :: k-side window-projection band offset, **0-based** — `ep_kq`'s band-of-k axis `n`
+  (1-based, `1:nbandk`) corresponds to PHYSICAL band `ibandk_offset + n` (so `n = 1` is physical band
+  `ibandk_offset + 1`). The loop rotates only an `nbandk`-wide contiguous eigenvector window around the
+  in-window bands; `ibandk_offset = 0` for full-band runs (then physical band `= n`).
 
 Runs on the backend of `ep_kq` (CPU or GPU); implementations should stay backend-generic
 (`similar`, `copyto!`, broadcasting, scatter assignment) so no CUDA dependency leaks into the
