@@ -165,6 +165,19 @@ is needed.
 - **A memory-estimate helper (future).** A utility that reports the device memory a run needs
   (given the model and `q_batch_size` / `k_batch_size`) would make it easier to pick chunk sizes
   and to fail early instead of OOM-ing mid-run.
+- **Keep `el_kq_save` (k+q electron states) on the device (future).** The GPU loop already hoists
+  every k+q eigenvector onto the device once (`ukqs_all_dev`); keeping the `el_kq_save` states
+  themselves device-resident would avoid the host staging entirely, but needs a states refactor.
+- **A dense-grid `Kpoints` type with integer-hash lookup (future).** The q-index lookup in the GPU
+  loop special-cases a "full grid" (iq == hash+1) vs a fallback `Dict` (`GridKpoints` uses a Dict
+  to allow huge `ngrid` with few points). A dedicated type for the common case — `ngrid` small
+  enough that a `prod(ngrid)` array fits — could carry an `is_full` field and use a simple integer
+  hash, replacing the special-casing here.
+
+## Conventions
+
+- **Device arrays use a `_dev` suffix** (e.g. `epmat_dev`, `ukqs_all_dev`), not a `gpu_` prefix.
+  Host copies of device results drop the suffix (e.g. `E = Array(E_dev)`).
 
 ## Files
 

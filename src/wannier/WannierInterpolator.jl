@@ -4,9 +4,6 @@ export get_interpolator
 export get_interpolator_channel
 export get_fourier!
 
-# `to_device` is declared in common/utils.jl (a low-level generic operation); methods come from
-# package extensions such as ElectronPhononCUDAExt.
-
 abstract type AbstractWannierInterpolator{T} end
 Base.eltype(::Type{<:AbstractWannierInterpolator{T}}) where {T} = Complex{T}
 

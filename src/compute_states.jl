@@ -38,6 +38,8 @@ end
 function _compute_electron_states_cpu!(states, model::Model{FT}, kpts, quantities, window,
                                        need_velocity, need_position; fourier_mode) where FT
     (; el_velocity_mode) = model
+    want_velocity = "velocity" ∈ quantities
+    want_vdiag    = "velocity_diagonal" ∈ quantities
     @threads for iks in chunks(kpts.vectors; n=2nthreads())
         # Setup thread-local WannierInterpolators
         ham = get_interpolator(model.el_ham; fourier_mode)
@@ -68,12 +70,12 @@ function _compute_electron_states_cpu!(states, model::Model{FT}, kpts, quantitie
                 if need_position
                     set_position!(el, pos, xk)
                 end
-                if "velocity" ∈ quantities
+                if want_velocity
                     set_velocity!(el, vel, xk, el_velocity_mode)
                     for i in el.rng
                         el.vdiag[i] = real.(el.v[i, i])
                     end
-                elseif "velocity_diagonal" ∈ quantities
+                elseif want_vdiag
                     set_velocity_diag!(el, vel, xk, el_velocity_mode)
                 end
             end
@@ -81,91 +83,88 @@ function _compute_electron_states_cpu!(states, model::Model{FT}, kpts, quantitie
     end # ik
 end
 
-# GPU: replace the per-k eigensolve with one batched solve on the device (eigenvalues, and
-# eigenvectors unless valueonly), then a cheap host loop that copies the results into the states.
-# Velocity/position are also rotated on the device (they reuse these eigenvectors). NOTE: the
-# batched solver does NOT apply the EPW degeneracy gauge-fixing that the per-k `get_el_eigen!`
-# does, so for degenerate bands the eigenvectors (and hence e-ph matrix elements / g2 for those
-# band pairs) can differ from the CPU path by a unitary rotation within the degenerate subspace.
-# This can produce small numerical differences vs the CPU path, most visibly on COARSE k grids
-# (which are more likely to sample exact high-symmetry degeneracies); the difference shrinks as
-# the grid is refined and BZ-summed results converge.
+# GPU: one batched eigensolve on the device replaces the per-k solve, then a host loop copies the
+# results into the states. The energy window is applied by set_window! after the full-band
+# eigenpair is copied in (e_full/u_full); windowed quantities (rbar/velocity) then read the
+# in-window block of the full-band device result. NOTE: the batched solver does NOT apply the EPW
+# degeneracy gauge-fixing of the per-k get_el_eigen!, so for degenerate bands the eigenvectors
+# (and e-ph matrix elements / g2 for those band pairs) can differ from the CPU path by a unitary
+# rotation within the degenerate subspace — small numerical differences, most visible on COARSE k
+# grids; they shrink as the grid is refined and BZ-summed results converge.
 function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantities, window,
                                        need_velocity, need_position) where FT
     (; nw, el_velocity_mode) = model
+    want_velocity = "velocity" ∈ quantities
+    want_vdiag    = "velocity_diagonal" ∈ quantities
 
-    gpu_W = nothing; gpu_V = nothing; gpu_rbar = nothing; gpu_v = nothing
+    E = nothing; U = nothing; rbar = nothing; vel = nothing
     elham_dev = to_device(model.el_ham)
     if quantities == ["eigenvalue"]
-        gpu_W = Array(get_el_eigen_valueonly_batched(elham_dev, kpts.vectors))
+        E = Array(get_el_eigen_valueonly_batched(elham_dev, kpts.vectors))
     else
-        W, V = get_el_eigen_batched(elham_dev, kpts.vectors)
-        gpu_W = Array(W); gpu_V = Array(V)
+        E_dev, U_dev = get_el_eigen_batched(elham_dev, kpts.vectors)
+        E = Array(E_dev); U = Array(U_dev)
         rbar_dev = nothing
         if need_position
-            # Position matrix rbar = uk' * A(k) * uk, batched on the device (full-band; the
-            # in-window block is sliced per k in the loop below). `el_pos` has ndata = nw^2*3.
-            rbar_dev = get_el_velocity_direct_batched(to_device(model.el_pos), kpts.vectors, V)
-            gpu_rbar = Array(rbar_dev)
+            rbar_dev = get_el_velocity_direct_batched(to_device(model.el_pos), kpts.vectors, U_dev)
+            rbar = Array(rbar_dev)
         end
-        if "velocity" ∈ quantities || "velocity_diagonal" ∈ quantities
-            # Full-band velocity rotation v = uk' * (dH/dk) * uk on the device. :Direct interpolates
-            # dH/dk (el_vel) directly; :BerryConnection interpolates H(R) (el_ham_R) for the rotation
-            # and adds the Berry term im*(e_i - e_j)*rbar_{ij}. The Berry term is added only for the
-            # full "velocity" quantity (rbar is on device then; it is zero on the diagonal, so the
-            # "velocity_diagonal" path takes real(diag(v)) without it).
-            Mop = el_velocity_mode === :Direct ? model.el_vel : model.el_ham_R
-            v_dev = get_el_velocity_direct_batched(to_device(Mop), kpts.vectors, V)
-            if el_velocity_mode === :BerryConnection && "velocity" ∈ quantities
-                nk = kpts.n
-                v_dev .+= im .* (reshape(W, nw, 1, 1, nk) .- reshape(W, 1, nw, 1, nk)) .* rbar_dev
+        if want_velocity || want_vdiag
+            Mop = if el_velocity_mode === :Direct
+                model.el_vel
+            elseif el_velocity_mode === :BerryConnection
+                model.el_ham_R
+            else
+                throw(ArgumentError("unknown el_velocity_mode $el_velocity_mode"))
             end
-            gpu_v = Array(v_dev)
+            vel_dev = get_el_velocity_direct_batched(to_device(Mop), kpts.vectors, U_dev)
+            if el_velocity_mode === :BerryConnection && want_velocity
+                nk = kpts.n
+                vel_dev .+= im .* (reshape(E_dev, nw, 1, 1, nk) .- reshape(E_dev, 1, nw, 1, nk)) .* rbar_dev
+            end
+            vel = Array(vel_dev)
         end
     end
 
+    # Copy the batched device results into the per-k states (on the host).
     @threads for iks in chunks(kpts.vectors; n=2nthreads())
         for ik in iks
             xk = kpts.vectors[ik]
             el = states[ik]
 
             if quantities == ["eigenvalue"]
-                el.xk = xk; @views el.e_full .= gpu_W[:, ik]; el.nband = 0; el.rng = 1:0
+                el.xk = xk; @views el.e_full .= E[:, ik]; el.nband = 0; el.rng = 1:0
                 set_window!(el, window)
             else
                 el.xk = xk
-                @views el.e_full .= gpu_W[:, ik]
-                @views el.u_full .= gpu_V[:, :, ik]
+                @views el.e_full .= E[:, ik]
+                @views el.u_full .= U[:, :, ik]
                 el.nband = 0; el.rng = 1:0
                 set_window!(el, window)
                 if need_position
-                    # Inject the in-window block of the device-computed full-band rbar.
-                    # (in-window block of the full-u rotation == windowed-u rotation.)
                     rbar_w = reshape(reinterpret(Complex{FT}, no_offset_view(el.rbar)), 3, el.nband, el.nband)
                     r = el.rng
                     @views for idir in 1:3
-                        rbar_w[idir, :, :] .= gpu_rbar[r, r, idir, ik]
+                        rbar_w[idir, :, :] .= rbar[r, r, idir, ik]
                     end
                 end
-                if "velocity" ∈ quantities
-                    # Inject the in-window block of the device-computed full-band velocity.
+                if want_velocity
                     v_w = reshape(reinterpret(Complex{FT}, no_offset_view(el.v)), 3, el.nband, el.nband)
                     r = el.rng
                     @views for idir in 1:3
-                        v_w[idir, :, :] .= gpu_v[r, r, idir, ik]
+                        v_w[idir, :, :] .= vel[r, r, idir, ik]
                     end
                     for i in el.rng
                         el.vdiag[i] = real.(el.v[i, i])
                     end
-                elseif "velocity_diagonal" ∈ quantities
-                    # vdiag = real(diag(v)); the BerryConnection term is zero on the diagonal.
+                elseif want_vdiag
                     for i in el.rng
-                        el.vdiag[i] = real.(Vec3(gpu_v[i, i, 1, ik], gpu_v[i, i, 2, ik], gpu_v[i, i, 3, ik]))
+                        el.vdiag[i] = real.(Vec3(vel[i, i, 1, ik], vel[i, i, 2, ik], vel[i, i, 3, ik]))
                     end
                 end
             end
         end
-    end # ik
+    end
 end
 
 """
@@ -233,14 +232,10 @@ function _compute_phonon_states_cpu!(states, model::Model{FT}, kpts, quantities,
     end  # iks
 end
 
-# GPU: batch the phonon eigensolve on the device — Fourier(dyn) over all q, mass-scale, batched
-# Hermitian eigensolve, ω = sign(ω²)·√|ω²|, then the eigenvector mass factor — replacing the
-# per-q `get_ph_eigen!`. A cheap host loop then copies the results into the states.
-# velocity_diagonal / eph_dipole_coeff stay on the CPU loop below. polar is unsupported here (the
-# GPU e-ph loop asserts no polar; `dynmat_dipole!` no-ops when polar.use is false anyway). Same
-# gauge caveat as the electrons: the batched solver omits the per-q degeneracy gauge-fixing, so
-# eigenvectors of degenerate modes can differ from the CPU path by a unitary rotation — small
-# numerical differences in g2, most visible on COARSE q grids.
+# GPU: batch the phonon eigensolve on the device (same idea as _compute_electron_states_gpu!),
+# then a host loop copies the results into the states. velocity_diagonal is rotated on the device
+# too. polar is unsupported (the GPU e-ph loop asserts no polar). Same degeneracy-gauge caveat as
+# the electrons — small g2 differences for degenerate modes, most visible on COARSE q grids.
 function _compute_phonon_states_gpu!(states, model::Model{FT}, kpts, quantities, need_velocity,
                                      eph_phonon_basis) where FT
     (; nmodes, mass) = model
@@ -249,40 +244,33 @@ function _compute_phonon_states_gpu!(states, model::Model{FT}, kpts, quantities,
 
     D = _fourier_hk_batched(to_device(model.ph_dyn), kpts.vectors; batch_size = kpts.n)  # (nmodes,nmodes,nq)
     msqrt_d = similar(D, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
-    D ./= reshape(msqrt_d, nmodes, 1, 1)        # dynq[i,j] /= sqrt(mass[i] mass[j])
+    D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
     D ./= reshape(msqrt_d, 1, nmodes, 1)
-    W, V = eigen_batched(D)                      # W = ω² (nmodes,nq), V (nmodes,nmodes,nq)
-    V ./= reshape(msqrt_d, nmodes, 1, 1)         # eigenvector mass factor: u[i,:] /= sqrt(mass[i])
-    gpu_phe = Array(sign.(W) .* sqrt.(abs.(W)))  # ω = sign(ω²)·√|ω²|
-    gpu_phu = Array(V)
-    gpu_phvel = nothing
+    E_dev, U_dev = eigen_batched(D)              # E_dev = ω² (nmodes,nq), U_dev (nmodes,nmodes,nq)
+    U_dev ./= reshape(msqrt_d, nmodes, 1, 1)     # eigenvector mass factor: u[i,:] /= sqrt(mass[i])
+    E = Array(sign.(E_dev) .* sqrt.(abs.(E_dev)))  # ω = sign(ω²)·√|ω²|
+    U = Array(U_dev)
+    vel = nothing
     if need_velocity
-        # Phonon band velocity (diagonal): reuse the batched uk'*M*uk rotation on dyn_R (ndata =
-        # nmodes^2*3) with the mass-factored eigenvectors V (mass factor already applied above,
-        # as get_ph_velocity_diag! assumes). get_el_velocity_direct_batched is matrix-dim-generic
-        # (nw -> nmodes), so it is reused here for phonons. The diagonal real part /(2ω) is taken
-        # per q in the loop below (matches set_velocity_diag!). Polar unsupported (asserted above).
-        gpu_phvel = Array(get_el_velocity_direct_batched(to_device(model.ph_dyn_R), kpts.vectors, V))
+        vel = Array(get_el_velocity_direct_batched(to_device(model.ph_dyn_R), kpts.vectors, U_dev))
     end
 
+    # Copy the batched device results into the per-q states (on the host).
     @threads for iks in chunks(kpts.vectors; n = nthreads())
         for ik in iks
             xk = kpts.vectors[ik]
             ph = states[ik]
 
             if quantities == ["eigenvalue"]
-                ph.xq = xk; @views ph.e .= gpu_phe[:, ik]
+                ph.xq = xk; @views ph.e .= E[:, ik]
             else
-                ph.xq = xk; @views ph.e .= gpu_phe[:, ik]; @views ph.u .= gpu_phu[:, :, ik]
+                ph.xq = xk; @views ph.e .= E[:, ik]; @views ph.u .= U[:, :, ik]
                 if "velocity" ∈ quantities
                     # not implemented
                     error("full velocity for phonons not implemented")
                 elseif "velocity_diagonal" ∈ quantities
-                    # vdiag[idir,i] = real(u[:,i]' * dD/dk[:,:,idir] * u[:,i]) / (2 ω_i)
-                    # (dw/dk = (d(w²)/dk)/(2w); same as set_velocity_diag!). ω≈0 acoustic modes
-                    # at Γ divide by ~0 exactly as the CPU path does.
                     for i in 1:nmodes
-                        ph.vdiag[i] = real.(Vec3(gpu_phvel[i, i, 1, ik], gpu_phvel[i, i, 2, ik], gpu_phvel[i, i, 3, ik])) ./ (2 * ph.e[i])
+                        ph.vdiag[i] = real.(Vec3(vel[i, i, 1, ik], vel[i, i, 2, ik], vel[i, i, 3, ik])) ./ (2 * ph.e[i])
                     end
                 end
                 if "eph_dipole_coeff" ∈ quantities
