@@ -2,7 +2,7 @@ using Test
 using ElectronPhonon
 using ElectronPhonon: WannierObject, Vec3, get_eph_RR_to_kR!, get_eph_kR_to_kq!, to_device
 # Batched drivers / primitives are internal (unexported); import the ones the tests use.
-using ElectronPhonon: eigvals_batched, get_el_eigen_batched, get_el_eigen_valueonly_batched,
+using ElectronPhonon: eigvals_batched, eigen_batched, get_el_eigen_batched, get_el_eigen_valueonly_batched,
     get_el_velocity_direct_batched, get_eph_RR_to_kR_batched!, get_eph_kR_to_kq_batched!,
     eph_apply_rotations!, KRtoKQWorkspace, batched_gemm!
 using LinearAlgebra
@@ -91,6 +91,21 @@ end
     check_eph_batched(identity, identity; rtol=1e-10)
 end
 
+@testset "batched eigensolve (CPU)" begin
+    # CPU eigen_batched: U must be eigenvectors of H — check eigenvalues vs LAPACK and the
+    # gauge-invariant reconstruction H ≈ U·diag(E)·U† at a few k-points. (The GPU counterpart is
+    # in "GPU batched Wannier interpolation".)
+    nw, nk = 8, 5
+    H = Array{ComplexF64,3}(undef, nw, nw, nk)
+    for k in 1:nk; A = rand(ComplexF64, nw, nw); @views H[:, :, k] .= (A + A') / 2; end
+    Hh = copy(H)   # eigen_batched overwrites its input
+    E, U = eigen_batched(H)
+    for k in (1, 3, 5)
+        @test sort(E[:, k]) ≈ sort(real(eigvals(Hermitian(Hh[:, :, k]))))
+        @test U[:, :, k] * Diagonal(E[:, k]) * U[:, :, k]' ≈ Hh[:, :, k]
+    end
+end
+
 @testset "GPU batched Wannier interpolation" begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU tests"
@@ -133,10 +148,7 @@ end
         @test E_gpu isa CuArray
         @test sort(Array(E_gpu), dims=1) ≈ sort(E_ref, dims=1)
 
-        # --- eigenvalues + eigenvectors ---
-        # TODO: the CPU `eigen_batched` / `get_el_eigen_batched` (eigenvector) path is only the
-        # generic reference the backend-generic design rests on and is not exercised here (only the
-        # GPU variant is). Add a CPU-side eigenvector reconstruction check (H ≈ U·diag(E)·U').
+        # --- eigenvalues + eigenvectors (CPU counterpart in "batched eigensolve (CPU)") ---
         Ev_gpu, U_gpu = get_el_eigen_batched(get_interpolator(obj_gpu; fourier_mode="batched"), kpts)
         @test sort(Array(Ev_gpu), dims=1) ≈ sort(E_ref, dims=1)
         # Eigenvectors are gauge-dependent, so check the gauge-invariant reconstruction
@@ -146,14 +158,17 @@ end
             @test U[:, :, ik] * Diagonal(Ev[:, ik]) * U[:, :, ik]' ≈ H[:, :, ik]
         end
 
-        # --- batched eigensolve is not limited to nw ≤ 32 on this cuSOLVER ---
+        # --- batched eigensolve is not limited to nw ≤ 32 on this cuSOLVER; check both the
+        #     eigenvalues (vs LAPACK) and that the eigenvectors reconstruct H ≈ U·diag(E)·U† ---
         let nw2 = 40, nk2 = 4
             H = CUDA.rand(ComplexF64, nw2, nw2, nk2)
             for k in 1:nk2; @views H[:, :, k] .= (H[:, :, k] + H[:, :, k]') / 2; end
-            Hh = Array(H)   # eigvals_batched overwrites H, so snapshot it first
-            Ebig = Array(eigvals_batched(H))
+            Hh = Array(H)   # the batched solvers overwrite their input, so snapshot it first
+            Ebig = Array(eigvals_batched(copy(H)))
+            Eev, Uev = eigen_batched(copy(H)); Eev = Array(Eev); Uev = Array(Uev)
             for k in 1:nk2
                 @test sort(Ebig[:, k]) ≈ sort(real(eigvals(Hermitian(Hh[:, :, k]))))
+                @test Uev[:, :, k] * Diagonal(Eev[:, k]) * Uev[:, :, k]' ≈ Hh[:, :, k]
             end
         end
 
