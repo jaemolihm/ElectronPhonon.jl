@@ -21,6 +21,8 @@ include("common/Structure.jl")
 include("common/occupation.jl")
 include("common/AllocatedLAPACK.jl")
 
+include("interface/quantum_espresso.jl")
+
 include("external/iterativesolvers.jl")
 
 include("wannier/WannierObject.jl")
