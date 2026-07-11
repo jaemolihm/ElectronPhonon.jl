@@ -95,12 +95,14 @@ function postprocess_calculator!(::AbstractCalculator; kwargs...)
     error("postprocess_calculator! has to be implemented")
 end
 
-# Optional per-outer-k-tile hooks for the batched GPU loop (`run_eph_over_k_and_kq`, use_gpu).
-# A *block-device-resident* calculator uses them to keep only ONE k-tile of its output on the
-# device (bounded memory): `setup_calculator_tile!` (re)points/zeros a tile-sized device buffer at
-# the start of each outer-k tile, `flush_calculator_tile!` copies it to the host at the tile's end.
-# Both are no-ops by default, so calculators that hold the whole output (resident or host-streamed)
-# ignore them. `proto` is a device array (the e-ph matrix backend) for the buffer allocation /
-# free-memory query; `kstart`/`kend` are the tile's outer-k index range.
+# Optional per-tile hooks for the batched GPU loop (`run_eph_over_k_and_kq`, use_gpu). That loop
+# processes the outer-k points in consecutive TILES of `k_batch_size` points (one batched
+# interpolation per tile). These hooks let a calculator bound its device memory: rather than hold
+# output for all outer-k states at once (device memory ∝ grid size), a *block-device-resident*
+# calculator keeps only the CURRENT tile's output on the device and copies it to the host each tile.
+# `setup_calculator_tile!` (re)points/zeros the tile-sized device buffer at the start of a tile;
+# `flush_calculator_tile!` copies it to the host at the tile's end. Both are no-ops by default — a
+# calculator that holds its whole output ignores them. `proto` is a device array (the e-ph matrix
+# backend) for buffer allocation / free-memory queries; `kstart`/`kend` are the tile's outer-k range.
 setup_calculator_tile!(::AbstractCalculator; kwargs...) = nothing
 flush_calculator_tile!(::AbstractCalculator; kwargs...) = nothing
