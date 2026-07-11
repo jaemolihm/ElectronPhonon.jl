@@ -130,8 +130,12 @@ function _fused_eph_rot_kernel!(ep, g2, g, ukq, uph, ωq, nw, nbkq, nbk, nm, nq)
     return
 end
 
-function ElectronPhonon.eph_apply_rotations!(ep_kq_all::CuArray{Complex{T},4}, g,
-        ukqs::CuArray, u_phs::CuArray, tmp; g2_out=nothing, ωq=nothing) where {T}
+# `DenseCuArray` (not `CuArray`): the GPU e-ph loop passes contiguous device VIEWS
+# (e.g. `view(epkq_dev, :,:,:, 1:nq_chunk)`) for a partial final q-chunk. The fused kernel takes
+# them through `@cuda` (cudaconvert handles strided views) and the cuBLAS path takes their
+# reshapes (strided), so no padding to a fixed batch width is needed.
+function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},4}, g,
+        ukqs::DenseCuArray, u_phs::DenseCuArray, tmp; g2_out=nothing, ωq=nothing) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
     if nw * nmodes <= _FUSED_ROT_MAX_NWNM

@@ -316,8 +316,9 @@ Batched over a list of q-points `qs` (for a fixed k). `ukqs` is `(nw, nbandkq, n
 One batched Fourier over `R_ep`, then two `batched_gemm!`s for the per-q rotations
 (`ukq(q)'` on the left, `u_ph(q)` on the right).
 
-Pass a [`KRtoKQWorkspace`](@ref) as `ws` (sized for this `nq`) to reuse the `g` / `tmp` scratch
-across calls instead of allocating it each call — the per-k hot path in the GPU loop does this.
+Pass a [`KRtoKQWorkspace`](@ref) as `ws` (sized for at least this `nq`) to reuse the `g` / `tmp`
+scratch across calls instead of allocating it each call — the per-k hot path in the GPU loop does
+this, sizing `ws` for the max chunk width and passing `nq ≤` that for a partial final chunk.
 """
 function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
                                    ep_ekpR_itp::BatchedWannierInterpolator{T}, qs, u_phs, ukqs;
@@ -334,9 +335,12 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
         g   = similar(parent.op_r, Complex{T}, parent.ndata, nq)
         tmp = similar(parent.op_r, Complex{T}, nbandkq, nbandk * nmodes, nq)
     else
-        g, tmp = ws.g, ws.tmp
-        @assert size(g) == (parent.ndata, nq)
-        @assert size(tmp) == (nbandkq, nbandk * nmodes, nq)
+        # `ws` is sized for the max chunk width; use the first `nq` columns (a partial final chunk
+        # passes nq < capacity), so the whole loop runs without padding the batch back up.
+        @assert size(ws.g, 1) == parent.ndata && size(ws.g, 2) >= nq
+        @assert size(ws.tmp, 1) == nbandkq && size(ws.tmp, 2) == nbandk * nmodes && size(ws.tmp, 3) >= nq
+        g   = view(ws.g, :, 1:nq)
+        tmp = view(ws.tmp, :, :, 1:nq)
     end
 
     get_fourier_batched!(g, ep_ekpR_itp, qs)                           # (nw*nbandk*nmodes, nq)

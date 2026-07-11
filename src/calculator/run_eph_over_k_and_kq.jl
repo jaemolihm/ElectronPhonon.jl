@@ -554,17 +554,16 @@ function _loop_eph_over_k_and_kq_gpu(
     ep_ekpR_all = similar(epmat_dev.op_r, Complex{FT}, ndata_ekpR, nr_ep, k_batch_size)
     ks_tile     = Vector{Vec3{FT}}(undef, k_batch_size)
 
-    ukqs_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, q_batch_size)
     uphs_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, q_batch_size)
     epkq_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nmodes, q_batch_size)
 
     # In-place scratch for the per-k kR->kq driver (g / tmp), reused across all (k, q) so the
-    # driver allocates nothing per call. The loop always hands it a full `q_batch_size`-sized (padded) chunk.
+    # driver allocates nothing per call. Sized for the max chunk width `q_batch_size`; the driver
+    # uses the first `nq_chunk` columns for a partial final chunk.
     kRkq_ws = KRtoKQWorkspace(ep_ekpR_dev.op_r, ndata_ekpR, nw, nw, nmodes, q_batch_size)
 
     # Collect the k+q electron eigenvectors on the host and copy to the device once (they do not
-    # depend on the outer k), reused across all k. Full chunks read a contiguous slice directly;
-    # a partial final chunk is copied + padded into `ukqs_dev`.
+    # depend on the outer k), reused across all k. Each q-chunk reads a contiguous slice directly.
     ukqs_all_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nkq)
     let ukqs_all_host = Array{Complex{FT}}(undef, nw, nw, nkq)
         for ikq in 1:nkq
@@ -670,11 +669,11 @@ function _loop_eph_over_k_and_kq_gpu(
         qstart = 1
         while qstart <= nkq
             qend = min(qstart + q_batch_size - 1, nkq)
-            nqc = qend - qstart + 1
+            nq_chunk = qend - qstart + 1
 
             # Build the per-q index list for this chunk (host-side integers only); the phonon
             # eigenvectors `u` and frequencies `e` are gathered on the device by iq below.
-            for j in 1:nqc
+            for j in 1:nq_chunk
                 ikq = qstart + j - 1
                 # Integer grid-coord hash for iq (no Float64 normalize/_hash_xk per pair).
                 h1 = mod(xkqs_int[1, ikq] - xk_int1, ng1)
@@ -691,47 +690,35 @@ function _loop_eph_over_k_and_kq_gpu(
                 iqs_chunk[j] = iq
                 ikqs_host[j] = ikq
             end
-            # Pad the tail of the final partial chunk with valid (duplicated) data so the
-            # batched kernels run on dense `q_batch_size`-sized arrays; only 1:nqc is read back.
-            for j in (nqc+1):q_batch_size
-                qs_chunk[j] = qs_chunk[nqc]
-                iqs_chunk[j] = iqs_chunk[nqc]
-            end
+            r = 1:nq_chunk   # this chunk's columns within the q_batch_size-sized device buffers
 
-            # Upload only the q_batch_size-int iq vector (was: the nmodes²·q_batch_size complex `uphs` stack), then
-            # gather the phonon eigenvectors on the device: uphs_dev[:,:,j] = uph_all_dev[:,:,iq[j]].
-            copyto!(iqs_chunk_dev, iqs_chunk)
-            @views uphs_dev .= uph_all_dev[:, :, iqs_chunk_dev]
-            # Phonon frequencies gathered here (before kRkq) so the fused kernel can fold
-            # g2 = |ep|²/(2ω) in the same pass. Padded tail is valid (duplicated iq).
-            @views ωq_dev .= ωq_all_dev[:, iqs_chunk_dev]
-            # k+q rotations: reuse the prebuilt device stack. Full chunk → contiguous view (no
-            # copy); partial final chunk → copy the slice and pad the tail (device→device).
-            if nqc == q_batch_size
-                ukqs_used = view(ukqs_all_dev, :, :, qstart:qend)
-            else
-                @views copyto!(ukqs_dev[:, :, 1:nqc], ukqs_all_dev[:, :, qstart:qend])
-                @views for j in (nqc+1):q_batch_size
-                    ukqs_dev[:, :, j] .= ukqs_dev[:, :, nqc]
-                end
-                ukqs_used = ukqs_dev
-            end
+            # Gather this chunk's phonon eigenvectors/frequencies on the device by iq
+            # (uphs_dev[:,:,j] = uph_all_dev[:,:,iq[j]]); ωq gathered here too so the fused kernel
+            # can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs at width nq_chunk
+            # via views into the q_batch_size-sized buffers, so there is no padded tail.
+            # H2D copy of just the first nq_chunk indices (5-arg contiguous copy — copying a host↔
+            # device SubArray view instead would fall back to scalar indexing); the device gather
+            # then reads only `view(iqs_chunk_dev, r)`, so the untouched tail is never used.
+            copyto!(iqs_chunk_dev, 1, iqs_chunk, 1, nq_chunk)
+            @views uphs_dev[:, :, r] .= uph_all_dev[:, :, view(iqs_chunk_dev, r)]
+            @views ωq_dev[:, r]      .= ωq_all_dev[:, view(iqs_chunk_dev, r)]
+            # k+q rotations: a contiguous slice of the prebuilt device stack (no copy).
+            ukqs_used = view(ukqs_all_dev, :, :, qstart:qend)
 
-            # One batched Wannier->Bloch over all q in the chunk: ep_kq(q) (nw, nw, nmodes).
-            # Device-native path: also fold g2 = |ep|²/(2ω) into the same fused kernel pass.
-            get_eph_kR_to_kq_batched!(epkq_dev, ep_ekpR_itp, qs_chunk, uphs_dev, ukqs_used; ws=kRkq_ws,
-                g2_out = g2_dev, ωq = ωq_dev)
+            # One batched Wannier->Bloch over this chunk's q: ep_kq(q) (nw, nw, nmodes), folding
+            # g2 = |ep|²/(2ω) into the same fused kernel pass.
+            get_eph_kR_to_kq_batched!(view(epkq_dev, :, :, :, r), ep_ekpR_itp, view(qs_chunk, r),
+                view(uphs_dev, :, :, r), ukqs_used; ws=kRkq_ws,
+                g2_out = view(g2_dev, :, :, :, r), ωq = view(ωq_dev, :, r))
 
-            # Hand the whole chunk's e-ph matrix (still on the device) to each calculator, which
-            # forms g2 / scatters on the device. Only 1:nqc is passed (the padded tail is dropped);
-            # no D2H of the e-ph matrix here. Full contiguous H2D copies (copying host↔device
-            # SubArray views falls back to scalar indexing); only the 1:nqc columns are read.
-            # ωq_dev was gathered above (before kRkq, for the g2 fold).
-            copyto!(ikqs_dev, ikqs_host)
+            # Hand the chunk's e-ph matrix (still on the device) to each calculator, which forms
+            # g2 / scatters it on the device; no D2H of the e-ph matrix here. 5-arg contiguous H2D
+            # copy of the first nq_chunk k+q indices (a SubArray-view copy would go scalar).
+            copyto!(ikqs_dev, 1, ikqs_host, 1, nq_chunk)
             for calc in calculators
                 run_calculator_batched!(calc,
-                    view(epkq_dev, :, :, :, 1:nqc), view(ωq_dev, :, 1:nqc),
-                    ik, view(ikqs_dev, 1:nqc); g2 = view(g2_dev, :, :, :, 1:nqc))
+                    view(epkq_dev, :, :, :, r), view(ωq_dev, :, r),
+                    ik, view(ikqs_dev, r); g2 = view(g2_dev, :, :, :, r))
             end
 
             qstart = qend + 1
