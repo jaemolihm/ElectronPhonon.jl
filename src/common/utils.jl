@@ -1,34 +1,6 @@
 # TODO: separate to smearing.jl and kpoints.jl
 using SpecialFunctions: erf, erfc
 
-"""
-    to_device(obj)
-Move an object (e.g. a Wannier object / interpolator) to a compute device such as a GPU.
-Methods are provided by package extensions (e.g. `ElectronPhononCUDAExt` for CUDA); the base
-package defines no method, so calling this without the relevant extension loaded raises a
-`MethodError`. Not exported (the name is generic); use `ElectronPhonon.to_device`.
-"""
-function to_device end
-
-"""
-    device_free_bytes(proto) -> Int
-
-Free memory (bytes) on the backend `proto` lives on, used to decide whether a large buffer fits
-on the device. Generic fallback returns `typemax(Int)` (host memory: assume it always fits — the
-caller's host allocation is governed by RAM, not this check). The CUDA extension returns
-`CUDA.available_memory()` for a `CuArray` proto.
-"""
-device_free_bytes(proto) = typemax(Int)
-
-"""
-    device_synchronize(proto)
-
-Block until queued device work on `proto`'s backend completes. Generic fallback is a no-op
-(host work is synchronous); the CUDA extension calls `CUDA.synchronize()`. Used to bound the
-host look-ahead in the GPU e-ph loop so per-tile scratch does not pile up in the memory pool.
-"""
-device_synchronize(proto) = nothing
-
 # module Utils
 export occ_fermion
 export occ_fermion_derivative

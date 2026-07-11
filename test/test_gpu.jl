@@ -404,10 +404,10 @@ end
         # difference, so this must match to machine precision (validates rotation + Berry math).
         ufc = zeros(ComplexF64, nw, nw, nk); ec = zeros(Float64, nw, nk)
         for ik in 1:nk; ufc[:, :, ik] .= els_c[ik].u_full; ec[:, ik] .= els_c[ik].e_full; end
-        v_itp = get_interpolator(ElectronPhonon.to_device(model.el_ham_R); fourier_mode="batched")
-        v_dev = ElectronPhonon.get_el_velocity_direct_batched(v_itp, kpts.vectors, CuArray(ufc))
-        rbar_itp = get_interpolator(ElectronPhonon.to_device(model.el_pos); fourier_mode="batched")
-        rbar_dev = ElectronPhonon.get_el_velocity_direct_batched(rbar_itp, kpts.vectors, CuArray(ufc))
+        itp_v = get_interpolator(ElectronPhonon.to_device(model.el_ham_R); fourier_mode="batched")
+        v_dev = ElectronPhonon.get_el_velocity_direct_batched(itp_v, kpts.vectors, CuArray(ufc))
+        itp_rbar = get_interpolator(ElectronPhonon.to_device(model.el_pos); fourier_mode="batched")
+        rbar_dev = ElectronPhonon.get_el_velocity_direct_batched(itp_rbar, kpts.vectors, CuArray(ufc))
         let E = CuArray(ec)
             v_dev .+= im .* (reshape(E, nw, 1, 1, nk) .- reshape(E, 1, nw, 1, nk)) .* rbar_dev
         end

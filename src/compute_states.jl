@@ -22,24 +22,30 @@ function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-In
         return states
     end
 
-    need_velocity = ("position" ∈ quantities
-        || "velocity" ∈ quantities || "velocity_diagonal" ∈ quantities)
-    need_position = ("position" ∈ quantities
-        || ("velocity" ∈ quantities && model.el_velocity_mode === :BerryConnection))
-
     if use_gpu
-        _compute_electron_states_gpu!(states, model, kpts, quantities, window, need_velocity, need_position)
+        _compute_electron_states_gpu!(states, model, kpts, quantities, window)
     else
-        _compute_electron_states_cpu!(states, model, kpts, quantities, window, need_velocity, need_position; fourier_mode)
+        _compute_electron_states_cpu!(states, model, kpts, quantities, window; fourier_mode)
     end
     states
 end
 
-function _compute_electron_states_cpu!(states, model::Model{FT}, kpts, quantities, window,
-                                       need_velocity, need_position; fourier_mode) where FT
+# Which quantities each backend needs to compute, derived from `quantities` (kept in one place so
+# the caller passes only `quantities`). `need_velocity` gates the velocity-operator interpolation;
+# `need_position` the position (Berry-connection) interpolation.
+function _electron_state_needs(model, quantities)
+    need_vfull    = "velocity" ∈ quantities
+    need_vdiag    = "velocity_diagonal" ∈ quantities
+    need_position = "position" ∈ quantities ||
+        (need_vfull && model.el_velocity_mode === :BerryConnection)
+    need_velocity = need_vfull || need_vdiag || "position" ∈ quantities
+    (; need_vfull, need_vdiag, need_position, need_velocity)
+end
+
+function _compute_electron_states_cpu!(states, model::Model{FT}, kpts, quantities, window;
+                                       fourier_mode) where FT
     (; el_velocity_mode) = model
-    want_velocity = "velocity" ∈ quantities
-    want_vdiag    = "velocity_diagonal" ∈ quantities
+    (; need_vfull, need_vdiag, need_position, need_velocity) = _electron_state_needs(model, quantities)
     @threads for iks in chunks(kpts.vectors; n=2nthreads())
         # Setup thread-local WannierInterpolators
         ham = get_interpolator(model.el_ham; fourier_mode)
@@ -70,12 +76,12 @@ function _compute_electron_states_cpu!(states, model::Model{FT}, kpts, quantitie
                 if need_position
                     set_position!(el, pos, xk)
                 end
-                if want_velocity
+                if need_vfull
                     set_velocity!(el, vel, xk, el_velocity_mode)
                     for i in el.rng
                         el.vdiag[i] = real.(el.v[i, i])
                     end
-                elseif want_vdiag
+                elseif need_vdiag
                     set_velocity_diag!(el, vel, xk, el_velocity_mode)
                 end
             end
@@ -95,26 +101,24 @@ end
 # (and e-ph matrix elements / g2 for those band pairs) can differ from the CPU path by a unitary
 # rotation within the degenerate subspace — small numerical differences, most visible on COARSE k
 # grids; they shrink as the grid is refined and BZ-summed results converge.
-function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantities, window,
-                                       need_velocity, need_position) where FT
+function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantities, window) where FT
     (; nw, el_velocity_mode) = model
-    want_velocity = "velocity" ∈ quantities
-    want_vdiag    = "velocity_diagonal" ∈ quantities
+    (; need_vfull, need_vdiag, need_position) = _electron_state_needs(model, quantities)
 
     E = nothing; U = nothing; rbar = nothing; vel = nothing
-    elham_itp = get_interpolator(to_device(model.el_ham); fourier_mode="batched", batch_size=kpts.n)
+    itp_elham = get_interpolator(to_device(model.el_ham); fourier_mode="batched", batch_size=kpts.n)
     if quantities == ["eigenvalue"]
-        E = Array(get_el_eigen_valueonly_batched(elham_itp, kpts.vectors))
+        E = Array(get_el_eigen_valueonly_batched(itp_elham, kpts.vectors))
     else
-        E_dev, U_dev = get_el_eigen_batched(elham_itp, kpts.vectors)
+        E_dev, U_dev = get_el_eigen_batched(itp_elham, kpts.vectors)
         E = Array(E_dev); U = Array(U_dev)
         rbar_dev = nothing
         if need_position
-            pos_itp = get_interpolator(to_device(model.el_pos); fourier_mode="batched", batch_size=kpts.n)
-            rbar_dev = get_el_velocity_direct_batched(pos_itp, kpts.vectors, U_dev)
+            itp_pos = get_interpolator(to_device(model.el_pos); fourier_mode="batched", batch_size=kpts.n)
+            rbar_dev = get_el_velocity_direct_batched(itp_pos, kpts.vectors, U_dev)
             rbar = Array(rbar_dev)
         end
-        if want_velocity || want_vdiag
+        if need_vfull || need_vdiag
             Mop = if el_velocity_mode === :Direct
                 model.el_vel
             elseif el_velocity_mode === :BerryConnection
@@ -122,9 +126,9 @@ function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantitie
             else
                 throw(ArgumentError("unknown el_velocity_mode $el_velocity_mode"))
             end
-            vel_itp = get_interpolator(to_device(Mop); fourier_mode="batched", batch_size=kpts.n)
-            vel_dev = get_el_velocity_direct_batched(vel_itp, kpts.vectors, U_dev)
-            if el_velocity_mode === :BerryConnection && want_velocity
+            itp_vel = get_interpolator(to_device(Mop); fourier_mode="batched", batch_size=kpts.n)
+            vel_dev = get_el_velocity_direct_batched(itp_vel, kpts.vectors, U_dev)
+            if el_velocity_mode === :BerryConnection && need_vfull
                 nk = kpts.n
                 vel_dev .+= im .* (reshape(E_dev, nw, 1, 1, nk) .- reshape(E_dev, 1, nw, 1, nk)) .* rbar_dev
             end
@@ -154,7 +158,7 @@ function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantitie
                         rbar_w[idir, :, :] .= rbar[r, r, idir, ik]
                     end
                 end
-                if want_velocity
+                if need_vfull
                     v_w = reshape(reinterpret(Complex{FT}, no_offset_view(el.v)), 3, el.nband, el.nband)
                     @views for idir in 1:3
                         v_w[idir, :, :] .= vel[r, r, idir, ik]
@@ -162,7 +166,7 @@ function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantitie
                     for i in el.rng
                         el.vdiag[i] = real.(el.v[i, i])
                     end
-                elseif want_vdiag
+                elseif need_vdiag
                     for i in el.rng
                         el.vdiag[i] = real.(Vec3(vel[i, i, 1, ik], vel[i, i, 2, ik], vel[i, i, 3, ik]))
                     end
@@ -192,19 +196,18 @@ function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode=
         return states
     end
 
-    need_velocity = "velocity_diagonal" ∈ quantities
-
     if use_gpu
-        _compute_phonon_states_gpu!(states, model, kpts, quantities, need_velocity, eph_phonon_basis)
+        _compute_phonon_states_gpu!(states, model, kpts, quantities, eph_phonon_basis)
     else
-        _compute_phonon_states_cpu!(states, model, kpts, quantities, need_velocity, eph_phonon_basis; fourier_mode)
+        _compute_phonon_states_cpu!(states, model, kpts, quantities, eph_phonon_basis; fourier_mode)
     end
     states
 end
 
-function _compute_phonon_states_cpu!(states, model::Model{FT}, kpts, quantities, need_velocity,
+function _compute_phonon_states_cpu!(states, model::Model{FT}, kpts, quantities,
                                      eph_phonon_basis; fourier_mode) where FT
     (; mass) = model
+    need_velocity = "velocity_diagonal" ∈ quantities
     polar = model.polar_phonon
     @threads for iks in chunks(kpts.vectors; n = nthreads())
         # Setup thread-local WannierInterpolators
@@ -241,14 +244,15 @@ end
 # then a host loop copies the results into the states. velocity_diagonal is rotated on the device
 # too. polar is unsupported (the GPU e-ph loop asserts no polar). Same degeneracy-gauge caveat as
 # the electrons — small g2 differences for degenerate modes, most visible on COARSE q grids.
-function _compute_phonon_states_gpu!(states, model::Model{FT}, kpts, quantities, need_velocity,
+function _compute_phonon_states_gpu!(states, model::Model{FT}, kpts, quantities,
                                      eph_phonon_basis) where FT
     (; nmodes, mass) = model
+    need_velocity = "velocity_diagonal" ∈ quantities
     polar = model.polar_phonon
     polar.use && error("compute_phonon_states use_gpu does not support polar phonons")
 
-    dyn_itp = get_interpolator(to_device(model.ph_dyn); fourier_mode="batched", batch_size=kpts.n)
-    D = _fourier_hk_batched(dyn_itp, kpts.vectors)  # (nmodes,nmodes,nq)
+    itp_dyn = get_interpolator(to_device(model.ph_dyn); fourier_mode="batched", batch_size=kpts.n)
+    D = _fourier_hk_batched(itp_dyn, kpts.vectors)  # (nmodes,nmodes,nq)
     msqrt_d = similar(D, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
     D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
     D ./= reshape(msqrt_d, 1, nmodes, 1)
@@ -258,8 +262,8 @@ function _compute_phonon_states_gpu!(states, model::Model{FT}, kpts, quantities,
     U = Array(U_dev)
     vel = nothing
     if need_velocity
-        phvel_itp = get_interpolator(to_device(model.ph_dyn_R); fourier_mode="batched", batch_size=kpts.n)
-        vel = Array(get_el_velocity_direct_batched(phvel_itp, kpts.vectors, U_dev))
+        itp_phvel = get_interpolator(to_device(model.ph_dyn_R); fourier_mode="batched", batch_size=kpts.n)
+        vel = Array(get_el_velocity_direct_batched(itp_phvel, kpts.vectors, U_dev))
     end
 
     # Copy the batched device results into the per-q states (on the host).

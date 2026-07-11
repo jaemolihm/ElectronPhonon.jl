@@ -26,6 +26,7 @@ Eigenvalues of a stack of Hermitian matrices `Hk` of size `(nw, nw, nk)`, return
 `heevjBatched!` method for `CuArray`s.
 """
 function eigvals_batched(Hk::AbstractArray{Complex{T},3}) where {T}
+    # CPU method; the CuArray method (CUSOLVER heevjBatched!) lives in ext/ElectronPhononCUDAExt.jl.
     nw, n2, nk = size(Hk)
     @assert nw == n2
     E = Matrix{T}(undef, nw, nk)
@@ -50,6 +51,7 @@ degenerate bands the eigenvectors may differ from `get_el_eigen!` by a gauge (th
 eigenvalues, and the eigen-decomposition, are unaffected).
 """
 function eigen_batched(Hk::AbstractArray{Complex{T},3}) where {T}
+    # CPU method; the CuArray method (CUSOLVER heevjBatched!) lives in ext/ElectronPhononCUDAExt.jl.
     nw, n2, nk = size(Hk)
     @assert nw == n2
     E = Matrix{T}(undef, nw, nk)
@@ -148,30 +150,6 @@ function get_el_velocity_direct_batched(itp::BatchedWannierInterpolator{T}, xk_l
 end
 
 # =============================================================================
-#  Batched (strided) GEMM: C[:,:,b] = op(A[:,:,b]) * op(B[:,:,b]) for all b.
-#  CPU method loops over `mul!`; the CUDA extension dispatches to
-#  `CUBLAS.gemm_strided_batched!`. This is the one primitive the *list-batched* e-ph
-#  drivers need beyond Fourier + plain GEMM (each k/q has its own rotation matrix).
-
-@inline _batched_op(t::Char, X) = t == 'N' ? X : (t == 'T' ? transpose(X) : adjoint(X))
-
-"""
-    batched_gemm!(transA, transB, A, B, C)
-
-`C[:,:,b] = op(transA, A[:,:,b]) * op(transB, B[:,:,b])` for every batch `b` (α=1, β=0),
-where `op('N',X)=X`, `op('T',X)=transpose(X)`, `op('C',X)=adjoint(X)`. The CPU method loops
-over `mul!`; the CUDA extension uses `CUBLAS.gemm_strided_batched!`.
-"""
-function batched_gemm!(transA::Char, transB::Char,
-                       A::AbstractArray{T,3}, B::AbstractArray{T,3}, C::AbstractArray{T,3}) where {T}
-    @assert size(A, 3) == size(B, 3) == size(C, 3)
-    @views for b in axes(C, 3)
-        mul!(C[:, :, b], _batched_op(transA, A[:, :, b]), _batched_op(transB, B[:, :, b]))
-    end
-    C
-end
-
-# =============================================================================
 #  List-batched e-ph drivers: process many k (RR->kR) / many q (kR->kq) at once.
 #  These collapse the per-k/q kernel launches into a few large kernels — the form that
 #  wins on the GPU. Rotation matrices are stacked along the batch dimension.
@@ -218,6 +196,9 @@ end
 Preallocated scratch for [`get_eph_kR_to_kq_batched!`](@ref), reused across the per-k calls so the
 driver does no per-call `similar`. `proto` is an array on the target backend (e.g. `parent.op_r`);
 the buffers follow its backend and element type. `ndata = nw*nbandk*nmodes`.
+
+TODO: merge this with the other Wannier→Bloch scratch (the eigensolve / velocity buffers) into a
+single shared workspace so a whole computation allocates its device scratch once.
 """
 struct KRtoKQWorkspace{MT<:AbstractMatrix, AT<:AbstractArray}
     g::MT      # (ndata, nq)                  — Fourier output g(k+R_ep) for all q

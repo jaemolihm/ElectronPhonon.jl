@@ -128,10 +128,11 @@ by `q_batch_size`) through one `get_eph_kR_to_kq_batched!`.
 A calculator can opt into a **device-native hook** so the e-ph matrix for a whole `(k, {k+q})`
 chunk stays on the device and the reduction/scatter happens there:
 
-- `AbstractCalculator` gains `allow_eph_batched(calc)` (default `false`) and
-  `run_calculator_batched!(calc, ep_kq, ωq, ik, ikqs)`. Every calculator must opt in: the GPU loop
-  keeps `ep_kq` on the device and calls the batched hook once per chunk, and a calculator that does
-  not implement it is rejected with an error — there is no silent fallback to the host path.
+- **To run on the GPU, a calculator must (1) define `allow_eph_batched(calc) = true` and (2)
+  implement `run_calculator_batched!(calc, ep_kq, ωq, ik, ikqs)`.** The GPU path is batched-only:
+  the loop keeps `ep_kq` on the device and calls the batched hook once per chunk. A calculator that
+  does not opt in is rejected with an error — there is no silent fallback to the per-`(k,q)` host
+  path.
 - A calculator can implement this backend-generically (only `similar`/`copyto!`/broadcast/
   scatter-assignment) and add no CUDA dependency of its own.
 
@@ -145,12 +146,15 @@ per-k path (`get_eph_RR_to_kR!` etc. keep their `nband < nband_bound` support). 
 GPU path into a calculation, pass full `nband` (= `nw` for the electron side); no window handling
 is needed.
 
-## Not done / deferred
+## Abandoned (tried, decided against)
 
-- **Per-k GPU interpolation was tried and abandoned.** An early extension-local
-  `CuNormalWannierInterpolator` issued thousands of tiny per-k GEMV + eigensolve launches and was
-  launch-bound (slower than CPU on small systems). It was removed and superseded by the generic
-  device `WannierObject` + the generalized `BatchedWannierInterpolator`.
+- **Per-k GPU interpolation.** An early extension-local `CuNormalWannierInterpolator` issued
+  thousands of tiny per-k GEMV + eigensolve launches and was launch-bound (slower than CPU on small
+  systems). Removed and superseded by the generic device `WannierObject` + the generalized
+  `BatchedWannierInterpolator`. Not planned to return.
+
+## Deferred (may do later)
+
 - **In-place workspace drivers** (workspace-backed scratch instead of per-call `similar()`) were
   benchmarked and validated bit-identical, but the gain is small on the GPU (CUDA's pool already
   recycles device buffers), so it is deferred. Best done together with the calculator loop, where
