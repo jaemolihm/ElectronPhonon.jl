@@ -520,30 +520,19 @@ function _loop_eph_over_k_and_kq_gpu(
     qb = q_batch_size === nothing ? nkq : min(Int(q_batch_size), nkq)
     kb = min(Int(k_batch_size), nk)
 
-    # Fully-GPU: every calculator must implement the batched device hook. The GPU path does NOT
-    # fall back to the per-(k,q) host `run_calculator!` loop — that would be a silent, hard-to-spot
-    # performance cliff (see README_GPU.md "Decisions"). A non-batched calculator fails loudly here.
-    if !isempty(calculators) && !all(allow_eph_batched, calculators)
-        throw(ArgumentError("use_gpu requires every calculator to implement the batched device " *
-            "hook (allow_eph_batched = true); the GPU path does not fall back to the per-(k,q) " *
-            "host run_calculator! loop."))
-    end
+    # The GPU path is always device-native/batched: the e-ph matrix for a whole (k, {k+q}) chunk
+    # stays on the device and each calculator does its reduction/scatter there (no per-(k,q) host
+    # callback, no host g2, no complex-ep D2H). Every calculator must therefore implement the
+    # batched device hook; a non-batched calculator fails loudly rather than silently falling back
+    # to a slow host path — a hard-to-spot performance cliff (see README_GPU.md "Decisions").
+    isempty(calculators) && throw(ArgumentError("use_gpu requires at least one calculator."))
+    all(allow_eph_batched, calculators) || throw(ArgumentError(
+        "use_gpu requires every calculator to implement the batched device hook " *
+        "(allow_eph_batched = true); the GPU path does not fall back to the host run_calculator! loop."))
 
-    # Device-native calculator path: the e-ph matrix for a whole (k, {k+q}) chunk stays on the
-    # device and the calculator does its reduction/scatter there — no per-(k,q) host callback,
-    # no host g2, no complex-ep D2H.
-    batched = !isempty(calculators) && all(allow_eph_batched, calculators)
-
-    # Energy window support: the interpolation always runs full-band (uniform nw×nw, using the
-    # full eigenvectors `el.u_full`), so the batched kernels are unchanged. The window is applied
-    # only in the calculator scatter, where out-of-window states have imap == 0 and are skipped.
-    # With no calculators the loop uses the host path (`epdata.ep` sized to the windowed `nband`),
-    # so that case still requires full bands (a non-batched calculator was already rejected above).
-    fullband = all(el.nband == nw for el in el_k_save) && all(el.nband == nw for el in el_kq_save)
-    if !batched && !fullband
-        throw(ArgumentError("use_gpu without a batched calculator is full-band only: " *
-            "window_k / window_kq must be (-Inf, Inf)."))
-    end
+    # The interpolation always runs full-band (uniform nw×nw, using the full eigenvectors
+    # `el.u_full`); the energy window is applied in the calculator scatter, where out-of-window
+    # states have imap == 0 and are skipped, so a windowed run needs no special handling here.
 
     # ----- device interpolators (allocated once) -----
     epmat_dev = to_device(model.epmat)
@@ -625,29 +614,21 @@ function _loop_eph_over_k_and_kq_gpu(
         Bk[d, ik] = round(Int, kpts.vectors[ik][d] * qpts.ngrid[d])
     end
 
-    # Device-native path: phonon frequencies and k+q indices per chunk, on the device.
-    # Host path: host staging for the per-(k,q) epdata write.
-    if batched
-        # Phonon frequencies hoisted once (analog of uph_all_dev), gathered per chunk by iq.
-        ωq_all_dev = similar(epmat_dev.op_r, FT, nmodes, qpts.n)
-        let ωq_all_host = Array{FT}(undef, nmodes, qpts.n)
-            for iq in 1:qpts.n
-                @views ωq_all_host[:, iq] .= ph_save[iq].e
-            end
-            copyto!(ωq_all_dev, ωq_all_host)
+    # Phonon frequencies per chunk, on the device: hoisted once (analog of uph_all_dev) and
+    # gathered per chunk by iq.
+    ωq_all_dev = similar(epmat_dev.op_r, FT, nmodes, qpts.n)
+    let ωq_all_host = Array{FT}(undef, nmodes, qpts.n)
+        for iq in 1:qpts.n
+            @views ωq_all_host[:, iq] .= ph_save[iq].e
         end
-        ikqs_host = Vector{Int}(undef, qb)
-        ωq_dev    = similar(epmat_dev.op_r, FT, nmodes, qb)
-        ikqs_dev  = similar(epmat_dev.op_r, Int, qb)
-        # Stage 2: g2 = |ep|²/(2ω) is written by the fused kRkq kernel in the same pass that
-        # produces ep_kq (folds the calculator's abs2 broadcast). Real-valued, full qb (padded).
-        g2_dev    = similar(epmat_dev.op_r, FT, nw, nw, nmodes, qb)
-        epkq_host = Array{Complex{FT}}(undef, 0, 0, 0, 0)  # unused
-    else
-        ωq_dev    = nothing
-        g2_dev    = nothing
-        epkq_host = Array{Complex{FT}}(undef, nw, nw, nmodes, qb)
+        copyto!(ωq_all_dev, ωq_all_host)
     end
+    ikqs_host = Vector{Int}(undef, qb)
+    ωq_dev    = similar(epmat_dev.op_r, FT, nmodes, qb)
+    ikqs_dev  = similar(epmat_dev.op_r, Int, qb)
+    # g2 = |ep|²/(2ω) is written by the fused kRkq kernel in the same pass that produces ep_kq
+    # (folds the calculator's abs2 broadcast). Real-valued, full qb (padded).
+    g2_dev    = similar(epmat_dev.op_r, FT, nw, nw, nmodes, qb)
 
     epdata = take!(epdatas)
 
@@ -715,7 +696,7 @@ function _loop_eph_over_k_and_kq_gpu(
                 # with 3 float divisions; qpts.vectors is O(n), never ngrid³). ≡ (xkq-xk) mod G.
                 qs_chunk[j] = qpts.vectors[iq]
                 iq_chunk[j] = iq
-                batched && (ikqs_host[j] = ikq)
+                ikqs_host[j] = ikq
             end
             # Pad the tail of the final partial chunk with valid (duplicated) data so the
             # batched kernels run on dense `qb`-sized arrays; only 1:nqc is read back.
@@ -729,8 +710,8 @@ function _loop_eph_over_k_and_kq_gpu(
             copyto!(iq_dev, iq_chunk)
             @views uphs_dev .= uph_all_dev[:, :, iq_dev]
             # Phonon frequencies gathered here (before kRkq) so the fused kernel can fold
-            # g2 = |ep|²/(2ω) in the same pass (Stage 2). Padded tail is valid (duplicated iq).
-            batched && (@views ωq_dev .= ωq_all_dev[:, iq_dev])
+            # g2 = |ep|²/(2ω) in the same pass. Padded tail is valid (duplicated iq).
+            @views ωq_dev .= ωq_all_dev[:, iq_dev]
             # k+q rotations: reuse the prebuilt device stack. Full chunk → contiguous view (no
             # copy); partial final chunk → copy the slice and pad the tail (device→device).
             if nqc == qb
@@ -746,36 +727,18 @@ function _loop_eph_over_k_and_kq_gpu(
             # One batched Wannier->Bloch over all q in the chunk: ep_kq(q) (nw, nw, nmodes).
             # Device-native path: also fold g2 = |ep|²/(2ω) into the same fused kernel pass.
             get_eph_kR_to_kq_batched!(epkq_dev, ep_ekpR_itp, qs_chunk, uphs_dev, ukqs_used; ws=kRkq_ws,
-                g2_out = batched ? g2_dev : nothing, ωq = batched ? ωq_dev : nothing)
+                g2_out = g2_dev, ωq = ωq_dev)
 
-            if batched
-                # Device-native path: hand the whole chunk's e-ph matrix (still on the device)
-                # to each calculator, which forms g2 / scatters on the device. Only 1:nqc is
-                # passed (the padded tail is dropped). No D2H of the e-ph matrix here.
-                # Full contiguous H2D copies (copying host↔device SubArray views falls back to
-                # scalar indexing); only the 1:nqc columns are read by the calculator below.
-                # ωq_dev was gathered above (before kRkq, for the g2 fold).
-                copyto!(ikqs_dev, ikqs_host)
-                for calc in calculators
-                    run_calculator_batched!(calc,
-                        view(epkq_dev, :, :, :, 1:nqc), view(ωq_dev, :, 1:nqc),
-                        ik, view(ikqs_dev, 1:nqc); g2 = view(g2_dev, :, :, :, 1:nqc))
-                end
-            else
-                # Host path: copy the chunk back and run the per-(k,q) host calculator.
-                copyto!(epkq_host, epkq_dev)
-                for (j, ikq) in enumerate(qstart:qend)
-                    epdata.el_kq = el_kq_save[ikq]
-                    epdata.ph = ph_save[iq_chunk[j]]
-                    epdata.wtk = kpts.weights[ik]
-                    epdata.wtq = kqpts.weights[ikq]
-                    @views no_offset_view(epdata.ep) .= epkq_host[:, :, :, j]
-                    epdata_set_g2!(epdata)
-                    for calc in calculators
-                        run_calculator!(calc, epdata, ik, iq_chunk[j], ikq;
-                            xq = qs_chunk[j], xk, id_chunk = 1, epdata_dg = nothing)
-                    end
-                end
+            # Hand the whole chunk's e-ph matrix (still on the device) to each calculator, which
+            # forms g2 / scatters on the device. Only 1:nqc is passed (the padded tail is dropped);
+            # no D2H of the e-ph matrix here. Full contiguous H2D copies (copying host↔device
+            # SubArray views falls back to scalar indexing); only the 1:nqc columns are read.
+            # ωq_dev was gathered above (before kRkq, for the g2 fold).
+            copyto!(ikqs_dev, ikqs_host)
+            for calc in calculators
+                run_calculator_batched!(calc,
+                    view(epkq_dev, :, :, :, 1:nqc), view(ωq_dev, :, 1:nqc),
+                    ik, view(ikqs_dev, 1:nqc); g2 = view(g2_dev, :, :, :, 1:nqc))
             end
 
             qstart = qend + 1
