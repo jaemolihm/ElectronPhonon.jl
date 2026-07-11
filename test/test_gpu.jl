@@ -178,7 +178,7 @@ ElectronPhonon.postprocess_calculator_inner!(c::_RecordCalc; kwargs...) = c
 ElectronPhonon.postprocess_calculator!(c::_RecordCalc; kwargs...) = c
 function ElectronPhonon.run_calculator!(c::_RecordCalc, epdata, ik, iq, ikq; kwargs...)
     (; el_k, el_kq, ph) = epdata
-    @inbounds for imode in 1:ph.nmodes, n in el_k.rng, m in el_kq.rng
+    for imode in 1:ph.nmodes, n in el_k.rng, m in el_kq.rng
         c.g2[m, n, imode, ik, ikq] = epdata.g2[m, n, imode]
         c.ωq[m, n, imode, ik, ikq] = ph.e[imode]
     end
@@ -215,7 +215,7 @@ function ElectronPhonon.run_calculator_batched!(c::_RecordCalcBatched, ep_kq, ω
     g2h = Array(g2dev)   # device → host (m,n,ν,j)
     ωh = Array(ωq)
     ikqsh = Array(ikqs)
-    @inbounds for j in 1:nqc, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
+    for j in 1:nqc, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
         c.g2[m, n, ν, ik, ikqsh[j]] = g2h[m, n, ν, j]
         c.ωq[m, n, ν, ik, ikqsh[j]] = ωh[ν, j]
     end

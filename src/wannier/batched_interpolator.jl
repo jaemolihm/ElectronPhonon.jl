@@ -75,33 +75,33 @@ end
 
 # Allocate an array on the same backend as `parent.op_r`. For DiskWannierObject (which has
 # no in-memory op_r) fall back to host memory.
-_batch_alloc(parent::AbstractWannierObject, ::Type{S}, dims...) where {S} = zeros(S, dims...)
-_batch_alloc(parent::WannierObject, ::Type{S}, dims...) where {S} = similar(parent.op_r, S, dims...)
+_alloc_array(parent::AbstractWannierObject, ::Type{S}, dims...) where {S} = zeros(S, dims...)
+_alloc_array(parent::WannierObject, ::Type{S}, dims...) where {S} = similar(parent.op_r, S, dims...)
 
 function BatchedWannierInterpolator(parent::WT; batch_size::Int=32, xk_tol=sqrt(eps(T))/100) where {WT <: AbstractWannierObject{T}} where {T}
     nr = length(parent.irvec)
     ws = HermitianEigenWsSYEV{Complex{T},T}()
 
-    cached_results = _batch_alloc(parent, Complex{T}, parent.ndata, batch_size)
-    phase_batch    = _batch_alloc(parent, Complex{T}, nr, batch_size)
-    rdotk          = _batch_alloc(parent, T, nr, batch_size)
+    cached_results = _alloc_array(parent, Complex{T}, parent.ndata, batch_size)
+    phase_batch    = _alloc_array(parent, Complex{T}, nr, batch_size)
+    rdotk          = _alloc_array(parent, T, nr, batch_size)
 
     # R-vectors as an (nr × 3) real matrix on the backend, for the GEMM phase computation.
     irvec_host = Matrix{T}(undef, nr, 3)
-    @inbounds for ir in 1:nr, d in 1:3
+    for ir in 1:nr, d in 1:3
         irvec_host[ir, d] = parent.irvec[ir][d]
     end
-    irvec_mat = _batch_alloc(parent, T, nr, 3)
+    irvec_mat = _alloc_array(parent, T, nr, 3)
     copyto!(irvec_mat, irvec_host)
 
-    out    = _batch_alloc(parent, Complex{T}, parent.ndata)
-    buffer = _batch_alloc(parent, Complex{T}, 0)
-    buffer2 = _batch_alloc(parent, Complex{T}, 0)
+    out    = _alloc_array(parent, Complex{T}, parent.ndata)
+    buffer = _alloc_array(parent, Complex{T}, 0)
+    buffer2 = _alloc_array(parent, Complex{T}, 0)
 
     BatchedWannierInterpolator{T, WT, typeof(cached_results), typeof(irvec_mat), typeof(out)}(
         parent,
         batch_size,
-        Vec3{T}[],              # registered_kpoints
+        Vec3{T}[],               # registered_kpoints
         1,                       # current_index
         cached_results,
         0,                       # cached_batch_start
@@ -221,24 +221,25 @@ end
     _compute_phase_batch!(obj, batch_start, batch_end)
 
 Fill `obj.phase_batch[:, 1:batch_len]` with `cispi(2 * irvec . xk)` for the k-points in the
-batch, using a single GEMM (`irvec_mat * kmat`) followed by a broadcast. Works on any
+batch, using a single GEMM (`irvec_mat * xkmat`) followed by a broadcast. Works on any
 backend (CPU or GPU) since it uses no scalar indexing of the device buffers.
 """
 function _compute_phase_batch!(obj::BatchedWannierInterpolator{T}, batch_start::Int, batch_end::Int) where {T}
     (; registered_kpoints, irvec_mat, rdotk, phase_batch) = obj
     batch_len = batch_end - batch_start + 1
 
-    # k-point matrix (3 × batch_len) on the backend
-    kh = Matrix{T}(undef, 3, batch_len)
-    @inbounds for (ik_local, ik_global) in enumerate(batch_start:batch_end)
-        xk = registered_kpoints[ik_global]
-        kh[1, ik_local] = xk[1]; kh[2, ik_local] = xk[2]; kh[3, ik_local] = xk[3]
+    # k-point matrix (3 × batch_len), built on the host then copied to the backend. For a CPU
+    # parent this copy is a redundant host→host move, but it is what lets the same code feed a
+    # GPU parent (host→device); CPU batching is rarely used, so this is not specialized away.
+    xkmat_host = Matrix{T}(undef, 3, batch_len)
+    for (ik_local, ik_global) in enumerate(batch_start:batch_end)
+        xkmat_host[:, ik_local] .= registered_kpoints[ik_global]
     end
-    kmat = _batch_alloc(obj.parent, T, 3, batch_len)
-    copyto!(kmat, kh)
+    xkmat = _alloc_array(obj.parent, T, 3, batch_len)
+    copyto!(xkmat, xkmat_host)
 
-    @views mul!(rdotk[:, 1:batch_len], irvec_mat, kmat)          # (nr × batch_len) real
-    @views phase_batch[:, 1:batch_len] .= cispi.(2 .* rdotk[:, 1:batch_len])
+    @views mul!(rdotk[:, 1:batch_len], irvec_mat, xkmat)          # (nr × batch_len) real
+    @views @. phase_batch[:, 1:batch_len] = cispi(2 * rdotk[:, 1:batch_len])
     nothing
 end
 
@@ -290,9 +291,10 @@ end
     get_fourier_batched!(out, obj::BatchedWannierInterpolator, xk_list)
 
 Fourier-transform `obj` at all k-points in `xk_list` at once, writing into `out`
-(`(ndata, nk)` on the backend of `obj.parent.op_r`). Internally processes the k-points in
-chunks of `batch_size` reusing the batched machinery, and keeps the whole result on the
-backend (no per-k device→host copy). This is the entry point for GPU / whole-batch use.
+(`(ndata, nk)` on the backend of `obj.parent.op_r`). `length(xk_list)` may be larger than
+`obj.batch_size`: the k-points are processed internally in chunks of `batch_size` reusing the
+batched machinery, and the whole result is kept on the backend (no per-k device→host copy).
+This is the entry point for GPU / whole-batch use.
 """
 function get_fourier_batched!(out, obj::BatchedWannierInterpolator{T}, xk_list) where {T}
     ndata = obj.parent.ndata
