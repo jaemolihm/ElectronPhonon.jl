@@ -545,6 +545,10 @@ function _loop_eph_over_k_and_kq_gpu(
     # window scatter to imap == 0 and are skipped exactly as before; the calculators only need the
     # per-k physical-band offset `ibandk_offset` to address their imaps. Full-band runs have
     # nbandk_max = nw, ibandk_offset = 0 — the path (shapes, GEMMs, results) is unchanged.
+    # ibandk_offsets[ik]: 0-based window start = (first in-window band − 1), clamped so the
+    # nbandk_max-wide window [offset+1, offset+nbandk_max] stays within [1, nw]. The clamp only
+    # bites when a k's bands sit near the top edge: e.g. nw=4, nbandk_max=3, rng=3:4 → first−1=2
+    # exceeds nw−nbandk_max=1, so offset=1 (window 2:4 ⊇ 3:4); offset=2 would give 3:5, off the top.
     nbandk_max = fullband ? nw : max(maximum(el -> el.nband, el_k_save; init = 1), 1)
     ibandk_offsets = fullband ? zeros(Int, nk) :
         [clamp(first(el.rng) - 1, 0, nw - nbandk_max) for el in el_k_save]
