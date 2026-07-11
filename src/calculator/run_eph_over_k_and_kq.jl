@@ -481,14 +481,18 @@ end
 #  batched over k-batches and q-batches with device staging — differs from the per-(k,q) CPU loop,
 #  not because it holds any device-specific code.
 #
-#  Minimal first step — the rest is asserted off (not implemented on the GPU path):
-#    * no polar / long-range terms (so ϵs = 1, no dipole correction)
-#    * full bands, no energy window  ->  nband == nw at every k / k+q (uniform batch shapes)
-#    * commensurate k / k+q grids (precompute_ph) so phonon states are precomputed
-#    * no covariant derivative of g, no screening, no el_kq_from_unfolding,
-#      and energy_conservation = (:None, 0.0)
-#  (IBZ outer-k symmetry and outer-k MPI decomposition ARE supported — both are handled upstream
-#   in the shared `_setup`, so this loop stays symmetry- and MPI-agnostic.)
+#  Supported (all handled upstream in the shared `_setup`, so this loop itself is agnostic to them):
+#    * energy windows (window_k / window_kq): the k side carries only its in-window bands, the
+#      window is applied in the calculator scatter
+#    * IBZ outer-k symmetry
+#    * outer-k MPI decomposition (mpi_comm_k)
+#  Not supported — asserted off on the GPU path (see the scope-assert block below):
+#    * polar / long-range terms
+#    * incommensurate k / k+q grids: requires precompute_ph (phonon states precomputed)
+#    * covariant derivative of g
+#    * screening
+#    * el_kq_from_unfolding (directly-computed k+q only)
+#    * energy_conservation other than (:None, 0.0)
 #
 #  Buffer reuse: device buffers are allocated once before the k loop and reused for every
 #  (k, q), so the loop itself allocates almost nothing.

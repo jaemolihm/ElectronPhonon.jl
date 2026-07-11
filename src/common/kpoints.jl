@@ -106,15 +106,10 @@ function kpoints_grid(ngrid, mpi_comm::Union{MPI.Comm, Nothing}=nothing; shift=(
             error("kpoints_grid with symmetry incompatible with shift")
         end
         if mpi_comm isa MPI.Comm
-            # Create the irreducible k points in the root. Then redistribute. Reduce the root's
-            # `GridKpoints` to a plain `Kpoints` first so every rank holds the same type for the
-            # collective `mpi_scatter` (which has a `Kpoints` method) and returns `Kpoints` — the
-            # same type the non-symmetry MPI branch (`kpoints_grid_range`) returns.
-            kpoints = if mpi_isroot(mpi_comm)
-                Kpoints(kpoints_grid_symmetry(ngrid, symmetry; ignore_time_reversal))
-            else
-                Kpoints{Float64}()
-            end
+            # Create the irreducible k points on the root, then scatter them across ranks. The
+            # scatter keeps the `GridKpoints` type (each rank's subset is grid-aligned and rebuilds
+            # its own xk->ik hash), so both the serial and MPI symmetry branches return `GridKpoints`.
+            kpoints = mpi_isroot(mpi_comm) ? kpoints_grid_symmetry(ngrid, symmetry; ignore_time_reversal) : GridKpoints{Float64}()
             return mpi_scatter(kpoints, mpi_comm)
         else
             return kpoints_grid_symmetry(ngrid, symmetry; ignore_time_reversal)
@@ -122,6 +117,8 @@ function kpoints_grid(ngrid, mpi_comm::Union{MPI.Comm, Nothing}=nothing; shift=(
     elseif symmetry === nothing
         nk = prod(ngrid)
         range = mpi_comm isa MPI.Comm ? mpi_split_iterator(1:nk, mpi_comm) : 1:nk
+        # TODO: return GridKpoints here too (see kpoints_grid_range) so the non-symmetry branch
+        # matches the symmetry branch's GridKpoints return type in both the serial and MPI cases.
         return kpoints_grid_range(ngrid, range; shift)
     else
         error("Wrong input symmetry: must be a Symmetry object or nothing")
@@ -149,12 +146,8 @@ function kpoints_grid_range(ngrid::NTuple{3, Int}, rng::UnitRange{Int}, ::Type{F
         i = mod(div(ik-1 - k - j*nk3, nk2*nk3), nk1)
         push!(kvecs, Vec3{FT}(i/nk1, j/nk2, k/nk3) .+ shift)
     end
-    # BZ weight is the grid fraction 1/prod(ngrid) per point — NOT 1/length(rng). They coincide for
-    # the full range (rng = 1:prod(ngrid)), but for an MPI sub-range each rank must still carry the
-    # global BZ fraction so the distributed Σ_k w_k = 1 (a per-range 1/length would over-count by the
-    # number of ranks). Only the sub-range (MPI) case changes; the full-grid/serial result is identical.
-    nrange = length(kvecs)
-    Kpoints(nrange, kvecs, fill(one(FT) / (nk1 * nk2 * nk3), nrange), (nk1, nk2, nk3))
+    nk = length(kvecs)
+    Kpoints(nk, kvecs, fill(one(FT) / (nk1 * nk2 * nk3), nk), (nk1, nk2, nk3))
 end
 
 "Filter kpoints using a Boolean vector ik_keep. Retern Kpoints object where
@@ -383,9 +376,40 @@ end
 
 GridKpoints(xk::Vec3{T}) where {T <: Real} = GridKpoints(Kpoints(xk))
 
+# Empty GridKpoints (e.g. the receive-side placeholder on non-root ranks before mpi_scatter).
+GridKpoints{T}() where {T} = GridKpoints{T}(0, Vector{Vec3{T}}(), Vector{T}(), (0, 0, 0), zero(Vec3{T}), Dict{Int,Int}())
+
 # Reduce GridKpoints to Kpoints
 Kpoints(k::GridKpoints{T}) where {T} = Kpoints{T}(k.n, k.vectors, k.weights, k.ngrid)
 GridKpoints(k::GridKpoints) = k
+
+"""
+    mpi_scatter(k::GridKpoints{FT}, comm::MPI.Comm) where {FT}
+Scatter the grid-aligned points across `comm`, returning a `GridKpoints` on each rank (the
+per-rank xk->ik hash is rebuilt from that rank's subset). Each subset is itself on the grid, so
+the result stays a `GridKpoints` — matching the serial symmetry return type.
+"""
+function mpi_scatter(k::GridKpoints{FT}, comm::MPI.Comm) where {FT}
+    ngrid = mpi_bcast(k.ngrid, comm)
+    vectors = mpi_scatter(k.vectors, comm)
+    weights = mpi_scatter(k.weights, comm)
+    GridKpoints(Kpoints{FT}(length(vectors), vectors, weights, ngrid), ngrid)
+end
+
+function mpi_gather(k::GridKpoints{FT}, comm::MPI.Comm) where {FT}
+    kvectors = mpi_gather(k.vectors, comm)
+    weights = mpi_gather(k.weights, comm)
+    new_ngrid = _gather_ngrid(k.ngrid, comm)
+    if mpi_isroot(comm)
+        GridKpoints(Kpoints{FT}(length(kvectors), kvectors, weights, new_ngrid), new_ngrid)
+    else
+        GridKpoints{FT}()
+    end
+end
+
+"Collect and uniformly redistribute GridKpoints among processers (each even chunk stays grid-aligned)."
+mpi_gather_and_scatter(k::GridKpoints, comm::MPI.Comm) = mpi_scatter(mpi_gather(k, comm), comm)
+mpi_gather_and_scatter(k::GridKpoints, comm::Nothing) = k
 
 function _hash_xk(xk, ngrid, shift)
     # xk_int = mod.(round.(Int, (xk - shift) .* ngrid), ngrid)

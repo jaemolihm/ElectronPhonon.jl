@@ -3,7 +3,7 @@ using Random
 using ElectronPhonon
 
 @testset "kpoints: grid" begin
-    using ElectronPhonon: get_filtered_kpoints, kpoints_grid, kpoints_create_subgrid
+    using ElectronPhonon: get_filtered_kpoints, kpoints_grid, kpoints_create_subgrid, kpoints_grid_range
 
     nk1 = 2
     nk2 = 3
@@ -16,6 +16,18 @@ using ElectronPhonon
     kpts_split = split_kpoints(kpts, 5)
     @test sum([k.n for k in kpts_split]) == kpts.n
     @test all([k isa Kpoints for k in kpts_split])
+
+    # kpoints_grid_range weights each point by the global BZ fraction 1/prod(ngrid), NOT
+    # 1/length(rng): a sub-range (as used per MPI rank) must carry the global fraction so the
+    # union of sub-ranges still sums to 1.
+    ngrid = (nk1, nk2, nk3)
+    nk = prod(ngrid)
+    kpts_full = kpoints_grid_range(ngrid, 1:nk)
+    @test all(kpts_full.weights .≈ 1 / nk)
+    kpts_sub = kpoints_grid_range(ngrid, 3:9)  # a strict sub-range
+    @test all(kpts_sub.weights .≈ 1 / nk)      # global BZ fraction, not 1/7
+    subranges = [1:5, 6:12, 13:nk]
+    @test sum(sum(kpoints_grid_range(ngrid, r).weights) for r in subranges) ≈ 1
 
     # Test get_filtered_kpoints
     ik_keep = zeros(Bool, nk1 * nk2 * nk3)
@@ -173,4 +185,35 @@ end
     # combine_kpoint_grids routes through that constructor, so the guard applies to ngrid_kq.
     single = GridKpoints(kpoints_grid((1, 1, 1)))
     @test_throws ArgumentError combine_kpoint_grids(single, single, +, (10^7, 10^7, 10^7))
+end
+
+@testset "kpoints: mpi_scatter return type" begin
+    using ElectronPhonon: kpoints_grid, mpi_scatter, mpi_gather_and_scatter
+    MPI = ElectronPhonon.MPI
+    MPI.Initialized() || MPI.Init()
+    comm = MPI.COMM_SELF  # single rank: scatter keeps all points on this rank
+
+    # Empty GridKpoints placeholder (the non-root receive side before mpi_scatter).
+    empty_grid = GridKpoints{Float64}()
+    @test empty_grid isa GridKpoints
+    @test empty_grid.n == 0
+
+    # mpi_scatter of a GridKpoints preserves the GridKpoints type (rebuilds the per-rank hash).
+    gridk = GridKpoints(kpoints_grid((2, 2, 3)))
+    scattered = mpi_scatter(gridk, comm)
+    @test scattered isa GridKpoints
+    @test scattered.n == gridk.n
+    @test scattered.vectors ≈ gridk.vectors
+    @test all(xk_to_ik.(scattered.vectors, Ref(scattered)) .== 1:scattered.n)
+
+    # The load-balancing gather+scatter (used by filter_kpoints under MPI) also stays GridKpoints.
+    balanced = mpi_gather_and_scatter(gridk, comm)
+    @test balanced isa GridKpoints
+    @test balanced.n == gridk.n
+
+    # Contrast: a plain Kpoints scatters back to a plain Kpoints.
+    plaink = kpoints_grid((2, 2, 3))
+    @test plaink isa Kpoints
+    @test mpi_scatter(plaink, comm) isa Kpoints
+    @test mpi_gather_and_scatter(plaink, comm) isa Kpoints
 end
