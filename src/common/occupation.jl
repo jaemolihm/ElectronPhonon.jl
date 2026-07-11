@@ -148,6 +148,7 @@ function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true)
     elseif occ.type == :Semiconductor
         # For semiconductors, count the doped carriers to minimize floating point error.
         # FIXME: nband_valence needs to be a field
+        # FIXME: BUG: nband_valence must be provided by the user. By mistake one may set nelec instead of nlist in a metal, then this leads to very wrong result. Also we should rename nelec to nelec_semiconductor or something like that to indicate that this is intended for doped semiconductors.
         nband_valence = round(Int, occ.nelec / occ.spin_degeneracy)
         ncarrier_target = @. occ.nlist / occ.spin_degeneracy
         e_e = el.e[el.iband .>  nband_valence]
