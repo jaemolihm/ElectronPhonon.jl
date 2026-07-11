@@ -310,23 +310,29 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 - `xk`: Input. k point vector.
 - `uk`, `ukq`: Input. Electron eigenstate at k and k+q, respectively.
 """
-@timing "w2b_eph_Rqtokq" function get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq)
-    nbandkq, nbandk, nmodes = size(ep_kq)
+@timing "w2b_eph_Rqtokq" function get_eph_Rq_to_kq!(ep, epobj_eRpq, xk, uk, ukq)
+    # Indices: i: k+q Wannier, j: k Wannier, m: k+q band, n: k band, ν: mode.
+    nbandkq, nbandk, nmodes = size(ep)
+    nwq = size(ukq, 1)
+    nwk = size(uk, 1)
     @assert size(uk, 2) == nbandk
     @assert size(ukq, 2) == nbandkq
-    @assert epobj_eRpq.parent.ndata == size(ukq, 1) * size(uk, 1) * nmodes
+    @assert epobj_eRpq.parent.ndata == nwq * nwk * nmodes
 
-    ep_kq_wan = _reshape_buffer(epobj_eRpq.out, (size(ukq, 1), size(uk, 1), nmodes))
-    tmp = _reshape_buffer(epobj_eRpq.buffer, (size(ukq, 1), nbandk))
+    ep_ijν = _reshape_buffer(epobj_eRpq.out, (nwq, nwk, nmodes))
+    get_fourier!(ep_ijν, epobj_eRpq, xk)
 
-    get_fourier!(ep_kq_wan, epobj_eRpq, xk)
+    # ep[m,n,ν] = ukq' * ep_ijν * uk.
 
-    # Rotate e-ph matrix from electron Wannier to eigenstate basis
-    # ep_kq[ibkq, ibk, imode] = ukq'[ibkq, :] * ep_kq_wan[:, :, imode] * uk[:, ibk]
-    @views for imode in 1:nmodes
-        mul!(tmp, ep_kq_wan[:, :, imode], uk)
-        mul!(ep_kq[:, :, imode], ukq', tmp)
+    # Contract i in one GEMM, flattening (j, ν).
+    ep_mjν = _reshape_buffer(epobj_eRpq.buffer, (nbandkq, nwk, nmodes))
+    mul!(reshape(ep_mjν, nbandkq, :), ukq', reshape(ep_ijν, nwq, :))
+
+    # Contract j per mode, straight into the output (no permute needed).
+    @views for ν in 1:nmodes
+        mul!(ep[:, :, ν], ep_mjν[:, :, ν], uk)
     end
+
     nothing
 end
 

@@ -51,6 +51,7 @@ mutable struct BatchedWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
 
     # Buffer for intermediate calculations
     buffer::Vector{Complex{T}}
+    buffer2::Vector{Complex{T}}
 
     # Buffer for diagonalization
     ws::HermitianEigenWsSYEV{Complex{T},T}
@@ -72,6 +73,7 @@ mutable struct BatchedWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
             zeros(Complex{T}, nr, batch_size),  # phase_batch
             zeros(Complex{T}, parent.ndata),  # out
             Complex{T}[],            # buffer
+            Complex{T}[],            # buffer2
             ws,
             T(xk_tol)
         )

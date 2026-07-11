@@ -51,6 +51,7 @@ mutable struct BatchedGridoptWannierInterpolator{T, WT <: AbstractWannierObject}
 
     # Buffer for intermediate calculations
     buffer::Vector{Complex{T}}
+    buffer2::Vector{Complex{T}}
 
     # Buffer for diagonalization
     ws::HermitianEigenWsSYEV{Complex{T},T}
@@ -78,6 +79,7 @@ mutable struct BatchedGridoptWannierInterpolator{T, WT <: AbstractWannierObject}
             zeros(Complex{T}, nr_3, batch_size),  # phase_3_batch
             zeros(Complex{T}, parent.ndata),  # out
             Complex{T}[],            # buffer
+            Complex{T}[],            # buffer2
             ws,
             parent._id,
             T(xk_tol)

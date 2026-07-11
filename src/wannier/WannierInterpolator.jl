@@ -20,6 +20,7 @@ struct NormalWannierInterpolator{T, WT <: AbstractWannierObject} <: AbstractWann
 
     # Buffer for intermediate calculations
     buffer::Vector{Complex{T}}
+    buffer2::Vector{Complex{T}}
 
     # Buffer for diagonalization
     ws::HermitianEigenWsSYEV{Complex{T},T}
@@ -27,7 +28,7 @@ struct NormalWannierInterpolator{T, WT <: AbstractWannierObject} <: AbstractWann
     function NormalWannierInterpolator(parent::WT) where {WT <: AbstractWannierObject{T}} where {T}
         nr = length(parent.irvec)
         ws = HermitianEigenWsSYEV{Complex{T},T}()
-        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr), zeros(Complex{T}, parent.ndata), Complex{T}[], ws)
+        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr), zeros(Complex{T}, parent.ndata), Complex{T}[], Complex{T}[], ws)
     end
 end
 
@@ -44,6 +45,7 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
 
     # Buffer for intermediate calculations
     buffer::Vector{Complex{T}}
+    buffer2::Vector{Complex{T}}
 
     # Buffer for diagonalization
     ws::HermitianEigenWsSYEV{Complex{T},T}
@@ -55,7 +57,7 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
     function GridoptWannierInterpolator(parent::WT, threads = false) where {WT <: AbstractWannierObject{T}} where {T}
         gridopt = GridOpt(T, parent.irvec, parent.ndata, threads)
         ws = HermitianEigenWsSYEV{Complex{T},T}()
-        new{T, WT}(parent, gridopt, zeros(Complex{T}, parent.ndata), Complex{T}[], ws, parent._id)
+        new{T, WT}(parent, gridopt, zeros(Complex{T}, parent.ndata), Complex{T}[], Complex{T}[], ws, parent._id)
     end
 end
 
