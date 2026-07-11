@@ -162,9 +162,11 @@ electron-Bloch / phonon-Wannier object at `ks[k]`.
 One batched Fourier (`get_fourier_batched!`) over `R_el`, then one `batched_gemm!` for the
 per-k rotation by `uk` (recast as `transpose(uk(k)) * permute(g(k))`).
 
-Full-band only: `ep_ekpR_all` is sized exactly `(nw*nband*nmodes, …)`. Unlike the per-k
-`get_eph_RR_to_kR!`, this list-batched path does not support an energy window
-(`nband < nband_bound`) — all `nk` k-points must share the same `nband`.
+Requires a UNIFORM `nband` across the batch: `ep_ekpR_all` is sized exactly
+`(nw*nband*nmodes, …)`, so all `nk` k-points must share the same `nband` (unlike the per-k
+`get_eph_RR_to_kR!`, which handles a per-k window). A windowed run satisfies this by projecting
+every k onto the same `nbk_max`-wide eigenvector window (`nband = nbk_max`); full-band is the
+`nband = nw` special case.
 """
 function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
                                    epmat_itp::BatchedWannierInterpolator{T}, ks, uks) where {T}
