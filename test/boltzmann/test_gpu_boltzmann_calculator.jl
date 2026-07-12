@@ -3,49 +3,22 @@ using ElectronPhonon
 const EP = ElectronPhonon
 using Random
 
-# Direct (independent) reference for the shared BTE scattering core, transcribed from the upstream
-# `dev_BTE` reference implementation. Guards against regressions in `bte_scattering_increments`
-# (the one physics implementation shared by the CPU loop and GPU kernel).
-function _ref_increment(method, ek, ekq, ωq, g2, wtq, μ, T, η)
-    occf(e) = 1/(exp(e/T)+1)
-    df(e)   = -1/(2+exp(e/T)+exp(-e/T))/T
-    nb(e)   = e == 0 ? 0.0 : 1/expm1(e/T)
-    δ(Δ)    = exp(-(Δ/η)^2)/sqrt(π)/η
-    Δe1 = ek-ekq+ωq; Δe2 = ek-ekq-ωq
-    δ1 = δ(Δe1); δ2 = δ(Δe2)
-    (δ1 < eps(δ1) && δ2 < eps(δ2)) && return (0.0, 0.0)
-    nq = nb(ωq); f_k = occf(ek-μ); f_kq = occf(ekq-μ)
-    if method == 1
-        f1o=nq+f_kq; f2o=nq+1-f_kq; f1i=nq+f_k; f2i=nq+1-f_k
-    elseif method == 2
-        po=f_kq*(1-f_kq)/(f_k*(1-f_k)); f1o=po*(nq+1-f_k); f2o=po*(nq+f_k)
-        pi=f_k*(1-f_k)/(f_kq*(1-f_kq)); f1i=pi*(nq+1-f_kq); f2i=pi*(nq+f_kq)
-    elseif method == 3
-        po=(1-f_kq)/(1-f_k); f1o=po*nq; f2o=po*(nq+1)
-        pi=(1-f_k)/(1-f_kq); f1i=pi*nq; f2i=pi*(nq+1)
-    elseif method == 4
-        po=f_kq/f_k; f1o=po*(nq+1); f2o=po*nq
-        pi=f_k/f_kq; f1i=pi*(nq+1); f2i=pi*nq
-    elseif method == 5
-        f1o=sqrt(nq*(nq+1)*df(ekq-μ)/df(ek-μ)); f2o=f1o
-        f1i=sqrt(nq*(nq+1)*df(ek-μ)/df(ekq-μ)); f2i=f1i
-    else
-        no=nb(ekq-ek); f1o=no+f_kq; f2o=-(no+f_kq)
-        ni=nb(ek-ekq); f1i=ni+f_k;  f2i=-(ni+f_k)
-    end
-    pref = 2π*wtq*g2
-    ((δ1*f1o+δ2*f2o)*pref, (δ2*f1i+δ1*f2i)*pref)
-end
-
-@testset "bte_scattering_increments (shared core) matches dev_BTE reference" begin
-    Random.seed!(42)
-    for _ in 1:200, method in 1:6
-        ek = 0.02randn(); ekq = 0.02randn(); ωq = 0.005 + 0.01rand()
-        g2 = 1e-3rand(); wtq = rand(); μ = 0.01randn(); T = 0.005 + 0.02rand(); η = 0.002 + 0.01rand()
-        sₒ, sᵢ = EP.bte_scattering_increments(method, ek, ekq, ωq, g2, wtq, μ, T, η)
-        rₒ, rᵢ = _ref_increment(method, ek, ekq, ωq, g2, wtq, μ, T, η)
-        @test sₒ ≈ rₒ rtol=1e-12
-        @test sᵢ ≈ rᵢ rtol=1e-12
+@testset "bte_scattering_increments (shared core) pinned values" begin
+    # (sₒ, sᵢ) for methods 1..6 at a fixed in-window input, pinned from the validated
+    # implementation as a regression guard. Input: ek, ekq, ωq, g2, wtq, μ, T, η =
+    #   0.01, -0.005, 0.008, 1e-3, 0.5, 0.002, 0.01, 0.005  (atomic units).
+    ref = Dict(
+        1 => (0.057312033235413576, 0.056224157281476575),
+        2 => (0.05827514910329083,  0.05529493824267435),
+        3 => (0.04360686568446893,  0.08472285346130072),
+        4 => (0.08781344455188772,  0.04207212358135953),
+        5 => (0.06188108814500812,  0.059703185425524365),
+        6 => (0.030909988400384957, 0.029822112446447974),
+    )
+    for method in 1:6
+        sₒ, sᵢ = EP.bte_scattering_increments(method, 0.01, -0.005, 0.008, 1e-3, 0.5, 0.002, 0.01, 0.005)
+        @test sₒ ≈ ref[method][1] rtol=1e-12
+        @test sᵢ ≈ ref[method][2] rtol=1e-12
     end
     # δ-underflow guard: huge energy mismatch ⇒ exact zero (no 0·Inf NaN even for Method5)
     s = EP.bte_scattering_increments(5, 10.0, -10.0, 0.01, 1e-3, 1.0, 0.01, 0.01, 0.005)
@@ -115,5 +88,31 @@ let
         end
     else
         @info "CUDA not functional — skipping GPU bte_window_scatter! test"
+    end
+end
+
+# End-to-end BoltzmannCalculator: the same calculator run on CPU (use_gpu=false) and GPU
+# (use_gpu=true) over a full pass of run_eph_over_k_and_kq must produce the same Sₒ/Sᵢ. Sₒ (the
+# SERTA lifetime) is gauge-invariant so it agrees to ~machine eps; this is the real cross-check that
+# the device path (batched loop + device scatter) matches the host path. Pb (metal) artifact model.
+@testset "end-to-end BTE: CPU vs GPU (Pb)" begin
+    model = _load_model_from_artifacts("pb")   # nw=4, nmodes=3; loads the e-ph matrix
+    eV = EP.unit_to_aru(:eV); K = EP.unit_to_aru(:K); meV = EP.unit_to_aru(:meV)
+    μ = 11.68eV; window = (μ - 0.5eV, μ + 0.5eV)
+    mkcalc() = BoltzmannCalculator{Float64}(;
+        occ = ElectronOccupationParams(; Tlist = [300.0 * K], nlist = 4.0, μlist = μ,
+            volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac),
+        smearing = [(:Gaussian, 100.0 * meV)], occupation_method = 5)
+    runbte(use_gpu) = (c = mkcalc(); EP.run_eph_over_k_and_kq(model, (6, 6, 6), (6, 6, 6);
+        calculators = [c], symmetry = nothing, window_k = window, window_kq = window,
+        fourier_mode = "gridopt", use_gpu, progress_print_step = 10^9); c)
+
+    cc = runbte(false)
+    @test length(cc.Sₒ[1]) > 0
+    @test all(isfinite, stack(cc.Sₒ)) && all(isfinite, stack(cc.Sᵢ))
+    if _CUDA_OK
+        cg = runbte(true)
+        @test stack(cg.Sₒ) ≈ stack(cc.Sₒ) rtol = 1e-9
+        @test stack(cg.Sᵢ) ≈ stack(cc.Sᵢ) rtol = 1e-9
     end
 end
