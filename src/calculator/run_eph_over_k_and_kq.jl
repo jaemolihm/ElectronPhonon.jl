@@ -31,8 +31,16 @@ function run_eph_over_k_and_kq(
         end
     end
 
-    mpi_comm_k === nothing || error("mpi_comm_k not implemented")
-    mpi_comm_q === nothing || error("mpi_comm_q not implemented")
+    # Outer-k MPI decomposition (multi-CPU/GPU): `mpi_comm_k` splits the OUTER k-points across ranks
+    # — each rank computes the e-ph coupling for its k-slice only (rank-local `calc.g2` / `el_i`),
+    # while k+q, the q-grid, and the phonon states stay FULL per rank (so any k can scatter to any
+    # k+q). `filter_kpoints` does the split + load-balance in `_setup`; the CPU and GPU inner loops
+    # are unchanged (they iterate whatever `kpts` they receive). `mpi_comm_q` is a separate scheme,
+    # not yet implemented.
+    mpi_comm_q === nothing || error("mpi_comm_q not implemented (use mpi_comm_k for outer-k decomposition)")
+    (mpi_comm_k === nothing || !el_kq_from_unfolding) || throw(ArgumentError(
+        "mpi_comm_k requires el_kq_from_unfolding = false (k+q stays full per rank; the unfolding " *
+        "path is not split-aware)."))
 
     # Symmetry (IBZ outer k) is supported on the GPU path, but only with directly-computed k+q
     # (el_kq_from_unfolding = false): the IBZ reduction happens in the shared setup and the GPU loop
@@ -473,12 +481,18 @@ end
 #  batched over k-batches and q-batches with device staging — differs from the per-(k,q) CPU loop,
 #  not because it holds any device-specific code.
 #
-#  Minimal first step — the rest is asserted off (not implemented on the GPU path):
-#    * no polar / long-range terms (so ϵs = 1, no dipole correction)
-#    * full bands, no energy window  ->  nband == nw at every k / k+q (uniform batch shapes)
-#    * commensurate k / k+q grids (precompute_ph) so phonon states are precomputed
-#    * no covariant derivative of g, no screening, no symmetry/unfolding, single node (no MPI),
-#      and energy_conservation = (:None, 0.0)
+#  Supported (all handled upstream in the shared `_setup`, so this loop itself is agnostic to them):
+#    * energy windows (window_k / window_kq): the k side carries only its in-window bands, the
+#      window is applied in the calculator scatter
+#    * IBZ outer-k symmetry
+#    * outer-k MPI decomposition (mpi_comm_k)
+#  Not supported — asserted off on the GPU path (see the scope-assert block below):
+#    * polar / long-range terms
+#    * incommensurate k / k+q grids: requires precompute_ph (phonon states precomputed)
+#    * covariant derivative of g
+#    * screening
+#    * el_kq_from_unfolding (directly-computed k+q only)
+#    * energy_conservation other than (:None, 0.0)
 #
 #  Buffer reuse: device buffers are allocated once before the k loop and reused for every
 #  (k, q), so the loop itself allocates almost nothing.

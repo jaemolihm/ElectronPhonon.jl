@@ -81,3 +81,33 @@ cross-row *speedup ratio* is not directly comparable; trend the GPU wall-time co
 `relerr(g2)=0.76` / `ωq=false`: same degenerate-gauge artifact documented in the Stage 1 entry
 above (two eigensolvers pick different gauges for Pb's degenerate bands), not a correctness
 regression — the 81/81 GPU tests use gauge-invariant / fixed-eigenvector checks.
+
+---
+
+## 2026-07-11 — `8597488` (gpu-3-mpi-outerk, Stage 3: MPI outer-k decomposition)
+
+**Hardware:** NVIDIA RTX A6000 (48 GB), host `ccqlin059`.
+**Software:** Julia 1.11.7, CUDA.jl functional. GPU tests: 81/81 green.
+
+Stage 3 enables `mpi_comm_k` to split the OUTER k-points across MPI ranks (each rank computes
+its k-slice's e-ph coupling; k+q / q-grid / phonons stay full per rank) and fixes the
+`kpoints_grid_range` BZ-fraction weight so a per-rank sub-range's Σ_k w_k is correct. The
+**serial single-rank path is unchanged** (the new guards are no-ops when `mpi_comm_k = nothing`,
+and the full-range weight is identical), so this benchmark is a single-GPU no-regression check —
+the MPI win is not measurable on one rank.
+
+**End-to-end e-ph loop** (`bench_eliashberg_loop_gpu.jl`, EliashbergCalculator, window E_F±0.3 eV):
+
+| grid | n_i | CPU | GPU | speedup |
+|-|-|-|-|-|
+| 16³ | 432  | 0.59 s | 0.54 s | 1.10× |
+| 24³ | 1716 | 6.85 s | 3.00 s | 2.28× |
+| 32³ | 4052 | 38.7 s | 8.96 s | 4.32× |
+
+**No regression vs Stage 2b** (`71f90e0`): the reliable 32³ GPU signal is 8.96 s vs 8.83 s
+(Δ≈1.5%, run-to-run noise); 24³ GPU 3.00 vs 2.94 s; 16³ 0.54 vs 0.55 s. As expected — Stage 3
+does not touch the single-rank inner loop.
+
+`relerr(g2)=0.76` / `ωq=false`: same degenerate-gauge artifact documented in the Stage 1/2b
+entries (two eigensolvers pick different gauges for Pb's degenerate bands), not a correctness
+regression — the 81/81 GPU tests use gauge-invariant / fixed-eigenvector checks.
