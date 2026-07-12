@@ -20,11 +20,11 @@
 # GPU device memory (Sᵢ): the scattering-in matrix Sᵢ (n_i·n_f·nT) is the large object. On the GPU it
 # is never held whole on the device — it is tiled over outer k, each tile filled by one k-batch and
 # streamed to the host (setup/flush_calculator_outer_batch!), so only one tile (≈ one k-batch of rows)
-# is device-resident. This bounds device memory to the tile regardless of grid size, at no measurable
-# speed cost: streaming the tiles is within ~2% of a single whole-Sᵢ copy even at 1.1 GB Sᵢ (measured
-# on Pb / RTX A6000; ~40 separate D2H copies), because the total bytes moved are identical and the
-# scatter is a tiny fraction of GPU time. (Sₒ is small — n_i·nT — and stays device-resident, streamed
-# once at the end.)
+# is device-resident. This bounds device memory to the tile regardless of grid size at no measurable
+# speed cost: streaming is within ~2% of a single whole-Sᵢ copy even at 1.1 GB Sᵢ, because the D2H
+# bytes moved are identical either way. There is deliberately no full-device-resident Sᵢ path. (Sₒ is
+# small — n_i·nT — and stays device-resident, streamed once at the end.) See benchmark/README.md for
+# the profile (and why the scatter kernel is NOT a negligible fraction of GPU time).
 
 export BoltzmannCalculator
 
@@ -44,6 +44,8 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
 
     # Number of CPU thread-chunks for the CPU-path buffers; set at setup (0 = not set yet).
     nchunks::Int = 0
+    # Physical-band range (iband_min:iband_max) spanning the in-window bands; set at setup. The CPU
+    # per-chunk Sₒ/Sᵢ buffers are OffsetArrays indexed over this band range. (1:0 = not set yet.)
     rng_band::UnitRange{Int} = 1:0
     # Backend selected by run_eph_over_k_and_kq (set at setup): false = CPU (run_calculator!),
     # true = GPU (run_calculator_batched!). Each per-path hook errors if called on the wrong backend.
@@ -116,6 +118,8 @@ function ElectronPhonon.setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, q
 
     # electron_states_to_BandStates requires GridKpoints (its k-vector hash is needed by the loop);
     # the non-symmetry path hands us a plain Kpoints, so promote here.
+    # TODO: make run_eph_over_k_and_kq pass GridKpoints directly; if that turns out not to be
+    # possible, make setup fail early on a plain Kpoints instead of promoting here.
     gkpts   = kpts isa GridKpoints   ? kpts   : GridKpoints(kpts)
     gkqpts  = kqpts isa GridKpoints  ? kqpts  : GridKpoints(kqpts)
     calc.el_i, calc.imap_el_i = electron_states_to_BandStates(el_states, gkpts, nelec_below_window_k)
