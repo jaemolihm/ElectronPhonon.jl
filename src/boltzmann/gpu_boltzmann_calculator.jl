@@ -1,10 +1,9 @@
 # GPUBoltzmannCalculator: an AbstractCalculator that accumulates the BTE scattering-out (Sₒ) and
 # scattering-in (Sᵢ) matrices during a single pass of `run_eph_over_k_and_kq`, on the CPU
-# (`run_calculator!`) or the GPU (`run_calculator_batched!`). It is the transport analogue of
-# MigdalEliashberg's `EliashbergCalculator`: same BandStates / imap addressing and the same
-# full-resident vs block-device-resident memory strategy, but instead of copying g2/ωq it folds
+# (`run_calculator!`) or the GPU (`run_calculator_batched!`). It uses BandStates / imap addressing
+# and a full-resident vs block-device-resident memory strategy; rather than copying g2/ωq it folds
 # the temperature-dependent occupation physics into Sₒ/Sᵢ via the shared `bte_scattering_increments`
-# (so CPU and GPU compute identical scattering — see src/boltzmann/bte_scattering_core.jl).
+# (so CPU and GPU compute the same scattering — see src/boltzmann/bte_scattering_core.jl).
 #
 # Output layout is what the transport solver (`solve_electron_bte` / `solve_thermoelectric_bte`)
 # consumes unchanged:
@@ -20,12 +19,12 @@ Base.@kwdef mutable struct GPUBoltzmannCalculator{FT} <: AbstractCalculator
     # --- Parameters ---
     const occ::ElectronOccupationParams
     const smearing::Vector{Tuple{Symbol, Float64}}        # one (type, η) per temperature
-    const occupation_method::Symbol = :Method5            # :Method1 … :Method6
+    # Occupation-factor convention, an integer 1..6 passed to the device-safe core; the six
+    # conventions are defined in `bte_scattering_increments` (src/boltzmann/bte_scattering_core.jl).
+    const occupation_method::Int = 5
     const scattering_method::Symbol = :BTE                # :SERTA or :BTE (affects only the solver)
     const omega_cutoff::FT = FT(omega_acoustic)           # skip modes below this (acoustic at Γ)
 
-    # Integer form of `occupation_method` (1..6) for the device-safe core; set at setup.
-    method_int::Int = 5
     # Number of CPU thread-chunks (for the lazily-allocated CPU buffers); set at setup.
     nchunks::Int = 1
     rng_band::UnitRange{Int} = 1:0
@@ -71,12 +70,6 @@ end
 ElectronPhonon.allow_eph_outer_k(::GPUBoltzmannCalculator) = true
 ElectronPhonon.allow_eph_batched(::GPUBoltzmannCalculator) = true
 
-_method_to_int(m::Symbol) = begin
-    s = String(m)
-    startswith(s, "Method") || throw(ArgumentError("occupation_method must be :Method1…:Method6, got $m"))
-    parse(Int, s[7:end])
-end
-
 function ElectronPhonon.setup_calculator!(calc::GPUBoltzmannCalculator{FT}, kpts, qpts, el_states;
         el_states_kq, kqpts, nelec_below_window_k, nchunks_threads, rng_band, kwargs...) where {FT}
     mpi_isroot() && println("Setting up GPUBoltzmannCalculator")
@@ -87,8 +80,10 @@ function ElectronPhonon.setup_calculator!(calc::GPUBoltzmannCalculator{FT}, kpts
     all(s -> s[1] === :Gaussian, calc.smearing) ||
         throw(ArgumentError("GPUBoltzmannCalculator supports :Gaussian smearing only"))
     FT === Float64 ||
-        @warn "GPUBoltzmannCalculator: FT=$FT; FP64 (Float64) is required for transport accuracy."
-    calc.method_int = _method_to_int(calc.occupation_method)
+        throw(ArgumentError("GPUBoltzmannCalculator requires FT = Float64: FP32 is not tested and " *
+                            "FP32 support is not planned (transport accuracy)."))
+    1 <= calc.occupation_method <= 6 ||
+        throw(ArgumentError("occupation_method must be an integer in 1:6, got $(calc.occupation_method)"))
     calc.nchunks = nchunks_threads
     calc.rng_band = rng_band
 
@@ -144,13 +139,15 @@ function ElectronPhonon.setup_calculator_inner!(calc::GPUBoltzmannCalculator; kw
     calc
 end
 
+# CPU path: called per (ik, iq, ikq) by the host e-ph loop (use_gpu = false); accumulates into the
+# per-chunk thread buffers, reduced into Sₒ/Sᵢ by postprocess_calculator_inner!.
 function ElectronPhonon.run_calculator!(calc::GPUBoltzmannCalculator{FT}, epdata, ik, iq, ikq;
         id_chunk, kwargs...) where {FT}
     _ensure_cpu_buffers!(calc)
     Sₒ = calc.Sₒ_buffer[id_chunk]
     Sᵢ = calc.Sᵢ_buffer[id_chunk]
     (; el_k, el_kq, ph, wtq) = epdata
-    method = calc.method_int
+    method = calc.occupation_method
     @inbounds for n in el_k.rng
         ek = el_k.e[n]
         for m in el_kq.rng
@@ -192,8 +189,13 @@ function ElectronPhonon.postprocess_calculator_inner!(calc::GPUBoltzmannCalculat
 end
 
 # --- GPU batched path -----------------------------------------------------------------------
-# (`_imap_to_device_bte` / `_tile_i_range_bte` mirror EliashbergCalculator's; defined here to keep
-# this calculator self-contained within ElectronPhonon.)
+
+# Build a device copy of a window imap for the device scatter: `imap` is the OffsetMatrix
+# `(band, k) → state` (band axis offset to the in-window bands); write it densely into rows
+# `1:nphys` of a zero-filled `(nphys, n_k)` host array (out-of-window bands stay 0), then copy to a
+# device array of the same element/backend type as `proto` (a device array used only as a
+# `similar` prototype). `nphys` is the physical band count the loop indexes by (the un-projected
+# k+q band count `nw`), so the calculator can address the device imap by physical band.
 function _imap_to_device_bte(proto, imap, nphys::Integer)
     host = zeros(Int, nphys, size(imap, 2))
     ilo, ihi = first(axes(imap, 1)), last(axes(imap, 1))
@@ -201,23 +203,8 @@ function _imap_to_device_bte(proto, imap, nphys::Integer)
     copyto!(similar(proto, Int, nphys, size(imap, 2)), host)
 end
 
-# Global-i range [i0+1, i0+ni] of the outer states in the k-tile `kstart:kend`. Outer states are
-# enumerated in k order, so a contiguous k-tile maps to a contiguous i-block (asserted).
-function _tile_i_range_bte(calc::GPUBoltzmannCalculator, kstart::Integer, kend::Integer)
-    imap = calc.imap_el_i
-    imin = typemax(Int); imax = 0; count = 0
-    @inbounds for ik in kstart:kend, b in axes(imap, 1)
-        v = imap[b, ik]
-        v > 0 || continue
-        imin = min(imin, v); imax = max(imax, v); count += 1
-    end
-    count == 0 && return (0, 0)
-    ni = imax - imin + 1
-    ni == count || error("GPUBoltzmannCalculator block path: outer-k tile $kstart:$kend maps to a " *
-                         "non-contiguous i-range ($count states span $ni rows).")
-    (imin - 1, ni)
-end
-
+# (Re)point/zero the batch-sized device Sᵢ buffer at the start of each outer-k batch (called by the
+# GPU e-ph loop once per k-batch, before its k iterations). Full-resident path: nothing to do here.
 function ElectronPhonon.setup_calculator_outer_batch!(calc::GPUBoltzmannCalculator{FT};
         kstart, kend, proto, kwargs...) where {FT}
     n_i, n_f, nT = calc.el_i.n, calc.el_f.n, length(calc.occ)
@@ -233,8 +220,9 @@ function ElectronPhonon.setup_calculator_outer_batch!(calc::GPUBoltzmannCalculat
         calc.residency_decided = true
     end
     calc.gpu_block || return calc
-    i0, ni = _tile_i_range_bte(calc, kstart, kend)
-    calc.tile_i0 = i0; calc.tile_ni = ni
+    rng = ind_range_for_k_range(calc.el_i, kstart, kend)   # contiguous outer-state block for this k-batch
+    calc.tile_i0 = first(rng) - 1; calc.tile_ni = length(rng)
+    ni = calc.tile_ni
     if calc.Sᵢ_tile_dev === nothing || size(calc.Sᵢ_tile_dev, 1) < ni
         calc.Sᵢ_tile_dev = similar(proto, FT, ni, n_f, nT)
         calc.Sᵢ_tile_host = Array{FT, 3}(undef, ni, n_f, nT)
@@ -243,6 +231,8 @@ function ElectronPhonon.setup_calculator_outer_batch!(calc::GPUBoltzmannCalculat
     calc
 end
 
+# D2H this batch's device Sᵢ tile into the host output (called by the GPU e-ph loop once per
+# outer-k batch, after its k iterations). Full-resident path: nothing to do here.
 function ElectronPhonon.flush_calculator_outer_batch!(calc::GPUBoltzmannCalculator; kwargs...)
     calc.gpu_block || return calc
     ni = calc.tile_ni
@@ -332,7 +322,7 @@ function ElectronPhonon.run_calculator_batched!(calc::GPUBoltzmannCalculator{FT}
     if calc.gpu_block
         ElectronPhonon.bte_window_scatter!(calc.Sₒ_dev, calc.Sᵢ_tile_dev, g2vals, ωq,
             imap_i_col, calc.imap_f_dev, ikqs, calc.e_i_dev, calc.e_f_dev, calc.wq_dev,
-            calc.μ_dev, calc.T_dev, calc.η_dev, calc.method_int, calc.omega_cutoff,
+            calc.μ_dev, calc.T_dev, calc.η_dev, calc.occupation_method, calc.omega_cutoff,
             nbandkq, nbandk, nm, nqc, nT; i0 = calc.tile_i0)
         return calc
     end
@@ -343,7 +333,7 @@ function ElectronPhonon.run_calculator_batched!(calc::GPUBoltzmannCalculator{FT}
     end
     ElectronPhonon.bte_window_scatter!(calc.Sₒ_dev, calc.Sᵢ_dev, g2vals, ωq,
         imap_i_col, calc.imap_f_dev, ikqs, calc.e_i_dev, calc.e_f_dev, calc.wq_dev,
-        calc.μ_dev, calc.T_dev, calc.η_dev, calc.method_int, calc.omega_cutoff,
+        calc.μ_dev, calc.T_dev, calc.η_dev, calc.occupation_method, calc.omega_cutoff,
         nbandkq, nbandk, nm, nqc, nT; i0 = 0)
     calc
 end

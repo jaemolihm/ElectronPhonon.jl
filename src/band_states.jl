@@ -76,14 +76,14 @@ end
 
 Flatten a per-k vector of `ElectronState` onto `kpts` into a `BandStates`, storing the
 per-state k-index `ik` directly (no deduplication: `kpts` already holds the distinct
-k-points). `kpts` is promoted to a `GridKpoints` if it isn't one. Also returns
-`imap[ib, ik]` = state index, for scattering the e-ph coupling during the loop.
+k-points). `kpts` must be a `GridKpoints` (its k-vector→index hash is needed for the e-ph loop
+and `state_index(xk, …)` queries). Also returns `imap[ib, ik]` = state index, for scattering
+the e-ph coupling during the loop.
 
 This is the `BandStates` replacement for `electron_states_to_BTStates`.
 """
 function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
-        kpts::AbstractKpoints{T}, nstates_base = zero(T)) where {T}
-    gkpts = kpts isa GridKpoints ? kpts : GridKpoints(kpts)
+        kpts::GridKpoints{T}, nstates_base = zero(T)) where {T}
     nk = length(el_states)
     n = sum(el.nband for el in el_states)
     iband_min = minimum(el.rng.start for el in el_states if el.nband > 0)
@@ -107,7 +107,7 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
             imap[ib, jk] = istate
         end
     end
-    BandStates(gkpts, ik, iband, e; v, nstates_base), imap
+    BandStates(kpts, ik, iband, e; v, nstates_base), imap
 end
 
 """
@@ -131,7 +131,7 @@ function find_unfolding_indices(el_i::BandStates, el_f::BandStates, symmetry)
                 el_i.iband[j] == ib || continue
                 Sk = apply_symop(S, xks_i[j], :momentum)
                 dk = Sk - xk_f
-                if all(abs.(dk .- round.(dk)) .< 1e-6)
+                if all(abs.(dk .- round.(dk)) .< 1e-10)
                     ind_and_isym[f] = (j, isym)
                     found = true
                     break
@@ -178,4 +178,23 @@ function state_index(s::BandStates{T, <:GridKpoints},
         xk::Vec3, iband::Int) where {T}
     ik = xk_to_ik(xk, s.kpts)
     ik === nothing ? 0 : state_index(s, ik, iband)
+end
+
+"""
+    ind_range_for_k_range(s::BandStates, kstart::Integer, kend::Integer) -> UnitRange
+
+State-index range of the states whose k-point lies in `kstart:kend`. States are enumerated in
+k order (see `electron_states_to_BandStates`), so a contiguous k-block maps to a contiguous
+state block; errors if it does not. Empty range (`1:0`) if no state falls in the k-range.
+"""
+function ind_range_for_k_range(s::BandStates, kstart::Integer, kend::Integer)
+    imin = typemax(Int); imax = 0; count = 0
+    @inbounds for i in 1:s.n
+        (kstart <= s.ik[i] <= kend) || continue
+        imin = min(imin, i); imax = max(imax, i); count += 1
+    end
+    count == 0 && return 1:0
+    imax - imin + 1 == count || error("ind_range_for_k_range: k-range $kstart:$kend maps to a " *
+        "non-contiguous state range ($count states span $(imax - imin + 1) indices).")
+    imin:imax
 end

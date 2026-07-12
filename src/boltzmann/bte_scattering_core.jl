@@ -1,13 +1,9 @@
 # Shared BTE scattering physics — ONE implementation used by both the CPU calculator loop
-# (`GPUBoltzmannCalculator`'s `run_calculator!`) and the GPU device kernel
-# (`bte_window_scatter!` in the CUDA extension). Keeping the physics in a single device-safe
-# `@inline` function makes the CPU and GPU paths compute the same scattering (to round-off) and
-# puts the Migdal–Eliashberg-style occupation factors in exactly one place.
+# (`GPUBoltzmannCalculator`'s `run_calculator!`) and the GPU device kernel (in the CUDA extension),
+# so the two paths compute the same scattering (to round-off).
 #
-# Transcribed from the upstream `dev_BTE` reference implementation (external to this repo); the
-# in-repo cross-check is the co-located CPU `run_calculator!` plus the independent transcription in
-# test/boltzmann/test_gpu_boltzmann_calculator.jl. Only the FermiDirac occupation + Gaussian
-# smearing configuration is supported here (the configuration used for transport); the calculator
+# Only the FermiDirac occupation + Gaussian smearing configuration is supported here (the
+# configuration used for transport); the calculator
 # asserts this at setup.
 
 # --- Device-safe elementary occupation / smearing helpers ------------------------------------
@@ -74,7 +70,7 @@ reference), and each `δ·factor` product is zeroed per-δ so a single zero δ d
         nΔi = _bte_occ_boson(ek - ekq, T);  f1i =  (nΔi + f_k);   f2i = -(nΔi + f_k)
     end
 
-    pref = 2 * oftype(z, π) * wtq * g2
+    pref = 2 * oftype(ek, π) * wtq * g2
     # A vanishing δ contributes nothing, so zero its term *before* multiplying: the Method 2–5
     # occupation prefactors diverge (→ Inf) as an `f`/`∂f` denominator → 0 for a state far from μ,
     # and a bare `0 * Inf` would be NaN. Guarding each product per-δ keeps the surviving

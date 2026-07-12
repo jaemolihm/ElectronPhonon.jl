@@ -49,6 +49,7 @@ function eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, 
     nothing
 end
 
-# The BTE transport analogue `bte_window_scatter!` lives next to its sole caller
-# `GPUBoltzmannCalculator` (src/boltzmann/gpu_boltzmann_calculator.jl); the CUDA method is in the
-# extension. `eph_window_scatter!` stays here because it is shared (EliashbergCalculator + BTE).
+# `eph_window_scatter!` above is used by device-resident calculators that copy g2/ωq (e.g. the
+# MigdalEliashberg EliashbergCalculator), not by the BTE calculator. The BTE analogue
+# `bte_window_scatter!` lives next to its sole caller `GPUBoltzmannCalculator`
+# (src/boltzmann/gpu_boltzmann_calculator.jl); its CUDA method is in the extension.
