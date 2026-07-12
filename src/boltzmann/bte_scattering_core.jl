@@ -1,5 +1,5 @@
 # Shared BTE scattering physics — ONE implementation used by both the CPU calculator loop
-# (`GPUBoltzmannCalculator`'s `run_calculator!`) and the GPU device kernel (in the CUDA extension),
+# (`BoltzmannCalculator`'s `run_calculator!`) and the GPU device kernel (in the CUDA extension),
 # so the two paths compute the same scattering (to round-off).
 #
 # Only the FermiDirac occupation + Gaussian smearing configuration is supported here (the

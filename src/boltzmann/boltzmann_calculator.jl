@@ -1,9 +1,14 @@
-# GPUBoltzmannCalculator: an AbstractCalculator that accumulates the BTE scattering-out (Sₒ) and
-# scattering-in (Sᵢ) matrices during a single pass of `run_eph_over_k_and_kq`, on the CPU
-# (`run_calculator!`) or the GPU (`run_calculator_batched!`). It uses BandStates / imap addressing
-# and a full-resident vs block-device-resident memory strategy; rather than copying g2/ωq it folds
-# the temperature-dependent occupation physics into Sₒ/Sᵢ via the shared `bte_scattering_increments`
-# (so CPU and GPU compute the same scattering — see src/boltzmann/bte_scattering_core.jl).
+# BoltzmannCalculator: an AbstractCalculator that accumulates the BTE scattering-out (Sₒ) and
+# scattering-in (Sᵢ) matrices during a single pass of `run_eph_over_k_and_kq`. It uses BandStates /
+# imap addressing and a full-resident vs block-device-resident memory strategy; rather than copying
+# g2/ωq it folds the temperature-dependent occupation physics into Sₒ/Sᵢ via the shared
+# `bte_scattering_increments` (see src/boltzmann/bte_scattering_core.jl).
+#
+# ONE calculator, both backends: the SAME calculator instance is used on CPU or GPU — the backend is
+# chosen by `run_eph_over_k_and_kq`'s `use_gpu`, which dispatches to `run_calculator!` (host loop,
+# per (ik,iq,ikq)) or `run_calculator_batched!` (device, per k-batch). Both fold the identical
+# `bte_scattering_increments`, so they compute the same scattering (to round-off); the CPU path also
+# serves as the validation reference for the GPU path.
 #
 # Output layout is what the transport solver (`solve_electron_bte` / `solve_thermoelectric_bte`)
 # consumes unchanged:
@@ -13,9 +18,9 @@
 # Supported configuration (asserted at setup): FermiDirac occupation + Gaussian smearing — the
 # configuration `bte_scattering_increments` implements and the one used for transport.
 
-export GPUBoltzmannCalculator
+export BoltzmannCalculator
 
-Base.@kwdef mutable struct GPUBoltzmannCalculator{FT} <: AbstractCalculator
+Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # --- Parameters ---
     const occ::ElectronOccupationParams
     const smearing::Vector{Tuple{Symbol, Float64}}        # one (type, η) per temperature
@@ -67,20 +72,20 @@ Base.@kwdef mutable struct GPUBoltzmannCalculator{FT} <: AbstractCalculator
     tile_ni::Int = 0
 end
 
-ElectronPhonon.allow_eph_outer_k(::GPUBoltzmannCalculator) = true
-ElectronPhonon.allow_eph_batched(::GPUBoltzmannCalculator) = true
+ElectronPhonon.allow_eph_outer_k(::BoltzmannCalculator) = true
+ElectronPhonon.allow_eph_batched(::BoltzmannCalculator) = true
 
-function ElectronPhonon.setup_calculator!(calc::GPUBoltzmannCalculator{FT}, kpts, qpts, el_states;
+function ElectronPhonon.setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, qpts, el_states;
         el_states_kq, kqpts, nelec_below_window_k, nchunks_threads, rng_band, kwargs...) where {FT}
-    mpi_isroot() && println("Setting up GPUBoltzmannCalculator")
+    mpi_isroot() && println("Setting up BoltzmannCalculator")
     calc.scattering_method === :MRTA &&
         throw(ArgumentError("scattering_method :MRTA not implemented"))
     calc.occ.occ_type === :FermiDirac ||
-        throw(ArgumentError("GPUBoltzmannCalculator supports occ_type = :FermiDirac only (got $(calc.occ.occ_type))"))
+        throw(ArgumentError("BoltzmannCalculator supports occ_type = :FermiDirac only (got $(calc.occ.occ_type))"))
     all(s -> s[1] === :Gaussian, calc.smearing) ||
-        throw(ArgumentError("GPUBoltzmannCalculator supports :Gaussian smearing only"))
+        throw(ArgumentError("BoltzmannCalculator supports :Gaussian smearing only"))
     FT === Float64 ||
-        throw(ArgumentError("GPUBoltzmannCalculator requires FT = Float64: FP32 is not tested and " *
+        throw(ArgumentError("BoltzmannCalculator requires FT = Float64: FP32 is not tested and " *
                             "FP32 support is not planned (transport accuracy)."))
     1 <= calc.occupation_method <= 6 ||
         throw(ArgumentError("occupation_method must be an integer in 1:6, got $(calc.occupation_method)"))
@@ -94,8 +99,12 @@ function ElectronPhonon.setup_calculator!(calc::GPUBoltzmannCalculator{FT}, kpts
         bte_compute_μ!(calc.occ, el; do_print=true)
     end
 
-    calc.el_i, calc.imap_el_i = electron_states_to_BandStates(el_states, kpts)
-    calc.el_f, calc.imap_el_f = electron_states_to_BandStates(el_states_kq, kqpts)
+    # electron_states_to_BandStates requires GridKpoints (its k-vector hash is needed by the loop);
+    # the non-symmetry path hands us a plain Kpoints, so promote here.
+    gkpts   = kpts isa GridKpoints   ? kpts   : GridKpoints(kpts)
+    gkqpts  = kqpts isa GridKpoints  ? kqpts  : GridKpoints(kqpts)
+    calc.el_i, calc.imap_el_i = electron_states_to_BandStates(el_states, gkpts)
+    calc.el_f, calc.imap_el_f = electron_states_to_BandStates(el_states_kq, gkqpts)
     n_i = calc.el_i.n
     n_f = calc.el_f.n
     nT = length(calc.occ)
@@ -113,7 +122,7 @@ end
 # --- CPU path -------------------------------------------------------------------------------
 # Lazily allocate per-chunk thread buffers (CPU loop only). Single allocation guarded by a lock;
 # concurrent first calls (the @threads inner loop) double-check under the lock.
-function _ensure_cpu_buffers!(calc::GPUBoltzmannCalculator{FT}) where {FT}
+function _ensure_cpu_buffers!(calc::BoltzmannCalculator{FT}) where {FT}
     # Gate on Sᵢ_buffer (the LAST field published below): any thread that sees it non-empty is
     # guaranteed Sₒ_buffer was published first, so the unlocked fast path never observes a
     # half-built state (Sₒ set but Sᵢ still empty). Each buffer is built fully into a local and
@@ -130,7 +139,7 @@ function _ensure_cpu_buffers!(calc::GPUBoltzmannCalculator{FT}) where {FT}
     calc
 end
 
-function ElectronPhonon.setup_calculator_inner!(calc::GPUBoltzmannCalculator; kwargs...)
+function ElectronPhonon.setup_calculator_inner!(calc::BoltzmannCalculator; kwargs...)
     # Zero the CPU buffers for the new outer k (no-op for the GPU path, where they are unallocated).
     for c in eachindex(calc.Sₒ_buffer)
         for x in calc.Sₒ_buffer[c]; x .= 0; end
@@ -141,7 +150,7 @@ end
 
 # CPU path: called per (ik, iq, ikq) by the host e-ph loop (use_gpu = false); accumulates into the
 # per-chunk thread buffers, reduced into Sₒ/Sᵢ by postprocess_calculator_inner!.
-function ElectronPhonon.run_calculator!(calc::GPUBoltzmannCalculator{FT}, epdata, ik, iq, ikq;
+function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, epdata, ik, iq, ikq;
         id_chunk, kwargs...) where {FT}
     _ensure_cpu_buffers!(calc)
     Sₒ = calc.Sₒ_buffer[id_chunk]
@@ -172,7 +181,7 @@ function ElectronPhonon.run_calculator!(calc::GPUBoltzmannCalculator{FT}, epdata
     calc
 end
 
-function ElectronPhonon.postprocess_calculator_inner!(calc::GPUBoltzmannCalculator; ik, kwargs...)
+function ElectronPhonon.postprocess_calculator_inner!(calc::BoltzmannCalculator; ik, kwargs...)
     # Reduce the per-chunk CPU buffers into the global Sₒ/Sᵢ (no-op for the GPU path).
     isempty(calc.Sₒ_buffer) && return calc
     @inbounds @views for n in axes(calc.imap_el_i, 1)
@@ -205,7 +214,7 @@ end
 
 # (Re)point/zero the batch-sized device Sᵢ buffer at the start of each outer-k batch (called by the
 # GPU e-ph loop once per k-batch, before its k iterations). Full-resident path: nothing to do here.
-function ElectronPhonon.setup_calculator_outer_batch!(calc::GPUBoltzmannCalculator{FT};
+function ElectronPhonon.setup_calculator_outer_batch!(calc::BoltzmannCalculator{FT};
         kstart, kend, proto, kwargs...) where {FT}
     n_i, n_f, nT = calc.el_i.n, calc.el_f.n, length(calc.occ)
     if !calc.residency_decided && calc.Sᵢ_dev === nothing
@@ -214,7 +223,7 @@ function ElectronPhonon.setup_calculator_outer_batch!(calc::GPUBoltzmannCalculat
         Sᵢ_bytes = sizeof(FT) * n_i * n_f * nT
         if 1.5 * Sᵢ_bytes > ElectronPhonon.device_free_bytes(proto)
             calc.gpu_block = true
-            @info "GPUBoltzmannCalculator: full device-resident Sᵢ ($(round(Sᵢ_bytes/1e9, digits=2)) GB) " *
+            @info "BoltzmannCalculator: full device-resident Sᵢ ($(round(Sᵢ_bytes/1e9, digits=2)) GB) " *
                   "would not fit; using block-device-resident (per-tile D2H)."
         end
         calc.residency_decided = true
@@ -233,7 +242,7 @@ end
 
 # D2H this batch's device Sᵢ tile into the host output (called by the GPU e-ph loop once per
 # outer-k batch, after its k iterations). Full-resident path: nothing to do here.
-function ElectronPhonon.flush_calculator_outer_batch!(calc::GPUBoltzmannCalculator; kwargs...)
+function ElectronPhonon.flush_calculator_outer_batch!(calc::BoltzmannCalculator; kwargs...)
     calc.gpu_block || return calc
     ni = calc.tile_ni
     ni == 0 && return calc
@@ -294,7 +303,7 @@ function bte_window_scatter!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col, ima
     nothing
 end
 
-function ElectronPhonon.run_calculator_batched!(calc::GPUBoltzmannCalculator{FT},
+function ElectronPhonon.run_calculator_batched!(calc::BoltzmannCalculator{FT},
         ep_kq, ωq, ik, ikqs; g2=nothing, ibandk_offset=0) where {FT}
     nbandkq, nbandk, nm, nqc = size(ep_kq)
     n_i, n_f, nT = calc.el_i.n, calc.el_f.n, length(calc.occ)
@@ -306,8 +315,8 @@ function ElectronPhonon.run_calculator_batched!(calc::GPUBoltzmannCalculator{FT}
         # by construction). Full-band runs have ibandk_offset = 0, nbandk = nw — identical to before.
         calc.imap_i_dev = _imap_to_device_bte(ep_kq, calc.imap_el_i, nbandkq)
         calc.imap_f_dev = _imap_to_device_bte(ep_kq, calc.imap_el_f, nbandkq)
-        calc.e_i_dev = copyto!(similar(ep_kq, FT, n_i), calc.el_i.e)
-        calc.e_f_dev = copyto!(similar(ep_kq, FT, n_f), calc.el_f.e)
+        calc.e_i_dev = copyto!(similar(ep_kq, FT, n_i), calc.el_i.es)
+        calc.e_f_dev = copyto!(similar(ep_kq, FT, n_f), calc.el_f.es)
         calc.wq_dev  = copyto!(similar(ep_kq, FT, calc.el_f.kpts.n), calc.el_f.kpts.weights)
         calc.μ_dev = copyto!(similar(ep_kq, FT, nT), collect(FT, calc.occ.μlist))
         calc.T_dev = copyto!(similar(ep_kq, FT, nT), collect(FT, calc.occ.Tlist))
@@ -338,7 +347,7 @@ function ElectronPhonon.run_calculator_batched!(calc::GPUBoltzmannCalculator{FT}
     calc
 end
 
-function ElectronPhonon.postprocess_calculator!(calc::GPUBoltzmannCalculator{FT}; kwargs...) where {FT}
+function ElectronPhonon.postprocess_calculator!(calc::BoltzmannCalculator{FT}; kwargs...) where {FT}
     # GPU path: D2H Sₒ (always resident) and Sᵢ (full-resident; the block path already D2H'd Sᵢ
     # per tile in flush_calculator_outer_batch!). CPU path: nothing device-side to do.
     if calc.Sₒ_dev !== nothing

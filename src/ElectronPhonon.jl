@@ -101,7 +101,7 @@ include("calculator/run_eph_outer_k.jl")
 include("calculator/run_eph_over_k_and_kq.jl")
 include("calculator/eph_loop_buffers.jl")
 include("calculator/run_eph_outer_q.jl")
-include("boltzmann/gpu_boltzmann_calculator.jl")
+include("boltzmann/boltzmann_calculator.jl")
 
 export ElectronOccupationParams
 

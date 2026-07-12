@@ -6,17 +6,29 @@ using Interpolations
 using Interpolations: WeightedArbIndex, coordslookup, value_weights, weightedindexes
 using Dictionaries
 
-# --- Unified state accessors (BTStates legacy + BandStates) ---------------------------------
-# The transport solvers below work on either the legacy `BTStates` (k-properties cached as
-# fields) or the newer `BandStates` (k-properties derived through `ik`). These accessors return
-# the per-state arrays for both; for `BTStates` they alias the stored fields (no copy, identical
-# numerics), for `BandStates` they materialize a dense length-n array (gather), so callers must
-# hoist them out of hot loops. `BTStates` will be deprecated once `BandStates` is everywhere.
-# TODO: remove BTStates and use BandStates everywhere (then drop this union + the bt_* accessors).
+# --- Unified state interface (BandStates canonical + BTStates legacy) ------------------------
+# The transport solvers below work on either the newer `BandStates` or the legacy `BTStates`.
+# `BandStates`' per-state field names (`es`, `vs`, `ibands`, `iks`) are canonical; `BTStates` (which
+# stores the same quantities under `e`, `vdiag`, `iband`) presents that interface via `getproperty`
+# below, so the solver can read `el.es` / `el.vs` / `el.ibands` uniformly on both.
+#
+# Only k-properties that `BandStates` DERIVES (weights/xks are a gather through `iks`; ngrid lives on
+# `kpts`) go through explicit accessors, since those genuinely differ from `BTStates`' stored fields;
+# they materialize a dense length-n array for `BandStates`, so hoist them out of hot loops.
+#
+# TODO: remove BTStates and use BandStates everywhere (then drop this union, the getproperty bridge,
+# and the derived-quantity accessors).
 const BTorBandStates{FT} = Union{BTStates{FT}, BandStates{FT}}
 
-bt_velocities(el::BTStates) = el.vdiag
-bt_velocities(el::BandStates) = el.v
+# BTStates → BandStates field-name bridge (temporary, until BTStates is removed). Literal property
+# access constant-folds each branch to a plain `getfield`, so this is type-stable and zero-cost.
+@inline function Base.getproperty(el::BTStates, name::Symbol)
+    name === :es     && return getfield(el, :e)
+    name === :vs     && return getfield(el, :vdiag)
+    name === :ibands && return getfield(el, :iband)
+    return getfield(el, name)
+end
+
 bt_weights(el::BTStates) = el.k_weight
 bt_weights(el::BandStates) = state_weights(el)
 bt_xks(el::BTStates) = el.xks
@@ -31,7 +43,7 @@ Compute electron conductivity using the occupation `δf`. Accepts `BTStates` or 
 function occupation_to_conductivity(δf, el::BTorBandStates, params)
     @assert length(δf) == el.n
     w = bt_weights(el)
-    v = bt_velocities(el)
+    v = el.vs
     σ = mapreduce(i -> w[i] .* (δf[i] * v[i]'), +, 1:el.n)
     return σ * params.spin_degeneracy / params.volume
 end
@@ -147,12 +159,12 @@ function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, 
     )
 
     map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
-    vdiag_i = bt_velocities(el_i)
+    vdiag_i = el_i.vs
 
     for iT in 1:length(params.Tlist)
         μ = params.μlist[iT]
         T = params.Tlist[iT]
-        δf_i_serta = @. -occ_fermion_derivative(el_i.e - μ, T) / inv_τ_i[:, iT] * vdiag_i
+        δf_i_serta = @. -occ_fermion_derivative(el_i.es - μ, T) / inv_τ_i[:, iT] * vdiag_i
         σ_serta = symmetrize(occupation_to_conductivity(δf_i_serta, el_i, params), symmetry)
 
         obs = δf -> symmetrize(occupation_to_conductivity(δf, el_i, params), symmetry)
@@ -191,7 +203,7 @@ function unfold_data_map(state::BTorBandStates{FT}, symmetry) where {FT}
     ndegen_unfold = Int[]
     for i in 1:state.n
         xk = xks[i]
-        iband = state.iband[i]
+        iband = state.ibands[i]
         for (S, is_tr, Scart) in zip(symmetry.S, symmetry.is_tr, symmetry.Scart)
             Sk = is_tr ? -S * xk : S * xk
             Sk_int = mod.(round.(Int, Sk .* ngrid), ngrid)
@@ -226,7 +238,7 @@ function unfold_data_map(state::BTorBandStates{FT}, ::Nothing) where {FT}
         # FIXME: using shift in xk
         xk = xks[i]
         xk_int = mod.(round.(Int, xk .* ngrid), ngrid)
-        iband = state.iband[i]
+        iband = state.ibands[i]
         key = CI(xk_int.data..., iband)
         insert!(indmap, key, i)
     end
@@ -252,7 +264,7 @@ function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f,
     xks_f = bt_xks(el_f)
     for i_f in 1:el_f.n
         xk = xks_f[i_f]
-        iband = el_f.iband[i_f]
+        iband = el_f.ibands[i_f]
 
         indexes, weights = linear_interpolation_weights(ranges, xk.data)
         for (ind_k, weight) in zip(indexes, weights)

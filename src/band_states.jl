@@ -35,10 +35,10 @@ struct BandStates{T, KT <: AbstractKpoints{T}}
     nband_ignore::Int       # bands below the lowest indexed one = minimum(iband) − 1, subtracted
                             # so band `iband` maps to `indmap` row `iband − nband_ignore ∈ 1:nband`
     kpts::KT                # k-grid: vectors, weights, ngrid (+ hash if GridKpoints)
-    ik::Vector{Int}         # per-state k index into kpts (k-vector/weight derived via this)
-    iband::Vector{Int}      # per-state band index (mode index for phonons)
-    e::Vector{T}            # per-state energy (intrinsic: depends on band + k)
-    v::Vector{Vec3{T}}      # per-state band velocity (intrinsic); empty if not computed
+    iks::Vector{Int}        # per-state k index into kpts (k-vector/weight derived via this)
+    ibands::Vector{Int}     # per-state band index (mode index for phonons)
+    es::Vector{T}           # per-state energy (intrinsic: depends on band + k)
+    vs::Vector{Vec3{T}}     # per-state band velocity (intrinsic); empty if not computed
     nstates_base::T         # occupied states per cell below the window (electron counting)
     indmap::Matrix{Int}     # (iband − nband_ignore, ik) → state index; 0 where absent
 end
@@ -124,11 +124,11 @@ function find_unfolding_indices(el_i::BandStates, el_f::BandStates, symmetry)
     ind_and_isym = fill((0, 0), el_f.n)
     for f in 1:el_f.n
         xk_f = xks_f[f]
-        ib = el_f.iband[f]
+        ib = el_f.ibands[f]
         found = false
         for (isym, S) in enumerate(symmetry)
             for j in 1:el_i.n
-                el_i.iband[j] == ib || continue
+                el_i.ibands[j] == ib || continue
                 Sk = apply_symop(S, xks_i[j], :momentum)
                 dk = Sk - xk_f
                 if all(abs.(dk .- round.(dk)) .< 1e-10)
@@ -150,17 +150,17 @@ Base.length(s::BandStates) = s.n
 Base.firstindex(::BandStates) = 1
 Base.lastindex(s::BandStates) = s.n
 @inline Base.getindex(s::BandStates, i::Int) =
-    (; ik = s.ik[i], iband = s.iband[i], xk = s.kpts.vectors[s.ik[i]], e = s.e[i],
-       weight = s.kpts.weights[s.ik[i]])
+    (; ik = s.iks[i], iband = s.ibands[i], xk = s.kpts.vectors[s.iks[i]], e = s.es[i],
+       weight = s.kpts.weights[s.iks[i]])
 Base.iterate(s::BandStates, i::Int = 1) = i > s.n ? nothing : (s[i], i + 1)
 Base.eltype(::Type{<:BandStates{T}}) where {T} =
     NamedTuple{(:ik, :iband, :xk, :e, :weight), Tuple{Int, Int, Vec3{T}, T, T}}
 
 "Per-state BZ weights, gathered from `kpts.weights` (dense length-`n` array)."
-state_weights(s::BandStates) = s.kpts.weights[s.ik]
+state_weights(s::BandStates) = s.kpts.weights[s.iks]
 
 "Per-state k-vectors, gathered from `kpts.vectors` (dense length-`n` array)."
-state_xks(s::BandStates) = s.kpts.vectors[s.ik]
+state_xks(s::BandStates) = s.kpts.vectors[s.iks]
 
 """
     state_index(s, ik::Int, iband::Int) -> Int
@@ -190,7 +190,7 @@ state block; errors if it does not. Empty range (`1:0`) if no state falls in the
 function ind_range_for_k_range(s::BandStates, kstart::Integer, kend::Integer)
     imin = typemax(Int); imax = 0; count = 0
     @inbounds for i in 1:s.n
-        (kstart <= s.ik[i] <= kend) || continue
+        (kstart <= s.iks[i] <= kend) || continue
         imin = min(imin, i); imax = max(imax, i); count += 1
     end
     count == 0 && return 1:0

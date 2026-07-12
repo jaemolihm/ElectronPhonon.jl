@@ -1,6 +1,6 @@
 # GPU Boltzmann transport (BTE) example — TaAs.
 #
-# Demonstrates the full flow with `GPUBoltzmannCalculator`:
+# Demonstrates the full flow with `BoltzmannCalculator`:
 #   1. extract the scattering matrices Sₒ (SERTA lifetime) and Sᵢ (scattering-in) in ONE GPU pass
 #      of `run_eph_over_k_and_kq` (use_gpu = true), then
 #   2. solve the linearized BTE with `solve_electron_bte` (now BandStates-aware) to get σ.
@@ -38,14 +38,15 @@ occupation_params() = ElectronOccupationParams(;
 σ_to_SI(σ) = σ .* EP.e2 / (unit_to_aru(:A) / unit_to_aru(:V) / unit_to_aru(:cm))
 
 """
-    run_bte_gpu(model, nk; η, window, occ, method=:Method5, use_gpu=true, symmetry=model.symmetry)
+    run_bte_gpu(model, nk; η, window, occ, method=5, use_gpu=true, symmetry=model.symmetry)
 
 Run one BTE transport calculation on an `nk³` grid and return the SERTA and full-BTE
-conductivity tensors (SI, `(Ω·cm)⁻¹`, shape `(3,3,nT)`) plus the calculator.
+conductivity tensors (SI, `(Ω·cm)⁻¹`, shape `(3,3,nT)`) plus the calculator. `method` is the
+occupation-factor convention 1..6 (see `bte_scattering_increments`).
 """
-function run_bte_gpu(model, nk; η, window, occ, method = :Method5,
+function run_bte_gpu(model, nk; η, window, occ, method = 5,
         use_gpu = true, symmetry = model.symmetry)
-    calc = GPUBoltzmannCalculator{Float64}(; occ, smearing = [(:Gaussian, η) for _ in 1:length(occ)],
+    calc = BoltzmannCalculator{Float64}(; occ, smearing = [(:Gaussian, η) for _ in 1:length(occ)],
         occupation_method = method)
     EP.run_eph_over_k_and_kq(model, (nk, nk, nk), (nk, nk, nk);
         calculators = [calc], symmetry, el_kq_from_unfolding = false,

@@ -51,5 +51,5 @@ end
 
 # `eph_window_scatter!` above is used by device-resident calculators that copy g2/ωq (e.g. the
 # MigdalEliashberg EliashbergCalculator), not by the BTE calculator. The BTE analogue
-# `bte_window_scatter!` lives next to its sole caller `GPUBoltzmannCalculator`
-# (src/boltzmann/gpu_boltzmann_calculator.jl); its CUDA method is in the extension.
+# `bte_window_scatter!` lives next to its sole caller `BoltzmannCalculator`
+# (src/boltzmann/boltzmann_calculator.jl); its CUDA method is in the extension.

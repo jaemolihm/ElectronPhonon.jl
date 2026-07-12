@@ -1,4 +1,4 @@
-# Benchmark: full e-ph calculator loop (run_eph_over_k_and_kq) with the GPUBoltzmannCalculator
+# Benchmark: full e-ph calculator loop (run_eph_over_k_and_kq) with the BoltzmannCalculator
 # (BTE transport scattering), CPU vs GPU, over a k/k+q grid. Same driver as the EliashbergCalculator
 # benchmark, but the calculator folds the temperature-dependent occupation physics into the
 # scattering-out (Sₒ) / scattering-in (Sᵢ) matrices on the device via the shared
@@ -11,7 +11,7 @@
 # (production transport uses an fsthick window). For large grids (a run > ~60 s) warm up on a
 # coarse grid, then time the main grid ONCE. Pass `gpu` as the 4th arg to skip the CPU side.
 #
-# Requires ElectronPhonon (this branch) + CUDA in the environment. GPUBoltzmannCalculator lives in
+# Requires ElectronPhonon (this branch) + CUDA in the environment. BoltzmannCalculator lives in
 # ElectronPhonon itself (no MigdalEliashberg needed), e.g.:
 #   julia --project=/mnt/home/jlihm/EPjl/gpuenv-stage benchmark/bench_bte_gpu.jl
 #
@@ -52,8 +52,8 @@ const meV = EP.unit_to_aru(:meV)
 occ() = ElectronOccupationParams(; Tlist = [300.0 * K], nlist = 14.0, μlist = ef,
     volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac)
 
-newcalc() = GPUBoltzmannCalculator{Float64}(; occ = occ(),
-    smearing = [(:Gaussian, 50.0 * meV)], occupation_method = :Method5)
+newcalc() = BoltzmannCalculator{Float64}(; occ = occ(),
+    smearing = [(:Gaussian, 50.0 * meV)], occupation_method = 5)
 
 run_cpu(g, win) = (c = newcalc(); EP.run_eph_over_k_and_kq(model, (g,g,g), (g,g,g); calculators=[c],
     symmetry=nothing, window_k=win, window_kq=win,

@@ -233,7 +233,7 @@ function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, ωq_out::CuArray, g
     nothing
 end
 
-# ---- device-resident BTE scatter (GPUBoltzmannCalculator) -------------------------------------
+# ---- device-resident BTE scatter (BoltzmannCalculator) -------------------------------------
 #
 # One thread per (m, n, j): look up the outer/inner states i, f; sum the shared per-mode physics
 # (`bte_scattering_increments` — the SAME function the CPU path calls) over the nm modes for each
