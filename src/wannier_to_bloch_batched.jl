@@ -252,6 +252,110 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
 end
 
 """
+    RqToKQWorkspace(proto, ndata, nbandkq, nbandk, nmodes, nk)
+
+Preallocated scratch for [`get_eph_Rq_to_kq_batched!`](@ref), reused across the per-q calls of the
+outer-q loop so the driver does no per-call `similar`. `proto` is an array on the target backend
+(e.g. `epobj_eRpq_itp.parent.op_r`); the buffers follow its backend and element type.
+`ndata = nw^2*nmodes` is the parent (electron-Wannier / phonon-Bloch) data size.
+"""
+struct RqToKQWorkspace{MT<:AbstractMatrix, AT<:AbstractArray, BT<:AbstractArray}
+    g::MT       # (ndata, nk)                   — Fourier output g(k, R_ep summed) for all k
+    tmp::AT     # (nbandkq, nw*nmodes, nk)      — after the ukq' rotation
+    uk_rep::BT  # (nw, nbandk, nmodes*nk)       — uk replicated over the phonon modes
+end
+function RqToKQWorkspace(proto, ndata::Int, nbandkq::Int, nbandk::Int, nmodes::Int, nk::Int)
+    T = real(eltype(proto))
+    nw = isqrt(div(ndata, nmodes))
+    nw^2 * nmodes == ndata || throw(ArgumentError("ndata=$ndata is not nw^2*nmodes for nmodes=$nmodes"))
+    RqToKQWorkspace(similar(proto, Complex{T}, ndata, nk),
+                    similar(proto, Complex{T}, nbandkq, nw * nmodes, nk),
+                    similar(proto, Complex{T}, nw, nbandk, nmodes * nk))
+end
+
+"""
+    get_eph_Rq_to_kq_batched!(ep_kq_all, epobj_eRpq_itp::BatchedWannierInterpolator, ks, uks, ukqs; ws=nothing)
+
+Batched over a list of k-points `ks` (for a fixed q). Counterpart of [`get_eph_Rq_to_kq!`](@ref)
+that runs on the backend of `epobj_eRpq_itp.parent.op_r` — the list-batched inner-k step of the
+outer-q e-ph loop. `uks` is `(nw, nbandk, nk)` and `ukqs` is `(nw, nbandkq, nk)` (one eigenvector
+per k / k+q). Writes `ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nk)`.
+
+The parent is the electron-Wannier / phonon-Bloch object (`op_r` `(nw^2*nmodes, nr_el)`, produced by
+[`get_eph_RR_to_Rq!`](@ref) at the current q). One batched Fourier over `R_el` gives
+`g(k)` `(nw^2*nmodes, nk)`, viewed as `g[iw, jw, ν, k]`, then the per-k rotation
+`ep_kq_all[m,n,ν,k] = Σ_{iw,jw} conj(ukqs[iw,m,k]) · g[iw,jw,ν,k] · uks[jw,n,k]` is applied as two
+`batched_gemm!`s (`ukq(k)'` on the left over batch `k`, `uk(k)` on the right over batch `(ν,k)`).
+
+Pass an [`RqToKQWorkspace`](@ref) (sized for this `nk`) as `ws` to reuse the `g`/`tmp`/`uk_rep`
+scratch across calls instead of allocating it each call — the per-q hot loop does this.
+
+Full-band only: like [`get_eph_RR_to_kR_batched!`](@ref), all `nk` k-points must share the same
+`nbandk`/`nbandkq` (energy windows are handled by callers with masks).
+"""
+function get_eph_Rq_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
+                                   epobj_eRpq_itp::BatchedWannierInterpolator{T}, ks, uks, ukqs;
+                                   ws::Union{Nothing,RqToKQWorkspace}=nothing) where {T}
+    nbandkq, nbandk, nmodes, nk = size(ep_kq_all)
+    nw = size(uks, 1)
+    @assert size(uks) == (nw, nbandk, nk)
+    @assert size(ukqs) == (nw, nbandkq, nk)
+    @assert length(ks) == nk
+    parent = epobj_eRpq_itp.parent
+    @assert parent.ndata == nw^2 * nmodes
+
+    if ws === nothing
+        g      = similar(parent.op_r, Complex{T}, parent.ndata, nk)
+        tmp    = similar(parent.op_r, Complex{T}, nbandkq, nw * nmodes, nk)
+        uk_rep = similar(parent.op_r, Complex{T}, nw, nbandk, nmodes * nk)
+    else
+        g, tmp, uk_rep = ws.g, ws.tmp, ws.uk_rep
+        @assert size(g) == (parent.ndata, nk)
+        @assert size(tmp) == (nbandkq, nw * nmodes, nk)
+        @assert size(uk_rep) == (nw, nbandk, nmodes * nk)
+    end
+
+    # Fourier over R_el at every k -> g(k) in (nw, nw, nmodes, nk); index legend g[iw, jw, ν, k]
+    # with iw the k+q-side (ukq) leg and jw the k-side (uk) leg.
+    get_fourier_batched!(g, epobj_eRpq_itp, ks)                        # (nw^2*nmodes, nk)
+
+    eph_apply_rotations_rqkq!(ep_kq_all, g, uks, ukqs, tmp, uk_rep)
+    ep_kq_all
+end
+
+"""
+    eph_apply_rotations_rqkq!(ep_kq_all, g, uks, ukqs, tmp, uk_rep)
+
+Apply the two per-k electron gauge rotations of the Rq→kq driver to the Fourier-interpolated `g`
+(`(nw²·nmodes, nk)`, viewed as `g[iw, jw, ν, k]`), writing
+`ep_kq_all[m, n, ν, k] = Σ_{iw,jw} conj(ukqs[iw,m,k]) · g[iw,jw,ν,k] · uks[jw,n,k]`.
+
+Generic method: two `batched_gemm!`s (`ukq(k)'` on the left over batch `k`; `uk(k)` on the right
+over batch `(ν,k)` after replicating `uks` over the modes into `uk_rep`), so any backend works.
+The CUDA extension overrides this with a fused per-(m,n,k) kernel for small `nw²·nmodes` — the
+right-rotation GEMMs are `nw×nw` matmuls at an `nmodes·nk` batch count, deep inside cuBLAS'
+tiny-batched-matmul overhead regime (cf. the outer-k `eph_apply_rotations!` fused kernel).
+"""
+function eph_apply_rotations_rqkq!(ep_kq_all::AbstractArray{Complex{T},4}, g,
+                                   uks, ukqs, tmp, uk_rep) where {T}
+    nbandkq, nbandk, nmodes, nk = size(ep_kq_all)
+    nw = size(uks, 1)
+
+    # 1. left rotation ukq(k)', batched over k: tmp[m, (jw,ν), k] = Σ_iw conj(ukqs[iw,m,k]) g[iw,(jw,ν),k]
+    batched_gemm!('C', 'N', ukqs, reshape(g, nw, nw * nmodes, nk), tmp) # (nbandkq, nw*nmodes, nk)
+
+    # 2. right rotation uk(k), batched over b = (ν, k): reshape tmp to (nbandkq, nw, nmodes*nk)
+    #    (contiguous: splits the (jw,ν) axis into jw and ν, ν fastest in the batch), and replicate
+    #    uk over the modes so each batch slice carries its own uk. ep_kq_all reshaped to
+    #    (nbandkq, nbandk, nmodes*nk) receives ep[m,n,(ν,k)] = Σ_jw tmp[m,jw,(ν,k)] uks[jw,n,k].
+    uk_rep4 = reshape(uk_rep, nw, nbandk, nmodes, nk)
+    uk_rep4 .= reshape(uks, nw, nbandk, 1, nk)                         # broadcast uk over ν
+    batched_gemm!('N', 'N', reshape(tmp, nbandkq, nw, nmodes * nk), uk_rep,
+                  reshape(ep_kq_all, nbandkq, nbandk, nmodes * nk))
+    ep_kq_all
+end
+
+"""
     eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp; g2_out=nothing, ωq=nothing)
 
 Apply the two e-ph gauge rotations to the Fourier-interpolated `g` (`(ndata, nq)`, reshaped to

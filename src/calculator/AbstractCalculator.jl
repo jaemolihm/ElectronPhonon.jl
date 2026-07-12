@@ -91,6 +91,81 @@ function run_calculator_batched!(::AbstractCalculator, ep_kq, ωq, ik, ikqs; kwa
     error("run_calculator_batched! has to be implemented (or set allow_eph_batched = false)")
 end
 
+"""
+    allow_eph_batched_q(calc::AbstractCalculator) -> Bool
+
+Whether the calculator implements the batched device hook [`run_calculator_batched_q!`] used by
+the GPU outer-q loop (`run_eph_outer_q` with `use_gpu = true`). When every calculator in a run
+returns `true`, the GPU loop keeps the e-ph matrix for a whole `(q, {k-chunk})` on the device and
+calls `run_calculator_batched_q!` once per k-chunk — skipping the per-`(k,q)` host `run_calculator!`
+callback and the device→host copy of the e-ph matrix. The default opts out, so calculators keep
+using the host `run_calculator!` path. This is the outer-q sibling of [`allow_eph_batched`].
+
+Contract note: on the batched-q GPU path the k-side `ElectronState`s (the `el_states` passed to
+`setup_calculator!`) carry **eigenvalue and eigenvector only** — velocity and position are not
+computed, so their setup interpolation is skipped. A calculator whose `setup_calculator!` needs
+velocities or positions must not opt in.
+"""
+allow_eph_batched_q(::AbstractCalculator) = false
+
+"""
+    run_calculator_batched_q!(calc, ep_kq, e_k, e_kq, uk, ukq, wtk, xks, iq; kwargs...)
+
+Batched device hook for the GPU outer-q loop. For a fixed phonon momentum `q` (index `iq`),
+consume the e-ph matrix and electron states for a chunk of outer k-points at once:
+- `ep_kq` :: `(nw, nw, nmodes, nkc)` — eigenbasis e-ph matrix on the device, index `[m, n, ν, k]`
+  with `m` the k+q band, `n` the k band. Out-of-window bands are already zeroed (the loop
+  window-masks the eigenvector columns on both sides), so out-of-window `(m,n)` contribute 0.
+- `e_k`  :: `(nw, nkc)` — k-side band energies `e_k[n, k]` (device; all `nw` bands).
+- `e_kq` :: `(nw, nkc)` — k+q-side band energies `e_kq[m, k]` (device).
+- `uk`   :: `(nw, nw, nkc)` — k-side eigenvectors `uk[jw, n, k]`, zero-padded outside the window.
+- `ukq`  :: `(nw, nw, nkc)` — k+q-side eigenvectors `ukq[iw, m, k]`, zero-padded outside the window.
+- `wtk`  :: `(nkc,)` — k-point integration weights (device). Padded tail entries are 0, so a
+  calculator may operate on the full (padded) chunk without special-casing the final partial chunk.
+- `xks`  :: `(nkc,)` — the chunk's k-vectors (host `Vec3` list), for any k-dependent phase factor.
+- `iq`   :: q-point index.
+
+The per-q lifecycle is bracketed by [`setup_calculator_batched_q!`] (device buffer alloc / zero at
+q start) and [`flush_calculator_batched_q!`] (device→host scatter at q end). Runs on the backend of
+`ep_kq`; implementations should stay backend-generic (`similar`, `copyto!`, broadcasting, `mul!`) so
+no CUDA dependency leaks into the calculator.
+
+Contract note: batched-q calculators receive k-side `ElectronState`s with eigenvalue/eigenvector
+only (see [`allow_eph_batched_q`](@ref)); everything a `run_calculator_batched_q!` implementation
+consumes is in the device arguments above.
+
+Memory note: implementations typically preallocate device scratch sized `(…, k_chunk)`, which also
+scales with calculator-internal factors (number of frequencies, temperatures, stacked channels).
+Declare that per-k footprint via [`eph_batched_q_bytes_per_k`](@ref) so the loop's memory-adaptive
+chunk sizing accounts for it; otherwise a large `k_chunk_size` can exhaust device memory through
+the calculator's scratch alone.
+"""
+function run_calculator_batched_q!(::AbstractCalculator, ep_kq, e_k, e_kq, uk, ukq, wtk, xks, iq; kwargs...)
+    error("run_calculator_batched_q! has to be implemented (or set allow_eph_batched_q = false)")
+end
+
+"""
+    eph_batched_q_bytes_per_k(calc::AbstractCalculator; nw, nmodes) -> Int
+
+Device bytes of per-k-point scratch that the calculator's [`run_calculator_batched_q!`](@ref) path
+holds for a k-chunk (its workspace arrays sized `(…, k_chunk)`, divided by the chunk width). The
+GPU outer-q loop sums this over the calculators and combines it with its own per-k staging cost to
+derive a memory-adaptive chunk width from `device_free_bytes`. Default `0`: the calculator declares
+no per-k device scratch (the loop then budgets only its own buffers — override this if the
+calculator allocates chunk-sized device arrays, or its scratch is not accounted for and a large
+chunk can exhaust device memory).
+"""
+eph_batched_q_bytes_per_k(::AbstractCalculator; nw, nmodes, kwargs...) = 0
+
+# Per-q lifecycle hooks for the batched GPU outer-q loop (`run_eph_outer_q`, use_gpu), siblings of
+# the outer-k `setup_calculator_tile!`/`flush_calculator_tile!`. `setup_calculator_batched_q!`
+# lazily allocates and zeros the calculator's per-q device accumulator at the start of each q;
+# `flush_calculator_batched_q!` copies it to the host output at the end of q. Both no-ops by
+# default. `proto` is a device array (the e-ph matrix backend) for buffer allocation; `iq` is the
+# q index; `k_chunk_size` is the max k-chunk width (device scratch is sized to it).
+setup_calculator_batched_q!(::AbstractCalculator; kwargs...) = nothing
+flush_calculator_batched_q!(::AbstractCalculator; kwargs...) = nothing
+
 function postprocess_calculator_inner!(::AbstractCalculator; kwargs...)
     error("postprocess_calculator_inner! has to be implemented")
 end

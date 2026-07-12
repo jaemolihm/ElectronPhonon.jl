@@ -1,10 +1,10 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: WannierObject, Vec3, get_eph_RR_to_kR!, get_eph_kR_to_kq!, to_device
+using ElectronPhonon: WannierObject, Vec3, get_eph_RR_to_kR!, get_eph_kR_to_kq!, get_eph_Rq_to_kq!, to_device
 # Batched drivers / primitives are internal (unexported); import the ones the tests use.
 using ElectronPhonon: eigvals_batched, eigen_batched, get_el_eigen_batched, get_el_eigen_valueonly_batched,
     get_el_velocity_direct_batched, get_eph_RR_to_kR_batched!, get_eph_kR_to_kq_batched!,
-    eph_apply_rotations!, KRtoKQWorkspace, batched_gemm!
+    get_eph_Rq_to_kq_batched!, eph_apply_rotations!, eph_apply_rotations_rqkq!, KRtoKQWorkspace, batched_gemm!
 using LinearAlgebra
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
@@ -42,6 +42,7 @@ function check_eph_batched(to_dev, arr_dev; rtol)
     uks  = cat([rand(ComplexF64, nwe, nband) for _ in 1:nk2]...; dims = 3)
     uphs = cat([rand(ComplexF64, nmodes, nmodes) for _ in 1:nq2]...; dims = 3)
     ukqs = cat([rand(ComplexF64, nwe, nband) for _ in 1:nq2]...; dims = 3)
+    ukqs_k = cat([rand(ComplexF64, nwe, nband) for _ in 1:nk2]...; dims = 3)  # k+q eigvecs, one per k
 
     # Independent per-k/q CPU references (ground truth). q-sweep uses k = ks[1].
     refs_RR = map(1:nk2) do ik
@@ -75,6 +76,23 @@ function check_eph_batched(to_dev, arr_dev; rtol)
         @test isapprox(ep_kq_h[:, :, :, iq], ep_ref[:, :, :, iq]; rtol)
     end
 
+    # list-batched Rq→kq over all k (fixed q) — electron-Wannier / phonon-Bloch object interpolated
+    # over R_el at each k, then rotated by uk (right) and ukq (left). Check every slice.
+    eRpq_obj = WannierObject(irvec_el, rand(ComplexF64, nwe^2 * nmodes, nr_el))
+    ep_rqkq_ref = zeros(ComplexF64, nband, nband, nmodes, nk2)
+    for ik in 1:nk2
+        get_eph_Rq_to_kq!(view(ep_rqkq_ref, :, :, :, ik), get_interpolator(eRpq_obj; fourier_mode="normal"),
+                          ks[ik], uks[:, :, ik], ukqs_k[:, :, ik])
+    end
+    eRpq_d = to_dev(eRpq_obj)
+    ep_rqkq = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nk2))
+    get_eph_Rq_to_kq_batched!(ep_rqkq, get_interpolator(eRpq_d; fourier_mode="batched", batch_size=nk2),
+                              ks, arr_dev(uks), arr_dev(ukqs_k))
+    ep_rqkq_h = Array(ep_rqkq)
+    for ik in 1:nk2
+        @test isapprox(ep_rqkq_h[:, :, :, ik], ep_rqkq_ref[:, :, :, ik]; rtol)
+    end
+
     # g2 fold: the driver can also write g2 = |ep|²/(2ω) in the same pass — the GPU fused kernel
     # writes it from registers, the CPU / large-nw path uses the generic broadcast. Check against
     # the independent per-q reference ep_ref. (Exercises both `eph_apply_rotations!` g2 paths.)
@@ -89,6 +107,53 @@ end
 
 @testset "batched e-ph drivers (CPU)" begin
     check_eph_batched(identity, identity; rtol=1e-10)
+end
+
+# Plumbing of the outer-q batched calculator hook (allow_eph_batched_q / run_calculator_batched_q!
+# and the per-q lifecycle hooks) used by `run_eph_outer_q(...; use_gpu=true)`. Backend-agnostic, so
+# no GPU is needed — it only checks the opt-in defaults and the not-implemented error paths.
+struct _PlainQCalc <: ElectronPhonon.AbstractCalculator end
+mutable struct _OptInQCalc <: ElectronPhonon.AbstractCalculator; setup::Int; flush::Int; end
+ElectronPhonon.allow_eph_batched_q(::_OptInQCalc) = true
+ElectronPhonon.setup_calculator_batched_q!(c::_OptInQCalc; kwargs...) = (c.setup += 1; nothing)
+ElectronPhonon.flush_calculator_batched_q!(c::_OptInQCalc; kwargs...) = (c.flush += 1; nothing)
+
+@testset "outer-q batched calculator hook plumbing" begin
+    # Default opts out; the lifecycle hooks are no-ops; the main hook errors if unimplemented.
+    @test ElectronPhonon.allow_eph_batched_q(_PlainQCalc()) == false
+    @test ElectronPhonon.setup_calculator_batched_q!(_PlainQCalc(); iq=1, proto=zeros(1)) === nothing
+    @test ElectronPhonon.flush_calculator_batched_q!(_PlainQCalc(); iq=1) === nothing
+    @test_throws Exception ElectronPhonon.run_calculator_batched_q!(
+        _PlainQCalc(), nothing, nothing, nothing, nothing, nothing, nothing, nothing, 1)
+
+    # Opt-in calculator: hook returns true and the lifecycle hooks dispatch to the override.
+    c = _OptInQCalc(0, 0)
+    @test ElectronPhonon.allow_eph_batched_q(c) == true
+    ElectronPhonon.setup_calculator_batched_q!(c; iq=1, proto=zeros(1), k_chunk_size=4)
+    ElectronPhonon.flush_calculator_batched_q!(c; iq=1)
+    @test (c.setup, c.flush) == (1, 1)
+end
+
+@testset "Rq→kq rotation: GPU cuBLAS fallback (large nw²·nmodes)" begin
+    # check_eph_batched exercises the FUSED rqkq kernel (nw²·nmodes ≤ _FUSED_RQKQ_MAX_NW2NM);
+    # here nw=8, nmodes=12 ⇒ 768 > 512 forces the `invoke`-to-generic (cuBLAS two-GEMM) branch of
+    # the CUDA `eph_apply_rotations_rqkq!`. Compare it to the generic CPU method (ground truth).
+    if !GPU_AVAILABLE
+        @info "CUDA not available/functional — skipping GPU rqkq fallback test"
+    else
+        nw, nmodes, nk, nbandk, nbandkq = 8, 12, 10, 8, 8
+        g   = rand(ComplexF64, nw * nw * nmodes, nk)
+        uks = rand(ComplexF64, nw, nbandk, nk)
+        ukqs = rand(ComplexF64, nw, nbandkq, nk)
+        ep_cpu = zeros(ComplexF64, nbandkq, nbandk, nmodes, nk)
+        eph_apply_rotations_rqkq!(ep_cpu, copy(g), uks, ukqs,
+            zeros(ComplexF64, nbandkq, nw * nmodes, nk), zeros(ComplexF64, nw, nbandk, nmodes * nk))
+        ep_gpu = CuArray(zeros(ComplexF64, nbandkq, nbandk, nmodes, nk))
+        eph_apply_rotations_rqkq!(ep_gpu, CuArray(copy(g)), CuArray(uks), CuArray(ukqs),
+            CuArray(zeros(ComplexF64, nbandkq, nw * nmodes, nk)),
+            CuArray(zeros(ComplexF64, nw, nbandk, nmodes * nk)))
+        @test isapprox(Array(ep_gpu), ep_cpu; rtol=1e-9)
+    end
 end
 
 @testset "batched eigensolve (CPU)" begin
