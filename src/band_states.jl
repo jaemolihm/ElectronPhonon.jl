@@ -112,6 +112,15 @@ end
 # — so a device kernel can look a state up directly from its physical band index. `proto` is a device
 # array used only as a `similar` prototype. (`s.indmap` is stored band-offset by `nband_ignore`; this
 # places its rows at their physical-band positions `nband_ignore+1 : nband_ignore+nband`.)
+#
+# Why the full `nw` rows and not the (smaller) in-window / projected band count:
+#   * k+q map: the scatter indexes it by the physical k+q band `m ∈ 1:nw`. The k+q band axis is NOT
+#     window-projected (all nw k+q bands are kept; out-of-window ones are the 0 entries), so it needs
+#     a row per physical band — nw is required here.
+#   * k map: the scatter reads it as a per-k *shifted* window `view(·, ibandk_offset+1 : +nbandk, ik)`
+#     (the k side IS projected to nbandk). It could be stored as just `nbandk` rows by baking each k's
+#     `ibandk_offset` into its column, but this Int map is tiny next to the streamed Sᵢ (GBs), so both
+#     maps share the one physical-band (nw) layout and the k side simply offsets at read time.
 function _indmap_to_device(proto, s::BandStates, nw::Integer)
     host = zeros(Int, nw, s.kpts.n)
     @views host[s.nband_ignore+1 : s.nband_ignore+s.nband, :] .= s.indmap
