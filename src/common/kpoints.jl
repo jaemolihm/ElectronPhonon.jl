@@ -407,7 +407,10 @@ function mpi_gather(k::GridKpoints{FT}, comm::MPI.Comm) where {FT}
     end
 end
 
-"Collect and uniformly redistribute GridKpoints among processers (each even chunk stays grid-aligned)."
+# Gather every rank's k-points to the root and redistribute them evenly. Needed after
+# `filter_kpoints`, which drops out-of-window points and so leaves an unbalanced count per rank —
+# this restores an even split. Every point is a node of the original regular grid, so any split of
+# them is still made of grid nodes ("grid-aligned") and each rank's chunk is again a `GridKpoints`.
 mpi_gather_and_scatter(k::GridKpoints, comm::MPI.Comm) = mpi_scatter(mpi_gather(k, comm), comm)
 mpi_gather_and_scatter(k::GridKpoints, comm::Nothing) = k
 

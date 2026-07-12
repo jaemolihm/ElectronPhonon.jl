@@ -191,7 +191,10 @@ end
     using ElectronPhonon: kpoints_grid, mpi_scatter, mpi_gather_and_scatter
     MPI = ElectronPhonon.MPI
     MPI.Initialized() || MPI.Init()
-    comm = MPI.COMM_SELF  # single rank: scatter keeps all points on this rank
+    # COMM_SELF exercises only the single-rank path (scatter keeps all points on this rank).
+    # TODO: actually test with a real multi-rank MPI communicator (np > 1), where scatter/gather
+    # split points across ranks — e.g. under mpiexec, or a spawned child comm.
+    comm = MPI.COMM_SELF
 
     # Empty GridKpoints placeholder (the non-root receive side before mpi_scatter).
     empty_grid = GridKpoints{Float64}()
