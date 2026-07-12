@@ -49,51 +49,6 @@ function eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, 
     nothing
 end
 
-"""
-    bte_window_scatter!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col, imap_f, ikqs, e_i, e_f, wq,
-                        μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nm, nqc, nT; i0=0)
-
-Device-resident BTE scatter for `GPUBoltzmannCalculator` — the transport analogue of
-`eph_window_scatter!`. For every `(m, n, j)` of the chunk look up the outer/inner states
-`i = imap_i_col[n]`, `f = imap_f[m, ikqs[j]]` (skip if either is out-of-window, `== 0`), then for
-each temperature `iocc` sum the shared per-mode physics (`bte_scattering_increments`) over the
-`nm` phonon modes (`ωqmat[ν,j] ≥ ω_cutoff`) and:
-
-  * `Sₒ_out[i, iocc] += Σ_ν sₒ`      — scattering-out, **accumulated** over `(m, ν, j)` (many `(m,j)`
-    map to the same outer `i`), so the device method uses an atomic add here. `Sₒ` is small
-    (`n_i × nT`) and always full-resident, so it is indexed by the GLOBAL outer state `i`;
-  * `Sᵢ_out[i−i0, f, iocc] = Σ_ν sᵢ` — scattering-in; each `(i, f)` pair is produced by a unique
-    `(n, m, j)` across the whole run (distinct k → distinct i, distinct k+q → distinct f), so this
-    is a collision-free plain write (matching the no-atomics insight of `eph_window_scatter!`).
-    `Sᵢ` is the large object that may be block-tiled, hence the `i − i0` (tile-local) row.
-
-`i0` is the global-i offset of the block-tiled `Sᵢ` buffer (`i0 = 0` for the full-resident buffer).
-Generic (CPU/fallback) method; the CUDA extension provides the `CuArray` kernel. The physics lives
-entirely in `bte_scattering_increments` so the two paths agree.
-"""
-function bte_window_scatter!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col, imap_f, ikqs,
-        e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
-        nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, nT::Int; i0::Int = 0)
-    @inbounds for j in 1:nqc, n in 1:nbandk, m in 1:nbandkq
-        i = imap_i_col[n]
-        i > 0 || continue
-        ikq = ikqs[j]
-        f = imap_f[m, ikq]
-        f > 0 || continue
-        ek = e_i[i]; ekq = e_f[f]; wtq = wq[ikq]
-        il = i - i0
-        for iocc in 1:nT
-            μ = μs[iocc]; T = Ts[iocc]; η = ηs[iocc]
-            sₒ = zero(eltype(Sₒ_out)); sᵢ = sₒ
-            for ν in 1:nm
-                ωq = ωqmat[ν, j]
-                ωq < ω_cutoff && continue
-                so, si = bte_scattering_increments(method, ek, ekq, ωq, g2vals[m, n, ν, j], wtq, μ, T, η)
-                sₒ += so; sᵢ += si
-            end
-            Sₒ_out[i, iocc] += sₒ
-            Sᵢ_out[il, f, iocc] = sᵢ
-        end
-    end
-    nothing
-end
+# The BTE transport analogue `bte_window_scatter!` lives next to its sole caller
+# `GPUBoltzmannCalculator` (src/boltzmann/gpu_boltzmann_calculator.jl); the CUDA method is in the
+# extension. `eph_window_scatter!` stays here because it is shared (EliashbergCalculator + BTE).

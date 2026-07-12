@@ -1,7 +1,6 @@
-# BandStates: a set of single-particle states indexed by (k-point, band) — the electronic
-# (or phononic) states on which transport / Eliashberg kernels and Green's functions live.
+# BandStates: a set of single-particle states indexed by (k-point, band).
 #
-# Designed to supersede `BTStates` (see STATES_REFACTOR.md). Differences, by design:
+# Designed to supersede `BTStates`. Differences, by design:
 #   * The k-grid is embedded as a `kpts::AbstractKpoints` (carrying vectors, weights, ngrid,
 #     and — for `GridKpoints` — the integer-grid hash). No more carrying `xks` + `ngrid`
 #     separately, and per-state weights are `kpts.weights[ik]` rather than a `k_weight` field.
@@ -13,10 +12,6 @@
 #   * An eager `indmap` gives O(1) `(ik, iband) → state` reverse lookup (no O(n) scans).
 #   * A full iterator: `for st in states` yields a non-allocating per-state NamedTuple.
 #   * Generic over `Kpoints`/`GridKpoints`; only k-vector→state queries need the hash.
-#
-# Moved here from MigdalEliashberg.jl (which originally defined it) so transport and
-# superconductivity share one states type. The `ElectronPhonon.`-qualified references in the
-# original were dropped now that this lives in-package.
 
 export BandStates, state_index, state_weights, state_xks, electron_states_to_BandStates
 
@@ -35,21 +30,23 @@ Pure k-properties (k-vector, weight) are derived through `ik` rather than cached
 """
 struct BandStates{T, KT <: AbstractKpoints{T}}
     n::Int                  # number of states
-    nband::Int              # number of indexed bands (indmap stride)
-    nband_ignore::Int       # bands below the lowest indexed band (indmap offset)
+    nband::Int              # number of distinct bands indexed = maximum(iband) − nband_ignore
+                            # (the band extent of `indmap`)
+    nband_ignore::Int       # bands below the lowest indexed one = minimum(iband) − 1, subtracted
+                            # so band `iband` maps to `indmap` row `iband − nband_ignore ∈ 1:nband`
     kpts::KT                # k-grid: vectors, weights, ngrid (+ hash if GridKpoints)
     ik::Vector{Int}         # per-state k index into kpts (k-vector/weight derived via this)
     iband::Vector{Int}      # per-state band index (mode index for phonons)
     e::Vector{T}            # per-state energy (intrinsic: depends on band + k)
     v::Vector{Vec3{T}}      # per-state band velocity (intrinsic); empty if not computed
     nstates_base::T         # occupied states per cell below the window (electron counting)
-    indmap::Vector{Int}     # flat (iband, ik) → state index; 0 where absent
+    indmap::Matrix{Int}     # (iband − nband_ignore, ik) → state index; 0 where absent
 end
 
 function _build_indmap(n, nk, nband, nband_ignore, ik, iband)
-    indmap = zeros(Int, nband * nk)
+    indmap = zeros(Int, nband, nk)
     @inbounds for i in 1:n
-        indmap[(ik[i] - 1) * nband + (iband[i] - nband_ignore)] = i
+        indmap[iband[i] - nband_ignore, ik[i]] = i
     end
     indmap
 end
@@ -72,38 +69,6 @@ function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
     BandStates{T, typeof(kpts)}(n, nband, nband_ignore, kpts, collect(Int, ik),
         collect(Int, iband), collect(T, e), collect(Vec3{T}, v),
         T(nstates_base), indmap)
-end
-
-# Internal: dedup a per-state list of k-vectors into a unique k-grid + per-state k-index.
-function _dedup_kpoints(xks::Vector{Vec3{T}}, weight::AbstractVector,
-        ngrid::NTuple{3,Int}; as_grid = true) where {T}
-    seen = Dict{Vec3{T},Int}()
-    uxk = Vec3{T}[]
-    uw = T[]
-    ik = Vector{Int}(undef, length(xks))
-    for j in eachindex(xks)
-        ik[j] = get!(seen, xks[j]) do
-            push!(uxk, xks[j]); push!(uw, T(weight[j])); length(uxk)
-        end
-    end
-    kpts = Kpoints{T}(length(uxk), uxk, uw, ngrid)
-    (as_grid ? GridKpoints(kpts, ngrid) : kpts), ik
-end
-
-"""
-    BandStates(xks, iband, e, weight, ngrid; v, nstates_base, as_grid=true)
-
-Convenience constructor from per-state arrays (k-vectors with one entry per state). The
-distinct k-points are deduplicated into the embedded `kpts` (a `GridKpoints` by default),
-and the per-state weights are taken from each k-point's first occurrence.
-"""
-function BandStates(xks::Vector{Vec3{T}}, iband::AbstractVector{<:Integer},
-        e::AbstractVector, weight::AbstractVector, ngrid::NTuple{3,Int};
-        v::AbstractVector = Vec3{T}[], nstates_base = zero(T),
-        as_grid = true) where {T}
-    length(xks) == length(weight) || error("BandStates: xks and weight must have equal length")
-    kpts, ik = _dedup_kpoints(xks, weight, ngrid; as_grid)
-    BandStates(kpts, ik, iband, e; v, nstates_base)
 end
 
 """
@@ -207,7 +172,7 @@ form resolves `ik = xk_to_ik(xk, s.kpts)` first and requires `kpts isa GridKpoin
 @inline function state_index(s::BandStates, ik::Int, iband::Int)
     b = iband - s.nband_ignore
     (1 <= b <= s.nband && 1 <= ik <= s.kpts.n) || return 0
-    @inbounds s.indmap[(ik - 1) * s.nband + b]
+    @inbounds s.indmap[b, ik]
 end
 function state_index(s::BandStates{T, <:GridKpoints},
         xk::Vec3, iband::Int) where {T}

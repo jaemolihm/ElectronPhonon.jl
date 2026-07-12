@@ -12,6 +12,7 @@ using Dictionaries
 # the per-state arrays for both; for `BTStates` they alias the stored fields (no copy, identical
 # numerics), for `BandStates` they materialize a dense length-n array (gather), so callers must
 # hoist them out of hot loops. `BTStates` will be deprecated once `BandStates` is everywhere.
+# TODO: remove BTStates and use BandStates everywhere (then drop this union + the bt_* accessors).
 const BTorBandStates{FT} = Union{BTStates{FT}, BandStates{FT}}
 
 bt_velocities(el::BTStates) = el.vdiag

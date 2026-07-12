@@ -117,12 +117,9 @@ function _setup_eph_over_k_and_kq(
     @time el_k_save  = compute_electron_states(model, kpts,  ["eigenvalue", "eigenvector", "velocity", "position"], window_k;  fourier_mode, use_gpu)
     nk = kpts.n
 
-    # Filter the k+q grid to the energy window. With symmetry, run the window eigensolve on the
-    # irreducible BZ only and unfold the kept k-POINT set to the full BZ (band energies are constant
-    # on the star, the same symmetry assumption already used for the outer-k IBZ reduction). This is
-    # ~nsym× fewer value-only eigensolves — the dominant setup cost at dense grids with a narrow
-    # window. Without symmetry, filter the full grid directly. Note this unfolds only the point set
-    # (cheap, k-vectors); the electron STATES are still handled per `el_kq_from_unfolding` below.
+    # Filter the k+q grid to the energy window. With symmetry, filter the k+q points in the
+    # irreducible BZ and unfold the kept point set to the full BZ (~nsym× fewer eigensolves; band
+    # energies are constant on the star). Electron STATES are still handled per `el_kq_from_unfolding`.
     if symmetry !== nothing
         @time kqpts_irr, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
             kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; symmetry, fourier_mode, use_gpu)
