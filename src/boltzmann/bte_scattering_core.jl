@@ -33,10 +33,10 @@ Single-mode contribution to the BTE scattering-out (`sₒ`) and scattering-in (`
 with `δ₁ = δ(ek−ekq+ωq)`, `δ₂ = δ(ek−ekq−ωq)` (Gaussian, width `η`). `method ∈ 1:6` selects the
 occupation-factor convention (Method5 is the σ default). NOTE: the acoustic-phonon cutoff
 (`ωq < omega_acoustic`) is NOT applied here — each caller skips sub-cutoff modes before calling
-this (so a fresh caller must remember to). When both δ underflow to ~0 we return
-`(0, 0)` *before* forming the factors — this guards the `0·Inf → NaN` that Methods 2–5 would
-otherwise hit when an out-of-window state has a vanishing `f`/`∂f` denominator (matches the
-`(δ1 < eps && δ2 < eps) && continue` skip in the CPU reference).
+this (so a fresh caller must remember to). Vanishing-δ handling guards the `0·Inf → NaN` that
+Methods 2–5 would otherwise hit when an out-of-window state has a vanishing `f`/`∂f` denominator
+(→ `Inf` prefactor): both δ zero returns `(0, 0)` early (matching the `continue` skip in the CPU
+reference), and each `δ·factor` product is zeroed per-δ so a single zero δ drops only its own term.
 """
 @inline function bte_scattering_increments(method::Integer, ek, ekq, ωq, g2, wtq, μ, T, η)
     z = zero(ek)
@@ -44,7 +44,7 @@ otherwise hit when an out-of-window state has a vanishing `f`/`∂f` denominator
     Δe2 = ek - ekq - ωq    # phonon emission
     δ1 = _bte_delta_gauss(Δe1, η)
     δ2 = _bte_delta_gauss(Δe2, η)
-    (δ1 < eps(δ1) && δ2 < eps(δ2)) && return (z, z)
+    (iszero(δ1) && iszero(δ2)) && return (z, z)   # fast path: no energy conservation at all
 
     nq   = _bte_occ_boson(ωq, T)
     f_k  = _bte_occ_fd(ek - μ, T)
@@ -75,7 +75,18 @@ otherwise hit when an out-of-window state has a vanishing `f`/`∂f` denominator
     end
 
     pref = 2 * oftype(z, π) * wtq * g2
-    sₒ = (δ1 * f1o + δ2 * f2o) * pref
-    sᵢ = (δ2 * f1i + δ1 * f2i) * pref
+    # A vanishing δ contributes nothing, so zero its term *before* multiplying: the Method 2–5
+    # occupation prefactors diverge (→ Inf) as an `f`/`∂f` denominator → 0 for a state far from μ,
+    # and a bare `0 * Inf` would be NaN. Guarding each product per-δ keeps the surviving
+    # (nonzero-δ) term when only one δ underflows — the both-zero case already returned above.
+    #
+    # TODO(physics): this guard is PARTIAL — verify it covers what production needs. It only fixes
+    # `δ==0 × (finite Inf factor)`. A NaN can still form *inside* a factor (`0 * Inf` before the δ
+    # multiply, e.g. Method5 `nq*(nq+1)*df_kq/df_k` when `nq` or a `df` underflows), and a
+    # tiny-but-nonzero δ × Inf factor yields Inf (not caught). Both are unphysical corners: `df → 0`
+    # (state far from μ) correlates with `δ → 0` (energy mismatch), so a realistic transport window
+    # should preclude them. Confirm against the dev_BTE reference before relying on it near edges.
+    sₒ = ((iszero(δ1) ? z : δ1 * f1o) + (iszero(δ2) ? z : δ2 * f2o)) * pref
+    sᵢ = ((iszero(δ2) ? z : δ2 * f1i) + (iszero(δ1) ? z : δ1 * f2i)) * pref
     return (sₒ, sᵢ)
 end
