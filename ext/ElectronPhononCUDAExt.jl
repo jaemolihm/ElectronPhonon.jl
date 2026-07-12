@@ -233,30 +233,35 @@ function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, ωq_out::CuArray, g
     nothing
 end
 
-# ---- device-resident BTE scatter (BoltzmannCalculator) -------------------------------------
+# ---- device BTE accumulate kernel (BoltzmannCalculator; CuArray method of bte_window_accumulate!) -
 #
-# One thread per (m, n, j): look up the outer/inner states i, f; sum the shared per-mode physics
-# (`bte_scattering_increments` — the SAME function the CPU path calls) over the nm modes for each
-# temperature; atomic-add the scattering-out term into Sₒ (many (m,j) share an i) and write the
-# scattering-in term into Sᵢ (each (i,f) is hit by a unique thread across the whole run → no atomic).
+# GPU implementation of `bte_window_accumulate!`: one thread per (m, n, j) — m = k+q band, n = k
+# band, j = q index within the chunk. It looks up the outer/inner states i, f; sums the shared
+# per-mode physics (`bte_scattering_increments` — the SAME function the CPU path calls) over the nm
+# modes for each temperature; atomic-adds the scattering-out term into Sₒ (many (m,j) share an i)
+# and writes the scattering-in term into Sᵢ (each (i,f) is hit by a unique thread across the whole
+# run → no atomic). See the generic method's docstring for the full accumulation semantics.
 function _bte_scattering_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col, imap_f, ikqs,
         e_i, e_f, wq, μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nm, nqc, nT, i0)
+    # Flat thread index e ∈ 1:N over the (m, n, j) grid (N = nbandkq·nbandk·nqc).
     e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     N = nbandkq * nbandk * nqc
     e <= N || return
     @inbounds begin
+        # Unroll the composite index e-1 into (m, n, j), m fastest then n then j (column-major over
+        # the (nbandkq, nbandk, nqc) grid): m ∈ 1:nbandkq, n ∈ 1:nbandk, j ∈ 1:nqc.
         m = (e - 1) % nbandkq + 1
         t = (e - 1) ÷ nbandkq
         n = t % nbandk + 1
         j = t ÷ nbandk + 1
-        i = imap_i_col[n]
+        i = imap_i_col[n]          # outer (k) state index; 0 = out of window → skip
         i > 0 || return
-        ikq = ikqs[j]
-        f = imap_f[m, ikq]
+        ikq = ikqs[j]              # k+q point of this q within the chunk
+        f = imap_f[m, ikq]         # inner (k+q) state index; 0 = out of window → skip
         f > 0 || return
         ek = e_i[i]; ekq = e_f[f]; wtq = wq[ikq]
-        il = i - i0
-        for iocc in 1:nT
+        il = i - i0                # tile-local outer row (i0 = 0 for the full-resident buffer)
+        for iocc in 1:nT           # one entry per temperature
             μ = μs[iocc]; T = Ts[iocc]; η = ηs[iocc]
             sₒ = zero(eltype(Sₒ_out)); sᵢ = sₒ
             for ν in 1:nm
@@ -273,7 +278,10 @@ function _bte_scattering_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col,
     return
 end
 
-function ElectronPhonon.bte_window_scatter!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
+# CuArray method of `bte_window_accumulate!` (generic method + full docstring in
+# src/boltzmann/boltzmann_calculator.jl): launches `_bte_scattering_kernel!` with one thread per
+# (m, n, j) over the chunk, accumulating this chunk's Sₒ/Sᵢ contributions into the device buffers.
+function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
         imap_i_col, imap_f, ikqs, e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
         nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, nT::Int; i0::Int = 0)
     N = nbandkq * nbandk * nqc

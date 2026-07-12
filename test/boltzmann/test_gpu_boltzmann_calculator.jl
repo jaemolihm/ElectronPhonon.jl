@@ -25,7 +25,7 @@ using Random
     @test all(isfinite, s) && s == (0.0, 0.0)
 end
 
-# Generic CPU `bte_window_scatter!` vs the CUDA kernel — same shared core, must agree to ~machine eps.
+# Generic CPU `bte_window_accumulate!` vs the CUDA kernel — same shared core, must agree to ~machine eps.
 const _CUDA_OK = (get(ENV, "EP_TEST_CUDA", "1") == "1") && try
     @eval import CUDA
     CUDA.functional()
@@ -34,7 +34,7 @@ catch
 end
 let
     if _CUDA_OK
-        @testset "bte_window_scatter! CPU generic == CUDA kernel" begin
+        @testset "bte_window_accumulate! CPU generic == CUDA kernel" begin
             Random.seed!(7)
             FT=Float64; nw=4; nm=3; nqc=6; nT=2
             ikqs = collect(1:nqc)
@@ -46,10 +46,10 @@ let
             μs=FT[0.0,0.002]; Ts=FT[0.01,0.02]; ηs=FT[0.005,0.005]; ωcut=FT(1e-6)
             for method in 1:6
                 So=zeros(n_i,nT); Si=zeros(n_i,n_f,nT)
-                EP.bte_window_scatter!(So,Si,g2vals,ωqmat,imap_i_col,imap_f,ikqs,e_i,e_f,wq,
+                EP.bte_window_accumulate!(So,Si,g2vals,ωqmat,imap_i_col,imap_f,ikqs,e_i,e_f,wq,
                     μs,Ts,ηs,method,ωcut,nw,nw,nm,nqc,nT; i0=0)
                 Sog=CUDA.zeros(FT,n_i,nT); Sig=CUDA.zeros(FT,n_i,n_f,nT)
-                EP.bte_window_scatter!(Sog,Sig,CUDA.CuArray(g2vals),CUDA.CuArray(ωqmat),
+                EP.bte_window_accumulate!(Sog,Sig,CUDA.CuArray(g2vals),CUDA.CuArray(ωqmat),
                     CUDA.CuArray(imap_i_col),CUDA.CuArray(imap_f),CUDA.CuArray(ikqs),
                     CUDA.CuArray(e_i),CUDA.CuArray(e_f),CUDA.CuArray(wq),
                     CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nm,nqc,nT; i0=0)
@@ -58,7 +58,7 @@ let
             end
         end
 
-        @testset "bte_window_scatter! out-of-window (imap==0) + block-tile (i0≠0)" begin
+        @testset "bte_window_accumulate! out-of-window (imap==0) + block-tile (i0≠0)" begin
             Random.seed!(11)
             FT=Float64; nw=4; nm=2; nqc=4; nT=1
             ikqs = collect(1:nqc)
@@ -73,10 +73,10 @@ let
             μs=FT[0.0]; Ts=FT[0.01]; ηs=FT[0.005]; ωcut=FT(1e-6)
             for method in (1,5,6)
                 So=zeros(n_i_global,nT); Si=zeros(ni,n_f,nT)
-                EP.bte_window_scatter!(So,Si,g2vals,ωqmat,imap_i_col,imap_f,ikqs,e_i,e_f,wq,
+                EP.bte_window_accumulate!(So,Si,g2vals,ωqmat,imap_i_col,imap_f,ikqs,e_i,e_f,wq,
                     μs,Ts,ηs,method,ωcut,nw,nw,nm,nqc,nT; i0=i0)
                 Sog=CUDA.zeros(FT,n_i_global,nT); Sig=CUDA.zeros(FT,ni,n_f,nT)
-                EP.bte_window_scatter!(Sog,Sig,CUDA.CuArray(g2vals),CUDA.CuArray(ωqmat),
+                EP.bte_window_accumulate!(Sog,Sig,CUDA.CuArray(g2vals),CUDA.CuArray(ωqmat),
                     CUDA.CuArray(imap_i_col),CUDA.CuArray(imap_f),CUDA.CuArray(ikqs),
                     CUDA.CuArray(e_i),CUDA.CuArray(e_f),CUDA.CuArray(wq),
                     CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nm,nqc,nT; i0=i0)
@@ -87,7 +87,7 @@ let
             end
         end
     else
-        @info "CUDA not functional — skipping GPU bte_window_scatter! test"
+        @info "CUDA not functional — skipping GPU bte_window_accumulate! test"
     end
 end
 

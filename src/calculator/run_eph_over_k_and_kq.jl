@@ -227,6 +227,7 @@ function _setup_eph_over_k_and_kq(
             nelec_below_window_k,
             nelec_below_window_kq,
             nchunks_threads,
+            use_gpu,
         )
     end
 

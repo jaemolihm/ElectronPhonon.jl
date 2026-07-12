@@ -33,6 +33,8 @@ this (so a fresh caller must remember to). Vanishing-δ handling guards the `0·
 Methods 2–5 would otherwise hit when an out-of-window state has a vanishing `f`/`∂f` denominator
 (→ `Inf` prefactor): both δ zero returns `(0, 0)` early (matching the `continue` skip in the CPU
 reference), and each `δ·factor` product is zeroed per-δ so a single zero δ drops only its own term.
+
+TODO: add citation to Lihm and Park (in preparation) for the occupation-factor conventions.
 """
 @inline function bte_scattering_increments(method::Integer, ek, ekq, ωq, g2, wtq, μ, T, η)
     z = zero(ek)
