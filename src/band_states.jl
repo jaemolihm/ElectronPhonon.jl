@@ -63,6 +63,8 @@ function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
     n = length(ik)
     n == length(iband) == length(e) || error("BandStates: ik, iband, e must have equal length")
     (isempty(v) || length(v) == n) || error("BandStates: v must be empty or length n")
+    # TODO: `minimum(iband)` throws an opaque error on an empty `iband` (n == 0). Guard n == 0 with a
+    # clear message (or return an empty BandStates) if a no-state grid ever needs to be supported.
     nband_ignore = minimum(iband) - 1
     nband = maximum(iband) - nband_ignore
     indmap = _build_indmap(n, kpts.n, nband, nband_ignore, ik, iband)
@@ -205,6 +207,8 @@ k order (see `electron_states_to_BandStates`), so a contiguous k-block maps to a
 state block; errors if it does not. Empty range (`1:0`) if no state falls in the k-range.
 """
 function ind_range_for_k_range(s::BandStates, kstart::Integer, kend::Integer)
+    # TODO: O(n_i) scan per call (once per outer-k batch — negligible today). Since states are in k
+    # order, this could be an O(1) lookup from a per-k state-offset prefix if it ever matters.
     imin = typemax(Int); imax = 0; count = 0
     @inbounds for i in 1:s.n
         (kstart <= s.iks[i] <= kend) || continue

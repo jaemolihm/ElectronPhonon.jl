@@ -244,6 +244,9 @@ end
 function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
         e_i, e_f, wq, μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nqc, nT, i0)
     # Flat thread index e ∈ 1:N over the (m, n, j) grid (N = nbandkq·nbandk·nqc).
+    # TODO: the CUDA index intrinsics are Int32, so this overflows if N ≥ 2^31. Unreachable today (a
+    # grid that large would exceed device memory), and systemic to all kernels in this extension;
+    # widen to Int (or chunk the launch) if a case ever approaches 2^31 threads.
     e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     N = nbandkq * nbandk * nqc
     e <= N || return
