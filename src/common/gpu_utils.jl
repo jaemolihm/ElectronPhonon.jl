@@ -12,15 +12,31 @@ package defines no method, so calling this without the relevant extension loaded
 function to_device end
 
 """
+    device_array_prototype(::Type{T}) -> a length-0 device array of eltype `T`
+
+A minimal device array used purely as a backend tag / `similar` prototype: it carries the device
+array type (so callers can `similar(proto, eltype, dims)` and dispatch `device_free_bytes`) without
+allocating real storage. The base package defines no method; the CUDA extension returns a 0-length
+`CuArray{T}`. Called only on the GPU path (`use_gpu = true`), where the relevant extension is
+guaranteed loaded (calling it without the extension raises a `MethodError`, like `to_device`).
+
+Returns a length-0 array INSTANCE (0 bytes of device buffer) rather than a bare `Type`: the
+device-allocation idiom used throughout the GPU path is `similar(proto, eltype, dims)`, and that
+3-arg form with a differing eltype (e.g. `Int` imap arrays from an `FT` prototype) has no
+`similar(::Type, ::Type, dims)` method for `CuArray`. Dispatching on an instance keeps `src`
+backend-generic — it never needs to name `CuArray{Int}(undef, …)` or a backend-specific
+constructor. See the PR #6 discussion on `BoltzmannCalculator` residency.
+"""
+function device_array_prototype end
+
+"""
     device_free_bytes(proto) -> Int
 
 Free memory (bytes) on the backend `proto` lives on, used to decide whether a large buffer fits
 on the device. Generic fallback returns `typemax(Int)` (host memory: assume it always fits — the
 caller's host allocation is governed by RAM, not this check). The CUDA extension returns
-`CUDA.available_memory()` for a `CuArray` proto.
-
-TODO: no in-repo caller yet — this exists for the deferred device memory-estimate helper
-(see README_GPU.md). Wire it up when that helper is written, or remove it.
+`CUDA.free_memory()` for a `CuArray` proto. Used by `BoltzmannCalculator`'s `setup_calculator!` to
+choose between full- and block-device-resident Sᵢ.
 """
 device_free_bytes(proto) = typemax(Int)
 

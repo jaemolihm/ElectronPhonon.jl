@@ -17,6 +17,19 @@
 #
 # Supported configuration (asserted at setup): FermiDirac occupation + Gaussian smearing — the
 # configuration `bte_scattering_increments` implements and the one used for transport.
+#
+# GPU device-memory residency (Sᵢ): the scattering-in matrix Sᵢ (n_i·n_f·nT) is the large device
+# object. `setup_calculator!` chooses once, from the device free memory, between:
+#   * full device-resident (default): Sᵢ lives whole on the device, streamed to the host once at the
+#     end (`postprocess_calculator!`);
+#   * block-device-resident (`gpu_stream_Sᵢ`): Sᵢ is tiled over outer k, each tile streamed to the
+#     host per k-batch (`flush_calculator_outer_batch!`), so only one tile is device-resident.
+# The block path engages when the full Sᵢ would not fit (`1.5·n_i·n_f·nT·8 B > free`). It is a pure
+# memory-bound fallback, NOT a speed tradeoff: forcing it (`force_stream_Sᵢ = true`) on Pb (nk 12–20,
+# Sᵢ ≤ 20 MB, RTX A6000) stays within ±5% of full-resident (measured 0.94–1.02×) — the per-tile D2H
+# copies overlap the next batch's compute. Capacity on the 48 GB-class A6000 (~49 GB free at a fresh
+# context): full-resident fits up to n_i·n_f ≈ 4×10⁹ for nT=1 (e.g. n_i = n_f ≈ 64k); larger grids
+# take the block path automatically.
 
 export BoltzmannCalculator
 
@@ -34,8 +47,11 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     nchunks::Int = 1
     rng_band::UnitRange{Int} = 1:0
     # Backend selected by run_eph_over_k_and_kq (set at setup): false = CPU (run_calculator!),
-    # true = GPU (run_calculator_batched!). Each per-path hook asserts the expected value.
+    # true = GPU (run_calculator_batched!). Each per-path hook errors if called on the wrong backend.
     use_gpu::Bool = false
+    # Length-0 device array minted at setup (GPU path only); carries the device array type for the
+    # `similar(...)` device allocations and the `device_free_bytes` query. `nothing` on the CPU path.
+    device_proto::Any = nothing
 
     # --- State (BandStates) ---
     el_i::Union{Nothing, BandStates{FT, GridKpoints{FT}}} = nothing
@@ -66,8 +82,14 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     η_dev::Any = nothing       # (nT)
 
     # --- Block-device-resident path (Sᵢ tiled over outer k) ---
-    gpu_block::Bool = false
-    residency_decided::Bool = false
+    # gpu_stream_Sᵢ = true selects the block path: Sᵢ is tiled over outer k, each tile streamed to
+    # the host per batch (flush_calculator_outer_batch!) instead of kept whole on the device. Decided
+    # once at setup from the device free memory (or forced by `force_stream_Sᵢ`).
+    gpu_stream_Sᵢ::Bool = false
+    # Override the automatic full-vs-block residency decision: `nothing` = auto (by device free
+    # memory); `true`/`false` forces the block/full path. Used by benchmarks and tests to exercise
+    # both paths at a size where either fits.
+    force_stream_Sᵢ::Union{Nothing, Bool} = nothing
     Sᵢ_tile_dev::Any = nothing            # (ni_cap, n_f, nT)
     Sᵢ_tile_host::Array{FT, 3} = zeros(FT, 0, 0, 0)
     tile_i0::Int = 0
@@ -121,6 +143,21 @@ function ElectronPhonon.setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, q
     if use_gpu
         calc.Sₒ_buffer = empty(calc.Sₒ_buffer)
         calc.Sᵢ_buffer = empty(calc.Sᵢ_buffer)
+        # Mint the device prototype (0-length, no real storage) so the device allocations and the
+        # free-memory query below need no full device array (the loop's epmat_dev does not exist yet).
+        calc.device_proto = ElectronPhonon.device_array_prototype(FT)
+        # Full-vs-block-resident Sᵢ decision (once, here). Full device-resident Sᵢ = n_i·n_f·nT·8 B;
+        # with headroom for the per-chunk g2 transient + the D2H host copy, fall back to the block
+        # (per-tile-streamed) path if it would not fit. NOTE: free memory is queried here, before the
+        # loop allocates epmat_dev + its staging buffers, so this reading is optimistic; the 1.5×
+        # headroom absorbs the loop's own device footprint for typical grids.
+        Sᵢ_bytes = sizeof(FT) * n_i * n_f * nT
+        fits = 1.5 * Sᵢ_bytes <= ElectronPhonon.device_free_bytes(calc.device_proto)
+        calc.gpu_stream_Sᵢ = calc.force_stream_Sᵢ === nothing ? !fits : calc.force_stream_Sᵢ
+        if calc.gpu_stream_Sᵢ && calc.force_stream_Sᵢ === nothing
+            @info "BoltzmannCalculator: full device-resident Sᵢ ($(round(Sᵢ_bytes/1e9, digits=2)) GB) " *
+                  "would not fit; using block-device-resident (per-tile D2H)."
+        end
     else
         rb = calc.rng_band
         calc.Sₒ_buffer = [[OffsetArray(zeros(FT, length(rb)), rb) for _ in 1:nT] for _ in 1:calc.nchunks]
@@ -145,7 +182,7 @@ end
 # buffers, reduced into Sₒ/Sᵢ by postprocess_calculator_inner!.
 function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, epdata, ik, iq, ikq;
         id_chunk, kwargs...) where {FT}
-    @assert !calc.use_gpu "run_calculator! is the CPU path but the calculator was set up with use_gpu=true"
+    calc.use_gpu && error("run_calculator! is a CPU-only hook (use_gpu=true)")
     Sₒ = calc.Sₒ_buffer[id_chunk]
     Sᵢ = calc.Sᵢ_buffer[id_chunk]
     (; el_k, el_kq, ph, wtq) = epdata
@@ -195,8 +232,8 @@ end
 # Build a device copy of a window imap for the device scatter: `imap` is the OffsetMatrix
 # `(band, k) → state` (band axis offset to the in-window bands); write it densely into rows
 # `1:nphys` of a zero-filled `(nphys, n_k)` host array (out-of-window bands stay 0), then copy to a
-# device array of the same element/backend type as `proto` (a device array used only as a
-# `similar` prototype). `nphys` is the physical band count the loop indexes by (the un-projected
+# device array of the same backend type as `proto` (the calculator's length-0 `device_proto`, used
+# only as a `similar` prototype). `nphys` is the physical band count the loop indexes by (the un-projected
 # k+q band count `nw`), so the calculator can address the device imap by physical band.
 function _imap_to_device_bte(proto, imap, nphys::Integer)
     host = zeros(Int, nphys, size(imap, 2))
@@ -205,34 +242,24 @@ function _imap_to_device_bte(proto, imap, nphys::Integer)
     copyto!(similar(proto, Int, nphys, size(imap, 2)), host)
 end
 
-# GPU (batched) path: (re)point/zero the batch-sized device Sᵢ buffer at the start of each outer-k
-# batch (called by the GPU e-ph loop once per k-batch, before its k iterations). Also makes the
-# one-time full-vs-block residency decision — deferred to here (not setup_calculator!) because it
-# needs the device-array prototype `proto` to query free memory and to `similar(...)` the tile.
+# GPU (batched) path: block-resident only — (re)point/zero the batch-sized device Sᵢ tile at the
+# start of each outer-k batch (called by the GPU e-ph loop once per k-batch, before its k
+# iterations). No-op on the full-resident path (its Sᵢ lives whole on the device). The residency
+# choice is made once in setup_calculator!, so nothing is decided here.
 function ElectronPhonon.setup_calculator_outer_batch!(calc::BoltzmannCalculator{FT};
-        kstart, kend, proto, kwargs...) where {FT}
-    @assert calc.use_gpu "setup_calculator_outer_batch! is the GPU path but use_gpu=false"
-    n_i, n_f, nT = calc.el_i.n, calc.el_f.n, length(calc.occ)
-    if !calc.residency_decided && calc.Sᵢ_dev === nothing
-        # Full device-resident Sᵢ = n_i·n_f·nT·sizeof(FT). With headroom for the per-chunk g2
-        # transient + the D2H host copy, fall back to the block path if it would not fit.
-        Sᵢ_bytes = sizeof(FT) * n_i * n_f * nT
-        if 1.5 * Sᵢ_bytes > ElectronPhonon.device_free_bytes(proto)
-            calc.gpu_block = true
-            @info "BoltzmannCalculator: full device-resident Sᵢ ($(round(Sᵢ_bytes/1e9, digits=2)) GB) " *
-                  "would not fit; using block-device-resident (per-tile D2H)."
+        kstart, kend, kwargs...) where {FT}
+    calc.use_gpu || error("setup_calculator_outer_batch! is a GPU-only hook")
+    if calc.gpu_stream_Sᵢ
+        n_f, nT = calc.el_f.n, length(calc.occ)
+        rng = ind_range_for_k_range(calc.el_i, kstart, kend)   # contiguous outer-state block for this k-batch
+        calc.tile_i0 = first(rng) - 1; calc.tile_ni = length(rng)
+        ni = calc.tile_ni
+        if calc.Sᵢ_tile_dev === nothing || size(calc.Sᵢ_tile_dev, 1) < ni
+            calc.Sᵢ_tile_dev = similar(calc.device_proto, FT, ni, n_f, nT)
+            calc.Sᵢ_tile_host = Array{FT, 3}(undef, ni, n_f, nT)
         end
-        calc.residency_decided = true
+        fill!(view(calc.Sᵢ_tile_dev, 1:ni, :, :), zero(FT))
     end
-    calc.gpu_block || return calc
-    rng = ind_range_for_k_range(calc.el_i, kstart, kend)   # contiguous outer-state block for this k-batch
-    calc.tile_i0 = first(rng) - 1; calc.tile_ni = length(rng)
-    ni = calc.tile_ni
-    if calc.Sᵢ_tile_dev === nothing || size(calc.Sᵢ_tile_dev, 1) < ni
-        calc.Sᵢ_tile_dev = similar(proto, FT, ni, n_f, nT)
-        calc.Sᵢ_tile_host = Array{FT, 3}(undef, ni, n_f, nT)
-    end
-    fill!(view(calc.Sᵢ_tile_dev, 1:ni, :, :), zero(FT))
     calc
 end
 
@@ -241,14 +268,14 @@ end
 # per-batch tile; the full-resident path keeps Sᵢ on the device and streams it once in
 # postprocess_calculator!.
 function ElectronPhonon.flush_calculator_outer_batch!(calc::BoltzmannCalculator; kwargs...)
-    @assert calc.use_gpu "flush_calculator_outer_batch! is the GPU path but use_gpu=false"
-    calc.gpu_block || return calc
-    ni = calc.tile_ni
-    ni == 0 && return calc
-    i0 = calc.tile_i0
-    copyto!(calc.Sᵢ_tile_host, calc.Sᵢ_tile_dev)
-    @inbounds for iT in 1:length(calc.occ)
-        @views calc.Sᵢ[iT][i0+1:i0+ni, :] .= calc.Sᵢ_tile_host[1:ni, :, iT]
+    calc.use_gpu || error("flush_calculator_outer_batch! is a GPU-only hook")
+    if calc.gpu_stream_Sᵢ && calc.tile_ni > 0
+        ni = calc.tile_ni
+        i0 = calc.tile_i0
+        copyto!(calc.Sᵢ_tile_host, calc.Sᵢ_tile_dev)
+        @inbounds for iT in 1:length(calc.occ)
+            @views calc.Sᵢ[iT][i0+1:i0+ni, :] .= calc.Sᵢ_tile_host[1:ni, :, iT]
+        end
     end
     calc
 end
@@ -306,31 +333,32 @@ end
 
 function ElectronPhonon.run_calculator_batched!(calc::BoltzmannCalculator{FT},
         ep_kq, ωq, ik, ikqs; g2=nothing, ibandk_offset=0) where {FT}
-    @assert calc.use_gpu "run_calculator_batched! is the GPU path but use_gpu=false"
+    calc.use_gpu || error("run_calculator_batched! is a GPU-only hook")
     nbandkq, nbandk, nm, nqc = size(ep_kq)
     n_i, n_f, nT = calc.el_i.n, calc.el_f.n, length(calc.occ)
+    proto = calc.device_proto   # length-0 device array minted at setup: carries the backend type
 
     if calc.imap_i_dev === nothing
         # imap_i spans ALL physical bands (nphys = nw = nbandkq, the un-projected k+q band count):
         # under the loop's k-side window projection the ep_kq band axis covers only nbandk bands
         # starting at physical band ibandk_offset+1, addressed below by a shifted view (ibandk_offset+nbandk ≤ nw
         # by construction). Full-band runs have ibandk_offset = 0, nbandk = nw — identical to before.
-        calc.imap_i_dev = _imap_to_device_bte(ep_kq, calc.imap_el_i, nbandkq)
-        calc.imap_f_dev = _imap_to_device_bte(ep_kq, calc.imap_el_f, nbandkq)
-        calc.e_i_dev = copyto!(similar(ep_kq, FT, n_i), calc.el_i.es)
-        calc.e_f_dev = copyto!(similar(ep_kq, FT, n_f), calc.el_f.es)
-        calc.wq_dev  = copyto!(similar(ep_kq, FT, calc.el_f.kpts.n), calc.el_f.kpts.weights)
-        calc.μ_dev = copyto!(similar(ep_kq, FT, nT), collect(FT, calc.occ.μlist))
-        calc.T_dev = copyto!(similar(ep_kq, FT, nT), collect(FT, calc.occ.Tlist))
-        calc.η_dev = copyto!(similar(ep_kq, FT, nT), FT[s[2] for s in calc.smearing])
-        calc.Sₒ_dev = fill!(similar(ep_kq, FT, n_i, nT), zero(FT))   # small, always resident
+        calc.imap_i_dev = _imap_to_device_bte(proto, calc.imap_el_i, nbandkq)
+        calc.imap_f_dev = _imap_to_device_bte(proto, calc.imap_el_f, nbandkq)
+        calc.e_i_dev = copyto!(similar(proto, FT, n_i), calc.el_i.es)
+        calc.e_f_dev = copyto!(similar(proto, FT, n_f), calc.el_f.es)
+        calc.wq_dev  = copyto!(similar(proto, FT, calc.el_f.kpts.n), calc.el_f.kpts.weights)
+        calc.μ_dev = copyto!(similar(proto, FT, nT), collect(FT, calc.occ.μlist))
+        calc.T_dev = copyto!(similar(proto, FT, nT), collect(FT, calc.occ.Tlist))
+        calc.η_dev = copyto!(similar(proto, FT, nT), FT[s[2] for s in calc.smearing])
+        calc.Sₒ_dev = fill!(similar(proto, FT, n_i, nT), zero(FT))   # small, always resident
     end
 
     g2vals = g2 === nothing ? abs2.(ep_kq) ./ (2 .* reshape(ωq, 1, 1, nm, nqc)) : g2
     # Shifted by the k-side projection offset: ep_kq band n ↔ physical band ibandk_offset + n.
     imap_i_col = view(calc.imap_i_dev, ibandk_offset+1:ibandk_offset+nbandk, ik)
 
-    if calc.gpu_block
+    if calc.gpu_stream_Sᵢ
         ElectronPhonon.bte_window_accumulate!(calc.Sₒ_dev, calc.Sᵢ_tile_dev, g2vals, ωq,
             imap_i_col, calc.imap_f_dev, ikqs, calc.e_i_dev, calc.e_f_dev, calc.wq_dev,
             calc.μ_dev, calc.T_dev, calc.η_dev, calc.occupation_method, calc.omega_cutoff,
@@ -340,7 +368,7 @@ function ElectronPhonon.run_calculator_batched!(calc::BoltzmannCalculator{FT},
 
     # Full device-resident path
     if calc.Sᵢ_dev === nothing
-        calc.Sᵢ_dev = fill!(similar(ep_kq, FT, n_i, n_f, nT), zero(FT))
+        calc.Sᵢ_dev = fill!(similar(proto, FT, n_i, n_f, nT), zero(FT))
     end
     ElectronPhonon.bte_window_accumulate!(calc.Sₒ_dev, calc.Sᵢ_dev, g2vals, ωq,
         imap_i_col, calc.imap_f_dev, ikqs, calc.e_i_dev, calc.e_f_dev, calc.wq_dev,
@@ -350,10 +378,10 @@ function ElectronPhonon.run_calculator_batched!(calc::BoltzmannCalculator{FT},
 end
 
 function ElectronPhonon.postprocess_calculator!(calc::BoltzmannCalculator{FT}; kwargs...) where {FT}
-    # GPU path final device→host copy. CPU path: all device buffers are `nothing`, so both blocks
-    # below are skipped (nothing device-side to do).
-    #
-    # Sₒ is always full-resident on the device (both residency modes), so it is streamed here.
+    calc.use_gpu || return calc   # CPU path: no device buffers to stream/free
+    # GPU path: final device→host copy. Sₒ is always full-resident (both residency modes), so it is
+    # streamed here. The `!== nothing` guard covers the no-batch corner: if this rank owns no outer
+    # k (empty MPI slice / empty window) run_calculator_batched! never ran, so Sₒ_dev is still unset.
     if calc.Sₒ_dev !== nothing
         Sₒ_host = Array(calc.Sₒ_dev)        # (n_i, nT)
         @inbounds for iT in 1:length(calc.occ)
@@ -361,24 +389,23 @@ function ElectronPhonon.postprocess_calculator!(calc::BoltzmannCalculator{FT}; k
         end
         calc.Sₒ_dev = nothing
     end
-    # Sᵢ: this runs ONLY for the full-resident path (its whole Sᵢ lives in `Sᵢ_dev`, streamed once
-    # here). The block path never allocates `Sᵢ_dev` (it uses `Sᵢ_tile_dev`, already streamed to the
-    # host per outer-k batch by flush_calculator_outer_batch!), so `Sᵢ_dev === nothing` and this is
-    # skipped — no double copy.
-    if calc.Sᵢ_dev !== nothing
+    # Sᵢ: stream here ONLY on the full-resident path (its whole Sᵢ lives in `Sᵢ_dev`). The block
+    # path (gpu_stream_Sᵢ) streamed each tile per outer-k batch in flush_calculator_outer_batch!, so
+    # there is nothing left here — skipping it avoids a double copy. `Sᵢ_dev !== nothing` also guards
+    # the no-batch corner as above.
+    if !calc.gpu_stream_Sᵢ && calc.Sᵢ_dev !== nothing
         Sᵢ_host = Array(calc.Sᵢ_dev)        # (n_i, n_f, nT)
         @inbounds for iT in 1:length(calc.occ)
             @views calc.Sᵢ[iT] .= Sᵢ_host[:, :, iT]
         end
         calc.Sᵢ_dev = nothing
     end
-    # Free device buffers / reset residency decision so the calc can be reused.
+    # Free device buffers so the calc can be reused (residency is re-decided on the next setup).
+    calc.device_proto = nothing
     calc.Sᵢ_tile_dev = nothing
     calc.Sᵢ_tile_host = zeros(FT, 0, 0, 0)
     calc.imap_i_dev = nothing; calc.imap_f_dev = nothing
     calc.e_i_dev = nothing; calc.e_f_dev = nothing; calc.wq_dev = nothing
     calc.μ_dev = nothing; calc.T_dev = nothing; calc.η_dev = nothing
-    calc.gpu_block = false
-    calc.residency_decided = false
     calc
 end

@@ -689,7 +689,7 @@ function _loop_eph_over_k_and_kq_gpu(
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
         for calc in calculators
-            setup_calculator_outer_batch!(calc; kstart, kend, proto = epmat_dev.op_r)
+            setup_calculator_outer_batch!(calc; kstart, kend)
         end
 
     for (ik_ind, ik) in enumerate(iks_batch)

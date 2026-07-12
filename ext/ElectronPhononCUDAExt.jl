@@ -45,6 +45,7 @@ function ElectronPhonon.to_device(obj::WannierObject{T, <:Array{Complex{T}}}) wh
     dev
 end
 
+ElectronPhonon.device_array_prototype(::Type{T}) where {T} = CuArray{T}(undef, 0)
 ElectronPhonon.device_free_bytes(::CuArray) = CUDA.free_memory()
 ElectronPhonon.device_synchronize(::CuArray) = CUDA.synchronize()
 
@@ -241,7 +242,7 @@ end
 # modes for each temperature; atomic-adds the scattering-out term into Sₒ (many (m,j) share an i)
 # and writes the scattering-in term into Sᵢ (each (i,f) is hit by a unique thread across the whole
 # run → no atomic). See the generic method's docstring for the full accumulation semantics.
-function _bte_scattering_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col, imap_f, ikqs,
+function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col, imap_f, ikqs,
         e_i, e_f, wq, μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nm, nqc, nT, i0)
     # Flat thread index e ∈ 1:N over the (m, n, j) grid (N = nbandkq·nbandk·nqc).
     e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
@@ -279,7 +280,7 @@ function _bte_scattering_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col,
 end
 
 # CuArray method of `bte_window_accumulate!` (generic method + full docstring in
-# src/boltzmann/boltzmann_calculator.jl): launches `_bte_scattering_kernel!` with one thread per
+# src/boltzmann/boltzmann_calculator.jl): launches `_bte_window_accumulate_kernel!` with one thread per
 # (m, n, j) over the chunk, accumulating this chunk's Sₒ/Sᵢ contributions into the device buffers.
 function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
         imap_i_col, imap_f, ikqs, e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
@@ -287,7 +288,7 @@ function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuAr
     N = nbandkq * nbandk * nqc
     threads = 256
     blocks = cld(N, threads)
-    @cuda threads=threads blocks=blocks _bte_scattering_kernel!(
+    @cuda threads=threads blocks=blocks _bte_window_accumulate_kernel!(
         Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col, imap_f, ikqs, e_i, e_f, wq,
         μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nm, nqc, nT, i0)
     nothing
