@@ -36,23 +36,23 @@ let
     if _CUDA_OK
         @testset "bte_window_accumulate! CPU generic == CUDA kernel" begin
             Random.seed!(7)
-            FT=Float64; nw=4; nm=3; nqc=6; nT=2
+            FT=Float64; nw=4; nmodes=3; nqc=6; nT=2
             ikqs = collect(1:nqc)
-            imap_i_col = collect(1:nw)
+            imap_i_at_k = collect(1:nw)
             imap_f = reshape(collect(1:nw*nqc), nw, nqc)
             n_i=nw; n_f=nw*nqc
             e_i=0.01randn(n_i); e_f=0.01randn(n_f); wq=fill(1/nqc,nqc)
-            g2vals=abs.(randn(nw,nw,nm,nqc)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nm,nqc))).*1e-2
+            g2vals=abs.(randn(nw,nw,nmodes,nqc)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,nqc))).*1e-2
             μs=FT[0.0,0.002]; Ts=FT[0.01,0.02]; ηs=FT[0.005,0.005]; ωcut=FT(1e-6)
             for method in 1:6
                 So=zeros(n_i,nT); Si=zeros(n_i,n_f,nT)
-                EP.bte_window_accumulate!(So,Si,g2vals,ωqmat,imap_i_col,imap_f,ikqs,e_i,e_f,wq,
-                    μs,Ts,ηs,method,ωcut,nw,nw,nm,nqc,nT; i0=0)
+                EP.bte_window_accumulate!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wq,
+                    μs,Ts,ηs,method,ωcut,nw,nw,nmodes,nqc,nT; i0=0)
                 Sog=CUDA.zeros(FT,n_i,nT); Sig=CUDA.zeros(FT,n_i,n_f,nT)
                 EP.bte_window_accumulate!(Sog,Sig,CUDA.CuArray(g2vals),CUDA.CuArray(ωqmat),
-                    CUDA.CuArray(imap_i_col),CUDA.CuArray(imap_f),CUDA.CuArray(ikqs),
+                    CUDA.CuArray(imap_i_at_k),CUDA.CuArray(imap_f),CUDA.CuArray(ikqs),
                     CUDA.CuArray(e_i),CUDA.CuArray(e_f),CUDA.CuArray(wq),
-                    CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nm,nqc,nT; i0=0)
+                    CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nmodes,nqc,nT; i0=0)
                 @test Array(Sog) ≈ So rtol=1e-10
                 @test Array(Sig) ≈ Si rtol=1e-10
             end
@@ -60,26 +60,26 @@ let
 
         @testset "bte_window_accumulate! out-of-window (imap==0) + block-tile (i0≠0)" begin
             Random.seed!(11)
-            FT=Float64; nw=4; nm=2; nqc=4; nT=1
+            FT=Float64; nw=4; nmodes=2; nqc=4; nT=1
             ikqs = collect(1:nqc)
             # Some bands out-of-window (imap==0); in-window outer states live in a tile i0+1:i0+ni.
             i0=3; ni=4                          # global outer states 4..7 land in tile rows 1..4
-            imap_i_col = [0, 4, 6, 7]           # band 1 out-of-window; others in-tile (global i)
+            imap_i_at_k = [0, 4, 6, 7]           # band 1 out-of-window; others in-tile (global i)
             n_i_global = 10
             imap_f = [ (m+ (kq-1)*nw) % 7 == 0 ? 0 : (m + (kq-1)*nw) for m in 1:nw, kq in 1:nqc ]  # scatter some 0s
             n_f = nw*nqc
             e_i=0.01randn(n_i_global); e_f=0.01randn(n_f); wq=fill(1/nqc,nqc)
-            g2vals=abs.(randn(nw,nw,nm,nqc)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nm,nqc))).*1e-2
+            g2vals=abs.(randn(nw,nw,nmodes,nqc)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,nqc))).*1e-2
             μs=FT[0.0]; Ts=FT[0.01]; ηs=FT[0.005]; ωcut=FT(1e-6)
             for method in (1,5,6)
                 So=zeros(n_i_global,nT); Si=zeros(ni,n_f,nT)
-                EP.bte_window_accumulate!(So,Si,g2vals,ωqmat,imap_i_col,imap_f,ikqs,e_i,e_f,wq,
-                    μs,Ts,ηs,method,ωcut,nw,nw,nm,nqc,nT; i0=i0)
+                EP.bte_window_accumulate!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wq,
+                    μs,Ts,ηs,method,ωcut,nw,nw,nmodes,nqc,nT; i0=i0)
                 Sog=CUDA.zeros(FT,n_i_global,nT); Sig=CUDA.zeros(FT,ni,n_f,nT)
                 EP.bte_window_accumulate!(Sog,Sig,CUDA.CuArray(g2vals),CUDA.CuArray(ωqmat),
-                    CUDA.CuArray(imap_i_col),CUDA.CuArray(imap_f),CUDA.CuArray(ikqs),
+                    CUDA.CuArray(imap_i_at_k),CUDA.CuArray(imap_f),CUDA.CuArray(ikqs),
                     CUDA.CuArray(e_i),CUDA.CuArray(e_f),CUDA.CuArray(wq),
-                    CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nm,nqc,nT; i0=i0)
+                    CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nmodes,nqc,nT; i0=i0)
                 @test Array(Sog) ≈ So rtol=1e-10
                 @test Array(Sig) ≈ Si rtol=1e-10
                 # out-of-window outer band 1 contributes nowhere; global rows 1..3,8..10 stay zero
