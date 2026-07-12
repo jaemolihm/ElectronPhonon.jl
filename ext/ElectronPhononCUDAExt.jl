@@ -45,7 +45,7 @@ function ElectronPhonon.to_device(obj::WannierObject{T, <:Array{Complex{T}}}) wh
     dev
 end
 
-ElectronPhonon.device_free_bytes(::CuArray) = CUDA.available_memory()
+ElectronPhonon.device_free_bytes(::CuArray) = CUDA.free_memory()
 ElectronPhonon.device_synchronize(::CuArray) = CUDA.synchronize()
 
 """
