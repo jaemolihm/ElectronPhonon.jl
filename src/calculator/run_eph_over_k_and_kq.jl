@@ -117,25 +117,29 @@ function _setup_eph_over_k_and_kq(
     @time el_k_save  = compute_electron_states(model, kpts,  ["eigenvalue", "eigenvector", "velocity", "position"], window_k;  fourier_mode, use_gpu)
     nk = kpts.n
 
-    if el_kq_from_unfolding
-        # To ensure gauge consistency between symmetry-equivalent k points, we explicitly compute
-        # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
+    # Filter the k+q grid to the energy window. With symmetry, filter the k+q points in the
+    # irreducible BZ and unfold the kept point set to the full BZ (~nsym× fewer eigensolves; band
+    # energies are constant on the star). Electron STATES are still handled per `el_kq_from_unfolding`.
+    if symmetry !== nothing
         @time kqpts_irr, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
             kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; symmetry, fourier_mode, use_gpu)
-
         kqpts, ik_to_ikirr_isym_kq = unfold_kpoints(kqpts_irr, symmetry)
-
-        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode, use_gpu)
-
-        el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
-
-        # el_kq_save_irr is not used anymore.
-        el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
-
     else
         @time kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
             kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode, use_gpu)
+    end
 
+    if el_kq_from_unfolding
+        # Gauge consistency between symmetry-equivalent k points: compute electron states only on the
+        # irreducible k+q set and unfold them (the eigenvector gauge is carried over). CPU-only —
+        # `run_eph_over_k_and_kq` gates this branch off for use_gpu (GPU state unfolding not implemented).
+        symmetry !== nothing || throw(ArgumentError("el_kq_from_unfolding = true requires symmetry"))
+        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode, use_gpu)
+        el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
+        # el_kq_save_irr is not used anymore.
+        el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
+    else
+        # Compute k+q electron states directly on the full BZ (no state unfolding).
         @time el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode, use_gpu)
     end
 
@@ -223,6 +227,7 @@ function _setup_eph_over_k_and_kq(
             nelec_below_window_k,
             nelec_below_window_kq,
             nchunks_threads,
+            use_gpu,
         )
     end
 

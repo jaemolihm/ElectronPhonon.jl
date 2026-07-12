@@ -123,19 +123,23 @@ function epw_parse_structure(folder::String)
     end
     wann_centers = reinterpret(Vec3{Float64}, reshape(w_centers_1d, 3, :))[:] * alat
 
-    # Smearing value and method used in the underlying DFT calculation
-    degauss = parse(Float64, readline(f))
-    ngauss = parse(Int, readline(f))
-
-    # New in EPW v6.2 : If present, Wigner-Seitz ndegen is pre-divided in the files.
-    # Otherwise, ndegen should be read from wigner.fmt and applied manually.
-    line = readline(f)
-    if length(split(line)) == 2
-        ws_method, idiv = parse.(Int, split(line))
-        idiv == 1 || throw(ArgumentError("idiv must be 1 in crystal.fmt"))
-    else
-        ws_method = -1  # Unknown
-        idiv = 0  # ndegen not divided
+    # Older EPW crystal.fmt ends after the Wannier centers: the smearing (degauss, ngauss) and the
+    # Wigner-Seitz method/idiv line below are absent. degauss/ngauss are metadata only (not used
+    # here), and their absence means the pre-v6.2 convention (ndegen read from wigner.fmt and applied
+    # manually, i.e. ws_method unknown / not pre-divided). So read them only when present.
+    ws_method = -1  # Unknown
+    idiv = 0        # ndegen not pre-divided
+    degauss_line = eof(f) ? "" : readline(f)
+    if !isempty(strip(degauss_line))
+        # Smearing value and method used in the underlying DFT calculation (metadata, discarded).
+        degauss = parse(Float64, degauss_line)
+        ngauss = parse(Int, readline(f))
+        # New in EPW v6.2: if present, Wigner-Seitz ndegen is pre-divided in the files.
+        line = eof(f) ? "" : readline(f)
+        if length(split(line)) == 2
+            ws_method, idiv = parse.(Int, split(line))
+            idiv == 1 || throw(ArgumentError("idiv must be 1 in crystal.fmt"))
+        end
     end
     ndegen_pre_divided = (idiv == 1)
 

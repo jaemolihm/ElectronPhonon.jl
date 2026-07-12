@@ -17,7 +17,7 @@ function to_device end
 Free memory (bytes) on the backend `proto` lives on, used to decide whether a large buffer fits
 on the device. Generic fallback returns `typemax(Int)` (host memory: assume it always fits — the
 caller's host allocation is governed by RAM, not this check). The CUDA extension returns
-`CUDA.available_memory()` for a `CuArray` proto.
+`CUDA.free_memory()` for a `CuArray` proto.
 
 TODO: no in-repo caller yet — this exists for the deferred device memory-estimate helper
 (see README_GPU.md). Wire it up when that helper is written, or remove it.

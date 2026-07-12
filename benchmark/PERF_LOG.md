@@ -111,3 +111,35 @@ does not touch the single-rank inner loop.
 `relerr(g2)=0.76` / `ωq=false`: same degenerate-gauge artifact documented in the Stage 1/2b
 entries (two eigensolvers pick different gauges for Pb's degenerate bands), not a correctness
 regression — the 81/81 GPU tests use gauge-invariant / fixed-eigenvector checks.
+
+## 2026-07-11 — `84a4a63` (gpu-4-bte, Stage 4: GPU Boltzmann transport calculator)
+
+**Hardware:** NVIDIA RTX A6000 (48 GB), host `ccqlin059`.
+**Software:** Julia 1.11.7, CUDA.jl functional. GPU + BTE tests green
+(`Pkg.test()`: `test_gpu.jl` 81 + new `test_gpu_boltzmann_calculator.jl` 2422 = all pass;
+the 10 errored / 1 broken are pre-existing artifact-DATA parse failures in model-loading
+integration tests untouched by Stage 4, also present on `main`).
+
+Stage 4 adds `GPUBoltzmannCalculator` — the transport analogue of the EliashbergCalculator. It
+folds the temperature-dependent BTE occupation physics into the scattering-out (Sₒ) / scattering-in
+(Sᵢ) matrices **on the device** via the shared `bte_scattering_increments` core, so no per-batch g2
+D2H streaming is needed (unlike the eliashberg loop, which copies g2/ωq).
+
+**End-to-end BTE loop** (`bench_bte_gpu.jl`, GPUBoltzmannCalculator, Method5, window E_F±0.3 eV,
+serial `symmetry = nothing`):
+
+| grid | n_i | CPU | GPU | speedup | relerr(Sₒ) |
+|-|-|-|-|-|-|
+| 16³ | 432  |  1.21 s | 0.19 s |  6.27× | 3.5e-13 |
+| 24³ | 1716 | 14.78 s | 0.98 s | 15.07× | 2.6e-13 |
+| 32³ | 4052 | 79.15 s | 3.79 s | 20.90× | 7.2e-13 |
+
+CPU-vs-GPU `Sₒ` (the SERTA lifetime γ_{nk}) agrees to **~1e-13** — `Sₒ` is gauge-invariant, so
+unlike the eliashberg g2 comparison there is no degenerate-gauge artifact; this is a direct
+end-to-end correctness check of the device scatter. The larger speedup than the eliashberg loop
+(20.9× vs 4.3× at 32³) reflects both a heavier CPU path (per-`(m,n,mode,T)` occupation factors) and
+a lighter GPU path (device-resident Sₒ/Sᵢ reduction instead of host-streamed g2).
+
+**No-regression on the shared loop:** Stage 4 leaves the `run_eph_over_k_and_kq` inner loop
+unchanged; its only edit there (the `950ab35` k+q filter refactor) is guarded by `symmetry !== nothing`
+and is inactive in this serial benchmark, so the Stage-3 eliashberg numbers above still hold.

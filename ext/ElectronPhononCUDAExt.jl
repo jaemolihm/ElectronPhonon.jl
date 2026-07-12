@@ -45,7 +45,7 @@ function ElectronPhonon.to_device(obj::WannierObject{T, <:Array{Complex{T}}}) wh
     dev
 end
 
-ElectronPhonon.device_free_bytes(::CuArray) = CUDA.available_memory()
+ElectronPhonon.device_free_bytes(::CuArray) = CUDA.free_memory()
 ElectronPhonon.device_synchronize(::CuArray) = CUDA.synchronize()
 
 """
@@ -230,6 +230,68 @@ function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, ωq_out::CuArray, g
     @cuda threads=threads blocks=blocks _window_scatter_kernel!(
         g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
         nbandkq, nbandk, nm, nqc, ni_stride, i0)
+    nothing
+end
+
+# ---- device BTE accumulate kernel (BoltzmannCalculator; CuArray method of bte_window_accumulate!) -
+#
+# GPU implementation of `bte_window_accumulate!`: one thread per (m, n, j) — m = k+q band, n = k
+# band, j = q index within the chunk. It looks up the outer/inner states i, f; sums the shared
+# per-mode physics (`bte_scattering_increments` — the SAME function the CPU path calls) over the
+# nmodes modes for each temperature; atomic-adds the scattering-out term into Sₒ (many (m,j) share an
+# i) and writes the scattering-in term into Sᵢ (each (i,f) is hit by a unique thread across the whole
+# run → no atomic). See the generic method's docstring for the full accumulation semantics.
+function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
+        e_i, e_f, wq, μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nqc, nT, i0)
+    # Flat thread index e ∈ 1:N over the (m, n, j) grid (N = nbandkq·nbandk·nqc).
+    # TODO: the CUDA index intrinsics are Int32, so this overflows if N ≥ 2^31. Unreachable today (a
+    # grid that large would exceed device memory), and systemic to all kernels in this extension;
+    # widen to Int (or chunk the launch) if a case ever approaches 2^31 threads.
+    e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    N = nbandkq * nbandk * nqc
+    e <= N || return
+    @inbounds begin
+        # Unroll the composite index e-1 into m ∈ 1:nbandkq, n ∈ 1:nbandk, j ∈ 1:nqc.
+        m = (e - 1) % nbandkq + 1
+        t = (e - 1) ÷ nbandkq
+        n = t % nbandk + 1
+        j = t ÷ nbandk + 1
+        i = imap_i_at_k[n]         # outer (k) state index; 0 = out of window → skip
+        i > 0 || return
+        ikq = ikqs[j]              # k+q point of this q within the chunk
+        f = imap_f[m, ikq]         # inner (k+q) state index; 0 = out of window → skip
+        f > 0 || return
+        ek = e_i[i]; ekq = e_f[f]; wtq = wq[ikq]
+        il = i - i0                # tile-local outer row (i0 = the current Sᵢ tile's global offset)
+        for iocc in 1:nT           # one entry per temperature
+            μ = μs[iocc]; T = Ts[iocc]; η = ηs[iocc]
+            sₒ = zero(eltype(Sₒ_out)); sᵢ = sₒ
+            for ν in 1:nmodes
+                ωq = ωqmat[ν, j]
+                ωq < ω_cutoff && continue
+                so, si = ElectronPhonon.bte_scattering_increments(
+                    method, ek, ekq, ωq, g2vals[m, n, ν, j], wtq, μ, T, η)
+                sₒ += so; sᵢ += si
+            end
+            CUDA.@atomic Sₒ_out[i, iocc] += sₒ
+            Sᵢ_out[il, f, iocc] = sᵢ
+        end
+    end
+    return
+end
+
+# CuArray method of `bte_window_accumulate!` (generic method + full docstring in
+# src/boltzmann/boltzmann_calculator.jl): launches `_bte_window_accumulate_kernel!` with one thread per
+# (m, n, j) over the chunk, accumulating this chunk's Sₒ/Sᵢ contributions into the device buffers.
+function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
+        imap_i_at_k, imap_f, ikqs, e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
+        nbandkq::Int, nbandk::Int, nmodes::Int, nqc::Int, nT::Int; i0::Int = 0)
+    N = nbandkq * nbandk * nqc
+    threads = 256
+    blocks = cld(N, threads)
+    @cuda threads=threads blocks=blocks _bte_window_accumulate_kernel!(
+        Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wq,
+        μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nqc, nT, i0)
     nothing
 end
 
