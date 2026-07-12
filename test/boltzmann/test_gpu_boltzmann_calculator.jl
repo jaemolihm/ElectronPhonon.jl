@@ -3,9 +3,9 @@ using ElectronPhonon
 const EP = ElectronPhonon
 using Random
 
-# Direct (independent) reference for the shared BTE scattering core, transcribed from
-# BoltzmannCalculatorX2X::run_calculator! (broadening/dev_BTE.jl). Guards against regressions in
-# `bte_scattering_increments` (the one physics implementation shared by the CPU loop and GPU kernel).
+# Direct (independent) reference for the shared BTE scattering core, transcribed from the upstream
+# `dev_BTE` reference implementation. Guards against regressions in `bte_scattering_increments`
+# (the one physics implementation shared by the CPU loop and GPU kernel).
 function _ref_increment(method, ek, ekq, ωq, g2, wtq, μ, T, η)
     occf(e) = 1/(exp(e/T)+1)
     df(e)   = -1/(2+exp(e/T)+exp(-e/T))/T
@@ -74,12 +74,12 @@ let
             for method in 1:6
                 So=zeros(n_i,nT); Si=zeros(n_i,n_f,nT)
                 EP.bte_window_scatter!(So,Si,g2vals,ωqmat,imap_i_col,imap_f,ikqs,e_i,e_f,wq,
-                    μs,Ts,ηs,method,ωcut,nw,nw,nm,nqc,nT,n_i; i0=0)
+                    μs,Ts,ηs,method,ωcut,nw,nw,nm,nqc,nT; i0=0)
                 Sog=CUDA.zeros(FT,n_i,nT); Sig=CUDA.zeros(FT,n_i,n_f,nT)
                 EP.bte_window_scatter!(Sog,Sig,CUDA.CuArray(g2vals),CUDA.CuArray(ωqmat),
                     CUDA.CuArray(imap_i_col),CUDA.CuArray(imap_f),CUDA.CuArray(ikqs),
                     CUDA.CuArray(e_i),CUDA.CuArray(e_f),CUDA.CuArray(wq),
-                    CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nm,nqc,nT,n_i; i0=0)
+                    CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nm,nqc,nT; i0=0)
                 @test Array(Sog) ≈ So rtol=1e-10
                 @test Array(Sig) ≈ Si rtol=1e-10
             end
@@ -101,12 +101,12 @@ let
             for method in (1,5,6)
                 So=zeros(n_i_global,nT); Si=zeros(ni,n_f,nT)
                 EP.bte_window_scatter!(So,Si,g2vals,ωqmat,imap_i_col,imap_f,ikqs,e_i,e_f,wq,
-                    μs,Ts,ηs,method,ωcut,nw,nw,nm,nqc,nT,ni; i0=i0)
+                    μs,Ts,ηs,method,ωcut,nw,nw,nm,nqc,nT; i0=i0)
                 Sog=CUDA.zeros(FT,n_i_global,nT); Sig=CUDA.zeros(FT,ni,n_f,nT)
                 EP.bte_window_scatter!(Sog,Sig,CUDA.CuArray(g2vals),CUDA.CuArray(ωqmat),
                     CUDA.CuArray(imap_i_col),CUDA.CuArray(imap_f),CUDA.CuArray(ikqs),
                     CUDA.CuArray(e_i),CUDA.CuArray(e_f),CUDA.CuArray(wq),
-                    CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nm,nqc,nT,ni; i0=i0)
+                    CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nm,nqc,nT; i0=i0)
                 @test Array(Sog) ≈ So rtol=1e-10
                 @test Array(Sig) ≈ Si rtol=1e-10
                 # out-of-window outer band 1 contributes nowhere; global rows 1..3,8..10 stay zero

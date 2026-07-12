@@ -6,10 +6,10 @@
 # the temperature-dependent occupation physics into Sₒ/Sᵢ via the shared `bte_scattering_increments`
 # (so CPU and GPU compute identical scattering — see src/boltzmann/bte_scattering_core.jl).
 #
-# Output layout matches the reference CPU calculator `BoltzmannCalculatorX2X` (broadening/dev_BTE.jl):
+# Output layout is what the transport solver (`solve_electron_bte` / `solve_thermoelectric_bte`)
+# consumes unchanged:
 #   Sₒ :: Vector{Vector}  — Sₒ[iT][i]      (inverse SERTA lifetime γ_{nk})
 #   Sᵢ :: Vector{Matrix}  — Sᵢ[iT][i, f]   (scattering-in kernel)
-# so the existing `solve_electron_bte` / `solve_thermoelectric_bte` consume it unchanged.
 #
 # Supported configuration (asserted at setup): FermiDirac occupation + Gaussian smearing — the
 # configuration `bte_scattering_increments` implements and the one used for transport.
@@ -23,9 +23,6 @@ Base.@kwdef mutable struct GPUBoltzmannCalculator{FT} <: AbstractCalculator
     const occupation_method::Symbol = :Method5            # :Method1 … :Method6
     const scattering_method::Symbol = :BTE                # :SERTA or :BTE (affects only the solver)
     const omega_cutoff::FT = FT(omega_acoustic)           # skip modes below this (acoustic at Γ)
-    # GPU residency: keep the full Sᵢ on the device (true) — block-tiled fallback is auto-selected
-    # in setup_calculator_outer_batch! when the full Sᵢ would not fit.
-    gpu_resident::Bool = true
 
     # Integer form of `occupation_method` (1..6) for the device-safe core; set at setup.
     method_int::Int = 5
@@ -195,8 +192,8 @@ function ElectronPhonon.postprocess_calculator_inner!(calc::GPUBoltzmannCalculat
 end
 
 # --- GPU batched path -----------------------------------------------------------------------
-# (`_imap_to_device` / `_tile_i_range` mirror EliashbergCalculator's; defined here to keep this
-# calculator self-contained within ElectronPhonon.)
+# (`_imap_to_device_bte` / `_tile_i_range_bte` mirror EliashbergCalculator's; defined here to keep
+# this calculator self-contained within ElectronPhonon.)
 function _imap_to_device_bte(proto, imap, nphys::Integer)
     host = zeros(Int, nphys, size(imap, 2))
     ilo, ihi = first(axes(imap, 1)), last(axes(imap, 1))
@@ -223,7 +220,6 @@ end
 
 function ElectronPhonon.setup_calculator_outer_batch!(calc::GPUBoltzmannCalculator{FT};
         kstart, kend, proto, kwargs...) where {FT}
-    calc.gpu_resident || throw(ArgumentError("GPUBoltzmannCalculator requires gpu_resident = true"))
     n_i, n_f, nT = calc.el_i.n, calc.el_f.n, length(calc.occ)
     if !calc.residency_decided && calc.Sᵢ_dev === nothing
         # Full device-resident Sᵢ = n_i·n_f·nT·sizeof(FT). With headroom for the per-chunk g2
@@ -288,7 +284,7 @@ function ElectronPhonon.run_calculator_batched!(calc::GPUBoltzmannCalculator{FT}
         ElectronPhonon.bte_window_scatter!(calc.Sₒ_dev, calc.Sᵢ_tile_dev, g2vals, ωq,
             imap_i_col, calc.imap_f_dev, ikqs, calc.e_i_dev, calc.e_f_dev, calc.wq_dev,
             calc.μ_dev, calc.T_dev, calc.η_dev, calc.method_int, calc.omega_cutoff,
-            nbandkq, nbandk, nm, nqc, nT, size(calc.Sᵢ_tile_dev, 1); i0 = calc.tile_i0)
+            nbandkq, nbandk, nm, nqc, nT; i0 = calc.tile_i0)
         return calc
     end
 
@@ -299,7 +295,7 @@ function ElectronPhonon.run_calculator_batched!(calc::GPUBoltzmannCalculator{FT}
     ElectronPhonon.bte_window_scatter!(calc.Sₒ_dev, calc.Sᵢ_dev, g2vals, ωq,
         imap_i_col, calc.imap_f_dev, ikqs, calc.e_i_dev, calc.e_f_dev, calc.wq_dev,
         calc.μ_dev, calc.T_dev, calc.η_dev, calc.method_int, calc.omega_cutoff,
-        nbandkq, nbandk, nm, nqc, nT, n_i; i0 = 0)
+        nbandkq, nbandk, nm, nqc, nT; i0 = 0)
     calc
 end
 

@@ -51,7 +51,7 @@ end
 
 """
     bte_window_scatter!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col, imap_f, ikqs, e_i, e_f, wq,
-                        μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nm, nqc, nT, ni_stride; i0=0)
+                        μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nm, nqc, nT; i0=0)
 
 Device-resident BTE scatter for `GPUBoltzmannCalculator` — the transport analogue of
 `eph_window_scatter!`. For every `(m, n, j)` of the chunk look up the outer/inner states
@@ -67,13 +67,13 @@ each temperature `iocc` sum the shared per-mode physics (`bte_scattering_increme
     is a collision-free plain write (matching the no-atomics insight of `eph_window_scatter!`).
     `Sᵢ` is the large object that may be block-tiled, hence the `i − i0` (tile-local) row.
 
-`ni_stride`/`i0` give the outer-i offset for the block-tiled `Sᵢ` buffer (`i0 = 0` for the
-full-resident buffer). Generic (CPU/fallback) method; the CUDA extension provides the
-`CuArray` kernel. The physics lives entirely in `bte_scattering_increments` so the two paths agree.
+`i0` is the global-i offset of the block-tiled `Sᵢ` buffer (`i0 = 0` for the full-resident buffer).
+Generic (CPU/fallback) method; the CUDA extension provides the `CuArray` kernel. The physics lives
+entirely in `bte_scattering_increments` so the two paths agree.
 """
 function bte_window_scatter!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_col, imap_f, ikqs,
         e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
-        nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, nT::Int, ni_stride::Int; i0::Int = 0)
+        nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, nT::Int; i0::Int = 0)
     @inbounds for j in 1:nqc, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_col[n]
         i > 0 || continue

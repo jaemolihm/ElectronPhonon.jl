@@ -275,7 +275,7 @@ end
 
 function ElectronPhonon.bte_window_scatter!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
         imap_i_col, imap_f, ikqs, e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
-        nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, nT::Int, ni_stride::Int; i0::Int = 0)
+        nbandkq::Int, nbandk::Int, nm::Int, nqc::Int, nT::Int; i0::Int = 0)
     N = nbandkq * nbandk * nqc
     threads = 256
     blocks = cld(N, threads)

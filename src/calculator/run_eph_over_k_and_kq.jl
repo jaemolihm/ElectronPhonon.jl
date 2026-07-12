@@ -120,7 +120,7 @@ function _setup_eph_over_k_and_kq(
     # Filter the k+q grid to the energy window. With symmetry, run the window eigensolve on the
     # irreducible BZ only and unfold the kept k-POINT set to the full BZ (band energies are constant
     # on the star, the same symmetry assumption already used for the outer-k IBZ reduction). This is
-    # ~nsym× fewer valueonly eigensolves — the dominant setup cost at dense grids with a narrow
+    # ~nsym× fewer value-only eigensolves — the dominant setup cost at dense grids with a narrow
     # window. Without symmetry, filter the full grid directly. Note this unfolds only the point set
     # (cheap, k-vectors); the electron STATES are still handled per `el_kq_from_unfolding` below.
     if symmetry !== nothing

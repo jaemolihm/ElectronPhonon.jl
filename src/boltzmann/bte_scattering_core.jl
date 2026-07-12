@@ -1,12 +1,14 @@
 # Shared BTE scattering physics — ONE implementation used by both the CPU calculator loop
 # (`GPUBoltzmannCalculator`'s `run_calculator!`) and the GPU device kernel
 # (`bte_window_scatter!` in the CUDA extension). Keeping the physics in a single device-safe
-# `@inline` function guarantees the CPU and GPU paths compute bit-identical scattering and that
-# there is exactly one place where the Migdal–Eliashberg-style occupation factors live.
+# `@inline` function makes the CPU and GPU paths compute the same scattering (to round-off) and
+# puts the Migdal–Eliashberg-style occupation factors in exactly one place.
 #
-# The CPU reference this reproduces is `BoltzmannCalculatorX2X::run_calculator!`
-# (broadening/dev_BTE.jl). Only the FermiDirac occupation + Gaussian smearing configuration is
-# supported here (the configuration used for transport); the calculator asserts this at setup.
+# Transcribed from the upstream `dev_BTE` reference implementation (external to this repo); the
+# in-repo cross-check is the co-located CPU `run_calculator!` plus the independent transcription in
+# test/boltzmann/test_gpu_boltzmann_calculator.jl. Only the FermiDirac occupation + Gaussian
+# smearing configuration is supported here (the configuration used for transport); the calculator
+# asserts this at setup.
 
 # --- Device-safe elementary occupation / smearing helpers ------------------------------------
 # Specialized (no `occ_type`/smearing-type branches, no `throw` paths) so they compile inside a
@@ -23,7 +25,7 @@
 
 Single-mode contribution to the BTE scattering-out (`sₒ`) and scattering-in (`sᵢ`) terms for one
 `(electron k, electron k+q, phonon mode)` triple at one temperature/μ. The caller accumulates
-`Sₒ[n] += sₒ` over `(m, ν, q)` and `Sᵢ[n, f] += sᵢ` over `ν` (see `dev_BTE.jl`):
+`Sₒ[n] += sₒ` over `(m, ν, q)` and `Sᵢ[n, f] += sᵢ` over `ν` (see the CPU `run_calculator!`):
 
     sₒ = (δ₁·f₁ₒ + δ₂·f₂ₒ) · 2π·wtq·g2          # out-factors f1o,f2o per `method`
     sᵢ = (δ₂·f₁ᵢ + δ₁·f₂ᵢ) · 2π·wtq·g2          # in-factors  f1i,f2i per `method`

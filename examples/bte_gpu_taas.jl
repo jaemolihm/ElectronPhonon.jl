@@ -14,7 +14,8 @@ const EP = ElectronPhonon
 using LinearAlgebra
 
 # --- model ---
-folder = "/mnt/home/jlihm/ceph/downfolding/TaAs/2_epw.projWF"
+# Point EP_TAAS_FOLDER at a TaAs EPW output folder (2_epw.projWF).
+folder = get(ENV, "EP_TAAS_FOLDER", joinpath(homedir(), "ceph/downfolding/TaAs/2_epw.projWF"))
 model = EP.load_model_from_epw_new(folder, "temp", "TaAs")
 
 # --- transport setup ---
