@@ -2,41 +2,15 @@
 # Functions related to finding Fermi energy
 
 using Roots
-using ChunkSplitters
-using Base.Threads: @threads
 
 export find_fermi_energy
 
-# Threaded deterministic reduction over the state index used by the ncarrier sums below. The
-# chunking is FIXED (size-based, depends only on `n`), each chunk is summed serially, and the
-# per-chunk partials are summed serially in chunk order — so the result is run-to-run
-# deterministic (independent of thread scheduling and of `nthreads()`). The summation ORDER
-# differs from the plain serial loop, so results may differ from it at the floating-point
-# rounding level (~1e-15 relative); this shifts the bisected chemical potential by a
-# comparable amount. Small problems stay on the serial path (threading overhead dominates).
-# `f(i) -> FT` is the per-state summand.
-const _NCARRIER_SERIAL_MAX = 1 << 14
-const _NCARRIER_CHUNK = 1 << 12
-
-function _ncarrier_sum(f, n::Int, ::Type{FT}) where {FT}
-    if n <= _NCARRIER_SERIAL_MAX
-        acc = zero(FT)
-        for i in 1:n
-            acc += f(i)
-        end
-        return acc
-    end
-    ck = chunks(1:n; size = _NCARRIER_CHUNK)
-    partials = zeros(FT, length(ck))
-    @threads for (ic, is) in enumerate(ck)
-        acc = zero(FT)
-        for i in is
-            acc += f(i)
-        end
-        partials[ic] = acc
-    end
-    sum(partials)
-end
+# occ_fermion with the occupation type as a COMPILE-TIME `Val` parameter, so a broadcast over it
+# compiles on any backend including the GPU. `occ_fermion`'s `occ_type` is a runtime keyword (its
+# `if occ_type == :…` chain and the string-interpolating `throw` do not lower to a device kernel);
+# as a `Val` the chain constant-folds to the single occupation formula, and `erf`/`erfc` map to
+# libdevice intrinsics — so :FermiDirac, :MV, :Gaussian, :MP all run device-side.
+@inline _occ_fermion(e, T, ::Val{occ_type}) where {occ_type} = occ_fermion(e, T; occ_type)
 
 """
     compute_ncarrier(μ, T, energy, weights; occ_type = :FermiDirac)
@@ -46,45 +20,24 @@ Compute number of electrons per unit cell.
 - `T`: temperature
 - `occ_type`: occupation type, default: `:FermiDirac`. (See [`occ_fermion`](@ref) for all options.)
 - `weights`: k-point weights.
-
-Threaded over the states with a deterministic chunked reduction (see `_ncarrier_sum`).
 """
 function compute_ncarrier(μ, T, energy::AbstractMatrix, weights; occ_type = :FermiDirac)
-    nband, nk = size(energy)
+    nk = size(energy, 2)
     @assert length(weights) == nk
-    _ncarrier_sum(nband * nk, eltype(energy)) do i
-        iband = (i - 1) % nband + 1
-        ik = (i - 1) ÷ nband + 1
-        weights[ik] * occ_fermion(energy[iband, ik] - μ, T; occ_type)
+    ncarrier = zero(eltype(energy))
+    for ik in 1:nk
+        for iband in 1:size(energy, 1)
+            ncarrier += weights[ik] * occ_fermion(energy[iband, ik] - μ, T; occ_type)
+        end
     end
+    ncarrier
 end
 
-function compute_ncarrier(μ, T, energy::Vector, weights; occ_type = :FermiDirac)
-    _ncarrier_sum(length(energy), eltype(energy)) do i
-        weights[i] * occ_fermion(energy[i] - μ, T; occ_type)
-    end
-end
-
-"""
-    compute_ncarrier(μ, T, energy::AbstractVector, weights; occ_type = :FermiDirac)
-
-Generic (device-capable) method: a plain broadcast + `sum`, so it runs on any array backend
-(e.g. `CuArray`) without scalar indexing or a CUDA dependency. `:FermiDirac` only — the other
-occupation types need `erf`/`erfc` (SpecialFunctions), which are not device-kernel-safe; callers
-keep those on the host. The `Vector` method above (the deterministic chunked-threads host path)
-takes precedence for host arrays and is unchanged. The broadcast `sum` reduction order differs
-from the host method's, so results agree with it only to the rounding level (~1e-15 relative).
-"""
+# Broadcast + `sum`, so it runs on any array backend (host `Array` or `CuArray`) without scalar
+# indexing or a CUDA dependency: this is the reduction used by the on-device chemical-potential
+# solve. `Val(occ_type)` keeps the broadcast kernel device-compilable (see `_occ_fermion`).
 function compute_ncarrier(μ, T, energy::AbstractVector, weights; occ_type = :FermiDirac)
-    occ_type === :FermiDirac || throw(ArgumentError(
-        "the generic (device) compute_ncarrier supports occ_type = :FermiDirac only (got $occ_type)"))
-    if T > sqrt(eps(Float64))
-        sum(weights ./ (exp.((energy .- μ) ./ T) .+ 1))
-    elseif T >= 0
-        sum(weights .* ((1 .- sign.(energy .- μ)) ./ 2))
-    else
-        throw(ArgumentError("Temperature must be positive"))
-    end
+    sum(weights .* _occ_fermion.(energy .- μ, T, Val(occ_type)))
 end
 
 """
@@ -92,9 +45,7 @@ end
 Compute number of holes per unit cell. See [`compute_ncarrier`](@ref) for arguments.
 """
 function compute_ncarrier_hole(μ, T, energy::AbstractVector, weights; occ_type = :FermiDirac)
-    _ncarrier_sum(length(energy), eltype(energy)) do i
-        weights[i] * (1 - occ_fermion(energy[i] - μ, T; occ_type))
-    end
+    sum(weights .* (1 .- _occ_fermion.(energy .- μ, T, Val(occ_type))))
 end
 
 """

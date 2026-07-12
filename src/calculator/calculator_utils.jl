@@ -25,7 +25,7 @@ The target `lin` indices are unique across the run (distinct k → distinct i, d
 distinct f), so the writes never collide (no atomics needed). Generic (CPU/fallback) method; the
 CUDA extension provides a one-kernel `CuArray` method.
 
-A helper for downstream device-resident calculators: from their `run_calculator_batched!` hook
+A helper for downstream device-resident calculators: from their `run_calculator_outer_k_batched!` hook
 they call this to scatter each e-ph batch's `g2`/`ωq` into their own window-mapped device
 accumulators. The library itself stays agnostic to any particular calculator.
 

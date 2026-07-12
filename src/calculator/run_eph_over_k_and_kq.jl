@@ -545,9 +545,9 @@ function _loop_eph_over_k_and_kq_gpu(
     # batched device hook; a non-batched calculator fails loudly rather than silently falling back
     # to a slow host path — a hard-to-spot performance cliff (see README_GPU.md "Decisions").
     isempty(calculators) && throw(ArgumentError("use_gpu requires at least one calculator."))
-    all(allow_eph_batched, calculators) || throw(ArgumentError(
+    all(allow_eph_outer_k_batched, calculators) || throw(ArgumentError(
         "use_gpu requires every calculator to implement the batched device hook " *
-        "(allow_eph_batched = true); the GPU path does not fall back to the host run_calculator! loop."))
+        "(allow_eph_outer_k_batched = true); the GPU path does not fall back to the host run_calculator! loop."))
 
     # The k+q side of the interpolation runs full-band (uniform nw×nw, using the full eigenvectors
     # `el.u_full`); the energy window is applied in the calculator scatter, where out-of-window
@@ -763,7 +763,7 @@ function _loop_eph_over_k_and_kq_gpu(
             # copy of the first nq_batch k+q indices (a SubArray-view copy would go scalar).
             copyto!(ikqs_dev, 1, ikqs_host, 1, nq_batch)
             for calc in calculators
-                run_calculator_batched!(calc,
+                run_calculator_outer_k_batched!(calc,
                     view(epkq_dev, :, :, :, rng_q), view(ωq_dev, :, rng_q),
                     ik, view(ikqs_dev, rng_q); g2 = view(g2_dev, :, :, :, rng_q),
                     ibandk_offset = ibandk_offsets[ik])

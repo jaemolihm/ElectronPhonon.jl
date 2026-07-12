@@ -109,28 +109,29 @@ end
     check_eph_batched(identity, identity; rtol=1e-10)
 end
 
-# Plumbing of the outer-q batched calculator hook (allow_eph_batched_q / run_calculator_batched_q!
-# and the per-q lifecycle hooks) used by `run_eph_outer_q(...; use_gpu=true)`. Backend-agnostic, so
-# no GPU is needed — it only checks the opt-in defaults and the not-implemented error paths.
+# Plumbing of the outer-q batched calculator hook (allow_eph_outer_q_batched /
+# run_calculator_outer_q_batched!) used by `run_eph_outer_q(...; use_gpu=true)`. The per-q device
+# lifecycle reuses the generic setup_calculator_inner! / postprocess_calculator_inner! hooks (same
+# as the CPU outer-q loop). Backend-agnostic, so no GPU is needed — checks the opt-in default and
+# the not-implemented error path.
 struct _PlainQCalc <: ElectronPhonon.AbstractCalculator end
 mutable struct _OptInQCalc <: ElectronPhonon.AbstractCalculator; setup::Int; flush::Int; end
-ElectronPhonon.allow_eph_batched_q(::_OptInQCalc) = true
-ElectronPhonon.setup_calculator_batched_q!(c::_OptInQCalc; kwargs...) = (c.setup += 1; nothing)
-ElectronPhonon.flush_calculator_batched_q!(c::_OptInQCalc; kwargs...) = (c.flush += 1; nothing)
+ElectronPhonon.allow_eph_outer_q_batched(::_OptInQCalc) = true
+ElectronPhonon.setup_calculator_inner!(c::_OptInQCalc; kwargs...) = (c.setup += 1; nothing)
+ElectronPhonon.postprocess_calculator_inner!(c::_OptInQCalc; kwargs...) = (c.flush += 1; nothing)
 
 @testset "outer-q batched calculator hook plumbing" begin
-    # Default opts out; the lifecycle hooks are no-ops; the main hook errors if unimplemented.
-    @test ElectronPhonon.allow_eph_batched_q(_PlainQCalc()) == false
-    @test ElectronPhonon.setup_calculator_batched_q!(_PlainQCalc(); iq=1, proto=zeros(1)) === nothing
-    @test ElectronPhonon.flush_calculator_batched_q!(_PlainQCalc(); iq=1) === nothing
-    @test_throws Exception ElectronPhonon.run_calculator_batched_q!(
+    # Default opts out; the batched-q hook errors if unimplemented.
+    @test ElectronPhonon.allow_eph_outer_q_batched(_PlainQCalc()) == false
+    @test_throws Exception ElectronPhonon.run_calculator_outer_q_batched!(
         _PlainQCalc(), nothing, nothing, nothing, nothing, nothing, nothing, nothing, 1)
 
-    # Opt-in calculator: hook returns true and the lifecycle hooks dispatch to the override.
+    # Opt-in calculator: hook returns true and the per-q inner hooks dispatch to the override
+    # (the GPU outer-q loop passes iq / proto / k_chunk_size through them).
     c = _OptInQCalc(0, 0)
-    @test ElectronPhonon.allow_eph_batched_q(c) == true
-    ElectronPhonon.setup_calculator_batched_q!(c; iq=1, proto=zeros(1), k_chunk_size=4)
-    ElectronPhonon.flush_calculator_batched_q!(c; iq=1)
+    @test ElectronPhonon.allow_eph_outer_q_batched(c) == true
+    ElectronPhonon.setup_calculator_inner!(c; iq=1, proto=zeros(1), k_chunk_size=4)
+    ElectronPhonon.postprocess_calculator_inner!(c; iq=1)
     @test (c.setup, c.flush) == (1, 1)
 end
 
@@ -307,16 +308,16 @@ function ElectronPhonon.run_calculator!(c::_RecordCalc, epdata, ik, iq, ikq; kwa
 end
 
 # Device-native counterpart of `_RecordCalc`: opts into the batched hook so the GPU loop keeps
-# the e-ph matrix on the device and calls `run_calculator_batched!` once per (k, batch). It
+# the e-ph matrix on the device and calls `run_calculator_outer_k_batched!` once per (k, batch). It
 # records the same `g2 = |ep|²/2ω` and ωq as `_RecordCalc`, exercising the loop's device-native
-# branch (allow_eph_batched, ωq/ikqs staging, on-device g2) without MigdalEliashberg.
+# branch (allow_eph_outer_k_batched, ωq/ikqs staging, on-device g2) without MigdalEliashberg.
 mutable struct _RecordCalcBatched <: ElectronPhonon.AbstractCalculator
     g2::Array{Float64,5}
     ωq::Array{Float64,5}
     _RecordCalcBatched() = new(zeros(0, 0, 0, 0, 0), zeros(0, 0, 0, 0, 0))
 end
 ElectronPhonon.allow_eph_outer_k(::_RecordCalcBatched) = true
-ElectronPhonon.allow_eph_batched(::_RecordCalcBatched) = true
+ElectronPhonon.allow_eph_outer_k_batched(::_RecordCalcBatched) = true
 function ElectronPhonon.setup_calculator!(c::_RecordCalcBatched, kpts, qpts, el_states;
         el_states_kq, kqpts, nw, nmodes, kwargs...)
     c.g2 = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
@@ -329,7 +330,7 @@ ElectronPhonon.postprocess_calculator!(c::_RecordCalcBatched; kwargs...) = c
 # Computes g2 from `ep_kq` itself (independent check of the fused-kernel ep_kq output). The GPU
 # loop now also folds g2 into the kRkq kernel and passes it as `g2=`; when present, assert it
 # matches the abs2/(2ω) recomputation — this guards the production g2 output in-package.
-function ElectronPhonon.run_calculator_batched!(c::_RecordCalcBatched, ep_kq, ωq, ik, ikqs;
+function ElectronPhonon.run_calculator_outer_k_batched!(c::_RecordCalcBatched, ep_kq, ωq, ik, ikqs;
         g2=nothing, ibandk_offset=0)
     nbandkq, nbandk, nm, nqc = size(ep_kq)
     g2dev = abs2.(ep_kq) ./ (2 .* reshape(ωq, 1, 1, nm, nqc))
@@ -393,7 +394,7 @@ end
             nk_batch_max=5, nq_batch_max=7, progress_print_step=10^9)
         @test maximum(abs, cg.g2 .- cbk.g2) < 1e-9 * scale
 
-        # Fully-GPU policy: a non-batched calculator (no allow_eph_batched) must be rejected, not
+        # Fully-GPU policy: a non-batched calculator (no allow_eph_outer_k_batched) must be rejected, not
         # silently run on the host path.
         @test_throws Exception ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
             calculators=[_RecordCalc()], symmetry=nothing, use_gpu=true, progress_print_step=10^9)

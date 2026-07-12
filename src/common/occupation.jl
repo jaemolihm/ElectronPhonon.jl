@@ -124,20 +124,24 @@ function chemical_potential_is_computed(occ :: ElectronOccupationParams)
 end
 
 """
-    set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true)
+    set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true, proto = nothing)
 If `occ.μlist` is not set, compute the chemical potential and set it.
 If `occ.μlist` is already set to some value that is not NaN, do nothing.
+Pass a device array `proto` (e.g. `to_device(model.el_ham).op_r`) to run the bisection's ncarrier
+sums on that backend (GPU); the default `nothing` keeps the whole solve on the host.
 """
-function set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true)
+function set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true, proto = nothing)
     if !chemical_potential_is_computed(occ)
         el, _ = electron_states_to_BTStates(el_states, kpts, nelec_below_window)
-        bte_compute_μ!(occ, el; do_print)
+        bte_compute_μ!(occ, el; do_print, proto)
     end
     occ
 end
 
+# Move a host vector onto `proto`'s backend (identity when proto === nothing / already host).
+_ncarrier_backend(x, proto) = proto === nothing ? x : copyto!(similar(proto, eltype(x), size(x)), x)
 
-function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true)
+function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true, proto=nothing)
     if occ.type == :Metal
         # For metals, compute the total electron density.
         # Since occ.n is the difference of number of electrons per cell from nband_valence,
@@ -151,18 +155,24 @@ function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true)
         # FIXME: BUG: nband_valence must be provided by the user. By mistake one may set nelec instead of nlist in a metal, then this leads to very wrong result. Also we should rename nelec to nelec_semiconductor or something like that to indicate that this is intended for doped semiconductors.
         nband_valence = round(Int, occ.nelec / occ.spin_degeneracy)
         ncarrier_target = @. occ.nlist / occ.spin_degeneracy
-        e_e = el.e[el.iband .>  nband_valence]
-        e_h = el.e[el.iband .<= nband_valence]
-        w_e = el.k_weight[el.iband .>  nband_valence]
-        w_h = el.k_weight[el.iband .<= nband_valence]
+        # Band masking is a host operation; the resulting energy/weight lists are then moved to the
+        # solve backend below.
+        e_e = _ncarrier_backend(el.e[el.iband .>  nband_valence], proto)
+        e_h = _ncarrier_backend(el.e[el.iband .<= nband_valence], proto)
+        w_e = _ncarrier_backend(el.k_weight[el.iband .>  nband_valence], proto)
+        w_h = _ncarrier_backend(el.k_weight[el.iband .<= nband_valence], proto)
     else
         throw(DomainError("Invalid occ.type $(occ.type)"))
     end
 
+    # Move the metal energy/weight lists onto the solve backend (device when `proto` is a CuArray).
+    e_metal = occ.type == :Metal ? _ncarrier_backend(el.e, proto) : el.e
+    w_metal = occ.type == :Metal ? _ncarrier_backend(el.k_weight, proto) : el.k_weight
+
     for i in axes(occ.Tlist, 1)
         T = occ.Tlist[i]
         if occ.type == :Metal
-            μ = find_chemical_potential(ncarrier_target[i], T, el.e, el.k_weight; occ.occ_type)
+            μ = find_chemical_potential(ncarrier_target[i], T, e_metal, w_metal; occ.occ_type)
         elseif occ.type == :Semiconductor
             μ = find_chemical_potential_semiconductor(ncarrier_target[i], T, e_e, e_h, w_e, w_h; occ.occ_type)
         end
