@@ -72,13 +72,14 @@ function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
 end
 
 """
-    electron_states_to_BandStates(el_states, kpts, nstates_base=0) -> (BandStates, imap)
+    electron_states_to_BandStates(el_states, kpts, nstates_base=0) -> BandStates
 
 Flatten a per-k vector of `ElectronState` onto `kpts` into a `BandStates`, storing the
 per-state k-index `ik` directly (no deduplication: `kpts` already holds the distinct
 k-points). `kpts` must be a `GridKpoints` (its k-vector→index hash is needed for the e-ph loop
-and `state_index(xk, …)` queries). Also returns `imap[ib, ik]` = state index, for scattering
-the e-ph coupling during the loop.
+and `state_index(xk, …)` queries). The `(iband, ik) → state` reverse map lives in the returned
+`BandStates` as `indmap` — query it with `state_index`, or build a device copy for the GPU
+scatter with `_indmap_to_device`.
 
 This is the `BandStates` replacement for `electron_states_to_BTStates`.
 """
@@ -86,10 +87,6 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
         kpts::GridKpoints{T}, nstates_base = zero(T)) where {T}
     nk = length(el_states)
     n = sum(el.nband for el in el_states)
-    iband_min = minimum(el.rng.start for el in el_states if el.nband > 0)
-    iband_max = maximum(el.rng.stop for el in el_states if el.nband > 0)
-    imap = OffsetArray(zeros(Int, iband_max - iband_min + 1, nk), iband_min:iband_max, :)
-
     ik = zeros(Int, n)
     iband = zeros(Int, n)
     e = zeros(T, n)
@@ -104,10 +101,21 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
             iband[istate] = ib
             e[istate] = el.e[ib]
             v[istate] = el.vdiag[ib]
-            imap[ib, jk] = istate
         end
     end
-    BandStates(kpts, ik, iband, e; v, nstates_base), imap
+    BandStates(kpts, ik, iband, e; v, nstates_base)
+end
+
+# Build a device `(nw, nk)` integer index map addressable by PHYSICAL band: row `iband` ∈ 1:nw holds
+# the flattened state index for `(iband, ik)`, and 0 where that band is absent / out of the energy
+# window. `nw` is the full (Wannier) band count — the band axis the e-ph matrix `ep_kq` is indexed by
+# — so a device kernel can look a state up directly from its physical band index. `proto` is a device
+# array used only as a `similar` prototype. (`s.indmap` is stored band-offset by `nband_ignore`; this
+# places its rows at their physical-band positions `nband_ignore+1 : nband_ignore+nband`.)
+function _indmap_to_device(proto, s::BandStates, nw::Integer)
+    host = zeros(Int, nw, s.kpts.n)
+    @views host[s.nband_ignore+1 : s.nband_ignore+s.nband, :] .= s.indmap
+    copyto!(similar(proto, Int, nw, s.kpts.n), host)
 end
 
 """

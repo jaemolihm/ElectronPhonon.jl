@@ -51,11 +51,9 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # true = GPU (run_calculator_batched!). Each per-path hook errors if called on the wrong backend.
     use_gpu::Bool = false
 
-    # --- State (BandStates) ---
+    # --- State (BandStates) --- the (iband, ik) → state reverse map is `el_*.indmap` (via state_index)
     el_i::Union{Nothing, BandStates{FT, GridKpoints{FT}}} = nothing
-    imap_el_i::Union{Nothing, OffsetMatrix{Int64, Matrix{Int64}}} = nothing
     el_f::Union{Nothing, BandStates{FT, GridKpoints{FT}}} = nothing
-    imap_el_f::Union{Nothing, OffsetMatrix{Int64, Matrix{Int64}}} = nothing
 
     # --- Host outputs (solver-facing) ---
     Sₒ::Vector{Vector{FT}} = Vector{Vector{FT}}()         # per iT, length n_i
@@ -122,8 +120,8 @@ function ElectronPhonon.setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, q
     # possible, make setup fail early on a plain Kpoints instead of promoting here.
     gkpts   = kpts isa GridKpoints   ? kpts   : GridKpoints(kpts)
     gkqpts  = kqpts isa GridKpoints  ? kqpts  : GridKpoints(kqpts)
-    calc.el_i, calc.imap_el_i = electron_states_to_BandStates(el_states, gkpts, nelec_below_window_k)
-    calc.el_f, calc.imap_el_f = electron_states_to_BandStates(el_states_kq, gkqpts, nelec_below_window_kq)
+    calc.el_i = electron_states_to_BandStates(el_states, gkpts, nelec_below_window_k)
+    calc.el_f = electron_states_to_BandStates(el_states_kq, gkqpts, nelec_below_window_kq)
     n_i = calc.el_i.n
     n_f = calc.el_f.n
     nT = length(calc.occ)
@@ -169,7 +167,7 @@ function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, epdata, i
     @inbounds for n in el_k.rng
         ek = el_k.e[n]
         for m in el_kq.rng
-            ind_el_f = calc.imap_el_f[m, ikq]
+            ind_el_f = state_index(calc.el_f, ikq, m)
             ind_el_f == 0 && continue
             ekq = el_kq.e[m]
             for (iocc, (; μ, T)) in enumerate(calc.occ)
@@ -193,8 +191,8 @@ end
 # CPU path: reduce the per-chunk buffers into the global Sₒ/Sᵢ. No-op on the GPU path.
 function ElectronPhonon.postprocess_calculator_inner!(calc::BoltzmannCalculator; ik, kwargs...)
     calc.use_gpu && return calc
-    @inbounds @views for n in axes(calc.imap_el_i, 1)
-        ind_el_i = calc.imap_el_i[n, ik]
+    @inbounds @views for n in calc.rng_band
+        ind_el_i = state_index(calc.el_i, ik, n)
         ind_el_i == 0 && continue
         for c in eachindex(calc.Sₒ_buffer)
             for iT in eachindex(calc.Sₒ)
@@ -207,19 +205,6 @@ function ElectronPhonon.postprocess_calculator_inner!(calc::BoltzmannCalculator;
 end
 
 # --- GPU batched path -----------------------------------------------------------------------
-
-# Build a device copy of a window imap for the device scatter: `imap` is the OffsetMatrix
-# `(band, k) → state` (band axis offset to the in-window bands); write it densely into rows
-# `1:nphys` of a zero-filled `(nphys, n_k)` host array (out-of-window bands stay 0), then copy to a
-# device array of the same backend type as `proto` (a device array — the e-ph matrix `ep_kq` — used
-# only as a `similar` prototype). `nphys` is the physical band count the loop indexes by (the un-projected
-# k+q band count `nw`), so the calculator can address the device imap by physical band.
-function _imap_to_device_bte(proto, imap, nphys::Integer)
-    host = zeros(Int, nphys, size(imap, 2))
-    ilo, ihi = first(axes(imap, 1)), last(axes(imap, 1))
-    @views host[ilo:ihi, :] .= parent(imap)
-    copyto!(similar(proto, Int, nphys, size(imap, 2)), host)
-end
 
 # GPU (batched) path: (re)point/zero the Sᵢ tile for this outer-k batch (called by the GPU e-ph loop
 # once per k-batch, before its k iterations). `proto` is a device array (the e-ph matrix) used as the
@@ -312,14 +297,17 @@ function ElectronPhonon.run_calculator_batched!(calc::BoltzmannCalculator{FT},
     nbandkq, nbandk, nmodes, nqc = size(ep_kq)
     n_i, n_f, nT = calc.el_i.n, calc.el_f.n, length(calc.occ)
 
+    # nw = full (Wannier) band count = size(ep_kq, 1); the k+q band axis is NOT window-projected, so
+    # both device index maps are addressable by physical band. Under the loop's k-side window
+    # projection the ep_kq band axis covers only nbandk bands starting at physical band
+    # ibandk_offset+1 (addressed below by the shifted view; ibandk_offset+nbandk ≤ nw). Full-band runs
+    # have ibandk_offset = 0, nbandk = nw.
+    nw = nbandkq
     if calc.imap_i_dev === nothing
-        # `ep_kq` (a device array) is the `similar` prototype for these one-time device copies.
-        # imap_i spans ALL physical bands (nphys = nw = nbandkq, the un-projected k+q band count):
-        # under the loop's k-side window projection the ep_kq band axis covers only nbandk bands
-        # starting at physical band ibandk_offset+1, addressed below by a shifted view (ibandk_offset+nbandk ≤ nw
-        # by construction). Full-band runs have ibandk_offset = 0, nbandk = nw — identical to before.
-        calc.imap_i_dev = _imap_to_device_bte(ep_kq, calc.imap_el_i, nbandkq)
-        calc.imap_f_dev = _imap_to_device_bte(ep_kq, calc.imap_el_f, nbandkq)
+        # One-time device copies (built lazily on the first batched call — setup_calculator! has no
+        # device array to `similar` from; `ep_kq` is the prototype). Reused across all k in the run.
+        calc.imap_i_dev = _indmap_to_device(ep_kq, calc.el_i, nw)
+        calc.imap_f_dev = _indmap_to_device(ep_kq, calc.el_f, nw)
         calc.e_i_dev = copyto!(similar(ep_kq, FT, n_i), calc.el_i.es)
         calc.e_f_dev = copyto!(similar(ep_kq, FT, n_f), calc.el_f.es)
         calc.wq_dev  = copyto!(similar(ep_kq, FT, calc.el_f.kpts.n), calc.el_f.kpts.weights)
@@ -329,7 +317,10 @@ function ElectronPhonon.run_calculator_batched!(calc::BoltzmannCalculator{FT},
         calc.Sₒ_dev = fill!(similar(ep_kq, FT, n_i, nT), zero(FT))   # small, device-resident
     end
 
-    g2vals = g2 === nothing ? abs2.(ep_kq) ./ (2 .* reshape(ωq, 1, 1, nmodes, nqc)) : g2
+    # The loop always folds g2 = |ep|²/(2ω) in get_eph_kR_to_kq_batched! and passes it here, so g2 is
+    # never nothing at the call site; require it rather than recomputing.
+    g2 === nothing && error("run_calculator_batched!(BoltzmannCalculator) requires g2 from the loop")
+    g2vals = g2
     # Shifted by the k-side projection offset: ep_kq band n ↔ physical band ibandk_offset + n.
     imap_i_at_k = view(calc.imap_i_dev, ibandk_offset+1:ibandk_offset+nbandk, ik)
 
