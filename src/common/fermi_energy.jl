@@ -10,6 +10,8 @@ export find_fermi_energy
 # `if occ_type == :…` chain and the string-interpolating `throw` do not lower to a device kernel);
 # as a `Val` the chain constant-folds to the single occupation formula, and `erf`/`erfc` map to
 # libdevice intrinsics — so :FermiDirac, :MV, :Gaussian, :MP all run device-side.
+# TODO: thread `Val{occ_type}` through the occupation API everywhere (occ_fermion / occ_fermion_derivative
+#       and their callers), instead of the runtime `occ_type` keyword + this local wrapper.
 @inline _occ_fermion(e, T, ::Val{occ_type}) where {occ_type} = occ_fermion(e, T; occ_type)
 
 """

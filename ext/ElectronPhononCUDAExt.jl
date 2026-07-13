@@ -193,8 +193,8 @@ end
 # with the ν loop inside and the small iw/jw contractions in registers, replacing both GEMMs.
 # The per-jw partial Σ_iw is re-read per n (L1-served), mirroring that kernel's redundancy note.
 # Per-thread work grows as nmodes·nw², so gate on nw²·nmodes; above the threshold the matmuls are
-# large enough that cuBLAS is efficient and the generic two-GEMM method is used.
-# THRESHOLD IS A100-TUNED (covers nw=3, nmodes=21 → 189; excludes e.g. nw=8, nmodes=12 → 768).
+# large enough that cuBLAS is efficient and the generic two-GEMM method is used. The threshold
+# covers small-nw metals (e.g. nw=3, nmodes=21 → 189) and excludes e.g. nw=8, nmodes=12 → 768.
 const _FUSED_RQKQ_MAX_NW2NM = 512
 
 # g : (nw, nw, nmodes, nk) with legend g[iw, jw, ν, k] (iw = k+q leg, jw = k leg);

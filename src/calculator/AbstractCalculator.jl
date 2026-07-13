@@ -43,9 +43,9 @@ end
 
 # Called once per outer-loop iteration, before the multithreaded / batched inner loop: `ik` on the
 # outer-k loops, `iq` on the outer-q loop. On the GPU outer-q path it also brackets the per-q device
-# accumulator — it receives `proto` (the e-ph matrix device backend) and `k_chunk_size` so a batched
-# calculator can lazily allocate + zero its per-q device buffer here, with the matching device→host
-# scatter in `postprocess_calculator_inner!` at the end of the q.
+# accumulator — it receives `gpu_array` (a device array on the e-ph matrix backend) and `nk_batch_max`
+# so a batched calculator can lazily allocate + zero its per-q device buffer here, with the matching
+# device→host scatter in `postprocess_calculator_inner!` at the end of the q.
 function setup_calculator_inner!(::AbstractCalculator; kwargs...)
     error("setup_calculator_inner! has to be implemented")
 end
