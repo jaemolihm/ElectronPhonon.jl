@@ -12,26 +12,26 @@ package defines no method, so calling this without the relevant extension loaded
 function to_device end
 
 """
-    device_free_bytes(proto) -> Int
+    device_free_bytes(gpu_array) -> Int
 
-Free memory (bytes) on the backend `proto` lives on, used to decide whether a large buffer fits
+Free memory (bytes) on the backend `gpu_array` lives on, used to decide whether a large buffer fits
 on the device. Generic fallback returns `typemax(Int)` (host memory: assume it always fits — the
 caller's host allocation is governed by RAM, not this check). The CUDA extension returns
-`CUDA.free_memory()` for a `CuArray` proto.
+`CUDA.free_memory()` for a `CuArray` gpu_array.
 
 TODO: no in-repo caller yet — this exists for the deferred device memory-estimate helper
 (see README_GPU.md). Wire it up when that helper is written, or remove it.
 """
-device_free_bytes(proto) = typemax(Int)
+device_free_bytes(gpu_array) = typemax(Int)
 
 """
-    device_synchronize(proto)
+    device_synchronize(gpu_array)
 
-Block until queued device work on `proto`'s backend completes. Generic fallback is a no-op
+Block until queued device work on `gpu_array`'s backend completes. Generic fallback is a no-op
 (host work is synchronous); the CUDA extension calls `CUDA.synchronize()`. Used to bound the
 host look-ahead in the GPU e-ph loop so per-tile scratch does not pile up in the memory pool.
 """
-device_synchronize(proto) = nothing
+device_synchronize(gpu_array) = nothing
 
 @inline _batched_op(t::Char, X) = t == 'N' ? X : (t == 'T' ? transpose(X) : adjoint(X))
 

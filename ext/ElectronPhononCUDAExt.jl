@@ -184,6 +184,63 @@ function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},
     ep_kq_all
 end
 
+# ---- fused Rq→kq gauge rotation (outer-q loop) -------------------------------------------------
+#
+# Same tiny-GEMM pathology as the outer-k rotation above, but along the k batch: the right
+# rotation of `eph_apply_rotations_rqkq!` is an nw×nw matmul strided-batched over nmodes·nk
+# (≈ 2·10⁶ batches at nw=3, nmodes=21, nk ≈ 10⁵), where cuBLAS' flat per-batch overhead
+# dominates. Following the outer-k `_fused_eph_rot_kernel!` precedent: one thread per (m, n, k)
+# with the ν loop inside and the small iw/jw contractions in registers, replacing both GEMMs.
+# The per-jw partial Σ_iw is re-read per n (L1-served), mirroring that kernel's redundancy note.
+# Per-thread work grows as nmodes·nw², so gate on nw²·nmodes; above the threshold the matmuls are
+# large enough that cuBLAS is efficient and the generic two-GEMM method is used. The threshold
+# covers small-nw metals (e.g. nw=3, nmodes=21 → 189) and excludes e.g. nw=8, nmodes=12 → 768.
+const _FUSED_RQKQ_MAX_NW2NM = 512
+
+# g : (nw, nw, nmodes, nk) with legend g[iw, jw, ν, k] (iw = k+q leg, jw = k leg);
+# uks : (nw, nbandk, nk); ukqs : (nw, nbandkq, nk); ep : (nbandkq, nbandk, nmodes, nk).
+function _fused_rqkq_rot_kernel!(ep, g, uks, ukqs, nw, nbkq, nbk, nm, nk)
+    t = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    t <= nbkq * nbk * nk || return
+    @inbounds begin
+        m = (t - 1) % nbkq + 1
+        r = (t - 1) ÷ nbkq
+        n = r % nbk + 1
+        k = r ÷ nbk + 1
+        for ν in 1:nm
+            acc = zero(eltype(ep))
+            for jw in 1:nw
+                tval = zero(eltype(ep))
+                for iw in 1:nw
+                    tval += conj(ukqs[iw, m, k]) * g[iw, jw, ν, k]
+                end
+                acc += tval * uks[jw, n, k]
+            end
+            ep[m, n, ν, k] = acc
+        end
+    end
+    return
+end
+
+function ElectronPhonon.eph_apply_rotations_rqkq!(ep_kq_all::CuArray{Complex{T},4}, g,
+        uks::CuArray, ukqs::CuArray, tmp, uk_rep) where {T}
+    nbandkq, nbandk, nmodes, nk = size(ep_kq_all)
+    nw = size(uks, 1)
+    if nw^2 * nmodes <= _FUSED_RQKQ_MAX_NW2NM
+        g4 = reshape(g, nw, nw, nmodes, nk)
+        threads = 256
+        blocks = cld(nbandkq * nbandk * nk, threads)
+        @cuda threads=threads blocks=blocks _fused_rqkq_rot_kernel!(
+            ep_kq_all, g4, uks, ukqs, nw, nbandkq, nbandk, nmodes, nk)
+        ep_kq_all
+    else
+        # Large nw²·nmodes: cuBLAS strided-batched is efficient; use the generic two-GEMM method.
+        invoke(ElectronPhonon.eph_apply_rotations_rqkq!,
+               Tuple{AbstractArray{Complex{T},4}, Any, Any, Any, Any, Any},
+               ep_kq_all, g, uks, ukqs, tmp, uk_rep)
+    end
+end
+
 # ---- device-resident scatter (calculator keeps g2/ωq on the device, no host streaming) --------
 #
 # One thread per (m,n,ν,j) entry: look up i = imap_i_col[n], f = imap_f[m, ikqs[j]]; if both

@@ -34,9 +34,10 @@ Deliberately **not** on the GPU (stays on the CPU per-k path):
 - **`op_r` fits in GPU memory.** No streaming/chunking of the Wannier operator itself.
 - **Full-band on the GPU.** No per-k energy window; see the design note.
 - **The GPU path is fully GPU — no silent fallback.** The GPU calculator loop requires every
-  calculator to implement the batched device hook (`allow_eph_batched`). It must not silently
-  fall back to the per-`(k,q)` host `run_calculator!` path, which would be a hard-to-spot
-  performance cliff — a calculator that forgets to opt in should fail loudly instead.
+  calculator to implement the batched device hook (`allow_eph_outer_k_batched` for the outer-k
+  loop, `allow_eph_outer_q_batched` for the outer-q loop). It must not silently fall back to the
+  per-`(k,q)` host `run_calculator!` path, which would be a hard-to-spot performance cliff — a
+  calculator that forgets to opt in should fail loudly instead.
 
 ## Strategy
 
@@ -125,15 +126,25 @@ functions are unchanged. The GPU loop: `to_device(model.epmat)` once; processes 
 outer-k with one list-batched `get_eph_RR_to_kR_batched!`; batches the inner `ikq` loop (in
 batches of `nq_batch_max`) through one `get_eph_kR_to_kq_batched!`.
 
-A calculator can opt into a **device-native hook** so the e-ph matrix for a whole `(k, {k+q})`
-batch stays on the device and the reduction/scatter happens there:
+A calculator can opt into a **device-native hook** so the e-ph matrix for a whole batch stays on
+the device and the reduction/scatter happens there. The two loops each have their own hook, named
+for which momentum is the outer loop and which is batched on the inner axis:
 
-- **To run on the GPU, a calculator must (1) define `allow_eph_batched(calc) = true` and (2)
-  implement `run_calculator_batched!(calc, ep_kq, ωq, ik, ikqs)`.** The GPU path is batched-only:
-  the loop keeps `ep_kq` on the device and calls the batched hook once per batch. A calculator that
-  does not opt in is rejected with an error — there is no silent fallback to the per-`(k,q)` host
-  path.
-- A calculator can implement this backend-generically (only `similar`/`copyto!`/broadcast/
+- **Outer-k loop (`run_eph_over_k_and_kq`, outer k / inner k+q batched).** To run on the GPU, a
+  calculator MUST (1) define `allow_eph_outer_k_batched(calc) = true` and (2) implement
+  `run_calculator_outer_k_batched!(calc, ep_kq, ωq, ik, ikqs)`. The loop keeps `ep_kq` for a whole
+  `(k, {k+q})` batch on the device and calls the hook once per batch.
+- **Outer-q loop (`run_eph_outer_q`, outer q / inner k batched).** To run on the GPU, a calculator
+  MUST (1) define `allow_eph_outer_q_batched(calc) = true` and (2) implement
+  `run_calculator_outer_q_batched!(calc, ep_kq, e_k, e_kq, uk, ukq, wtk, xks, iq)`. For a fixed q
+  the loop keeps the e-ph matrix for a batch of outer-k on the device and calls the hook once per
+  batch; the per-q device accumulator is bracketed by the generic `setup_calculator_inner!` /
+  `postprocess_calculator_inner!` hooks (which on this path receive `gpu_array` / `nk_batch_max`),
+  and the per-k device scratch is declared via `eph_outer_q_batched_bytes_per_k` for the loop's
+  memory-adaptive batch sizing.
+- Either path is rejected with an error if a calculator does not opt in — there is no silent
+  fallback to the per-`(k,q)` host path.
+- A calculator can implement these backend-generically (only `similar`/`copyto!`/broadcast/
   scatter-assignment) and add no CUDA dependency of its own.
 
 ### Full bands on the GPU (design note)
@@ -155,6 +166,11 @@ is needed.
 
 ## Deferred (may do later)
 
+- **Outer-q k-side streaming.** The outer-q GPU loop keeps the whole-grid k-side eigenvector /
+  energy / weight stacks device-resident for the entire run (16·nw²·nk bytes), which is not covered
+  by the per-batch memory-adaptive sizing — for large `nw` on a dense grid it, not the per-batch
+  scratch, is the memory limit. Streaming the k side per batch (like the outer-k loop's per-batch
+  `uks_host`) is deferred.
 - **In-place workspace drivers** (workspace-backed scratch instead of per-call `similar()`) were
   benchmarked and validated bit-identical, but the gain is small on the GPU (CUDA's pool already
   recycles device buffers), so it is deferred. Best done together with the calculator loop, where

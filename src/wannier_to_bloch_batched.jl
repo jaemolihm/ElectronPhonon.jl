@@ -153,7 +153,7 @@ end
 #  wins on the GPU. Rotation matrices are stacked along the batch dimension.
 
 """
-    get_eph_RR_to_kR_batched!(ep_ekpR_all, epmat_itp::BatchedWannierInterpolator, ks, uks)
+    get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat::BatchedWannierInterpolator, ks, uks)
 
 Batched over a list of k-points `ks`. `uks` is `(nw, nband, nk)` (one `uk` per k).
 Writes `ep_ekpR_all`, shape `(nw*nband*nmodes, nr_ep, nk)` — column `k` is the `op_r` of the
@@ -169,8 +169,8 @@ every k onto the same `nbandk_max`-wide eigenvector window (`nband = nbandk_max`
 `nband = nw` special case.
 """
 function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
-                                   epmat_itp::BatchedWannierInterpolator{T}, ks, uks) where {T}
-    epmat = epmat_itp.parent
+                                   itp_epmat::BatchedWannierInterpolator{T}, ks, uks) where {T}
+    epmat = itp_epmat.parent
     nr_ep = length(epmat.irvec_next)
     nw, nband, nk = size(uks)
     nmodes = div(epmat.ndata, nw^2 * nr_ep)
@@ -180,7 +180,7 @@ function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
     @assert size(ep_ekpR_all) == (nw * nband * nmodes, nr_ep, nk)
 
     g = similar(epmat.op_r, Complex{T}, epmat.ndata, nk)
-    get_fourier_batched!(g, epmat_itp, ks)                              # (nw^2*nmodes*nr_ep, nk)
+    get_fourier_batched!(g, itp_epmat, ks)                              # (nw^2*nmodes*nr_ep, nk)
 
     gp = permutedims(reshape(g, nw, nw, M, nk), (2, 1, 3, 4))           # (jw, iw, M, k)
     C = similar(g, Complex{T}, nband, nw * M, nk)
@@ -191,10 +191,10 @@ function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
 end
 
 """
-    KRtoKQWorkspace(proto, ndata, nbandkq, nbandk, nmodes, nq)
+    KRtoKQWorkspace(gpu_array, ndata, nbandkq, nbandk, nmodes, nq)
 
 Preallocated scratch for [`get_eph_kR_to_kq_batched!`](@ref), reused across the per-k calls so the
-driver does no per-call `similar`. `proto` is an array on the target backend (e.g. `parent.op_r`);
+driver does no per-call `similar`. `gpu_array` is an array on the target backend (e.g. `parent.op_r`);
 the buffers follow its backend and element type. `ndata = nw*nbandk*nmodes`.
 
 TODO: merge this with the other Wannier→Bloch scratch (the eigensolve / velocity buffers) into a
@@ -204,14 +204,14 @@ struct KRtoKQWorkspace{MT<:AbstractMatrix, AT<:AbstractArray}
     g::MT      # (ndata, nq)                  — Fourier output g(k+R_ep) for all q
     tmp::AT    # (nbandkq, nbandk*nmodes, nq) — after the ukq' rotation
 end
-function KRtoKQWorkspace(proto, ndata::Int, nbandkq::Int, nbandk::Int, nmodes::Int, nq::Int)
-    T = real(eltype(proto))
-    KRtoKQWorkspace(similar(proto, Complex{T}, ndata, nq),
-                    similar(proto, Complex{T}, nbandkq, nbandk * nmodes, nq))
+function KRtoKQWorkspace(gpu_array, ndata::Int, nbandkq::Int, nbandk::Int, nmodes::Int, nq::Int)
+    T = real(eltype(gpu_array))
+    KRtoKQWorkspace(similar(gpu_array, Complex{T}, ndata, nq),
+                    similar(gpu_array, Complex{T}, nbandkq, nbandk * nmodes, nq))
 end
 
 """
-    get_eph_kR_to_kq_batched!(ep_kq_all, ep_ekpR_itp::BatchedWannierInterpolator, qs, u_phs, ukqs; ws=nothing)
+    get_eph_kR_to_kq_batched!(ep_kq_all, itp_ep_ekpR::BatchedWannierInterpolator, qs, u_phs, ukqs; ws=nothing)
 
 Batched over a list of q-points `qs` (for a fixed k). `ukqs` is `(nw, nbandkq, nq)` and
 `u_phs` is `(nmodes, nmodes, nq)`. Writes `ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nq)`.
@@ -224,14 +224,14 @@ scratch across calls instead of allocating it each call — the per-k hot path i
 this, sizing `ws` for the max chunk width and passing `nq ≤` that for a partial final chunk.
 """
 function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
-                                   ep_ekpR_itp::BatchedWannierInterpolator{T}, qs, u_phs, ukqs;
+                                   itp_ep_ekpR::BatchedWannierInterpolator{T}, qs, u_phs, ukqs;
                                    ws::Union{Nothing,KRtoKQWorkspace}=nothing,
                                    g2_out=nothing, ωq=nothing) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
     @assert size(ukqs) == (nw, nbandkq, nq)
     @assert size(u_phs) == (nmodes, nmodes, nq)
-    parent = ep_ekpR_itp.parent
+    parent = itp_ep_ekpR.parent
     @assert parent.ndata == nw * nbandk * nmodes
 
     if ws === nothing
@@ -246,9 +246,129 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
         tmp = view(ws.tmp, :, :, 1:nq)
     end
 
-    get_fourier_batched!(g, ep_ekpR_itp, qs)                           # (nw*nbandk*nmodes, nq)
+    get_fourier_batched!(g, itp_ep_ekpR, qs)                           # (nw*nbandk*nmodes, nq)
     eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp; g2_out, ωq)
     ep_kq_all
+end
+
+"""
+    RqToKQWorkspace(gpu_array, ndata, nbandkq, nbandk, nmodes, nk)
+
+Preallocated scratch for [`get_eph_Rq_to_kq_batched!`](@ref), reused across the per-q calls of the
+outer-q loop so the driver does no per-call `similar`. `gpu_array` is an array on the target backend
+(e.g. `itp_epobj_eRpq.parent.op_r`); the buffers follow its backend and element type.
+`ndata = nw^2*nmodes` is the parent (electron-Wannier / phonon-Bloch) data size.
+"""
+struct RqToKQWorkspace{MT<:AbstractMatrix, AT<:AbstractArray, BT<:AbstractArray}
+    g::MT       # (ndata, nk)                   — Fourier output g(k, R_ep summed) for all k
+    tmp::AT     # (nbandkq, nw*nmodes, nk)      — after the ukq' rotation
+    uk_rep::BT  # (nw, nbandk, nmodes*nk)       — uk replicated over the phonon modes
+end
+function RqToKQWorkspace(gpu_array, ndata::Int, nbandkq::Int, nbandk::Int, nmodes::Int, nk::Int)
+    T = real(eltype(gpu_array))
+    nw = isqrt(div(ndata, nmodes))
+    nw^2 * nmodes == ndata || throw(ArgumentError("ndata=$ndata is not nw^2*nmodes for nmodes=$nmodes"))
+    RqToKQWorkspace(similar(gpu_array, Complex{T}, ndata, nk),
+                    similar(gpu_array, Complex{T}, nbandkq, nw * nmodes, nk),
+                    similar(gpu_array, Complex{T}, nw, nbandk, nmodes * nk))
+end
+
+"""
+    get_eph_Rq_to_kq_batched!(ep_kq_all, itp_epobj_eRpq::BatchedWannierInterpolator, ks, uks, ukqs; ws=nothing)
+
+Batched over a list of k-points `ks` (for a fixed q). Counterpart of [`get_eph_Rq_to_kq!`](@ref)
+that runs on the backend of `itp_epobj_eRpq.parent.op_r` — the list-batched inner-k step of the
+outer-q e-ph loop. `uks` is `(nw, nbandk, nk)` and `ukqs` is `(nw, nbandkq, nk)` (one eigenvector
+per k / k+q). Writes `ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nk)`.
+
+The parent is the electron-Wannier / phonon-Bloch object (`op_r` `(nw^2*nmodes, nr_el)`, produced by
+[`get_eph_RR_to_Rq!`](@ref) at the current q). One batched Fourier over `R_el` gives
+`g(k)` `(nw^2*nmodes, nk)`, viewed as `g[iw, jw, ν, k]`, then the per-k rotation
+`ep_kq_all[m,n,ν,k] = Σ_{iw,jw} conj(ukqs[iw,m,k]) · g[iw,jw,ν,k] · uks[jw,n,k]` is applied as two
+`batched_gemm!`s (`ukq(k)'` on the left over batch `k`, `uk(k)` on the right over batch `(ν,k)`).
+
+Pass an [`RqToKQWorkspace`](@ref) (sized for this `nk`) as `ws` to reuse the `g`/`tmp`/`uk_rep`
+scratch across calls instead of allocating it each call — the per-q hot loop does this.
+
+Full-band only: like [`get_eph_RR_to_kR_batched!`](@ref), all `nk` k-points must share the same
+`nbandk`/`nbandkq` (energy windows are handled by callers with masks).
+"""
+function get_eph_Rq_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
+                                   itp_epobj_eRpq::BatchedWannierInterpolator{T}, ks, uks, ukqs;
+                                   ws::Union{Nothing,RqToKQWorkspace}=nothing) where {T}
+    nbandkq, nbandk, nmodes, nk = size(ep_kq_all)
+    nw = size(uks, 1)
+    @assert size(uks) == (nw, nbandk, nk)
+    @assert size(ukqs) == (nw, nbandkq, nk)
+    @assert length(ks) == nk
+    parent = itp_epobj_eRpq.parent
+    @assert parent.ndata == nw^2 * nmodes
+
+    if ws === nothing
+        g      = similar(parent.op_r, Complex{T}, parent.ndata, nk)
+        tmp    = similar(parent.op_r, Complex{T}, nbandkq, nw * nmodes, nk)
+        uk_rep = similar(parent.op_r, Complex{T}, nw, nbandk, nmodes * nk)
+    else
+        g, tmp, uk_rep = ws.g, ws.tmp, ws.uk_rep
+        @assert size(g) == (parent.ndata, nk)
+        @assert size(tmp) == (nbandkq, nw * nmodes, nk)
+        @assert size(uk_rep) == (nw, nbandk, nmodes * nk)
+    end
+
+    # Fourier over R_el at every k -> g(k) in (nw, nw, nmodes, nk); index legend g[iw, jw, ν, k]
+    # with iw the k+q-side (ukq) leg and jw the k-side (uk) leg.
+    get_fourier_batched!(g, itp_epobj_eRpq, ks)                        # (nw^2*nmodes, nk)
+
+    eph_apply_rotations_rqkq!(ep_kq_all, g, uks, ukqs, tmp, uk_rep)
+    ep_kq_all
+end
+
+"""
+    eph_apply_rotations_rqkq!(ep_kq_all, g, uks, ukqs, tmp, uk_rep)
+
+Apply the two per-k electron gauge rotations of the Rq→kq driver to the Fourier-interpolated `g`
+(`(nw²·nmodes, nk)`, viewed as `g[iw, jw, ν, k]`), writing
+`ep_kq_all[m, n, ν, k] = Σ_{iw,jw} conj(ukqs[iw,m,k]) · g[iw,jw,ν,k] · uks[jw,n,k]`.
+
+Generic method: two `batched_gemm!`s (`ukq(k)'` on the left over batch `k`; `uk(k)` on the right
+over batch `(ν,k)` after replicating `uks` over the modes into `uk_rep`), so any backend works.
+The CUDA extension overrides this with a fused per-(m,n,k) kernel for small `nw²·nmodes` — the
+right-rotation GEMMs are `nw×nw` matmuls at an `nmodes·nk` batch count, deep inside cuBLAS'
+tiny-batched-matmul overhead regime (cf. the outer-k `eph_apply_rotations!` fused kernel).
+"""
+function eph_apply_rotations_rqkq!(ep_kq_all::AbstractArray{Complex{T},4}, g,
+                                   uks, ukqs, tmp, uk_rep) where {T}
+    nbandkq, nbandk, nmodes, nk = size(ep_kq_all)
+    nw = size(uks, 1)
+
+    # 1. left rotation ukq(k)', batched over k: tmp[m, (jw,ν), k] = Σ_iw conj(ukqs[iw,m,k]) g[iw,(jw,ν),k]
+    batched_gemm!('C', 'N', ukqs, reshape(g, nw, nw * nmodes, nk), tmp) # (nbandkq, nw*nmodes, nk)
+
+    # 2. right rotation uk(k), batched over b = (ν, k): reshape tmp to (nbandkq, nw, nmodes*nk)
+    #    (contiguous: splits the (jw,ν) axis into jw and ν, ν fastest in the batch), and replicate
+    #    uk over the modes so each batch slice carries its own uk. ep_kq_all reshaped to
+    #    (nbandkq, nbandk, nmodes*nk) receives ep[m,n,(ν,k)] = Σ_jw tmp[m,jw,(ν,k)] uks[jw,n,k].
+    uk_rep4 = reshape(uk_rep, nw, nbandk, nmodes, nk)
+    uk_rep4 .= reshape(uks, nw, nbandk, 1, nk)                         # broadcast uk over ν
+    batched_gemm!('N', 'N', reshape(tmp, nbandkq, nw, nmodes * nk), uk_rep,
+                  reshape(ep_kq_all, nbandkq, nbandk, nmodes * nk))
+    ep_kq_all
+end
+
+"""
+    add_eph_dipole_batched!(eps, coeffs, ukqs, uks, mmats)
+
+Add the polar (long-range) e-ph dipole term to a batch of e-ph matrices `eps` `(nw, nw, nmodes, nk)`,
+the batched counterpart of the per-k `epdata_compute_eph_dipole!` (unscreened, ϵ ≡ 1):
+`eps[m,n,ν,k] += coeffs[ν] · Σ_iw conj(ukqs[iw,m,k]) uks[iw,n,k]`. Window-masked eigenvector columns
+make the overlap vanish for out-of-window `m`/`n`. `mmats` is `(nw, nw, nk)` scratch on the same
+backend. Runs on the backend of `eps` (the `batched_gemm!` + broadcast are backend-generic).
+"""
+function add_eph_dipole_batched!(eps, coeffs, ukqs, uks, mmats)
+    nw, _, nmodes, nk = size(eps)
+    batched_gemm!('C', 'N', ukqs, uks, mmats)   # mmats[m,n,k] = Σ_iw conj(ukqs[iw,m,k]) uks[iw,n,k]
+    eps .+= reshape(coeffs, 1, 1, nmodes, 1) .* reshape(mmats, nw, nw, 1, nk)
+    eps
 end
 
 """

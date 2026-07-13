@@ -124,20 +124,24 @@ function chemical_potential_is_computed(occ :: ElectronOccupationParams)
 end
 
 """
-    set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true)
+    set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true, gpu_array = nothing)
 If `occ.μlist` is not set, compute the chemical potential and set it.
 If `occ.μlist` is already set to some value that is not NaN, do nothing.
+Pass a device array `gpu_array` (e.g. `to_device(model.el_ham).op_r`) to run the bisection's ncarrier
+sums on that backend (GPU); the default `nothing` keeps the whole solve on the host.
 """
-function set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true)
+function set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true, gpu_array = nothing)
     if !chemical_potential_is_computed(occ)
         el, _ = electron_states_to_BTStates(el_states, kpts, nelec_below_window)
-        bte_compute_μ!(occ, el; do_print)
+        bte_compute_μ!(occ, el; do_print, gpu_array)
     end
     occ
 end
 
+function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true, gpu_array=nothing)
+    # Move a host vector onto `gpu_array`'s backend for the ncarrier sums (identity on the host).
+    _to_device(x) = gpu_array === nothing ? x : copyto!(similar(gpu_array, eltype(x), size(x)), x)
 
-function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true)
     if occ.type == :Metal
         # For metals, compute the total electron density.
         # Since occ.n is the difference of number of electrons per cell from nband_valence,
@@ -145,16 +149,20 @@ function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true)
         # Also, el.nstates_base is the contribution to the ncarrier from occupied states
         # outside the window (i.e. not included in `energy`). So it is subtracted.
         ncarrier_target = @. (occ.nlist + occ.nelec) / occ.spin_degeneracy - el.nstates_base
+        e_solve = _to_device(el.e)
+        w_solve = _to_device(el.k_weight)
     elseif occ.type == :Semiconductor
         # For semiconductors, count the doped carriers to minimize floating point error.
         # FIXME: nband_valence needs to be a field
         # FIXME: BUG: nband_valence must be provided by the user. By mistake one may set nelec instead of nlist in a metal, then this leads to very wrong result. Also we should rename nelec to nelec_semiconductor or something like that to indicate that this is intended for doped semiconductors.
         nband_valence = round(Int, occ.nelec / occ.spin_degeneracy)
         ncarrier_target = @. occ.nlist / occ.spin_degeneracy
-        e_e = el.e[el.iband .>  nband_valence]
-        e_h = el.e[el.iband .<= nband_valence]
-        w_e = el.k_weight[el.iband .>  nband_valence]
-        w_h = el.k_weight[el.iband .<= nband_valence]
+        # Band masking is a host operation; the resulting energy/weight lists are then moved to the
+        # solve backend.
+        e_e = _to_device(el.e[el.iband .>  nband_valence])
+        e_h = _to_device(el.e[el.iband .<= nband_valence])
+        w_e = _to_device(el.k_weight[el.iband .>  nband_valence])
+        w_h = _to_device(el.k_weight[el.iband .<= nband_valence])
     else
         throw(DomainError("Invalid occ.type $(occ.type)"))
     end
@@ -162,7 +170,7 @@ function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true)
     for i in axes(occ.Tlist, 1)
         T = occ.Tlist[i]
         if occ.type == :Metal
-            μ = find_chemical_potential(ncarrier_target[i], T, el.e, el.k_weight; occ.occ_type)
+            μ = find_chemical_potential(ncarrier_target[i], T, e_solve, w_solve; occ.occ_type)
         elseif occ.type == :Semiconductor
             μ = find_chemical_potential_semiconductor(ncarrier_target[i], T, e_e, e_h, w_e, w_h; occ.occ_type)
         end

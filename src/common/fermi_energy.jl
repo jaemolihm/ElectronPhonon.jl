@@ -5,6 +5,15 @@ using Roots
 
 export find_fermi_energy
 
+# occ_fermion with the occupation type as a COMPILE-TIME `Val` parameter, so a broadcast over it
+# compiles on any backend including the GPU. `occ_fermion`'s `occ_type` is a runtime keyword (its
+# `if occ_type == :…` chain and the string-interpolating `throw` do not lower to a device kernel);
+# as a `Val` the chain constant-folds to the single occupation formula, and `erf`/`erfc` map to
+# libdevice intrinsics — so :FermiDirac, :MV, :Gaussian, :MP all run device-side.
+# TODO: thread `Val{occ_type}` through the occupation API everywhere (occ_fermion / occ_fermion_derivative
+#       and their callers), instead of the runtime `occ_type` keyword + this local wrapper.
+@inline _occ_fermion(e, T, ::Val{occ_type}) where {occ_type} = occ_fermion(e, T; occ_type)
+
 """
     compute_ncarrier(μ, T, energy, weights; occ_type = :FermiDirac)
 Compute number of electrons per unit cell.
@@ -26,8 +35,11 @@ function compute_ncarrier(μ, T, energy::AbstractMatrix, weights; occ_type = :Fe
     ncarrier
 end
 
+# Broadcast + `sum`, so it runs on any array backend (host `Array` or `CuArray`) without scalar
+# indexing or a CUDA dependency: this is the reduction used by the on-device chemical-potential
+# solve. `Val(occ_type)` keeps the broadcast kernel device-compilable (see `_occ_fermion`).
 function compute_ncarrier(μ, T, energy::AbstractVector, weights; occ_type = :FermiDirac)
-    sum(@. weights * occ_fermion(energy - μ, T; occ_type))
+    sum(weights .* _occ_fermion.(energy .- μ, T, Val(occ_type)))
 end
 
 """
@@ -35,7 +47,7 @@ end
 Compute number of holes per unit cell. See [`compute_ncarrier`](@ref) for arguments.
 """
 function compute_ncarrier_hole(μ, T, energy::AbstractVector, weights; occ_type = :FermiDirac)
-    sum(@. weights * (1 - occ_fermion(energy - μ, T; occ_type)))
+    sum(weights .* (1 .- _occ_fermion.(energy .- μ, T, Val(occ_type))))
 end
 
 """

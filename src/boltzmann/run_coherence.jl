@@ -199,7 +199,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # Write symmetry object to file
         g = create_group(fid_btedata, "gauge/symmetry")
         dump_BTData(g, symmetry)
-        el_sym_itp = get_interpolator.(model.el_sym.operators; fourier_mode)
+        itp_el_sym = get_interpolator.(model.el_sym.operators; fourier_mode)
 
         for (isym, symop) in enumerate(symmetry)
             # Find symmetry in model.el_sym
@@ -220,7 +220,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
                 # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k) = <u(Sk)|S|u(k)>
                 compute_symmetry_representation!(gauge[el_sk.rng, el_k.rng, ik], el_k, el_sk,
-                xk, el_sym_itp[isym_el], symop.is_tr)
+                xk, itp_el_sym[isym_el], symop.is_tr)
                 # FIXME: Perform SVD to make gauge completely unitary
 
                 # Set is_degenerate. Use more loose tolerance because symmetry can be slightly
@@ -276,7 +276,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
 
                 # Compute symmetry gauge matrix: S_H = U†(Sk) * S_W * U(k) = <u(k)|S|u(k)>
                 compute_symmetry_representation!(gauge_list[el_k.rng, el_k.rng, icount], el_k, el_k,
-                    xk, el_sym_itp[isym_el], symop.is_tr)
+                    xk, itp_el_sym[isym_el], symop.is_tr)
                 # FIXME: Perform SVD to make gauge completely unitary
             end
 

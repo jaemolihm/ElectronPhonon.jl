@@ -38,6 +38,8 @@ function run_eph_outer_q(
         eph_phonon_basis::Symbol = :eigenmode,  # :eigenmode or :cartesian
         verbosity::Int = 1,
         eph_buffers::Union{Nothing, EphOuterQLoopBuffers} = nothing,
+        use_gpu = false,          # Run the inner-k e-ph interpolation + calculator on the GPU
+        nk_batch_max = 2^15,      # GPU: max number of outer k points processed per batch
     ) where {FT}
 
     if model.epmat_outer_momentum != "ph"
@@ -76,18 +78,34 @@ function run_eph_outer_q(
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, precompute_el_kq, use_symmetry,
         keep_all_qpts, eph_phonon_basis, calculators, nchunks_threads,
-        verbosity, eph_buffers,
+        verbosity, eph_buffers, use_gpu,
     )
 
-    _loop_eph_outer_q(model,
-        setup.kpts, setup.qpts, setup.kqpts,
-        setup.el_k_save, setup.el_kq_save, setup.ph_save,
-        setup.precompute_el_kq, setup.eph_buffers;
-        calculators, skip_eph, window_kq,
-        energy_conservation, screening_params,
-        progress_print_step, nchunks_threads,
-        eph_phonon_basis, verbosity,
-    )
+    if use_gpu
+        # GPU path: setup stays on the host (filter/states/setup_calculator!); the inner-k e-ph
+        # interpolation, k+q eigensolve, and calculator reduction run on the device. Extra flags
+        # must be off; `_loop_eph_outer_q_gpu` asserts the rest (no polar/screening, full-band via
+        # window masking, directly-computed k+q, energy_conservation = (:None, 0.0)).
+        precompute_el_kq && throw(ArgumentError(
+            "use_gpu does not support precompute_el_kq (k+q states are eigensolved on the device)."))
+        _loop_eph_outer_q_gpu(model,
+            setup.kpts, setup.qpts,
+            setup.el_k_save, setup.ph_save, setup.eph_buffers;
+            calculators, skip_eph, window_kq,
+            energy_conservation, screening_params,
+            progress_print_step, eph_phonon_basis, verbosity, nk_batch_max,
+        )
+    else
+        _loop_eph_outer_q(model,
+            setup.kpts, setup.qpts, setup.kqpts,
+            setup.el_k_save, setup.el_kq_save, setup.ph_save,
+            setup.precompute_el_kq, setup.eph_buffers;
+            calculators, skip_eph, window_kq,
+            energy_conservation, screening_params,
+            progress_print_step, nchunks_threads,
+            eph_phonon_basis, verbosity,
+        )
+    end
 
     (; setup.kpts, setup.qpts, setup.el_k_save, setup.el_kq_save, setup.ph_save)
 end
@@ -115,19 +133,20 @@ function _setup_eph_outer_q(
         nchunks_threads = nthreads(),
         verbosity::Int = 1,
         eph_buffers::Union{Nothing, EphOuterQLoopBuffers} = nothing,
+        use_gpu = false,
     ) where {FT}
 
     (; nw, nmodes) = model
 
     symmetry = use_symmetry ? model.symmetry : nothing
 
-    # Generate k points
+    # Generate k points (use_gpu: batched device eigensolve for the window test)
     if verbosity > 0
         @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
-            kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
+            kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
     else
         kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
-            kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
+            kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
     end
     nk = kpts.n
 
@@ -156,12 +175,19 @@ function _setup_eph_outer_q(
     end
 
 
-    # Compute and save electron state at k
+    # Compute and save electron state at k.
+    # GPU outer-q-batched path: the loop consumes only e_full / u_full / rng from el_k_save, so skip
+    # the velocity/position interpolation+rotation (the dominant setup cost after the eigensolve).
+    # All other paths keep the full quantity list.
+    # TODO: calculators should declare whether they need velocity and/or position, instead of the
+    #       driver hard-coding this for the outer-q-batched path.
+    el_k_quantities = (use_gpu && !isempty(calculators) && all(allow_eph_outer_q_batched, calculators)) ?
+        ["eigenvalue", "eigenvector"] : ["eigenvalue", "eigenvector", "velocity", "position"]
     if verbosity > 0
-        @time el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_k; fourier_mode)
+        @time el_k_save = compute_electron_states(model, kpts, el_k_quantities, window_k; fourier_mode, use_gpu)
         @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis)
     else
-        el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_k; fourier_mode)
+        el_k_save = compute_electron_states(model, kpts, el_k_quantities, window_k; fourier_mode, use_gpu)
         ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis)
     end
 
@@ -217,10 +243,17 @@ function _setup_eph_outer_q(
     end
 
 
+    # Chemical potential is solved inside each calculator's `setup_calculator!` (via
+    # `set_chemical_potential!`), not here. On the GPU path we hand it a device array `gpu_array` so
+    # that solve runs its ncarrier sums on the device (the bisection sweeps all in-window states many
+    # times and dominates the setup at dense grids); the generic `compute_ncarrier` broadcast+sum
+    # works for every occ_type on the device, so no occ_type is special-cased.
+    gpu_array = use_gpu ? to_device(model.el_ham).op_r : nothing
+
     setup_calculator!.(calculators, Ref(kpts), Ref(qpts), Ref(el_k_save);
         nw, nmodes, rng_band = iband_min:iband_max,
         el_states_kq = el_kq_save, kqpts, nelec_below_window_k, nelec_below_window_kq,
-        nchunks_threads, verbosity,
+        nchunks_threads, verbosity, use_gpu, gpu_array,
     )
 
     return (;
@@ -252,7 +285,6 @@ function _loop_eph_outer_q(
     ) where {FT}
 
     (; epdatas, ep_eRpq_obj, ep_eRpqs, epmat, ham_threads, vel_threads) = eph_buffers
-    (; nmodes) = model
     nk = kpts.n
     nq = qpts.n
 
@@ -271,8 +303,7 @@ function _loop_eph_outer_q(
         end
 
         if !skip_eph
-            u_ph_for_eph = (eph_phonon_basis == :eigenmode) ? ph.u : I(nmodes)
-            get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, u_ph_for_eph)
+            get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph, eph_phonon_basis)
         end
 
         # Multithreading setup
@@ -357,6 +388,219 @@ function _loop_eph_outer_q(
         # Multithreading collect
         postprocess_calculator_inner!.(calculators; iq)
 
+    end # iq
+
+    postprocess_calculator!.(calculators; qpts, model.symmetry)
+end
+
+
+# =============================================================================
+#  GPU calculator loop for the outer-q e-ph sweep.
+#
+#  Mirrors `_loop_eph_over_k_and_kq_gpu` (run_eph_over_k_and_kq.jl): the shared `_setup_eph_outer_q`
+#  runs on the host, and this loop moves the inner-k work — the e-ph Rq→kq interpolation, the k+q
+#  eigensolve, and the calculator reduction — onto the device via the generic batched drivers
+#  (`get_eph_Rq_to_kq_batched!`, `eigen_batched`, `get_fourier_batched!`) and the outer-q batched
+#  calculator hook. The code is backend-generic: it calls only `to_device` and the batched drivers,
+#  so no CUDA code lives here (the device methods live in the CUDA extension).
+#
+#  Per q: interpolate g(R_el, q) on the HOST (`get_eph_RR_to_Rq!`, nq is small), upload it,
+#  then loop over the outer k points in batches. Each batch: batched k+q eigensolve (window-masked
+#  by zeroing out-of-window eigenvector columns), batched Rq→kq e-ph interpolation, and one call to
+#  `run_calculator_outer_q_batched!`. The per-q device accumulator is bracketed by the generic
+#  `setup_calculator_inner!` / `postprocess_calculator_inner!` hooks, the same ones the CPU loop uses.
+#
+#  Scope (asserted below; the CPU path handles the rest): no screening,
+#  energy_conservation = (:None, 0.0), skip_eph = false, and every calculator implements
+#  `allow_eph_outer_q_batched`. Windows are supported via eigenvector-column masking (out-of-window
+#  states contribute exactly 0), so the batched full-band nw×nw shapes stay uniform. Polar models are
+#  supported: the `polar_eph` dipole term is added on the device per batch (`add_eph_dipole_batched!`).
+function _loop_eph_outer_q_gpu(
+        model       :: Model{FT},
+        kpts, qpts,
+        el_k_save, ph_save,
+        eph_buffers :: EphOuterQLoopBuffers{FT};
+        calculators = [],
+        skip_eph = false,
+        window_kq = (-Inf, Inf),
+        energy_conservation = (:None, 0.0),
+        screening_params = nothing,
+        progress_print_step = 20,
+        eph_phonon_basis::Symbol = :eigenmode,
+        verbosity::Int = 1,
+        nk_batch_max = 2^15,
+    ) where {FT}
+
+    (; nw, nmodes) = model
+    nk = kpts.n
+    nq = qpts.n
+
+    # ----- scope asserts -----
+    skip_eph && throw(ArgumentError("use_gpu requires skip_eph = false."))
+    energy_conservation === (:None, 0.0) || throw(ArgumentError(
+        "use_gpu supports only energy_conservation = (:None, 0.0)."))
+    # screening_params === nothing also guarantees ϵ ≡ 1 in the polar dipole term below.
+    screening_params === nothing || throw(ArgumentError("use_gpu does not support screening_params."))
+    (!isempty(calculators) && all(allow_eph_outer_q_batched, calculators)) || throw(ArgumentError(
+        "use_gpu (outer-q) requires every calculator to implement allow_eph_outer_q_batched " *
+        "(run_calculator_outer_q_batched!). Use the CPU path otherwise."))
+
+    # ----- device Hamiltonian for the k+q eigensolve (allocated once) -----
+    # TODO: `_setup_eph_outer_q` already uploads `model.el_ham` for the chemical-potential solve;
+    #       thread that device object through instead of uploading it again here.
+    el_ham_dev = to_device(model.el_ham)
+    gpu_array = el_ham_dev.op_r    # device-array prototype for `similar` / `device_free_bytes`
+
+    # ----- device clone of the electron-Wannier / phonon-Bloch e-ph object -----
+    # `get_eph_RR_to_Rq!` runs on the HOST per q into `ep_eRpq_obj`; its op_r is then uploaded
+    # into this device clone. Reusing the clone across q is correct because `get_fourier_batched!`
+    # recomputes its phases and reads `parent.op_r` fresh on every call (it never consults `_id`).
+    ep_eRpq_obj = eph_buffers.ep_eRpq_obj
+    epmat = eph_buffers.epmat
+    ep_eRpq_dev = to_device(ep_eRpq_obj)
+    ndata_eRpq = nw^2 * nmodes
+    @assert ep_eRpq_dev.ndata == ndata_eRpq
+
+    # ----- k-side eigenvectors / energies / weights uploaded ONCE -----
+    # `Uk` is zero-padded outside each k's in-window range `rng`, so the full nw×nw Rq→kq rotation
+    # reproduces the CPU's windowed rotation with zeros outside.
+    # TODO: this whole-grid stack (16·nw²·nk bytes) stays device-resident for the entire run and is
+    #       NOT covered by the memory-adaptive batch sizing below — for large nw on a dense grid it,
+    #       not the per-batch scratch, is the memory limit. Stream the k side per batch (upload only
+    #       the batch's `Uk`, like the outer-k loop's per-batch `uks_host`) if it does not fit.
+    Uk_all_dev  = similar(gpu_array, Complex{FT}, nw, nw, nk)
+    ek_all_dev  = similar(gpu_array, FT, nw, nk)
+    wtk_all_dev = similar(gpu_array, FT, nk)
+    let Uk_host = zeros(Complex{FT}, nw, nw, nk), ek_host = zeros(FT, nw, nk), wtk_host = zeros(FT, nk)
+        for ik in 1:nk
+            el = el_k_save[ik]
+            @views Uk_host[:, el.rng, ik] .= el.u_full[:, el.rng]
+            ek_host[:, ik] .= el.e_full
+            wtk_host[ik] = kpts.weights[ik]
+        end
+        copyto!(Uk_all_dev, Uk_host)
+        copyto!(ek_all_dev, ek_host)
+        copyto!(wtk_all_dev, wtk_host)
+    end
+
+    # ----- memory-adaptive k-batch size -----
+    # Every per-batch device buffer scales with the batch size: the loop's own staging plus each
+    # calculator's per-k device scratch (`eph_outer_q_batched_bytes_per_k`). Cap the batch at what
+    # the free device memory allows (30% headroom for the batched drivers' recycled temporaries);
+    # `nk_batch_max` stays a hard cap (the only control on the CPU backend, where `device_free_bytes`
+    # is unbounded).
+    # TODO: make memory management more structured — the per-k byte estimate is hand-counted and
+    #       omits the whole-grid k-side stack; a single helper that owns the device buffers and their
+    #       size accounting (and the k-side streaming fallback) would be more robust.
+    use_polar_eph = model.polar_eph.use
+
+    bytes_per_k = 16 * nw^2 * (5 * nmodes + 8 + (use_polar_eph ? 1 : 0)) +
+        24 * (length(model.el_ham.irvec) + length(ep_eRpq_obj.irvec)) +
+        sum(Int[eph_outer_q_batched_bytes_per_k(calc; nw, nmodes) for calc in calculators])
+    free = device_free_bytes(gpu_array)
+    nk_batch_mem = free == typemax(Int) ? nk : max(1, (free ÷ 10 * 7) ÷ bytes_per_k)
+    nk_batch_cap = min(Int(nk_batch_max), nk)
+    nk_batch_max = min(nk_batch_cap, nk_batch_mem)
+    if verbosity > 0 && mpi_isroot() && nk_batch_max < nk_batch_cap
+        @info "GPU outer-q: memory-adaptive k-batch size = $nk_batch_max " *
+              "($(round(bytes_per_k / 1e3, digits = 1)) kB/k, $(round(free / 1e9, digits = 1)) GB free)"
+    end
+
+    itp_el_ham = BatchedWannierInterpolator(el_ham_dev; batch_size = nk_batch_max)
+    itp_ep_eRpq = BatchedWannierInterpolator(ep_eRpq_dev; batch_size = nk_batch_max)
+
+    # ----- persistent per-batch device workspace (sized to nk_batch_max) -----
+    ep_ws     = RqToKQWorkspace(ep_eRpq_dev.op_r, ndata_eRpq, nw, nw, nmodes, nk_batch_max)
+    ep_batch  = similar(gpu_array, Complex{FT}, nw, nw, nmodes, nk_batch_max)
+    Hkq_flat  = similar(gpu_array, Complex{FT}, nw * nw, nk_batch_max)
+    Uk_batch  = similar(gpu_array, Complex{FT}, nw, nw, nk_batch_max)
+    Ukq_batch = similar(gpu_array, Complex{FT}, nw, nw, nk_batch_max)
+    ek_batch  = similar(gpu_array, FT, nw, nk_batch_max)
+    wtk_batch = similar(gpu_array, FT, nk_batch_max)
+    ks_batch  = Vector{Vec3{FT}}(undef, nk_batch_max)
+    kqs_batch = Vector{Vec3{FT}}(undef, nk_batch_max)
+
+    # ----- polar e-ph dipole (long-range) scratch -----
+    # `ph.eph_dipole_coeff` is host-precomputed per q by the shared setup; `add_eph_dipole_batched!`
+    # applies the term on the device.
+    mmats_batch = use_polar_eph ? similar(gpu_array, Complex{FT}, nw, nw, nk_batch_max) : nothing
+    coeffs_dev  = use_polar_eph ? similar(gpu_array, Complex{FT}, nmodes) : nothing
+
+    wmin, wmax = window_kq
+
+    for iq in 1:nq
+        if verbosity > 0 && mod(iq, progress_print_step) == 0 && mpi_isroot()
+            @info "iq = $iq"; flush(stdout); flush(stderr)
+        end
+        xq = qpts.vectors[iq]
+        ph = ph_save[iq]
+
+        # HOST: interpolate g(R_el, q) in the requested phonon basis, then upload to the device clone.
+        get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph, eph_phonon_basis)
+        copyto!(ep_eRpq_dev.op_r, ep_eRpq_obj.op_r)
+        use_polar_eph && copyto!(coeffs_dev, ph.eph_dipole_coeff)
+
+        # Per-q calculator begin: allocate (first q) + zero the device accumulator (inner hook, same
+        # as the CPU loop; the GPU path also passes `gpu_array` / `nk_batch_max` for the device buffer).
+        setup_calculator_inner!.(calculators; iq, gpu_array, nk_batch_max)
+
+        for kstart in 1:nk_batch_max:nk
+            kend = min(kstart + nk_batch_max - 1, nk)
+            iks_batch = kstart:kend
+            nk_batch = length(iks_batch)
+
+            # k / k+q lists (host), tail padded with the last valid vector so the batched Fourier /
+            # eigensolve see finite data (their results in the tail are discarded via wtk = 0).
+            for (ik_ind, ik) in enumerate(iks_batch)
+                ks_batch[ik_ind]  = kpts.vectors[ik]
+                kqs_batch[ik_ind] = ks_batch[ik_ind] + xq
+            end
+            for ik_ind in (nk_batch + 1):nk_batch_max
+                ks_batch[ik_ind]  = ks_batch[nk_batch]
+                kqs_batch[ik_ind] = kqs_batch[nk_batch]
+            end
+
+            # k-side data: device→device slice, tail padded. Unlike the outer-k loop (whose padded
+            # duplicates are harmless because each state scatters to a unique in-window index), here
+            # a padded k column WOULD double-count into the q-summed χ, so its integration weight is
+            # zeroed — the calculator multiplies by `wtk`, making the padded columns contribute 0.
+            @views copyto!(Uk_batch[:, :, 1:nk_batch], Uk_all_dev[:, :, iks_batch])
+            @views copyto!(ek_batch[:, 1:nk_batch],    ek_all_dev[:, iks_batch])
+            @views copyto!(wtk_batch[1:nk_batch],      wtk_all_dev[iks_batch])
+            if nk_batch < nk_batch_max
+                @views Uk_batch[:, :, (nk_batch + 1):nk_batch_max] .= Uk_batch[:, :, nk_batch:nk_batch]
+                @views ek_batch[:, (nk_batch + 1):nk_batch_max]    .= ek_batch[:, nk_batch:nk_batch]
+                @views wtk_batch[(nk_batch + 1):nk_batch_max]      .= 0
+            end
+
+            # k+q eigensolve on the device (batched). No gauge fixing needed: χ is gauge-invariant.
+            # TODO: `eigen_batched` allocates (E, U) each batch; an in-place variant into ek/Ukq
+            #       scratch would remove the per-batch allocation.
+            get_fourier_batched!(Hkq_flat, itp_el_ham, kqs_batch)
+            Ekq, Ukq = eigen_batched(reshape(Hkq_flat, nw, nw, nk_batch_max))   # (nw,·), (nw,nw,·)
+
+            # k+q window mask: zero eigenvector COLUMNS m outside [wmin, wmax] (Ekq[m,k]). This
+            # zeroes ep_kq[m,·] and every k+q-side matrix element for out-of-window m, so those
+            # (m,n) pairs contribute exactly 0 — reproducing the CPU's `for m in el_kq.rng` loop.
+            mask_kq = (Ekq .>= wmin) .& (Ekq .<= wmax)                    # (nw, ·) Bool
+            Ukq_batch .= Ukq .* reshape(mask_kq, 1, nw, nk_batch_max)
+
+            # Batched Rq→kq e-ph interpolation: ep_batch[m,n,ν,k] = Ukq(k)' * g(k) * Uk(k).
+            get_eph_Rq_to_kq_batched!(ep_batch, itp_ep_eRpq, ks_batch, Uk_batch, Ukq_batch; ws = ep_ws)
+
+            use_polar_eph && add_eph_dipole_batched!(ep_batch, coeffs_dev, Ukq_batch, Uk_batch, mmats_batch)
+
+            for calc in calculators
+                run_calculator_outer_q_batched!(calc, ep_batch, ek_batch, Ekq,
+                    Uk_batch, Ukq_batch, wtk_batch, ks_batch, iq)
+            end
+        end # k batch
+
+        # Per-q calculator end: device→host scatter into the per-q output arrays (inner hook).
+        postprocess_calculator_inner!.(calculators; iq)
+
+        # Bound the host look-ahead to one q so per-q device scratch does not pile up in the pool.
+        device_synchronize(gpu_array)
     end # iq
 
     postprocess_calculator!.(calculators; qpts, model.symmetry)

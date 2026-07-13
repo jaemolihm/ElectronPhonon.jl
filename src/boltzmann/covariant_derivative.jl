@@ -155,7 +155,7 @@ function compute_covariant_derivative_matrix(el_irr::QMEStates{FT}, el_irr_state
         # is on the full k grid. ik_to_ikirr_isym is the mapping from the full grid to the
         # irreducible grid.
 
-        el_sym_itp = get_interpolator.(el_sym.operators; fourier_mode)
+        itp_el_sym = get_interpolator.(el_sym.operators; fourier_mode)
 
         # Compute symmetry gauge matrix. For Sk = S_isym * k, the eigenstate at Sk is
         # U(Sk) = S_isym(k) * U(k). (Here, k is a point in the irreducible grid.)
@@ -165,7 +165,7 @@ function compute_covariant_derivative_matrix(el_irr::QMEStates{FT}, el_irr_state
             xk = el_irr.kpts.vectors[ikirr]
             is_tr = el_sym.symmetry[isym].is_tr
             # TODO: Optimize by skipping if symop is identity
-            get_symmetry_representation_wannier!(smat_all[:, :, ik], el_sym_itp[isym], xk, is_tr)
+            get_symmetry_representation_wannier!(smat_all[:, :, ik], itp_el_sym[isym], xk, is_tr)
         end
     end
 
