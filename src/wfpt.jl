@@ -108,7 +108,7 @@ function compute_debye_waller_active_space(model, kpts, el_mom, window; fourier_
 
     dw_active = zeros(ComplexF64, nw, nw, 3, nmodes, kpts.n)
 
-    mom_itp = get_interpolator(el_mom; fourier_mode)
+    itp_mom = get_interpolator(el_mom; fourier_mode)
 
     for (ik, xk) in enumerate(kpts.vectors)
         epdata.el_k  = el_k_save[ik]
@@ -118,7 +118,7 @@ function compute_debye_waller_active_space(model, kpts, el_mom, window; fourier_
         get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(uk))
         get_eph_kR_to_kq!(no_offset_view(epdata.ep), ep_ekpR, xq, I(model.nmodes), no_offset_view(uk))
 
-        ElectronPhonon.set_velocity!(epdata.el_k, mom_itp, xk, :Direct)
+        ElectronPhonon.set_velocity!(epdata.el_k, itp_mom, xk, :Direct)
 
         for imode in 1:nmodes, idir in 1:3
             for ib in 1:nw, jb in 1:nw, pb in 1:nw
@@ -191,7 +191,7 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
         # @threads for (id_chunk, iqs) in enumerate(chunks(1:qpts_coarse.n; n = nchunks_threads))
             epdata = take!(epdatas)
             ep_ekpR = take!(ep_ekpRs)
-            dw_itp = take!(dw_itps)
+            itp_dw = take!(dw_itps)
             Σ_Fan_chunk = Σ_Fan_channel[id_chunk]
             Σ_DW_chunk = Σ_DW_channel[id_chunk]
 
@@ -201,8 +201,8 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
                 xq = qpts_coarse.vectors[iq]
 
                 ph = ph_save[iq]
-                dg_itp = get_interpolator(dgmat[iq]; fourier_mode = "normal")
-                sth_itp = get_interpolator(sthmat[iq]; fourier_mode = "normal")
+                itp_dg = get_interpolator(dgmat[iq]; fourier_mode = "normal")
+                itp_sth = get_interpolator(sthmat[iq]; fourier_mode = "normal")
 
                 el_kq = compute_electron_states(model, Kpoints(xk + xq), ["eigenvalue", "eigenvector"])[1]
 
@@ -213,23 +213,23 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
                 u_ph = ph_save[iq].u
 
                 # Interpolate WFPT matrix elements from (Re, q) to (k, q)
-                get_fourier!(dw_itp.out, dw_itp, xk)
-                get_fourier!(dg_itp.out, dg_itp, xk)
-                get_fourier!(sth_itp.out, sth_itp, xk)
+                get_fourier!(itp_dw.out, itp_dw, xk)
+                get_fourier!(itp_dg.out, itp_dg, xk)
+                get_fourier!(itp_sth.out, itp_sth, xk)
 
-                dg_k_tmp = reshape(dg_itp.out, nw, nw, nmodes)
+                dg_k_tmp = reshape(itp_dg.out, nw, nw, nmodes)
                 dg_k = zeros(ComplexF64, nw, nw, nmodes)
                 @views for imode in 1:nmodes, jmode in 1:nmodes
                     dg_k[:, :, imode] .+= dg_k_tmp[:, :, jmode] .* u_ph[jmode, imode]
                 end
 
-                sth_k_tmp = reshape(sth_itp.out, nw, nw, nmodes, nmodes)
+                sth_k_tmp = reshape(itp_sth.out, nw, nw, nmodes, nmodes)
                 sth_k = zeros(ComplexF64, nw, nw, nmodes)
                 @views for imode in 1:nmodes, jmode in 1:nmodes, kmode in 1:nmodes
                     sth_k[:, :, imode] .+= sth_k_tmp[:, :, kmode, jmode] .* conj(u_ph[kmode, imode]) .* u_ph[jmode, imode]
                 end
 
-                dw_k_tmp = reshape(dw_itp.out, nw, nw, 3, nmodes)
+                dw_k_tmp = reshape(itp_dw.out, nw, nw, 3, nmodes)
                 dw_k_tmp .-= view(dw_active, :, :, :, :, ik)  # Subtract active-space Debye-Waller contribution
 
                 dw_k = zeros(ComplexF64, nw, nw, nmodes)
@@ -282,7 +282,7 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
 
             put!(ep_ekpRs, ep_ekpR)
             put!(epdatas, epdata)
-            put!(dw_itps, dw_itp)
+            put!(dw_itps, itp_dw)
 
         end # iq chunk
     end # ik
@@ -313,7 +313,7 @@ function compute_self_energy_active_DW(folder, outdir, prefix, model, window, kp
 
     dw_active = ElectronPhonon.compute_debye_waller_active_space(model, kpts, el_mom, window; wannier_gauge=false)
 
-    # dw_itp = get_interpolator(dwmat)
+    # itp_dw = get_interpolator(dwmat)
     el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector"]; fourier_mode);
 
     Σ = [zeros(nw, length(occupation_params.Tlist)) for _ in 1:kpts.n]
@@ -329,7 +329,7 @@ function compute_self_energy_active_DW(folder, outdir, prefix, model, window, kp
             # uk = el_k.u
             u_ph = ph.u
 
-            # get_fourier!(dw_itp.out, dw_itp, xk)
+            # get_fourier!(itp_dw.out, itp_dw, xk)
 
             # dw_active is in the Wannier gauge, so we don't need to multiply uk
             dw_k_tmp = view(dw_active, :, :, :, :, ik)

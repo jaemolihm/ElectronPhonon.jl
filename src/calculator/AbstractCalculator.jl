@@ -172,7 +172,7 @@ end
 # calculator keeps only the CURRENT batch's output on the device and copies it to the host each batch.
 # `setup_calculator_outer_batch!` (re)points/zeros the batch-sized device buffer at the start of a
 # batch; `flush_calculator_outer_batch!` copies it to the host at the batch's end. Both are no-ops by
-# default — a calculator that holds its whole output ignores them. `proto` is a device array (the e-ph
+# default — a calculator that holds its whole output ignores them. `gpu_array` is a device array (the e-ph
 # matrix backend) for buffer allocation; `kstart`/`kend` are the batch's outer-k range.
 setup_calculator_outer_batch!(::AbstractCalculator; kwargs...) = nothing
 flush_calculator_outer_batch!(::AbstractCalculator; kwargs...) = nothing

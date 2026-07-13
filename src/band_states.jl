@@ -111,7 +111,7 @@ end
 # Build a device `(nw, nk)` integer index map addressable by PHYSICAL band: row `iband` ∈ 1:nw holds
 # the flattened state index for `(iband, ik)`, and 0 where that band is absent / out of the energy
 # window. `nw` is the full (Wannier) band count — the band axis the e-ph matrix `ep_kq` is indexed by
-# — so a device kernel can look a state up directly from its physical band index. `proto` is a device
+# — so a device kernel can look a state up directly from its physical band index. `gpu_array` is a device
 # array used only as a `similar` prototype. (`s.indmap` is stored band-offset by `nband_ignore`; this
 # places its rows at their physical-band positions `nband_ignore+1 : nband_ignore+nband`.)
 #
@@ -123,10 +123,10 @@ end
 #     (the k side IS projected to nbandk). It could be stored as just `nbandk` rows by baking each k's
 #     `ibandk_offset` into its column, but this Int map is tiny next to the streamed Sᵢ (GBs), so both
 #     maps share the one physical-band (nw) layout and the k side simply offsets at read time.
-function _indmap_to_device(proto, s::BandStates, nw::Integer)
+function _indmap_to_device(gpu_array, s::BandStates, nw::Integer)
     host = zeros(Int, nw, s.kpts.n)
     @views host[s.nband_ignore+1 : s.nband_ignore+s.nband, :] .= s.indmap
-    copyto!(similar(proto, Int, nw, s.kpts.n), host)
+    copyto!(similar(gpu_array, Int, nw, s.kpts.n), host)
 end
 
 """

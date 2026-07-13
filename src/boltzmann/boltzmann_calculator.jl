@@ -211,7 +211,7 @@ end
 # --- GPU batched path -----------------------------------------------------------------------
 
 # GPU (batched) path: called by the GPU e-ph loop once per outer-k batch, before its k iterations.
-# `proto` is a device array (the e-ph matrix) used as the allocation prototype. On the first batch it
+# `gpu_array` is a device array (the e-ph matrix) used as the allocation prototype. On the first batch it
 # also builds the run's one-time device buffers (they need a device array, which `setup_calculator!`
 # does not have); every batch it (re)points/zeros the Sᵢ tile.
 #
@@ -219,22 +219,22 @@ end
 # array type) so the one-time device init below can move into setup_calculator! and out of this
 # per-batch hook entirely.
 function ElectronPhonon.setup_calculator_outer_batch!(calc::BoltzmannCalculator{FT};
-        kstart, kend, proto, kwargs...) where {FT}
+        kstart, kend, gpu_array, kwargs...) where {FT}
     calc.use_gpu || error("setup_calculator_outer_batch! is a GPU-only hook")
     n_i, n_f, nT = calc.el_i.n, calc.el_f.n, length(calc.occ)
 
     # One-time device copies, built on the first batch and reused across all k in the run. `nw` (the
     # full Wannier band count, from setup) sizes the physical-band index maps; see `_indmap_to_device`.
     if calc.imap_i_dev === nothing
-        calc.imap_i_dev = _indmap_to_device(proto, calc.el_i, calc.nw)
-        calc.imap_f_dev = _indmap_to_device(proto, calc.el_f, calc.nw)
-        calc.e_i_dev = copyto!(similar(proto, FT, n_i), calc.el_i.es)
-        calc.e_f_dev = copyto!(similar(proto, FT, n_f), calc.el_f.es)
-        calc.wq_dev  = copyto!(similar(proto, FT, calc.el_f.kpts.n), calc.el_f.kpts.weights)
-        calc.μ_dev = copyto!(similar(proto, FT, nT), collect(FT, calc.occ.μlist))
-        calc.T_dev = copyto!(similar(proto, FT, nT), collect(FT, calc.occ.Tlist))
-        calc.η_dev = copyto!(similar(proto, FT, nT), FT[s[2] for s in calc.smearing])
-        calc.Sₒ_dev = fill!(similar(proto, FT, n_i, nT), zero(FT))   # small, device-resident
+        calc.imap_i_dev = _indmap_to_device(gpu_array, calc.el_i, calc.nw)
+        calc.imap_f_dev = _indmap_to_device(gpu_array, calc.el_f, calc.nw)
+        calc.e_i_dev = copyto!(similar(gpu_array, FT, n_i), calc.el_i.es)
+        calc.e_f_dev = copyto!(similar(gpu_array, FT, n_f), calc.el_f.es)
+        calc.wq_dev  = copyto!(similar(gpu_array, FT, calc.el_f.kpts.n), calc.el_f.kpts.weights)
+        calc.μ_dev = copyto!(similar(gpu_array, FT, nT), collect(FT, calc.occ.μlist))
+        calc.T_dev = copyto!(similar(gpu_array, FT, nT), collect(FT, calc.occ.Tlist))
+        calc.η_dev = copyto!(similar(gpu_array, FT, nT), FT[s[2] for s in calc.smearing])
+        calc.Sₒ_dev = fill!(similar(gpu_array, FT, n_i, nT), zero(FT))   # small, device-resident
     end
 
     # Sᵢ tile for this batch (re-sized/zeroed every batch — Sᵢ is streamed per tile).
@@ -242,7 +242,7 @@ function ElectronPhonon.setup_calculator_outer_batch!(calc::BoltzmannCalculator{
     calc.tile_i0 = first(rng) - 1; calc.tile_ni = length(rng)
     ni = calc.tile_ni
     if calc.Sᵢ_tile_dev === nothing || size(calc.Sᵢ_tile_dev, 1) < ni
-        calc.Sᵢ_tile_dev = similar(proto, FT, ni, n_f, nT)
+        calc.Sᵢ_tile_dev = similar(gpu_array, FT, ni, n_f, nT)
         calc.Sᵢ_tile_host = Array{FT, 3}(undef, ni, n_f, nT)
     end
     fill!(view(calc.Sᵢ_tile_dev, 1:ni, :, :), zero(FT))

@@ -300,14 +300,15 @@ Multithreading is not supported because of large buffer array size.
 end
 
 """
-    get_eph_RR_to_Rq_basis!(epobj_eRpq, epmat, xq, ph, eph_phonon_basis, nmodes)
+    get_eph_RR_to_Rq!(epobj_eRpq, epmat, xq, ph, eph_phonon_basis::Symbol)
 
-`get_eph_RR_to_Rq!` with the phonon-mode rotation chosen by `eph_phonon_basis`: `:eigenmode` rotates
-by the phonon eigenvectors `ph.u`, `:cartesian` leaves the modes in the Cartesian basis (identity).
-The per-q host e-ph step shared by the CPU and GPU outer-q loops.
+Phonon state `ph` + basis overload of [`get_eph_RR_to_Rq!`](@ref): choose the phonon-mode rotation
+from `eph_phonon_basis` — `:eigenmode` rotates by the phonon eigenvectors `ph.u`, `:cartesian` leaves
+the modes in the Cartesian basis (identity). The per-q host e-ph step shared by the CPU and GPU
+outer-q loops.
 """
-function get_eph_RR_to_Rq_basis!(epobj_eRpq, epmat, xq, ph, eph_phonon_basis::Symbol, nmodes)
-    u_ph = eph_phonon_basis == :eigenmode ? ph.u : I(nmodes)
+function get_eph_RR_to_Rq!(epobj_eRpq, epmat, xq, ph, eph_phonon_basis::Symbol)
+    u_ph = eph_phonon_basis == :eigenmode ? ph.u : I(length(ph.e))
     get_eph_RR_to_Rq!(epobj_eRpq, epmat, xq, u_ph)
 end
 

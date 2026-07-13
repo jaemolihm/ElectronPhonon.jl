@@ -127,10 +127,10 @@ ElectronPhonon.postprocess_calculator_inner!(c::_OptInQCalc; kwargs...) = (c.flu
         _PlainQCalc(), nothing, nothing, nothing, nothing, nothing, nothing, nothing, 1)
 
     # Opt-in calculator: hook returns true and the per-q inner hooks dispatch to the override
-    # (the GPU outer-q loop passes iq / proto / k_chunk_size through them).
+    # (the GPU outer-q loop passes iq / gpu_array / nk_batch_max through them).
     c = _OptInQCalc(0, 0)
     @test ElectronPhonon.allow_eph_outer_q_batched(c) == true
-    ElectronPhonon.setup_calculator_inner!(c; iq=1, proto=zeros(1), k_chunk_size=4)
+    ElectronPhonon.setup_calculator_inner!(c; iq=1, gpu_array=zeros(1), nk_batch_max=4)
     ElectronPhonon.postprocess_calculator_inner!(c; iq=1)
     @test (c.setup, c.flush) == (1, 1)
 end
@@ -407,6 +407,92 @@ end
         @test_throws Exception ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
             calculators=[_RecordCalcBatched()], symmetry=nothing, use_gpu=true,
             energy_conservation=(:Fixed, 0.1), progress_print_step=10^9)
+    end
+end
+
+# Outer-q analogue of `_RecordCalc`/`_RecordCalcBatched` above: a calculator for
+# `run_eph_outer_q` that accumulates a per-q, GAUGE-INVARIANT scalar
+#   A[iq] = Σ_{m,n,ν,k} wtk[k] · |ep[m,n,ν,k]|²
+# (the band-summed |g|² is invariant under the electron/phonon eigenvector gauge, so the
+# degenerate-band gauge difference between the CPU LAPACK and GPU batched eigensolvers — see the
+# note in the outer-k test above — does not matter here). This lets the SAME calculator validate
+# both the CPU (`run_calculator!`) and GPU-batched (`run_calculator_outer_q_batched!`) hooks of
+# `run_eph_outer_q` against each other directly, without restricting to eigenvalues only.
+#
+# Thread-safety: `run_calculator!` on the CPU path is called from multiple threads (one per
+# k-chunk) for the SAME iq, so the per-q sum is accumulated into a per-chunk slot (`id_chunk`,
+# passed by the driver) and reduced in `postprocess_calculator_inner!`; no cross-thread races.
+mutable struct _RecordCalcOuterQ <: ElectronPhonon.AbstractCalculator
+    A::Vector{Float64}       # (nq,) final per-q gauge-invariant sum
+    Achunk::Vector{Float64}  # (nchunks,) per-thread-chunk partial sum for the CURRENT q (CPU path)
+    Adev::Any                # length-1 device accumulator for the CURRENT q (GPU path), or nothing
+    _RecordCalcOuterQ() = new(zeros(0), zeros(0), nothing)
+end
+ElectronPhonon.allow_eph_outer_q(::_RecordCalcOuterQ) = true
+ElectronPhonon.allow_eph_outer_q_batched(::_RecordCalcOuterQ) = true
+ElectronPhonon.allowed_eph_phonon_basis(::_RecordCalcOuterQ) = [:eigenmode]
+function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, kpts, qpts, el_states;
+        nchunks_threads=nthreads(), kwargs...)
+    c.A = zeros(qpts.n)
+    c.Achunk = zeros(nchunks_threads)
+    c.Adev = nothing
+    c
+end
+# CPU path: zero this q's per-chunk accumulator. GPU path (gpu_array !== nothing): (re)allocate and
+# zero this q's length-1 device accumulator.
+function ElectronPhonon.setup_calculator_inner!(c::_RecordCalcOuterQ; gpu_array=nothing, kwargs...)
+    if gpu_array !== nothing
+        c.Adev = fill!(similar(gpu_array, Float64, 1), 0.0)
+    else
+        fill!(c.Achunk, 0.0)
+    end
+    c
+end
+# Reduce this q's accumulator (per-chunk sum, or device→host copy) into A[iq].
+function ElectronPhonon.postprocess_calculator_inner!(c::_RecordCalcOuterQ; iq, kwargs...)
+    c.A[iq] = c.Adev === nothing ? sum(c.Achunk) : Array(c.Adev)[1]
+    c.Adev = nothing
+    c
+end
+ElectronPhonon.postprocess_calculator!(c::_RecordCalcOuterQ; kwargs...) = c
+# CPU hook: epdata.ep is already an OffsetArray restricted to (el_kq.rng, el_k.rng, :), so summing
+# all of it covers exactly the in-window (m, n, ν) triples.
+function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, epdata, ik, iq, ikq; id_chunk, kwargs...)
+    c.Achunk[id_chunk] += epdata.wtk * sum(abs2, epdata.ep)
+    c
+end
+# GPU batched hook: `ep` is (nw,nw,nmodes,nkc) on the device, full-band (out-of-window bands already
+# zeroed by the loop's eigenvector-column masking); `wtk` is (nkc,) with padded tail entries = 0, so
+# no special-casing of the final partial k-batch is needed. `sum` of a device broadcast expression
+# reduces on-device and returns a host scalar without any scalar indexing (allowed under
+# CUDA.allowscalar(false)).
+function ElectronPhonon.run_calculator_outer_q_batched!(c::_RecordCalcOuterQ, ep, e_k, e_kq, uk, ukq, wtk, xks, iq; kwargs...)
+    nkc = size(ep, 4)
+    val = sum(abs2.(ep) .* reshape(wtk, 1, 1, 1, nkc))
+    c.Adev .+= val
+    c
+end
+
+@testset "run_eph_outer_q CPU vs GPU equivalence" begin
+    if !GPU_AVAILABLE
+        @info "CUDA not available/functional — skipping run_eph_outer_q CPU-vs-GPU test"
+    else
+        model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
+        grid = (4, 4, 4)
+
+        calc_cpu = _RecordCalcOuterQ()
+        ElectronPhonon.run_eph_outer_q(model, grid, grid;
+            calculators=[calc_cpu], use_symmetry=false, keep_all_qpts=true,
+            use_gpu=false, progress_print_step=10^9)
+
+        calc_gpu = _RecordCalcOuterQ()
+        ElectronPhonon.run_eph_outer_q(model, grid, grid;
+            calculators=[calc_gpu], use_symmetry=false, keep_all_qpts=true,
+            use_gpu=true, progress_print_step=10^9)
+
+        rdiff = maximum(abs, calc_cpu.A .- calc_gpu.A) / maximum(abs, calc_cpu.A)
+        @info "run_eph_outer_q CPU vs GPU" cpu_A=calc_cpu.A gpu_A=calc_gpu.A rdiff
+        @test isapprox(calc_cpu.A, calc_gpu.A; rtol=1e-8)
     end
 end
 

@@ -26,7 +26,7 @@ using ElectronPhonon: get_symmetry_representation_wannier!
         kpts = GridKpoints(kpts);
         els = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"]; fourier_mode);
         ham = get_interpolator(model.el_ham; fourier_mode)
-        el_sym_itp = get_interpolator.(model.el_sym.operators; fourier_mode)
+        itp_el_sym = get_interpolator.(model.el_sym.operators; fourier_mode)
 
         nw = model.nw
         sym_W = zeros(ComplexF64, nw, nw)
@@ -41,8 +41,8 @@ using ElectronPhonon: get_symmetry_representation_wannier!
                 sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
                 isk = xk_to_ik(sxk, kpts)
 
-                get_symmetry_representation_wannier!(sym_W, el_sym_itp[isym], xk, symop.is_tr)
-                compute_symmetry_representation!(sym_H, els[ik], els[isk], xk, el_sym_itp[isym], symop.is_tr)
+                get_symmetry_representation_wannier!(sym_W, itp_el_sym[isym], xk, symop.is_tr)
+                compute_symmetry_representation!(sym_H, els[ik], els[isk], xk, itp_el_sym[isym], symop.is_tr)
 
                 @test norm(sym_W' * sym_W - I(nw)) < 3e-6
 

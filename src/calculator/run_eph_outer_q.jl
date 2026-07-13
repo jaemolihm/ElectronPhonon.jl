@@ -285,7 +285,6 @@ function _loop_eph_outer_q(
     ) where {FT}
 
     (; epdatas, ep_eRpq_obj, ep_eRpqs, epmat, ham_threads, vel_threads) = eph_buffers
-    (; nmodes) = model
     nk = kpts.n
     nq = qpts.n
 
@@ -304,7 +303,7 @@ function _loop_eph_outer_q(
         end
 
         if !skip_eph
-            get_eph_RR_to_Rq_basis!(ep_eRpq_obj, epmat, xq, ph, eph_phonon_basis, nmodes)
+            get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph, eph_phonon_basis)
         end
 
         # Multithreading setup
@@ -405,7 +404,7 @@ end
 #  calculator hook. The code is backend-generic: it calls only `to_device` and the batched drivers,
 #  so no CUDA code lives here (the device methods live in the CUDA extension).
 #
-#  Per q: interpolate g(R_el, q) on the HOST (`get_eph_RR_to_Rq_basis!`, nq is small), upload it,
+#  Per q: interpolate g(R_el, q) on the HOST (`get_eph_RR_to_Rq!`, nq is small), upload it,
 #  then loop over the outer k points in batches. Each batch: batched k+q eigensolve (window-masked
 #  by zeroing out-of-window eigenvector columns), batched Rq→kq e-ph interpolation, and one call to
 #  `run_calculator_outer_q_batched!`. The per-q device accumulator is bracketed by the generic
@@ -453,7 +452,7 @@ function _loop_eph_outer_q_gpu(
     gpu_array = el_ham_dev.op_r    # device-array prototype for `similar` / `device_free_bytes`
 
     # ----- device clone of the electron-Wannier / phonon-Bloch e-ph object -----
-    # `get_eph_RR_to_Rq_basis!` runs on the HOST per q into `ep_eRpq_obj`; its op_r is then uploaded
+    # `get_eph_RR_to_Rq!` runs on the HOST per q into `ep_eRpq_obj`; its op_r is then uploaded
     # into this device clone. Reusing the clone across q is correct because `get_fourier_batched!`
     # recomputes its phases and reads `parent.op_r` fresh on every call (it never consults `_id`).
     ep_eRpq_obj = eph_buffers.ep_eRpq_obj
@@ -490,6 +489,9 @@ function _loop_eph_outer_q_gpu(
     # the free device memory allows (30% headroom for the batched drivers' recycled temporaries);
     # `nk_batch_max` stays a hard cap (the only control on the CPU backend, where `device_free_bytes`
     # is unbounded).
+    # TODO: make memory management more structured — the per-k byte estimate is hand-counted and
+    #       omits the whole-grid k-side stack; a single helper that owns the device buffers and their
+    #       size accounting (and the k-side streaming fallback) would be more robust.
     use_polar_eph = model.polar_eph.use
 
     bytes_per_k = 16 * nw^2 * (5 * nmodes + 8 + (use_polar_eph ? 1 : 0)) +
@@ -504,8 +506,8 @@ function _loop_eph_outer_q_gpu(
               "($(round(bytes_per_k / 1e3, digits = 1)) kB/k, $(round(free / 1e9, digits = 1)) GB free)"
     end
 
-    el_ham_itp = BatchedWannierInterpolator(el_ham_dev; batch_size = nk_batch_max)
-    ep_eRpq_itp = BatchedWannierInterpolator(ep_eRpq_dev; batch_size = nk_batch_max)
+    itp_el_ham = BatchedWannierInterpolator(el_ham_dev; batch_size = nk_batch_max)
+    itp_ep_eRpq = BatchedWannierInterpolator(ep_eRpq_dev; batch_size = nk_batch_max)
 
     # ----- persistent per-batch device workspace (sized to nk_batch_max) -----
     ep_ws     = RqToKQWorkspace(ep_eRpq_dev.op_r, ndata_eRpq, nw, nw, nmodes, nk_batch_max)
@@ -534,7 +536,7 @@ function _loop_eph_outer_q_gpu(
         ph = ph_save[iq]
 
         # HOST: interpolate g(R_el, q) in the requested phonon basis, then upload to the device clone.
-        get_eph_RR_to_Rq_basis!(ep_eRpq_obj, epmat, xq, ph, eph_phonon_basis, nmodes)
+        get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph, eph_phonon_basis)
         copyto!(ep_eRpq_dev.op_r, ep_eRpq_obj.op_r)
         use_polar_eph && copyto!(coeffs_dev, ph.eph_dipole_coeff)
 
@@ -574,7 +576,7 @@ function _loop_eph_outer_q_gpu(
             # k+q eigensolve on the device (batched). No gauge fixing needed: χ is gauge-invariant.
             # TODO: `eigen_batched` allocates (E, U) each batch; an in-place variant into ek/Ukq
             #       scratch would remove the per-batch allocation.
-            get_fourier_batched!(Hkq_flat, el_ham_itp, kqs_batch)
+            get_fourier_batched!(Hkq_flat, itp_el_ham, kqs_batch)
             Ekq, Ukq = eigen_batched(reshape(Hkq_flat, nw, nw, nk_batch_max))   # (nw,·), (nw,nw,·)
 
             # k+q window mask: zero eigenvector COLUMNS m outside [wmin, wmax] (Ekq[m,k]). This
@@ -584,7 +586,7 @@ function _loop_eph_outer_q_gpu(
             Ukq_batch .= Ukq .* reshape(mask_kq, 1, nw, nk_batch_max)
 
             # Batched Rq→kq e-ph interpolation: ep_batch[m,n,ν,k] = Ukq(k)' * g(k) * Uk(k).
-            get_eph_Rq_to_kq_batched!(ep_batch, ep_eRpq_itp, ks_batch, Uk_batch, Ukq_batch; ws = ep_ws)
+            get_eph_Rq_to_kq_batched!(ep_batch, itp_ep_eRpq, ks_batch, Uk_batch, Ukq_batch; ws = ep_ws)
 
             use_polar_eph && add_eph_dipole_batched!(ep_batch, coeffs_dev, Ukq_batch, Uk_batch, mmats_batch)
 

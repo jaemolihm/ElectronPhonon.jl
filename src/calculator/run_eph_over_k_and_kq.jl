@@ -575,13 +575,13 @@ function _loop_eph_over_k_and_kq_gpu(
 
     # ----- device interpolators (allocated once) -----
     epmat_dev = to_device(model.epmat)
-    epmat_itp = BatchedWannierInterpolator(epmat_dev; batch_size = nk_batch_max)
+    itp_epmat = BatchedWannierInterpolator(epmat_dev; batch_size = nk_batch_max)
     ep_ekpR_dev = to_device(get_next_wannier_object(model.epmat))
     ndata_ekpR = nw * nbandk_max * nmodes
     # Set ndata BEFORE building the interpolator (its Fourier cache is sized to parent.ndata):
     # under the k-side projection only the first nw·nbandk_max·nmodes rows of op_r are filled/read.
     ep_ekpR_dev.ndata = ndata_ekpR
-    ep_ekpR_itp = BatchedWannierInterpolator(ep_ekpR_dev; batch_size = nq_batch_max)
+    itp_ep_ekpR = BatchedWannierInterpolator(ep_ekpR_dev; batch_size = nq_batch_max)
     nr_ep = ep_ekpR_dev.nr
 
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
@@ -684,12 +684,12 @@ function _loop_eph_over_k_and_kq_gpu(
         copyto!(uks_dev, uks_host)
 
         # One batched RR->kR over the whole batch: g(k, R_ep) for all k in the batch.
-        get_eph_RR_to_kR_batched!(ep_ekpR_all, epmat_itp, ks_batch, uks_dev)
+        get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat, ks_batch, uks_dev)
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
         for calc in calculators
-            setup_calculator_outer_batch!(calc; kstart, kend, proto = epmat_dev.op_r)
+            setup_calculator_outer_batch!(calc; kstart, kend, gpu_array = epmat_dev.op_r)
         end
 
     for (ik_ind, ik) in enumerate(iks_batch)
@@ -754,7 +754,7 @@ function _loop_eph_over_k_and_kq_gpu(
 
             # One batched Wannier->Bloch over this batch's q: ep_kq(q) (nw, nw, nmodes), folding
             # g2 = |ep|²/(2ω) into the same fused kernel pass.
-            get_eph_kR_to_kq_batched!(view(epkq_dev, :, :, :, rng_q), ep_ekpR_itp, view(qs_batch, rng_q),
+            get_eph_kR_to_kq_batched!(view(epkq_dev, :, :, :, rng_q), itp_ep_ekpR, view(qs_batch, rng_q),
                 view(uphs_dev, :, :, rng_q), ukqs_used; ws=kRkq_ws,
                 g2_out = view(g2_dev, :, :, :, rng_q), ωq = view(ωq_dev, :, rng_q))
 
