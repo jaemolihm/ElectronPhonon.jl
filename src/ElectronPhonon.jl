@@ -31,6 +31,7 @@ include("wannier/DiskWannierObject.jl")
 include("wannier/GridOpt.jl")
 include("wannier/DiskGridOpt.jl")
 include("wannier/WannierInterpolator.jl")
+include("wannier/batched_fourier_core.jl")
 include("wannier/batched_interpolator.jl")
 include("wannier/batched_gridopt_interpolator.jl")
 

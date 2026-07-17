@@ -559,11 +559,12 @@ function _loop_eph_over_k_and_kq_gpu(
     # epmat_dev / ep_ekpR_dev / itp_epmat are already live, so `free` reflects them:
     #   epkq_dev + kRkq_ws.g + kRkq_ws.tmp + itp_ep_ekpR.cached_results : 4 × 16·nw·nbandk_max·nmodes
     #   g2_dev                                                          :      8·nw·nbandk_max·nmodes
-    #   itp_ep_ekpR.phase_batch (cplx) + rdotk (real)                   :     24·nr_ep
+    #   itp_ep_ekpR.core.phase (cplx) + core.rdotk (real)               :     24·nr_ep
+    #   itp_ep_ekpR.core.xkmat (real, 3 rows)                           :     24
     #   uphs_dev                                                        :     16·nmodes²
     #   ωq_dev                                                          :      8·nmodes
     #   iqs_batch_dev + ikqs_dev (Int)                                  :     16
-    bytes_per_q = 72 * nw * nbandk_max * nmodes + 24 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 16 +
+    bytes_per_q = 72 * nw * nbandk_max * nmodes + 24 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 40 +
         sum(Int[eph_batched_bytes_per_point(c, ElPhDataOuterKBatched; nw, nmodes) for c in calculators])
     # Whole-run + per-k-batch commitments allocated after this point come off the top before dividing:
     #   ukqs_all_dev              : 16·nw²·nkq
