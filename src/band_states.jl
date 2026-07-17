@@ -74,14 +74,17 @@ function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
 end
 
 """
-    electron_states_to_BandStates(el_states, kpts, nstates_base=0) -> BandStates
+    electron_states_to_BandStates(el_states, kpts, nstates_base=0) -> (BandStates, imap)
 
-Flatten a per-k vector of `ElectronState` onto `kpts` into a `BandStates`, storing the
-per-state k-index `ik` directly (no deduplication: `kpts` already holds the distinct
-k-points). `kpts` must be a `GridKpoints` (its k-vector→index hash is needed for the e-ph loop
-and `state_index(xk, …)` queries). The `(iband, ik) → state` reverse map lives in the returned
-`BandStates` as `indmap` — query it with `state_index`, or build a device copy for the GPU
-scatter with `_indmap_to_device`.
+Flatten a per-k vector of `ElectronState` onto `kpts` into a `BandStates`, and return it together
+with `imap[iband, ik]` = state index — an `OffsetMatrix` over the physical band range, 0 outside
+the window. The per-state k-index `ik` is stored directly (no deduplication: `kpts` already holds
+the distinct k-points). `kpts` must be a `GridKpoints` (its k-vector→index hash is needed for the
+e-ph loop and `state_index(xk, …)` queries); callers holding a plain `Kpoints` promote it first.
+
+The same `(iband, ik) → state` information also lives in the returned `BandStates` as `indmap`
+(query it with `state_index`, or build a device copy for the GPU scatter with `_indmap_to_device`);
+the returned `imap` is the physical-band `OffsetMatrix` form that CPU calculator loops index directly.
 
 This is the `BandStates` replacement for `electron_states_to_BTStates`.
 """
@@ -89,6 +92,9 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
         kpts::GridKpoints{T}, nstates_base = zero(T)) where {T}
     nk = length(el_states)
     n = sum(el.nband for el in el_states)
+    iband_min = minimum(el.rng.start for el in el_states if el.nband > 0)
+    iband_max = maximum(el.rng.stop for el in el_states if el.nband > 0)
+    imap = OffsetArray(zeros(Int, iband_max - iband_min + 1, nk), iband_min:iband_max, :)
     ik = zeros(Int, n)
     iband = zeros(Int, n)
     e = zeros(T, n)
@@ -103,9 +109,10 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
             iband[istate] = ib
             e[istate] = el.e[ib]
             v[istate] = el.vdiag[ib]
+            imap[ib, jk] = istate
         end
     end
-    BandStates(kpts, ik, iband, e; v, nstates_base)
+    BandStates(kpts, ik, iband, e; v, nstates_base), imap
 end
 
 # Build a device `(nw, nk)` integer index map addressable by PHYSICAL band: row `iband` ∈ 1:nw holds

@@ -124,8 +124,9 @@ function ElectronPhonon.setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, q
     # possible, make setup fail early on a plain Kpoints instead of promoting here.
     gkpts   = kpts isa GridKpoints   ? kpts   : GridKpoints(kpts)
     gkqpts  = kqpts isa GridKpoints  ? kqpts  : GridKpoints(kqpts)
-    calc.el_i = electron_states_to_BandStates(el_states, gkpts, nelec_below_window_k)
-    calc.el_f = electron_states_to_BandStates(el_states_kq, gkqpts, nelec_below_window_kq)
+    # (imap discarded: the BoltzmannCalculator scatter reads `el_*.indmap` via `_indmap_to_device`.)
+    calc.el_i, _ = electron_states_to_BandStates(el_states, gkpts, nelec_below_window_k)
+    calc.el_f, _ = electron_states_to_BandStates(el_states_kq, gkqpts, nelec_below_window_kq)
     n_i = calc.el_i.n
     n_f = calc.el_f.n
     nT = length(calc.occ)
