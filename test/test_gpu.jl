@@ -109,29 +109,28 @@ end
     check_eph_batched(identity, identity; rtol=1e-10)
 end
 
-# Plumbing of the outer-q batched calculator hook (allow_eph_outer_q_batched /
-# run_calculator_outer_q_batched!) used by `run_eph_over_q_and_k(...; use_gpu=true)`. The per-q device
-# lifecycle reuses the generic setup_calculator_inner! / postprocess_calculator_inner! hooks (same
-# as the CPU outer-q loop). Backend-agnostic, so no GPU is needed — checks the opt-in default and
-# the not-implemented error path.
+# Plumbing of the outer-q batched calculator payload (supports(_, ElPhDataOuterQBatched) /
+# run_calculator!(_, ::ElPhDataOuterQBatched, ctx)) used by `run_eph_over_q_and_k(...; use_gpu=true)`.
+# The per-q device lifecycle reuses the OuterIteration begin/end brackets (same as the CPU outer-q
+# loop). Backend-agnostic, so no GPU is needed — checks the opt-in default and the MethodError path.
 struct _PlainQCalc <: ElectronPhonon.AbstractCalculator end
 mutable struct _OptInQCalc <: ElectronPhonon.AbstractCalculator; setup::Int; flush::Int; end
-ElectronPhonon.allow_eph_outer_q_batched(::_OptInQCalc) = true
-ElectronPhonon.setup_calculator_inner!(c::_OptInQCalc; kwargs...) = (c.setup += 1; nothing)
-ElectronPhonon.postprocess_calculator_inner!(c::_OptInQCalc; kwargs...) = (c.flush += 1; nothing)
+ElectronPhonon.supports(::_OptInQCalc, ::Type{ElectronPhonon.ElPhDataOuterQBatched}) = true
+ElectronPhonon.calculator_begin!(c::_OptInQCalc, ::ElectronPhonon.OuterIteration, ctx) = (c.setup += 1; nothing)
+ElectronPhonon.calculator_end!(c::_OptInQCalc, ::ElectronPhonon.OuterIteration, ctx) = (c.flush += 1; nothing)
 
 @testset "outer-q batched calculator hook plumbing" begin
-    # Default opts out; the batched-q hook errors if unimplemented.
-    @test ElectronPhonon.allow_eph_outer_q_batched(_PlainQCalc()) == false
-    @test_throws Exception ElectronPhonon.run_calculator_outer_q_batched!(
-        _PlainQCalc(), nothing, nothing, nothing, nothing, nothing, nothing, nothing, 1)
+    ctx = ElectronPhonon.LoopContext(ElectronPhonon.CPUBackend(), 1, 1:0, 4)
+    # Default opts out; a calculator with no run_calculator! method for the payload is a MethodError.
+    @test ElectronPhonon.supports(_PlainQCalc(), ElectronPhonon.ElPhDataOuterQBatched) == false
+    pl = ElectronPhonon.ElPhDataOuterQBatched(nothing, nothing, nothing, nothing, nothing, nothing, nothing, 1)
+    @test_throws MethodError ElectronPhonon.run_calculator!(_PlainQCalc(), pl, ctx)
 
-    # Opt-in calculator: hook returns true and the per-q inner hooks dispatch to the override
-    # (the GPU outer-q loop passes iq / gpu_array / nk_batch_max through them).
+    # Opt-in calculator: supports returns true and the per-iteration brackets dispatch to the override.
     c = _OptInQCalc(0, 0)
-    @test ElectronPhonon.allow_eph_outer_q_batched(c) == true
-    ElectronPhonon.setup_calculator_inner!(c; iq=1, gpu_array=zeros(1), nk_batch_max=4)
-    ElectronPhonon.postprocess_calculator_inner!(c; iq=1)
+    @test ElectronPhonon.supports(c, ElectronPhonon.ElPhDataOuterQBatched) == true
+    ElectronPhonon.calculator_begin!(c, ElectronPhonon.OuterIteration(), ctx)
+    ElectronPhonon.calculator_end!(c, ElectronPhonon.OuterIteration(), ctx)
     @test (c.setup, c.flush) == (1, 1)
 end
 
@@ -288,17 +287,16 @@ mutable struct _RecordCalc <: ElectronPhonon.AbstractCalculator
     ωq::Array{Float64,5}
     _RecordCalc() = new(zeros(0, 0, 0, 0, 0), zeros(0, 0, 0, 0, 0))
 end
-ElectronPhonon.allow_eph_outer_k(::_RecordCalc) = true
+ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.OuterKLoop}) = true
 function ElectronPhonon.setup_calculator!(c::_RecordCalc, kpts, qpts, el_states;
         el_states_kq, kqpts, nw, nmodes, kwargs...)
     c.g2 = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
     c.ωq = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
     c
 end
-ElectronPhonon.setup_calculator_inner!(c::_RecordCalc; kwargs...) = c
-ElectronPhonon.postprocess_calculator_inner!(c::_RecordCalc; kwargs...) = c
 ElectronPhonon.postprocess_calculator!(c::_RecordCalc; kwargs...) = c
-function ElectronPhonon.run_calculator!(c::_RecordCalc, epdata, ik, iq, ikq; kwargs...)
+function ElectronPhonon.run_calculator!(c::_RecordCalc, p::ElectronPhonon.ElPhDataPoint, ctx)
+    (; epdata, ik, ikq) = p
     (; el_k, el_kq, ph) = epdata
     for imode in 1:ph.nmodes, n in el_k.rng, m in el_kq.rng
         c.g2[m, n, imode, ik, ikq] = epdata.g2[m, n, imode]
@@ -316,25 +314,23 @@ mutable struct _RecordCalcBatched <: ElectronPhonon.AbstractCalculator
     ωq::Array{Float64,5}
     _RecordCalcBatched() = new(zeros(0, 0, 0, 0, 0), zeros(0, 0, 0, 0, 0))
 end
-ElectronPhonon.allow_eph_outer_k(::_RecordCalcBatched) = true
-ElectronPhonon.allow_eph_outer_k_batched(::_RecordCalcBatched) = true
+ElectronPhonon.supports(::_RecordCalcBatched, ::Type{ElectronPhonon.OuterKLoop}) = true
+ElectronPhonon.supports(::_RecordCalcBatched, ::Type{ElectronPhonon.ElPhDataOuterKBatched}) = true
 function ElectronPhonon.setup_calculator!(c::_RecordCalcBatched, kpts, qpts, el_states;
         el_states_kq, kqpts, nw, nmodes, kwargs...)
     c.g2 = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
     c.ωq = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
     c
 end
-ElectronPhonon.setup_calculator_inner!(c::_RecordCalcBatched; kwargs...) = c
-ElectronPhonon.postprocess_calculator_inner!(c::_RecordCalcBatched; kwargs...) = c
 ElectronPhonon.postprocess_calculator!(c::_RecordCalcBatched; kwargs...) = c
 # Computes g2 from `ep_kq` itself (independent check of the fused-kernel ep_kq output). The GPU
-# loop now also folds g2 into the kRkq kernel and passes it as `g2=`; when present, assert it
-# matches the abs2/(2ω) recomputation — this guards the production g2 output in-package.
-function ElectronPhonon.run_calculator_outer_k_batched!(c::_RecordCalcBatched, ep_kq, ωq, ik, ikqs;
-        g2=nothing, ibandk_offset=0)
+# loop also folds g2 into the kRkq kernel and carries it in the payload; assert it matches the
+# abs2/(2ω) recomputation — this guards the production g2 output in-package.
+function ElectronPhonon.run_calculator!(c::_RecordCalcBatched, p::ElectronPhonon.ElPhDataOuterKBatched, ctx)
+    (; ep_kq, g2, ωq, ik, ikqs, ibandk_offset) = p
     nbandkq, nbandk, nm, nqc = size(ep_kq)
     g2dev = abs2.(ep_kq) ./ (2 .* reshape(ωq, 1, 1, nm, nqc))
-    g2 === nothing || @assert maximum(abs, Array(g2 .- g2dev)) <= 1e-10 * maximum(abs, Array(g2dev))
+    @assert maximum(abs, Array(g2 .- g2dev)) <= 1e-10 * maximum(abs, Array(g2dev))
     g2h = Array(g2dev)   # device → host (m,n,ν,j)
     ωh = Array(ωq)
     ikqsh = Array(ikqs)
@@ -428,8 +424,8 @@ mutable struct _RecordCalcOuterQ <: ElectronPhonon.AbstractCalculator
     Adev::Any                # length-1 device accumulator for the CURRENT q (GPU path), or nothing
     _RecordCalcOuterQ() = new(zeros(0), zeros(0), nothing)
 end
-ElectronPhonon.allow_eph_outer_q(::_RecordCalcOuterQ) = true
-ElectronPhonon.allow_eph_outer_q_batched(::_RecordCalcOuterQ) = true
+ElectronPhonon.supports(::_RecordCalcOuterQ, ::Type{ElectronPhonon.OuterQLoop}) = true
+ElectronPhonon.supports(::_RecordCalcOuterQ, ::Type{ElectronPhonon.ElPhDataOuterQBatched}) = true
 ElectronPhonon.allowed_eph_phonon_basis(::_RecordCalcOuterQ) = [:eigenmode]
 function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, kpts, qpts, el_states;
         nchunks_threads=nthreads(), kwargs...)
@@ -438,35 +434,37 @@ function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, kpts, qpts, el_s
     c.Adev = nothing
     c
 end
-# CPU path: zero this q's per-chunk accumulator. GPU path (gpu_array !== nothing): (re)allocate and
-# zero this q's length-1 device accumulator.
-function ElectronPhonon.setup_calculator_inner!(c::_RecordCalcOuterQ; gpu_array=nothing, kwargs...)
-    if gpu_array !== nothing
-        c.Adev = fill!(similar(gpu_array, Float64, 1), 0.0)
+# CPU path: zero this q's per-chunk accumulator. GPU path: (re)allocate and zero this q's length-1
+# device accumulator from ctx.backend.
+function ElectronPhonon.calculator_begin!(c::_RecordCalcOuterQ, ::ElectronPhonon.OuterIteration, ctx)
+    if ctx.backend isa ElectronPhonon.GPUBackend
+        c.Adev = fill!(ElectronPhonon.alloc(ctx.backend, Float64, 1), 0.0)
     else
         fill!(c.Achunk, 0.0)
     end
     c
 end
-# Reduce this q's accumulator (per-chunk sum, or device→host copy) into A[iq].
-function ElectronPhonon.postprocess_calculator_inner!(c::_RecordCalcOuterQ; iq, kwargs...)
+# Reduce this q's accumulator (per-chunk sum, or device→host copy) into A[iq] (iq = ctx.outer_index).
+function ElectronPhonon.calculator_end!(c::_RecordCalcOuterQ, ::ElectronPhonon.OuterIteration, ctx)
+    iq = ctx.outer_index
     c.A[iq] = c.Adev === nothing ? sum(c.Achunk) : Array(c.Adev)[1]
     c.Adev = nothing
     c
 end
 ElectronPhonon.postprocess_calculator!(c::_RecordCalcOuterQ; kwargs...) = c
-# CPU hook: epdata.ep is already an OffsetArray restricted to (el_kq.rng, el_k.rng, :), so summing
+# CPU path: epdata.ep is already an OffsetArray restricted to (el_kq.rng, el_k.rng, :), so summing
 # all of it covers exactly the in-window (m, n, ν) triples.
-function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, epdata, ik, iq, ikq; id_chunk, kwargs...)
-    c.Achunk[id_chunk] += epdata.wtk * sum(abs2, epdata.ep)
+function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.ElPhDataPoint, ctx)
+    c.Achunk[p.id_chunk] += p.epdata.wtk * sum(abs2, p.epdata.ep)
     c
 end
-# GPU batched hook: `ep` is (nw,nw,nmodes,nkc) on the device, full-band (out-of-window bands already
+# GPU batched path: `ep_kq` is (nw,nw,nmodes,nkc) on the device, full-band (out-of-window bands already
 # zeroed by the loop's eigenvector-column masking); `wtk` is (nkc,) with padded tail entries = 0, so
 # no special-casing of the final partial k-batch is needed. `sum` of a device broadcast expression
 # reduces on-device and returns a host scalar without any scalar indexing (allowed under
 # CUDA.allowscalar(false)).
-function ElectronPhonon.run_calculator_outer_q_batched!(c::_RecordCalcOuterQ, ep, e_k, e_kq, uk, ukq, wtk, xks, iq; kwargs...)
+function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.ElPhDataOuterQBatched, ctx)
+    ep, wtk = p.ep_kq, p.wtk
     nkc = size(ep, 4)
     val = sum(abs2.(ep) .* reshape(wtk, 1, 1, 1, nkc))
     c.Adev .+= val

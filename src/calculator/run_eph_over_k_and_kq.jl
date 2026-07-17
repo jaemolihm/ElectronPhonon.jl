@@ -26,8 +26,8 @@ function run_eph_over_k_and_kq(
         throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_over_k_and_kq"))
     end
     for calc in calculators
-        if !allow_eph_outer_k(calc)
-            throw(ArgumentError("$calc does not allow eph_outer_k. Use run_eph_over_q_and_k instead."))
+        if !supports(calc, OuterKLoop)
+            throw(ArgumentError("$calc does not support the outer-k loop. Use run_eph_over_q_and_k instead."))
         end
     end
 
@@ -206,7 +206,7 @@ function _setup_eph_over_k_and_kq(
     # Initialize calculators
     _setup_calculators!(calculators, kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        nelec_below_window_k, nelec_below_window_kq, nchunks_threads, use_gpu,
+        nelec_below_window_k, nelec_below_window_kq, nchunks_threads,
     )
 
     if mpi_isroot()
@@ -249,6 +249,7 @@ function _loop_eph_over_k_and_kq(
 
     (; nw, nmodes) = model
     nk = kpts.n
+    backend = CPUBackend()
 
     for ik in 1:nk
         if mod(ik, progress_print_step) == 0 && mpi_isroot()
@@ -275,9 +276,8 @@ function _loop_eph_over_k_and_kq(
         end
 
         # Multithreading setup
-        for calc in calculators
-            setup_calculator_inner!(calc; ik)
-        end
+        ctx_k = LoopContext(backend, ik, 1:0, 0)
+        foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
 
         @threads for (id_chunk, ikqs) in enumerate(chunks(1:kqpts.n; n=nchunks_threads))
         # @time for (id_chunk, ikqs) in enumerate(collect(chunks(1:kqpts.n; n=nchunks_threads))[1:1])
@@ -298,7 +298,7 @@ function _loop_eph_over_k_and_kq(
 
             _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, el_kq_save,
                 xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk,
-                energy_conservation, screening_params, skip_eph;
+                energy_conservation, screening_params, skip_eph, ctx_k;
                 ep_ekpR_R, calculators,
             )
 
@@ -313,9 +313,7 @@ function _loop_eph_over_k_and_kq(
         end # ikq chunk
 
         # Multithreading collect
-        for calc in calculators
-            postprocess_calculator_inner!(calc; ik)
-        end
+        foreach(c -> calculator_end!(c, OuterIteration(), ctx_k), calculators)
 
     end # ik
 
@@ -327,7 +325,7 @@ end
 
 function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epdata, ik, ep_ekpR, el_kq_save,
         xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk,
-        energy_conservation, screening_params, skip_eph;
+        energy_conservation, screening_params, skip_eph, ctx;
         ep_ekpR_R, calculators,
     ) where {FT}
 
@@ -436,10 +434,9 @@ function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epdata, ik, ep_ekpR, e
 
         # Now, we are done with matrix elements. All data saved in epdata.
 
-        for calc in calculators
-            # FIXME: Find out better way to pass epdata_dg
-            run_calculator!(calc, epdata, ik, iq, ikq; xq, xk, id_chunk, epdata_dg)
-        end
+        # FIXME: Find out better way to pass epdata_dg (now a typed payload field)
+        payload = ElPhDataPoint(epdata, ik, iq, ikq, xk, xq, id_chunk, epdata_dg)
+        foreach(c -> run_calculator!(c, payload, ctx), calculators)
 
     end # ikq
 end
@@ -515,9 +512,9 @@ function _loop_eph_over_k_and_kq_gpu(
     # batched device hook; a non-batched calculator fails loudly rather than silently falling back
     # to a slow host path — a hard-to-spot performance cliff (see README_GPU.md "Decisions").
     isempty(calculators) && throw(ArgumentError("use_gpu requires at least one calculator."))
-    all(allow_eph_outer_k_batched, calculators) || throw(ArgumentError(
-        "use_gpu requires every calculator to implement the batched device hook " *
-        "(allow_eph_outer_k_batched = true); the GPU path does not fall back to the host run_calculator! loop."))
+    all(c -> supports(c, ElPhDataOuterKBatched), calculators) || throw(ArgumentError(
+        "use_gpu requires every calculator to support the ElPhDataOuterKBatched payload " *
+        "(supports(calc, ElPhDataOuterKBatched) = true); the GPU path does not fall back to the host loop."))
 
     # The k+q side of the interpolation runs full-band (uniform nw×nw, using the full eigenvectors
     # `el.u_full`); the energy window is applied in the calculator scatter, where out-of-window
@@ -545,6 +542,7 @@ function _loop_eph_over_k_and_kq_gpu(
 
     # ----- device interpolators (allocated once) -----
     epmat_dev = to_device(model.epmat)
+    backend = GPUBackend(epmat_dev.op_r)   # one resolution point; carried in LoopContext below
     itp_epmat = BatchedWannierInterpolator(epmat_dev; batch_size = nk_batch_max)
     ep_ekpR_dev = to_device(get_next_wannier_object(model.epmat))
     ndata_ekpR = nw * nbandk_max * nmodes
@@ -565,7 +563,8 @@ function _loop_eph_over_k_and_kq_gpu(
     #   uphs_dev                                                        :     16·nmodes²
     #   ωq_dev                                                          :      8·nmodes
     #   iqs_batch_dev + ikqs_dev (Int)                                  :     16
-    bytes_per_q = 72 * nw * nbandk_max * nmodes + 24 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 16
+    bytes_per_q = 72 * nw * nbandk_max * nmodes + 24 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 16 +
+        sum(Int[eph_batched_bytes_per_point(c, ElPhDataOuterKBatched; nw, nmodes) for c in calculators])
     # Whole-run + per-k-batch commitments allocated after this point come off the top before dividing:
     #   ukqs_all_dev              : 16·nw²·nkq
     #   uph_all_dev + ωq_all_dev  : (16·nmodes² + 8·nmodes)·qpts.n
@@ -573,7 +572,7 @@ function _loop_eph_over_k_and_kq_gpu(
     committed = 16 * nw^2 * nkq +
         (16 * nmodes^2 + 8 * nmodes) * qpts.n +
         16 * nw * nbandk_max * (nmodes * nr_ep + 1) * nk_batch_max
-    free = device_free_bytes(epmat_dev.op_r)
+    free = free_bytes(backend)
     if free != typemax(Int) && committed > free
         error("GPU outer-k: committed device memory ($(round(committed / 1e9, digits = 2)) GB: " *
               "whole-run k+q/phonon stacks + per-k-batch RR→kR scratch, nk_batch_max = $nk_batch_max) " *
@@ -693,9 +692,8 @@ function _loop_eph_over_k_and_kq_gpu(
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
-        for calc in calculators
-            setup_calculator_outer_batch!(calc; kstart, kend, gpu_array = epmat_dev.op_r)
-        end
+        ctx_batch = LoopContext(backend, 0, iks_batch, nk_batch_max)
+        foreach(c -> calculator_begin!(c, OuterIterationBatch(), ctx_batch), calculators)
 
     for (ik_ind, ik) in enumerate(iks_batch)
         if mod(ik, progress_print_step) == 0 && mpi_isroot()
@@ -709,9 +707,8 @@ function _loop_eph_over_k_and_kq_gpu(
         @views ep_ekpR_dev.op_r[1:ndata_ekpR, :] .= ep_ekpR_all[:, :, ik_ind]
         ep_ekpR_dev._id += 1
 
-        for calc in calculators
-            setup_calculator_inner!(calc; ik)
-        end
+        ctx_k = LoopContext(backend, ik, iks_batch, nk_batch_max)
+        foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
 
         qstart = 1
         while qstart <= nkq
@@ -765,32 +762,26 @@ function _loop_eph_over_k_and_kq_gpu(
             # g2 / scatters it on the device; no D2H of the e-ph matrix here. 5-arg contiguous H2D
             # copy of the first nq_batch k+q indices (a SubArray-view copy would go scalar).
             copyto!(ikqs_dev, 1, ikqs_host, 1, nq_batch)
-            for calc in calculators
-                run_calculator_outer_k_batched!(calc,
-                    view(epkq_dev, :, :, :, rng_q), view(ωq_dev, :, rng_q),
-                    ik, view(ikqs_dev, rng_q); g2 = view(g2_dev, :, :, :, rng_q),
-                    ibandk_offset = ibandk_offsets[ik])
-            end
+            payload = ElPhDataOuterKBatched(
+                view(epkq_dev, :, :, :, rng_q), view(g2_dev, :, :, :, rng_q),
+                view(ωq_dev, :, rng_q), ik, view(ikqs_dev, rng_q), ibandk_offsets[ik])
+            foreach(c -> run_calculator!(c, payload, ctx_k), calculators)
 
             qstart = qend + 1
         end # q batch
 
-        for calc in calculators
-            postprocess_calculator_inner!(calc; ik)
-        end
+        foreach(c -> calculator_end!(c, OuterIteration(), ctx_k), calculators)
     end # ik within batch
 
     # Outer-batch-resident calculators D2H this batch's device buffer into their host output here
     # (one contiguous copy per batch, not per k); no-op (default hooks) for full-resident calculators.
-    for calc in calculators
-        flush_calculator_outer_batch!(calc; kstart, kend)
-    end
+    foreach(c -> calculator_end!(c, OuterIterationBatch(), ctx_batch), calculators)
 
     # Bound the host look-ahead to one k-batch: a device-resident calculator never D2H-syncs per k,
     # so without this the host can race across all batches, keeping every batch's RR->kR scratch +
     # per-k transients live in the memory pool at once. Draining at each batch boundary caps the
     # transient working set with negligible utilization cost. No-op on the CPU backend.
-    device_synchronize(epmat_dev.op_r)
+    synchronize(backend)
     end # k batch
 
     for calc in calculators

@@ -39,8 +39,8 @@ function run_eph_over_k_and_q(
         throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_over_k_and_q"))
     end
     for calc in calculators
-        if !allow_eph_outer_k(calc)
-            throw(ArgumentError("$calc does not allow eph_outer_k. Use run_eph_over_q_and_k instead."))
+        if !supports(calc, OuterKLoop)
+            throw(ArgumentError("$calc does not support the outer-k loop. Use run_eph_over_q_and_k instead."))
         end
     end
 
@@ -215,6 +215,7 @@ function _loop_eph_over_k_and_q(
 
     nk = kpts.n
     nq = qpts.n
+    backend = CPUBackend()
 
     for ik in 1:nk
         if mod(ik, progress_print_step) == 0 && mpi_isroot()
@@ -235,7 +236,8 @@ function _loop_eph_over_k_and_q(
         end
 
         # Multithreading setup
-        setup_calculator_inner!.(calculators, ik; ik)
+        ctx_k = LoopContext(backend, ik, 1:0, 0)
+        foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
 
         @threads for (id_chunk, iqs) in enumerate(chunks(1:nq; n=nchunks_threads))
             epdata = take!(epdatas)
@@ -295,7 +297,8 @@ function _loop_eph_over_k_and_q(
 
                 # Now, we are done with matrix elements. All data saved in epdata.
 
-                run_calculator!.(calculators, Ref(epdata), Ref(ik), Ref(iq), Ref(ikq); xq, xk, id_chunk)
+                payload = ElPhDataPoint(epdata, ik, iq, ikq, xk, xq, id_chunk, nothing)
+                foreach(c -> run_calculator!(c, payload, ctx_k), calculators)
 
             end # iq
 
@@ -309,7 +312,7 @@ function _loop_eph_over_k_and_q(
         end # iq chunk
 
         # Multithreading collect
-        postprocess_calculator_inner!.(calculators; ik)
+        foreach(c -> calculator_end!(c, OuterIteration(), ctx_k), calculators)
 
     end # ik
 

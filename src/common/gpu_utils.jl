@@ -30,6 +30,26 @@ host look-ahead in the GPU e-ph loop so per-tile scratch does not pile up in the
 """
 device_synchronize(gpu_array) = nothing
 
+# Backend objects: one resolution point per driver entry (`backend = use_gpu ? GPUBackend(proto)
+# : CPUBackend()`), then carried in `LoopContext` (see calculator/AbstractCalculator.jl). Below the
+# driver entry, calculators allocate device/host buffers via `alloc(backend, T, dims...)` and query
+# `free_bytes(backend)` / `synchronize(backend)`, so `use_gpu`/`gpu_array` never thread through the
+# calculator interface. No extension code is needed for the types themselves: `GPUBackend` carries a
+# device-array prototype, and `free_bytes`/`synchronize` route through the `device_*` primitives
+# above whose `CuArray` methods already live in the extension.
+abstract type AbstractBackend end
+struct CPUBackend <: AbstractBackend end
+struct GPUBackend{AT <: AbstractArray} <: AbstractBackend
+    proto :: AT     # allocation prototype (a device array, e.g. `to_device(model.epmat).op_r`)
+end
+
+alloc(::CPUBackend, ::Type{T}, dims...) where {T} = Array{T}(undef, dims...)
+alloc(b::GPUBackend, ::Type{T}, dims...) where {T} = similar(b.proto, T, dims...)
+free_bytes(::CPUBackend)  = typemax(Int)
+free_bytes(b::GPUBackend) = device_free_bytes(b.proto)
+synchronize(::CPUBackend)  = nothing
+synchronize(b::GPUBackend) = device_synchronize(b.proto)
+
 @inline _batched_op(t::Char, X) = t == 'N' ? X : (t == 'T' ? transpose(X) : adjoint(X))
 
 """

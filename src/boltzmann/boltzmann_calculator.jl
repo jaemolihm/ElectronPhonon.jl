@@ -4,10 +4,10 @@
 # into Sₒ/Sᵢ via the shared `bte_scattering_increments` (see src/boltzmann/bte_scattering_core.jl).
 #
 # One calculator, both backends: the same calculator instance is used on CPU or GPU — the backend is
-# chosen by `run_eph_over_k_and_kq`'s `use_gpu`, which dispatches to `run_calculator!` (host loop,
-# per (ik,iq,ikq)) or `run_calculator_outer_k_batched!` (device, per k-batch). Both fold the identical
-# `bte_scattering_increments`, so they compute the same scattering (to round-off); the CPU path also
-# serves as the validation reference for the GPU path.
+# chosen by `run_eph_over_k_and_kq`'s `use_gpu`, which dispatches `run_calculator!` on the payload
+# type: `ElPhDataPoint` (host loop, per (ik,iq,ikq)) or `ElPhDataOuterKBatched` (device, per k-batch).
+# Both fold the identical `bte_scattering_increments`, so they compute the same scattering (to
+# round-off); the CPU path also serves as the validation reference for the GPU path.
 #
 # Output layout is what the transport solver (`solve_electron_bte` / `solve_thermoelectric_bte`)
 # consumes unchanged:
@@ -19,7 +19,7 @@
 #
 # GPU device memory (Sᵢ): the scattering-in matrix Sᵢ (n_i·n_f·nT) is the large object. On the GPU it
 # is never held whole on the device — it is tiled over outer k, each tile filled by one k-batch and
-# streamed to the host (setup/flush_calculator_outer_batch!), so only one tile (≈ one k-batch of rows)
+# streamed to the host (OuterIterationBatch begin/end brackets), so only one tile (≈ one k-batch of rows)
 # is device-resident. This bounds device memory to the tile regardless of grid size at no measurable
 # speed cost: streaming is within ~2% of a single whole-Sᵢ copy even at 1.1 GB Sᵢ, because the D2H
 # bytes moved are identical either way. There is deliberately no full-device-resident Sᵢ path. (Sₒ is
@@ -27,6 +27,24 @@
 # the profile (and why the scatter kernel is NOT a negligible fraction of GPU time).
 
 export BoltzmannCalculator
+
+# Device buffers for the GPU batched path, built once in the first `calculator_begin!(…,
+# OuterIterationBatch(), ctx)` from `alloc(ctx.backend, …)`. Held behind `dev::Union{Nothing, …}` on
+# the calculator; touched only at hook granularity (one kernel launch per call), so the function
+# boundary keeps the hot code type-stable. Sᵢ is never held whole here — `Sᵢ_tile` is one outer-k
+# tile (i-extent = the largest k-batch), streamed to the host per batch.
+struct BoltzmannDeviceBuffers{MT, MI, VT, AT3}
+    Sₒ      :: MT      # (n_i, nT)  — small, device-resident
+    imap_i  :: MI      # (nw, n_k)  physical-band → outer state index
+    imap_f  :: MI      # (nw, n_kq) physical-band → inner state index
+    e_i     :: VT      # (n_i,) outer energies
+    e_f     :: VT      # (n_f,) inner energies
+    wq      :: VT      # (n_kq,) inner k+q weights
+    μ       :: VT      # (nT,)
+    T       :: VT      # (nT,)
+    η       :: VT      # (nT,)
+    Sᵢ_tile :: AT3     # (ni_cap, n_f, nT)
+end
 
 Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # --- Parameters ---
@@ -48,11 +66,8 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # per-chunk Sₒ/Sᵢ buffers are OffsetArrays indexed over this band range. (1:0 = not set yet.)
     rng_band::UnitRange{Int} = 1:0
     # Full (Wannier) band count (= model.nw); set at setup. GPU path only: sizes the physical-band
-    # device index maps built in setup_calculator_outer_batch!. (0 = not set yet.)
+    # device index maps built in the first OuterIterationBatch begin. (0 = not set yet.)
     nw::Int = 0
-    # Backend selected by run_eph_over_k_and_kq (set at setup): false = CPU (run_calculator!),
-    # true = GPU (run_calculator_outer_k_batched!). Each per-path hook errors if called on the wrong backend.
-    use_gpu::Bool = false
 
     # --- State (BandStates) --- the (iband, ik) → state reverse map is `el_*.indmap` (via state_index)
     el_i::Union{Nothing, BandStates{FT, GridKpoints{FT}}} = nothing
@@ -63,39 +78,31 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     Sᵢ::Vector{Matrix{FT}} = Vector{Matrix{FT}}()         # per iT, (n_i, n_f)
 
     # --- CPU-path thread buffers (run_calculator!) ---
-    # Allocated at setup when use_gpu = false; the GPU path never allocates them (Sᵢ_buffer would be
-    # nchunks·nT·rng_band·n_f — prohibitive on production grids).
+    # Allocated lazily on the first CPU `calculator_begin!(…, OuterIteration(), ctx)`; the GPU path
+    # never allocates them (Sᵢ_buffer would be nchunks·nT·rng_band·n_f — prohibitive on production grids).
     Sₒ_buffer::Vector{Vector{OffsetVector{FT, Vector{FT}}}} = Vector{Vector{OffsetVector{FT, Vector{FT}}}}()
     Sᵢ_buffer::Vector{Vector{OffsetMatrix{FT, Matrix{FT}}}} = Vector{Vector{OffsetMatrix{FT, Matrix{FT}}}}()
 
     # --- Device buffers (GPU batched path) ---
-    Sₒ_dev::Any = nothing      # (n_i, nT) — small, kept device-resident
-    imap_i_dev::Any = nothing  # (nw, n_k)  physical-band → outer state index
-    imap_f_dev::Any = nothing  # (nw, n_kq) physical-band → inner state index
-    e_i_dev::Any = nothing     # (n_i) outer energies
-    e_f_dev::Any = nothing     # (n_f) inner energies
-    wq_dev::Any = nothing      # (n_kq) inner k+q weights
-    μ_dev::Any = nothing       # (nT)
-    T_dev::Any = nothing       # (nT)
-    η_dev::Any = nothing       # (nT)
+    # Built once in the first `calculator_begin!(…, OuterIterationBatch(), ctx)`; nothing until then
+    # (and on the CPU path). See `BoltzmannDeviceBuffers`.
+    dev::Union{Nothing, BoltzmannDeviceBuffers} = nothing
 
-    # --- Sᵢ tile (streamed to the host per outer-k batch) ---
-    # Sᵢ is never held whole on the device: each outer-k batch fills a tile and streams it to the host
-    # (setup/flush_calculator_outer_batch!), so only one tile is device-resident at a time.
-    Sᵢ_tile_dev::Any = nothing            # (ni_cap, n_f, nT)
+    # --- Sᵢ tile bookkeeping (streamed to the host per outer-k batch) ---
+    # Sᵢ is never held whole on the device: each outer-k batch fills `dev.Sᵢ_tile` and streams it to
+    # the host (OuterIterationBatch begin/end), so only one tile is device-resident at a time.
     Sᵢ_tile_host::Array{FT, 3} = zeros(FT, 0, 0, 0)
     tile_i0::Int = 0
     tile_ni::Int = 0
 end
 
-ElectronPhonon.allow_eph_outer_k(::BoltzmannCalculator) = true
-ElectronPhonon.allow_eph_outer_k_batched(::BoltzmannCalculator) = true
+ElectronPhonon.supports(::BoltzmannCalculator, ::Type{OuterKLoop}) = true
+ElectronPhonon.supports(::BoltzmannCalculator, ::Type{ElPhDataOuterKBatched}) = true
 
 function ElectronPhonon.setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, qpts, el_states;
         el_states_kq, kqpts, nelec_below_window_k, nelec_below_window_kq, nchunks_threads, rng_band,
-        nw, use_gpu = false, kwargs...) where {FT}
+        nw, kwargs...) where {FT}
     mpi_isroot() && println("Setting up BoltzmannCalculator")
-    calc.use_gpu = use_gpu
     calc.scattering_method === :MRTA &&
         throw(ArgumentError("scattering_method :MRTA not implemented"))
     calc.occ.occ_type === :FermiDirac ||
@@ -133,26 +140,30 @@ function ElectronPhonon.setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, q
 
     calc.Sₒ = [zeros(FT, n_i) for _ in 1:nT]
     calc.Sᵢ = [zeros(FT, n_i, n_f) for _ in 1:nT]
-    # CPU path only: allocate the per-chunk thread buffers now (this runs once, single-threaded, so
-    # no lock is needed). The GPU path leaves them empty (its device buffers are allocated lazily in
-    # the batched hooks). Reallocated on every setup, so a reused calculator on a different grid gets
-    # correctly-sized buffers.
-    if use_gpu
-        calc.Sₒ_buffer = empty(calc.Sₒ_buffer)
-        calc.Sᵢ_buffer = empty(calc.Sᵢ_buffer)
-    else
-        rb = calc.rng_band
-        calc.Sₒ_buffer = [[OffsetArray(zeros(FT, length(rb)), rb) for _ in 1:nT] for _ in 1:calc.nchunks]
-        calc.Sᵢ_buffer = [[OffsetArray(zeros(FT, length(rb), n_f), rb, :) for _ in 1:nT] for _ in 1:calc.nchunks]
-    end
+    # The device buffers (GPU) and the per-chunk CPU thread buffers are both allocated lazily — the
+    # device ones in the first OuterIterationBatch begin, the CPU ones in the first CPU OuterIteration
+    # begin — so setup does not need to know the backend. Reset them here so a reused calculator on a
+    # different grid re-allocates correctly-sized buffers.
+    calc.dev = nothing
+    calc.Sₒ_buffer = empty(calc.Sₒ_buffer)
+    calc.Sᵢ_buffer = empty(calc.Sᵢ_buffer)
     calc
 end
 
-# --- CPU (non-batched) path -----------------------------------------------------------------
+# --- CPU (non-batched, ElPhDataPoint) path --------------------------------------------------
 
-# CPU path: zero the per-chunk buffers for the new outer k. No-op on the GPU path.
-function ElectronPhonon.setup_calculator_inner!(calc::BoltzmannCalculator; kwargs...)
-    calc.use_gpu && return calc
+# CPU path: allocate the per-chunk thread buffers on the first outer iteration (this runs once,
+# single-threaded, so no lock is needed), then zero them for the new outer k. Dispatched on the CPU
+# backend; on the GPU path the default no-op runs (device buffers live in OuterIterationBatch).
+function ElectronPhonon.calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIteration,
+        ctx::LoopContext{CPUBackend}) where {FT}
+    if isempty(calc.Sₒ_buffer)
+        rb = calc.rng_band
+        n_f = calc.el_f.n
+        nT = length(calc.occ)
+        calc.Sₒ_buffer = [[OffsetArray(zeros(FT, length(rb)), rb) for _ in 1:nT] for _ in 1:calc.nchunks]
+        calc.Sᵢ_buffer = [[OffsetArray(zeros(FT, length(rb), n_f), rb, :) for _ in 1:nT] for _ in 1:calc.nchunks]
+    end
     for c in eachindex(calc.Sₒ_buffer)
         for x in calc.Sₒ_buffer[c]; x .= 0; end
         for x in calc.Sᵢ_buffer[c]; x .= 0; end
@@ -161,10 +172,9 @@ function ElectronPhonon.setup_calculator_inner!(calc::BoltzmannCalculator; kwarg
 end
 
 # CPU path: called per (ik, iq, ikq) by the host e-ph loop; accumulates into the per-chunk thread
-# buffers, reduced into Sₒ/Sᵢ by postprocess_calculator_inner!.
-function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, epdata, ik, iq, ikq;
-        id_chunk, kwargs...) where {FT}
-    calc.use_gpu && error("run_calculator! is a CPU-only hook (use_gpu=true)")
+# buffers, reduced into Sₒ/Sᵢ by the OuterIteration end bracket.
+function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, p::ElPhDataPoint, ctx) where {FT}
+    (; epdata, ikq, id_chunk) = p
     Sₒ = calc.Sₒ_buffer[id_chunk]
     Sᵢ = calc.Sᵢ_buffer[id_chunk]
     (; el_k, el_kq, ph, wtq) = epdata
@@ -193,9 +203,11 @@ function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, epdata, i
     calc
 end
 
-# CPU path: reduce the per-chunk buffers into the global Sₒ/Sᵢ. No-op on the GPU path.
-function ElectronPhonon.postprocess_calculator_inner!(calc::BoltzmannCalculator; ik, kwargs...)
-    calc.use_gpu && return calc
+# CPU path: reduce the per-chunk buffers into the global Sₒ/Sᵢ. Dispatched on the CPU backend; the
+# GPU path runs the default no-op.
+function ElectronPhonon.calculator_end!(calc::BoltzmannCalculator, ::OuterIteration,
+        ctx::LoopContext{CPUBackend})
+    ik = ctx.outer_index
     @inbounds @views for n in calc.rng_band
         ind_el_i = state_index(calc.el_i, ik, n)
         ind_el_i == 0 && continue
@@ -209,55 +221,56 @@ function ElectronPhonon.postprocess_calculator_inner!(calc::BoltzmannCalculator;
     calc
 end
 
-# --- GPU batched path -----------------------------------------------------------------------
+# --- GPU batched path (ElPhDataOuterKBatched) -----------------------------------------------
 
 # GPU (batched) path: called by the GPU e-ph loop once per outer-k batch, before its k iterations.
-# `gpu_array` is a device array (the e-ph matrix) used as the allocation prototype. On the first batch it
-# also builds the run's one-time device buffers (they need a device array, which `setup_calculator!`
-# does not have); every batch it (re)points/zeros the Sᵢ tile.
-#
-# TODO: have run_eph_over_k_and_kq hand setup_calculator! a GPU array prototype (or the backend
-# array type) so the one-time device init below can move into setup_calculator! and out of this
-# per-batch hook entirely.
-function ElectronPhonon.setup_calculator_outer_batch!(calc::BoltzmannCalculator{FT};
-        kstart, kend, gpu_array, kwargs...) where {FT}
-    calc.use_gpu || error("setup_calculator_outer_batch! is a GPU-only hook")
+# `ctx.backend` (a `GPUBackend`) allocates from the e-ph matrix backend. On the first batch it builds
+# the run's one-time device buffers into `calc.dev` (a `BoltzmannDeviceBuffers`); every batch it
+# records this batch's Sᵢ tile range and zeros the tile's active region. Dispatched on the GPU
+# backend; the CPU path runs the default no-op.
+function ElectronPhonon.calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIterationBatch,
+        ctx::LoopContext{<:GPUBackend}) where {FT}
+    backend = ctx.backend
     n_i, n_f, nT = calc.el_i.n, calc.el_f.n, length(calc.occ)
+    kstart, kend = first(ctx.batch), last(ctx.batch)
 
-    # One-time device copies, built on the first batch and reused across all k in the run. `nw` (the
+    # One-time device buffers, built on the first batch and reused across all k in the run. `nw` (the
     # full Wannier band count, from setup) sizes the physical-band index maps; see `_indmap_to_device`.
-    if calc.imap_i_dev === nothing
-        calc.imap_i_dev = _indmap_to_device(gpu_array, calc.el_i, calc.nw)
-        calc.imap_f_dev = _indmap_to_device(gpu_array, calc.el_f, calc.nw)
-        calc.e_i_dev = copyto!(similar(gpu_array, FT, n_i), calc.el_i.es)
-        calc.e_f_dev = copyto!(similar(gpu_array, FT, n_f), calc.el_f.es)
-        calc.wq_dev  = copyto!(similar(gpu_array, FT, calc.el_f.kpts.n), calc.el_f.kpts.weights)
-        calc.μ_dev = copyto!(similar(gpu_array, FT, nT), collect(FT, calc.occ.μlist))
-        calc.T_dev = copyto!(similar(gpu_array, FT, nT), collect(FT, calc.occ.Tlist))
-        calc.η_dev = copyto!(similar(gpu_array, FT, nT), FT[s[2] for s in calc.smearing])
-        calc.Sₒ_dev = fill!(similar(gpu_array, FT, n_i, nT), zero(FT))   # small, device-resident
+    # `Sᵢ_tile` is sized to the LARGEST outer-k tile so it never grows mid-run (immutable buffer).
+    if calc.dev === nothing
+        nk_outer = calc.el_i.kpts.n
+        ni_cap = maximum(length(ind_range_for_k_range(calc.el_i, ks, min(ks + ctx.n_batch_max - 1, nk_outer)))
+                         for ks in 1:ctx.n_batch_max:nk_outer)
+        calc.dev = BoltzmannDeviceBuffers(
+            fill!(alloc(backend, FT, n_i, nT), zero(FT)),                                  # Sₒ
+            _indmap_to_device(backend, calc.el_i, calc.nw),                                # imap_i
+            _indmap_to_device(backend, calc.el_f, calc.nw),                                # imap_f
+            copyto!(alloc(backend, FT, n_i), calc.el_i.es),                                # e_i
+            copyto!(alloc(backend, FT, n_f), calc.el_f.es),                                # e_f
+            copyto!(alloc(backend, FT, calc.el_f.kpts.n), calc.el_f.kpts.weights),         # wq
+            copyto!(alloc(backend, FT, nT), collect(FT, calc.occ.μlist)),                  # μ
+            copyto!(alloc(backend, FT, nT), collect(FT, calc.occ.Tlist)),                  # T
+            copyto!(alloc(backend, FT, nT), FT[s[2] for s in calc.smearing]),              # η
+            alloc(backend, FT, ni_cap, n_f, nT),                                           # Sᵢ_tile
+        )
+        calc.Sᵢ_tile_host = Array{FT, 3}(undef, ni_cap, n_f, nT)
     end
 
-    # Sᵢ tile for this batch (re-sized/zeroed every batch — Sᵢ is streamed per tile).
+    # Sᵢ tile for this batch (zeroed every batch — Sᵢ is streamed per tile).
     rng = ind_range_for_k_range(calc.el_i, kstart, kend)   # contiguous outer-state block for this k-batch
     calc.tile_i0 = first(rng) - 1; calc.tile_ni = length(rng)
-    ni = calc.tile_ni
-    if calc.Sᵢ_tile_dev === nothing || size(calc.Sᵢ_tile_dev, 1) < ni
-        calc.Sᵢ_tile_dev = similar(gpu_array, FT, ni, n_f, nT)
-        calc.Sᵢ_tile_host = Array{FT, 3}(undef, ni, n_f, nT)
-    end
-    fill!(view(calc.Sᵢ_tile_dev, 1:ni, :, :), zero(FT))
+    fill!(view(calc.dev.Sᵢ_tile, 1:calc.tile_ni, :, :), zero(FT))
     calc
 end
 
-# GPU (batched) path: stream this batch's Sᵢ tile from device to the host output (called by the GPU
-# e-ph loop once per outer-k batch, after its k iterations).
-function ElectronPhonon.flush_calculator_outer_batch!(calc::BoltzmannCalculator; kwargs...)
-    calc.use_gpu || error("flush_calculator_outer_batch! is a GPU-only hook")
+# GPU (batched) path: stream this batch's Sᵢ tile from device to the host output (called once per
+# outer-k batch, after its k iterations). Dispatched on the GPU backend.
+function ElectronPhonon.calculator_end!(calc::BoltzmannCalculator, ::OuterIterationBatch,
+        ctx::LoopContext{<:GPUBackend})
     if calc.tile_ni > 0
         ni = calc.tile_ni
         i0 = calc.tile_i0
-        copyto!(calc.Sᵢ_tile_host, calc.Sᵢ_tile_dev)
+        copyto!(calc.Sᵢ_tile_host, calc.dev.Sᵢ_tile)
         @inbounds for iT in 1:length(calc.occ)
             @views calc.Sᵢ[iT][i0+1:i0+ni, :] .= calc.Sᵢ_tile_host[1:ni, :, iT]
         end
@@ -271,7 +284,7 @@ end
 
 Accumulate the BTE scattering-out (Sₒ) and scattering-in (Sᵢ) contributions of one e-ph chunk into
 the (in-energy-window) device buffers — the transport analogue of `eph_window_scatter!`, and the
-device-resident work of `run_calculator_outer_k_batched!` (its sole caller, so it lives here). For every
+device-resident work of `run_calculator!(::BoltzmannCalculator, ::ElPhDataOuterKBatched, ctx)` (its sole caller, so it lives here). For every
 `(m, n, j)` of the chunk look up the outer/inner states `i = imap_i_at_k[n]`,
 `f = imap_f[m, ikqs[j]]` (skip if either is out-of-window, `== 0`), then for each temperature
 `iocc` sum the shared per-mode physics (`bte_scattering_increments`) over the `nmodes` phonon modes
@@ -317,48 +330,40 @@ function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k,
     nothing
 end
 
-function ElectronPhonon.run_calculator_outer_k_batched!(calc::BoltzmannCalculator{FT},
-        ep_kq, ωq, ik, ikqs; g2=nothing, ibandk_offset=0) where {FT}
-    calc.use_gpu || error("run_calculator_outer_k_batched! is a GPU-only hook")
+function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, p::ElPhDataOuterKBatched, ctx) where {FT}
+    (; ep_kq, g2, ωq, ik, ikqs, ibandk_offset) = p
+    dev = calc.dev
     nbandkq, nbandk, nmodes, nqc = size(ep_kq)
     nT = length(calc.occ)
-    # Device buffers (imap/energies/Sₒ) were built once in setup_calculator_outer_batch!.
+    # Device buffers (imap/energies/Sₒ/Sᵢ_tile) were built once in the first OuterIterationBatch begin.
+    # `g2 = |ep|²/(2ω)` is always folded by the loop's fused kernel and carried in the payload.
 
-    # The loop always folds g2 = |ep|²/(2ω) in get_eph_kR_to_kq_batched! and passes it here, so g2 is
-    # never nothing at the call site; require it rather than recomputing.
-    g2 === nothing && error("run_calculator_outer_k_batched!(BoltzmannCalculator) requires g2 from the loop")
-    g2vals = g2
     # k-side window projection: ep_kq's band-n axis covers nbandk bands starting at physical band
     # ibandk_offset+1, so shift into the physical-band imap_i by that offset (full-band runs have
     # ibandk_offset = 0, nbandk = nw). The k+q axis (m ∈ 1:nbandkq = nw) is not projected.
-    imap_i_at_k = view(calc.imap_i_dev, ibandk_offset+1:ibandk_offset+nbandk, ik)
+    imap_i_at_k = view(dev.imap_i, ibandk_offset+1:ibandk_offset+nbandk, ik)
 
-    # Scatter into this batch's Sᵢ tile (streamed to the host by flush_calculator_outer_batch!).
-    ElectronPhonon.bte_window_accumulate!(calc.Sₒ_dev, calc.Sᵢ_tile_dev, g2vals, ωq,
-        imap_i_at_k, calc.imap_f_dev, ikqs, calc.e_i_dev, calc.e_f_dev, calc.wq_dev,
-        calc.μ_dev, calc.T_dev, calc.η_dev, calc.occupation_method, calc.omega_cutoff,
+    # Scatter into this batch's Sᵢ tile (streamed to the host by the OuterIterationBatch end bracket).
+    ElectronPhonon.bte_window_accumulate!(dev.Sₒ, dev.Sᵢ_tile, g2, ωq,
+        imap_i_at_k, dev.imap_f, ikqs, dev.e_i, dev.e_f, dev.wq,
+        dev.μ, dev.T, dev.η, calc.occupation_method, calc.omega_cutoff,
         nbandkq, nbandk, nmodes, nqc, nT; i0 = calc.tile_i0)
     calc
 end
 
 function ElectronPhonon.postprocess_calculator!(calc::BoltzmannCalculator{FT}; kwargs...) where {FT}
-    calc.use_gpu || return calc   # CPU path: no device buffers to stream/free
+    # CPU path (dev === nothing): no device buffers to stream/free. This also covers the GPU no-batch
+    # corner: if this rank owns no outer k (empty MPI slice / empty window) the OuterIterationBatch
+    # begin never ran, so `dev` is still nothing and Sₒ stays the setup zeros.
+    calc.dev === nothing && return calc
     # GPU path: Sₒ is kept device-resident, so stream it to the host here. (Sᵢ was already streamed
-    # one tile per outer-k batch in flush_calculator_outer_batch!.) The `!== nothing` guard covers
-    # the no-batch corner: if this rank owns no outer k (empty MPI slice / empty window)
-    # run_calculator_outer_k_batched! never ran, so Sₒ_dev is still unset.
-    if calc.Sₒ_dev !== nothing
-        Sₒ_host = Array(calc.Sₒ_dev)        # (n_i, nT)
-        @inbounds for iT in 1:length(calc.occ)
-            @views calc.Sₒ[iT] .= Sₒ_host[:, iT]
-        end
-        calc.Sₒ_dev = nothing
+    # one tile per outer-k batch in the OuterIterationBatch end bracket.)
+    Sₒ_host = Array(calc.dev.Sₒ)        # (n_i, nT)
+    @inbounds for iT in 1:length(calc.occ)
+        @views calc.Sₒ[iT] .= Sₒ_host[:, iT]
     end
     # Free device buffers so the calc can be reused.
-    calc.Sᵢ_tile_dev = nothing
+    calc.dev = nothing
     calc.Sᵢ_tile_host = zeros(FT, 0, 0, 0)
-    calc.imap_i_dev = nothing; calc.imap_f_dev = nothing
-    calc.e_i_dev = nothing; calc.e_f_dev = nothing; calc.wq_dev = nothing
-    calc.μ_dev = nothing; calc.T_dev = nothing; calc.η_dev = nothing
     calc
 end

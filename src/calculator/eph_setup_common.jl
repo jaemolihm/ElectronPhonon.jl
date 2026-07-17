@@ -59,7 +59,7 @@ end
 
 # setup_calculator! fan-out shared by all three drivers. The common keyword payload (band range,
 # k+q states/grid, carrier counts, thread chunking) is passed explicitly; driver-specific extras
-# (use_gpu / gpu_array / verbosity) forward through `kwargs`.
+# (backend / verbosity) forward through `kwargs`.
 function _setup_calculators!(
         calculators, kpts, qpts, el_k_save;
         nw, nmodes, rng_band, el_states_kq, kqpts,
