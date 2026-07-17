@@ -11,6 +11,15 @@ export average_degeneracy
 export bisect
 
 """
+    maybe_time(f, verbosity)
+    maybe_time(verbosity) do ... end
+
+Run `f()`, wrapping it in `@time` only when `verbosity > 0`. Returns `f()`'s value, so it can
+wrap a timed assignment: `x = maybe_time(verbosity) do; expensive(); end`.
+"""
+maybe_time(f, verbosity) = verbosity > 0 ? (@time f()) : f()
+
+"""
     occ_fermion(e, T; occ_type=:FermiDirac)
 Occupation of a fermion at energy `e` and temperature `T`.
 """

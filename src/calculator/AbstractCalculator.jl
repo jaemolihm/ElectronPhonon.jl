@@ -106,7 +106,7 @@ end
 Whether the calculator implements the batched device hook [`run_calculator_outer_q_batched!`] used
 by the GPU outer-q loop (`run_eph_outer_q` with `use_gpu = true`) — outer q, inner k batched. When
 every calculator in a run returns `true`, the GPU loop keeps the e-ph matrix for a whole
-`(q, {k-chunk})` on the device and calls `run_calculator_outer_q_batched!` once per k-chunk —
+`(q, {k-batch})` on the device and calls `run_calculator_outer_q_batched!` once per k-batch —
 skipping the per-`(k,q)` host `run_calculator!` callback and the device→host copy of the e-ph
 matrix. The default opts out. This is the outer-q sibling of [`allow_eph_outer_k_batched`].
 """
@@ -116,7 +116,7 @@ allow_eph_outer_q_batched(::AbstractCalculator) = false
     run_calculator_outer_q_batched!(calc, ep_kq, e_k, e_kq, uk, ukq, wtk, xks, iq; kwargs...)
 
 Batched device hook for the GPU outer-q loop. For a fixed phonon momentum `q` (index `iq`),
-consume the e-ph matrix and electron states for a chunk of outer k-points at once:
+consume the e-ph matrix and electron states for a batch of outer k-points at once:
 - `ep_kq` :: `(nw, nw, nmodes, nkc)` — eigenbasis e-ph matrix on the device, index `[m, n, ν, k]`
   with `m` the k+q band, `n` the k band. Out-of-window bands are already zeroed (the loop
   window-masks the eigenvector columns on both sides), so out-of-window `(m,n)` contribute 0.
@@ -125,8 +125,8 @@ consume the e-ph matrix and electron states for a chunk of outer k-points at onc
 - `uk`   :: `(nw, nw, nkc)` — k-side eigenvectors `uk[jw, n, k]`, zero-padded outside the window.
 - `ukq`  :: `(nw, nw, nkc)` — k+q-side eigenvectors `ukq[iw, m, k]`, zero-padded outside the window.
 - `wtk`  :: `(nkc,)` — k-point integration weights (device). Padded tail entries are 0, so a
-  calculator may operate on the full (padded) chunk without special-casing the final partial chunk.
-- `xks`  :: `(nkc,)` — the chunk's k-vectors (host `Vec3` list), for any k-dependent phase factor.
+  calculator may operate on the full (padded) batch without special-casing the final partial batch.
+- `xks`  :: `(nkc,)` — the batch's k-vectors (host `Vec3` list), for any k-dependent phase factor.
 - `iq`   :: q-point index.
 
 The per-q lifecycle is bracketed by the generic [`setup_calculator_inner!`] (device buffer alloc /
@@ -135,10 +135,10 @@ hooks the CPU loop uses per q. Runs on the backend of `ep_kq`; implementations s
 backend-generic (`similar`, `copyto!`, broadcasting, `mul!`) so no CUDA dependency leaks into the
 calculator.
 
-Memory note: implementations typically preallocate device scratch sized `(…, k_chunk)`, which also
+Memory note: implementations typically preallocate device scratch sized `(…, k_batch)`, which also
 scales with calculator-internal factors (number of frequencies, temperatures, stacked channels).
 Declare that per-k footprint via [`eph_outer_q_batched_bytes_per_k`](@ref) so the loop's
-memory-adaptive chunk sizing accounts for it; otherwise a large `k_chunk_size` can exhaust device
+memory-adaptive batch sizing accounts for it; otherwise a large `k_batch_size` can exhaust device
 memory through the calculator's scratch alone.
 """
 function run_calculator_outer_q_batched!(::AbstractCalculator, ep_kq, e_k, e_kq, uk, ukq, wtk, xks, iq; kwargs...)
@@ -149,11 +149,11 @@ end
     eph_outer_q_batched_bytes_per_k(calc::AbstractCalculator; nw, nmodes) -> Int
 
 Device bytes of per-k-point scratch that the calculator's [`run_calculator_outer_q_batched!`](@ref)
-path holds for a k-chunk (its workspace arrays sized `(…, k_chunk)`, divided by the chunk width).
+path holds for a k-batch (its workspace arrays sized `(…, k_batch)`, divided by the batch width).
 The GPU outer-q loop sums this over the calculators and combines it with its own per-k staging cost
-to derive a memory-adaptive chunk width from `device_free_bytes`. Default `0`: the calculator
+to derive a memory-adaptive batch width from `device_free_bytes`. Default `0`: the calculator
 declares no per-k device scratch (the loop then budgets only its own buffers — override this if the
-calculator allocates chunk-sized device arrays, or a large chunk can exhaust device memory).
+calculator allocates batch-sized device arrays, or a large batch can exhaust device memory).
 """
 eph_outer_q_batched_bytes_per_k(::AbstractCalculator; nw, nmodes, kwargs...) = 0
 

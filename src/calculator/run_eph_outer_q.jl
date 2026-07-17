@@ -141,12 +141,8 @@ function _setup_eph_outer_q(
     symmetry = use_symmetry ? model.symmetry : nothing
 
     # Generate k points (use_gpu: batched device eigensolve for the window test)
-    if verbosity > 0
-        @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
-            kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
-    else
-        kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
-            kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
+    kpts, iband_min, iband_max, nelec_below_window_k = maybe_time(verbosity) do
+        filter_kpoints(kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
     end
     nk = kpts.n
 
@@ -161,10 +157,8 @@ function _setup_eph_outer_q(
     end
 
     if !keep_all_qpts
-        if verbosity > 0
-            @time qpts = filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
-        else
-            qpts = filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
+        qpts = maybe_time(verbosity) do
+            filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
         end
     end
     nq = qpts.n
@@ -183,12 +177,11 @@ function _setup_eph_outer_q(
     #       driver hard-coding this for the outer-q-batched path.
     el_k_quantities = (use_gpu && !isempty(calculators) && all(allow_eph_outer_q_batched, calculators)) ?
         ["eigenvalue", "eigenvector"] : ["eigenvalue", "eigenvector", "velocity", "position"]
-    if verbosity > 0
-        @time el_k_save = compute_electron_states(model, kpts, el_k_quantities, window_k; fourier_mode, use_gpu)
-        @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis)
-    else
-        el_k_save = compute_electron_states(model, kpts, el_k_quantities, window_k; fourier_mode, use_gpu)
-        ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis)
+    el_k_save = maybe_time(verbosity) do
+        compute_electron_states(model, kpts, el_k_quantities, window_k; fourier_mode, use_gpu)
+    end
+    ph_save = maybe_time(verbosity) do
+        compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis)
     end
 
 
@@ -196,12 +189,8 @@ function _setup_eph_outer_q(
     # Otherwise, it is computed on the fly for each k and each q.
     if precompute_el_kq
         shift_kq = kpts.shift + qpts.shift
-        if verbosity > 0
-            @time kqpts, iband_min_kq, iband_max_kq, nelec_below_window_kq = filter_kpoints(
-                qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
-        else
-            kqpts, iband_min_kq, iband_max_kq, nelec_below_window_kq = filter_kpoints(
-                qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
+        kqpts, iband_min_kq, iband_max_kq, nelec_below_window_kq = maybe_time(verbosity) do
+            filter_kpoints(qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
         end
         kqpts = GridKpoints(kqpts)
 

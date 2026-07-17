@@ -18,9 +18,6 @@ Free memory (bytes) on the backend `gpu_array` lives on, used to decide whether 
 on the device. Generic fallback returns `typemax(Int)` (host memory: assume it always fits — the
 caller's host allocation is governed by RAM, not this check). The CUDA extension returns
 `CUDA.free_memory()` for a `CuArray` gpu_array.
-
-TODO: no in-repo caller yet — this exists for the deferred device memory-estimate helper
-(see README_GPU.md). Wire it up when that helper is written, or remove it.
 """
 device_free_bytes(gpu_array) = typemax(Int)
 

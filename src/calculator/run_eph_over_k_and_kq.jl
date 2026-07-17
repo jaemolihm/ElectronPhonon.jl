@@ -23,7 +23,7 @@ function run_eph_over_k_and_kq(
     ) where {FT}
 
     if model.epmat_outer_momentum != "el"
-        throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_outer_k"))
+        throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_over_k_and_kq"))
     end
     for calc in calculators
         if !allow_eph_outer_k(calc)
@@ -63,8 +63,7 @@ function run_eph_over_k_and_kq(
         _loop_eph_over_k_and_kq_gpu(model,
             setup.kpts, setup.qpts, setup.kqpts,
             setup.el_k_save, setup.el_kq_save,
-            setup.ph_save, setup.precompute_ph,
-            setup.epdatas;
+            setup.ph_save, setup.precompute_ph;
             calculators,
             energy_conservation, screening_params,
             progress_print_step, nq_batch_max, nk_batch_max, symmetry,
@@ -165,9 +164,16 @@ function _setup_eph_over_k_and_kq(
                     maximum(el.nband for el in el_kq_save))
 
 
-    epdatas = Channel{ElPhData{FT}}(nthreads())
-    foreach(1:nthreads()) do _
-        put!(epdatas, ElPhData{FT}(nw, nmodes, nband_max))
+    # The CPU loop takes/puts one ElPhData buffer per thread; the GPU loop is device-batched and
+    # never touches epdata, so it does not allocate the (nw, nmodes, nband_max) thread buffers.
+    epdatas = if use_gpu
+        nothing
+    else
+        ch = Channel{ElPhData{FT}}(nthreads())
+        foreach(1:nthreads()) do _
+            put!(ch, ElPhData{FT}(nw, nmodes, nband_max))
+        end
+        ch
     end
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
@@ -347,15 +353,15 @@ function _loop_eph_over_k_and_kq(
 end
 
 
-function _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, el_kq_save,
+function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epdata, ik, ep_ekpR, el_kq_save,
         xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk,
         energy_conservation, screening_params, skip_eph;
         ep_ekpR_R, calculators,
-    )
+    ) where {FT}
 
     (; nw, nmodes) = model
 
-    ϵs = zeros(ComplexF64, model.nmodes)
+    ϵs = zeros(Complex{FT}, model.nmodes)
 
     for ikq in ikqs
         xkq = kqpts.vectors[ikq]
@@ -505,8 +511,7 @@ function _loop_eph_over_k_and_kq_gpu(
         model       :: Model{FT},
         kpts, qpts, kqpts,
         el_k_save, el_kq_save,
-        ph_save, precompute_ph,
-        epdatas;
+        ph_save, precompute_ph;
         calculators = [],
         energy_conservation = (:None, 0.0),
         screening_params = nothing,
@@ -660,8 +665,6 @@ function _loop_eph_over_k_and_kq_gpu(
     ikqs_dev  = similar(epmat_dev.op_r, Int, nq_batch_max)
     g2_dev    = similar(epmat_dev.op_r, FT, nw, nbandk_max, nmodes, nq_batch_max)
 
-    epdata = take!(epdatas)
-
     for kstart in 1:nk_batch_max:nk
         kend = min(kstart + nk_batch_max - 1, nk)
         iks_batch = kstart:kend
@@ -697,8 +700,6 @@ function _loop_eph_over_k_and_kq_gpu(
             @info "$(now()) ik = $ik / $nk"
             flush(stdout); flush(stderr)
         end
-        el_k = el_k_save[ik]
-        epdata.el_k = el_k
 
         # Load this k's g(k, R_ep) into the interpolator's parent (cheap device→device copy);
         # the inner kR->kq driver reads `ep_ekpR_dev.op_r` fresh. Under the k-side projection
@@ -789,8 +790,6 @@ function _loop_eph_over_k_and_kq_gpu(
     # transient working set with negligible utilization cost. No-op on the CPU backend.
     device_synchronize(epmat_dev.op_r)
     end # k batch
-
-    put!(epdatas, epdata)
 
     for calc in calculators
         postprocess_calculator!(calc; qpts, symmetry)
