@@ -591,7 +591,7 @@ end
 # Base.@deprecate depwarns are invisible in ordinary script runs (Julia ≥ 1.5). Both drivers renamed
 # to the run_eph_over_<outer>_and_<inner> scheme. Delete this whole block when the old names go.
 function run_eph_outer_k(args...; kwargs...)
-    @warn "run_eph_outer_k is deprecated; use run_eph_over_k_and_q (identical arguments)." maxlog=1
+    @warn "run_eph_outer_k is deprecated; use run_eph_over_k_and_q (note: `calculators` is now a keyword argument)." maxlog=1
     run_eph_over_k_and_q(args...; kwargs...)
 end
 function run_eph_outer_q(args...; kwargs...)
