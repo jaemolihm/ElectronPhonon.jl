@@ -20,6 +20,8 @@ include("common_models_from_artifacts.jl")
     include("test_plot_bandstructure.jl")
     # include("test_check_model_symmetry.jl")
     include("test_screening.jl")
+    include("test_calculator_guide.jl")  # runs the docs/writing_a_calculator.md example
+    include("test_calculator_contract.jl")  # supports trait + driver fail-early checks
 
     # Integration tests
     include("test_cubicBN_eigenvalues.jl")

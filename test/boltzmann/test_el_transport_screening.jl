@@ -2,6 +2,11 @@ using Test
 using ElectronPhonon
 using LinearAlgebra
 
+# NOTE: Dielectric screening is currently DISABLED (ϵ ≡ 1); passing a nontrivial `screening_params`
+# to any e-ph driver / `run_transport` now throws (see plans/calculator_gpu_extensibility.md
+# [DECISION-3] and `_apply_screening!`). This testset (already disabled in runtests.jl) is kept for
+# when screening is reinstated with a self-contained (T, μ) source; the reference numbers below are
+# the pre-disable values. Re-enabling it as-is will hit the "screening is not supported" error.
 @testset "transport with screening" begin
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")

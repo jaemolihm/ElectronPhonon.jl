@@ -97,6 +97,7 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
 end
 
 ElectronPhonon.supports(::BoltzmannCalculator, ::Type{OuterKLoop}) = true
+ElectronPhonon.supports(::BoltzmannCalculator, ::Type{ElPhDataPoint}) = true
 ElectronPhonon.supports(::BoltzmannCalculator, ::Type{ElPhDataOuterKBatched}) = true
 
 function ElectronPhonon.setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, qpts, el_states;

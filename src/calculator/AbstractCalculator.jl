@@ -21,6 +21,17 @@ Optionally:
 * `eph_batched_bytes_per_point(calc, PayloadType; nw, nmodes)` — per-point device scratch (bytes)
   the calculator holds, so the GPU loops' memory-adaptive batch sizing can account for it.
 * `allowed_eph_phonon_basis(calc)` — phonon bases the calculator accepts.
+* `required_el_k_quantities(calc)` — outer-k electron-state quantities the calculator needs (the
+  outer-q driver computes the union; override to skip velocity/position).
+
+See `docs/writing_a_calculator.md` for a worked example. The public (unexported) calculator API,
+reachable as `ElectronPhonon.<name>`, is: `AbstractCalculator`, `supports`, `setup_calculator!`,
+`run_calculator!`, `postprocess_calculator!`, `calculator_begin!`, `calculator_end!`, the loop tags
+`OuterKLoop` / `OuterQLoop`, the scope tags `OuterIteration` / `OuterIterationBatch`, the payloads
+`AbstractElPhPayload` / `ElPhDataPoint` / `ElPhDataOuterKBatched` / `ElPhDataOuterQBatched`,
+`LoopContext`, the backends `CPUBackend` / `GPUBackend` with `alloc` / `free_bytes` / `synchronize`,
+`eph_window_scatter!`, `eph_batched_bytes_per_point`, `allowed_eph_phonon_basis`,
+`required_el_k_quantities`, and `to_device`.
 """
 abstract type AbstractCalculator end
 
@@ -144,17 +155,26 @@ end
 #  Capability trait — one extensible declaration replacing the `allow_*` quartet.
 
 # Loop-shape tags: a calculator declares compatibility with a driver's loop shape.
-struct OuterKLoop end    # run_eph_over_k_and_kq / run_eph_over_k_and_q (outer k)
-struct OuterQLoop end    # run_eph_over_q_and_k (outer q)
+abstract type LoopTag end
+struct OuterKLoop <: LoopTag end    # run_eph_over_k_and_kq / run_eph_over_k_and_q (outer k)
+struct OuterQLoop <: LoopTag end    # run_eph_over_q_and_k (outer q)
 
 """
-    supports(calc, x) -> Bool
+    supports(calc, ::Type{T}) -> Bool
 
-Declare that `calc` handles loop shape `x` (an `OuterKLoop` / `OuterQLoop` tag type) or payload `x`
-(an `AbstractElPhPayload` type). Default `false`. The drivers check this up front and fail loudly if
-a calculator does not support the loop/payload they will hand it.
+Declare that `calc` handles loop shape `T` (an `OuterKLoop` / `OuterQLoop` tag type) or payload `T`
+(an `AbstractElPhPayload` type). Default `false` for both families. The drivers check this up front
+and fail loudly if a calculator does not support the loop/payload they will hand it.
+
+The second argument must be a *type* (e.g. `supports(calc, OuterKLoop)`), not an instance: a non-Type
+argument throws, so a typo like `supports(calc, OuterKLoop())` fails loudly instead of silently
+returning `false`.
 """
-supports(::AbstractCalculator, ::Any) = false
+supports(::AbstractCalculator, ::Type{<:LoopTag}) = false
+supports(::AbstractCalculator, ::Type{<:AbstractElPhPayload}) = false
+supports(::AbstractCalculator, x) = error(
+    "supports(calc, x) expects a loop-tag or payload TYPE (e.g. supports(calc, OuterKLoop) or " *
+    "supports(calc, ElPhDataPoint)); got x::$(typeof(x)). Pass the Type, not an instance.")
 
 
 # =============================================================================
@@ -168,6 +188,17 @@ Return the list of phonon bases the calculator supports for e-ph matrix elements
 - `:cartesian`: e-ph coupling in Cartesian displacement basis
 """
 allowed_eph_phonon_basis(::AbstractCalculator) = [:eigenmode]
+
+"""
+    required_el_k_quantities(calc::AbstractCalculator) -> Vector{String}
+
+Return the electron-state quantities at the outer k-points the calculator needs the driver to
+compute. The outer-q driver (`run_eph_over_q_and_k`) computes the union over its calculators, so a
+calculator that only reads eigenvalues/eigenvectors can override this to skip the
+velocity/position interpolation (the dominant setup cost after the eigensolve). Default is the
+conservative full list.
+"""
+required_el_k_quantities(::AbstractCalculator) = ["eigenvalue", "eigenvector", "velocity", "position"]
 
 function setup_calculator!(::AbstractCalculator, kpts, qpts, el_states; kwargs...)
     error("setup_calculator! has to be implemented")
@@ -212,3 +243,22 @@ calculators and combine it with their own per-point staging cost to derive a mem
 width from `free_bytes`. Default `0` (no per-point device scratch).
 """
 eph_batched_bytes_per_point(::AbstractCalculator, ::Type{<:AbstractElPhPayload}; nw, nmodes) = 0
+
+
+# =============================================================================
+#  Public (but unexported) calculator API. `public` (Julia ≥ 1.11) marks these names as the
+#  supported interface without exporting them (users still reach them as `ElectronPhonon.<name>`).
+#  Gated so the package still parses on older Julia (`Project.toml` compat is `julia = "1"`); the
+#  `public` keyword lives inside a string so it is never parsed on a Julia that lacks it.
+#  `eph_window_scatter!` (calculator_utils.jl) and the backend primitives (gpu_utils.jl) are marked
+#  here too — `public`, like `export`, permits forward references to names defined later in the module.
+if VERSION >= v"1.11.0-DEV.469"
+    Core.eval(@__MODULE__, Meta.parse(
+        "public AbstractCalculator, supports, setup_calculator!, run_calculator!, " *
+        "postprocess_calculator!, calculator_begin!, calculator_end!, " *
+        "OuterKLoop, OuterQLoop, OuterIteration, OuterIterationBatch, " *
+        "AbstractElPhPayload, ElPhDataPoint, ElPhDataOuterKBatched, ElPhDataOuterQBatched, " *
+        "LoopContext, CPUBackend, GPUBackend, alloc, free_bytes, synchronize, " *
+        "eph_window_scatter!, eph_batched_bytes_per_point, allowed_eph_phonon_basis, " *
+        "required_el_k_quantities, to_device"))
+end

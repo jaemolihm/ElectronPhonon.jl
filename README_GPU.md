@@ -32,12 +32,18 @@ Deliberately **not** on the GPU (stays on the CPU per-k path):
   `ext/ElectronPhononCUDAExt.jl`. The base package loads and runs on CPU-only machines and in
   CI without CUDA installed.
 - **`op_r` fits in GPU memory.** No streaming/chunking of the Wannier operator itself.
-- **Full-band on the GPU.** No per-k energy window; see the design note.
+- **Full-band interpolation on the GPU, with energy windows supported.** The batched drivers
+  interpolate all `nw` bands (uniform shapes keep the GEMMs large), but energy windows *are*
+  supported: the outer-k loop projects the k side onto a contiguous in-window eigenvector window
+  and applies the window in the calculator scatter (out-of-window states map to `imap == 0`); the
+  outer-q loop masks out-of-window eigenvector columns so those matrix elements are exactly 0. See
+  the design note.
 - **The GPU path is fully GPU — no silent fallback.** The GPU calculator loop requires every
-  calculator to implement the batched device hook (`allow_eph_outer_k_batched` for the outer-k
-  loop, `allow_eph_outer_q_batched` for the outer-q loop). It must not silently fall back to the
-  per-`(k,q)` host `run_calculator!` path, which would be a hard-to-spot performance cliff — a
-  calculator that forgets to opt in should fail loudly instead.
+  calculator to support the batched device payload (`supports(calc, ElPhDataOuterKBatched) = true`
+  for the outer-k loop, `supports(calc, ElPhDataOuterQBatched) = true` for the outer-q loop). It
+  must not silently fall back to the per-`(k,q)` host `run_calculator!(calc, ::ElPhDataPoint, ctx)`
+  path, which would be a hard-to-spot performance cliff — a calculator that forgets to opt in should
+  fail loudly instead.
 
 ## Strategy
 
@@ -120,42 +126,56 @@ list-batched forms) live in `wannier_to_bloch_batched.jl` and pick CPU/GPU by th
 
 ### Calculator integration
 
-`run_eph_over_k_and_kq` gains a `use_gpu` keyword (with `nq_batch_max` / `nk_batch_max`) that
-branches to a backend-generic `_loop_eph_over_k_and_kq_gpu`. The CPU loop and per-k/q CPU e-ph
-functions are unchanged. The GPU loop: `to_device(model.epmat)` once; processes a batch of
-outer-k with one list-batched `get_eph_RR_to_kR_batched!`; batches the inner `ikq` loop (in
-batches of `nq_batch_max`) through one `get_eph_kR_to_kq_batched!`.
+The calculator interface is unified around **payload dispatch**: `run_calculator!(calc, payload,
+ctx::LoopContext)` has one method per payload type. The full spec is in the docstrings of
+`src/calculator/AbstractCalculator.jl`, and `docs/writing_a_calculator.md` is the tutorial (start
+there for a CPU-only calculator). This section covers only the GPU side.
 
-A calculator can opt into a **device-native hook** so the e-ph matrix for a whole batch stays on
-the device and the reduction/scatter happens there. The two loops each have their own hook, named
-for which momentum is the outer loop and which is batched on the inner axis:
+`run_eph_over_k_and_kq` / `run_eph_over_q_and_k` take a `use_gpu` keyword (with `nq_batch_max` /
+`nk_outer_batch_max` for outer-k, `nk_batch_max` for outer-q) that branches to a backend-generic
+device loop. `use_gpu` is the only user-facing switch; below the driver entry a `backend` object
+(`CPUBackend()` / `GPUBackend(proto)`) is resolved once, uploaded `to_device(model.epmat)` once,
+and carried in `LoopContext`. The CPU loop and per-(k,q) CPU e-ph functions are unchanged. The GPU
+outer-k loop processes a batch of outer k with one list-batched `get_eph_RR_to_kR_batched!` and
+batches the inner `ikq` loop (in batches of `nq_batch_max`) through one `get_eph_kR_to_kq_batched!`.
 
-- **Outer-k loop (`run_eph_over_k_and_kq`, outer k / inner k+q batched).** To run on the GPU, a
-  calculator MUST (1) define `allow_eph_outer_k_batched(calc) = true` and (2) implement
-  `run_calculator_outer_k_batched!(calc, ep_kq, ωq, ik, ikqs)`. The loop keeps `ep_kq` for a whole
-  `(k, {k+q})` batch on the device and calls the hook once per batch.
-- **Outer-q loop (`run_eph_outer_q`, outer q / inner k batched).** To run on the GPU, a calculator
-  MUST (1) define `allow_eph_outer_q_batched(calc) = true` and (2) implement
-  `run_calculator_outer_q_batched!(calc, ep_kq, e_k, e_kq, uk, ukq, wtk, xks, iq)`. For a fixed q
-  the loop keeps the e-ph matrix for a batch of outer-k on the device and calls the hook once per
-  batch; the per-q device accumulator is bracketed by the generic `setup_calculator_inner!` /
-  `postprocess_calculator_inner!` hooks (which on this path receive `gpu_array` / `nk_batch_max`),
-  and the per-k device scratch is declared via `eph_outer_q_batched_bytes_per_k` for the loop's
-  memory-adaptive batch sizing.
+To run on the GPU a calculator opts into a **device-native batched payload** so the e-ph matrix for
+a whole batch stays on the device and the reduction/scatter happens there. Each loop has its own
+payload, named for which momentum is the outer loop and which is batched on the inner axis:
+
+- **Outer-k loop (`run_eph_over_k_and_kq`, outer k / inner k+q batched).** A calculator MUST
+  (1) declare `supports(calc, ::Type{ElPhDataOuterKBatched}) = true` and (2) implement
+  `run_calculator!(calc, p::ElPhDataOuterKBatched, ctx)`. The payload `p` carries the batch's
+  `ep_kq` / `g2` / `ωq` on the device plus `ik`, `ikqs`, `ibandk_offset`. The loop calls it once
+  per `(k, {k+q})` batch (outer k is still serial: one `OuterIteration` bracket + payload per k).
+- **Outer-q loop (`run_eph_over_q_and_k`, outer q / inner k batched).** A calculator MUST
+  (1) declare `supports(calc, ::Type{ElPhDataOuterQBatched}) = true` and (2) implement
+  `run_calculator!(calc, p::ElPhDataOuterQBatched, ctx)`. The payload carries `ep_kq`, k/k+q
+  energies and eigenvectors, `wtk`, `xks`, `iq` on the device. The per-q device accumulator is
+  bracketed by `calculator_begin!/end!(calc, OuterIteration(), ctx)` (the same brackets the CPU
+  loop uses; on the GPU they allocate/scatter the device buffer via `ctx.backend`), and the per-k
+  device scratch is declared via `eph_batched_bytes_per_point(calc, ElPhDataOuterKBatched/…)` for
+  the loop's memory-adaptive batch sizing.
 - Either path is rejected with an error if a calculator does not opt in — there is no silent
   fallback to the per-`(k,q)` host path.
-- A calculator can implement these backend-generically (only `similar`/`copyto!`/broadcast/
-  scatter-assignment) and add no CUDA dependency of its own.
+- A calculator implements these backend-generically (only `alloc(ctx.backend, …)` /
+  `similar`/`copyto!`/broadcast/scatter-assignment) and adds no CUDA dependency of its own.
 
-### Full bands on the GPU (design note)
+### Full-band interpolation on the GPU, with energy windows (design note)
 
-The list-batched drivers and the GPU loop are full-band only: every k in a batch shares the same
-`nband`, and `ep_ekpR_all` / `ep_kq_all` are sized with no `nband_bound` slack. A per-k variable
-`nband` would break the single large GEMMs that make the GPU fast, and the extra bands are cheap
-on the GPU. Energy windowing — which mainly helps when only a few bands matter — stays on the CPU
-per-k path (`get_eph_RR_to_kR!` etc. keep their `nband < nband_bound` support). When wiring the
-GPU path into a calculation, pass full `nband` (= `nw` for the electron side); no window handling
-is needed.
+The list-batched drivers interpolate full bands: every k in a batch shares the same `nband`, and
+the e-ph stacks are sized with no `nband_bound` slack. A per-k variable `nband` would break the
+single large GEMMs that make the GPU fast, and the extra bands are cheap on the GPU. Energy windows
+are nonetheless supported without shrinking the dense GEMMs:
+
+- **Outer-k**: the k side is rotated by only an `nbandk_max`-wide *contiguous* window of eigenvector
+  columns per k (`ibandk_offset` positions it over that k's in-window range); the window itself is
+  applied in the calculator scatter, where out-of-window states map to `imap == 0` and are skipped.
+- **Outer-q**: out-of-window k+q eigenvector columns are masked to zero, so those matrix elements
+  are exactly 0 — reproducing the CPU's `for m in el_kq.rng` window loop.
+
+Full-band runs are the special case `nbandk_max = nw`, `ibandk_offset = 0` (shapes/results
+unchanged). No window handling is needed in the calculator beyond addressing its imaps.
 
 ## Abandoned (tried, decided against)
 
@@ -183,7 +203,7 @@ is needed.
   the whole `Model` on the device is *not* obviously right: `Model` is large, and one may want
   it resident on the CPU while only the calculation runs on the GPU.
 - **A memory-estimate helper (future).** A utility that reports the device memory a run needs
-  (given the model and `nq_batch_max` / `nk_batch_max`) would make it easier to pick batch sizes
+  (given the model and the batch knobs `nq_batch_max` / `nk_outer_batch_max` / `nk_batch_max`) would make it easier to pick batch sizes
   and to fail early instead of OOM-ing mid-run.
 - **Keep `el_kq_save` (k+q electron states) on the device (future).** The GPU loop already hoists
   every k+q eigenvector onto the device once (`ukqs_all_dev`); keeping the `el_kq_save` states
@@ -222,8 +242,8 @@ is needed.
 - `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`, `eigvals_batched`/
   `eigen_batched` (`heevjBatched!`), `batched_gemm!` (`gemm_strided_batched!`), and the fused
   rotation / window-scatter kernels.
-- `src/calculator/run_eph_over_k_and_kq.jl` — `use_gpu` / `nq_batch_max` / `nk_batch_max`
-  keywords; backend-generic `_loop_eph_over_k_and_kq_gpu` and the device-native calculator hook.
+- `src/calculator/run_eph_over_k_and_kq.jl` — `use_gpu` / `nq_batch_max` / `nk_outer_batch_max`
+  keywords; backend-generic `_loop_eph_over_k_and_kq_gpu` and the device-native calculator payload.
   CPU path unchanged.
 - `benchmark/bench_el_eigen_gpu.jl`, `benchmark/bench_eph_gpu.jl`,
   `benchmark/bench_eliashberg_loop_gpu.jl` — CPU-vs-GPU benchmarks.

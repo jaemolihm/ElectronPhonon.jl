@@ -45,9 +45,18 @@ function run_eph_over_q_and_k(
     if model.epmat_outer_momentum != "ph"
         throw(ArgumentError("model.epmat_outer_momentum must be ph to use run_eph_over_q_and_k"))
     end
+    screening_params === nothing || error(
+        "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
+        "Pass screening_params = nothing.")
     for calc in calculators
         if !supports(calc, OuterQLoop)
             throw(ArgumentError("$calc does not support the outer-q loop. Use run_eph_over_k_and_q instead."))
+        end
+        # CPU path hands each calculator the per-(k,q) host `ElPhDataPoint`; it must declare support.
+        # The GPU path uses `ElPhDataOuterQBatched` (checked in `_loop_eph_over_q_and_k_gpu`).
+        if !use_gpu && !supports(calc, ElPhDataPoint)
+            throw(ArgumentError("$calc does not declare support for the per-(k,q) host payload; " *
+                "define supports(::$(typeof(calc)), ::Type{ElPhDataPoint}) = true."))
         end
     end
 
@@ -57,12 +66,6 @@ function run_eph_over_q_and_k(
             throw(ArgumentError("Calculator $calc does not support eph_phonon_basis = :$eph_phonon_basis. " *
                                 "Allowed: $(allowed_eph_phonon_basis(calc))"))
         end
-    end
-
-    # Validate eph_phonon_basis compatibility with dipole screening
-    if eph_phonon_basis == :cartesian && screening_params !== nothing
-        throw(ArgumentError("eph_phonon_basis = :cartesian is incompatible with dipole screening (screening_params). " *
-                            "Dipole screening is mode-dependent and requires eigenmode basis."))
     end
 
     mpi_comm_k === nothing || error("mpi_comm_k not implemented")
@@ -142,13 +145,12 @@ function _setup_eph_over_q_and_k(
     symmetry = use_symmetry ? model.symmetry : nothing
 
     # Generate k points and electron states at k (shared setup core; use_gpu: batched device
-    # eigensolve for the window test). The outer-q-batched GPU path consumes only e_full / u_full /
-    # rng from el_k_save, so it skips the velocity/position interpolation+rotation (the dominant
-    # setup cost after the eigensolve); all other paths keep the full quantity list.
-    # TODO: calculators should declare whether they need velocity and/or position, instead of the
-    #       driver hard-coding this for the outer-q-batched path.
-    el_k_quantities = (use_gpu && !isempty(calculators) && all(c -> supports(c, ElPhDataOuterQBatched), calculators)) ?
-        ["eigenvalue", "eigenvector"] : ["eigenvalue", "eigenvector", "velocity", "position"]
+    # eigensolve for the window test). Each calculator declares the k-side quantities it needs via
+    # `required_el_k_quantities`; the driver computes the union, so a calculator that only reads
+    # eigenvalues/eigenvectors skips the velocity/position interpolation+rotation (the dominant
+    # setup cost after the eigensolve). Default is the conservative full list.
+    el_k_quantities = isempty(calculators) ? ["eigenvalue", "eigenvector", "velocity", "position"] :
+        unique(reduce(vcat, required_el_k_quantities(c) for c in calculators))
     (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_eph_common(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity, el_k_quantities)
     nk = kpts.n

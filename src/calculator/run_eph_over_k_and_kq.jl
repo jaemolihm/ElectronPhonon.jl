@@ -19,15 +19,28 @@ function run_eph_over_k_and_kq(
         covariant_derivative_of_g = false,  # Compute cov. derivative of g
         use_gpu = false,   # Run the e-ph Wannier->Bloch interpolation on the GPU
         nq_batch_max = nothing,  # GPU: k+q points per batched kR->kq kernel (nothing = all k+q in one batch)
-        nk_batch_max = 256,   # GPU: number of outer k points processed per batched RR->kR kernel
+        # GPU: number of outer k points per batched RR->kR kernel + D2H tile extent. Calculators still
+        # see outer k SERIALLY (one `OuterIteration` bracket + payload per k); this only sets the
+        # interpolation-staging width. No deprecated alias for the former name `nk_batch_max`.
+        nk_outer_batch_max = 256,
+        verbosity::Int = 1,
     ) where {FT}
 
     if model.epmat_outer_momentum != "el"
         throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_over_k_and_kq"))
     end
+    screening_params === nothing || error(
+        "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
+        "Pass screening_params = nothing.")
     for calc in calculators
         if !supports(calc, OuterKLoop)
             throw(ArgumentError("$calc does not support the outer-k loop. Use run_eph_over_q_and_k instead."))
+        end
+        # CPU path hands each calculator the per-(k,q) host `ElPhDataPoint`; it must declare support.
+        # The GPU path uses `ElPhDataOuterKBatched` (checked in `_loop_eph_over_k_and_kq_gpu`).
+        if !use_gpu && !supports(calc, ElPhDataPoint)
+            throw(ArgumentError("$calc does not declare support for the per-(k,q) host payload; " *
+                "define supports(::$(typeof(calc)), ::Type{ElPhDataPoint}) = true."))
         end
     end
 
@@ -52,7 +65,7 @@ function run_eph_over_k_and_kq(
     setup = _setup_eph_over_k_and_kq(model, kpts_input, kqpts_input;
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, symmetry, calculators, nchunks_threads,
-        covariant_derivative_of_g, use_gpu,
+        covariant_derivative_of_g, use_gpu, verbosity,
     )
 
     if use_gpu
@@ -63,10 +76,11 @@ function run_eph_over_k_and_kq(
         _loop_eph_over_k_and_kq_gpu(model,
             setup.kpts, setup.qpts, setup.kqpts,
             setup.el_k_save, setup.el_kq_save,
-            setup.ph_save, setup.precompute_ph;
+            setup.ph_save, setup.precompute_ph,
+            setup.epmat_dev, setup.backend;
             calculators,
             energy_conservation, screening_params,
-            progress_print_step, nq_batch_max, nk_batch_max, symmetry,
+            progress_print_step, nq_batch_max, nk_outer_batch_max, symmetry, verbosity,
         )
     else
         _loop_eph_over_k_and_kq(model,
@@ -106,25 +120,28 @@ function _setup_eph_over_k_and_kq(
         nchunks_threads = nthreads(),
         covariant_derivative_of_g = false,
         use_gpu = false,
+        verbosity::Int = 1,
     ) where {FT}
 
     (; nw, nmodes) = model
 
     # Generate k points and electron states at k (shared setup core)
     (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_eph_common(
-        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu)
+        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity)
     nk = kpts.n
 
     # Filter the k+q grid to the energy window. With symmetry, filter the k+q points in the
     # irreducible BZ and unfold the kept point set to the full BZ (~nsym× fewer eigensolves; band
     # energies are constant on the star). Electron STATES are still handled per `el_kq_from_unfolding`.
     if symmetry !== nothing
-        @time kqpts_irr, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
-            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; symmetry, fourier_mode, use_gpu)
+        kqpts_irr, iband_kq_min, iband_kq_max, nelec_below_window_kq = maybe_time(verbosity) do
+            filter_kpoints(kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; symmetry, fourier_mode, use_gpu)
+        end
         kqpts, ik_to_ikirr_isym_kq = unfold_kpoints(kqpts_irr, symmetry)
     else
-        @time kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
-            kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode, use_gpu)
+        kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq = maybe_time(verbosity) do
+            filter_kpoints(kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode, use_gpu)
+        end
         kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
     end
 
@@ -194,7 +211,9 @@ function _setup_eph_over_k_and_kq(
 
     # Precompute phonon states if precompute_ph == true
     if precompute_ph
-        @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, use_gpu)
+        ph_save = maybe_time(verbosity) do
+            compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, use_gpu)
+        end
         dyn_threads = nothing
     else
         qpts = nothing
@@ -203,13 +222,19 @@ function _setup_eph_over_k_and_kq(
     end
 
 
+    # Backend: one resolution point. On the GPU path upload `model.epmat` ONCE here and wrap it as
+    # the backend prototype; `_loop_eph_over_k_and_kq_gpu` reuses this device object rather than
+    # re-uploading. `backend` is carried in `LoopContext` and passed to `setup_calculator!`.
+    epmat_dev = use_gpu ? to_device(model.epmat) : nothing
+    backend = use_gpu ? GPUBackend(epmat_dev.op_r) : CPUBackend()
+
     # Initialize calculators
     _setup_calculators!(calculators, kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        nelec_below_window_k, nelec_below_window_kq, nchunks_threads,
+        nelec_below_window_k, nelec_below_window_kq, nchunks_threads, verbosity, backend,
     )
 
-    if mpi_isroot()
+    if verbosity > 0 && mpi_isroot()
         @info "Number of k points = $(kpts.n)"
         @info "Number of k+q points = $(kqpts.n)"
         precompute_ph && @info "Number of q points = $(qpts.n)"
@@ -223,6 +248,7 @@ function _setup_eph_over_k_and_kq(
         epdatas, ep_ekpRs, epmat, ep_ekpR_obj,
         dyn_threads,
         epmat_R, epobj_ekpR_R, ep_ekpR_Rs,
+        epmat_dev, backend,
         iband_min, iband_max,
         nelec_below_window_k, nelec_below_window_kq,
     )
@@ -472,14 +498,16 @@ function _loop_eph_over_k_and_kq_gpu(
         model       :: Model{FT},
         kpts, qpts, kqpts,
         el_k_save, el_kq_save,
-        ph_save, precompute_ph;
+        ph_save, precompute_ph,
+        epmat_dev, backend;
         calculators = [],
         energy_conservation = (:None, 0.0),
         screening_params = nothing,
         progress_print_step = 20,
         nq_batch_max::Union{Int, Nothing} = nothing,
-        nk_batch_max::Int = 256,
+        nk_outer_batch_max::Int = 256,
         symmetry = nothing,
+        verbosity::Int = 1,
     ) where {FT}
 
     (; nw, nmodes) = model
@@ -504,7 +532,7 @@ function _loop_eph_over_k_and_kq_gpu(
     # faster than the old 1024 default at 16³. Passing an Int caps the batch harder; the
     # memory-adaptive cap (§7) then takes the smaller of the two so a large-nw run cannot OOM.
     nq_batch_user = nq_batch_max   # nothing = size to memory (capped at nkq); Int = hard upper cap
-    nk_batch_max = min(nk_batch_max, nk)
+    nk_batch_max = min(nk_outer_batch_max, nk)
 
     # The GPU path is always device-native/batched: the e-ph matrix for a whole (k, {k+q}) batch
     # stays on the device and each calculator does its reduction/scatter there (no per-(k,q) host
@@ -541,8 +569,8 @@ function _loop_eph_over_k_and_kq_gpu(
         [clamp(first(el.rng) - 1, 0, nw - nbandk_max) for el in el_k_save]
 
     # ----- device interpolators (allocated once) -----
-    epmat_dev = to_device(model.epmat)
-    backend = GPUBackend(epmat_dev.op_r)   # one resolution point; carried in LoopContext below
+    # `epmat_dev` (device e-ph object) was uploaded ONCE in the shared setup and threaded here through
+    # `backend`; the loop reuses it rather than re-uploading. `backend` is carried in LoopContext below.
     itp_epmat = BatchedWannierInterpolator(epmat_dev; batch_size = nk_batch_max)
     # Device child object for g(k, R_ep), born partial-width: under the k-side eigenvector-window
     # projection only the first nw·nbandk_max·nmodes rows of op_r are filled/read, so `ndata` (which
@@ -585,7 +613,7 @@ function _loop_eph_over_k_and_kq_gpu(
         max(1, ((free - committed) ÷ 10 * 7) ÷ bytes_per_q)
     nq_batch_cap = nq_batch_user === nothing ? nkq : min(nq_batch_user, nkq)
     nq_batch_max = min(nq_batch_cap, nq_batch_mem, nkq)
-    if mpi_isroot() && nq_batch_max < nq_batch_cap
+    if verbosity > 0 && mpi_isroot() && nq_batch_max < nq_batch_cap
         @info "GPU outer-k: memory-adaptive q-batch size = $nq_batch_max " *
               "($(round(bytes_per_q / 1e3, digits = 1)) kB/q, $(round(free / 1e9, digits = 1)) GB free)"
     end

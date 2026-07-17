@@ -18,8 +18,8 @@ function run_eph_over_k_and_q(
         model       :: Model{FT},
         kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
         qpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
-        calculators :: AbstractVector,
         ;
+        calculators = [],
         mpi_comm_k = nothing,
         mpi_comm_q = nothing,
         fourier_mode = "gridopt",
@@ -33,14 +33,22 @@ function run_eph_over_k_and_q(
         progress_print_step = 20,
         symmetry = model.symmetry,
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
+        verbosity::Int = 1,
     ) where {FT}
 
     if model.epmat_outer_momentum != "el"
         throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_over_k_and_q"))
     end
+    screening_params === nothing || error(
+        "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
+        "Pass screening_params = nothing.")
     for calc in calculators
         if !supports(calc, OuterKLoop)
             throw(ArgumentError("$calc does not support the outer-k loop. Use run_eph_over_q_and_k instead."))
+        end
+        if !supports(calc, ElPhDataPoint)
+            throw(ArgumentError("$calc does not declare support for the per-(k,q) host payload; " *
+                "define supports(::$(typeof(calc)), ::Type{ElPhDataPoint}) = true."))
         end
     end
 
@@ -56,7 +64,7 @@ function run_eph_over_k_and_q(
     setup = _setup_eph_over_k_and_q(model, kpts_input, qpts_input;
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, precompute_el_kq, symmetry,
-        calculators, nchunks_threads,
+        calculators, nchunks_threads, verbosity,
     )
 
     _loop_eph_over_k_and_q(model,
@@ -92,13 +100,14 @@ function _setup_eph_over_k_and_q(
         symmetry = nothing,
         calculators = [],
         nchunks_threads = nthreads(),
+        verbosity::Int = 1,
     ) where {FT}
 
     (; nw, nmodes) = model
 
     # Generate k points and electron states at k (shared setup core)
     (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_eph_common(
-        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode)
+        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, verbosity)
     nk = kpts.n
 
     # Generate q points
@@ -110,7 +119,9 @@ function _setup_eph_over_k_and_q(
     else
         error("type of qpts_input is wrong")
     end
-    @time qpts = filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
+    qpts = maybe_time(verbosity) do
+        filter_qpoints(qpts, kpts, nw, model.el_ham, window_kq; fourier_mode)
+    end
     nq = qpts.n
 
 
@@ -119,15 +130,18 @@ function _setup_eph_over_k_and_q(
     end
 
 
-    @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
+    ph_save = maybe_time(verbosity) do
+        compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
+    end
 
 
     # If precompute_el_kq, generate a Kpoint for k+q and compute electron states therein.
     # Otherwise, it is computed on the fly for each k and each q.
     if precompute_el_kq
         shift_kq = kpts.shift + qpts.shift
-        @time kqpts, iband_min_kq, iband_max_kq, nelec_below_window_kq = filter_kpoints(
-            qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
+        kqpts, iband_min_kq, iband_max_kq, nelec_below_window_kq = maybe_time(verbosity) do
+            filter_kpoints(qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
+        end
         kqpts = GridKpoints(kqpts)
 
         if el_kq_from_unfolding
@@ -172,16 +186,19 @@ function _setup_eph_over_k_and_q(
         pos_threads = nothing
     end
 
-    if mpi_isroot()
+    if verbosity > 0 && mpi_isroot()
         @info "Number of k points = $nk"
         precompute_el_kq && @info "Number of k+q points = $(kqpts.n)"
         @info "Number of q points = $nq"
     end
 
+    # Backend: one resolution point. This driver has no GPU loop, so it is always the CPU backend;
+    # it is carried in `LoopContext` and passed to `setup_calculator!` for interface uniformity.
+    backend = CPUBackend()
 
     _setup_calculators!(calculators, kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        nelec_below_window_k, nelec_below_window_kq, nchunks_threads,
+        nelec_below_window_k, nelec_below_window_kq, nchunks_threads, verbosity, backend,
     )
 
     return (;

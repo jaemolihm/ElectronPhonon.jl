@@ -73,18 +73,24 @@ function _setup_calculators!(
 end
 
 
-# Dielectric screening ε(q, ω=0) per phonon mode, evaluated once for all three inner loops. `ϵs` is
-# filled in place (set to 1 when screening is off).
-# FIXME: T, μ are read from calculators[1].occ[1] (a layering violation); moving the screening
-#        parameters into calculator ownership lands with the stage-4 payload redesign.
+# Dielectric screening is currently disabled: ϵ ≡ 1 always. Passing a nontrivial `screening_params`
+# throws (the drivers reject it at entry; this is the defensive guard). The Lindhard evaluation is
+# kept commented for reference — re-enabling it needs a self-contained (T, μ) source, not the
+# `calculators[1].occ[1]` read it used to do (a layering violation that silently used the first
+# calculator's first occupation set even in multi-T runs). See
+# plans/calculator_gpu_extensibility.md [DECISION-3].
 function _apply_screening!(ϵs, calculators, model, xq, epdata, screening_params)
-    if screening_params !== nothing
-        (; T, μ) = calculators[1].occ[1]
-        xq_ = normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
-        ϵs .= epsilon_lindhard.(Ref(model.recip_lattice * xq_), epdata.ph.e, T, μ, Ref(screening_params))
-        ϵs .= real.(ϵs)
-    else
-        ϵs .= 1
-    end
+    screening_params === nothing || error(
+        "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
+        "Pass screening_params = nothing.")
+    ϵs .= 1
+    # if screening_params !== nothing
+    #     (; T, μ) = calculators[1].occ[1]
+    #     xq_ = normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
+    #     ϵs .= epsilon_lindhard.(Ref(model.recip_lattice * xq_), epdata.ph.e, T, μ, Ref(screening_params))
+    #     ϵs .= real.(ϵs)
+    # else
+    #     ϵs .= 1
+    # end
     ϵs
 end
