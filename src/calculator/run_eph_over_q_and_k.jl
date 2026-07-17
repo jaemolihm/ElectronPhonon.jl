@@ -292,7 +292,7 @@ function _loop_eph_over_q_and_k(
         end
 
         # Multithreading setup
-        ctx_q = LoopContext(backend, iq, 1:0, 0)
+        ctx_q = LoopContext(backend, PointMode(), iq, 1:0, 0)
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_q), calculators)
 
         @threads for (id_chunk, iks) in enumerate(chunks(1:nk; n=nchunks_threads))
@@ -436,7 +436,7 @@ function _loop_eph_over_q_and_k_gpu(
     # section of the `BatchedFourierCore` / `BatchedWannierInterpolator` docstrings.
     ep_eRpq_obj = eph_buffers.ep_eRpq_obj
     epmat = eph_buffers.epmat
-    ep_eRpq_dev = to_device(ep_eRpq_obj)
+    ep_eRpq_dev = to_device(backend, ep_eRpq_obj)
     ndata_eRpq = nw^2 * nmodes
     @assert ep_eRpq_dev.ndata == ndata_eRpq
 
@@ -521,7 +521,7 @@ function _loop_eph_over_q_and_k_gpu(
 
         # Per-q calculator begin: allocate (first q) + zero the device accumulator (OuterIteration
         # bracket, same as the CPU loop; ctx carries backend + n_batch_max for the device buffer).
-        ctx_q = LoopContext(backend, iq, 1:0, nk_batch_max)
+        ctx_q = LoopContext(backend, BatchedMode(), iq, 1:0, nk_batch_max)
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_q), calculators)
 
         for kstart in 1:nk_batch_max:nk

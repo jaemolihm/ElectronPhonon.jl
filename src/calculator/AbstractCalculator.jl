@@ -29,7 +29,8 @@ reachable as `ElectronPhonon.<name>`, is: `AbstractCalculator`, `supports`, `set
 `run_calculator!`, `postprocess_calculator!`, `calculator_begin!`, `calculator_end!`, the loop tags
 `OuterKLoop` / `OuterQLoop`, the scope tags `OuterIteration` / `OuterIterationBatch`, the payloads
 `AbstractElPhPayload` / `ElPhDataPoint` / `ElPhDataOuterKBatched` / `ElPhDataOuterQBatched`,
-`LoopContext`, the backends `CPUBackend` / `GPUBackend` with `alloc` / `free_bytes` / `synchronize`,
+`LoopContext` with the loop modes `PointMode` / `BatchedMode`, the backends `CPUBackend` /
+`GPUBackend` with `alloc` / `free_bytes` / `synchronize`,
 `eph_window_scatter!`, `eph_batched_bytes_per_point`, `allowed_eph_phonon_basis`,
 `required_el_k_quantities`, and `to_device`.
 """
@@ -130,21 +131,37 @@ end
 # =============================================================================
 #  LoopContext — loop-level state, carried into every hook.
 
+# Loop-mode singletons name the SHAPE of the loop driving a hook, independent of the backend: a hook
+# that must behave differently for the per-(k, q) host loop vs the device-batched loop dispatches on
+# the mode, NOT the backend. The two are orthogonal — the batched loop still fires the per-iteration
+# `OuterIteration` brackets, so `LoopContext{<:GPUBackend}` alone cannot tell a per-point hook from a
+# per-batch one (it would run a CPU per-point reduction inside the batched loop).
+abstract type LoopMode end
+struct PointMode <: LoopMode end     # per-(k, q) host inner loops (CPU paths)
+struct BatchedMode <: LoopMode end   # device-batched loops (one outer index, a batch of inner ones)
+
 """
-    LoopContext{BT <: AbstractBackend}
+    LoopContext{BT <: AbstractBackend, MT <: LoopMode}
 
 Loop-level state passed to every calculator hook. Replaces the ad-hoc per-hook kwargs (`ik`, `iq`,
 `gpu_array`, `nk_batch_max`, `kstart`, `kend`) with one typed object.
 
+`BT` is the backend type and `MT` the loop mode; the backend is first, so a partial annotation
+`LoopContext{<:GPUBackend}` still names "any mode on a GPU backend". Backend-dependent hooks dispatch
+on the *mode* (`LoopContext{<:AbstractBackend, PointMode}` / `{<:AbstractBackend, BatchedMode}`), not
+the backend, so the batched loop's per-iteration bracket does not collide with the per-point one.
+
 Fields:
 - `backend`     :: `CPUBackend()` or `GPUBackend(proto)` — allocation / free / synchronize routes.
+- `mode`        :: `PointMode()` (per-(k, q) host loop) or `BatchedMode()` (device-batched loop).
 - `outer_index` :: current outer index (`ik` for outer-k loops, `iq` for the outer-q loop); `0` at
   batch scope.
 - `batch`       :: outer-iteration range of the current batch (`1:0` on the CPU paths).
 - `n_batch_max` :: loop batch cap, for device-buffer sizing.
 """
-struct LoopContext{BT <: AbstractBackend}
+struct LoopContext{BT <: AbstractBackend, MT <: LoopMode}
     backend     :: BT
+    mode        :: MT
     outer_index :: Int
     batch       :: UnitRange{Int}
     n_batch_max :: Int
@@ -258,7 +275,7 @@ if VERSION >= v"1.11.0-DEV.469"
         "postprocess_calculator!, calculator_begin!, calculator_end!, " *
         "OuterKLoop, OuterQLoop, OuterIteration, OuterIterationBatch, " *
         "AbstractElPhPayload, ElPhDataPoint, ElPhDataOuterKBatched, ElPhDataOuterQBatched, " *
-        "LoopContext, CPUBackend, GPUBackend, alloc, free_bytes, synchronize, " *
+        "LoopContext, PointMode, BatchedMode, CPUBackend, GPUBackend, alloc, free_bytes, synchronize, " *
         "eph_window_scatter!, eph_batched_bytes_per_point, allowed_eph_phonon_basis, " *
         "required_el_k_quantities, to_device"))
 end

@@ -50,6 +50,14 @@ free_bytes(b::GPUBackend) = device_free_bytes(b.proto)
 synchronize(::CPUBackend)  = nothing
 synchronize(b::GPUBackend) = device_synchronize(b.proto)
 
+# Backend-routed move-to-device: the CPU backend is an identity (host object stays host); the GPU
+# backend forwards to the extension's converting `to_device(obj)`. Loop bodies below the driver
+# entry call this 2-arg form so no `use_gpu`/backend `Bool` threads through them — the backend
+# object alone decides. (The base has no 1-arg `to_device` method; only the extension defines one,
+# so `to_device(::CPUBackend, obj)` is what lets the base package load and run on the host.)
+to_device(::CPUBackend, obj) = obj
+to_device(b::GPUBackend, obj) = to_device(obj)
+
 @inline _batched_op(t::Char, X) = t == 'N' ? X : (t == 'T' ? transpose(X) : adjoint(X))
 
 """

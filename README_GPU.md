@@ -153,13 +153,25 @@ payload, named for which momentum is the outer loop and which is batched on the 
   `run_calculator!(calc, p::ElPhDataOuterQBatched, ctx)`. The payload carries `ep_kq`, k/k+q
   energies and eigenvectors, `wtk`, `xks`, `iq` on the device. The per-q device accumulator is
   bracketed by `calculator_begin!/end!(calc, OuterIteration(), ctx)` (the same brackets the CPU
-  loop uses; on the GPU they allocate/scatter the device buffer via `ctx.backend`), and the per-k
-  device scratch is declared via `eph_batched_bytes_per_point(calc, ElPhDataOuterQBatched)` for
-  the loop's memory-adaptive batch sizing.
+  loop uses — the batched path is selected by `ctx.mode`, and the device buffer is allocated via
+  `ctx.backend`), and the per-k device scratch is declared via
+  `eph_batched_bytes_per_point(calc, ElPhDataOuterQBatched)` for the loop's memory-adaptive batch
+  sizing.
 - Either path is rejected with an error if a calculator does not opt in — there is no silent
   fallback to the per-`(k,q)` host path.
 - A calculator implements these backend-generically (only `alloc(ctx.backend, …)` /
   `similar`/`copyto!`/broadcast/scatter-assignment) and adds no CUDA dependency of its own.
+
+**Distinguishing the per-point host loop from the device-batched loop.** `LoopContext` carries a
+loop *mode* (`PointMode` / `BatchedMode`) that names the loop shape independently of the backend.
+Hooks a calculator shares between the two loop shapes — most commonly the `OuterIteration` brackets,
+which the batched outer-k loop *also* fires per k — must key off the mode, not the backend: either
+dispatch (`ctx::LoopContext{<:AbstractBackend, PointMode}` vs `{<:AbstractBackend, BatchedMode}`, as
+`BoltzmannCalculator` / `EliashbergCalculator` do) or branch at runtime on `ctx.mode isa BatchedMode`
+(as the outer-q calculators do). Dispatching these on `LoopContext{CPUBackend}` / `{<:GPUBackend}`
+would misfire, because the batched loop's per-iteration bracket runs on a device backend but must not
+trigger the per-point reduction. `ctx.backend` stays reserved for allocation / `free_bytes` /
+`synchronize`.
 
 ### Full-band interpolation on the GPU, with energy windows (design note)
 

@@ -253,7 +253,7 @@ function _loop_eph_over_k_and_q(
         end
 
         # Multithreading setup
-        ctx_k = LoopContext(backend, ik, 1:0, 0)
+        ctx_k = LoopContext(backend, PointMode(), ik, 1:0, 0)
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
 
         @threads for (id_chunk, iqs) in enumerate(chunks(1:nq; n=nchunks_threads))

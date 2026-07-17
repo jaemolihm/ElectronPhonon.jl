@@ -120,7 +120,7 @@ ElectronPhonon.calculator_begin!(c::_OptInQCalc, ::ElectronPhonon.OuterIteration
 ElectronPhonon.calculator_end!(c::_OptInQCalc, ::ElectronPhonon.OuterIteration, ctx) = (c.flush += 1; nothing)
 
 @testset "outer-q batched calculator hook plumbing" begin
-    ctx = ElectronPhonon.LoopContext(ElectronPhonon.CPUBackend(), 1, 1:0, 4)
+    ctx = ElectronPhonon.LoopContext(ElectronPhonon.CPUBackend(), ElectronPhonon.PointMode(), 1, 1:0, 4)
     # Default opts out; a calculator with no run_calculator! method for the payload is a MethodError.
     @test ElectronPhonon.supports(_PlainQCalc(), ElectronPhonon.ElPhDataOuterQBatched) == false
     pl = ElectronPhonon.ElPhDataOuterQBatched(nothing, nothing, nothing, nothing, nothing, nothing, nothing, 1)
@@ -438,10 +438,10 @@ function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, kpts, qpts, el_s
     c.Adev = nothing
     c
 end
-# CPU path: zero this q's per-chunk accumulator. GPU path: (re)allocate and zero this q's length-1
-# device accumulator from ctx.backend.
+# Per-point path: zero this q's per-chunk accumulator. Batched path: (re)allocate and zero this q's
+# length-1 device accumulator from ctx.backend. The loop shape is read from `ctx.mode`, not the backend.
 function ElectronPhonon.calculator_begin!(c::_RecordCalcOuterQ, ::ElectronPhonon.OuterIteration, ctx)
-    if ctx.backend isa ElectronPhonon.GPUBackend
+    if ctx.mode isa ElectronPhonon.BatchedMode
         c.Adev = fill!(ElectronPhonon.alloc(ctx.backend, Float64, 1), 0.0)
     else
         fill!(c.Achunk, 0.0)

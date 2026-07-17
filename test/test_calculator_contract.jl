@@ -1,7 +1,9 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, ElPhDataPoint,
-    ElPhDataOuterKBatched, supports
+    ElPhDataOuterKBatched, supports, LoopContext, PointMode, BatchedMode, CPUBackend,
+    GPUBackend, AbstractBackend, OuterIteration, OuterIterationBatch,
+    calculator_begin!, calculator_end!, to_device
 
 # Stage-2 calculator-contract checks (CPU-only): the `supports` trait, the fail-early payload checks
 # the drivers do at entry, the `calculators`-as-kwarg change, and the screening-disabled error.
@@ -58,4 +60,48 @@ end
     ElectronPhonon.run_eph_over_k_and_q(model, grid, grid;
         calculators = [c], symmetry = nothing, progress_print_step = 10^9)
     @test c.n > 0
+end
+
+# Stage-3 (DECISION-6): brackets that differ by loop shape dispatch on the loop MODE, not the
+# backend. A calculator with per-point-mode and batched-mode `OuterIteration` / `OuterIterationBatch`
+# brackets; each records the (scope, mode) it fired under so we can assert selection is by mode.
+mutable struct _ModeDispatchCalc <: AbstractCalculator
+    fired :: Vector{Tuple{Symbol, Symbol}}
+    _ModeDispatchCalc() = new(Tuple{Symbol, Symbol}[])
+end
+ElectronPhonon.calculator_begin!(c::_ModeDispatchCalc, ::OuterIteration, ::LoopContext{<:AbstractBackend, PointMode}) =
+    (push!(c.fired, (:iter, :point)); c)
+ElectronPhonon.calculator_begin!(c::_ModeDispatchCalc, ::OuterIterationBatch, ::LoopContext{<:AbstractBackend, BatchedMode}) =
+    (push!(c.fired, (:batch, :batched)); c)
+
+@testset "loop-mode bracket dispatch (DECISION-6)" begin
+    # `LoopContext` carries the backend first, the mode second.
+    ctx_pt = LoopContext(CPUBackend(), PointMode(), 1, 1:0, 4)
+    ctx_bt = LoopContext(CPUBackend(), BatchedMode(), 0, 1:4, 4)
+    @test ctx_pt isa LoopContext{CPUBackend, PointMode}
+    @test ctx_bt isa LoopContext{CPUBackend, BatchedMode}
+    # The backend-first order keeps the partial annotation `LoopContext{<:GPUBackend}` valid (any mode).
+    @test LoopContext{CPUBackend, PointMode} <: LoopContext{CPUBackend}
+
+    # A calculator's per-point `OuterIteration` bracket fires only in PointMode; the batched loop's
+    # per-iteration `OuterIteration` bracket hits the default no-op (does NOT trigger the point path).
+    c = _ModeDispatchCalc()
+    calculator_begin!(c, OuterIteration(), ctx_pt)          # -> (:iter, :point)
+    calculator_begin!(c, OuterIteration(), ctx_bt)          # -> default no-op (no method for BatchedMode)
+    calculator_begin!(c, OuterIterationBatch(), ctx_bt)     # -> (:batch, :batched)
+    calculator_begin!(c, OuterIterationBatch(), ctx_pt)     # -> default no-op (no method for PointMode)
+    @test c.fired == [(:iter, :point), (:batch, :batched)]
+
+    # The two reference calculators dispatch their real brackets by mode, not backend: the batched
+    # loop fires per-k `OuterIteration` on a GPU backend, which must resolve to the default no-op
+    # (not the CPU per-point reduction).
+    BC = ElectronPhonon.BoltzmannCalculator
+    @test which(calculator_begin!, (BC, OuterIteration, LoopContext{CPUBackend, PointMode})).module === ElectronPhonon
+    # OuterIteration on any backend in BatchedMode -> AbstractCalculator no-op default.
+    m_noop = which(calculator_begin!, (BC, OuterIteration, LoopContext{CPUBackend, BatchedMode}))
+    @test m_noop.sig.parameters[2] === AbstractCalculator
+
+    # Backend-routed `to_device`: the CPU backend is an identity (no CUDA needed on the host path).
+    v = [1.0, 2.0, 3.0]
+    @test to_device(CPUBackend(), v) === v
 end

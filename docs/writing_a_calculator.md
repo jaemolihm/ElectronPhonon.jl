@@ -163,6 +163,13 @@ To add a GPU path to an existing CPU calculator:
    `eph_batched_bytes_per_point(calc, PayloadType; nw, nmodes)` so the loop's memory-adaptive batch
    sizing accounts for it.
 
+   If a bracket is shared between the CPU and GPU loop shapes (e.g. the `OuterIteration` bracket,
+   which the batched outer-k loop fires per k in addition to the CPU per-point loop), select the
+   batched behavior from the loop **mode** carried in `ctx`, never the backend: either dispatch on
+   `ctx::LoopContext{<:AbstractBackend, PointMode}` vs `{<:AbstractBackend, BatchedMode}`, or branch
+   on `ctx.mode isa ElectronPhonon.BatchedMode`. `ctx.backend` is only for allocation
+   (`alloc(ctx.backend, …)`) / `free_bytes` / `synchronize`, not for telling the loop shapes apart.
+
 `BoltzmannCalculator` (`src/boltzmann/boltzmann_calculator.jl`) and `EliashbergCalculator`
 (MigdalEliashberg.jl) are worked references: each has both a CPU `ElPhDataPoint` method and a GPU
 batched method sharing the same output arrays. See `README_GPU.md` for the device-loop details.

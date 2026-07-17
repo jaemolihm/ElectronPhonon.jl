@@ -154,10 +154,11 @@ end
 # --- CPU (non-batched, ElPhDataPoint) path --------------------------------------------------
 
 # CPU path: allocate the per-chunk thread buffers on the first outer iteration (this runs once,
-# single-threaded, so no lock is needed), then zero them for the new outer k. Dispatched on the CPU
-# backend; on the GPU path the default no-op runs (device buffers live in OuterIterationBatch).
+# single-threaded, so no lock is needed), then zero them for the new outer k. Dispatched on
+# `PointMode`; in the batched loop (`BatchedMode`) the default no-op runs (the batched loop fires
+# per-k OuterIteration brackets too, but the device buffers live in OuterIterationBatch).
 function ElectronPhonon.calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIteration,
-        ctx::LoopContext{CPUBackend}) where {FT}
+        ctx::LoopContext{<:AbstractBackend, PointMode}) where {FT}
     if isempty(calc.Sₒ_buffer)
         rb = calc.rng_band
         n_f = calc.el_f.n
@@ -204,10 +205,10 @@ function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, p::ElPhDa
     calc
 end
 
-# CPU path: reduce the per-chunk buffers into the global Sₒ/Sᵢ. Dispatched on the CPU backend; the
-# GPU path runs the default no-op.
+# CPU path: reduce the per-chunk buffers into the global Sₒ/Sᵢ. Dispatched on `PointMode`; the
+# batched loop (`BatchedMode`) runs the default no-op.
 function ElectronPhonon.calculator_end!(calc::BoltzmannCalculator, ::OuterIteration,
-        ctx::LoopContext{CPUBackend})
+        ctx::LoopContext{<:AbstractBackend, PointMode})
     ik = ctx.outer_index
     @inbounds @views for n in calc.rng_band
         ind_el_i = state_index(calc.el_i, ik, n)
@@ -224,13 +225,13 @@ end
 
 # --- GPU batched path (ElPhDataOuterKBatched) -----------------------------------------------
 
-# GPU (batched) path: called by the GPU e-ph loop once per outer-k batch, before its k iterations.
+# Batched path: called by the GPU e-ph loop once per outer-k batch, before its k iterations.
 # `ctx.backend` (a `GPUBackend`) allocates from the e-ph matrix backend. On the first batch it builds
 # the run's one-time device buffers into `calc.dev` (a `BoltzmannDeviceBuffers`); every batch it
-# records this batch's Sᵢ tile range and zeros the tile's active region. Dispatched on the GPU
-# backend; the CPU path runs the default no-op.
+# records this batch's Sᵢ tile range and zeros the tile's active region. Dispatched on `BatchedMode`;
+# the per-point (`PointMode`) path runs the default no-op.
 function ElectronPhonon.calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIterationBatch,
-        ctx::LoopContext{<:GPUBackend}) where {FT}
+        ctx::LoopContext{<:AbstractBackend, BatchedMode}) where {FT}
     backend = ctx.backend
     n_i, n_f, nT = calc.el_i.n, calc.el_f.n, length(calc.occ)
     kstart, kend = first(ctx.batch), last(ctx.batch)
@@ -264,10 +265,10 @@ function ElectronPhonon.calculator_begin!(calc::BoltzmannCalculator{FT}, ::Outer
     calc
 end
 
-# GPU (batched) path: stream this batch's Sᵢ tile from device to the host output (called once per
-# outer-k batch, after its k iterations). Dispatched on the GPU backend.
+# Batched path: stream this batch's Sᵢ tile from device to the host output (called once per
+# outer-k batch, after its k iterations). Dispatched on `BatchedMode`.
 function ElectronPhonon.calculator_end!(calc::BoltzmannCalculator, ::OuterIterationBatch,
-        ctx::LoopContext{<:GPUBackend})
+        ctx::LoopContext{<:AbstractBackend, BatchedMode})
     if calc.tile_ni > 0
         ni = calc.tile_ni
         i0 = calc.tile_i0

@@ -302,7 +302,7 @@ function _loop_eph_over_k_and_kq(
         end
 
         # Multithreading setup
-        ctx_k = LoopContext(backend, ik, 1:0, 0)
+        ctx_k = LoopContext(backend, PointMode(), ik, 1:0, 0)
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
 
         @threads for (id_chunk, ikqs) in enumerate(chunks(1:kqpts.n; n=nchunks_threads))
@@ -577,7 +577,7 @@ function _loop_eph_over_k_and_kq_gpu(
     # sizes the interpolator's Fourier cache) is set at construction, not mutated afterward. `op_r`
     # itself is full-band-sized.
     ndata_ekpR = nw * nbandk_max * nmodes
-    ep_ekpR_dev = to_device(get_next_wannier_object(model.epmat; ndata = ndata_ekpR))
+    ep_ekpR_dev = to_device(backend, get_next_wannier_object(model.epmat; ndata = ndata_ekpR))
     nr_ep = ep_ekpR_dev.nr
 
     # ----- memory-adaptive q-batch size (§7) -----
@@ -722,7 +722,7 @@ function _loop_eph_over_k_and_kq_gpu(
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
-        ctx_batch = LoopContext(backend, 0, iks_batch, nk_batch_max)
+        ctx_batch = LoopContext(backend, BatchedMode(), 0, iks_batch, nk_batch_max)
         foreach(c -> calculator_begin!(c, OuterIterationBatch(), ctx_batch), calculators)
 
     for (ik_ind, ik) in enumerate(iks_batch)
@@ -737,7 +737,7 @@ function _loop_eph_over_k_and_kq_gpu(
         # the leading rows and bumps `_id` (the single invalidation entry point).
         @views update_op_r!(ep_ekpR_dev, ep_ekpR_all[:, :, ik_ind]; rows = 1:ndata_ekpR)
 
-        ctx_k = LoopContext(backend, ik, iks_batch, nk_batch_max)
+        ctx_k = LoopContext(backend, BatchedMode(), ik, iks_batch, nk_batch_max)
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
 
         qstart = 1
