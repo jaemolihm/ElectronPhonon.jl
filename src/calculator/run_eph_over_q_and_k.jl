@@ -430,6 +430,8 @@ function _loop_eph_over_q_and_k_gpu(
     # `get_eph_RR_to_Rq!` runs on the HOST per q into `ep_eRpq_obj`; its op_r is then uploaded
     # into this device clone. Reusing the clone across q is correct because `get_fourier_batched!`
     # recomputes its phases and reads `parent.op_r` fresh on every call (it never consults `_id`).
+    # This is the interpolator's documented data-freshness contract; see the "Data freshness"
+    # section of the `BatchedFourierCore` / `BatchedWannierInterpolator` docstrings.
     ep_eRpq_obj = eph_buffers.ep_eRpq_obj
     epmat = eph_buffers.epmat
     ep_eRpq_dev = to_device(ep_eRpq_obj)

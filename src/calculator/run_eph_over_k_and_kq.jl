@@ -544,11 +544,12 @@ function _loop_eph_over_k_and_kq_gpu(
     epmat_dev = to_device(model.epmat)
     backend = GPUBackend(epmat_dev.op_r)   # one resolution point; carried in LoopContext below
     itp_epmat = BatchedWannierInterpolator(epmat_dev; batch_size = nk_batch_max)
-    ep_ekpR_dev = to_device(get_next_wannier_object(model.epmat))
+    # Device child object for g(k, R_ep), born partial-width: under the k-side eigenvector-window
+    # projection only the first nw·nbandk_max·nmodes rows of op_r are filled/read, so `ndata` (which
+    # sizes the interpolator's Fourier cache) is set at construction, not mutated afterward. `op_r`
+    # itself is full-band-sized.
     ndata_ekpR = nw * nbandk_max * nmodes
-    # Set ndata BEFORE building the interpolator (its Fourier cache is sized to parent.ndata):
-    # under the k-side projection only the first nw·nbandk_max·nmodes rows of op_r are filled/read.
-    ep_ekpR_dev.ndata = ndata_ekpR
+    ep_ekpR_dev = to_device(get_next_wannier_object(model.epmat; ndata = ndata_ekpR))
     nr_ep = ep_ekpR_dev.nr
 
     # ----- memory-adaptive q-batch size (§7) -----
@@ -703,10 +704,10 @@ function _loop_eph_over_k_and_kq_gpu(
         end
 
         # Load this k's g(k, R_ep) into the interpolator's parent (cheap device→device copy);
-        # the inner kR->kq driver reads `ep_ekpR_dev.op_r` fresh. Under the k-side projection
-        # only the first ndata_ekpR rows are used (op_r itself is full-band-sized).
-        @views ep_ekpR_dev.op_r[1:ndata_ekpR, :] .= ep_ekpR_all[:, :, ik_ind]
-        ep_ekpR_dev._id += 1
+        # the inner kR->kq driver reads `ep_ekpR_dev.op_r` fresh. Under the k-side projection only
+        # the first ndata_ekpR rows are used (op_r itself is full-band-sized). `update_op_r!` writes
+        # the leading rows and bumps `_id` (the single invalidation entry point).
+        @views update_op_r!(ep_ekpR_dev, ep_ekpR_all[:, :, ik_ind]; rows = 1:ndata_ekpR)
 
         ctx_k = LoopContext(backend, ik, iks_batch, nk_batch_max)
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
