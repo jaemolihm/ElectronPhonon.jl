@@ -501,11 +501,12 @@ function _loop_eph_over_k_and_kq_gpu(
     # symmetry-agnostic — `symmetry` is only passed through to `postprocess_calculator!`. The
     # dispatcher gates the unsupported el_kq_from_unfolding = true case.
 
-    # Default (nq_batch_max === nothing): process all k+q in a single batch per k. Fewer, larger
-    # kR->kq / calculator kernels — the GPU e-ph path is launch-bound for small nw/nmodes, so one
-    # big batch is ~1.8× faster than the old 1024 default at 16³, and the per-batch device buffers
-    # stay modest even at 50³ (≲ a few hundred MB). Pass an Int to cap the batch if memory-limited.
-    nq_batch_max = nq_batch_max === nothing ? nkq : min(nq_batch_max, nkq)
+    # Default (nq_batch_max === nothing): size the q-batch to the free device memory (below), which
+    # for small nw/nmodes lands on all k+q in a single batch. Fewer, larger kR->kq / calculator
+    # kernels — the GPU e-ph path is launch-bound for small nw/nmodes, so one big batch is ~1.8×
+    # faster than the old 1024 default at 16³. Passing an Int caps the batch harder; the
+    # memory-adaptive cap (§7) then takes the smaller of the two so a large-nw run cannot OOM.
+    nq_batch_user = nq_batch_max   # nothing = size to memory (capped at nkq); Int = hard upper cap
     nk_batch_max = min(nk_batch_max, nk)
 
     # The GPU path is always device-native/batched: the e-ph matrix for a whole (k, {k+q}) batch
@@ -550,8 +551,45 @@ function _loop_eph_over_k_and_kq_gpu(
     # Set ndata BEFORE building the interpolator (its Fourier cache is sized to parent.ndata):
     # under the k-side projection only the first nw·nbandk_max·nmodes rows of op_r are filled/read.
     ep_ekpR_dev.ndata = ndata_ekpR
-    itp_ep_ekpR = BatchedWannierInterpolator(ep_ekpR_dev; batch_size = nq_batch_max)
     nr_ep = ep_ekpR_dev.nr
+
+    # ----- memory-adaptive q-batch size (§7) -----
+    # Mirror the outer-q loop's device_free_bytes sizing: every per-q staging buffer scales with the
+    # q-batch width, so cap it at what free device memory allows (30% headroom for the batched
+    # drivers' recycled temporaries). `nq_batch_user` (Int, or nkq when nothing) stays a hard cap.
+    # Per-q device bytes (complex = 16 B, real = 8 B), counted against the allocations below —
+    # epmat_dev / ep_ekpR_dev / itp_epmat are already live, so `free` reflects them:
+    #   epkq_dev + kRkq_ws.g + kRkq_ws.tmp + itp_ep_ekpR.cached_results : 4 × 16·nw·nbandk_max·nmodes
+    #   g2_dev                                                          :      8·nw·nbandk_max·nmodes
+    #   itp_ep_ekpR.phase_batch (cplx) + rdotk (real)                   :     24·nr_ep
+    #   uphs_dev                                                        :     16·nmodes²
+    #   ωq_dev                                                          :      8·nmodes
+    #   iqs_batch_dev + ikqs_dev (Int)                                  :     16
+    bytes_per_q = 72 * nw * nbandk_max * nmodes + 24 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 16
+    # Whole-run + per-k-batch commitments allocated after this point come off the top before dividing:
+    #   ukqs_all_dev              : 16·nw²·nkq
+    #   uph_all_dev + ωq_all_dev  : (16·nmodes² + 8·nmodes)·qpts.n
+    #   ep_ekpR_all + uks_dev     : 16·nw·nbandk_max·(nmodes·nr_ep + 1)·nk_batch_max
+    committed = 16 * nw^2 * nkq +
+        (16 * nmodes^2 + 8 * nmodes) * qpts.n +
+        16 * nw * nbandk_max * (nmodes * nr_ep + 1) * nk_batch_max
+    free = device_free_bytes(epmat_dev.op_r)
+    if free != typemax(Int) && committed > free
+        error("GPU outer-k: committed device memory ($(round(committed / 1e9, digits = 2)) GB: " *
+              "whole-run k+q/phonon stacks + per-k-batch RR→kR scratch, nk_batch_max = $nk_batch_max) " *
+              "exceeds free device memory ($(round(free / 1e9, digits = 2)) GB). " *
+              "Reduce nk_batch_max or the k+q grid.")
+    end
+    nq_batch_mem = free == typemax(Int) ? nkq :
+        max(1, ((free - committed) ÷ 10 * 7) ÷ bytes_per_q)
+    nq_batch_cap = nq_batch_user === nothing ? nkq : min(nq_batch_user, nkq)
+    nq_batch_max = min(nq_batch_cap, nq_batch_mem, nkq)
+    if mpi_isroot() && nq_batch_max < nq_batch_cap
+        @info "GPU outer-k: memory-adaptive q-batch size = $nq_batch_max " *
+              "($(round(bytes_per_q / 1e3, digits = 1)) kB/q, $(round(free / 1e9, digits = 1)) GB free)"
+    end
+
+    itp_ep_ekpR = BatchedWannierInterpolator(ep_ekpR_dev; batch_size = nq_batch_max)
 
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
     # All device staging is sized to the full batch and used as plain CuArrays (not
