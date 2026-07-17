@@ -668,3 +668,53 @@ end
         @test vm < 1e-8 * vs
     end
 end
+
+
+# Scatter round-trip: the device-resident scatter `eph_window_scatter!` (used by
+# EliashbergCalculator's device path) must (1) write COLLISION-FREE — its non-collision invariant
+# (distinct k → distinct outer state i, distinct k+q → distinct inner state f, so every target linear
+# index is unique across the run) is what makes the atomic-free device writes correct — and (2) agree
+# bit-for-bit between the generic (CPU) method and the CUDA kernel. Builds window-aware imaps (some
+# out-of-window entries == 0) mimicking a small run and checks both the full-buffer (i0=0,
+# ni_stride=n_i) and per-tile block-buffer (i0≠0, ni_stride=tile extent) addressings.
+@testset "eph_window_scatter! round-trip (collision-free + CPU==CUDA)" begin
+    using Random
+    Random.seed!(20260717)
+    FT = Float64
+    nw = 4; nbandk = 3; nm = 2; nqc = 5; nkq = 8
+    # Distinct positive global state indices, with some 0 (out-of-window) entries.
+    imap_i_col = [0, 5, 2]                              # outer states for the nbandk projected bands
+    n_i = 6
+    imap_f = reshape(collect(1:nw*nkq), nw, nkq)        # distinct global inner states, all in-window
+    imap_f[1, 2] = 0; imap_f[3, 5] = 0                  # a couple out-of-window
+    n_f = nw * nkq
+    ikqs = [2, 5, 7, 8, 3]                              # this chunk's (distinct) k+q indices
+
+    # (1) Collision-free: the target linear indices of the in-window writes are all distinct.
+    lins = Int[]
+    for j in 1:nqc, ν in 1:nm, n in 1:nbandk, m in 1:nw
+        i = imap_i_col[n]; f = imap_f[m, ikqs[j]]
+        (i > 0 && f > 0) || continue
+        push!(lins, ν + nm * (i - 1) + nm * n_i * (f - 1))
+    end
+    @test !isempty(lins)
+    @test allunique(lins)
+
+    g2vals = abs.(randn(nw, nbandk, nm, nqc))
+    ωq = 0.01 .+ abs.(randn(nm, nqc))
+
+    if GPU_AVAILABLE
+        for (ni_stride, i0) in ((n_i, 0), (5, 1))       # full buffer, then a per-tile block buffer
+            len = nm * ni_stride * n_f
+            g2c = zeros(FT, len); ωc = zeros(FT, len)
+            ElectronPhonon.eph_window_scatter!(g2c, ωc, g2vals, imap_i_col, imap_f, ikqs, ωq,
+                nw, nbandk, nm, nqc, ni_stride; i0)
+            g2g = CUDA.zeros(FT, len); ωg = CUDA.zeros(FT, len)
+            ElectronPhonon.eph_window_scatter!(g2g, ωg, CUDA.CuArray(g2vals),
+                CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), CUDA.CuArray(ikqs), CUDA.CuArray(ωq),
+                nw, nbandk, nm, nqc, ni_stride; i0)
+            @test Array(g2g) == g2c                     # same integer indexing + copy ⇒ bit-identical
+            @test Array(ωg) == ωc
+        end
+    end
+end

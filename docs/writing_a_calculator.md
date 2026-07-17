@@ -170,6 +170,43 @@ To add a GPU path to an existing CPU calculator:
    on `ctx.mode isa ElectronPhonon.BatchedMode`. `ctx.backend` is only for allocation
    (`alloc(ctx.backend, …)`) / `free_bytes` / `synchronize`, not for telling the loop shapes apart.
 
+### Tiling a large outer-k output over the device: `TiledDeviceOutput`
+
+A device-resident outer-k calculator whose output is indexed by the outer-k *state* (so it grows
+with the grid — e.g. an `(nmodes, n_i, n_f)` coupling, or an `(n_i, n_f, nT)` scattering matrix)
+should not always hold the whole thing on the device. `ElectronPhonon.TiledDeviceOutput` is an
+opt-in helper that owns exactly that bookkeeping, so `BoltzmannCalculator` and `EliashbergCalculator`
+both use it instead of hand-rolling it:
+
+- Construct it once (at `setup_calculator!`) from the full output shape and which axis is tiled over
+  outer-k states — any dims, any tiled-axis position, and `narr` arrays of identical tiling per
+  instance (`EliashbergCalculator` holds g2 and ωq in one instance):
+  `TiledDeviceOutput{FT}((nmodes, n_i, n_f), 2, calc.el_i; narr = 2, force_block)`.
+- It decides **full-device-resident vs per-tile block** residency from `free_bytes(ctx.backend)`
+  (override with `force_block`), allocates lazily on the first batch, computes the outer-k tile
+  ranges (with the contiguity guarantee), zeros the active tile per batch, and does the contiguous
+  device→host download.
+- In your `calculator_begin!(…, OuterIterationBatch(), ctx)` call `tile_begin!(t, ctx)`; scatter into
+  `device_array(t, k)` using `tile_offset(t)` / `tile_stride(t)` (the scatter stays yours —
+  `eph_window_scatter!` or your own); in `calculator_end!(…, OuterIterationBatch(), ctx)` flush a
+  block tile with `tile_download!(t)` + a small view-copy into your host output; in
+  `postprocess_calculator!` copy a full-resident buffer back and `tile_free!(t)`.
+
+The lazily-allocated device buffers are held behind a `Union{Nothing, …}` / `Vector{Any}` handle;
+type stability is preserved because the scatter kernel (a typed generic function) is the
+function-boundary type barrier — everything the helper itself does runs once per batch (cold).
+
+### Shared run-level device stacks
+
+The outer-k GPU loop can hand batched calculators whole-run device stacks it already has (band
+energies, integration weights) via `ctx.el_k_stacks` (an `ElKDeviceStacks`), so a calculator need
+not hand-upload its own copy. Declare which stacks you need with
+`required_el_k_device_stacks(calc) = [:e_k, :e_kq, :wtq]` (subset of `:e_k`, `:e_kq`, `:wtk`,
+`:wtq`; default none — then `ctx.el_k_stacks` is `nothing`). The energy grids are per-`(physical
+band, k)`; derive your flattened per-state view by gathering through your own state-index map (the
+device state-index map itself is built with `_indmap_to_device(ctx.backend, states, nw)`).
+
 `BoltzmannCalculator` (`src/boltzmann/boltzmann_calculator.jl`) and `EliashbergCalculator`
 (MigdalEliashberg.jl) are worked references: each has both a CPU `ElPhDataPoint` method and a GPU
-batched method sharing the same output arrays. See `README_GPU.md` for the device-loop details.
+batched method sharing the same output arrays, and both use `TiledDeviceOutput`. See `README_GPU.md`
+for the device-loop details.

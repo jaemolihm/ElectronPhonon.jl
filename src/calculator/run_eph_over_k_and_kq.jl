@@ -544,6 +544,12 @@ function _loop_eph_over_k_and_kq_gpu(
         "use_gpu requires every calculator to support the ElPhDataOuterKBatched payload " *
         "(supports(calc, ElPhDataOuterKBatched) = true); the GPU path does not fall back to the host loop."))
 
+    # Whole-run device stacks (band energies / integration weights), built once and shared with the
+    # batched calculators via `LoopContext.el_k_stacks`, so a device-resident calculator does not
+    # hand-upload its own copy. Built lazily and only for the quantities some calculator declares.
+    stack_syms = union(Symbol[], (required_el_k_device_stacks(c) for c in calculators)...)
+    el_k_stacks = _build_el_k_device_stacks(backend, stack_syms, el_k_save, el_kq_save, kpts, kqpts, nw, FT)
+
     # The k+q side of the interpolation runs full-band (uniform nw×nw, using the full eigenvectors
     # `el.u_full`); the energy window is applied in the calculator scatter, where out-of-window
     # states have imap == 0 and are skipped, so a windowed run needs no special handling there.
@@ -722,7 +728,7 @@ function _loop_eph_over_k_and_kq_gpu(
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
-        ctx_batch = LoopContext(backend, BatchedMode(), 0, iks_batch, nk_batch_max)
+        ctx_batch = LoopContext(backend, BatchedMode(), 0, iks_batch, nk_batch_max, el_k_stacks)
         foreach(c -> calculator_begin!(c, OuterIterationBatch(), ctx_batch), calculators)
 
     for (ik_ind, ik) in enumerate(iks_batch)
@@ -737,7 +743,7 @@ function _loop_eph_over_k_and_kq_gpu(
         # the leading rows and bumps `_id` (the single invalidation entry point).
         @views update_op_r!(ep_ekpR_dev, ep_ekpR_all[:, :, ik_ind]; rows = 1:ndata_ekpR)
 
-        ctx_k = LoopContext(backend, BatchedMode(), ik, iks_batch, nk_batch_max)
+        ctx_k = LoopContext(backend, BatchedMode(), ik, iks_batch, nk_batch_max, el_k_stacks)
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
 
         qstart = 1
@@ -817,4 +823,34 @@ function _loop_eph_over_k_and_kq_gpu(
     for calc in calculators
         postprocess_calculator!(calc; qpts, symmetry)
     end
+end
+
+
+# --- shared whole-run device stacks (see `ElKDeviceStacks` / `required_el_k_device_stacks`) --------
+
+# Per-(physical band, k) energy grid `(nw, nk)`, zero outside the window. `el_states[k].e` is an
+# OffsetArray over that k's in-window band range; a calculator's flattened per-state view (gathered
+# through its `(iband, ik)` map) only ever reads in-window entries, so out-of-window slots stay 0.
+function _band_energy_stack(backend, el_states, nw::Integer, ::Type{FT}) where {FT}
+    nk = length(el_states)
+    host = zeros(FT, nw, nk)
+    for (k, el) in enumerate(el_states)
+        el.nband == 0 && continue
+        @inbounds for ib in el.rng
+            host[ib, k] = el.e[ib]
+        end
+    end
+    copyto!(alloc(backend, FT, nw, nk), host)
+end
+
+# Build only the requested stacks (union over calculators); undeclared quantities stay `nothing`.
+# Returns `nothing` when nothing is requested, so `LoopContext.el_k_stacks` is `nothing` in that
+# (common) case.
+function _build_el_k_device_stacks(backend, syms, el_k_save, el_kq_save, kpts, kqpts, nw, ::Type{FT}) where {FT}
+    isempty(syms) && return nothing
+    e_k  = :e_k  in syms ? _band_energy_stack(backend, el_k_save, nw, FT)  : nothing
+    e_kq = :e_kq in syms ? _band_energy_stack(backend, el_kq_save, nw, FT) : nothing
+    wtk  = :wtk  in syms ? copyto!(alloc(backend, FT, kpts.n),  collect(FT, kpts.weights))  : nothing
+    wtq  = :wtq  in syms ? copyto!(alloc(backend, FT, kqpts.n), collect(FT, kqpts.weights)) : nothing
+    ElKDeviceStacks(e_k, e_kq, wtk, wtq)
 end
