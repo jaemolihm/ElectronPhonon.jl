@@ -1,7 +1,7 @@
 """
     AbstractCalculator
 
-A calculator is a type for calculating properties of the system. In `run_eph_outer_k`,
+A calculator is a type for calculating properties of the system. In `run_eph_over_k_and_q`,
 once all the electron and phonon states and the e-ph matrix elements are calculated,
 calculators are called and these information are passed as arguments.
 Each calculator implement their own calculation of different properties of the system.
@@ -57,7 +57,7 @@ end
 # The two GPU batched-calculator hooks are named for which momentum is the OUTER loop and which is
 # batched on the INNER axis:
 #   * `*_outer_k_batched*`  — the outer-k loop `run_eph_over_k_and_kq` (outer k, inner k+q batched)
-#   * `*_outer_q_batched*`  — the outer-q loop `run_eph_outer_q`        (outer q, inner k   batched)
+#   * `*_outer_q_batched*`  — the outer-q loop `run_eph_over_q_and_k`   (outer q, inner k   batched)
 
 """
     allow_eph_outer_k_batched(calc::AbstractCalculator) -> Bool
@@ -104,7 +104,7 @@ end
     allow_eph_outer_q_batched(calc::AbstractCalculator) -> Bool
 
 Whether the calculator implements the batched device hook [`run_calculator_outer_q_batched!`] used
-by the GPU outer-q loop (`run_eph_outer_q` with `use_gpu = true`) — outer q, inner k batched. When
+by the GPU outer-q loop (`run_eph_over_q_and_k` with `use_gpu = true`) — outer q, inner k batched. When
 every calculator in a run returns `true`, the GPU loop keeps the e-ph matrix for a whole
 `(q, {k-batch})` on the device and calls `run_calculator_outer_q_batched!` once per k-batch —
 skipping the per-`(k,q)` host `run_calculator!` callback and the device→host copy of the e-ph

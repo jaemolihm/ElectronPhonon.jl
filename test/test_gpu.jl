@@ -110,7 +110,7 @@ end
 end
 
 # Plumbing of the outer-q batched calculator hook (allow_eph_outer_q_batched /
-# run_calculator_outer_q_batched!) used by `run_eph_outer_q(...; use_gpu=true)`. The per-q device
+# run_calculator_outer_q_batched!) used by `run_eph_over_q_and_k(...; use_gpu=true)`. The per-q device
 # lifecycle reuses the generic setup_calculator_inner! / postprocess_calculator_inner! hooks (same
 # as the CPU outer-q loop). Backend-agnostic, so no GPU is needed — checks the opt-in default and
 # the not-implemented error path.
@@ -411,13 +411,13 @@ end
 end
 
 # Outer-q analogue of `_RecordCalc`/`_RecordCalcBatched` above: a calculator for
-# `run_eph_outer_q` that accumulates a per-q, GAUGE-INVARIANT scalar
+# `run_eph_over_q_and_k` that accumulates a per-q, GAUGE-INVARIANT scalar
 #   A[iq] = Σ_{m,n,ν,k} wtk[k] · |ep[m,n,ν,k]|²
 # (the band-summed |g|² is invariant under the electron/phonon eigenvector gauge, so the
 # degenerate-band gauge difference between the CPU LAPACK and GPU batched eigensolvers — see the
 # note in the outer-k test above — does not matter here). This lets the SAME calculator validate
 # both the CPU (`run_calculator!`) and GPU-batched (`run_calculator_outer_q_batched!`) hooks of
-# `run_eph_outer_q` against each other directly, without restricting to eigenvalues only.
+# `run_eph_over_q_and_k` against each other directly, without restricting to eigenvalues only.
 #
 # Thread-safety: `run_calculator!` on the CPU path is called from multiple threads (one per
 # k-chunk) for the SAME iq, so the per-q sum is accumulated into a per-chunk slot (`id_chunk`,
@@ -473,25 +473,25 @@ function ElectronPhonon.run_calculator_outer_q_batched!(c::_RecordCalcOuterQ, ep
     c
 end
 
-@testset "run_eph_outer_q CPU vs GPU equivalence" begin
+@testset "run_eph_over_q_and_k CPU vs GPU equivalence" begin
     if !GPU_AVAILABLE
-        @info "CUDA not available/functional — skipping run_eph_outer_q CPU-vs-GPU test"
+        @info "CUDA not available/functional — skipping run_eph_over_q_and_k CPU-vs-GPU test"
     else
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
         grid = (4, 4, 4)
 
         calc_cpu = _RecordCalcOuterQ()
-        ElectronPhonon.run_eph_outer_q(model, grid, grid;
+        ElectronPhonon.run_eph_over_q_and_k(model, grid, grid;
             calculators=[calc_cpu], use_symmetry=false, keep_all_qpts=true,
             use_gpu=false, progress_print_step=10^9)
 
         calc_gpu = _RecordCalcOuterQ()
-        ElectronPhonon.run_eph_outer_q(model, grid, grid;
+        ElectronPhonon.run_eph_over_q_and_k(model, grid, grid;
             calculators=[calc_gpu], use_symmetry=false, keep_all_qpts=true,
             use_gpu=true, progress_print_step=10^9)
 
         rdiff = maximum(abs, calc_cpu.A .- calc_gpu.A) / maximum(abs, calc_cpu.A)
-        @info "run_eph_outer_q CPU vs GPU" cpu_A=calc_cpu.A gpu_A=calc_gpu.A rdiff
+        @info "run_eph_over_q_and_k CPU vs GPU" cpu_A=calc_cpu.A gpu_A=calc_gpu.A rdiff
         @test isapprox(calc_cpu.A, calc_gpu.A; rtol=1e-8)
     end
 end

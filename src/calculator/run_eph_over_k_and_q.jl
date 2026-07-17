@@ -14,7 +14,7 @@ using OffsetArrays: no_offset_view
     ensure gauge consistency between symmetry-equivalent k points.
     To enable this option, `kpts` and `qpts` must have same grid size.
 """
-function run_eph_outer_k(
+function run_eph_over_k_and_q(
         model       :: Model{FT},
         kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
         qpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
@@ -36,11 +36,11 @@ function run_eph_outer_k(
     ) where {FT}
 
     if model.epmat_outer_momentum != "el"
-        throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_outer_k"))
+        throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_over_k_and_q"))
     end
     for calc in calculators
         if !allow_eph_outer_k(calc)
-            throw(ArgumentError("$calc does not allow eph_outer_k. Use run_eph_outer_q instead."))
+            throw(ArgumentError("$calc does not allow eph_outer_k. Use run_eph_over_q_and_k instead."))
         end
     end
 
@@ -53,13 +53,13 @@ function run_eph_outer_k(
         precompute_el_kq = true
     end
 
-    setup = _setup_eph_outer_k(model, kpts_input, qpts_input;
+    setup = _setup_eph_over_k_and_q(model, kpts_input, qpts_input;
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, precompute_el_kq, symmetry,
         calculators, nchunks_threads,
     )
 
-    _loop_eph_outer_k(model,
+    _loop_eph_over_k_and_q(model,
         setup.kpts, setup.qpts, setup.kqpts,
         setup.el_k_save, setup.el_kq_save, setup.ph_save,
         setup.precompute_el_kq,
@@ -74,10 +74,10 @@ function run_eph_outer_k(
 end
 
 
-# _setup_eph_outer_k and _loop_eph_outer_k are split from run_eph_outer_k so that all
-# variables captured by the @threads closure in _loop_eph_outer_k are typed function
+# _setup_eph_over_k_and_q and _loop_eph_over_k_and_q are split from run_eph_over_k_and_q so that all
+# variables captured by the @threads closure in _loop_eph_over_k_and_q are typed function
 # arguments, avoiding Core.Box wrapping.
-function _setup_eph_outer_k(
+function _setup_eph_over_k_and_q(
         model       :: Model{FT},
         kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
         qpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
@@ -96,9 +96,9 @@ function _setup_eph_outer_k(
 
     (; nw, nmodes) = model
 
-    # Generate k points
-    @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
-        kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode)
+    # Generate k points and electron states at k (shared setup core)
+    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_eph_common(
+        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode)
     nk = kpts.n
 
     # Generate q points
@@ -119,8 +119,6 @@ function _setup_eph_outer_k(
     end
 
 
-    # Compute and save electron state at k
-    @time el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_k; fourier_mode)
     @time ph_save = compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode)
 
 
@@ -133,18 +131,12 @@ function _setup_eph_outer_k(
         kqpts = GridKpoints(kqpts)
 
         if el_kq_from_unfolding
-            # To ensure gauge consistency between symmetry-equivalent k points, we explicitly compute
-            # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
             kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
-            el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
-
-            el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
-
-            # el_kq_save_irr is not used anymore.
-            el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
         else
-            el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
+            kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
         end
+        el_kq_save = _compute_el_kq_states(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
+            symmetry, el_kq_from_unfolding, window_kq; fourier_mode)
     else
         kqpts = nothing
         nelec_below_window_kq = nothing
@@ -158,10 +150,7 @@ function _setup_eph_outer_k(
                                        maximum(el.nband for el in el_kq_save)) : nw
 
 
-    epdatas = Channel{ElPhData{FT}}(nthreads())
-    foreach(1:nthreads()) do _
-        put!(epdatas, ElPhData{FT}(nw, nmodes, nband_max))
-    end
+    epdatas = _make_epdatas_channel(FT, nw, nmodes, nband_max)
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
     ep_ekpR_obj = get_next_wannier_object(model.epmat)
@@ -190,13 +179,10 @@ function _setup_eph_outer_k(
     end
 
 
-    for calc in calculators
-        setup_calculator!(calc, kpts, qpts, el_k_save;
-            nw, nmodes, rng_band = iband_min:iband_max,
-            el_states_kq = el_kq_save, kqpts, nelec_below_window_k, nelec_below_window_kq,
-            nchunks_threads
-        )
-    end
+    _setup_calculators!(calculators, kpts, qpts, el_k_save;
+        nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
+        nelec_below_window_k, nelec_below_window_kq, nchunks_threads,
+    )
 
     return (;
         kpts, qpts, kqpts,
@@ -210,7 +196,7 @@ function _setup_eph_outer_k(
 end
 
 
-function _loop_eph_outer_k(
+function _loop_eph_over_k_and_q(
         model       :: Model{FT},
         kpts, qpts, kqpts,
         el_k_save, el_kq_save, ph_save,
@@ -300,15 +286,7 @@ function _loop_eph_outer_k(
                 # Compute electron-phonon coupling
                 if !skip_eph
                     get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
-                    if screening_params !== nothing
-                        # FIXME: screening should go into calculator
-                        (; T, μ) = calculators[1].occ[1]
-                        xq_ = ElectronPhonon.normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
-                        ϵs .= epsilon_lindhard.(Ref(model.recip_lattice * xq_), epdata.ph.e, T, μ, Ref(screening_params))
-                        ϵs .= real.(ϵs)
-                    else
-                        ϵs .= 1
-                    end
+                    _apply_screening!(ϵs, calculators, model, xq, epdata, screening_params)
                     epdata_compute_eph_dipole!(epdata, ϵs; model)
                     epdata_set_g2!(epdata)
                 end

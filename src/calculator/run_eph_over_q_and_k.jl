@@ -8,14 +8,14 @@ using OffsetArrays: no_offset_view
 
 
 """
-    run_eph_outer_q(model, kpts, qpts; calculators, kwargs...)
+    run_eph_over_q_and_k(model, kpts, qpts; calculators, kwargs...)
 
 * `el_kq_from_unfolding`: If true, compute the electron states at k+q by computing the
     states at k+q in the irreducible BZ and unfolding them to the full BZ. This is useful to
     ensure gauge consistency between symmetry-equivalent k points.
     To enable this option, `kpts` and `qpts` must have same grid size.
 """
-function run_eph_outer_q(
+function run_eph_over_q_and_k(
         model       :: Model{FT},
         kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
         qpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
@@ -43,11 +43,11 @@ function run_eph_outer_q(
     ) where {FT}
 
     if model.epmat_outer_momentum != "ph"
-        throw(ArgumentError("model.epmat_outer_momentum must be ph to use run_eph_outer_q"))
+        throw(ArgumentError("model.epmat_outer_momentum must be ph to use run_eph_over_q_and_k"))
     end
     for calc in calculators
         if !allow_eph_outer_q(calc)
-            throw(ArgumentError("$calc does not allow run_eph_outer_q. Use run_eph_outer_k instead."))
+            throw(ArgumentError("$calc does not allow run_eph_over_q_and_k. Use run_eph_over_k_and_q instead."))
         end
     end
 
@@ -74,7 +74,7 @@ function run_eph_outer_q(
         precompute_el_kq = true
     end
 
-    setup = _setup_eph_outer_q(model, kpts_input, qpts_input;
+    setup = _setup_eph_over_q_and_k(model, kpts_input, qpts_input;
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, precompute_el_kq, use_symmetry,
         keep_all_qpts, eph_phonon_basis, calculators, nchunks_threads,
@@ -84,11 +84,11 @@ function run_eph_outer_q(
     if use_gpu
         # GPU path: setup stays on the host (filter/states/setup_calculator!); the inner-k e-ph
         # interpolation, k+q eigensolve, and calculator reduction run on the device. Extra flags
-        # must be off; `_loop_eph_outer_q_gpu` asserts the rest (no polar/screening, full-band via
+        # must be off; `_loop_eph_over_q_and_k_gpu` asserts the rest (no polar/screening, full-band via
         # window masking, directly-computed k+q, energy_conservation = (:None, 0.0)).
         precompute_el_kq && throw(ArgumentError(
             "use_gpu does not support precompute_el_kq (k+q states are eigensolved on the device)."))
-        _loop_eph_outer_q_gpu(model,
+        _loop_eph_over_q_and_k_gpu(model,
             setup.kpts, setup.qpts,
             setup.el_k_save, setup.ph_save, setup.eph_buffers;
             calculators, skip_eph, window_kq,
@@ -96,7 +96,7 @@ function run_eph_outer_q(
             progress_print_step, eph_phonon_basis, verbosity, nk_batch_max,
         )
     else
-        _loop_eph_outer_q(model,
+        _loop_eph_over_q_and_k(model,
             setup.kpts, setup.qpts, setup.kqpts,
             setup.el_k_save, setup.el_kq_save, setup.ph_save,
             setup.precompute_el_kq, setup.eph_buffers;
@@ -111,10 +111,10 @@ function run_eph_outer_q(
 end
 
 
-# _setup_eph_outer_q and _loop_eph_outer_q are split from run_eph_outer_q so that all
-# variables captured by the @threads closure in _loop_eph_outer_q are typed function
+# _setup_eph_over_q_and_k and _loop_eph_over_q_and_k are split from run_eph_over_q_and_k so that all
+# variables captured by the @threads closure in _loop_eph_over_q_and_k are typed function
 # arguments, avoiding Core.Box wrapping.
-function _setup_eph_outer_q(
+function _setup_eph_over_q_and_k(
         model       :: Model{FT},
         kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
         qpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
@@ -140,10 +140,16 @@ function _setup_eph_outer_q(
 
     symmetry = use_symmetry ? model.symmetry : nothing
 
-    # Generate k points (use_gpu: batched device eigensolve for the window test)
-    kpts, iband_min, iband_max, nelec_below_window_k = maybe_time(verbosity) do
-        filter_kpoints(kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
-    end
+    # Generate k points and electron states at k (shared setup core; use_gpu: batched device
+    # eigensolve for the window test). The outer-q-batched GPU path consumes only e_full / u_full /
+    # rng from el_k_save, so it skips the velocity/position interpolation+rotation (the dominant
+    # setup cost after the eigensolve); all other paths keep the full quantity list.
+    # TODO: calculators should declare whether they need velocity and/or position, instead of the
+    #       driver hard-coding this for the outer-q-batched path.
+    el_k_quantities = (use_gpu && !isempty(calculators) && all(allow_eph_outer_q_batched, calculators)) ?
+        ["eigenvalue", "eigenvector"] : ["eigenvalue", "eigenvector", "velocity", "position"]
+    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_eph_common(
+        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity, el_k_quantities)
     nk = kpts.n
 
     # Generate q points
@@ -169,17 +175,6 @@ function _setup_eph_outer_q(
     end
 
 
-    # Compute and save electron state at k.
-    # GPU outer-q-batched path: the loop consumes only e_full / u_full / rng from el_k_save, so skip
-    # the velocity/position interpolation+rotation (the dominant setup cost after the eigensolve).
-    # All other paths keep the full quantity list.
-    # TODO: calculators should declare whether they need velocity and/or position, instead of the
-    #       driver hard-coding this for the outer-q-batched path.
-    el_k_quantities = (use_gpu && !isempty(calculators) && all(allow_eph_outer_q_batched, calculators)) ?
-        ["eigenvalue", "eigenvector"] : ["eigenvalue", "eigenvector", "velocity", "position"]
-    el_k_save = maybe_time(verbosity) do
-        compute_electron_states(model, kpts, el_k_quantities, window_k; fourier_mode, use_gpu)
-    end
     ph_save = maybe_time(verbosity) do
         compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis)
     end
@@ -195,18 +190,12 @@ function _setup_eph_outer_q(
         kqpts = GridKpoints(kqpts)
 
         if el_kq_from_unfolding
-            # To ensure gauge consistency between symmetry-equivalent k points, we explicitly compute
-            # electron states only for k+q in the irreducible BZ and unfold them to the full BZ.
             kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
-            el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
-
-            el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
-
-            # el_kq_save_irr is not used anymore.
-            el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
         else
-            el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode)
+            kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
         end
+        el_kq_save = _compute_el_kq_states(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
+            symmetry, el_kq_from_unfolding, window_kq; fourier_mode)
     else
         kqpts = nothing
         nelec_below_window_kq = nothing
@@ -239,10 +228,9 @@ function _setup_eph_outer_q(
     # works for every occ_type on the device, so no occ_type is special-cased.
     gpu_array = use_gpu ? to_device(model.el_ham).op_r : nothing
 
-    setup_calculator!.(calculators, Ref(kpts), Ref(qpts), Ref(el_k_save);
-        nw, nmodes, rng_band = iband_min:iband_max,
-        el_states_kq = el_kq_save, kqpts, nelec_below_window_k, nelec_below_window_kq,
-        nchunks_threads, verbosity, use_gpu, gpu_array,
+    _setup_calculators!(calculators, kpts, qpts, el_k_save;
+        nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
+        nelec_below_window_k, nelec_below_window_kq, nchunks_threads, verbosity, use_gpu, gpu_array,
     )
 
     return (;
@@ -256,7 +244,7 @@ function _setup_eph_outer_q(
 end
 
 
-function _loop_eph_outer_q(
+function _loop_eph_over_q_and_k(
         model       :: Model{FT},
         kpts, qpts, kqpts,
         el_k_save, el_kq_save, ph_save,
@@ -345,15 +333,7 @@ function _loop_eph_outer_q(
                 # Compute electron-phonon coupling
                 if !skip_eph
                     get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
-                    if screening_params !== nothing
-                        # FIXME: screening should go into calculator
-                        (; T, μ) = calculators[1].occ[1]
-                        xq_ = ElectronPhonon.normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
-                        ϵs .= epsilon_lindhard.(Ref(model.recip_lattice * xq_), epdata.ph.e, T, μ, Ref(screening_params))
-                        ϵs .= real.(ϵs)
-                    else
-                        ϵs .= 1
-                    end
+                    _apply_screening!(ϵs, calculators, model, xq, epdata, screening_params)
                     epdata_compute_eph_dipole!(epdata, ϵs; model)
                     epdata_set_g2!(epdata)
                 end
@@ -386,7 +366,7 @@ end
 # =============================================================================
 #  GPU calculator loop for the outer-q e-ph sweep.
 #
-#  Mirrors `_loop_eph_over_k_and_kq_gpu` (run_eph_over_k_and_kq.jl): the shared `_setup_eph_outer_q`
+#  Mirrors `_loop_eph_over_k_and_kq_gpu` (run_eph_over_k_and_kq.jl): the shared `_setup_eph_over_q_and_k`
 #  runs on the host, and this loop moves the inner-k work — the e-ph Rq→kq interpolation, the k+q
 #  eigensolve, and the calculator reduction — onto the device via the generic batched drivers
 #  (`get_eph_Rq_to_kq_batched!`, `eigen_batched`, `get_fourier_batched!`) and the outer-q batched
@@ -404,7 +384,7 @@ end
 #  `allow_eph_outer_q_batched`. Windows are supported via eigenvector-column masking (out-of-window
 #  states contribute exactly 0), so the batched full-band nw×nw shapes stay uniform. Polar models are
 #  supported: the `polar_eph` dipole term is added on the device per batch (`add_eph_dipole_batched!`).
-function _loop_eph_outer_q_gpu(
+function _loop_eph_over_q_and_k_gpu(
         model       :: Model{FT},
         kpts, qpts,
         el_k_save, ph_save,
@@ -435,7 +415,7 @@ function _loop_eph_outer_q_gpu(
         "(run_calculator_outer_q_batched!). Use the CPU path otherwise."))
 
     # ----- device Hamiltonian for the k+q eigensolve (allocated once) -----
-    # TODO: `_setup_eph_outer_q` already uploads `model.el_ham` for the chemical-potential solve;
+    # TODO: `_setup_eph_over_q_and_k` already uploads `model.el_ham` for the chemical-potential solve;
     #       thread that device object through instead of uploading it again here.
     el_ham_dev = to_device(model.el_ham)
     gpu_array = el_ham_dev.op_r    # device-array prototype for `similar` / `device_free_bytes`
@@ -593,4 +573,18 @@ function _loop_eph_outer_q_gpu(
     end # iq
 
     postprocess_calculator!.(calculators; qpts, model.symmetry)
+end
+
+
+# =============================================================================
+# Deprecated driver names — forwarders, removed after one release. Explicit @warn (maxlog=1) because
+# Base.@deprecate depwarns are invisible in ordinary script runs (Julia ≥ 1.5). Both drivers renamed
+# to the run_eph_over_<outer>_and_<inner> scheme. Delete this whole block when the old names go.
+function run_eph_outer_k(args...; kwargs...)
+    @warn "run_eph_outer_k is deprecated; use run_eph_over_k_and_q (identical arguments)." maxlog=1
+    run_eph_over_k_and_q(args...; kwargs...)
+end
+function run_eph_outer_q(args...; kwargs...)
+    @warn "run_eph_outer_q is deprecated; use run_eph_over_q_and_k (identical arguments)." maxlog=1
+    run_eph_over_q_and_k(args...; kwargs...)
 end

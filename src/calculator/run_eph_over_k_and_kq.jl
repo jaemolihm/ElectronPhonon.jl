@@ -27,7 +27,7 @@ function run_eph_over_k_and_kq(
     end
     for calc in calculators
         if !allow_eph_outer_k(calc)
-            throw(ArgumentError("$calc does not allow eph_outer_k. Use run_eph_outer_q instead."))
+            throw(ArgumentError("$calc does not allow eph_outer_k. Use run_eph_over_q_and_k instead."))
         end
     end
 
@@ -110,10 +110,9 @@ function _setup_eph_over_k_and_kq(
 
     (; nw, nmodes) = model
 
-    # Generate k points
-    @time kpts, iband_min, iband_max, nelec_below_window_k = filter_kpoints(
-        kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
-    @time el_k_save  = compute_electron_states(model, kpts,  ["eigenvalue", "eigenvector", "velocity", "position"], window_k;  fourier_mode, use_gpu)
+    # Generate k points and electron states at k (shared setup core)
+    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_eph_common(
+        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu)
     nk = kpts.n
 
     # Filter the k+q grid to the energy window. With symmetry, filter the k+q points in the
@@ -126,21 +125,13 @@ function _setup_eph_over_k_and_kq(
     else
         @time kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq = filter_kpoints(
             kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode, use_gpu)
+        kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
     end
 
-    if el_kq_from_unfolding
-        # Gauge consistency between symmetry-equivalent k points: compute electron states only on the
-        # irreducible k+q set and unfold them (the eigenvector gauge is carried over). CPU-only —
-        # `run_eph_over_k_and_kq` gates this branch off for use_gpu (GPU state unfolding not implemented).
-        symmetry !== nothing || throw(ArgumentError("el_kq_from_unfolding = true requires symmetry"))
-        el_kq_save_irr = compute_electron_states(model, kqpts_irr, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode, use_gpu)
-        el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
-        # el_kq_save_irr is not used anymore.
-        el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
-    else
-        # Compute k+q electron states directly on the full BZ (no state unfolding).
-        @time el_kq_save = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector", "velocity", "position"], window_kq; fourier_mode, use_gpu)
-    end
+    # Electron states at k+q (directly, or via IBZ + unfolding for gauge consistency). CPU-only
+    # unfolding — `run_eph_over_k_and_kq` gates el_kq_from_unfolding off for use_gpu.
+    el_kq_save = _compute_el_kq_states(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
+        symmetry, el_kq_from_unfolding, window_kq; fourier_mode, use_gpu)
 
 
     # Precompute qpts and phonon states if k and k+q meshes are commensurate
@@ -166,15 +157,7 @@ function _setup_eph_over_k_and_kq(
 
     # The CPU loop takes/puts one ElPhData buffer per thread; the GPU loop is device-batched and
     # never touches epdata, so it does not allocate the (nw, nmodes, nband_max) thread buffers.
-    epdatas = if use_gpu
-        nothing
-    else
-        ch = Channel{ElPhData{FT}}(nthreads())
-        foreach(1:nthreads()) do _
-            put!(ch, ElPhData{FT}(nw, nmodes, nband_max))
-        end
-        ch
-    end
+    epdatas = use_gpu ? nothing : _make_epdatas_channel(FT, nw, nmodes, nband_max)
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
     ep_ekpR_obj = get_next_wannier_object(model.epmat)
@@ -221,21 +204,10 @@ function _setup_eph_over_k_and_kq(
 
 
     # Initialize calculators
-    for calc in calculators
-        setup_calculator!(
-            calc, kpts, qpts, el_k_save
-            ;
-            rng_band = iband_min:iband_max,
-            el_states_kq = el_kq_save,
-            model.nw,
-            model.nmodes,
-            kqpts,
-            nelec_below_window_k,
-            nelec_below_window_kq,
-            nchunks_threads,
-            use_gpu,
-        )
-    end
+    _setup_calculators!(calculators, kpts, qpts, el_k_save;
+        nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
+        nelec_below_window_k, nelec_below_window_kq, nchunks_threads, use_gpu,
+    )
 
     if mpi_isroot()
         @info "Number of k points = $(kpts.n)"
@@ -455,15 +427,7 @@ function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epdata, ik, ep_ekpR, e
 
             end
 
-            if screening_params !== nothing
-                # FIXME: screening should go into calculator
-                (; T, μ) = calculators[1].occ[1]
-                xq_ = ElectronPhonon.normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
-                ϵs .= epsilon_lindhard.(Ref(model.recip_lattice * xq_), epdata.ph.e, T, μ, Ref(screening_params))
-                ϵs .= real.(ϵs)
-            else
-                ϵs .= 1
-            end
+            _apply_screening!(ϵs, calculators, model, xq, epdata, screening_params)
             epdata_compute_eph_dipole!(epdata, ϵs; model)
             epdata_set_g2!(epdata)
         end

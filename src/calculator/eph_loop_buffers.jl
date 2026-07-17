@@ -3,10 +3,10 @@ using Base.Threads: nthreads
 """
     EphOuterQLoopBuffers
 
-Pre-allocated buffers for `run_eph_outer_q` that can be reused across multiple calls
+Pre-allocated buffers for `run_eph_over_q_and_k` that can be reused across multiple calls
 to avoid repeated allocation of interpolator channels, `ElPhData` buffers, and `GridOpt` objects.
 
-Create once and pass via the `eph_buffers` keyword argument to `run_eph_outer_q`.
+Create once and pass via the `eph_buffers` keyword argument to `run_eph_over_q_and_k`.
 
     EphOuterQLoopBuffers(model; nchunks_threads=nthreads(), precompute_el_kq=false,
                          fourier_mode="gridopt", nband_max=model.nw)
