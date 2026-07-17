@@ -14,8 +14,8 @@ module ElectronPhononCUDAExt
 using ElectronPhonon
 using ElectronPhonon: WannierObject
 using CUDA
-using CUDA.CUSOLVER: heevjBatched!
-using CUDA.CUBLAS: gemm_strided_batched!
+using CUDA.cuSOLVER: heevjBatched!
+using CUDA.cuBLAS: gemm_strided_batched!
 
 # Notes on `heevjBatched!` (cuSOLVER batched Jacobi eigensolver, `cusolverDn<t>heevjBatched`):
 #   - The often-quoted "n ≤ 32" is a performance figure, not a correctness bound; it solves

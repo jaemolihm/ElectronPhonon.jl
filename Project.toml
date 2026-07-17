@@ -43,7 +43,7 @@ CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 ElectronPhononCUDAExt = "CUDA"
 
 [compat]
-CUDA = "5"
+CUDA = "6"
 ChunkSplitters = "2"
 Spglib = "0.8"
 julia = "1"
