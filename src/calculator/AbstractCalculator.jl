@@ -35,7 +35,8 @@ reachable as `ElectronPhonon.<name>`, is: `AbstractCalculator`, `supports`, `set
 `required_el_k_quantities`, `required_el_k_device_stacks`, `_indmap_to_device`, the tiled
 device-output helper `TiledDeviceOutput` (with `tile_begin!` / `tile_download!` / `tile_free!` /
 `device_array` / `host_array` / `tile_offset` / `tile_length` / `tile_stride` / `is_block` /
-`is_allocated`), and `to_device`.
+`is_allocated`), the device-memory batch-sizing helpers `plan_batch` / `estimate_device_memory`, and
+`to_device`.
 """
 abstract type AbstractCalculator end
 
@@ -107,6 +108,12 @@ end
 Device payload of the GPU outer-q loop (`run_eph_over_q_and_k`, `use_gpu`): one phonon momentum q with
 a batch of outer k-points. Runs on the backend of `ep_kq`; consumers stay backend-generic.
 
+All fields are trimmed to the batch's actual width `nk` (the outer-k convention): the final partial
+batch has `nk < n_batch_max`, and the loop hands width-`nk` views into its internally padded staging
+buffers (a trailing-prefix device view, so it stays contiguous). A consumer therefore reads its own
+size from any field (e.g. `size(ep_kq, 4)`) and never sees a padded tail. (The loop still zeros the
+internal `wtk` padding as defense-in-depth, but that padding is not exposed here.)
+
 Fields (`m` = k+q band, `n` = k band, `k` = batch column):
 - `ep_kq` :: `(nw, nw, nmodes, nk)` — eigenbasis e-ph matrix. Out-of-window bands are already zeroed
   (the loop window-masks the eigenvector columns on both sides).
@@ -114,8 +121,7 @@ Fields (`m` = k+q band, `n` = k band, `k` = batch column):
 - `e_kq`  :: `(nw, nk)` — k+q-side band energies.
 - `uk`    :: `(nw, nw, nk)` — k-side eigenvectors, zero-padded outside the window.
 - `ukq`   :: `(nw, nw, nk)` — k+q-side eigenvectors, zero-padded outside the window.
-- `wtk`   :: `(nk,)` — k-point integration weights; padded tail entries are 0, so a consumer may
-  operate on the full (padded) batch without special-casing the final partial batch.
+- `wtk`   :: `(nk,)` — k-point integration weights.
 - `xks`   :: `(nk,)` — host `Vec3` list of the batch's k-vectors (for k-dependent phases).
 - `iq`    :: q-point index.
 """
@@ -324,5 +330,6 @@ if VERSION >= v"1.11.0-DEV.469"
         "eph_window_scatter!, eph_batched_bytes_per_point, allowed_eph_phonon_basis, " *
         "required_el_k_quantities, required_el_k_device_stacks, _indmap_to_device, " *
         "TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array, " *
-        "tile_offset, tile_length, tile_stride, is_block, is_allocated, to_device"))
+        "tile_offset, tile_length, tile_stride, is_block, is_allocated, to_device, " *
+        "plan_batch, estimate_device_memory"))
 end

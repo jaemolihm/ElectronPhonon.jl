@@ -440,49 +440,25 @@ function _loop_eph_over_q_and_k_gpu(
     ndata_eRpq = nw^2 * nmodes
     @assert ep_eRpq_dev.ndata == ndata_eRpq
 
-    # ----- k-side eigenvectors / energies / weights uploaded ONCE -----
-    # `Uk` is zero-padded outside each k's in-window range `rng`, so the full nw×nw Rq→kq rotation
-    # reproduces the CPU's windowed rotation with zeros outside.
-    # TODO: this whole-grid stack (16·nw²·nk bytes) stays device-resident for the entire run and is
-    #       NOT covered by the memory-adaptive batch sizing below — for large nw on a dense grid it,
-    #       not the per-batch scratch, is the memory limit. Stream the k side per batch (upload only
-    #       the batch's `Uk`, like the outer-k loop's per-batch `uks_host`) if it does not fit.
-    Uk_all_dev  = alloc(backend, Complex{FT}, nw, nw, nk)
-    ek_all_dev  = alloc(backend, FT, nw, nk)
-    wtk_all_dev = alloc(backend, FT, nk)
-    let Uk_host = zeros(Complex{FT}, nw, nw, nk), ek_host = zeros(FT, nw, nk), wtk_host = zeros(FT, nk)
-        for ik in 1:nk
-            el = el_k_save[ik]
-            @views Uk_host[:, el.rng, ik] .= el.u_full[:, el.rng]
-            ek_host[:, ik] .= el.e_full
-            wtk_host[ik] = kpts.weights[ik]
-        end
-        copyto!(Uk_all_dev, Uk_host)
-        copyto!(ek_all_dev, ek_host)
-        copyto!(wtk_all_dev, wtk_host)
-    end
-
     # ----- memory-adaptive k-batch size -----
     # Every per-batch device buffer scales with the batch size: the loop's own staging plus each
-    # calculator's per-k device scratch (`eph_batched_bytes_per_point`). Cap the batch at what
-    # the free device memory allows (30% headroom for the batched drivers' recycled temporaries);
-    # `nk_batch_max` stays a hard cap (the only control on the CPU backend, where `free_bytes`
-    # is unbounded).
-    # TODO: make memory management more structured — the per-k byte estimate is hand-counted and
-    #       omits the whole-grid k-side stack; a single helper that owns the device buffers and their
-    #       size accounting (and the k-side streaming fallback) would be more robust.
+    # calculator's per-k device scratch (`eph_batched_bytes_per_point`). Cap the batch at what free
+    # device memory allows (30% headroom for the batched drivers' recycled temporaries). All buffer
+    # byte accounting lives in `_outer_q_staging_bytes` (shared with `estimate_device_memory`);
+    # `nk_batch_max` stays a hard cap (the only control on the CPU backend, where `free_bytes` is
+    # unbounded). The k side is streamed per batch (below), so there is no whole-grid device stack to
+    # subtract — nothing is committed outside the per-k staging, and a tight-memory run simply shrinks
+    # the batch instead of OOM-ing.
     use_polar_eph = model.polar_eph.use
 
-    bytes_per_k = 16 * nw^2 * (5 * nmodes + 8 + (use_polar_eph ? 1 : 0)) +
-        24 * (length(model.el_ham.irvec) + length(ep_eRpq_obj.irvec)) +
-        sum(Int[eph_batched_bytes_per_point(calc, ElPhDataOuterQBatched; nw, nmodes) for calc in calculators])
-    free = free_bytes(backend)
-    nk_batch_mem = free == typemax(Int) ? nk : max(1, (free ÷ 10 * 7) ÷ bytes_per_k)
+    per_point, committed = _outer_q_staging_bytes(; nw, nmodes,
+        nr_el_ham = length(model.el_ham.irvec), nr_ep_eRpq = length(ep_eRpq_obj.irvec),
+        use_polar_eph, calculators, FT)
     nk_batch_cap = min(Int(nk_batch_max), nk)
-    nk_batch_max = min(nk_batch_cap, nk_batch_mem)
-    if verbosity > 0 && mpi_isroot() && nk_batch_max < nk_batch_cap
-        @info "GPU outer-q: memory-adaptive k-batch size = $nk_batch_max " *
-              "($(round(bytes_per_k / 1e3, digits = 1)) kB/k, $(round(free / 1e9, digits = 1)) GB free)"
+    nk_batch_max = plan_batch(backend, per_point, committed, nk_batch_cap; what = "outer-q")
+    if verbosity > 0 && mpi_isroot()
+        @info "GPU outer-q device memory: committed = $(round(committed / 1e9, digits = 2)) GB, " *
+              "$(round(per_point / 1e3, digits = 1)) kB/k; k-batch size = $nk_batch_max"
     end
 
     itp_el_ham = BatchedWannierInterpolator(el_ham_dev; batch_size = nk_batch_max)
@@ -498,6 +474,14 @@ function _loop_eph_over_q_and_k_gpu(
     wtk_batch = alloc(backend, FT, nk_batch_max)
     ks_batch  = Vector{Vec3{FT}}(undef, nk_batch_max)
     kqs_batch = Vector{Vec3{FT}}(undef, nk_batch_max)
+
+    # ----- per-batch host staging for the k side (streamed, not held whole-grid) -----
+    # The k-side eigenvectors / energies / weights are staged into these host buffers per batch and
+    # uploaded once, mirroring the outer-k loop's `uks_host` staging (run_eph_over_k_and_kq.jl): no
+    # whole-grid device stack, so device memory is bounded by the per-batch buffers regardless of nk.
+    Uk_host  = zeros(Complex{FT}, nw, nw, nk_batch_max)
+    ek_host  = zeros(FT, nw, nk_batch_max)
+    wtk_host = zeros(FT, nk_batch_max)
 
     # ----- polar e-ph dipole (long-range) scratch -----
     # `ph.eph_dipole_coeff` is host-precomputed per q by the shared setup; `add_eph_dipole_batched!`
@@ -529,29 +513,32 @@ function _loop_eph_over_q_and_k_gpu(
             iks_batch = kstart:kend
             nk_batch = length(iks_batch)
 
-            # k / k+q lists (host), tail padded with the last valid vector so the batched Fourier /
-            # eigensolve see finite data (their results in the tail are discarded via wtk = 0).
+            # k / k+q lists + k-side data staged on the host, then uploaded (streaming). `Uk` is
+            # zero-padded outside each k's in-window range `rng`, so the full nw×nw Rq→kq rotation
+            # reproduces the CPU's windowed rotation with zeros outside. The tail (partial final
+            # batch) is padded with the last valid k so the batched Fourier / eigensolve see finite
+            # data; its weight is zeroed so — unlike the outer-k loop, where padded duplicates scatter
+            # to a unique in-window index harmlessly — a padded k column cannot double-count into the
+            # q-summed χ (the calculator multiplies by `wtk`).
             for (ik_ind, ik) in enumerate(iks_batch)
+                el = el_k_save[ik]
                 ks_batch[ik_ind]  = kpts.vectors[ik]
                 kqs_batch[ik_ind] = ks_batch[ik_ind] + xq
+                @views Uk_host[:, :, ik_ind]      .= 0
+                @views Uk_host[:, el.rng, ik_ind] .= el.u_full[:, el.rng]
+                ek_host[:, ik_ind] .= el.e_full
+                wtk_host[ik_ind]    = kpts.weights[ik]
             end
             for ik_ind in (nk_batch + 1):nk_batch_max
                 ks_batch[ik_ind]  = ks_batch[nk_batch]
                 kqs_batch[ik_ind] = kqs_batch[nk_batch]
+                @views Uk_host[:, :, ik_ind] .= Uk_host[:, :, nk_batch]
+                @views ek_host[:, ik_ind]    .= ek_host[:, nk_batch]
+                wtk_host[ik_ind]  = 0
             end
-
-            # k-side data: device→device slice, tail padded. Unlike the outer-k loop (whose padded
-            # duplicates are harmless because each state scatters to a unique in-window index), here
-            # a padded k column WOULD double-count into the q-summed χ, so its integration weight is
-            # zeroed — the calculator multiplies by `wtk`, making the padded columns contribute 0.
-            @views copyto!(Uk_batch[:, :, 1:nk_batch], Uk_all_dev[:, :, iks_batch])
-            @views copyto!(ek_batch[:, 1:nk_batch],    ek_all_dev[:, iks_batch])
-            @views copyto!(wtk_batch[1:nk_batch],      wtk_all_dev[iks_batch])
-            if nk_batch < nk_batch_max
-                @views Uk_batch[:, :, (nk_batch + 1):nk_batch_max] .= Uk_batch[:, :, nk_batch:nk_batch]
-                @views ek_batch[:, (nk_batch + 1):nk_batch_max]    .= ek_batch[:, nk_batch:nk_batch]
-                @views wtk_batch[(nk_batch + 1):nk_batch_max]      .= 0
-            end
+            copyto!(Uk_batch, Uk_host)
+            copyto!(ek_batch, ek_host)
+            copyto!(wtk_batch, wtk_host)
 
             # k+q eigensolve on the device (batched). No gauge fixing needed: χ is gauge-invariant.
             # TODO: `eigen_batched` allocates (E, U) each batch; an in-place variant into ek/Ukq
@@ -570,8 +557,16 @@ function _loop_eph_over_q_and_k_gpu(
 
             use_polar_eph && add_eph_dipole_batched!(ep_batch, coeffs_dev, Ukq_batch, Uk_batch, mmats_batch)
 
-            payload = ElPhDataOuterQBatched(ep_batch, ek_batch, Ekq,
-                Uk_batch, Ukq_batch, wtk_batch, ks_batch, iq)
+            # Hand the calculator width-`nk_batch` views (the outer-k convention): the internal
+            # staging stays padded to `nk_batch_max` for the dense batched eigensolve / Fourier, but
+            # the payload is trimmed so an unweighted reduction cannot count padded columns. (The
+            # internal `wtk` zero-padding above is kept as defense-in-depth.) A trailing-prefix view
+            # of a device array is contiguous, so the extension kernels take these directly.
+            rng_k = 1:nk_batch
+            payload = ElPhDataOuterQBatched(
+                view(ep_batch, :, :, :, rng_k), view(ek_batch, :, rng_k), view(Ekq, :, rng_k),
+                view(Uk_batch, :, :, rng_k), view(Ukq_batch, :, :, rng_k), view(wtk_batch, rng_k),
+                view(ks_batch, rng_k), iq)
             foreach(c -> run_calculator!(c, payload, ctx_q), calculators)
         end # k batch
 
@@ -583,6 +578,45 @@ function _loop_eph_over_q_and_k_gpu(
     end # iq
 
     postprocess_calculator!.(calculators; qpts, model.symmetry)
+end
+
+
+"""
+    estimate_device_memory(model; nk, nkq, nk_outer_batch_max = 256, nq_batch_max = nothing,
+                           nk_batch_max = 2^15, calculators = [], use_gpu = true) -> NamedTuple
+
+Estimate the GPU device memory a batched e-ph run would use, WITHOUT running it, so a batch width can
+be sized ahead of time. Uses the same byte functions as the drivers (`_outer_{k,q}_staging_bytes`,
+full-band: `nbandk_max = nw`, so windowed runs use less), and reports both the whole-run `committed`
+bytes and the `per_point` (per batched-inner index) bytes, plus the memory-adaptive batch width
+`plan_batch` would pick against the current backend. Which loop is estimated follows
+`model.epmat_outer_momentum` (`el` → outer-k, `ph` → outer-q). Returns a `NamedTuple`; the
+committed / per-point fields are also printed by the drivers at `verbosity > 0`.
+"""
+function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
+        nk_outer_batch_max::Integer = 256, nq_batch_max = nothing, nk_batch_max::Integer = 2^15,
+        calculators = [], use_gpu::Bool = true) where {FT}
+    (; nw, nmodes) = model
+    backend = use_gpu ? GPUBackend(to_device(model.epmat).op_r) : CPUBackend()
+    if model.epmat_outer_momentum == "el"
+        nr_ep = length(get_next_wannier_object(model.epmat).irvec)
+        nk_batch = min(Int(nk_outer_batch_max), Int(nk))
+        per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max = nw, nmodes, nr_ep, nkq,
+            nq_grid = nkq, nk_batch_max = nk_batch, calculators, FT)
+        cap = nq_batch_max === nothing ? Int(nkq) : min(Int(nq_batch_max), Int(nkq))
+        loop = :outer_k
+    elseif model.epmat_outer_momentum == "ph"
+        use_polar_eph = model.polar_eph.use
+        nr_ep_eRpq = length(get_next_wannier_object(model.epmat).irvec)
+        per_point, committed = _outer_q_staging_bytes(; nw, nmodes,
+            nr_el_ham = length(model.el_ham.irvec), nr_ep_eRpq, use_polar_eph, calculators, FT)
+        cap = min(Int(nk_batch_max), Int(nk))
+        loop = :outer_q
+    else
+        throw(ArgumentError("model.epmat_outer_momentum must be \"el\" or \"ph\""))
+    end
+    batch = plan_batch(backend, per_point, committed, cap; what = string(loop))
+    (; loop, committed, per_point, batch, free = free_bytes(backend))
 end
 
 

@@ -463,10 +463,10 @@ function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.
     c
 end
 # GPU batched path: `ep_kq` is (nw,nw,nmodes,nkc) on the device, full-band (out-of-window bands already
-# zeroed by the loop's eigenvector-column masking); `wtk` is (nkc,) with padded tail entries = 0, so
-# no special-casing of the final partial k-batch is needed. `sum` of a device broadcast expression
-# reduces on-device and returns a host scalar without any scalar indexing (allowed under
-# CUDA.allowscalar(false)).
+# zeroed by the loop's eigenvector-column masking); the payload is trimmed to this batch's actual width
+# `nkc` (no padded tail), so the reduction reads its size from `size(ep, 4)`. `sum` of a device
+# broadcast expression reduces on-device and returns a host scalar without any scalar indexing
+# (allowed under CUDA.allowscalar(false)).
 function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.ElPhDataOuterQBatched, ctx)
     ep, wtk = p.ep_kq, p.wtk
     nkc = size(ep, 4)
@@ -494,6 +494,32 @@ end
 
         rdiff = maximum(abs, calc_cpu.A .- calc_gpu.A) / maximum(abs, calc_cpu.A)
         @info "run_eph_over_q_and_k CPU vs GPU" cpu_A=calc_cpu.A gpu_A=calc_gpu.A rdiff
+        @test isapprox(calc_cpu.A, calc_gpu.A; rtol=1e-8)
+    end
+end
+
+# F4: force a PARTIAL outer-q k-batch (small nk_batch_max) so the DECISION-9 payload trim is a real
+# width-nk_batch < nk_batch_max trim, not the identity trim of the single-batch test above. nk=64,
+# nk_batch_max=10 ⇒ 7 batches, the last of width 4 — the trimmed-view path is exercised end-to-end.
+@testset "run_eph_over_q_and_k partial k-batch trim (CPU vs GPU, DECISION-9)" begin
+    if !GPU_AVAILABLE
+        @info "CUDA not available/functional — skipping run_eph_over_q_and_k partial-batch test"
+    else
+        model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
+        grid = (4, 4, 4)
+
+        calc_cpu = _RecordCalcOuterQ()
+        ElectronPhonon.run_eph_over_q_and_k(model, grid, grid;
+            calculators=[calc_cpu], use_symmetry=false, keep_all_qpts=true,
+            use_gpu=false, progress_print_step=10^9)
+
+        calc_gpu = _RecordCalcOuterQ()
+        ElectronPhonon.run_eph_over_q_and_k(model, grid, grid;
+            calculators=[calc_gpu], use_symmetry=false, keep_all_qpts=true,
+            use_gpu=true, nk_batch_max=10, progress_print_step=10^9)
+
+        rdiff = maximum(abs, calc_cpu.A .- calc_gpu.A) / maximum(abs, calc_cpu.A)
+        @info "run_eph_over_q_and_k partial k-batch (nk_batch_max=10) CPU vs GPU" rdiff
         @test isapprox(calc_cpu.A, calc_gpu.A; rtol=1e-8)
     end
 end
@@ -717,4 +743,71 @@ end
             @test Array(ωg) == ωc
         end
     end
+end
+
+
+# --- Stage 5: device-staging byte-accounting parity + memory-adaptive sizing (CPU-only) ------------
+# Pins the staging byte functions against the byte formulas they replaced (the transition @assert of
+# the plan, made durable). If a term drifts, these fail. No GPU needed.
+using ElectronPhonon: plan_batch, _outer_k_staging_bytes, _outer_q_staging_bytes,
+    estimate_device_memory, CPUBackend
+
+# A calculator declaring per-point device scratch, to exercise the calculator-scratch term.
+struct _ByteCalc <: ElectronPhonon.AbstractCalculator
+    kbytes::Int
+    qbytes::Int
+end
+ElectronPhonon.eph_batched_bytes_per_point(c::_ByteCalc, ::Type{ElectronPhonon.ElPhDataOuterKBatched}; nw, nmodes) = c.kbytes
+ElectronPhonon.eph_batched_bytes_per_point(c::_ByteCalc, ::Type{ElectronPhonon.ElPhDataOuterQBatched}; nw, nmodes) = c.qbytes
+
+# A stub backend with a settable free-memory budget, to drive the adaptive-width / fail-early paths
+# on the CPU (no CUDA needed).
+struct _StubBackend <: ElectronPhonon.AbstractBackend
+    free::Int
+end
+ElectronPhonon.free_bytes(b::_StubBackend) = b.free
+
+@testset "device-staging byte-accounting parity (Stage 5)" begin
+    FT = Float64
+    calcs = [_ByteCalc(1234, 5678)]
+
+    @testset "outer-k parity" begin
+        nw, nbandk_max, nmodes, nr_ep, nkq, nq_grid, nk_batch_max = 7, 5, 6, 137, 200, 64, 32
+        per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nkq, nq_grid,
+            nk_batch_max, calculators = calcs, FT)
+        # OLD formulas (ground truth), reproduced inline.
+        old_per_q = 72 * nw * nbandk_max * nmodes + 24 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 40 +
+            sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.ElPhDataOuterKBatched; nw, nmodes) for c in calcs)
+        old_committed = 16 * nw^2 * nkq + (16 * nmodes^2 + 8 * nmodes) * nq_grid +
+            16 * nw * nbandk_max * (nmodes * nr_ep + 1) * nk_batch_max
+        @test per_point == old_per_q
+        @test committed == old_committed
+    end
+
+    @testset "outer-q parity" begin
+        nw, nmodes, nr_el_ham, nr_ep_eRpq = 4, 21, 250, 419
+        for use_polar_eph in (false, true)
+            per_point, committed = _outer_q_staging_bytes(; nw, nmodes, nr_el_ham, nr_ep_eRpq,
+                use_polar_eph, calculators = calcs, FT)
+            old_per_k = 16 * nw^2 * (5 * nmodes + 8 + (use_polar_eph ? 1 : 0)) +
+                24 * (nr_el_ham + nr_ep_eRpq) +
+                sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.ElPhDataOuterQBatched; nw, nmodes) for c in calcs)
+            @test per_point == old_per_k
+            @test committed == 0   # k side streamed: no whole-run device stack
+        end
+    end
+end
+
+@testset "plan_batch memory-adaptive sizing + fail-early (Stage 5)" begin
+    # CPU backend: free is unbounded ⇒ batch = cap.
+    @test plan_batch(CPUBackend(), 1600, 1600, 42; what = "cpu") == 42
+
+    # Stub backend, tight memory: (free - committed) ÷ 10 * 7 ÷ per_point clamps the width.
+    per_point, committed, free = 1600, 1600, 1_000_000
+    expect = min(1000, max(1, ((free - committed) ÷ 10 * 7) ÷ per_point))
+    @test plan_batch(_StubBackend(free), per_point, committed, 1000; what = "stub") == expect
+    @test expect < 1000                                          # actually clamped by memory
+
+    # Committed alone exceeds free ⇒ fail early (clear error, not an OOM mid-loop).
+    @test_throws ErrorException plan_batch(_StubBackend(1000), 1600, 16000, 100; what = "stub-oom")
 end

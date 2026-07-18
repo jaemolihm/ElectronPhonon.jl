@@ -156,7 +156,15 @@ payload, named for which momentum is the outer loop and which is batched on the 
   loop uses — the batched path is selected by `ctx.mode`, and the device buffer is allocated via
   `ctx.backend`), and the per-k device scratch is declared via
   `eph_batched_bytes_per_point(calc, ElPhDataOuterQBatched)` for the loop's memory-adaptive batch
-  sizing.
+  sizing. The k side is streamed per k-batch (host-staged, no whole-grid device stack), and the
+  payload is trimmed to the batch's actual width — a consumer reads its own size from any field
+  (e.g. `size(ep_kq, 4)`) and never sees a padded tail (the outer-k convention).
+- Both loops fold their device-buffer byte accounting into `src/calculator/eph_device_staging.jl`:
+  `_outer_{k,q}_staging_bytes(…)` return the loop's `(per_point, committed)` device-byte counts, and
+  `plan_batch(backend, per_point, committed, cap; …)` turns those into the memory-adaptive batch
+  width (committed-vs-free check + 30% headroom). `estimate_device_memory(model; nk, nkq, batch
+  kwargs…)` calls the same byte functions to report committed + per-point bytes ahead of a run so
+  batch sizes can be picked (and the drivers print them at `verbosity > 0`).
 - Either path is rejected with an error if a calculator does not opt in — there is no silent
   fallback to the per-`(k,q)` host path.
 - A calculator implements these backend-generically (only `alloc(ctx.backend, …)` /
@@ -198,11 +206,6 @@ unchanged). No window handling is needed in the calculator beyond addressing its
 
 ## Deferred (may do later)
 
-- **Outer-q k-side streaming.** The outer-q GPU loop keeps the whole-grid k-side eigenvector /
-  energy / weight stacks device-resident for the entire run (16·nw²·nk bytes), which is not covered
-  by the per-batch memory-adaptive sizing — for large `nw` on a dense grid it, not the per-batch
-  scratch, is the memory limit. Streaming the k side per batch (like the outer-k loop's per-batch
-  `uks_host`) is deferred.
 - **In-place workspace drivers** (workspace-backed scratch instead of per-call `similar()`) were
   benchmarked and validated bit-identical, but the gain is small on the GPU (CUDA's pool already
   recycles device buffers), so it is deferred. Best done together with the calculator loop, where
@@ -214,9 +217,6 @@ unchanged). No window handling is needed in the calculator beyond addressing its
   carry it as a type (e.g. dispatch the loop on the array backend). Note a `ModelGPU` that puts
   the whole `Model` on the device is *not* obviously right: `Model` is large, and one may want
   it resident on the CPU while only the calculation runs on the GPU.
-- **A memory-estimate helper (future).** A utility that reports the device memory a run needs
-  (given the model and the batch knobs `nq_batch_max` / `nk_outer_batch_max` / `nk_batch_max`) would make it easier to pick batch sizes
-  and to fail early instead of OOM-ing mid-run.
 - **Keep `el_kq_save` (k+q electron states) on the device (future).** The GPU loop already hoists
   every k+q eigenvector onto the device once (`ukqs_all_dev`); keeping the `el_kq_save` states
   themselves device-resident would avoid the host staging entirely, but needs a states refactor.
