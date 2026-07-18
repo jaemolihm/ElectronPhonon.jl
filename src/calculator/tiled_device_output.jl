@@ -47,6 +47,19 @@ mutable struct TiledDeviceOutput{FT}
     tile_ni     :: Int
 end
 
+"""
+    residency_use_block(backend, full_bytes; headroom = 1.2) -> Bool
+
+The residency heuristic (one of the composable building blocks): `true` if `full_bytes` of
+full-device-resident output — summed over all arrays — should fall back to a per-tile block layout
+because it would not fit free device memory with the given `headroom`, i.e.
+`headroom * full_bytes > free_bytes(backend)`. This is exactly the decision `tile_begin!` makes on
+its first batch (with `full_bytes = narr · sizeof(FT) · prod(dims)`); exposed standalone so an exotic
+calculator that hand-rolls its buffers can make the same choice without a `TiledDeviceOutput`.
+"""
+residency_use_block(backend::AbstractBackend, full_bytes::Integer; headroom::Real = 1.2) =
+    headroom * full_bytes > free_bytes(backend)
+
 function TiledDeviceOutput{FT}(dims, i_axis::Integer, el_i::BandStates;
         narr::Integer = 1, force_block::Union{Nothing, Bool} = nothing,
         headroom::Real = 1.2) where {FT}
@@ -85,7 +98,7 @@ function tile_begin!(t::TiledDeviceOutput{FT}, ctx) where {FT}
             t.block = false
         else
             full_bytes = t.narr * sizeof(FT) * prod(t.dims)
-            t.block = t.headroom * full_bytes > free_bytes(backend)
+            t.block = residency_use_block(backend, full_bytes; headroom = t.headroom)
             t.block && @info "TiledDeviceOutput: full device-resident output " *
                 "($(t.narr)×$(round(sizeof(FT) * prod(t.dims) / 1e9, digits = 2)) GB) would not fit; " *
                 "using per-tile block residency (bounded device memory)."
