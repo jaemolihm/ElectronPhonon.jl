@@ -594,7 +594,8 @@ function _loop_eph_over_k_and_kq_gpu(
     # `_outer_k_staging_bytes` (shared with `estimate_device_memory`); `nq_batch_user`
     # (Int, or nkq when nothing) stays a hard cap.
     per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nkq,
-        nq_grid = qpts.n, nk_batch_max, calculators, FT)
+        nq_grid = qpts.n, nk_batch_max, calculators,
+        ndata_epmat = epmat_dev.ndata, nr_epmat = epmat_dev.nr, FT)
     nq_batch_cap = nq_batch_user === nothing ? nkq : min(nq_batch_user, nkq)
     nq_batch_max = plan_batch(backend, per_point, committed, nq_batch_cap; what = "outer-k")
     if verbosity > 0 && mpi_isroot()

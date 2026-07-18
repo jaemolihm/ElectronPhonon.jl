@@ -592,6 +592,14 @@ bytes and the `per_point` (per batched-inner index) bytes, plus the memory-adapt
 `plan_batch` would pick against the current backend. Which loop is estimated follows
 `model.epmat_outer_momentum` (`el` → outer-k, `ph` → outer-q). Returns a `NamedTuple`; the
 committed / per-point fields are also printed by the drivers at `verbosity > 0`.
+
+Note: these counts cover the driver's own device buffers only. Actual device usage starts ~100–150 MB
+HIGHER than reported here because of a fixed CUDA library context/workspace floor (cuBLAS etc.),
+allocated lazily on the first in-loop kernel launch — this is inherent library overhead, not a
+per-run buffer, so it is not (and cannot be) captured by the byte accounting. The reported figures
+are what scales with the grid/batch; treat the library floor as a fixed additive constant. (A
+calculator's own device output — e.g. a full-band `(nw·nk)²` coupling array — is likewise separate;
+it is sized by the calculator, not by this estimate.)
 """
 function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
         nk_outer_batch_max::Integer = 256, nq_batch_max = nothing, nk_batch_max::Integer = 2^15,
@@ -602,7 +610,8 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
         nr_ep = length(get_next_wannier_object(model.epmat).irvec)
         nk_batch = min(Int(nk_outer_batch_max), Int(nk))
         per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max = nw, nmodes, nr_ep, nkq,
-            nq_grid = nkq, nk_batch_max = nk_batch, calculators, FT)
+            nq_grid = nkq, nk_batch_max = nk_batch, calculators,
+            ndata_epmat = model.epmat.ndata, nr_epmat = model.epmat.nr, FT)
         cap = nq_batch_max === nothing ? Int(nkq) : min(Int(nq_batch_max), Int(nkq))
         loop = :outer_k
     elseif model.epmat_outer_momentum == "ph"

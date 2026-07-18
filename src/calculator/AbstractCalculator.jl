@@ -330,6 +330,6 @@ if VERSION >= v"1.11.0-DEV.469"
         "eph_window_scatter!, eph_batched_bytes_per_point, allowed_eph_phonon_basis, " *
         "required_el_k_quantities, required_el_k_device_stacks, _indmap_to_device, " *
         "TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array, " *
-        "tile_offset, tile_length, tile_stride, is_block, is_allocated, to_device, " *
-        "plan_batch, estimate_device_memory"))
+        "tile_offset, tile_length, tile_stride, is_block, is_allocated, residency_use_block, " *
+        "to_device, plan_batch, estimate_device_memory"))
 end

@@ -773,15 +773,18 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
 
     @testset "outer-k parity" begin
         nw, nbandk_max, nmodes, nr_ep, nkq, nq_grid, nk_batch_max = 7, 5, 6, 137, 200, 64, 32
+        ndata_epmat, nr_epmat = 2064, 43
         per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nkq, nq_grid,
-            nk_batch_max, calculators = calcs, FT)
-        # OLD formulas (ground truth), reproduced inline.
+            nk_batch_max, calculators = calcs, ndata_epmat, nr_epmat, FT)
+        # OLD formulas (ground truth), reproduced inline — pre-existing terms pinned as-is.
         old_per_q = 72 * nw * nbandk_max * nmodes + 24 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 40 +
             sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.ElPhDataOuterKBatched; nw, nmodes) for c in calcs)
         old_committed = 16 * nw^2 * nkq + (16 * nmodes^2 + 8 * nmodes) * nq_grid +
             16 * nw * nbandk_max * (nmodes * nr_ep + 1) * nk_batch_max
+        # NEW term (2026-07-18): itp_epmat RR→kR interpolator Fourier scratch, asserted separately.
+        itp_epmat_term = (16 * ndata_epmat + 24 * nr_epmat + 24) * nk_batch_max
         @test per_point == old_per_q
-        @test committed == old_committed
+        @test committed == old_committed + itp_epmat_term
     end
 
     @testset "outer-q parity" begin

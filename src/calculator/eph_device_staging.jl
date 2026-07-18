@@ -41,12 +41,17 @@ end
 #
 # Returns `(per_point, committed)` in bytes. `ndata = nw·nbandk_max·nmodes` is the k-side projected
 # e-ph data size (`= nw²·nmodes` full-band); `nr_ep` = number of R-vectors of g(k, R_ep); `nkq` /
-# `nq_grid` = k+q / q grid sizes; `nk_batch_max` = the fixed outer-k batch width. The per-q term sums
-# to `72·nw·nbandk_max·nmodes + 24·nr_ep + 16·nmodes² + 8·nmodes + 40 + Σcalc` and the committed to
-# `16·nw²·nkq + (16·nmodes²+8·nmodes)·nq_grid + 16·nw·nbandk_max·(nmodes·nr_ep+1)·nk_batch_max` — the
-# exact old hand-counted formulas (transition-pinned by test/test_gpu.jl).
+# `nq_grid` = k+q / q grid sizes; `nk_batch_max` = the fixed outer-k batch width; `ndata_epmat` /
+# `nr_epmat` = the parent e-ph object's (`epmat_dev`) data size / R-vector count, for the RR→kR
+# interpolator's scratch. The per-q term sums to `72·nw·nbandk_max·nmodes + 24·nr_ep + 16·nmodes² +
+# 8·nmodes + 40 + Σcalc`; the committed to the old hand-counted `16·nw²·nkq + (16·nmodes²+8·nmodes)·
+# nq_grid + 16·nw·nbandk_max·(nmodes·nr_ep+1)·nk_batch_max` PLUS the `itp_epmat` Fourier scratch
+# `(16·ndata_epmat + 24·nr_epmat + 24)·nk_batch_max` (added 2026-07-18; the parent RR→kR interpolator,
+# built at `batch_size = nk_batch_max`, was omitted from the original hand-count — validated against a
+# direct pool-stat measurement of `BatchedWannierInterpolator(epmat_dev)`). Both transition-pinned by
+# test/test_gpu.jl.
 function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nkq, nq_grid, nk_batch_max,
-        calculators, FT = Float64)
+        calculators, ndata_epmat, nr_epmat, FT = Float64)
     cx = sizeof(Complex{FT})    # 16
     rl = sizeof(FT)             # 8
     iz = sizeof(Int)            # 8
@@ -70,12 +75,17 @@ function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nkq, nq_grid, n
         per_point += eph_batched_bytes_per_point(c, ElPhDataOuterKBatched; nw, nmodes)
     end
     # Whole-run + per-k-batch commitments (allocated after the sizing point; subtracted from free).
+    # The `itp_epmat` term uses `nk_batch_max` (the outer-k batch width, a SEPARATE fixed cap from the
+    # sized q-batch), so it belongs here in `committed`, not in the per-q term. Its layout mirrors how
+    # the child `itp_ep_ekpR` scratch is counted in `per_point`: cached_results (16·ndata_epmat) +
+    # phase (16·nr_epmat) + rdotk (8·nr_epmat) + xkmat (24), all × nk_batch_max.
     committed =
-        cx * nw * nw * nkq +                    # ukqs_all_dev
-        cx * nmodes * nmodes * nq_grid +        # uph_all_dev
-        rl * nmodes * nq_grid +                 # ωq_all_dev
-        cx * ndata * nr_ep * nk_batch_max +     # ep_ekpR_all
-        cx * nw * nbandk_max * nk_batch_max     # uks_dev
+        cx * nw * nw * nkq +                                  # ukqs_all_dev
+        cx * nmodes * nmodes * nq_grid +                      # uph_all_dev
+        rl * nmodes * nq_grid +                               # ωq_all_dev
+        cx * ndata * nr_ep * nk_batch_max +                   # ep_ekpR_all
+        cx * nw * nbandk_max * nk_batch_max +                 # uks_dev
+        (cx * ndata_epmat + (cx + rl) * nr_epmat + rl * 3) * nk_batch_max  # itp_epmat Fourier scratch
     (per_point, committed)
 end
 
