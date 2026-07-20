@@ -109,26 +109,26 @@ end
     check_eph_batched(identity, identity; rtol=1e-10)
 end
 
-# Plumbing of the outer-q batched calculator payload (supports(_, ElPhDataOuterQBatched) /
-# run_calculator!(_, ::ElPhDataOuterQBatched, ctx)) used by `run_eph_over_q_and_k(...; use_gpu=true)`.
+# Plumbing of the outer-q batched calculator payload (supports(_, EPDataKBatched) /
+# run_calculator!(_, ::EPDataKBatched, ctx)) used by `run_eph_over_q_and_k(...; use_gpu=true)`.
 # The per-q device lifecycle reuses the OuterIteration begin/end brackets (same as the CPU outer-q
 # loop). Backend-agnostic, so no GPU is needed — checks the opt-in default and the MethodError path.
 struct _PlainQCalc <: ElectronPhonon.AbstractCalculator end
 mutable struct _OptInQCalc <: ElectronPhonon.AbstractCalculator; setup::Int; flush::Int; end
-ElectronPhonon.supports(::_OptInQCalc, ::Type{ElectronPhonon.ElPhDataOuterQBatched}) = true
+ElectronPhonon.supports(::_OptInQCalc, ::Type{ElectronPhonon.EPDataKBatched}) = true
 ElectronPhonon.calculator_begin!(c::_OptInQCalc, ::ElectronPhonon.OuterIteration, ctx) = (c.setup += 1; nothing)
 ElectronPhonon.calculator_end!(c::_OptInQCalc, ::ElectronPhonon.OuterIteration, ctx) = (c.flush += 1; nothing)
 
 @testset "outer-q batched calculator hook plumbing" begin
-    ctx = ElectronPhonon.LoopContext(ElectronPhonon.CPUBackend(), ElectronPhonon.PointMode(), 1, 1:0, 4)
+    ctx = ElectronPhonon.LoopContext(ElectronPhonon.CPUBackend(), ElectronPhonon.SingleMode(), 1, 1:0, 4)
     # Default opts out; a calculator with no run_calculator! method for the payload is a MethodError.
-    @test ElectronPhonon.supports(_PlainQCalc(), ElectronPhonon.ElPhDataOuterQBatched) == false
-    pl = ElectronPhonon.ElPhDataOuterQBatched(nothing, nothing, nothing, nothing, nothing, nothing, nothing, 1)
+    @test ElectronPhonon.supports(_PlainQCalc(), ElectronPhonon.EPDataKBatched) == false
+    pl = ElectronPhonon.EPDataKBatched(nothing, nothing, nothing, nothing, nothing, nothing, nothing, 1)
     @test_throws MethodError ElectronPhonon.run_calculator!(_PlainQCalc(), pl, ctx)
 
     # Opt-in calculator: supports returns true and the per-iteration brackets dispatch to the override.
     c = _OptInQCalc(0, 0)
-    @test ElectronPhonon.supports(c, ElectronPhonon.ElPhDataOuterQBatched) == true
+    @test ElectronPhonon.supports(c, ElectronPhonon.EPDataKBatched) == true
     ElectronPhonon.calculator_begin!(c, ElectronPhonon.OuterIteration(), ctx)
     ElectronPhonon.calculator_end!(c, ElectronPhonon.OuterIteration(), ctx)
     @test (c.setup, c.flush) == (1, 1)
@@ -288,7 +288,7 @@ mutable struct _RecordCalc <: ElectronPhonon.AbstractCalculator
     _RecordCalc() = new(zeros(0, 0, 0, 0, 0), zeros(0, 0, 0, 0, 0))
 end
 ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.OuterKLoop}) = true
-ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.ElPhDataPoint}) = true
+ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.EPData}) = true
 function ElectronPhonon.setup_calculator!(c::_RecordCalc, kpts, qpts, el_states;
         el_states_kq, kqpts, nw, nmodes, kwargs...)
     c.g2 = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
@@ -296,7 +296,7 @@ function ElectronPhonon.setup_calculator!(c::_RecordCalc, kpts, qpts, el_states;
     c
 end
 ElectronPhonon.postprocess_calculator!(c::_RecordCalc; kwargs...) = c
-function ElectronPhonon.run_calculator!(c::_RecordCalc, p::ElectronPhonon.ElPhDataPoint, ctx)
+function ElectronPhonon.run_calculator!(c::_RecordCalc, p::ElectronPhonon.EPData, ctx)
     (; epdata, ik, ikq) = p
     (; el_k, el_kq, ph) = epdata
     for imode in 1:ph.nmodes, n in el_k.rng, m in el_kq.rng
@@ -307,16 +307,16 @@ function ElectronPhonon.run_calculator!(c::_RecordCalc, p::ElectronPhonon.ElPhDa
 end
 
 # Device-native counterpart of `_RecordCalc`: opts into the batched payload so the GPU loop keeps
-# the e-ph matrix on the device and calls `run_calculator!(::ElPhDataOuterKBatched, ctx)` once per
+# the e-ph matrix on the device and calls `run_calculator!(::EPDataQBatched, ctx)` once per
 # (k, batch). It records the same `g2 = |ep|²/2ω` and ωq as `_RecordCalc`, exercising the loop's
-# device-native branch (supports(ElPhDataOuterKBatched), ωq/ikqs staging, on-device g2) without MigdalEliashberg.
+# device-native branch (supports(EPDataQBatched), ωq/ikqs staging, on-device g2) without MigdalEliashberg.
 mutable struct _RecordCalcBatched <: ElectronPhonon.AbstractCalculator
     g2::Array{Float64,5}
     ωq::Array{Float64,5}
     _RecordCalcBatched() = new(zeros(0, 0, 0, 0, 0), zeros(0, 0, 0, 0, 0))
 end
 ElectronPhonon.supports(::_RecordCalcBatched, ::Type{ElectronPhonon.OuterKLoop}) = true
-ElectronPhonon.supports(::_RecordCalcBatched, ::Type{ElectronPhonon.ElPhDataOuterKBatched}) = true
+ElectronPhonon.supports(::_RecordCalcBatched, ::Type{ElectronPhonon.EPDataQBatched}) = true
 function ElectronPhonon.setup_calculator!(c::_RecordCalcBatched, kpts, qpts, el_states;
         el_states_kq, kqpts, nw, nmodes, kwargs...)
     c.g2 = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
@@ -327,7 +327,7 @@ ElectronPhonon.postprocess_calculator!(c::_RecordCalcBatched; kwargs...) = c
 # Computes g2 from `ep_kq` itself (independent check of the fused-kernel ep_kq output). The GPU
 # loop also folds g2 into the kRkq kernel and carries it in the payload; assert it matches the
 # abs2/(2ω) recomputation — this guards the production g2 output in-package.
-function ElectronPhonon.run_calculator!(c::_RecordCalcBatched, p::ElectronPhonon.ElPhDataOuterKBatched, ctx)
+function ElectronPhonon.run_calculator!(c::_RecordCalcBatched, p::ElectronPhonon.EPDataQBatched, ctx)
     (; ep_kq, g2, ωq, ik, ikqs, ibandk_offset) = p
     nbandkq, nbandk, nm, nqc = size(ep_kq)
     g2dev = abs2.(ep_kq) ./ (2 .* reshape(ωq, 1, 1, nm, nqc))
@@ -391,7 +391,7 @@ end
             nk_outer_batch_max=5, nq_batch_max=7, progress_print_step=10^9)
         @test maximum(abs, cg.g2 .- cbk.g2) < 1e-9 * scale
 
-        # Fully-GPU policy: a non-batched calculator (does not support ElPhDataOuterKBatched) must be
+        # Fully-GPU policy: a non-batched calculator (does not support EPDataQBatched) must be
         # rejected, not silently run on the host path.
         @test_throws Exception ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
             calculators=[_RecordCalc()], symmetry=nothing, use_gpu=true, progress_print_step=10^9)
@@ -413,7 +413,7 @@ end
 # (the band-summed |g|² is invariant under the electron/phonon eigenvector gauge, so the
 # degenerate-band gauge difference between the CPU LAPACK and GPU batched eigensolvers — see the
 # note in the outer-k test above — does not matter here). This lets the SAME calculator validate
-# both the CPU (`run_calculator!(::ElPhDataPoint)`) and GPU-batched (`run_calculator!(::ElPhDataOuterQBatched)`) hooks of
+# both the CPU (`run_calculator!(::EPData)`) and GPU-batched (`run_calculator!(::EPDataKBatched)`) hooks of
 # `run_eph_over_q_and_k` against each other directly, without restricting to eigenvalues only.
 #
 # Thread-safety: `run_calculator!` on the CPU path is called from multiple threads (one per
@@ -426,8 +426,8 @@ mutable struct _RecordCalcOuterQ <: ElectronPhonon.AbstractCalculator
     _RecordCalcOuterQ() = new(zeros(0), zeros(0), nothing)
 end
 ElectronPhonon.supports(::_RecordCalcOuterQ, ::Type{ElectronPhonon.OuterQLoop}) = true
-ElectronPhonon.supports(::_RecordCalcOuterQ, ::Type{ElectronPhonon.ElPhDataPoint}) = true
-ElectronPhonon.supports(::_RecordCalcOuterQ, ::Type{ElectronPhonon.ElPhDataOuterQBatched}) = true
+ElectronPhonon.supports(::_RecordCalcOuterQ, ::Type{ElectronPhonon.EPData}) = true
+ElectronPhonon.supports(::_RecordCalcOuterQ, ::Type{ElectronPhonon.EPDataKBatched}) = true
 ElectronPhonon.allowed_eph_phonon_basis(::_RecordCalcOuterQ) = [:eigenmode]
 # Reads only the e-ph matrix (→ eigenvalues/eigenvectors); skips velocity/position.
 ElectronPhonon.required_el_k_quantities(::_RecordCalcOuterQ) = ["eigenvalue", "eigenvector"]
@@ -458,7 +458,7 @@ end
 ElectronPhonon.postprocess_calculator!(c::_RecordCalcOuterQ; kwargs...) = c
 # CPU path: epdata.ep is already an OffsetArray restricted to (el_kq.rng, el_k.rng, :), so summing
 # all of it covers exactly the in-window (m, n, ν) triples.
-function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.ElPhDataPoint, ctx)
+function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.EPData, ctx)
     c.Achunk[p.id_chunk] += p.epdata.wtk * sum(abs2, p.epdata.ep)
     c
 end
@@ -467,7 +467,7 @@ end
 # `nkc` (no padded tail), so the reduction reads its size from `size(ep, 4)`. `sum` of a device
 # broadcast expression reduces on-device and returns a host scalar without any scalar indexing
 # (allowed under CUDA.allowscalar(false)).
-function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.ElPhDataOuterQBatched, ctx)
+function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.EPDataKBatched, ctx)
     ep, wtk = p.ep_kq, p.wtk
     nkc = size(ep, 4)
     val = sum(abs2.(ep) .* reshape(wtk, 1, 1, 1, nkc))
@@ -757,8 +757,8 @@ struct _ByteCalc <: ElectronPhonon.AbstractCalculator
     kbytes::Int
     qbytes::Int
 end
-ElectronPhonon.eph_batched_bytes_per_point(c::_ByteCalc, ::Type{ElectronPhonon.ElPhDataOuterKBatched}; nw, nmodes) = c.kbytes
-ElectronPhonon.eph_batched_bytes_per_point(c::_ByteCalc, ::Type{ElectronPhonon.ElPhDataOuterQBatched}; nw, nmodes) = c.qbytes
+ElectronPhonon.eph_batched_bytes_per_point(c::_ByteCalc, ::Type{ElectronPhonon.EPDataQBatched}; nw, nmodes) = c.kbytes
+ElectronPhonon.eph_batched_bytes_per_point(c::_ByteCalc, ::Type{ElectronPhonon.EPDataKBatched}; nw, nmodes) = c.qbytes
 
 # A stub backend with a settable free-memory budget, to drive the adaptive-width / fail-early paths
 # on the CPU (no CUDA needed).
@@ -778,7 +778,7 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
             nk_batch_max, calculators = calcs, ndata_epmat, nr_epmat, FT)
         # OLD formulas (ground truth), reproduced inline — pre-existing terms pinned as-is.
         old_per_q = 72 * nw * nbandk_max * nmodes + 24 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 40 +
-            sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.ElPhDataOuterKBatched; nw, nmodes) for c in calcs)
+            sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataQBatched; nw, nmodes) for c in calcs)
         old_committed = 16 * nw^2 * nkq + (16 * nmodes^2 + 8 * nmodes) * nq_grid +
             16 * nw * nbandk_max * (nmodes * nr_ep + 1) * nk_batch_max
         # NEW term (2026-07-18): itp_epmat RR→kR interpolator Fourier scratch, asserted separately.
@@ -794,7 +794,7 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
                 use_polar_eph, calculators = calcs, FT)
             old_per_k = 16 * nw^2 * (5 * nmodes + 8 + (use_polar_eph ? 1 : 0)) +
                 24 * (nr_el_ham + nr_ep_eRpq) +
-                sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.ElPhDataOuterQBatched; nw, nmodes) for c in calcs)
+                sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataKBatched; nw, nmodes) for c in calcs)
             @test per_point == old_per_k
             @test committed == 0   # k side streamed: no whole-run device stack
         end

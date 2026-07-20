@@ -4,7 +4,7 @@ using Base.Threads: nthreads
     EphOuterQLoopBuffers
 
 Pre-allocated buffers for `run_eph_over_q_and_k` that can be reused across multiple calls
-to avoid repeated allocation of interpolator channels, `ElPhData` buffers, and `GridOpt` objects.
+to avoid repeated allocation of interpolator channels, `EPState` buffers, and `GridOpt` objects.
 
 Create once and pass via the `eph_buffers` keyword argument to `run_eph_over_q_and_k`.
 
@@ -12,7 +12,7 @@ Create once and pass via the `eph_buffers` keyword argument to `run_eph_over_q_a
                          fourier_mode="gridopt", nband_max=model.nw)
 """
 struct EphOuterQLoopBuffers{FT, IT <: AbstractWannierInterpolator}
-    epdatas::Channel{ElPhData{FT}}
+    epdatas::Channel{EPState{FT}}
     ep_eRpq_obj::HostWannierObject{FT}
     ep_eRpqs::Channel{AbstractWannierInterpolator{FT}}
     epmat::IT
@@ -31,9 +31,9 @@ function EphOuterQLoopBuffers(model::Model{FT};
     nbuffers = min(nthreads(), nchunks_threads)
     threads = nbuffers > 1
 
-    epdatas = Channel{ElPhData{FT}}(nbuffers)
+    epdatas = Channel{EPState{FT}}(nbuffers)
     foreach(1:nbuffers) do _
-        put!(epdatas, ElPhData{FT}(nw, nmodes, nband_max))
+        put!(epdatas, EPState{FT}(nw, nmodes, nband_max))
     end
 
     ep_eRpq_obj = get_next_wannier_object(model.epmat)

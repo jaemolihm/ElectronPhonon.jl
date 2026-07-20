@@ -72,7 +72,7 @@ function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nkq, nq_grid, n
         rl * nmodes +                      # ωq_dev
         iz + iz                            # iqs_batch_dev + ikqs_dev
     for c in calculators
-        per_point += eph_batched_bytes_per_point(c, ElPhDataOuterKBatched; nw, nmodes)
+        per_point += eph_batched_bytes_per_point(c, EPDataQBatched; nw, nmodes)
     end
     # Whole-run + per-k-batch commitments (allocated after the sizing point; subtracted from free).
     # The `itp_epmat` term uses `nk_batch_max` (the outer-k batch width, a SEPARATE fixed cap from the
@@ -106,7 +106,7 @@ function _outer_q_staging_bytes(; nw, nmodes, nr_el_ham, nr_ep_eRpq, use_polar_e
         (use_polar_eph ? cx * nw^2 : 0) +    # mmats_batch (polar only)
         (cx + rl) * (nr_el_ham + nr_ep_eRpq) # interpolator core phase (cx) + rdotk (rl) = 24·nr, both interpolators
     for c in calculators
-        per_point += eph_batched_bytes_per_point(c, ElPhDataOuterQBatched; nw, nmodes)
+        per_point += eph_batched_bytes_per_point(c, EPDataKBatched; nw, nmodes)
     end
     (per_point, 0)
 end

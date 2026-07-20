@@ -39,9 +39,9 @@ Deliberately **not** on the GPU (stays on the CPU per-k path):
   outer-q loop masks out-of-window eigenvector columns so those matrix elements are exactly 0. See
   the design note.
 - **The GPU path is fully GPU — no silent fallback.** The GPU calculator loop requires every
-  calculator to support the batched device payload (`supports(calc, ElPhDataOuterKBatched) = true`
-  for the outer-k loop, `supports(calc, ElPhDataOuterQBatched) = true` for the outer-q loop). It
-  must not silently fall back to the per-`(k,q)` host `run_calculator!(calc, ::ElPhDataPoint, ctx)`
+  calculator to support the batched device payload (`supports(calc, EPDataQBatched) = true`
+  for the outer-k loop, `supports(calc, EPDataKBatched) = true` for the outer-q loop). It
+  must not silently fall back to the per-`(k,q)` host `run_calculator!(calc, ::EPData, ctx)`
   path, which would be a hard-to-spot performance cliff — a calculator that forgets to opt in should
   fail loudly instead.
 
@@ -144,18 +144,18 @@ a whole batch stays on the device and the reduction/scatter happens there. Each 
 payload, named for which momentum is the outer loop and which is batched on the inner axis:
 
 - **Outer-k loop (`run_eph_over_k_and_kq`, outer k / inner k+q batched).** A calculator MUST
-  (1) declare `supports(calc, ::Type{ElPhDataOuterKBatched}) = true` and (2) implement
-  `run_calculator!(calc, p::ElPhDataOuterKBatched, ctx)`. The payload `p` carries the batch's
+  (1) declare `supports(calc, ::Type{EPDataQBatched}) = true` and (2) implement
+  `run_calculator!(calc, p::EPDataQBatched, ctx)`. The payload `p` carries the batch's
   `ep_kq` / `g2` / `ωq` on the device plus `ik`, `ikqs`, `ibandk_offset`. The loop calls it once
   per `(k, {k+q})` batch (outer k is still serial: one `OuterIteration` bracket + payload per k).
 - **Outer-q loop (`run_eph_over_q_and_k`, outer q / inner k batched).** A calculator MUST
-  (1) declare `supports(calc, ::Type{ElPhDataOuterQBatched}) = true` and (2) implement
-  `run_calculator!(calc, p::ElPhDataOuterQBatched, ctx)`. The payload carries `ep_kq`, k/k+q
+  (1) declare `supports(calc, ::Type{EPDataKBatched}) = true` and (2) implement
+  `run_calculator!(calc, p::EPDataKBatched, ctx)`. The payload carries `ep_kq`, k/k+q
   energies and eigenvectors, `wtk`, `xks`, `iq` on the device. The per-q device accumulator is
   bracketed by `calculator_begin!/end!(calc, OuterIteration(), ctx)` (the same brackets the CPU
   loop uses — the batched path is selected by `ctx.mode`, and the device buffer is allocated via
   `ctx.backend`), and the per-k device scratch is declared via
-  `eph_batched_bytes_per_point(calc, ElPhDataOuterQBatched)` for the loop's memory-adaptive batch
+  `eph_batched_bytes_per_point(calc, EPDataKBatched)` for the loop's memory-adaptive batch
   sizing. The k side is streamed per k-batch (host-staged, no whole-grid device stack), and the
   payload is trimmed to the batch's actual width — a consumer reads its own size from any field
   (e.g. `size(ep_kq, 4)`) and never sees a padded tail (the outer-k convention).
@@ -177,10 +177,10 @@ payload, named for which momentum is the outer loop and which is batched on the 
   `similar`/`copyto!`/broadcast/scatter-assignment) and adds no CUDA dependency of its own.
 
 **Distinguishing the per-point host loop from the device-batched loop.** `LoopContext` carries a
-loop *mode* (`PointMode` / `BatchedMode`) that names the loop shape independently of the backend.
+loop *mode* (`SingleMode` / `BatchedMode`) that names the loop shape independently of the backend.
 Hooks a calculator shares between the two loop shapes — most commonly the `OuterIteration` brackets,
 which the batched outer-k loop *also* fires per k — must key off the mode, not the backend: either
-dispatch (`ctx::LoopContext{<:AbstractBackend, PointMode}` vs `{<:AbstractBackend, BatchedMode}`, as
+dispatch (`ctx::LoopContext{<:AbstractBackend, SingleMode}` vs `{<:AbstractBackend, BatchedMode}`, as
 `BoltzmannCalculator` / `EliashbergCalculator` do) or branch at runtime on `ctx.mode isa BatchedMode`
 (as the outer-q calculators do). Dispatching these on `LoopContext{CPUBackend}` / `{<:GPUBackend}`
 would misfire, because the batched loop's per-iteration bracket runs on a device backend but must not

@@ -28,8 +28,8 @@ See `docs/writing_a_calculator.md` for a worked example. The public (unexported)
 reachable as `ElectronPhonon.<name>`, is: `AbstractCalculator`, `supports`, `setup_calculator!`,
 `run_calculator!`, `postprocess_calculator!`, `calculator_begin!`, `calculator_end!`, the loop tags
 `OuterKLoop` / `OuterQLoop`, the scope tags `OuterIteration` / `OuterIterationBatch`, the payloads
-`AbstractElPhPayload` / `ElPhDataPoint` / `ElPhDataOuterKBatched` / `ElPhDataOuterQBatched`,
-`LoopContext` with the loop modes `PointMode` / `BatchedMode` and the shared device stacks
+`AbstractElPhPayload` / `EPData` / `EPDataQBatched` / `EPDataKBatched`,
+`LoopContext` with the loop modes `SingleMode` / `BatchedMode` and the shared device stacks
 `ElKDeviceStacks`, the backends `CPUBackend` / `GPUBackend` with `alloc` / `free_bytes` /
 `synchronize`, `eph_window_scatter!`, `eph_batched_bytes_per_point`, `allowed_eph_phonon_basis`,
 `required_el_k_quantities`, `required_el_k_device_stacks`, `_indmap_to_device`, the tiled
@@ -42,7 +42,7 @@ abstract type AbstractCalculator end
 
 
 # =============================================================================
-#  Payload family — generalizations of `ElPhData`
+#  Payload family — generalizations of `EPState`
 #
 #  A payload carries all per-call data in typed fields (self-describing), and the loop-level state
 #  lives in `LoopContext`. `run_calculator!` dispatches on the payload type, so the interface grows
@@ -51,13 +51,13 @@ abstract type AbstractCalculator end
 abstract type AbstractElPhPayload end
 
 """
-    ElPhDataPoint{FT, DGT} <: AbstractElPhPayload
+    EPData{FT, DGT} <: AbstractElPhPayload
 
-Host per-(k, q) point payload — a light immutable wrapper of the reused `ElPhData` buffer plus the
+Host per-(k, q) point payload — a light immutable wrapper of the reused `EPState` buffer plus the
 per-point indices. Immutable and small, so constructing one per (k, q) is free (stack-allocated).
 
 Fields:
-- `epdata`   :: `ElPhData{FT}` — the thread's reused e-ph data buffer (states + matrix elements).
+- `epdata`   :: `EPState{FT}` — the thread's reused e-ph data buffer (states + matrix elements).
 - `ik`       :: outer k-point index.
 - `iq`       :: q-point index, or `nothing` when phonons are not precomputed.
 - `ikq`      :: k+q-point index, or `nothing` when k+q states are computed on the fly.
@@ -65,8 +65,8 @@ Fields:
 - `id_chunk` :: CPU thread-chunk id (selects the calculator's per-thread buffer).
 - `epdata_dg`:: covariant-derivative dg (`OffsetArray`), or `nothing`.
 """
-struct ElPhDataPoint{FT, DGT} <: AbstractElPhPayload
-    epdata    :: ElPhData{FT}
+struct EPData{FT, DGT} <: AbstractElPhPayload
+    epdata    :: EPState{FT}
     ik        :: Int
     iq        :: Union{Int, Nothing}
     ikq       :: Union{Int, Nothing}
@@ -77,7 +77,7 @@ struct ElPhDataPoint{FT, DGT} <: AbstractElPhPayload
 end
 
 """
-    ElPhDataOuterKBatched{AT4C, AT4R, AT2, VI} <: AbstractElPhPayload
+    EPDataQBatched{AT4C, AT4R, AT2, VI} <: AbstractElPhPayload
 
 Device payload of the GPU outer-k loop (`run_eph_over_k_and_kq`, `use_gpu`): one outer k-point with a
 batch of its k+q points. Runs on the backend of `ep_kq` (CPU or GPU); consumers stay backend-generic
@@ -93,7 +93,7 @@ Fields:
 - `ibandk_offset` :: k-side window-projection band offset (0-based; 0 for full-band). `ep_kq`'s
   band-of-k axis `n` (1-based) is PHYSICAL band `ibandk_offset + n`.
 """
-struct ElPhDataOuterKBatched{AT4C, AT4R, AT2, VI} <: AbstractElPhPayload
+struct EPDataQBatched{AT4C, AT4R, AT2, VI} <: AbstractElPhPayload
     ep_kq         :: AT4C
     g2            :: AT4R
     ωq            :: AT2
@@ -103,7 +103,7 @@ struct ElPhDataOuterKBatched{AT4C, AT4R, AT2, VI} <: AbstractElPhPayload
 end
 
 """
-    ElPhDataOuterQBatched{AT4, AT3, AT2, AT1, VK} <: AbstractElPhPayload
+    EPDataKBatched{AT4, AT3, AT2, AT1, VK} <: AbstractElPhPayload
 
 Device payload of the GPU outer-q loop (`run_eph_over_q_and_k`, `use_gpu`): one phonon momentum q with
 a batch of outer k-points. Runs on the backend of `ep_kq`; consumers stay backend-generic.
@@ -125,7 +125,7 @@ Fields (`m` = k+q band, `n` = k band, `k` = batch column):
 - `xks`   :: `(nk,)` — host `Vec3` list of the batch's k-vectors (for k-dependent phases).
 - `iq`    :: q-point index.
 """
-struct ElPhDataOuterQBatched{AT4, AT3, AT2, AT1, VK} <: AbstractElPhPayload
+struct EPDataKBatched{AT4, AT3, AT2, AT1, VK} <: AbstractElPhPayload
     ep_kq :: AT4
     e_k   :: AT2
     e_kq  :: AT2
@@ -168,7 +168,7 @@ end
 # `OuterIteration` brackets, so `LoopContext{<:GPUBackend}` alone cannot tell a per-point hook from a
 # per-batch one (it would run a CPU per-point reduction inside the batched loop).
 abstract type LoopMode end
-struct PointMode <: LoopMode end     # per-(k, q) host inner loops (CPU paths)
+struct SingleMode <: LoopMode end     # per-(k, q) host inner loops (CPU paths)
 struct BatchedMode <: LoopMode end   # device-batched loops (one outer index, a batch of inner ones)
 
 """
@@ -179,12 +179,12 @@ Loop-level state passed to every calculator hook. Replaces the ad-hoc per-hook k
 
 `BT` is the backend type and `MT` the loop mode; the backend is first, so a partial annotation
 `LoopContext{<:GPUBackend}` still names "any mode on a GPU backend". Backend-dependent hooks dispatch
-on the *mode* (`LoopContext{<:AbstractBackend, PointMode}` / `{<:AbstractBackend, BatchedMode}`), not
+on the *mode* (`LoopContext{<:AbstractBackend, SingleMode}` / `{<:AbstractBackend, BatchedMode}`), not
 the backend, so the batched loop's per-iteration bracket does not collide with the per-point one.
 
 Fields:
 - `backend`     :: `CPUBackend()` or `GPUBackend(proto)` — allocation / free / synchronize routes.
-- `mode`        :: `PointMode()` (per-(k, q) host loop) or `BatchedMode()` (device-batched loop).
+- `mode`        :: `SingleMode()` (per-(k, q) host loop) or `BatchedMode()` (device-batched loop).
 - `outer_index` :: current outer index (`ik` for outer-k loops, `iq` for the outer-q loop); `0` at
   batch scope.
 - `batch`       :: outer-iteration range of the current batch (`1:0` on the CPU paths).
@@ -206,6 +206,18 @@ end
 LoopContext(backend::AbstractBackend, mode::LoopMode, outer_index::Integer, batch::UnitRange,
     n_batch_max::Integer) =
     LoopContext(backend, mode, outer_index, batch, n_batch_max, nothing)
+
+# SingleMode context (CPU per-(k, q) host loops): there is no batch and no device stacks, so a
+# SingleMode context cannot be handed a spurious batch — fill `batch = 1:0`, `n_batch_max = 0`,
+# `el_k_stacks = nothing` automatically.
+LoopContext(backend::AbstractBackend, ::SingleMode, outer_index::Integer) =
+    LoopContext(backend, SingleMode(), outer_index, 1:0, 0, nothing)
+
+# BatchedMode context at batch scope (device loops): there is no single outer index spanning the whole
+# batch, so `outer_index = 0` is the "no single outer index — use `batch`" sentinel.
+LoopContext(backend::AbstractBackend, ::BatchedMode, batch::UnitRange, n_batch_max::Integer,
+    el_k_stacks::Union{Nothing, ElKDeviceStacks}) =
+    LoopContext(backend, BatchedMode(), 0, batch, n_batch_max, el_k_stacks)
 
 
 # =============================================================================
@@ -231,7 +243,7 @@ supports(::AbstractCalculator, ::Type{<:LoopTag}) = false
 supports(::AbstractCalculator, ::Type{<:AbstractElPhPayload}) = false
 supports(::AbstractCalculator, x) = error(
     "supports(calc, x) expects a loop-tag or payload TYPE (e.g. supports(calc, OuterKLoop) or " *
-    "supports(calc, ElPhDataPoint)); got x::$(typeof(x)). Pass the Type, not an instance.")
+    "supports(calc, EPData)); got x::$(typeof(x)). Pass the Type, not an instance.")
 
 
 # =============================================================================
@@ -294,9 +306,9 @@ calculator_end!(::AbstractCalculator,   ::OuterIterationBatch, ctx) = nothing
 #  Execution hook — one function, dispatched on the payload type.
 #
 # `run_calculator!(calc, payload, ctx)`:
-#   * `ElPhDataPoint`         — host per-(k, q) callback (CPU inner loops).
-#   * `ElPhDataOuterKBatched` — device, outer-k loop (one k, batch of k+q).
-#   * `ElPhDataOuterQBatched` — device, outer-q loop (one q, batch of k).
+#   * `EPData`         — host per-(k, q) callback (CPU inner loops).
+#   * `EPDataQBatched` — device, outer-k loop (one k, batch of k+q).
+#   * `EPDataKBatched` — device, outer-q loop (one q, batch of k).
 # There is deliberately no catch-all default: calling a payload a calculator does not implement is a
 # `MethodError`, and the drivers reject unsupported calculators up front via `supports`. The empty
 # generic-function declaration below creates the binding that calculators extend.
@@ -325,8 +337,8 @@ if VERSION >= v"1.11.0-DEV.469"
         "public AbstractCalculator, supports, setup_calculator!, run_calculator!, " *
         "postprocess_calculator!, calculator_begin!, calculator_end!, " *
         "OuterKLoop, OuterQLoop, OuterIteration, OuterIterationBatch, " *
-        "AbstractElPhPayload, ElPhDataPoint, ElPhDataOuterKBatched, ElPhDataOuterQBatched, " *
-        "LoopContext, PointMode, BatchedMode, ElKDeviceStacks, CPUBackend, GPUBackend, alloc, free_bytes, synchronize, " *
+        "AbstractElPhPayload, EPData, EPDataQBatched, EPDataKBatched, " *
+        "LoopContext, SingleMode, BatchedMode, ElKDeviceStacks, CPUBackend, GPUBackend, alloc, free_bytes, synchronize, " *
         "eph_window_scatter!, eph_batched_bytes_per_point, allowed_eph_phonon_basis, " *
         "required_el_k_quantities, required_el_k_device_stacks, _indmap_to_device, " *
         "TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array, " *

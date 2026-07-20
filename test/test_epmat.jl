@@ -47,7 +47,7 @@ using OffsetArrays: no_offset_view
         for model in [model_ph, model_el]
         # for model in [model_ph, model_ph_disk, model_el, model_el_disk]
             i += 1
-            epdata = ElPhData(nw, nmodes, nband)
+            epdata = EPState(nw, nmodes, nband)
             epdata.ph = ph
             epdata.el_k = el_k
             epdata.el_kq = el_kq

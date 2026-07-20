@@ -156,7 +156,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
     nband_max = max(maximum(el.nband for el in el_k_save),
                     maximum(el.nband for el in el_kq_save))
 
-    epdatas = [ElPhData{Float64}(nw, nmodes, nband_max) for _ in 1:nthreads()]
+    epdatas = [EPState{Float64}(nw, nmodes, nband_max) for _ in 1:nthreads()]
 
     epmat = get_interpolator(model.epmat; fourier_mode)
 

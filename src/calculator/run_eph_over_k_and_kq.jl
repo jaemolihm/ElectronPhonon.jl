@@ -36,11 +36,16 @@ function run_eph_over_k_and_kq(
         if !supports(calc, OuterKLoop)
             throw(ArgumentError("$calc does not support the outer-k loop. Use run_eph_over_q_and_k instead."))
         end
-        # CPU path hands each calculator the per-(k,q) host `ElPhDataPoint`; it must declare support.
-        # The GPU path uses `ElPhDataOuterKBatched` (checked in `_loop_eph_over_k_and_kq_gpu`).
-        if !use_gpu && !supports(calc, ElPhDataPoint)
+        # CPU path hands each calculator the per-(k,q) host `EPData`; the GPU path hands the device
+        # `EPDataQBatched`. Fail fast up front (before the expensive device upload / state setup),
+        # symmetric with the CPU check, rather than only inside `_loop_eph_over_k_and_kq_gpu`.
+        if !use_gpu && !supports(calc, EPData)
             throw(ArgumentError("$calc does not declare support for the per-(k,q) host payload; " *
-                "define supports(::$(typeof(calc)), ::Type{ElPhDataPoint}) = true."))
+                "define supports(::$(typeof(calc)), ::Type{EPData}) = true."))
+        end
+        if use_gpu && !supports(calc, EPDataQBatched)
+            throw(ArgumentError("$calc does not declare support for the GPU outer-k batched payload; " *
+                "define supports(::$(typeof(calc)), ::Type{EPDataQBatched}) = true."))
         end
     end
 
@@ -126,7 +131,7 @@ function _setup_eph_over_k_and_kq(
     (; nw, nmodes) = model
 
     # Generate k points and electron states at k (shared setup core)
-    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_eph_common(
+    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_electron_k(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity)
     nk = kpts.n
 
@@ -147,7 +152,7 @@ function _setup_eph_over_k_and_kq(
 
     # Electron states at k+q (directly, or via IBZ + unfolding for gauge consistency). CPU-only
     # unfolding — `run_eph_over_k_and_kq` gates el_kq_from_unfolding off for use_gpu.
-    el_kq_save = _compute_el_kq_states(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
+    el_kq_save = _setup_electron_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
         symmetry, el_kq_from_unfolding, window_kq; fourier_mode, use_gpu)
 
 
@@ -172,7 +177,7 @@ function _setup_eph_over_k_and_kq(
                     maximum(el.nband for el in el_kq_save))
 
 
-    # The CPU loop takes/puts one ElPhData buffer per thread; the GPU loop is device-batched and
+    # The CPU loop takes/puts one EPState buffer per thread; the GPU loop is device-batched and
     # never touches epdata, so it does not allocate the (nw, nmodes, nband_max) thread buffers.
     epdatas = use_gpu ? nothing : _make_epdatas_channel(FT, nw, nmodes, nband_max)
 
@@ -302,8 +307,8 @@ function _loop_eph_over_k_and_kq(
         end
 
         # Multithreading setup
-        ctx_k = LoopContext(backend, PointMode(), ik, 1:0, 0)
-        foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
+        ctx = LoopContext(backend, SingleMode(), ik)
+        foreach(c -> calculator_begin!(c, OuterIteration(), ctx), calculators)
 
         @threads for (id_chunk, ikqs) in enumerate(chunks(1:kqpts.n; n=nchunks_threads))
         # @time for (id_chunk, ikqs) in enumerate(collect(chunks(1:kqpts.n; n=nchunks_threads))[1:1])
@@ -324,7 +329,7 @@ function _loop_eph_over_k_and_kq(
 
             _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, el_kq_save,
                 xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk,
-                energy_conservation, screening_params, skip_eph, ctx_k;
+                energy_conservation, screening_params, skip_eph, ctx;
                 ep_ekpR_R, calculators,
             )
 
@@ -339,7 +344,7 @@ function _loop_eph_over_k_and_kq(
         end # ikq chunk
 
         # Multithreading collect
-        foreach(c -> calculator_end!(c, OuterIteration(), ctx_k), calculators)
+        foreach(c -> calculator_end!(c, OuterIteration(), ctx), calculators)
 
     end # ik
 
@@ -461,7 +466,7 @@ function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epdata, ik, ep_ekpR, e
         # Now, we are done with matrix elements. All data saved in epdata.
 
         # FIXME: Find out better way to pass epdata_dg (now a typed payload field)
-        payload = ElPhDataPoint(epdata, ik, iq, ikq, xk, xq, id_chunk, epdata_dg)
+        payload = EPData(epdata, ik, iq, ikq, xk, xq, id_chunk, epdata_dg)
         foreach(c -> run_calculator!(c, payload, ctx), calculators)
 
     end # ikq
@@ -540,9 +545,9 @@ function _loop_eph_over_k_and_kq_gpu(
     # batched device hook; a non-batched calculator fails loudly rather than silently falling back
     # to a slow host path — a hard-to-spot performance cliff (see README_GPU.md "Decisions").
     isempty(calculators) && throw(ArgumentError("use_gpu requires at least one calculator."))
-    all(c -> supports(c, ElPhDataOuterKBatched), calculators) || throw(ArgumentError(
-        "use_gpu requires every calculator to support the ElPhDataOuterKBatched payload " *
-        "(supports(calc, ElPhDataOuterKBatched) = true); the GPU path does not fall back to the host loop."))
+    all(c -> supports(c, EPDataQBatched), calculators) || throw(ArgumentError(
+        "use_gpu requires every calculator to support the EPDataQBatched payload " *
+        "(supports(calc, EPDataQBatched) = true); the GPU path does not fall back to the host loop."))
 
     # Whole-run device stacks (band energies / integration weights), built once and shared with the
     # batched calculators via `LoopContext.el_k_stacks`, so a device-resident calculator does not
@@ -707,7 +712,7 @@ function _loop_eph_over_k_and_kq_gpu(
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
-        ctx_batch = LoopContext(backend, BatchedMode(), 0, iks_batch, nk_batch_max, el_k_stacks)
+        ctx_batch = LoopContext(backend, BatchedMode(), iks_batch, nk_batch_max, el_k_stacks)
         foreach(c -> calculator_begin!(c, OuterIterationBatch(), ctx_batch), calculators)
 
     for (ik_ind, ik) in enumerate(iks_batch)
@@ -777,7 +782,7 @@ function _loop_eph_over_k_and_kq_gpu(
             # g2 / scatters it on the device; no D2H of the e-ph matrix here. 5-arg contiguous H2D
             # copy of the first nq_batch k+q indices (a SubArray-view copy would go scalar).
             copyto!(ikqs_dev, 1, ikqs_host, 1, nq_batch)
-            payload = ElPhDataOuterKBatched(
+            payload = EPDataQBatched(
                 view(epkq_dev, :, :, :, rng_q), view(g2_dev, :, :, :, rng_q),
                 view(ωq_dev, :, rng_q), ik, view(ikqs_dev, rng_q), ibandk_offsets[ik])
             foreach(c -> run_calculator!(c, payload, ctx_k), calculators)
@@ -802,34 +807,4 @@ function _loop_eph_over_k_and_kq_gpu(
     for calc in calculators
         postprocess_calculator!(calc; qpts, symmetry)
     end
-end
-
-
-# --- shared whole-run device stacks (see `ElKDeviceStacks` / `required_el_k_device_stacks`) --------
-
-# Per-(physical band, k) energy grid `(nw, nk)`, zero outside the window. `el_states[k].e` is an
-# OffsetArray over that k's in-window band range; a calculator's flattened per-state view (gathered
-# through its `(iband, ik)` map) only ever reads in-window entries, so out-of-window slots stay 0.
-function _band_energy_stack(backend, el_states, nw::Integer, ::Type{FT}) where {FT}
-    nk = length(el_states)
-    host = zeros(FT, nw, nk)
-    for (k, el) in enumerate(el_states)
-        el.nband == 0 && continue
-        @inbounds for ib in el.rng
-            host[ib, k] = el.e[ib]
-        end
-    end
-    copyto!(alloc(backend, FT, nw, nk), host)
-end
-
-# Build only the requested stacks (union over calculators); undeclared quantities stay `nothing`.
-# Returns `nothing` when nothing is requested, so `LoopContext.el_k_stacks` is `nothing` in that
-# (common) case.
-function _build_el_k_device_stacks(backend, syms, el_k_save, el_kq_save, kpts, kqpts, nw, ::Type{FT}) where {FT}
-    isempty(syms) && return nothing
-    e_k  = :e_k  in syms ? _band_energy_stack(backend, el_k_save, nw, FT)  : nothing
-    e_kq = :e_kq in syms ? _band_energy_stack(backend, el_kq_save, nw, FT) : nothing
-    wtk  = :wtk  in syms ? copyto!(alloc(backend, FT, kpts.n),  collect(FT, kpts.weights))  : nothing
-    wtq  = :wtq  in syms ? copyto!(alloc(backend, FT, kqpts.n), collect(FT, kqpts.weights)) : nothing
-    ElKDeviceStacks(e_k, e_kq, wtk, wtq)
 end

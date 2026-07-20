@@ -103,7 +103,7 @@ function compute_debye_waller_active_space(model, kpts, el_mom, window; fourier_
     ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
 
 
-    epdata = ElPhData(nw, nmodes)
+    epdata = EPState(nw, nmodes)
     epdata.ph = compute_phonon_states(model, ElectronPhonon.Kpoints(xq), ["eigenvalue", "eigenvector"])[1]
 
     dw_active = zeros(ComplexF64, nw, nw, 3, nmodes, kpts.n)
@@ -166,9 +166,9 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
     epmat = get_interpolator(model.epmat; fourier_mode)
     ep_ekpRs = get_interpolator_channel(ep_ekpR_obj; fourier_mode)
 
-    epdatas = Channel{ElPhData{Float64}}(nthreads())
+    epdatas = Channel{EPState{Float64}}(nthreads())
     foreach(1:nthreads()) do _
-        put!(epdatas, ElPhData{Float64}(nw, nmodes))
+        put!(epdatas, EPState{Float64}(nw, nmodes))
     end
 
     Σ_Fan_channel = [[zeros(nw, length(occupation_params.Tlist)) for _ in 1:kpts.n] for _ in 1:nchunks_threads]

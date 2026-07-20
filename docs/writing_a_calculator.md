@@ -16,8 +16,8 @@ A calculator must implement:
 
 - `setup_calculator!(calc, kpts, qpts, el_states; kwargs...)` — run once, before the loop.
 - `run_calculator!(calc, payload, ctx)` — one method per payload *type* the calculator consumes.
-  The host per-(k,q) payload is `ElPhDataPoint`; the device-batched payloads (`ElPhDataOuterKBatched`
-  / `ElPhDataOuterQBatched`) are only for the GPU path (see "Migrating to the GPU" below).
+  The host per-(k,q) payload is `EPData`; the device-batched payloads (`EPDataQBatched`
+  / `EPDataKBatched`) are only for the GPU path (see "Migrating to the GPU" below).
 - `postprocess_calculator!(calc; kwargs...)` — run once, after the loop.
 - `supports(calc, ::Type{T})` — declare the driver loop shapes (`OuterKLoop` / `OuterQLoop`) and
   the payload types the calculator handles. The default is `false`; the second argument must be a
@@ -41,7 +41,7 @@ and modes, giving one number per outer k-point. It runs under `run_eph_over_k_an
 <!-- doc-example:begin -->
 ```julia
 using ElectronPhonon
-using ElectronPhonon: AbstractCalculator, OuterKLoop, ElPhDataPoint, OuterIteration
+using ElectronPhonon: AbstractCalculator, OuterKLoop, EPData, OuterIteration
 
 # One value per outer k: Σ over (k+q, m, n, ν) of wtq · g2[m, n, ν].
 mutable struct EphG2SumCalculator <: AbstractCalculator
@@ -52,7 +52,7 @@ end
 
 # This calculator runs under the outer-k drivers and consumes the host per-(k,q) payload.
 ElectronPhonon.supports(::EphG2SumCalculator, ::Type{OuterKLoop})    = true
-ElectronPhonon.supports(::EphG2SumCalculator, ::Type{ElPhDataPoint}) = true
+ElectronPhonon.supports(::EphG2SumCalculator, ::Type{EPData}) = true
 
 # Run once before the loop. `nchunks_threads` is the number of thread chunks the inner loop uses;
 # allocate one partial-sum slot per chunk so concurrent calls never touch the same slot.
@@ -71,7 +71,7 @@ end
 
 # Called CONCURRENTLY from @threads over inner-k+q chunks at fixed outer k. Accumulate into THIS
 # chunk's slot (`p.id_chunk`) — never a shared slot — so there is no data race.
-function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, p::ElPhDataPoint, ctx)
+function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, p::EPData, ctx)
     epdata = p.epdata
     s = 0.0
     for ν in 1:epdata.ph.nmodes, n in epdata.el_k.rng, m in epdata.el_kq.rng
@@ -102,7 +102,7 @@ calc.per_k   # one number per outer k-point
 
 ## The threading contract (read this)
 
-On all CPU paths `run_calculator!(calc, ::ElPhDataPoint, ctx)` is called **concurrently** from
+On all CPU paths `run_calculator!(calc, ::EPData, ctx)` is called **concurrently** from
 `@threads` over inner (k+q or k) chunks at a fixed outer index. Mutating shared calculator state
 from it races. Two safe patterns:
 
@@ -149,9 +149,9 @@ carried in `ctx.backend`.
 
 To add a GPU path to an existing CPU calculator:
 
-1. Declare the batched payload: `supports(calc, ::Type{ElPhDataOuterKBatched}) = true` (outer-k) or
-   `supports(calc, ::Type{ElPhDataOuterQBatched}) = true` (outer-q).
-2. Implement `run_calculator!(calc, p::ElPhDataOuterKBatched, ctx)` (resp. `ElPhDataOuterQBatched`).
+1. Declare the batched payload: `supports(calc, ::Type{EPDataQBatched}) = true` (outer-k) or
+   `supports(calc, ::Type{EPDataKBatched}) = true` (outer-q).
+2. Implement `run_calculator!(calc, p::EPDataQBatched, ctx)` (resp. `EPDataKBatched`).
    The payload carries the e-ph matrix for a whole batch **on the device** (`p.ep_kq`, `p.g2`,
    `p.ωq`, batch indices …). Write it backend-generically — only `alloc(ctx.backend, T, dims...)`,
    `similar`, `copyto!`, broadcasting, `mul!`, and scatter-assignment — so the same method runs on
@@ -166,7 +166,7 @@ To add a GPU path to an existing CPU calculator:
    If a bracket is shared between the CPU and GPU loop shapes (e.g. the `OuterIteration` bracket,
    which the batched outer-k loop fires per k in addition to the CPU per-point loop), select the
    batched behavior from the loop **mode** carried in `ctx`, never the backend: either dispatch on
-   `ctx::LoopContext{<:AbstractBackend, PointMode}` vs `{<:AbstractBackend, BatchedMode}`, or branch
+   `ctx::LoopContext{<:AbstractBackend, SingleMode}` vs `{<:AbstractBackend, BatchedMode}`, or branch
    on `ctx.mode isa ElectronPhonon.BatchedMode`. `ctx.backend` is only for allocation
    (`alloc(ctx.backend, …)`) / `free_bytes` / `synchronize`, not for telling the loop shapes apart.
 
@@ -207,6 +207,6 @@ band, k)`; derive your flattened per-state view by gathering through your own st
 device state-index map itself is built with `_indmap_to_device(ctx.backend, states, nw)`).
 
 `BoltzmannCalculator` (`src/boltzmann/boltzmann_calculator.jl`) and `EliashbergCalculator`
-(MigdalEliashberg.jl) are worked references: each has both a CPU `ElPhDataPoint` method and a GPU
+(MigdalEliashberg.jl) are worked references: each has both a CPU `EPData` method and a GPU
 batched method sharing the same output arrays, and both use `TiledDeviceOutput`. See `README_GPU.md`
 for the device-loop details.

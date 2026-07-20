@@ -1,6 +1,6 @@
 # Shared setup building blocks for the three e-ph drivers (run_eph_over_k_and_q,
 # run_eph_over_q_and_k, run_eph_over_k_and_kq). Their `_setup_*` bodies are ~70% identical, so the
-# common k-side filtering/state computation, the k+q electron-state branch, the per-thread ElPhData
+# common k-side filtering/state computation, the k+q electron-state branch, the per-thread EPState
 # channel, the setup_calculator! fan-out, and the screening evaluation live here, each exactly once.
 
 using Base.Threads: nthreads
@@ -9,7 +9,7 @@ using Base.Threads: nthreads
 # k-side setup shared by all three drivers: filter the outer k-points to the energy window and
 # compute the electron states there. `verbosity` selects timing (@time when > 0, via `maybe_time`);
 # `el_k_quantities` lets the outer-q GPU-batched path skip velocity/position.
-function _setup_eph_common(
+function _setup_electron_k(
         model :: Model, kpts_input;
         window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu = false, verbosity = 1,
         el_k_quantities = ["eigenvalue", "eigenvector", "velocity", "position"],
@@ -29,7 +29,7 @@ end
 # computed only in the irreducible BZ (`kqpts_irr`) and unfolded to `kqpts` (carrying the eigenvector
 # gauge) to keep gauge consistency between symmetry-equivalent k points; otherwise they are computed
 # directly on `kqpts`. `kqpts_irr` / `ik_to_ikirr_isym_kq` are only read on the unfolding path.
-function _compute_el_kq_states(
+function _setup_electron_kq(
         model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq, symmetry, el_kq_from_unfolding, window_kq;
         fourier_mode, use_gpu = false,
     )
@@ -47,11 +47,11 @@ function _compute_el_kq_states(
 end
 
 
-# Per-thread ElPhData channel used by the CPU inner loops of the outer-k and over-k-and-kq drivers.
+# Per-thread EPState channel used by the CPU inner loops of the outer-k and over-k-and-kq drivers.
 function _make_epdatas_channel(::Type{FT}, nw, nmodes, nband_max) where {FT}
-    ch = Channel{ElPhData{FT}}(nthreads())
+    ch = Channel{EPState{FT}}(nthreads())
     foreach(1:nthreads()) do _
-        put!(ch, ElPhData{FT}(nw, nmodes, nband_max))
+        put!(ch, EPState{FT}(nw, nmodes, nband_max))
     end
     ch
 end

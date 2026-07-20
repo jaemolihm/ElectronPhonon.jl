@@ -52,11 +52,11 @@ function run_eph_over_q_and_k(
         if !supports(calc, OuterQLoop)
             throw(ArgumentError("$calc does not support the outer-q loop. Use run_eph_over_k_and_q instead."))
         end
-        # CPU path hands each calculator the per-(k,q) host `ElPhDataPoint`; it must declare support.
-        # The GPU path uses `ElPhDataOuterQBatched` (checked in `_loop_eph_over_q_and_k_gpu`).
-        if !use_gpu && !supports(calc, ElPhDataPoint)
+        # CPU path hands each calculator the per-(k,q) host `EPData`; it must declare support.
+        # The GPU path uses `EPDataKBatched` (checked in `_loop_eph_over_q_and_k_gpu`).
+        if !use_gpu && !supports(calc, EPData)
             throw(ArgumentError("$calc does not declare support for the per-(k,q) host payload; " *
-                "define supports(::$(typeof(calc)), ::Type{ElPhDataPoint}) = true."))
+                "define supports(::$(typeof(calc)), ::Type{EPData}) = true."))
         end
     end
 
@@ -151,7 +151,7 @@ function _setup_eph_over_q_and_k(
     # setup cost after the eigensolve). Default is the conservative full list.
     el_k_quantities = isempty(calculators) ? ["eigenvalue", "eigenvector", "velocity", "position"] :
         unique(reduce(vcat, required_el_k_quantities(c) for c in calculators))
-    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_eph_common(
+    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_electron_k(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity, el_k_quantities)
     nk = kpts.n
 
@@ -197,7 +197,7 @@ function _setup_eph_over_q_and_k(
         else
             kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
         end
-        el_kq_save = _compute_el_kq_states(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
+        el_kq_save = _setup_electron_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
             symmetry, el_kq_from_unfolding, window_kq; fourier_mode)
     else
         kqpts = nothing
@@ -292,7 +292,7 @@ function _loop_eph_over_q_and_k(
         end
 
         # Multithreading setup
-        ctx_q = LoopContext(backend, PointMode(), iq, 1:0, 0)
+        ctx_q = LoopContext(backend, SingleMode(), iq)
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_q), calculators)
 
         @threads for (id_chunk, iks) in enumerate(chunks(1:nk; n=nchunks_threads))
@@ -351,7 +351,7 @@ function _loop_eph_over_q_and_k(
 
                 # Now, we are done with matrix elements. All data saved in epdata.
 
-                payload = ElPhDataPoint(epdata, ik, iq, ikq, xk, xq, id_chunk, nothing)
+                payload = EPData(epdata, ik, iq, ikq, xk, xq, id_chunk, nothing)
                 foreach(c -> run_calculator!(c, payload, ctx_q), calculators)
 
             end # ik
@@ -386,12 +386,12 @@ end
 #  Per q: interpolate g(R_el, q) on the HOST (`get_eph_RR_to_Rq!`, nq is small), upload it,
 #  then loop over the outer k points in batches. Each batch: batched k+q eigensolve (window-masked
 #  by zeroing out-of-window eigenvector columns), batched Rq→kq e-ph interpolation, and one call to
-#  `run_calculator!(calc, ::ElPhDataOuterQBatched, ctx)`. The per-q device accumulator is bracketed
+#  `run_calculator!(calc, ::EPDataKBatched, ctx)`. The per-q device accumulator is bracketed
 #  by the `calculator_begin!/end!(…, OuterIteration(), ctx)` brackets, the same ones the CPU loop uses.
 #
 #  Scope (asserted below; the CPU path handles the rest): no screening,
 #  energy_conservation = (:None, 0.0), skip_eph = false, and every calculator supports the
-#  `ElPhDataOuterQBatched` payload. Windows are supported via eigenvector-column masking (out-of-window
+#  `EPDataKBatched` payload. Windows are supported via eigenvector-column masking (out-of-window
 #  states contribute exactly 0), so the batched full-band nw×nw shapes stay uniform. Polar models are
 #  supported: the `polar_eph` dipole term is added on the device per batch (`add_eph_dipole_batched!`).
 function _loop_eph_over_q_and_k_gpu(
@@ -421,8 +421,8 @@ function _loop_eph_over_q_and_k_gpu(
         "use_gpu supports only energy_conservation = (:None, 0.0)."))
     # screening_params === nothing also guarantees ϵ ≡ 1 in the polar dipole term below.
     screening_params === nothing || throw(ArgumentError("use_gpu does not support screening_params."))
-    (!isempty(calculators) && all(c -> supports(c, ElPhDataOuterQBatched), calculators)) || throw(ArgumentError(
-        "use_gpu (outer-q) requires every calculator to support the ElPhDataOuterQBatched payload. " *
+    (!isempty(calculators) && all(c -> supports(c, EPDataKBatched), calculators)) || throw(ArgumentError(
+        "use_gpu (outer-q) requires every calculator to support the EPDataKBatched payload. " *
         "Use the CPU path otherwise."))
 
     # `el_ham_dev` (device Hamiltonian for the k+q eigensolve) was uploaded ONCE in the shared setup
@@ -563,7 +563,7 @@ function _loop_eph_over_q_and_k_gpu(
             # internal `wtk` zero-padding above is kept as defense-in-depth.) A trailing-prefix view
             # of a device array is contiguous, so the extension kernels take these directly.
             rng_k = 1:nk_batch
-            payload = ElPhDataOuterQBatched(
+            payload = EPDataKBatched(
                 view(ep_batch, :, :, :, rng_k), view(ek_batch, :, rng_k), view(Ekq, :, rng_k),
                 view(Uk_batch, :, :, rng_k), view(Ukq_batch, :, :, rng_k), view(wtk_batch, rng_k),
                 view(ks_batch, rng_k), iq)

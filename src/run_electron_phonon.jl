@@ -74,7 +74,7 @@ function run_eph_outer_loop_q(
     nq = qpoints.n
     nband = iband_max - iband_min + 1
 
-    epdatas = [ElPhData{FT}(nw, nmodes, nband) for _ in 1:nthreads()]
+    epdatas = [EPState{FT}(nw, nmodes, nband) for _ in 1:nthreads()]
 
     # Initialize data structs (always assign to avoid Core.Box in @threads closure)
     elself = compute_elself ? ElectronSelfEnergy{FT}(iband_min:iband_max, nk, length(elself_params.Tlist)) : nothing

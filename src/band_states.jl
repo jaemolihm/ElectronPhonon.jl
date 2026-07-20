@@ -34,6 +34,9 @@ struct BandStates{T, KT <: AbstractKpoints{T}}
                             # (the band extent of `indmap`)
     nband_ignore::Int       # bands below the lowest indexed one = minimum(iband) − 1, subtracted
                             # so band `iband` maps to `indmap` row `iband − nband_ignore ∈ 1:nband`
+    nw::Int                 # full (Wannier) band count of the model these states came from; the
+                            # physical-band extent (≥ nband_ignore + nband). Informational — the
+                            # device index-map pad width is passed explicitly to `_indmap_to_device`.
     kpts::KT                # k-grid: vectors, weights, ngrid (+ hash if GridKpoints)
     iks::Vector{Int}        # per-state k index into kpts (k-vector/weight derived via this)
     ibands::Vector{Int}     # per-state band index (mode index for phonons)
@@ -52,14 +55,15 @@ function _build_indmap(n, nk, nband, nband_ignore, ik, iband)
 end
 
 """
-    BandStates(kpts, ik, iband, e; v, nstates_base)
+    BandStates(kpts, ik, iband, e; nw, v, nstates_base)
 
 Primary constructor: `kpts` is the (shared) k-grid, `ik[i]` the k-index of state `i`,
-`iband[i]` its band, `e[i]` its energy. `v` (per-state velocity) defaults to empty.
+`iband[i]` its band, `e[i]` its energy. `nw` is the model's full Wannier band count. `v`
+(per-state velocity) defaults to empty.
 """
 function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
         iband::AbstractVector{<:Integer}, e::AbstractVector;
-        v::AbstractVector = Vec3{T}[], nstates_base = zero(T)) where {T}
+        nw::Integer, v::AbstractVector = Vec3{T}[], nstates_base = zero(T)) where {T}
     n = length(ik)
     n == length(iband) == length(e) || error("BandStates: ik, iband, e must have equal length")
     (isempty(v) || length(v) == n) || error("BandStates: v must be empty or length n")
@@ -68,19 +72,20 @@ function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
     nband_ignore = minimum(iband) - 1
     nband = maximum(iband) - nband_ignore
     indmap = _build_indmap(n, kpts.n, nband, nband_ignore, ik, iband)
-    BandStates{T, typeof(kpts)}(n, nband, nband_ignore, kpts, collect(Int, ik),
+    BandStates{T, typeof(kpts)}(n, nband, nband_ignore, Int(nw), kpts, collect(Int, ik),
         collect(Int, iband), collect(T, e), collect(Vec3{T}, v),
         T(nstates_base), indmap)
 end
 
 """
-    electron_states_to_BandStates(el_states, kpts, nstates_base=0) -> (BandStates, imap)
+    electron_states_to_BandStates(el_states, kpts, nstates_base=0; nw) -> (BandStates, imap)
 
 Flatten a per-k vector of `ElectronState` onto `kpts` into a `BandStates`, and return it together
 with `imap[iband, ik]` = state index — an `OffsetMatrix` over the physical band range, 0 outside
-the window. The per-state k-index `ik` is stored directly (no deduplication: `kpts` already holds
-the distinct k-points). `kpts` must be a `GridKpoints` (its k-vector→index hash is needed for the
-e-ph loop and `state_index(xk, …)` queries); callers holding a plain `Kpoints` promote it first.
+the window. `nw` is the model's full Wannier band count, stored on the `BandStates`. The per-state
+k-index `ik` is stored directly (no deduplication: `kpts` already holds the distinct k-points).
+`kpts` must be a `GridKpoints` (its k-vector→index hash is needed for the e-ph loop and
+`state_index(xk, …)` queries); callers holding a plain `Kpoints` promote it first.
 
 The same `(iband, ik) → state` information also lives in the returned `BandStates` as `indmap`
 (query it with `state_index`, or build a device copy for the GPU scatter with `_indmap_to_device`);
@@ -89,7 +94,7 @@ the returned `imap` is the physical-band `OffsetMatrix` form that CPU calculator
 This is the `BandStates` replacement for `electron_states_to_BTStates`.
 """
 function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
-        kpts::GridKpoints{T}, nstates_base = zero(T)) where {T}
+        kpts::GridKpoints{T}, nstates_base = zero(T); nw::Integer) where {T}
     nk = length(el_states)
     n = sum(el.nband for el in el_states)
     iband_min = minimum(el.rng.start for el in el_states if el.nband > 0)
@@ -112,28 +117,31 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
             imap[ib, jk] = istate
         end
     end
-    BandStates(kpts, ik, iband, e; v, nstates_base), imap
+    BandStates(kpts, ik, iband, e; nw, v, nstates_base), imap
 end
 
-# Build a device `(nw, nk)` integer index map addressable by PHYSICAL band: row `iband` ∈ 1:nw holds
-# the flattened state index for `(iband, ik)`, and 0 where that band is absent / out of the energy
-# window. `nw` is the full (Wannier) band count — the band axis the e-ph matrix `ep_kq` is indexed by
-# — so a device kernel can look a state up directly from its physical band index. `gpu_array` is a device
-# array used only as a `similar` prototype. (`s.indmap` is stored band-offset by `nband_ignore`; this
-# places its rows at their physical-band positions `nband_ignore+1 : nband_ignore+nband`.)
+# Build a device `(nband_physical, nk)` integer index map addressable by PHYSICAL band: row `iband` ∈
+# 1:nband_physical holds the flattened state index for `(iband, ik)`, and 0 where that band is absent
+# / out of the energy window, so a device kernel can look a state up directly from its physical band
+# index. (`s.indmap` is stored band-offset by `nband_ignore`; this places its rows at their
+# physical-band positions `nband_ignore+1 : nband_ignore+nband`.)
 #
-# Why the full `nw` rows and not the (smaller) in-window / projected band count:
-#   * k+q map: the scatter indexes it by the physical k+q band `m ∈ 1:nw`. The k+q band axis is NOT
-#     window-projected (all nw k+q bands are kept; out-of-window ones are the 0 entries), so it needs
-#     a row per physical band — nw is required here.
+# `nband_physical` is the physical-band row count (row stride) to pad to — a property of the
+# CONSUMER's index space, not of `s`, so it is passed explicitly rather than read from `s.nw`: the
+# two callers choose it differently (Boltzmann passes `model.nw`; ME passes `nbandkq`).
+#
+# Why the full physical-band rows and not the (smaller) in-window / projected band count:
+#   * k+q map: the scatter indexes it by the physical k+q band `m`. The k+q band axis is NOT
+#     window-projected (all bands are kept; out-of-window ones are the 0 entries), so it needs a row
+#     per physical band.
 #   * k map: the scatter reads it as a per-k *shifted* window `view(·, ibandk_offset+1 : +nbandk, ik)`
 #     (the k side IS projected to nbandk). It could be stored as just `nbandk` rows by baking each k's
 #     `ibandk_offset` into its column, but this Int map is tiny next to the streamed Sᵢ (GBs), so both
-#     maps share the one physical-band (nw) layout and the k side simply offsets at read time.
-function _indmap_to_device(backend::AbstractBackend, s::BandStates, nw::Integer)
-    host = zeros(Int, nw, s.kpts.n)
+#     maps share the one physical-band layout and the k side simply offsets at read time.
+function _indmap_to_device(backend::AbstractBackend, s::BandStates, nband_physical::Integer)
+    host = zeros(Int, nband_physical, s.kpts.n)
     @views host[s.nband_ignore+1 : s.nband_ignore+s.nband, :] .= s.indmap
-    copyto!(alloc(backend, Int, nw, s.kpts.n), host)
+    copyto!(alloc(backend, Int, nband_physical, s.kpts.n), host)
 end
 
 """

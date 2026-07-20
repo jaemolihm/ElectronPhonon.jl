@@ -30,18 +30,19 @@ using CUDA.cuBLAS: gemm_strided_batched!
 #     tolerance / max-sweeps knobs; not done here.
 
 """
-    to_device(obj::WannierObject{T, <:Array}; ndata = obj.ndata) -> WannierObject
+    to_device(obj::WannierObject{T, <:Array}) -> WannierObject
 
-Return a copy of a host `obj` with `op_r` moved to the GPU (`irvec` stays on the host).
-`ndata` defaults to the source's, so partial-transform objects keep their semantics; pass a
-smaller `ndata` to make the device copy born partial-transform. The returned object works
-with the generic `get_fourier_batched!` / `get_el_eigen[_valueonly]_batched`.
+Return a copy of a host `obj` with `op_r` moved to the GPU (`irvec` stays on the host). The
+source's `ndata` (partial-transform width) is preserved, so partial-transform objects keep their
+semantics; the partial-transform entry point is `get_next_wannier_object`, which validates `ndata`
+and hands back an already-partial object. The returned object works with the generic
+`get_fourier_batched!` / `get_el_eigen[_valueonly]_batched`.
 
 Restricted to host (`Array`-backed) objects — moving an already-device object is a no-op
 that this method intentionally does not provide.
 """
-function ElectronPhonon.to_device(obj::WannierObject{T, <:Array{Complex{T}}}; ndata = obj.ndata) where {T}
-    WannierObject(obj.irvec, CuArray(obj.op_r); irvec_next = obj.irvec_next, ndata)
+function ElectronPhonon.to_device(obj::WannierObject{T, <:Array{Complex{T}}}) where {T}
+    WannierObject(obj.irvec, CuArray(obj.op_r); irvec_next = obj.irvec_next, ndata = obj.ndata)
 end
 
 ElectronPhonon.device_free_bytes(::CuArray) = CUDA.free_memory()

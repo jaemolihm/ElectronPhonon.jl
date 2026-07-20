@@ -316,7 +316,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     end
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData{Float64}(nw, nmodes, nband_max)]
+    epdatas = [EPState{Float64}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
 
     ep_ekpR_obj = get_next_wannier_object(model.epmat)

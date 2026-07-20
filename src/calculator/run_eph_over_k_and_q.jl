@@ -46,9 +46,9 @@ function run_eph_over_k_and_q(
         if !supports(calc, OuterKLoop)
             throw(ArgumentError("$calc does not support the outer-k loop. Use run_eph_over_q_and_k instead."))
         end
-        if !supports(calc, ElPhDataPoint)
+        if !supports(calc, EPData)
             throw(ArgumentError("$calc does not declare support for the per-(k,q) host payload; " *
-                "define supports(::$(typeof(calc)), ::Type{ElPhDataPoint}) = true."))
+                "define supports(::$(typeof(calc)), ::Type{EPData}) = true."))
         end
     end
 
@@ -106,7 +106,7 @@ function _setup_eph_over_k_and_q(
     (; nw, nmodes) = model
 
     # Generate k points and electron states at k (shared setup core)
-    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_eph_common(
+    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_electron_k(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, verbosity)
     nk = kpts.n
 
@@ -149,7 +149,7 @@ function _setup_eph_over_k_and_q(
         else
             kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
         end
-        el_kq_save = _compute_el_kq_states(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
+        el_kq_save = _setup_electron_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
             symmetry, el_kq_from_unfolding, window_kq; fourier_mode)
     else
         kqpts = nothing
@@ -253,7 +253,7 @@ function _loop_eph_over_k_and_q(
         end
 
         # Multithreading setup
-        ctx_k = LoopContext(backend, PointMode(), ik, 1:0, 0)
+        ctx_k = LoopContext(backend, SingleMode(), ik)
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
 
         @threads for (id_chunk, iqs) in enumerate(chunks(1:nq; n=nchunks_threads))
@@ -314,7 +314,7 @@ function _loop_eph_over_k_and_q(
 
                 # Now, we are done with matrix elements. All data saved in epdata.
 
-                payload = ElPhDataPoint(epdata, ik, iq, ikq, xk, xq, id_chunk, nothing)
+                payload = EPData(epdata, ik, iq, ikq, xk, xq, id_chunk, nothing)
                 foreach(c -> run_calculator!(c, payload, ctx_k), calculators)
 
             end # iq

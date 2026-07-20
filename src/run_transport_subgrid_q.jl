@@ -121,7 +121,7 @@ function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_pref
                     maximum(el.nband for el in el_kq_save))
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData{FT}(nw, nmodes, nband_max)]
+    epdatas = [EPState{FT}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
     epmat = get_interpolator(model.epmat; fourier_mode)
     ep_eRpq_obj = get_next_wannier_object(model.epmat)
@@ -256,7 +256,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
                     maximum(el.nband for el in el_kq_save))
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [ElPhData{Float64}(nw, nmodes, nband_max)]
+    epdatas = [EPState{Float64}(nw, nmodes, nband_max)]
     Threads.resize_nthreads!(epdatas)
 
     ep_ekpR_obj = WannierObject(model.epmat.irvec_next,

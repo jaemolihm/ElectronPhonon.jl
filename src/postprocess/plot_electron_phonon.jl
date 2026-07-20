@@ -43,7 +43,7 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
     ph_save = compute_phonon_states(model, qpts, ["eigenvector", "eph_dipole_coeff"]; fourier_mode)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdata = ElPhData(nw, nmodes)
+    epdata = EPState(nw, nmodes)
 
     ik = 1
     xk = kpts.vectors[ik]

@@ -5,15 +5,13 @@ using Base: @kwdef
 using OffsetArrays
 using OffsetArrays: no_offset_view
 
-export ElPhData
+export EPState
 export epdata_set_g2!
 export epdata_set_mmat!
 export epdata_compute_eph_dipole!
 
-# TODO: Rename to ElPhState?
-
 # Energy and matrix elements at a single k and q point
-@kwdef mutable struct ElPhData{T <: Real}
+@kwdef mutable struct EPState{T <: Real}
     nw::Int # Number of Wannier functions
     nmodes::Int # Number of modes
     nband_bound::Int # Maximum allowed number of bands inside the window
@@ -39,12 +37,12 @@ export epdata_compute_eph_dipole!
     buffer2::Array{T, 3} = zeros(T, nband_bound, nband_bound, nmodes)
 end
 
-function ElPhData{T}(nw, nmodes, nband_bound=nw) where {T}
+function EPState{T}(nw, nmodes, nband_bound=nw) where {T}
     @assert nw > 0
     @assert nmodes > 0
     @assert nband_bound > 0
 
-    ElPhData{T}(nw=nw, nmodes=nmodes, nband_bound=nband_bound, wtk=T(0), wtq=T(0),
+    EPState{T}(nw=nw, nmodes=nmodes, nband_bound=nband_bound, wtk=T(0), wtq=T(0),
         el_k = ElectronState{T}(nw),
         el_kq = ElectronState{T}(nw),
         ph = PhononState(nmodes, T),
@@ -54,9 +52,9 @@ function ElPhData{T}(nw, nmodes, nband_bound=nw) where {T}
     )
 end
 
-ElPhData(nw, nmodes, nband_bound=nw) = ElPhData{Float64}(nw, nmodes, nband_bound)
+EPState(nw, nmodes, nband_bound=nw) = EPState{Float64}(nw, nmodes, nband_bound)
 
-@inline function Base.getproperty(epdata::ElPhData, name::Symbol)
+@inline function Base.getproperty(epdata::EPState, name::Symbol)
     if name === :mmat
         OffsetArray(view(getfield(epdata, name), 1:getfield(epdata, :el_kq).nband, 1:getfield(epdata, :el_k).nband),
             getfield(epdata, :el_kq).rng, getfield(epdata, :el_k).rng)
@@ -90,30 +88,30 @@ end
 # Define wrappers of wannier_to_bloch functions
 
 """
-    get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk)
+    get_eph_Rq_to_kq!(epdata::EPState, epobj_eRpq, xk)
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
-function get_eph_Rq_to_kq!(epdata::ElPhData, epobj_eRpq, xk)
+function get_eph_Rq_to_kq!(epdata::EPState, epobj_eRpq, xk)
     ep_kq = no_offset_view(epdata.ep)
     get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, no_offset_view(epdata.el_k.u), no_offset_view(epdata.el_kq.u))
 end
 
 """
-    get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq)
+    get_eph_kR_to_kq!(epdata::EPState, epobj_ekpR, xq)
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
-function get_eph_kR_to_kq!(epdata::ElPhData, epobj_ekpR, xq)
+function get_eph_kR_to_kq!(epdata::EPState, epobj_ekpR, xq)
     ep_kq = no_offset_view(epdata.ep)
     get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epdata.ph.u, no_offset_view(epdata.el_kq.u))
 end
 
 """
-    epdata_compute_eph_dipole!(epdata::ElPhData, polar::Polar, factor=1)
+    epdata_compute_eph_dipole!(epdata::EPState, polar::Polar, factor=1)
 Compute electron-phonon coupling matrix elements using pre-computed `ph.eph_dipole_coeff` and `mmat`.
 Divide by `factor` if given. Can be used to screen the dipole term (`factor = ϵ`)
 or to subtracting the dipole term from `epdata.ep` (`factor = -1`).
 """
-function epdata_compute_eph_dipole!(epdata::ElPhData, factor=nothing; model = nothing)
+function epdata_compute_eph_dipole!(epdata::EPState, factor=nothing; model = nothing)
     # epdata.ep .= 0
     # return
     coeff = epdata.ph.eph_dipole_coeff
@@ -201,10 +199,10 @@ end
 
 
 """
-    epdata_g2_degenerate_average!(epdata::ElPhData)
+    epdata_g2_degenerate_average!(epdata::EPState)
 Avearage g2 over degenerate bands of el_k and el_kq
 """
-function epdata_g2_degenerate_average!(epdata::ElPhData{FT}) where {FT}
+function epdata_g2_degenerate_average!(epdata::EPState{FT}) where {FT}
     el_k = epdata.el_k
     el_kq = epdata.el_kq
     g2_avg = epdata.buffer2
