@@ -290,27 +290,50 @@ function combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
     BqS = [Vec3(round.(Int, (xq - shift_q).data .* qpts.ngrid) .* fq) for xq in qpts.vectors]
 
     xkqs = Vector{Vec3{T}}()
-    cs = Vector{NTuple{3,Int}}()          # integer coords per stored point, for the collision guard
-    xkq_hash_to_ikq = Dict{Int, Int}()
+    # cs = Vector{NTuple{3,Int}}()          # integer coords per stored point, for the collision guard
+    # xkq_hash_to_ikq = Dict{Int, Int}()
+    # ikq = 0
+    # for bq in BqS
+    #     for bk in BkS
+    #         c1 = mod(bk[1] + sgn * bq[1], ng1)
+    #         c2 = mod(bk[2] + sgn * bq[2], ng2)
+    #         c3 = mod(bk[3] + sgn * bq[3], ng3)
+    #         xk_hash_value = (c1 * ng2 + c2) * ng3 + c3
+
+    #         # Find new k+q points, append to xkq_hash_to_ikq and xkqs
+    #         ikq_found = get(xkq_hash_to_ikq, xk_hash_value, 0)
+    #         if ikq_found == 0
+    #             ikq += 1
+    #             xkq_hash_to_ikq[xk_hash_value] = ikq
+    #             push!(cs, (c1, c2, c3))
+    #             push!(xkqs, Vec3(c1 / ng1, c2 / ng2, c3 / ng3) + shift_kq)
+    #         else
+    #             # A hash hit must be the same grid point. A mismatch here means an off-grid input
+    #             # or a hash that overflowed Int (prod(ngrid_kq) too large) — fail loudly.
+    #             @assert cs[ikq_found] == (c1, c2, c3)
+    #         end
+    #     end
+    # end
+    # Optimization using a 3d array
+    if ng1 * ng2 * ng3 > 1e9
+        error("ngrid_kq is too large, use smaller grid or use the old Dict implementation")
+        # TODO: Specialize uniform grid kpoints type ?
+    end
+    xkq_hash_to_ikq = zeros(Int, ng1, ng2, ng3)
     ikq = 0
     for bq in BqS
         for bk in BkS
             c1 = mod(bk[1] + sgn * bq[1], ng1)
             c2 = mod(bk[2] + sgn * bq[2], ng2)
             c3 = mod(bk[3] + sgn * bq[3], ng3)
-            xk_hash_value = (c1 * ng2 + c2) * ng3 + c3
 
             # Find new k+q points, append to xkq_hash_to_ikq and xkqs
-            ikq_found = get(xkq_hash_to_ikq, xk_hash_value, 0)
+            # ikq_found = get(xkq_hash_to_ikq, xk_hash_value, 0)
+            ikq_found = xkq_hash_to_ikq[c1 + 1, c2 + 1, c3 + 1]
             if ikq_found == 0
                 ikq += 1
-                xkq_hash_to_ikq[xk_hash_value] = ikq
-                push!(cs, (c1, c2, c3))
+                xkq_hash_to_ikq[c1 + 1, c2 + 1, c3 + 1] = ikq
                 push!(xkqs, Vec3(c1 / ng1, c2 / ng2, c3 / ng3) + shift_kq)
-            else
-                # A hash hit must be the same grid point. A mismatch here means an off-grid input
-                # or a hash that overflowed Int (prod(ngrid_kq) too large) — fail loudly.
-                @assert cs[ikq_found] == (c1, c2, c3)
             end
         end
     end
@@ -414,11 +437,11 @@ end
 mpi_gather_and_scatter(k::GridKpoints, comm::MPI.Comm) = mpi_scatter(mpi_gather(k, comm), comm)
 mpi_gather_and_scatter(k::GridKpoints, comm::Nothing) = k
 
-function _hash_xk(xk, ngrid, shift)
-    # xk_int = mod.(round.(Int, (xk - shift) .* ngrid), ngrid)
-    # FIXME: round.(Int, x) allocates, so I use the following temporary fix
-    xk_int = Vec3(mod.(round.(Int, (xk - shift).data .* ngrid), ngrid))
-    (xk_int[1] * ngrid[2] + xk_int[2]) * ngrid[3] + xk_int[3]
+function _hash_xk(xk::Vec3, ngrid, shift)
+    xk_int_1 = mod(round(Int, (xk[1] - shift[1]) * ngrid[1]), ngrid[1])
+    xk_int_2 = mod(round(Int, (xk[2] - shift[2]) * ngrid[2]), ngrid[2])
+    xk_int_3 = mod(round(Int, (xk[3] - shift[3]) * ngrid[3]), ngrid[3])
+    (xk_int_1 * ngrid[2] + xk_int_2) * ngrid[3] + xk_int_3
 end
 _hash_xk(xk, kpts::GridKpoints) = _hash_xk(xk, kpts.ngrid, kpts.shift)
 
