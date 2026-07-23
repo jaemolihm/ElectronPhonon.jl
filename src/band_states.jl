@@ -141,9 +141,9 @@ end
 #     `ibandk_offset` into its column, but this Int map is tiny next to the streamed Sᵢ (GBs), so both
 #     maps share the one physical-band layout and the k side simply offsets at read time.
 function _indmap_to_device(backend::AbstractBackend, s::BandStates, nband_physical::Integer)
-    host = zeros(Int, nband_physical, s.kpts.n)
-    @views host[s.nband_ignore+1 : s.nband_ignore+s.nband, :] .= s.indmap
-    copyto!(alloc(backend, Int, nband_physical, s.kpts.n), host)
+    indmap_host = zeros(Int, nband_physical, s.kpts.n)
+    @views indmap_host[s.nband_ignore+1 : s.nband_ignore+s.nband, :] .= s.indmap
+    to_device(backend, indmap_host)
 end
 
 """
