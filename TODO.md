@@ -37,6 +37,10 @@
   `epmat_dev.op_r` as its allocation prototype (the loop reuses that device object). Moving it into
   the loop would re-plumb where `setup_calculator!` gets its backend.
 
+- [ ] Clean up `calculator_begin!` for `BoltzmannCalculator`: `tile_begin!` (the batched
+  `OuterIterationBatch` bracket) is not needed on the CPU path, so limit its context — restrict the
+  batched begin/end brackets to the GPU path rather than defining CPU no-ops.
+
 - [ ] Clean up the `LoopContext` construction at the batch/per-k scope
   (`src/calculator/run_eph_over_k_and_kq.jl` ~L713/L728). The batch-scope `ctx_batch` and per-k
   `ctx_k` are built from positional constructors that are disambiguated by whether the argument is an
