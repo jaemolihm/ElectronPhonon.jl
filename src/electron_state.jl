@@ -131,6 +131,26 @@ function set_window!(el::ElectronState, window=(-Inf, Inf))
     return el
 end
 
+"""
+    set_window!(el::ElectronState, band_range::UnitRange)
+Set `el.rng`/`el.nband` directly from an explicit physical-band range (clamped to `1:nw`), instead
+of from an energy window. Used by `compute_electron_states(model, ::StateSelection, …)`, where the
+per-k band extent is fixed by the selection (e.g. the multigrid, whose per-k range is not a single
+energy window).
+"""
+function set_window!(el::ElectronState, band_range::UnitRange)
+    r = intersect(band_range, 1:el.nw)
+    if isempty(r)
+        el.nband = 0
+        el.rng = 1:0
+    else
+        el.rng = r
+        el.nband = length(r)
+        el.nband > el.nband_bound && resize!(el)
+    end
+    return el
+end
+
 function set_occupation!(el::ElectronState, occ :: ElectronOccupationParams, i :: Int)
     for ib in el.rng
         el.occupation[ib] = occ_fermion(el.e[ib], occ, i)

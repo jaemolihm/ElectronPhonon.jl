@@ -15,13 +15,19 @@ function _setup_electron_k(
         el_k_quantities = ["eigenvalue", "eigenvector", "velocity", "position"],
     )
     (; nw) = model
-    kpts, iband_min, iband_max, nelec_below_window_k = maybe_time(verbosity) do
-        filter_kpoints(kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
+    sel = maybe_time(verbosity) do
+        filter_electron_states(kpts_input, nw, model.el_ham, window_k; symmetry, fourier_mode, use_gpu, mpi_comm=mpi_comm_k)
     end
+    kpts = sel.kpts
+    br = band_range(sel)
+    iband_min, iband_max = first(br), last(br)
+    # State computation stays window-based (per [DECISION 2]): no per-k band extent from the selection.
     el_k_save = maybe_time(verbosity) do
         compute_electron_states(model, kpts, el_k_quantities, window_k; fourier_mode, use_gpu)
     end
-    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save)
+    # Surface `sel` so the driver can forward it to the calculator fan-out (`sel_k`): calculators
+    # that solve μ read `sel_k.nstates_base` (the MPI-summed below-window carrier count).
+    (; kpts, iband_min, iband_max, el_k_save, sel)
 end
 
 
@@ -62,13 +68,13 @@ end
 # (backend / verbosity) forward through `kwargs`.
 function _setup_calculators!(
         calculators, kpts, qpts, el_k_save;
-        nw, nmodes, rng_band, el_states_kq, kqpts,
-        nelec_below_window_k, nelec_below_window_kq, nchunks_threads, kwargs...,
+        nw, nmodes, rng_band, el_states_kq, kqpts, nchunks_threads,
+        sel_k = nothing, sel_kq = nothing, kwargs...,
     )
     for calc in calculators
         setup_calculator!(calc, kpts, qpts, el_k_save;
-            nw, nmodes, rng_band, el_states_kq, kqpts,
-            nelec_below_window_k, nelec_below_window_kq, nchunks_threads, kwargs...)
+            nw, nmodes, rng_band, el_states_kq, kqpts, nchunks_threads,
+            sel_k, sel_kq, kwargs...)
     end
 end
 

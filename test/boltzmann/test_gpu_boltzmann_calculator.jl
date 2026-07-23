@@ -42,18 +42,18 @@ let
             imap_i_at_k = collect(1:nw)
             imap_f = reshape(collect(1:nw*nqc), nw, nqc)
             n_i=nw; n_f=nw*nqc
-            e_i=0.01randn(n_i); e_f=0.01randn(n_f); wq=fill(1/nqc,nqc)
+            e_i=0.01randn(n_i); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight (D3)
             g2vals=abs.(randn(nw,nw,nmodes,nqc)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,nqc))).*1e-2
             μs=FT[0.0,0.002]; Ts=FT[0.01,0.02]; ωcut=FT(1e-6)
             ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005, 0.005]]
             for method in 1:6
                 So=zeros(n_i,nT); Si=zeros(n_i,n_f,nT)
-                EP.bte_window_accumulate!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wq,
+                EP.bte_window_accumulate!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
                     μs,Ts,ηs,method,ωcut,nw,nw,nmodes,nqc; i0=0)
                 Sog=CUDA.zeros(FT,n_i,nT); Sig=CUDA.zeros(FT,n_i,n_f,nT)
                 EP.bte_window_accumulate!(Sog,Sig,CUDA.CuArray(g2vals),CUDA.CuArray(ωqmat),
                     CUDA.CuArray(imap_i_at_k),CUDA.CuArray(imap_f),CUDA.CuArray(ikqs),
-                    CUDA.CuArray(e_i),CUDA.CuArray(e_f),CUDA.CuArray(wq),
+                    CUDA.CuArray(e_i),CUDA.CuArray(e_f),CUDA.CuArray(wf),
                     CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nmodes,nqc; i0=0)
                 @test Array(Sog) ≈ So rtol=1e-10
                 @test Array(Sig) ≈ Si rtol=1e-10
@@ -70,18 +70,18 @@ let
             n_i_global = 10
             imap_f = [ (m+ (kq-1)*nw) % 7 == 0 ? 0 : (m + (kq-1)*nw) for m in 1:nw, kq in 1:nqc ]  # scatter some 0s
             n_f = nw*nqc
-            e_i=0.01randn(n_i_global); e_f=0.01randn(n_f); wq=fill(1/nqc,nqc)
+            e_i=0.01randn(n_i_global); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight (D3)
             g2vals=abs.(randn(nw,nw,nmodes,nqc)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,nqc))).*1e-2
             μs=FT[0.0]; Ts=FT[0.01]; ωcut=FT(1e-6)
             ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005]]
             for method in (1,5,6)
                 So=zeros(n_i_global,nT); Si=zeros(ni,n_f,nT)
-                EP.bte_window_accumulate!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wq,
+                EP.bte_window_accumulate!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
                     μs,Ts,ηs,method,ωcut,nw,nw,nmodes,nqc; i0=i0)
                 Sog=CUDA.zeros(FT,n_i_global,nT); Sig=CUDA.zeros(FT,ni,n_f,nT)
                 EP.bte_window_accumulate!(Sog,Sig,CUDA.CuArray(g2vals),CUDA.CuArray(ωqmat),
                     CUDA.CuArray(imap_i_at_k),CUDA.CuArray(imap_f),CUDA.CuArray(ikqs),
-                    CUDA.CuArray(e_i),CUDA.CuArray(e_f),CUDA.CuArray(wq),
+                    CUDA.CuArray(e_i),CUDA.CuArray(e_f),CUDA.CuArray(wf),
                     CUDA.CuArray(μs),CUDA.CuArray(Ts),CUDA.CuArray(ηs),method,ωcut,nw,nw,nmodes,nqc; i0=i0)
                 @test Array(Sog) ≈ So rtol=1e-10
                 @test Array(Sig) ≈ Si rtol=1e-10

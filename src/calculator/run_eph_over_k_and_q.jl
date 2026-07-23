@@ -106,7 +106,7 @@ function _setup_eph_over_k_and_q(
     (; nw, nmodes) = model
 
     # Generate k points and electron states at k (shared setup core)
-    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_electron_k(
+    (; kpts, iband_min, iband_max, el_k_save, sel) = _setup_electron_k(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, verbosity)
     nk = kpts.n
 
@@ -139,10 +139,10 @@ function _setup_eph_over_k_and_q(
     # Otherwise, it is computed on the fly for each k and each q.
     if precompute_el_kq
         shift_kq = kpts.shift + qpts.shift
-        kqpts, iband_min_kq, iband_max_kq, nelec_below_window_kq = maybe_time(verbosity) do
-            filter_kpoints(qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
+        sel_kq = maybe_time(verbosity) do
+            filter_electron_states(qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
         end
-        kqpts = GridKpoints(kqpts)
+        kqpts = GridKpoints(sel_kq.kpts)
 
         if el_kq_from_unfolding
             kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
@@ -153,7 +153,6 @@ function _setup_eph_over_k_and_q(
             symmetry, el_kq_from_unfolding, window_kq; fourier_mode)
     else
         kqpts = nothing
-        nelec_below_window_kq = nothing
         el_kq_save = nothing
     end
 
@@ -198,7 +197,7 @@ function _setup_eph_over_k_and_q(
 
     _setup_calculators!(calculators, kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        nelec_below_window_k, nelec_below_window_kq, nchunks_threads, verbosity, backend,
+        sel_k = sel, nchunks_threads, verbosity, backend,
     )
 
     return (;
@@ -208,7 +207,6 @@ function _setup_eph_over_k_and_q(
         epdatas, ep_ekpRs, epmat, ep_ekpR_obj,
         ham_threads, vel_threads, pos_threads,
         iband_min, iband_max,
-        nelec_below_window_k, nelec_below_window_kq,
     )
 end
 

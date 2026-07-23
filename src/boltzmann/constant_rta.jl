@@ -31,7 +31,9 @@ function run_transport_constant_relaxation_time(model, k_input, transport_params
     τ = 1 / inv_τ_constant
 
     # Filter k points
-    kpts, iband_min, iband_max, nstates_base = filter_kpoints(k_input, nw, model.el_ham, window, mpi_comm_k; symmetry)
+    sel = filter_electron_states(k_input, nw, model.el_ham, window; symmetry, mpi_comm=mpi_comm_k)
+    kpts = sel.kpts
+    nstates_base = sel.nstates_base
 
     # Calculate electron states
     el_k_save = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"], window; fourier_mode)

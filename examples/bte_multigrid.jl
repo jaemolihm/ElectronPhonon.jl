@@ -8,14 +8,16 @@
 # alone — the fine shell recovers near-μ accuracy cheaply.
 #
 # Flow (caller builds, cf. `bte_gpu_taas.jl`):
-#   1. build ONE multigrid `GridKpoints` with `filter_kpoints_multigrid` (fine + coarse spec); it
-#      also returns nelec_below_window (the coarse full-grid carrier count below the window),
-#   2. pass the grid as BOTH the k and k+q argument to `run_eph_over_k_and_kq` with the WIDE window
-#      (the narrow window lives only inside the multigrid construction), forwarding
-#      nelec_below_window so the μ-solve brackets on the windowed grid,
-#   3. solve with `solve_electron_bte(...; interpolate=false)` — el_f is the symmetry unfolding of
+#   1. build the k `StateSelection` with `filter_electron_states_multigrid` (fine + coarse spec); it carries
+#      the per-(k,band) double-grid weights and `nstates_base` (the coarse full-grid below-window
+#      carrier count), so the auto-μ solve brackets on the windowed selection with no override,
+#   2. build the k+q `StateSelection` as the explicit symmetry unfold of the k selection
+#      (`unfold_band_states`) — the full-BZ final states,
+#   3. pass BOTH selections to `run_eph_over_k_and_kq` (consumed as-is, WIDE window) and
+#   4. solve with `solve_electron_bte(...; interpolate=false)` — el_f is the symmetry unfolding of
 #      el_i on the shared multigrid spec, so the δf feedback map is an exact integer-grid-key
-#      lookup (no linear interpolation, no uniform-grid assumption; benign band-edge misses warn).
+#      lookup (no linear interpolation, no uniform-grid assumption; benign band-edge misses are
+#      treated as zero).
 
 using ElectronPhonon
 const EP = ElectronPhonon
@@ -32,10 +34,9 @@ e_REF   = 17.3494 * eV
 window_narrow = (-0.1, 0.1) .* eV .+ e_REF        # narrow window: dense refinement near μ
 window_wide = (-0.4, 0.4) .* eV .+ e_REF        # wide window: coarse tail
 
-# Auto-μ: nlist set, μlist left unset so the driver solves μ. A multigrid is a pre-built WINDOWED
-# grid with no below-window k, so the below-window carrier count must be supplied from construction
-# (nelec_below_window from filter_kpoints_multigrid, passed to run_eph_over_k_and_kq) or the μ solve
-# cannot bracket.
+# Auto-μ: nlist set, μlist left unset so the driver solves μ. The multigrid `StateSelection` carries
+# the below-window carrier count (`nstates_base`, from the coarse full-grid filter), so the μ solve
+# brackets on the windowed selection without any override kwarg.
 occupation_params() = ElectronOccupationParams(;
     Tlist = [300.0] .* K,
     nlist = 11.0,
@@ -54,27 +55,28 @@ occupation_params() = ElectronOccupationParams(;
 
 Run one multigrid BTE transport calculation and return the SERTA and full-BTE conductivity
 tensors (SI, `(Ω·cm)⁻¹`, shape `(3,3,nT)`) plus the calculator. `nk_narrow` must be a multiple of
-`nk_wide`. Builds a single multigrid spec shared by the k and k+q arguments.
+`nk_wide`. Builds the k `StateSelection` (double grid) and the full-BZ k+q selection (its symmetry
+unfold).
 """
 function run_bte_multigrid(model, nk_narrow, nk_wide; η, window_narrow, window_wide, occ,
         method = 5, use_gpu = true, symmetry = model.symmetry)
-    kmg, nelec_below_window = EP.filter_kpoints_multigrid(
+    sel_k = EP.filter_electron_states_multigrid(
         (nk_narrow, nk_narrow, nk_narrow), (nk_wide, nk_wide, nk_wide),
         window_narrow, window_wide, model.nw, model.el_ham; symmetry, use_gpu)
+    sel_kq = EP.unfold_band_states(sel_k, symmetry)   # explicit full-BZ k+q selection
 
     calc = BoltzmannCalculator{Float64}(; occ,
         smearing_list = [SmearingType(:Lorentzian, η) for _ in 1:length(occ)],
         occupation_method = method)
-    EP.run_eph_over_k_and_kq(model, kmg, kmg;
+    EP.run_eph_over_k_and_kq(model, sel_k, sel_kq;
         calculators = [calc], symmetry, el_kq_from_unfolding = false,
         window_k = window_wide, window_kq = window_wide, use_gpu,
-        nelec_below_window_k = nelec_below_window, nelec_below_window_kq = nelec_below_window,
         nchunks_threads = Threads.nthreads(), progress_print_step = 200)
 
     # interpolate=false: exact unfold-only δf feedback on the shared multigrid spec.
     res = EP.solve_electron_bte(calc.el_i, calc.el_f, calc.Sᵢ, stack(calc.Sₒ), occ, symmetry;
                                 interpolate = false)
-    (; σ_serta_SI = σ_to_SI(res.σ_serta), σ_bte_SI = σ_to_SI(res.σ), res, calc, kmg)
+    (; σ_serta_SI = σ_to_SI(res.σ_serta), σ_bte_SI = σ_to_SI(res.σ), res, calc, sel_k, sel_kq)
 end
 
 # --- run ---

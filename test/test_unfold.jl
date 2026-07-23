@@ -23,10 +23,10 @@ using LinearAlgebra
         # Unfolding of irreducible BZ inside given energy window to full BZ
         nk = 53
         window = (0.7, 0.8)
-        kpts = GridKpoints(filter_kpoints((nk, nk, nk), model.nw, model.el_ham, window, nothing,
-            symmetry=model.symmetry)[1])
-        kpts_unfold_ref = GridKpoints(filter_kpoints((nk, nk, nk), model.nw, model.el_ham, window,
-            nothing, symmetry=nothing)[1])
+        kpts = GridKpoints(filter_electron_states((nk, nk, nk), model.nw, model.el_ham, window;
+            symmetry=model.symmetry).kpts)
+        kpts_unfold_ref = GridKpoints(filter_electron_states((nk, nk, nk), model.nw, model.el_ham, window;
+            symmetry=nothing).kpts)
         kpts_unfold = unfold_kpoints(kpts, model.symmetry);
         @test kpts_unfold == kpts_unfold_ref
 
@@ -88,16 +88,18 @@ using LinearAlgebra
         window = (0.7, 0.81)
         quantities = ["eigenvalue", "eigenvector", "velocity"]
 
-        kpts, iband_min, iband_max, nstates_base = filter_kpoints((nk, nk, nk), model.nw, model.el_ham,
-            window, nothing, symmetry=symmetry);
+        sel = filter_electron_states((nk, nk, nk), model.nw, model.el_ham, window; symmetry);
+        kpts = sel.kpts
+        br = band_range(sel); iband_min, iband_max = first(br), last(br)
+        nstates_base = sel.nstates_base
         nband = iband_max - iband_min + 1
 
         kpts = GridKpoints(kpts)
         el_k_save = compute_electron_states(model, kpts, quantities, window; fourier_mode);
         el = electron_states_to_QMEStates(el_k_save, kpts, electron_degen_cutoff, nstates_base);
 
-        kpts_unfold_ref = GridKpoints(filter_kpoints((nk, nk, nk), model.nw, model.el_ham, window,
-            nothing, symmetry=nothing)[1]);
+        kpts_unfold_ref = GridKpoints(filter_electron_states((nk, nk, nk), model.nw, model.el_ham, window;
+            symmetry=nothing).kpts);
         el_k_save_unfold = compute_electron_states(model, kpts_unfold_ref, quantities, window; fourier_mode);
         el_unfold_ref = electron_states_to_QMEStates(el_k_save_unfold, kpts_unfold_ref,
             electron_degen_cutoff, nstates_base);

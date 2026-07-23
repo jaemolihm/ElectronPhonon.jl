@@ -41,7 +41,7 @@ struct BoltzmannDeviceBuffers{MT, MI, VT, ST}
     imap_f   :: MI      # (nw, n_kq) physical-band → inner state index
     e_i      :: VT      # (n_i,) outer energies
     e_f      :: VT      # (n_f,) inner energies
-    wq       :: VT      # (n_kq,) inner k+q weights
+    wf       :: VT      # (n_f,) per-final-state BZ weight ([DECISION 3]); indexed by the inner state f
     μ        :: VT      # (nT,)
     T        :: VT      # (nT,)
     smearing :: ST      # (nT,)
@@ -73,6 +73,11 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # --- State (BandStates) --- the (iband, ik) → state reverse map is `el_*.indmap` (via state_index)
     el_i::Union{Nothing, BandStates{FT, GridKpoints{FT}}} = nothing
     el_f::Union{Nothing, BandStates{FT, GridKpoints{FT}}} = nothing
+
+    # Per-final-state BZ weight ([DECISION 3]): `state_weights(el_f)`, indexed by the inner state f
+    # (`ind_el_f`). This replaces the per-k+q-point weight `wtq` in the scattering sum, so a
+    # double-grid final state carries its own (fine or coarse) weight. Set at setup; length n_f.
+    w_f::Vector{FT} = Vector{FT}()
 
     # --- Host outputs (solver-facing) ---
     Sₒ::Vector{Vector{FT}} = Vector{Vector{FT}}()         # per iT, length n_i
@@ -109,12 +114,15 @@ supports(::BoltzmannCalculator, ::Type{EPData}) = true
 supports(::BoltzmannCalculator, ::Type{EPDataQBatched}) = true
 
 function setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, qpts, el_states;
-        el_states_kq, kqpts, nelec_below_window_k, nelec_below_window_kq, nchunks_threads, rng_band,
+        el_states_kq, kqpts, sel_k, sel_kq, nchunks_threads, rng_band,
         nw, backend, kwargs...) where {FT}
     mpi_isroot() && println("Setting up BoltzmannCalculator")
     calc.done &&
         throw(ArgumentError("this BoltzmannCalculator has already been run; reconstruct the " *
                             "calculator, reuse is not supported"))
+    (sel_k isa StateSelection && sel_kq isa StateSelection) ||
+        throw(ArgumentError("BoltzmannCalculator requires a StateSelection for both k and k+q " *
+                            "(run it through run_eph_over_k_and_kq)."))
     calc.scattering_method === :MRTA &&
         throw(ArgumentError("scattering_method :MRTA not implemented"))
     calc.occ.occ_type === :FermiDirac ||
@@ -128,22 +136,27 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, qpts, el_states;
     calc.rng_band = rng_band
     calc.nw = nw
 
-    # Chemical potential: computed on a temporary BTStates exactly as the CPU reference, so μ is
-    # identical (bte_compute_μ! reads BTStates fields directly).
+    # Build the rich BandStates (es/vs attached) directly on the prebuilt selections, so el_i/el_f
+    # carry the per-(k,band) weights and `nstates_base` of the selection (the multigrid double-grid
+    # partition; on a uniform grid the weights are empty and derive to the per-k weight, unchanged).
+    calc.el_i = electron_states_to_BandStates(el_states, sel_k)
+    calc.el_f = electron_states_to_BandStates(el_states_kq, sel_kq)
+
+    # Chemical potential ([DECISION 6]): computed on a temporary BTStates built from el_i's per-state
+    # energies/weights and `nstates_base`, so the auto-μ carrier count is correct on a windowed
+    # selection (the below-window count rides on the selection) and brackets normally. `bte_compute_μ!`
+    # reads BTStates fields directly; the μ formula is unchanged.
     if !chemical_potential_is_computed(calc.occ)
-        el, _ = electron_states_to_BTStates(el_states, kpts, nelec_below_window_k)
-        bte_compute_μ!(calc.occ, el; do_print=true)
+        el_bt = BTStates{FT}(; n = calc.el_i.n, nk = calc.el_i.kpts.n, nband = calc.el_i.nband,
+            e = calc.el_i.es, vdiag = calc.el_i.vs, k_weight = state_weights(calc.el_i),
+            xks = state_xks(calc.el_i), iband = calc.el_i.ibands, ngrid = calc.el_i.kpts.ngrid,
+            nstates_base = calc.el_i.nstates_base)
+        bte_compute_μ!(calc.occ, el_bt; do_print=true)
     end
 
-    # electron_states_to_BandStates requires GridKpoints (its k-vector hash is needed by the loop);
-    # the non-symmetry path hands us a plain Kpoints, so promote here.
-    # TODO: make run_eph_over_k_and_kq pass GridKpoints directly; if that turns out not to be
-    # possible, make setup fail early on a plain Kpoints instead of promoting here.
-    gkpts   = kpts isa GridKpoints   ? kpts   : GridKpoints(kpts)
-    gkqpts  = kqpts isa GridKpoints  ? kqpts  : GridKpoints(kqpts)
-    # (imap discarded: the BoltzmannCalculator scatter reads `el_*.indmap` via `_indmap_to_device`.)
-    calc.el_i, _ = electron_states_to_BandStates(el_states, gkpts, nelec_below_window_k)
-    calc.el_f, _ = electron_states_to_BandStates(el_states_kq, gkqpts, nelec_below_window_kq)
+    # Per-final-state BZ weight ([DECISION 3]): indexed by the inner state f (`ind_el_f`).
+    calc.w_f = collect(FT, state_weights(calc.el_f))
+
     n_i = calc.el_i.n
     n_f = calc.el_f.n
     nT = length(calc.occ)
@@ -168,7 +181,7 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, qpts, el_states;
             _indmap_to_device(backend, calc.el_f, calc.nw),                     # imap_f
             to_device(backend, calc.el_i.es),                                   # e_i  (per outer state)
             to_device(backend, calc.el_f.es),                                   # e_f  (per inner state)
-            to_device(backend, collect(FT, gkqpts.weights)),                    # wq   (per k+q point)
+            to_device(backend, calc.w_f),                                       # wf   (per inner state f)
             to_device(backend, collect(FT, calc.occ.μlist)),                    # μ
             to_device(backend, collect(FT, calc.occ.Tlist)),                    # T
             to_device(backend, calc.smearing_list),                             # smearing (one per T)
@@ -207,7 +220,7 @@ function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData, ctx::LoopCont
     (; epdata, ikq, id_chunk) = p
     Sₒ = calc.Sₒ_buffer[id_chunk]
     Sᵢ = calc.Sᵢ_buffer[id_chunk]
-    (; el_k, el_kq, ph, wtq) = epdata
+    (; el_k, el_kq, ph) = epdata
     method = calc.occupation_method
     @inbounds for n in el_k.rng
         ek = el_k.e[n]
@@ -215,6 +228,9 @@ function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData, ctx::LoopCont
             ind_el_f = state_index(calc.el_f, ikq, m)
             ind_el_f == 0 && continue
             ekq = el_kq.e[m]
+            # Per-final-state weight ([DECISION 3]): the inner state f = ind_el_f carries its own
+            # (fine or coarse) BZ weight, replacing the per-k+q-point wtq.
+            wtq = calc.w_f[ind_el_f]
             for (iT, (; μ, T)) in enumerate(calc.occ)
                 smearing = calc.smearing_list[iT]
                 sₒ = zero(FT); sᵢ = zero(FT)
@@ -282,14 +298,15 @@ function calculator_end!(calc::BoltzmannCalculator, ::OuterIterationBatch,
 end
 
 """
-    bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wq,
+    bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
                            μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nq_batch; i0=0)
 
 Accumulate the BTE scattering-out (Sₒ) and scattering-in (Sᵢ) contributions of one k+q batch into
 the (in-energy-window) device buffers — the transport analogue of `eph_window_scatter!`, and the
 device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPDataQBatched, ctx)` (its sole caller, so it lives here). For every
 `(m, n, j)` of the batch look up the outer/inner states `i = imap_i_at_k[n]`,
-`f = imap_f[m, ikqs[j]]` (skip if either is out-of-window, `== 0`), then for each temperature
+`f = imap_f[m, ikqs[j]]` (skip if either is out-of-window, `== 0`), the per-final-state weight
+`wtq = wf[f]` ([DECISION 3]), then for each temperature
 `iT` sum the shared per-mode physics (`bte_scattering_increments`) over the `nmodes` phonon modes
 (`ωqmat[ν,j] ≥ ω_cutoff`) and:
 
@@ -307,7 +324,7 @@ extension provides the `CuArray` kernel. The physics lives entirely in `bte_scat
 so the two paths agree.
 """
 function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
-        e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
+        e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff,
         nbandkq::Int, nbandk::Int, nmodes::Int, nq_batch::Int; i0::Int = 0)
     nT = length(μs)
     @inbounds for j in 1:nq_batch, n in 1:nbandk, m in 1:nbandkq
@@ -316,7 +333,7 @@ function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k,
         ikq = ikqs[j]
         f = imap_f[m, ikq]
         f > 0 || continue
-        ek = e_i[i]; ekq = e_f[f]; wtq = wq[ikq]
+        ek = e_i[i]; ekq = e_f[f]; wtq = wf[f]   # per-final-state weight ([DECISION 3])
         il = i - i0
         for iT in 1:nT
             μ = μs[iT]; T = Ts[iT]; η = ηs[iT]
@@ -352,7 +369,7 @@ function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPDataQBatched, ctx) 
     # Scatter into this batch's Sᵢ tile (streamed to the host by the OuterIterationBatch end bracket).
     t = calc.tiled
     bte_window_accumulate!(dev.Sₒ, device_array(t, 1), g2s, ωqs,
-        imap_i_at_k, dev.imap_f, ikqs, dev.e_i, dev.e_f, dev.wq,
+        imap_i_at_k, dev.imap_f, ikqs, dev.e_i, dev.e_f, dev.wf,
         dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff,
         nbandkq, nbandk, nmodes, nq_batch; i0 = tile_offset(t))
     calc

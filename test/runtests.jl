@@ -16,6 +16,7 @@ include("common_models_from_artifacts.jl")
     # include("test_symmetry_operator.jl")
     # include("test_unfold.jl")
     include("test_velocity.jl")
+    include("test_filter_electron_states.jl")  # unified filter primitive: MPI (COMM_SELF) + shift
     include("test_epmat.jl")
     include("test_ElectronState.jl")
     include("test_plot_bandstructure.jl")

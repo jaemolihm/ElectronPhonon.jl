@@ -30,6 +30,36 @@ function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-In
     states
 end
 
+"""
+    compute_electron_states(model, sel::StateSelection, quantities; fourier_mode="normal", use_gpu=false)
+
+Compute electron states for exactly the per-k bands selected by `sel` ([DECISION 7]): each state's
+band range is `sel.band_extent[ik]` (from the selection) rather than a single energy window, so a
+multigrid (whose per-k band extent is narrow at fine-only nodes and wide at coincident nodes) gets
+the right bands per k. Returns a vector of `ElectronState` over `sel.kpts`.
+"""
+function compute_electron_states(model::Model{FT}, sel::StateSelection, quantities;
+        fourier_mode="normal", use_gpu=false) where FT
+    allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
+    for quantity in quantities
+        quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
+    end
+    kpts = sel.kpts
+    states = [ElectronState{FT}(model.nw) for _ in 1:kpts.n]
+    isempty(quantities) && return states
+    if use_gpu
+        _compute_electron_states_gpu!(states, model, kpts, quantities, sel.band_extent)
+    else
+        _compute_electron_states_cpu!(states, model, kpts, quantities, sel.band_extent; fourier_mode)
+    end
+    states
+end
+
+# The per-k band window for `set_window!`: an energy-window tuple applies to every k; a per-k vector
+# of band ranges (from a `StateSelection`) is indexed by k.
+_window_for(window::Tuple, ik) = window
+_window_for(window::AbstractVector, ik) = window[ik]
+
 # Which quantities each backend needs to compute, derived from `quantities` (kept in one place so
 # the caller passes only `quantities`). `need_velocity` gates the velocity-operator interpolation;
 # `need_position` the position (Berry-connection) interpolation.
@@ -69,10 +99,10 @@ function _compute_electron_states_cpu!(states, model::Model{FT}, kpts, quantitie
 
             if quantities == ["eigenvalue"]
                 set_eigen_valueonly!(el, ham, xk)
-                set_window!(el, window)
+                set_window!(el, _window_for(window, ik))
             else
                 set_eigen!(el, ham, xk)
-                set_window!(el, window)
+                set_window!(el, _window_for(window, ik))
                 if need_position
                     set_position!(el, pos, xk)
                 end
@@ -143,13 +173,13 @@ function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantitie
 
             if quantities == ["eigenvalue"]
                 el.xk = xk; @views el.e_full .= E[:, ik]; el.nband = 0; el.rng = 1:0
-                set_window!(el, window)
+                set_window!(el, _window_for(window, ik))
             else
                 el.xk = xk
                 @views el.e_full .= E[:, ik]
                 @views el.u_full .= U[:, :, ik]
                 el.nband = 0; el.rng = 1:0
-                set_window!(el, window)
+                set_window!(el, _window_for(window, ik))
                 r = el.rng
                 if need_position
                     rbar_w = reshape(reinterpret(Complex{FT}, no_offset_view(el.rbar)), 3, el.nband, el.nband)

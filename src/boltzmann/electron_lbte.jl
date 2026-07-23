@@ -30,11 +30,11 @@ const BTorBandStates{FT} = Union{BTStates{FT}, BandStates{FT}}
 end
 
 bt_weights(el::BTStates) = el.k_weight
-bt_weights(el::BandStates) = state_weights(el)
+bt_weights(el::AbstractBandStates) = state_weights(el)
 bt_xks(el::BTStates) = el.xks
-bt_xks(el::BandStates) = state_xks(el)
+bt_xks(el::AbstractBandStates) = state_xks(el)
 bt_ngrid(el::BTStates) = el.ngrid
-bt_ngrid(el::BandStates) = el.kpts.ngrid
+bt_ngrid(el::AbstractBandStates) = el.kpts.ngrid
 
 """
     occupation_to_conductivity(δf, el, params)

@@ -1,19 +1,22 @@
 using Test
 using ElectronPhonon
 const EP = ElectronPhonon
+using ElectronPhonon: StateSelection, state_xks
 using LinearAlgebra
 
 # Multigrid BTE transport: end-to-end validation on the Pb artifact model (portable fixture; the
-# heavy production numbers are measured on Cu, see plans/multigrid_bte_ksampling.md). Three checks:
+# heavy production numbers are measured on Cu, see plans/multigrid_bandstates.md). The multigrid is a
+# prebuilt `StateSelection` (Generator 2, `filter_electron_states_multigrid`) with the double-grid per-(k,band)
+# weights; the k+q selection is its explicit symmetry unfold (`unfold_band_states`). Checks:
 #   1. multigrid vs uniform reference — the double-grid σ discrepancy (reported, not pre-toleranced);
 #   2. the fine refinement improves accuracy — multigrid beats the coarse grid alone;
-#   3. CPU-vs-GPU equality on the multigrid — the grid change did not break backend agreement.
+#   3. CPU-vs-GPU equality on the multigrid — the per-final-state weight is bit-identical on both;
+#   4. over-selection regression — a wide-tail band at a fine-only node is absent from el_i/el_f;
+#   5. auto-μ succeeds on the windowed multigrid selection (no bracket failure).
 # All solved with interpolate=false (unfold-only δf feedback, exact on the shared multigrid spec).
-#
-# μ is FIXED here: the μ-solve reads nelec_below_window, which is only correct when the FULL grid is
-# filtered (below-window k-points contribute). A pre-built windowed GridKpoints (the multigrid) has
-# no below-window points, so an in-driver μ-solve would mis-count; fixing μ is the correct same-μ
-# transport comparison and sidesteps that. (See the plan's μ-solve note.)
+
+isdefined(@__MODULE__, :_load_model_from_artifacts) ||
+    include(joinpath(@__DIR__, "..", "common_models_from_artifacts.jl"))
 
 const _CUDA_OK = (get(ENV, "EP_TEST_CUDA", "1") == "1") && try
     @eval import CUDA
@@ -26,7 +29,7 @@ end
     model = _load_model_from_artifacts("pb")
     model.el_velocity_mode = :BerryConnection
     eV = EP.unit_to_aru(:eV); K = EP.unit_to_aru(:K); meV = EP.unit_to_aru(:meV)
-    μ = 11.594123 * eV                         # fixed chemical potential (see header)
+    μ = 11.594123 * eV                         # fixed chemical potential
     w_wide = (μ - 0.4eV, μ + 0.4eV)
     w_fine = (μ - 0.1eV, μ + 0.1eV)
     sym = model.symmetry
@@ -35,9 +38,9 @@ end
         volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac)
     mkcalc() = BoltzmannCalculator{Float64}(; occ = occ(),
         smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
-    σ_to_SI(σ) = σ .* EP.e2 / (EP.unit_to_aru(:A) / EP.unit_to_aru(:V) / EP.unit_to_aru(:cm))
 
-    run_grid(kk, kq; use_gpu) = (c = mkcalc();
+    # Grid/tuple input runs Generator 1 internally (sugar); a StateSelection passes through as-is.
+    run_sel(kk, kq; use_gpu) = (c = mkcalc();
         EP.run_eph_over_k_and_kq(model, kk, kq; calculators = [c], symmetry = sym,
             el_kq_from_unfolding = false, window_k = w_wide, window_kq = w_wide,
             fourier_mode = "gridopt", use_gpu, progress_print_step = 10^9); c)
@@ -46,13 +49,15 @@ end
 
     on_gpu = _CUDA_OK
 
-    # Reference (uniform 12/±0.4), coarse-only (6/±0.4), multigrid (fine 12/±0.1 + coarse 6/±0.4).
-    c_ref = run_grid((12, 12, 12), (12, 12, 12); use_gpu = on_gpu)
-    c_coarse = run_grid((6, 6, 6), (6, 6, 6); use_gpu = on_gpu)
-    kmg, nbw = EP.filter_kpoints_multigrid((12, 12, 12), (6, 6, 6), w_fine, w_wide,
-                                           model.nw, model.el_ham; symmetry = sym, use_gpu = on_gpu)
-    @test kmg.ngrid == (12, 12, 12)
-    c_mg = run_grid(kmg, kmg; use_gpu = on_gpu)
+    # Reference uniform 12/±0.4; coarse-only uniform 6/±0.4; multigrid fine 12/±0.1 + coarse 6/±0.4.
+    c_ref = run_sel((12, 12, 12), (12, 12, 12); use_gpu = on_gpu)
+    c_coarse = run_sel((6, 6, 6), (6, 6, 6); use_gpu = on_gpu)
+    sel_k = EP.filter_electron_states_multigrid((12, 12, 12), (6, 6, 6), w_fine, w_wide,
+                                        model.nw, model.el_ham; symmetry = sym, use_gpu = on_gpu)
+    sel_kq = EP.unfold_band_states(sel_k, sym)     # explicit full-BZ k+q selection ([DECISION 5])
+    @test sel_k isa StateSelection && sel_kq isa StateSelection
+    @test sel_k.kpts.ngrid == (12, 12, 12)
+    c_mg = run_sel(sel_k, sel_kq; use_gpu = on_gpu)
 
     r_ref = solve(c_ref); r_coarse = solve(c_coarse); r_mg = solve(c_mg)
     @test all(isfinite, r_mg.σ) && all(isfinite, r_mg.σ_serta)
@@ -67,10 +72,27 @@ end
 
     @info "multigrid vs uniform reference (Pb)" σ_SERTA_reldiff = reldiff(r_mg.σ_serta, r_ref.σ_serta) σ_BTE_reldiff = reldiff(r_mg.σ, r_ref.σ)
 
+    @testset "over-selection regression: fine-only node has no wide-tail band" begin
+        # A node on the fine grid but NOT on the coarse grid ("fine-only") must carry only bands in
+        # the NARROW window — the old merged-grid + wide re-filter would have kept its wide-tail
+        # bands at the fine weight (the confirmed bug). Verified on both el_i and el_f.
+        oncoarse(xk) = all(isapprox.(xk .* 6, round.(xk .* 6); atol = 1e-8))
+        for el in (c_mg.el_i, c_mg.el_f)
+            xks = state_xks(el)
+            n_fine_only = 0
+            for i in 1:el.n
+                oncoarse(xks[i]) && continue          # coincident node may carry wide-only bands
+                n_fine_only += 1
+                @test w_fine[1] - 1e-9 <= el.es[i] <= w_fine[2] + 1e-9
+            end
+            @test n_fine_only > 0                     # the check is non-vacuous
+        end
+    end
+
     # CPU-vs-GPU equality on the multigrid: same calculator, both backends fold the identical
-    # bte_scattering_increments, so Sₒ/Sᵢ and σ agree to ~machine eps.
+    # bte_scattering_increments with the per-final-state weight, so Sₒ/Sᵢ and σ agree to ~machine eps.
     if _CUDA_OK
-        c_mg_cpu = run_grid(kmg, kmg; use_gpu = false)
+        c_mg_cpu = run_sel(sel_k, sel_kq; use_gpu = false)
         @test stack(c_mg_cpu.Sₒ) ≈ stack(c_mg.Sₒ) rtol = 1e-9
         @test stack(c_mg_cpu.Sᵢ) ≈ stack(c_mg.Sᵢ) rtol = 1e-9
         r_mg_cpu = solve(c_mg_cpu)
@@ -81,11 +103,10 @@ end
     end
 end
 
-# Chemical-potential solve on a pre-built WINDOWED multigrid. Auto-μ (nlist-based, no μlist) reads
-# nelec_below_window; the windowed grid has no below-window k, so the driver's recompute under-counts
-# and the μ bisection fails to bracket. `filter_kpoints_multigrid` returns the correct coarse-window
-# count; passing it via `nelec_below_window_k/kq` fixes the solve.
-@testset "Multigrid μ-solve: bracket bug + fix (Pb)" begin
+# Chemical-potential solve on a prebuilt WINDOWED multigrid selection. Auto-μ (nlist-based, no μlist)
+# reads `nstates_base`; the selection carries the correct coarse-window below-window count, so the μ
+# bisection brackets normally — no override kwarg, no bracket failure ([DECISION 6]).
+@testset "Multigrid μ-solve succeeds on the selection (Pb)" begin
     model = _load_model_from_artifacts("pb")
     model.el_velocity_mode = :BerryConnection
     eV = EP.unit_to_aru(:eV); K = EP.unit_to_aru(:K); meV = EP.unit_to_aru(:meV)
@@ -100,10 +121,10 @@ end
         volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac)
     mkcalc(o) = BoltzmannCalculator{Float64}(; occ = o,
         smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
-    run_grid(o, kk, kq; nbw = nothing) = EP.run_eph_over_k_and_kq(model, kk, kq;
+    run_grid(o, kk, kq) = EP.run_eph_over_k_and_kq(model, kk, kq;
         calculators = [mkcalc(o)], symmetry = sym, el_kq_from_unfolding = false,
         window_k = w_wide, window_kq = w_wide, fourier_mode = "gridopt", use_gpu = on_gpu,
-        progress_print_step = 10^9, nelec_below_window_k = nbw, nelec_below_window_kq = nbw)
+        progress_print_step = 10^9)
 
     # Uniform reference: the full grid is filtered, so the μ solve brackets.
     o_ref = occ_auto()
@@ -111,16 +132,12 @@ end
     μ_ref = o_ref.μlist[1]
     @test isfinite(μ_ref)
 
-    kmg, nbw = EP.filter_kpoints_multigrid((12, 12, 12), (6, 6, 6), w_fine, w_wide,
-                                           model.nw, model.el_ham; symmetry = sym, use_gpu = on_gpu)
-
-    # BUG: without the below-window override, the windowed multigrid's μ solve fails to bracket
-    # (Roots.bisection over [-Inf, Inf] cannot bracket the under-counted carrier target).
-    @test_throws "the interval provided does not bracket a root" run_grid(occ_auto(), kmg, kmg)
-
-    # FIX: pass the coarse-window nelec_below_window from filter_kpoints_multigrid.
+    # Multigrid selection: `nstates_base` rides on the selection, so auto-μ SUCCEEDS (does not throw).
+    sel_k = EP.filter_electron_states_multigrid((12, 12, 12), (6, 6, 6), w_fine, w_wide,
+                                        model.nw, model.el_ham; symmetry = sym, use_gpu = on_gpu)
+    sel_kq = EP.unfold_band_states(sel_k, sym)
     o_mg = occ_auto()
-    run_grid(o_mg, kmg, kmg; nbw = nbw)
+    run_grid(o_mg, sel_k, sel_kq)
     @test isfinite(o_mg.μlist[1])
     @test abs(o_mg.μlist[1] - μ_ref) < 0.3eV        # sane on tiny Pb grids (Cu 100/50: Δμ≈2 meV)
 end

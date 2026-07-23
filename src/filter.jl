@@ -2,7 +2,6 @@
 "Functions for filtering k points and bands outside a certain energy window"
 
 # TODO: Threads
-# TODO: Rename filter_kpoints -> filter_kpoints_by_energy / initialize_and_filter_kpoints
 
 using Base.Threads
 using ChunkSplitters
@@ -12,80 +11,31 @@ using ElectronPhonon: Kpoints
 using Interpolations: AbstractInterpolation
 
 export filter_kpoints
-export filter_kpoints_multigrid
+export filter_electron_states
+export filter_electron_states_multigrid
 export filter_qpoints
 
 # range of bands inside the window. Assume e is sorted in ascending order.
 inside_window(e, window_min, window_max) = searchsortedfirst(e, window_min):searchsortedlast(e, window_max)
 
-"""Filter Kpoints object
-# Output
-- `kpts`: Filtered kpoints.
-- `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
-- `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
 """
-function filter_kpoints(kpoints::AbstractKpoints, nw, el_ham, window; fourier_mode="normal", symmetry=nothing, shift=nothing, use_gpu=false)
-    # If the window is trivial, return the original kpoints
-    window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
-    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, use_gpu)
-    get_filtered_kpoints(kpoints, ik_keep), band_min, band_max, nelec_below_window
+    filter_kpoints(kpts_input, nw, el_ham, window[, mpi_comm]; kwargs...)
+        -> (kpts, band_min, band_max, nelec_below_window)
+
+DEPRECATED backward-compat alias for `filter_electron_states`. New code should call
+`filter_electron_states(...) -> StateSelection` and read `sel.kpts`, `band_range(sel)`,
+`sel.nstates_base`. This wrapper unpacks those into the legacy tuple. `mpi_comm` (optional 5th
+positional) is forwarded as the `mpi_comm` keyword.
+"""
+function filter_kpoints(kpts_input, nw, el_ham, window; kwargs...)
+    @warn "filter_kpoints is deprecated; use filter_electron_states(...) -> StateSelection " *
+          "(sel.kpts, band_range(sel), sel.nstates_base)." maxlog=1
+    sel = filter_electron_states(kpts_input, nw, el_ham, window; kwargs...)
+    br = band_range(sel)
+    sel.kpts, first(br), last(br), sel.nstates_base
 end
-
-"""
-    filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window) -> Kpoints
-
-Generate k grid of size nk1 * nk2 * nk3 and filter the k points, where nks = (nk1, nk2, nk3).
-# Output
-- `kpts`: Filtered kpoints.
-- `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
-- `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
-"""
-function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window; fourier_mode="gridopt", symmetry=nothing, shift=(0, 0, 0), use_gpu=false)
-    if symmetry !== nothing && (! all(shift .== 0))
-        error("nonzero shift and symmetry incompatible (not implemented)")
-    end
-    kpoints = kpoints_grid(nks; symmetry, shift)
-
-    # If the window is trivial, return the whole grid
-    window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
-
-    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, use_gpu)
-    get_filtered_kpoints(kpoints, ik_keep), band_min, band_max, nelec_below_window
-end
-
-filter_kpoints(k_input, nw, el_ham, window, mpi_comm::Nothing; kwargs...) = filter_kpoints(k_input, nw, el_ham, window; kwargs...)
-
-"""
-    filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MPI.Comm) -> Kpoints
-
-Generate k grid of size nk1 * nk2 * nk3 and filter the k points, where nks = (nk1, nk2, nk3).
-Obtained k points are distributed over the MPI communicator mpi_comm.
-# Output
-- `new_kpoints`: Filtered kpoints, equally redistributed among `mpi_comm`.
-- `band_min`, `band_max`: Minimum and maximum index of bands inside the window.
-- `nelec_below_window`: Number of bands below the window, weighted by the k-point weights.
-"""
-function filter_kpoints(nks::NTuple{3,Integer}, nw, el_ham, window, mpi_comm::MPI.Comm; fourier_mode="gridopt", symmetry=nothing, shift=(0, 0, 0), use_gpu=false)
-    if symmetry !== nothing && (! all(shift .== 0))
-        error("nonzero shift and symmetry incompatible (not implemented)")
-    end
-    # Distribute k points
-    kpoints = kpoints_grid(nks, mpi_comm; shift, symmetry)
-
-    # If the window is trivial, return the whole grid
-    window == (-Inf, Inf) && return kpoints, 1, nw, zero(eltype(window))
-
-    ik_keep, band_min, band_max, nelec_below_window = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, use_gpu)
-
-    k_filtered = get_filtered_kpoints(kpoints, ik_keep)
-
-    band_min = mpi_min(band_min, mpi_comm)
-    band_max = mpi_max(band_max, mpi_comm)
-    nelec_below_window = mpi_sum(nelec_below_window, mpi_comm)
-
-    new_kpoints = mpi_gather_and_scatter(k_filtered, mpi_comm)
-    new_kpoints, band_min, band_max, nelec_below_window
-end
+filter_kpoints(kpts_input, nw, el_ham, window, mpi_comm; kwargs...) =
+    filter_kpoints(kpts_input, nw, el_ham, window; mpi_comm, kwargs...)
 
 function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", use_gpu=false)
     ik_keep = zeros(Bool, kpoints.n)
@@ -117,7 +67,8 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", use
             kstart = kstop + 1
         end
         nelec_below_window = sum(nelec_below_window_)
-        return (; ik_keep, band_min = minimum(band_min_), band_max = maximum(band_max_), nelec_below_window)
+        return (; ik_keep, band_min = minimum(band_min_), band_max = maximum(band_max_),
+                nelec_below_window, band_min_per_k = band_min_, band_max_per_k = band_max_)
     end
 
     @threads for iks in chunks(kpoints.vectors; n=2*nthreads())
@@ -142,7 +93,10 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", use
     nelec_below_window = sum(nelec_below_window_)
     band_min = minimum(band_min_)
     band_max = maximum(band_max_)
-    (; ik_keep, band_min, band_max, nelec_below_window)
+    # `band_min_per_k`/`band_max_per_k` are per-k in-window band ranges (0 where the point has no
+    # in-window band); the multigrid / selection generators need them, so they are surfaced here
+    # rather than collapsed to the global min/max alone.
+    (; ik_keep, band_min, band_max, nelec_below_window, band_min_per_k = band_min_, band_max_per_k = band_max_)
 end
 
 
@@ -196,40 +150,148 @@ end
 
 
 
-"""
-    filter_kpoints_multigrid(nks1, nks2, window1, window2, nw, el_ham;
-                             fourier_mode="gridopt", symmetry=nothing, use_gpu=false)
-        -> (kpts, nelec_below_window)
-Generate k point grid using the double grid method
-1) Mesh with size nks1 inside window1 (denser mesh, narrower window)
-2) Mesh with size nks2 inside window2 (coarser mesh, wider window)
+# Filter `kpts_input` to `window` and return the filtered `GridKpoints` together with the PER-k
+# in-window band ranges (`band_min[ik]:band_max[ik]`) and the below-window carrier count. This is
+# the state-selection building block: `_filter_kpoints` already computes the per-k band ranges, so
+# they are surfaced here (kept for the retained points, in order) rather than collapsed to a global
+# min/max. Non-MPI (the selection generators are single-node); a trivial window keeps the whole grid
+# with all bands `1:nw`.
+function _filter_with_band_ranges(kpts_input, nw, el_ham, window;
+                                  symmetry=nothing, fourier_mode="gridopt", use_gpu=false, shift=(0, 0, 0))
+    if kpts_input isa NTuple{3,Integer}
+        (symmetry === nothing || all(shift .== 0)) ||
+            error("nonzero shift and symmetry incompatible (not implemented)")
+        kpoints = kpoints_grid(kpts_input; symmetry, shift)
+    else
+        kpoints = kpts_input
+    end
+    if window == (-Inf, Inf)
+        gkpts = kpoints isa GridKpoints ? kpoints : GridKpoints(kpoints)
+        return gkpts, fill(1, gkpts.n), fill(nw, gkpts.n), zero(eltype(window))
+    end
+    r = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, use_gpu)
+    gkpts = GridKpoints(get_filtered_kpoints(kpoints, r.ik_keep))
+    gkpts, r.band_min_per_k[r.ik_keep], r.band_max_per_k[r.ik_keep], r.nelec_below_window
+end
 
-Also return `nelec_below_window` from the coarse (window2) filter. The coarse filter runs on the
-FULL nks2 grid, so it correctly counts the fully-occupied bands below window2; the merged windowed
-grid has no below-window points, so re-filtering it (as the driver does) cannot recover this. Pass
-it back to `run_eph_over_k_and_kq(...; nelec_below_window_k, nelec_below_window_kq)` so the
-chemical-potential solve sees the true carrier count (window2 is the effective transport window).
 """
-function filter_kpoints_multigrid(nks1, nks2, window1, window2, nw, el_ham;
+    filter_electron_states(kpts_input, nw, el_ham, window; symmetry, fourier_mode, use_gpu,
+                           mpi_comm, shift) -> StateSelection
+    filter_electron_states(model, kpts_input, window; kwargs...) -> StateSelection
+
+The unified electron-state filtering primitive (Generator 1). Filters a k-grid spec (an
+`NTuple{3,Int}`, `Kpoints`, or `GridKpoints`) to the energy `window` — optionally IBZ-reducing with
+`symmetry` and offsetting an `NTuple` grid by `shift` — and returns the selected `(k, band)` states
+as a `StateSelection`: `sel.kpts` is the filtered `GridKpoints`, `band_range(sel)` the global band
+range, `sel.nstates_base` the below-window carrier count. Per-state weights are left empty (uniform
+⇒ derived from `kpts.weights`). Supersedes the legacy tuple-returning `filter_kpoints`.
+
+`shift` applies only to the `NTuple` grid path (ignored for a prebuilt `Kpoints`/`GridKpoints`) and
+is mutually exclusive with `symmetry`. Under `mpi_comm` the k-points are split across ranks: the grid
+is built distributed, each rank filters its slice once (single eigensolve pass), then the kept
+k-points and per-k band ranges are redistributed together through the same gather/scatter so they
+stay aligned, and the local below-window counts are summed.
+"""
+function filter_electron_states(kpts_input, nw::Integer, el_ham, window;
+        symmetry=nothing, fourier_mode="gridopt", use_gpu=false, mpi_comm=nothing, shift=(0, 0, 0))
+    if mpi_comm === nothing
+        gkpts, bmin, bmax, nelec = _filter_with_band_ranges(kpts_input, nw, el_ham, window;
+            symmetry, fourier_mode, use_gpu, shift)
+    else
+        kpts_input isa NTuple{3,Integer} ||
+            throw(ArgumentError("filter_electron_states with mpi_comm requires an NTuple grid spec"))
+        (symmetry === nothing || all(shift .== 0)) ||
+            error("nonzero shift and symmetry incompatible (not implemented)")
+        # Build the grid distributed and filter each rank's slice once (single eigensolve pass).
+        kpoints = kpoints_grid(kpts_input, mpi_comm; shift, symmetry)
+        gkpts_l, bmin_l, bmax_l, nelec_l = _filter_with_band_ranges(kpoints, nw, el_ham, window;
+            fourier_mode, use_gpu)
+        # Redistribute the kept k-vectors, weights, and per-k band ranges through the SAME
+        # gather/scatter — equal-length arrays share one rank-concatenation order and even split, so
+        # the four stay aligned. Sum the local below-window counts.
+        vectors = mpi_scatter(mpi_gather(gkpts_l.vectors, mpi_comm), mpi_comm)
+        weights = mpi_scatter(mpi_gather(gkpts_l.weights, mpi_comm), mpi_comm)
+        bmin    = mpi_scatter(mpi_gather(bmin_l, mpi_comm), mpi_comm)
+        bmax    = mpi_scatter(mpi_gather(bmax_l, mpi_comm), mpi_comm)
+        gkpts   = GridKpoints(Kpoints(length(vectors), vectors, weights, kpts_input))
+        nelec   = mpi_sum(nelec_l, mpi_comm)
+    end
+    iks = Int[]; ibands = Int[]
+    for ik in 1:gkpts.n
+        bmax[ik] >= bmin[ik] || continue
+        for b in bmin[ik]:bmax[ik]
+            push!(iks, ik); push!(ibands, b)
+        end
+    end
+    StateSelection(gkpts, iks, ibands; nw, nstates_base=nelec)
+end
+
+# Convenience: pull nw/el_ham off a Model.
+filter_electron_states(model::Model, kpts_input, window; kwargs...) =
+    filter_electron_states(kpts_input, model.nw, model.el_ham, window; kwargs...)
+
+"""
+    filter_electron_states_multigrid(nks1, nks2, window1, window2, nw, el_ham;
+                                     fourier_mode="gridopt", symmetry=nothing, use_gpu=false)
+        -> StateSelection
+
+Generator 2 (double-grid): build a `StateSelection` sampling a FINE grid `nks1` in the narrow
+`window1` merged with a COARSE grid `nks2` in the wide `window2` (`nks1` a multiple of `nks2`). The
+per-`(k, band)` weight follows the clean double-grid partition ([DECISION 1]):
+
+  * a fine-grid state `(k, b)` with `b` in the narrow window gets the fine BZ weight
+    `kpts_fine.weights[k]`;
+  * a coarse-grid state `(k, b)` with `b` in the wide window but NOT in the narrow window gets the
+    coarse BZ weight `kpts_coarse.weights[k]`.
+
+Every coarse node coincides with a fine node (coarse ⊂ fine), so the k-points dedup on the fine
+grid: a coarse node coincident with a kept fine point shares its shared-grid index, contributing its
+wide-only bands at the coarse weight while the fine point's narrow bands stay at the fine weight — a
+single physical node carrying two weights across its bands, which a merged single-window k-set
+cannot express. `nstates_base` is the coarse full-grid below-`window2` carrier count. The shared
+grid is stamped with the FINE `ngrid` (`nks1`) so every k lies on a common grid for the q-lookup;
+its per-point `weights` are informational (the per-state `weights` on the selection are the
+authoritative BZ weights).
+"""
+function filter_electron_states_multigrid(nks1, nks2, window1, window2, nw, el_ham;
                                   fourier_mode="gridopt", symmetry=nothing, use_gpu=false)
 
     all(mod.(nks1, nks2) .== 0) || throw(ArgumentError("nks1 must be a multiple of nks2"))
 
-    kpts1, = filter_kpoints(nks1, nw, el_ham, window1; symmetry, fourier_mode, use_gpu)
-    kpts1 = GridKpoints(kpts1)
-    kpts2, _, _, nelec_below_window = filter_kpoints(nks2, nw, el_ham, window2; symmetry, fourier_mode, use_gpu)
-    kpts2 = GridKpoints(kpts2)
+    kpts1, bmin1, bmax1, _            = _filter_with_band_ranges(nks1, nw, el_ham, window1; symmetry, fourier_mode, use_gpu)  # fine, narrow
+    kpts2, bmin2, bmax2, nstates_base = _filter_with_band_ranges(nks2, nw, el_ham, window2; symmetry, fourier_mode, use_gpu)  # coarse, wide
 
-    # Merge kpts1 and kpts2, remove duplicates
+    T = eltype(kpts1.weights)
 
-    (; vectors, weights, ngrid) = kpts1
-    for i in 1:kpts2.n
-        xk = kpts2.vectors[i]
-        if xk_to_ik(xk, kpts1) === nothing
-            push!(vectors, xk)
-            push!(weights, kpts2.weights[i])
+    # Shared grid points 1..kpts1.n are the fine points; coarse-only points are appended. Per shared
+    # point collect (band => weight): narrow bands at the fine weight, then wide-only bands at the
+    # coarse weight (dedup: a band already present from the narrow set keeps the fine weight).
+    pt_vectors = collect(kpts1.vectors)
+    pt_weight  = collect(kpts1.weights)
+    bandw = [Dict{Int, T}() for _ in 1:kpts1.n]
+    for i1 in 1:kpts1.n, b in bmin1[i1]:bmax1[i1]
+        bandw[i1][b] = kpts1.weights[i1]
+    end
+    for i2 in 1:kpts2.n
+        i1 = xk_to_ik(kpts2.vectors[i2], kpts1)   # exact: a coarse node lies on the fine grid
+        Wb = bmin2[i2]:bmax2[i2]
+        if i1 === nothing
+            push!(pt_vectors, kpts2.vectors[i2]); push!(pt_weight, kpts2.weights[i2])
+            d = Dict{Int, T}()
+            for b in Wb; d[b] = kpts2.weights[i2]; end
+            push!(bandw, d)
+        else
+            for b in Wb
+                haskey(bandw[i1], b) && continue   # narrow band already at the fine weight
+                bandw[i1][b] = kpts2.weights[i2]
+            end
         end
     end
 
-    GridKpoints(Kpoints(length(vectors), vectors, weights, ngrid)), nelec_below_window
+    iks = Int[]; ibands = Int[]; wstate = T[]
+    for ik in 1:length(pt_vectors), b in sort!(collect(keys(bandw[ik])))
+        push!(iks, ik); push!(ibands, b); push!(wstate, bandw[ik][b])
+    end
+    gkpts = GridKpoints(Kpoints(length(pt_vectors), pt_vectors, pt_weight, nks1))
+    StateSelection(gkpts, iks, ibands; nw, weights=wstate, nstates_base)
 end
