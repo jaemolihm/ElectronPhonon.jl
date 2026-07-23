@@ -324,19 +324,19 @@ function ElectronPhonon.setup_calculator!(c::_RecordCalcBatched, kpts, qpts, el_
     c
 end
 ElectronPhonon.postprocess_calculator!(c::_RecordCalcBatched; kwargs...) = c
-# Computes g2 from `ep_kq` itself (independent check of the fused-kernel ep_kq output). The GPU
+# Computes g2 from `eps` itself (independent check of the fused-kernel matrix output). The GPU
 # loop also folds g2 into the kRkq kernel and carries it in the payload; assert it matches the
 # abs2/(2ω) recomputation — this guards the production g2 output in-package.
 function ElectronPhonon.run_calculator!(c::_RecordCalcBatched, p::ElectronPhonon.EPDataQBatched, ctx)
-    (; ep_kq, g2, ωq, ik, ikqs, ibandk_offset) = p
-    nbandkq, nbandk, nm, nqc = size(ep_kq)
-    g2dev = abs2.(ep_kq) ./ (2 .* reshape(ωq, 1, 1, nm, nqc))
-    @assert maximum(abs, Array(g2 .- g2dev)) <= 1e-10 * maximum(abs, Array(g2dev))
+    (; eps, g2s, ωqs, ik, ikqs, ibandk_offset) = p
+    nbandkq, nbandk, nm, nqc = size(eps)
+    g2dev = abs2.(eps) ./ (2 .* reshape(ωqs, 1, 1, nm, nqc))
+    @assert maximum(abs, Array(g2s .- g2dev)) <= 1e-10 * maximum(abs, Array(g2dev))
     g2h = Array(g2dev)   # device → host (m,n,ν,j)
-    ωh = Array(ωq)
+    ωh = Array(ωqs)
     ikqsh = Array(ikqs)
     for j in 1:nqc, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
-        # ibandk_offset: the loop's k-side window projection offset (ep_kq band n ↔ physical band ibandk_offset+n).
+        # ibandk_offset: the loop's k-side window projection offset (eps band n ↔ physical band ibandk_offset+n).
         c.g2[m, ibandk_offset + n, ν, ik, ikqsh[j]] = g2h[m, n, ν, j]
         c.ωq[m, ibandk_offset + n, ν, ik, ikqsh[j]] = ωh[ν, j]
     end
@@ -468,7 +468,7 @@ end
 # broadcast expression reduces on-device and returns a host scalar without any scalar indexing
 # (allowed under CUDA.allowscalar(false)).
 function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.EPDataKBatched, ctx)
-    ep, wtk = p.ep_kq, p.wtk
+    ep, wtk = p.eps, p.wtk
     nkc = size(ep, 4)
     val = sum(abs2.(ep) .* reshape(wtk, 1, 1, 1, nkc))
     c.Adev .+= val

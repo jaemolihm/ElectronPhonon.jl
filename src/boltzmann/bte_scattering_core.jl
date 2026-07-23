@@ -31,7 +31,6 @@ reference), and each `δ·factor` product is zeroed per-δ so a single zero δ d
 TODO: add citation to Lihm and Park (in preparation) for the occupation-factor conventions.
 """
 @inline function bte_scattering_increments(method::Integer, ek, ekq, ωq, g2, wtq, μ, T, η::SmearingType)
-    # TODO: Add in style guide for EPjl developer and reviewer skill : for dash, hyphen, and minus, only use - (ASCII/Unicode U+002D), don't use − or – (U+2212, U+2013)
     z = zero(ek)
     Δe1 = ek - ekq + ωq    # phonon absorption
     Δe2 = ek - ekq - ωq    # phonon emission

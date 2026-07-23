@@ -127,7 +127,7 @@ const _FUSED_ROT_MAX_NWNM = 24
 # g : (nw, nbandk, nmodes, nq) ; ukq : (nw, nbandkq, nq) ; uph : (nmodes, nmodes, nq)
 # ep : (nbandkq, nbandk, nmodes, nq) ; g2 / ωq optional (g2 : same as ep ; ωq : (nmodes, nq)).
 # One thread per (ibkq, ibk, q) — NOT per q: a per-q thread leaves the GPU idle at production
-# chunk sizes (nq ~ 2·10³–2·10⁴ threads is a handful of blocks on ~100 SMs; the (band², q) grid
+# chunk sizes (nq ~ 2·10³-2·10⁴ threads is a handful of blocks on ~100 SMs; the (band², q) grid
 # is nbandkq·nbandk× larger). The scalar accumulation below is the previous per-q kernel body
 # verbatim (with the ibk/ibkq loops hoisted into the thread index), so results are bit-identical;
 # the redundant per-im re-read of g/ukq is L1-served (the kernel is occupancy-, not flop-bound).
@@ -250,7 +250,7 @@ end
 # distinct k+q → distinct f), so the writes never collide — no atomics, no compaction. Removes the
 # per-batch D2H + host scatter (the calculator's g2/ωq stay resident on the device).
 # `ni_stride` = the output buffer's outer-k (i) extent, `i0` = its global-i offset, so global state
-# i writes to local row (i − i0): full buffer → ni_stride = n_i, i0 = 0; per-batch buffer →
+# i writes to local row (i - i0): full buffer → ni_stride = n_i, i0 = 0; per-batch buffer →
 # ni_stride = batch i-extent, i0 = batch offset. See `eph_window_scatter!` in calculator/calculator_utils.jl.
 function _window_scatter_kernel!(g2_out, ωq_out, g2vals, imap_i_col, imap_f,
                                  ikqs, ωq, nbandkq, nbandk, nm, nqc, ni_stride, i0)

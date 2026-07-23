@@ -152,11 +152,14 @@ To add a GPU path to an existing CPU calculator:
 1. Declare the batched payload: `supports(calc, ::Type{EPDataQBatched}) = true` (outer-k) or
    `supports(calc, ::Type{EPDataKBatched}) = true` (outer-q).
 2. Implement `run_calculator!(calc, p::EPDataQBatched, ctx)` (resp. `EPDataKBatched`).
-   The payload carries the e-ph matrix for a whole batch **on the device** (`p.ep_kq`, `p.g2`,
-   `p.ωq`, batch indices …). Write it backend-generically — only `alloc(ctx.backend, T, dims...)`,
+   The payload carries the e-ph matrices for a whole batch **on the device** (`p.eps`, `p.g2s`,
+   `p.ωqs`, batch indices …). Write it backend-generically — only `alloc(ctx.backend, T, dims...)`,
    `similar`, `copyto!`, broadcasting, `mul!`, and scatter-assignment — so the same method runs on
    CPU arrays and `CuArray`s and adds no CUDA dependency of its own.
-3. Manage device buffers in the brackets: allocate/zero the per-iteration device accumulator in
+3. Manage device buffers. `setup_calculator!` is passed the run's `backend`, so build whole-run
+   device buffers (index maps, band energies, weights — anything intrinsic to the state sets) there
+   with `alloc(backend, …)` / `to_device(backend, …)` (only when `backend isa GPUBackend`). Use the
+   brackets only for per-iteration state: allocate/zero the per-iteration device accumulator in
    `calculator_begin!(calc, OuterIteration(), ctx)` (or `OuterIterationBatch()` for outer-k
    per-batch buffers) using `ctx.backend`, and copy the result device→host in the matching
    `calculator_end!`. Declare per-point device scratch via
@@ -196,15 +199,14 @@ The lazily-allocated device buffers are held behind a `Union{Nothing, …}` / `V
 type stability is preserved because the scatter kernel (a typed generic function) is the
 function-boundary type barrier — everything the helper itself does runs once per batch (cold).
 
-### Shared run-level device stacks
+### Whole-run device buffers at setup
 
-The outer-k GPU loop can hand batched calculators whole-run device stacks it already has (band
-energies, integration weights) via `ctx.el_k_stacks` (an `ElKDeviceStacks`), so a calculator need
-not hand-upload its own copy. Declare which stacks you need with
-`required_el_k_device_stacks(calc) = [:e_k, :e_kq, :wtq]` (subset of `:e_k`, `:e_kq`, `:wtk`,
-`:wtq`; default none — then `ctx.el_k_stacks` is `nothing`). The energy grids are per-`(physical
-band, k)`; derive your flattened per-state view by gathering through your own state-index map (the
-device state-index map itself is built with `_indmap_to_device(ctx.backend, states, nw)`).
+Band energies, integration weights, and state-index maps are intrinsic to the state sets, not to any
+one loop iteration, so build them once in `setup_calculator!` from the `backend` it is handed (they
+would otherwise pollute `LoopContext`, which describes only the current iteration). Upload arrays
+with `to_device(backend, host_array)` and build the device state-index map with
+`_indmap_to_device(backend, states, nw)`. Do this only for `backend isa GPUBackend` (the CPU path
+uses the per-point `EPData` method and needs no device buffers).
 
 `BoltzmannCalculator` (`src/boltzmann/boltzmann_calculator.jl`) and `EliashbergCalculator`
 (MigdalEliashberg.jl) are worked references: each has both a CPU `EPData` method and a GPU

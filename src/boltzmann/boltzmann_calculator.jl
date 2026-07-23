@@ -291,10 +291,10 @@ device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPDataQBatched
   * `Sₒ_out[i, iT] += Σ_ν sₒ`      — scattering-out, added over `(m, ν, j)` (many `(m,j)` map to
     the same outer `i`), so the device method uses an atomic add here. `Sₒ` is small (`n_i × nT`)
     and device-resident, so it is indexed by the GLOBAL outer state `i`;
-  * `Sᵢ_out[i−i0, f, iT] = Σ_ν sᵢ` — scattering-in; each `(i, f)` pair is produced by a unique
+  * `Sᵢ_out[i-i0, f, iT] = Σ_ν sᵢ` — scattering-in; each `(i, f)` pair is produced by a unique
     `(n, m, j)` across the whole run (distinct k → distinct i, distinct k+q → distinct f), so this
     is a collision-free plain write (no atomics needed). `Sᵢ` is streamed to the host one tile per
-    outer-k batch, so `Sᵢ_out` is the current tile and the row is the tile-local `i − i0`.
+    outer-k batch, so `Sᵢ_out` is the current tile and the row is the tile-local `i - i0`.
 
 `imap_i_at_k` is `imap_i[:, ik]` — the outer-state indices at the batch's fixed outer k `ik`.
 `i0` is the global-i offset of the current `Sᵢ` tile. Generic (CPU/fallback) method; the CUDA
@@ -333,20 +333,20 @@ end
 # current Sᵢ tile via `bte_window_accumulate!` (the device analogue of the CPU EPData loop above —
 # same `bte_scattering_increments`). No per-chunk reduction: the scatter writes the global buffers.
 function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, p::EPDataQBatched, ctx) where {FT}
-    (; ep_kq, g2, ωq, ik, ikqs, ibandk_offset) = p
+    (; g2s, ωqs, ik, ikqs, ibandk_offset) = p
     dev = calc.dev
-    nbandkq, nbandk, nmodes, nqc = size(ep_kq)
+    nbandkq, nbandk, nmodes, nqc = size(g2s)
     # Device buffers (imap/energies/Sₒ in `dev`, the Sᵢ tile in `calc.tiled`) were built once at
-    # setup. `g2 = |ep|²/(2ω)` is folded by the loop's fused kernel (payload).
+    # setup. `g2s = |ep|²/(2ω)` is folded by the loop's fused kernel (payload).
 
-    # k-side window projection: ep_kq's band-n axis covers nbandk bands starting at physical band
+    # k-side window projection: the band-n axis covers nbandk bands starting at physical band
     # ibandk_offset+1, so shift into the physical-band imap_i by that offset (full-band runs have
     # ibandk_offset = 0, nbandk = nw). The k+q axis (m ∈ 1:nbandkq = nw) is not projected.
     imap_i_at_k = view(dev.imap_i, ibandk_offset+1:ibandk_offset+nbandk, ik)
 
     # Scatter into this batch's Sᵢ tile (streamed to the host by the OuterIterationBatch end bracket).
     t = calc.tiled
-    ElectronPhonon.bte_window_accumulate!(dev.Sₒ, device_array(t, 1), g2, ωq,
+    ElectronPhonon.bte_window_accumulate!(dev.Sₒ, device_array(t, 1), g2s, ωqs,
         imap_i_at_k, dev.imap_f, ikqs, dev.e_i, dev.e_f, dev.wq,
         dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff,
         nbandkq, nbandk, nmodes, nqc; i0 = tile_offset(t))
