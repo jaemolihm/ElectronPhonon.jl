@@ -29,7 +29,7 @@ model.el_velocity_mode = :Direct
 # --- transport setup ---
 eV = unit_to_aru(:eV); meV = unit_to_aru(:meV); K = unit_to_aru(:K)
 e_REF   = 17.3494 * eV
-window_fine = (-0.1, 0.1) .* eV .+ e_REF        # narrow window: dense refinement near μ
+window_narrow = (-0.1, 0.1) .* eV .+ e_REF        # narrow window: dense refinement near μ
 window_wide = (-0.4, 0.4) .* eV .+ e_REF        # wide window: coarse tail
 
 # Auto-μ: nlist set, μlist left unset so the driver solves μ. A multigrid is a pre-built WINDOWED
@@ -49,18 +49,18 @@ occupation_params() = ElectronOccupationParams(;
 σ_to_SI(σ) = σ .* EP.e2 / (unit_to_aru(:A) / unit_to_aru(:V) / unit_to_aru(:cm))
 
 """
-    run_bte_multigrid(model, nk_fine, nk_coarse; η, window_fine, window_wide, occ,
+    run_bte_multigrid(model, nk_narrow, nk_wide; η, window_narrow, window_wide, occ,
                       method, use_gpu, symmetry)
 
 Run one multigrid BTE transport calculation and return the SERTA and full-BTE conductivity
-tensors (SI, `(Ω·cm)⁻¹`, shape `(3,3,nT)`) plus the calculator. `nk_fine` must be a multiple of
-`nk_coarse`. Builds a single multigrid spec shared by the k and k+q arguments.
+tensors (SI, `(Ω·cm)⁻¹`, shape `(3,3,nT)`) plus the calculator. `nk_narrow` must be a multiple of
+`nk_wide`. Builds a single multigrid spec shared by the k and k+q arguments.
 """
-function run_bte_multigrid(model, nk_fine, nk_coarse; η, window_fine, window_wide, occ,
+function run_bte_multigrid(model, nk_narrow, nk_wide; η, window_narrow, window_wide, occ,
         method = 5, use_gpu = true, symmetry = model.symmetry)
     kmg, nelec_below_window = EP.filter_kpoints_multigrid(
-        (nk_fine, nk_fine, nk_fine), (nk_coarse, nk_coarse, nk_coarse),
-        window_fine, window_wide, model.nw, model.el_ham; symmetry, use_gpu)
+        (nk_narrow, nk_narrow, nk_narrow), (nk_wide, nk_wide, nk_wide),
+        window_narrow, window_wide, model.nw, model.el_ham; symmetry, use_gpu)
 
     calc = BoltzmannCalculator{Float64}(; occ,
         smearing_list = [SmearingType(:Lorentzian, η) for _ in 1:length(occ)],
@@ -78,14 +78,14 @@ function run_bte_multigrid(model, nk_fine, nk_coarse; η, window_fine, window_wi
 end
 
 # --- run ---
-nk_fine   = 100
-nk_coarse = 50
+nk_narrow   = 100
+nk_wide = 50
 η   = 5.0 * meV
 occ = occupation_params()
-out = run_bte_multigrid(model, nk_fine, nk_coarse; η, window_fine, window_wide, occ,
+out = run_bte_multigrid(model, nk_narrow, nk_wide; η, window_narrow, window_wide, occ,
                         method = 5, use_gpu = true)
 
-println("\nmultigrid: fine $(nk_fine)³/±0.1eV + coarse $(nk_coarse)³/±0.4eV")
+println("\nmultigrid: fine $(nk_narrow)³/±0.1eV + coarse $(nk_wide)³/±0.4eV")
 println("  el_i.n = $(out.calc.el_i.n)   el_f.n = $(out.calc.el_f.n)")
 println("\nCu σ (multigrid BTE), trace/3, per temperature:")
 for (iT, T) in enumerate(occ.Tlist)
