@@ -265,34 +265,40 @@ function filter_electron_states_multigrid(nks1, nks2, window1, window2, nw, el_h
 
     T = eltype(kpts1.weights)
 
-    # Shared grid points 1..kpts1.n are the fine points; coarse-only points are appended. Per shared
-    # point collect (band => weight): narrow bands at the fine weight, then wide-only bands at the
-    # coarse weight (dedup: a band already present from the narrow set keeps the fine weight).
+    # Shared grid points 1..kpts1.n are the fine points; coarse-only points are appended. A coarse node
+    # coincides exactly with a fine node, and window1 is contained in window2 (asserted above), so at a
+    # coincident point the narrow in-window bands `ibmin1:ibmax1` are a contiguous subset of the wide
+    # bands `ibmin2:ibmax2`. Invert the coarse->fine node map: for each fine point that a coarse node
+    # coincides with, record that wide band range and coarse weight (`wide_lo`/`wide_hi`/`wide_w`, 0 =
+    # no coincident coarse node); coarse nodes with no surviving fine point become appended points
+    # (`extra_*`). No dedup or per-band sort is needed since the ranges are contiguous and nested.
     xks = collect(kpts1.vectors)
     k_weights = collect(kpts1.weights)
-    band_weights = [Dict{Int, T}() for _ in 1:kpts1.n]
-    for i1 in 1:kpts1.n, b in ibmin1[i1]:ibmax1[i1]
-        band_weights[i1][b] = kpts1.weights[i1]
-    end
+    wide_lo = zeros(Int, kpts1.n); wide_hi = zeros(Int, kpts1.n); wide_w = zeros(T, kpts1.n)
+    extra_lo = Int[]; extra_hi = Int[]; extra_w = T[]
     for i2 in 1:kpts2.n
         i1 = xk_to_ik(kpts2.vectors[i2], kpts1)   # exact: a coarse node lies on the fine grid
-        Wb = ibmin2[i2]:ibmax2[i2]
         if i1 === nothing
             push!(xks, kpts2.vectors[i2]); push!(k_weights, kpts2.weights[i2])
-            d = Dict{Int, T}()
-            for b in Wb; d[b] = kpts2.weights[i2]; end
-            push!(band_weights, d)
+            push!(extra_lo, ibmin2[i2]); push!(extra_hi, ibmax2[i2]); push!(extra_w, kpts2.weights[i2])
         else
-            for b in Wb
-                haskey(band_weights[i1], b) && continue   # narrow band already at the fine weight
-                band_weights[i1][b] = kpts2.weights[i2]
-            end
+            wide_lo[i1] = ibmin2[i2]; wide_hi[i1] = ibmax2[i2]; wide_w[i1] = kpts2.weights[i2]
         end
     end
 
+    # Emit per-state arrays directly, points in order (fine points first, then coarse-only), bands
+    # ascending: narrow bands take the fine weight, the wide-only bands take the coarse weight.
     iks = Int[]; ibands = Int[]; wstate = T[]
-    for ik in 1:length(xks), b in sort!(collect(keys(band_weights[ik])))
-        push!(iks, ik); push!(ibands, b); push!(wstate, band_weights[ik][b])
+    for i1 in 1:kpts1.n
+        nlo, nhi = ibmin1[i1], ibmax1[i1]
+        blo, bhi = wide_lo[i1] == 0 ? (nlo, nhi) : (wide_lo[i1], wide_hi[i1])
+        for b in blo:bhi
+            push!(iks, i1); push!(ibands, b)
+            push!(wstate, nlo <= b <= nhi ? kpts1.weights[i1] : wide_w[i1])
+        end
+    end
+    for j in eachindex(extra_lo), b in extra_lo[j]:extra_hi[j]
+        push!(iks, kpts1.n + j); push!(ibands, b); push!(wstate, extra_w[j])
     end
     gkpts = GridKpoints(Kpoints(length(xks), xks, k_weights, nks1))
     FilteredStates(gkpts, iks, ibands; nw, weights=wstate, nstates_base)
