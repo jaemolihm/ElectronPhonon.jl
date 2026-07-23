@@ -112,23 +112,23 @@ function update_op_r!(obj, op_r_new; rows = axes(obj.op_r, 1))
 end
 
 """
-    get_next_wannier_object(parent :: WannierObject{T}; ndata = nothing) where {T}
+    get_next_wannier_object(parent :: WannierObject{T}; ndata_child = nothing) where {T}
 For a higher-order WannierObject (e.g. `g(Rₑ, Rₚ) → g(k, Rₚ) → g(k, q)`), return a
 child WannierObject whose `child.irvec` is `parent.irvec_next`.
 
-`op_r` is always allocated at the full child width. Pass `ndata` (≤ the full width) to make
-the child *born* partial-transform — only its first `ndata` rows are Fourier-transformed —
+`op_r` is always allocated at the full child width. Pass `ndata_child` (≤ the full width) to make
+the child *born* partial-transform — only its first `ndata_child` rows are Fourier-transformed —
 instead of shrinking `ndata` on the object after construction.
 """
-function get_next_wannier_object(parent :: WannierObject{T}; ndata = nothing) where {T}
+function get_next_wannier_object(parent :: WannierObject{T}; ndata_child = nothing) where {T}
     if parent.irvec_next === nothing
         throw(ArgumentError("irvec_next must be set"))
     end
     nr_child = length(parent.irvec_next)
     mod(parent.ndata, nr_child) == 0 || throw(ArgumentError("ndata must be divisible by length(irvec_next)"))
-    ndata_child = div(parent.ndata, nr_child)
-    if ndata !== nothing && !(1 <= ndata <= ndata_child)
-        throw(ArgumentError("ndata=$ndata must be in 1:$ndata_child"))
+    ndata_child_full = div(parent.ndata, nr_child)
+    if ndata_child !== nothing && !(1 <= ndata_child <= ndata_child_full)
+        throw(ArgumentError("ndata_child=$ndata_child must be in 1:$ndata_child_full"))
     end
-    WannierObject(parent.irvec_next, zeros(Complex{T}, (ndata_child, nr_child)); ndata)
+    WannierObject(parent.irvec_next, zeros(Complex{T}, (ndata_child_full, nr_child)); ndata = ndata_child)
 end

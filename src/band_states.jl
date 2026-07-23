@@ -78,11 +78,12 @@ function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
 end
 
 """
-    electron_states_to_BandStates(el_states, kpts, nstates_base=0; nw) -> (BandStates, imap)
+    electron_states_to_BandStates(el_states, kpts, nstates_base=0) -> (BandStates, imap)
 
 Flatten a per-k vector of `ElectronState` onto `kpts` into a `BandStates`, and return it together
 with `imap[iband, ik]` = state index — an `OffsetMatrix` over the physical band range, 0 outside
-the window. `nw` is the model's full Wannier band count, stored on the `BandStates`. The per-state
+the window. The model's full Wannier band count `nw` is read from the `ElectronState`s (they all
+carry it) and stored on the `BandStates`. The per-state
 k-index `ik` is stored directly (no deduplication: `kpts` already holds the distinct k-points).
 `kpts` must be a `GridKpoints` (its k-vector→index hash is needed for the e-ph loop and
 `state_index(xk, …)` queries); callers holding a plain `Kpoints` promote it first.
@@ -94,8 +95,9 @@ the returned `imap` is the physical-band `OffsetMatrix` form that CPU calculator
 This is the `BandStates` replacement for `electron_states_to_BTStates`.
 """
 function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
-        kpts::GridKpoints{T}, nstates_base = zero(T); nw::Integer) where {T}
+        kpts::GridKpoints{T}, nstates_base = zero(T)) where {T}
     nk = length(el_states)
+    nw = first(el_states).nw     # full Wannier band count (same on every ElectronState)
     n = sum(el.nband for el in el_states)
     iband_min = minimum(el.rng.start for el in el_states if el.nband > 0)
     iband_max = maximum(el.rng.stop for el in el_states if el.nband > 0)

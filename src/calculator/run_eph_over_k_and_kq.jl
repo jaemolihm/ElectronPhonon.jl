@@ -352,9 +352,7 @@ function _loop_eph_over_k_and_kq(
 
     end # ik
 
-    for calc in calculators
-        postprocess_calculator!(calc; qpts, symmetry)
-    end
+    foreach(c -> postprocess_calculator!(c; qpts, symmetry), calculators)
 end
 
 
@@ -586,7 +584,7 @@ function _loop_eph_over_k_and_kq_gpu(
     # sizes the interpolator's Fourier cache) is set at construction, not mutated afterward. `op_r`
     # itself is full-band-sized.
     ndata_ekpR = nw * nbandk_max * nmodes
-    ep_ekpR_dev = to_device(backend, get_next_wannier_object(model.epmat; ndata = ndata_ekpR))
+    ep_ekpR_dev = to_device(backend, get_next_wannier_object(model.epmat; ndata_child = ndata_ekpR))
     nr_ep = ep_ekpR_dev.nr
 
     # ----- memory-adaptive q-batch size (§7) -----
@@ -802,7 +800,5 @@ function _loop_eph_over_k_and_kq_gpu(
     synchronize(backend)
     end # k batch
 
-    for calc in calculators
-        postprocess_calculator!(calc; qpts, symmetry)
-    end
+    foreach(c -> postprocess_calculator!(c; qpts, symmetry), calculators)
 end
