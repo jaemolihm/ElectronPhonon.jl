@@ -80,7 +80,8 @@ using HDF5
         symmetry_k = use_irr_k ? symmetry : nothing
         @time sel_k = filter_electron_states(k_input, nw, model.el_ham, window_k;
             symmetry=symmetry_k, mpi_comm=mpi_comm_k, fourier_mode)
-        kpts = sel_k.kpts; nstates_base_k = sel_k.nstates_base
+        kpts = sel_k.kpts
+        nstates_base_k = sel_k.nstates_base
 
         # Generate k+q points
         mpi_isroot() && println("Setting k+q-point grid")
@@ -89,7 +90,8 @@ using HDF5
         shift_kq = shift_k .+ shift_q ./ qgrid
         @time sel_kq = filter_electron_states(qgrid, nw, model.el_ham, window_kq;
             shift=shift_kq, mpi_comm=mpi_comm_k, fourier_mode)
-        kqpts = sel_kq.kpts; nstates_base_kq = sel_kq.nstates_base
+        kqpts = sel_kq.kpts
+        nstates_base_kq = sel_kq.nstates_base
         if mpi_comm_k !== nothing
             # k+q points are not distributed over mpi_comm_k in the remaining part.
             kqpts = mpi_allgather(kqpts, mpi_comm_k)

@@ -136,59 +136,17 @@ function _setup_eph_over_k_and_kq(
     ) where {FT}
 
     (; nw, nmodes) = model
-    el_quantities = ["eigenvalue", "eigenvector", "velocity", "position"]
 
-    # --- outer k: a state selection consumed as-is ---
-    # A prebuilt `FilteredStates` (e.g. a multigrid) passes straight through and is used verbatim; a
-    # grid/`Kpoints`/tuple runs Generator 1 (`filter_electron_states`) internally (the sugar path).
-    # Either way `sel_k` fixes the per-k band extent, so `compute_electron_states(model, sel_k)`
-    # computes eigenvectors/velocities for exactly those bands.
-    sel_k = kpts_input isa FilteredStates ? kpts_input :
-        maybe_time(verbosity) do
-            filter_electron_states(model, kpts_input, window_k; symmetry, fourier_mode, use_gpu, mpi_comm=mpi_comm_k)
-        end
-    kpts = sel_k.kpts
+    # Outer k and k+q setup via the shared role helpers. Each yields a `FilteredStates` selection
+    # (a prebuilt one passed through verbatim, or filtered from a grid — the k+q grid path also
+    # IBZ-reduces + unfolds under symmetry) plus its `kpts` and computed electron states. Same calls,
+    # same order as the prior inline block.
+    (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(model, kpts_input;
+        window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity)
     nk = kpts.n
-    el_k_save = maybe_time(verbosity) do
-        compute_electron_states(model, sel_k, el_quantities; fourier_mode, use_gpu)
-    end
-    iband_min = sel_k.nband_ignore + 1
-    iband_max = sel_k.nband_ignore + sel_k.nband
 
-    # --- k+q: a state selection consumed as-is (no hidden filter/unfold on the selection path) ---
-    # A prebuilt k+q `FilteredStates` is used verbatim — the caller has already built the full-BZ
-    # k+q selection (e.g. via `unfold_band_states`), so no internal `filter_kpoints` + `unfold_kpoints`
-    # runs here. A grid/tuple runs the sugar path: filter to the window (IBZ-reduce
-    # with symmetry) and unfold to the full BZ, matching the prior behavior; electron states are then
-    # computed directly or via IBZ + unfolding per `el_kq_from_unfolding`.
-    if kqpts_input isa FilteredStates
-        sel_kq = kqpts_input
-        kqpts = sel_kq.kpts
-        el_kq_save = maybe_time(verbosity) do
-            compute_electron_states(model, sel_kq, el_quantities; fourier_mode, use_gpu)
-        end
-    else
-        if symmetry !== nothing
-            sel_irr = maybe_time(verbosity) do
-                filter_electron_states(kqpts_input, nw, model.el_ham, window_kq; mpi_comm=mpi_comm_q, symmetry, fourier_mode, use_gpu)
-            end
-            kqpts_irr = sel_irr.kpts; nelec_kq = sel_irr.nstates_base
-            kqpts, ik_to_ikirr_isym_kq = unfold_kpoints(kqpts_irr, symmetry)
-        else
-            sel_kqf = maybe_time(verbosity) do
-                filter_electron_states(kqpts_input, nw, model.el_ham, window_kq; mpi_comm=mpi_comm_q, fourier_mode, use_gpu)
-            end
-            kqpts = sel_kqf.kpts; nelec_kq = sel_kqf.nstates_base
-            kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
-        end
-        # Electron states at k+q (directly, or via IBZ + unfolding for gauge consistency). CPU-only
-        # unfolding — `run_eph_over_k_and_kq` gates el_kq_from_unfolding off for use_gpu.
-        el_kq_save = _setup_electron_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
-            symmetry, el_kq_from_unfolding, window_kq; fourier_mode, use_gpu)
-        # Build the k+q selection from the computed states' per-k band extent (uniform per-state
-        # weights) so the calculator consumes a selection on both paths.
-        sel_kq = _selection_from_computed_states(kqpts, el_kq_save, nelec_kq; nw)
-    end
+    (; sel_kq, kqpts, el_kq_save) = _setup_selection_kq(model, kqpts_input;
+        window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, fourier_mode, use_gpu, verbosity)
 
 
     # Precompute qpts and phonon states if k and k+q meshes are commensurate

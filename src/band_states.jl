@@ -121,8 +121,9 @@ end
 
 Primary constructor: `kpts` is the (shared) k-grid, `ik[i]` the k-index of state `i`,
 `iband[i]` its band, `e[i]` its energy. `nw` is the model's full Wannier band count. `v`
-(per-state velocity) and `weights` (per-state BZ weight; empty ⇒ derived from `kpts.weights`)
-default to empty. `band_extent` defaults to the per-k span of `ik`/`iband`.
+(per-state velocity) defaults to empty. `weights` (per-state BZ weight) is always stored
+length-`n`: when the caller passes an empty `weights`, it is materialized from `kpts.weights[ik]`.
+`band_extent` defaults to the per-k span of `ik`/`iband`.
 """
 function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
         iband::AbstractVector{<:Integer}, e::AbstractVector;
@@ -139,8 +140,9 @@ function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
     indmap = _build_indmap(n, kpts.n, nband, nband_ignore, ik, iband)
     be = band_extent === nothing ? _build_band_extent(kpts.n, ik, iband) :
         collect(UnitRange{Int}, band_extent)
+    w = isempty(weights) ? kpts.weights[collect(Int, ik)] : collect(T, weights)
     BandStates{T, typeof(kpts)}(n, nband, nband_ignore, Int(nw), kpts, collect(Int, ik),
-        collect(Int, iband), collect(T, e), collect(Vec3{T}, v), collect(T, weights),
+        collect(Int, iband), collect(T, e), collect(Vec3{T}, v), w,
         T(nstates_base), indmap, be)
 end
 
@@ -148,8 +150,8 @@ end
     FilteredStates(kpts, ik, iband; nw, weights, nstates_base, band_extent)
 
 Build a `FilteredStates` over the shared grid `kpts` from the selected `(ik[i], iband[i])` pairs.
-`weights` (per-state BZ weight; empty ⇒ derived from `kpts.weights`) and `band_extent` (per-k band
-range; defaults to the per-k span of `ik`/`iband`) default as for `BandStates`.
+`weights` (per-state BZ weight) is always stored length-`n`: an empty `weights` is materialized from
+`kpts.weights[ik]`. `band_extent` (per-k band range) defaults to the per-k span of `ik`/`iband`.
 """
 function FilteredStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
         iband::AbstractVector{<:Integer};
@@ -164,8 +166,9 @@ function FilteredStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
     indmap = _build_indmap(n, kpts.n, nband, nband_ignore, ik, iband)
     be = band_extent === nothing ? _build_band_extent(kpts.n, ik, iband) :
         collect(UnitRange{Int}, band_extent)
+    w = isempty(weights) ? kpts.weights[collect(Int, ik)] : collect(T, weights)
     FilteredStates{T, typeof(kpts)}(n, nband, nband_ignore, Int(nw), kpts, collect(Int, ik),
-        collect(Int, iband), collect(T, weights), T(nstates_base), indmap, be)
+        collect(Int, iband), w, T(nstates_base), indmap, be)
 end
 
 """
@@ -253,13 +256,11 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
         es[i] = el.e_full[b]
         vs[i] = el.vdiag[b]
     end
-    # Materialize the per-state weights (the selection's own, or derived from kpts.weights when the
-    # selection left them empty) so `es`/`vs`-side consumers can index `el.weights` directly, O(1)
-    # and non-allocating, in a hot loop (the BTE scatter's per-final-state weight). Same values as
-    # `state_weights` derives lazily.
-    weights = collect(T, state_weights(sel))
+    # Carry over the selection's per-state weights (always materialized) so `es`/`vs`-side consumers
+    # index `el.weights` directly, O(1) and non-allocating, in a hot loop (the BTE scatter's
+    # per-final-state weight).
     BandStates{T, typeof(sel.kpts)}(n, sel.nband, sel.nband_ignore, sel.nw, sel.kpts,
-        copy(sel.iks), copy(sel.ibands), es, vs, weights, sel.nstates_base,
+        copy(sel.iks), copy(sel.ibands), es, vs, copy(sel.weights), sel.nstates_base,
         copy(sel.indmap), copy(sel.band_extent))
 end
 
@@ -368,14 +369,13 @@ Base.firstindex(::AbstractBandStates) = 1
 Base.lastindex(s::AbstractBandStates) = s.n
 @inline Base.getindex(s::BandStates, i::Int) =
     (; ik = s.iks[i], iband = s.ibands[i], xk = s.kpts.vectors[s.iks[i]], e = s.es[i],
-       weight = isempty(s.weights) ? s.kpts.weights[s.iks[i]] : s.weights[i])
+       weight = s.weights[i])
 Base.iterate(s::BandStates, i::Int = 1) = i > s.n ? nothing : (s[i], i + 1)
 Base.eltype(::Type{<:BandStates{T}}) where {T} =
     NamedTuple{(:ik, :iband, :xk, :e, :weight), Tuple{Int, Int, Vec3{T}, T, T}}
 
-"""Per-state BZ weights (dense length-`n` array): the stored per-state `weights` when non-empty
-(e.g. the multigrid double-grid partition), else gathered from `kpts.weights[iks]`."""
-state_weights(s::AbstractBandStates) = isempty(s.weights) ? s.kpts.weights[s.iks] : s.weights
+"Per-state BZ weights (the stored length-`n` `weights`, always materialized at construction)."
+state_weights(s::AbstractBandStates) = s.weights
 
 "Per-state k-vectors, gathered from `kpts.vectors` (dense length-`n` array)."
 state_xks(s::AbstractBandStates) = s.kpts.vectors[s.iks]

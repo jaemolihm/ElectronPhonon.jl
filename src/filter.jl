@@ -177,14 +177,14 @@ end
 """
     filter_electron_states(kpts_input, nw, el_ham, window; symmetry, fourier_mode, use_gpu,
                            mpi_comm, shift) -> FilteredStates
-    filter_electron_states(model, kpts_input, window; kwargs...) -> FilteredStates
+    filter_electron_states(kpts_input, model::Model, window; kwargs...) -> FilteredStates
 
 The unified electron-state filtering primitive (Generator 1). Filters a k-grid spec (an
 `NTuple{3,Int}`, `Kpoints`, or `GridKpoints`) to the energy `window` — optionally IBZ-reducing with
 `symmetry` and offsetting an `NTuple` grid by `shift` — and returns the selected `(k, band)` states
 as a `FilteredStates`: `sel.kpts` is the filtered `GridKpoints`, `band_range(sel)` the global band
-range, `sel.nstates_base` the below-window carrier count. Per-state weights are left empty (uniform
-⇒ derived from `kpts.weights`). Supersedes the legacy tuple-returning `filter_kpoints`.
+range, `sel.nstates_base` the below-window carrier count, `state_weights(sel)` the per-state (uniform
+per-k) BZ weights. Supersedes the legacy tuple-returning `filter_kpoints`.
 
 `shift` applies only to the `NTuple` grid path (ignored for a prebuilt `Kpoints`/`GridKpoints`) and
 is mutually exclusive with `symmetry`. Under `mpi_comm` the k-points are split across ranks: the grid
@@ -195,7 +195,7 @@ stay aligned, and the local below-window counts are summed.
 function filter_electron_states(kpts_input, nw::Integer, el_ham, window;
         symmetry=nothing, fourier_mode="gridopt", use_gpu=false, mpi_comm=nothing, shift=(0, 0, 0))
     if mpi_comm === nothing
-        gkpts, bmin, bmax, nelec = _filter_with_band_ranges(kpts_input, nw, el_ham, window;
+        gkpts, ibmin, ibmax, nelec = _filter_with_band_ranges(kpts_input, nw, el_ham, window;
             symmetry, fourier_mode, use_gpu, shift)
     else
         kpts_input isa NTuple{3,Integer} ||
@@ -204,30 +204,30 @@ function filter_electron_states(kpts_input, nw::Integer, el_ham, window;
             error("nonzero shift and symmetry incompatible (not implemented)")
         # Build the grid distributed and filter each rank's slice once (single eigensolve pass).
         kpoints = kpoints_grid(kpts_input, mpi_comm; shift, symmetry)
-        gkpts_l, bmin_l, bmax_l, nelec_l = _filter_with_band_ranges(kpoints, nw, el_ham, window;
+        gkpts_l, ibmin_l, ibmax_l, nelec_l = _filter_with_band_ranges(kpoints, nw, el_ham, window;
             fourier_mode, use_gpu)
-        # Redistribute the kept k-vectors, weights, and per-k band ranges through the SAME
-        # gather/scatter — equal-length arrays share one rank-concatenation order and even split, so
-        # the four stay aligned. Sum the local below-window counts.
-        vectors = mpi_scatter(mpi_gather(gkpts_l.vectors, mpi_comm), mpi_comm)
-        weights = mpi_scatter(mpi_gather(gkpts_l.weights, mpi_comm), mpi_comm)
-        bmin    = mpi_scatter(mpi_gather(bmin_l, mpi_comm), mpi_comm)
-        bmax    = mpi_scatter(mpi_gather(bmax_l, mpi_comm), mpi_comm)
-        gkpts   = GridKpoints(Kpoints(length(vectors), vectors, weights, kpts_input))
-        nelec   = mpi_sum(nelec_l, mpi_comm)
+        # Redistribute the kept k-points via the shared GridKpoints wrapper (rank-concatenate +
+        # even-split, no reorder; preserves the global ngrid). The per-k band ranges follow with the
+        # SAME gather/scatter, so they stay aligned to `gkpts`. Sum the local below-window counts.
+        gkpts = mpi_gather_and_scatter(gkpts_l, mpi_comm)
+        ibmin = mpi_scatter(mpi_gather(ibmin_l, mpi_comm), mpi_comm)
+        ibmax = mpi_scatter(mpi_gather(ibmax_l, mpi_comm), mpi_comm)
+        nelec = mpi_sum(nelec_l, mpi_comm)
     end
     iks = Int[]; ibands = Int[]
     for ik in 1:gkpts.n
-        bmax[ik] >= bmin[ik] || continue
-        for b in bmin[ik]:bmax[ik]
+        ibmax[ik] >= ibmin[ik] || continue
+        for b in ibmin[ik]:ibmax[ik]
             push!(iks, ik); push!(ibands, b)
         end
     end
     FilteredStates(gkpts, iks, ibands; nw, nstates_base=nelec)
 end
 
-# Convenience: pull nw/el_ham off a Model.
-filter_electron_states(model::Model, kpts_input, window; kwargs...) =
+# Convenience: pull nw/el_ham off a Model. Kept kpts-first to match the core signature; dispatches on
+# the 2nd argument being a `Model` (no ambiguity with the `(kpts_input, nw::Integer, el_ham, window)`
+# core method).
+filter_electron_states(kpts_input, model::Model, window; kwargs...) =
     filter_electron_states(kpts_input, model.nw, model.el_ham, window; kwargs...)
 
 """
