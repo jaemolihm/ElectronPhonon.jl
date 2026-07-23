@@ -197,11 +197,13 @@ function _setup_eph_over_q_and_k(
         else
             kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
         end
-        el_kq_save = _setup_electron_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
-            symmetry, el_kq_from_unfolding, window_kq; fourier_mode)
+        el_kq_save = _compute_electron_states_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
+            symmetry, el_kq_from_unfolding, window_kq;
+            quantities=["eigenvalue", "eigenvector", "velocity", "position"], fourier_mode)
     else
         kqpts = nothing
         el_kq_save = nothing
+        sel_kq = nothing
     end
 
 
@@ -236,7 +238,7 @@ function _setup_eph_over_q_and_k(
     # every occ_type on the device, so no occ_type is special-cased.
     _setup_calculators!(calculators, kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        sel_k, nchunks_threads, verbosity, backend,
+        sel_k, sel_kq, nchunks_threads, verbosity, backend,
     )
 
     return (;

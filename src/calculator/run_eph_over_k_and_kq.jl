@@ -145,8 +145,10 @@ function _setup_eph_over_k_and_kq(
         window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity)
     nk = kpts.n
 
-    (; sel_kq, kqpts, el_kq_save) = _setup_selection_kq(model, kqpts_input;
-        window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, fourier_mode, use_gpu, verbosity)
+    el_kq_quantities = ["eigenvalue", "eigenvector", "velocity", "position"]
+    (; kqpts, el_kq_save, sel_kq) = _setup_electron_kq(model, kqpts_input;
+        window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
+        fourier_mode, use_gpu, verbosity)
 
 
     # Precompute qpts and phonon states if k and k+q meshes are commensurate

@@ -257,41 +257,43 @@ function filter_electron_states_multigrid(nks1, nks2, window1, window2, nw, el_h
                                   fourier_mode="gridopt", symmetry=nothing, use_gpu=false)
 
     all(mod.(nks1, nks2) .== 0) || throw(ArgumentError("nks1 must be a multiple of nks2"))
+    (window1[1] >= window2[1] && window1[2] <= window2[2]) ||
+        throw(ArgumentError("the fine window1 must be contained in the coarse window2"))
 
-    kpts1, bmin1, bmax1, _            = _filter_with_band_ranges(nks1, nw, el_ham, window1; symmetry, fourier_mode, use_gpu)  # fine, narrow
-    kpts2, bmin2, bmax2, nstates_base = _filter_with_band_ranges(nks2, nw, el_ham, window2; symmetry, fourier_mode, use_gpu)  # coarse, wide
+    kpts1, ibmin1, ibmax1, _            = _filter_with_band_ranges(nks1, nw, el_ham, window1; symmetry, fourier_mode, use_gpu)  # fine, narrow
+    kpts2, ibmin2, ibmax2, nstates_base = _filter_with_band_ranges(nks2, nw, el_ham, window2; symmetry, fourier_mode, use_gpu)  # coarse, wide
 
     T = eltype(kpts1.weights)
 
     # Shared grid points 1..kpts1.n are the fine points; coarse-only points are appended. Per shared
     # point collect (band => weight): narrow bands at the fine weight, then wide-only bands at the
     # coarse weight (dedup: a band already present from the narrow set keeps the fine weight).
-    pt_vectors = collect(kpts1.vectors)
-    pt_weight  = collect(kpts1.weights)
-    bandw = [Dict{Int, T}() for _ in 1:kpts1.n]
-    for i1 in 1:kpts1.n, b in bmin1[i1]:bmax1[i1]
-        bandw[i1][b] = kpts1.weights[i1]
+    xks = collect(kpts1.vectors)
+    k_weights = collect(kpts1.weights)
+    band_weights = [Dict{Int, T}() for _ in 1:kpts1.n]
+    for i1 in 1:kpts1.n, b in ibmin1[i1]:ibmax1[i1]
+        band_weights[i1][b] = kpts1.weights[i1]
     end
     for i2 in 1:kpts2.n
         i1 = xk_to_ik(kpts2.vectors[i2], kpts1)   # exact: a coarse node lies on the fine grid
-        Wb = bmin2[i2]:bmax2[i2]
+        Wb = ibmin2[i2]:ibmax2[i2]
         if i1 === nothing
-            push!(pt_vectors, kpts2.vectors[i2]); push!(pt_weight, kpts2.weights[i2])
+            push!(xks, kpts2.vectors[i2]); push!(k_weights, kpts2.weights[i2])
             d = Dict{Int, T}()
             for b in Wb; d[b] = kpts2.weights[i2]; end
-            push!(bandw, d)
+            push!(band_weights, d)
         else
             for b in Wb
-                haskey(bandw[i1], b) && continue   # narrow band already at the fine weight
-                bandw[i1][b] = kpts2.weights[i2]
+                haskey(band_weights[i1], b) && continue   # narrow band already at the fine weight
+                band_weights[i1][b] = kpts2.weights[i2]
             end
         end
     end
 
     iks = Int[]; ibands = Int[]; wstate = T[]
-    for ik in 1:length(pt_vectors), b in sort!(collect(keys(bandw[ik])))
-        push!(iks, ik); push!(ibands, b); push!(wstate, bandw[ik][b])
+    for ik in 1:length(xks), b in sort!(collect(keys(band_weights[ik])))
+        push!(iks, ik); push!(ibands, b); push!(wstate, band_weights[ik][b])
     end
-    gkpts = GridKpoints(Kpoints(length(pt_vectors), pt_vectors, pt_weight, nks1))
+    gkpts = GridKpoints(Kpoints(length(xks), xks, k_weights, nks1))
     FilteredStates(gkpts, iks, ibands; nw, weights=wstate, nstates_base)
 end

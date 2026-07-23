@@ -14,7 +14,8 @@
 #   * Generic over `Kpoints`/`GridKpoints`; only k-vector→state queries need the hash.
 
 export AbstractBandStates, BandStates, FilteredStates
-export state_index, state_weights, state_xks, band_range, electron_states_to_BandStates, unfold_band_states
+export state_index, state_weights, state_xks, band_range, electron_states_to_BandStates,
+    electron_states_to_FilteredStates, unfold_band_states
 
 """
     AbstractBandStates{T, KT<:AbstractKpoints{T}}
@@ -117,18 +118,18 @@ function _build_band_extent(nk, ik, iband)
 end
 
 """
-    BandStates(kpts, ik, iband, e; nw, v, weights, nstates_base, band_extent)
+    BandStates(kpts, ik, iband, e; nw, v, weights, nstates_base)
 
 Primary constructor: `kpts` is the (shared) k-grid, `ik[i]` the k-index of state `i`,
 `iband[i]` its band, `e[i]` its energy. `nw` is the model's full Wannier band count. `v`
 (per-state velocity) defaults to empty. `weights` (per-state BZ weight) is always stored
 length-`n`: when the caller passes an empty `weights`, it is materialized from `kpts.weights[ik]`.
-`band_extent` defaults to the per-k span of `ik`/`iband`.
+`band_extent` is the per-k span of `ik`/`iband`.
 """
 function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
         iband::AbstractVector{<:Integer}, e::AbstractVector;
         nw::Integer, v::AbstractVector = Vec3{T}[], weights::AbstractVector = T[],
-        nstates_base = zero(T), band_extent = nothing) where {T}
+        nstates_base = zero(T)) where {T}
     n = length(ik)
     n == length(iband) == length(e) || error("BandStates: ik, iband, e must have equal length")
     (isempty(v) || length(v) == n) || error("BandStates: v must be empty or length n")
@@ -138,8 +139,7 @@ function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
     nband_ignore = isempty(iband) ? 0 : minimum(iband) - 1
     nband = isempty(iband) ? 0 : maximum(iband) - nband_ignore
     indmap = _build_indmap(n, kpts.n, nband, nband_ignore, ik, iband)
-    be = band_extent === nothing ? _build_band_extent(kpts.n, ik, iband) :
-        collect(UnitRange{Int}, band_extent)
+    be = _build_band_extent(kpts.n, ik, iband)
     w = isempty(weights) ? kpts.weights[collect(Int, ik)] : collect(T, weights)
     BandStates{T, typeof(kpts)}(n, nband, nband_ignore, Int(nw), kpts, collect(Int, ik),
         collect(Int, iband), collect(T, e), collect(Vec3{T}, v), w,
@@ -147,28 +147,26 @@ function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
 end
 
 """
-    FilteredStates(kpts, ik, iband; nw, weights, nstates_base, band_extent)
+    FilteredStates(kpts, iks, ibands; nw, weights, nstates_base)
 
-Build a `FilteredStates` over the shared grid `kpts` from the selected `(ik[i], iband[i])` pairs.
+Build a `FilteredStates` over the shared grid `kpts` from the selected `(iks[i], ibands[i])` pairs.
 `weights` (per-state BZ weight) is always stored length-`n`: an empty `weights` is materialized from
-`kpts.weights[ik]`. `band_extent` (per-k band range) defaults to the per-k span of `ik`/`iband`.
+`kpts.weights[iks]`. `band_extent` (per-k band range) is the per-k span of `iks`/`ibands`.
 """
-function FilteredStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
-        iband::AbstractVector{<:Integer};
-        nw::Integer, weights::AbstractVector = T[], nstates_base = zero(T),
-        band_extent = nothing) where {T}
-    n = length(ik)
-    n == length(iband) || error("FilteredStates: ik, iband must have equal length")
+function FilteredStates(kpts::AbstractKpoints{T}, iks::AbstractVector{<:Integer},
+        ibands::AbstractVector{<:Integer};
+        nw::Integer, weights::AbstractVector = T[], nstates_base = zero(T)) where {T}
+    n = length(iks)
+    n == length(ibands) || error("FilteredStates: iks, ibands must have equal length")
     (isempty(weights) || length(weights) == n) || error("FilteredStates: weights must be empty or length n")
     # Empty selection (no in-window state, e.g. an empty MPI rank): band_range = 1:0, indmap no rows.
-    nband_ignore = isempty(iband) ? 0 : minimum(iband) - 1
-    nband = isempty(iband) ? 0 : maximum(iband) - nband_ignore
-    indmap = _build_indmap(n, kpts.n, nband, nband_ignore, ik, iband)
-    be = band_extent === nothing ? _build_band_extent(kpts.n, ik, iband) :
-        collect(UnitRange{Int}, band_extent)
-    w = isempty(weights) ? kpts.weights[collect(Int, ik)] : collect(T, weights)
-    FilteredStates{T, typeof(kpts)}(n, nband, nband_ignore, Int(nw), kpts, collect(Int, ik),
-        collect(Int, iband), w, T(nstates_base), indmap, be)
+    nband_ignore = isempty(ibands) ? 0 : minimum(ibands) - 1
+    nband = isempty(ibands) ? 0 : maximum(ibands) - nband_ignore
+    indmap = _build_indmap(n, kpts.n, nband, nband_ignore, iks, ibands)
+    be = _build_band_extent(kpts.n, iks, ibands)
+    w = isempty(weights) ? kpts.weights[collect(Int, iks)] : collect(T, weights)
+    FilteredStates{T, typeof(kpts)}(n, nband, nband_ignore, Int(nw), kpts, collect(Int, iks),
+        collect(Int, ibands), w, T(nstates_base), indmap, be)
 end
 
 """
@@ -217,14 +215,14 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
 end
 
 """
-    _selection_from_computed_states(kpts, el_states, nstates_base; nw) -> FilteredStates
+    electron_states_to_FilteredStates(kpts, el_states, nstates_base; nw) -> FilteredStates
 
 Build a `FilteredStates` from already-computed `ElectronState`s: each state's per-k band extent is
 `el.rng`, per-state weights are left empty (uniform ⇒ derived from `kpts.weights`). Used by the
 driver's sugar path to wrap the filter+compute result into a selection, so the calculator consumes a
 selection on both the sugar and prebuilt-selection paths. Promotes `kpts` to `GridKpoints`.
 """
-function _selection_from_computed_states(kpts, el_states, nstates_base; nw)
+function electron_states_to_FilteredStates(kpts, el_states, nstates_base; nw)
     gkpts = kpts isa GridKpoints ? kpts : GridKpoints(kpts)
     iks = Int[]; ibands = Int[]
     for (ik, el) in enumerate(el_states)
