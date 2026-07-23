@@ -166,7 +166,7 @@ payload, named for which momentum is the outer loop and which is batched on the 
   kwargs…)` calls the same byte functions to report committed + per-point bytes ahead of a run so
   batch sizes can be picked (and the drivers print them at `verbosity > 0`). These counts cover the
   driver's own device buffers (which scale with the grid/batch); actual device usage starts
-  **~100–150 MB higher** because of a fixed CUDA library context/workspace floor (cuBLAS etc.)
+  **~100-150 MB higher** because of a fixed CUDA library context/workspace floor (cuBLAS etc.)
   allocated lazily on the first in-loop kernel launch — inherent overhead, not a per-run buffer, so
   treat it as a fixed additive constant on top of the estimate. (A calculator's own device output,
   e.g. a full-band `(nw·nk)²` coupling array, is sized separately by the calculator, not by this

@@ -2,7 +2,7 @@
 
 ## Code style
 
-- [ ] Global dash sweep: replace every Unicode minus `−` (U+2212) and en-dash `–` (U+2013) with the
-  ASCII hyphen-minus `-` (U+002D) across the whole repo (code and comments). Only the files touched
-  in the PR #9 review round have been converted so far. The rule is documented in the EPjl-developer
-  and EPjl-reviewer agent definitions.
+- [x] Global dash sweep: every Unicode minus `−` (U+2212) and en-dash `–` (U+2013) replaced with the
+  ASCII hyphen-minus `-` (U+002D) across the source, tests, benchmarks, examples, and maintained docs
+  of ElectronPhonon.jl and MigdalEliashberg.jl. (Working notes / progress docs are left as-is.) The
+  rule is documented in the EPjl-developer and EPjl-reviewer agent definitions.

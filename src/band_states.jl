@@ -30,10 +30,10 @@ Pure k-properties (k-vector, weight) are derived through `ik` rather than cached
 """
 struct BandStates{T, KT <: AbstractKpoints{T}}
     n::Int                  # number of states
-    nband::Int              # number of distinct bands indexed = maximum(iband) − nband_ignore
+    nband::Int              # number of distinct bands indexed = maximum(iband) - nband_ignore
                             # (the band extent of `indmap`)
-    nband_ignore::Int       # bands below the lowest indexed one = minimum(iband) − 1, subtracted
-                            # so band `iband` maps to `indmap` row `iband − nband_ignore ∈ 1:nband`
+    nband_ignore::Int       # bands below the lowest indexed one = minimum(iband) - 1, subtracted
+                            # so band `iband` maps to `indmap` row `iband - nband_ignore ∈ 1:nband`
     nw::Int                 # full (Wannier) band count of the model these states came from; the
                             # physical-band extent (≥ nband_ignore + nband). Informational — the
                             # device index-map pad width is passed explicitly to `_indmap_to_device`.
@@ -43,7 +43,7 @@ struct BandStates{T, KT <: AbstractKpoints{T}}
     es::Vector{T}           # per-state energy (intrinsic: depends on band + k)
     vs::Vector{Vec3{T}}     # per-state band velocity (intrinsic); empty if not computed
     nstates_base::T         # occupied states per cell below the window (electron counting)
-    indmap::Matrix{Int}     # (iband − nband_ignore, ik) → state index; 0 where absent
+    indmap::Matrix{Int}     # (iband - nband_ignore, ik) → state index; 0 where absent
 end
 
 function _build_indmap(n, nk, nband, nband_ignore, ik, iband)

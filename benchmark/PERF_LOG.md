@@ -73,7 +73,7 @@ per-batch device iq gathers.
 **No GPU regression — the reliable 32³ GPU signal improved 11.2 s → 8.83 s (1.27×) vs the Stage 1
 baseline row above.** The 24³ GPU also improved (3.55 → 2.94 s). The window-projection win is
 modest here because Pb has `nw = 4` (little to project away); the large speedups it targets
-(2.9–4.9× measured in EP `15d2570` on TaAs `nw = 32`, ±0.1 eV) need a wide-band, narrow-window
+(2.9-4.9× measured in EP `15d2570` on TaAs `nw = 32`, ±0.1 eV) need a wide-band, narrow-window
 system. The **CPU** times dropped vs the baseline row too (e.g. 78.8 → 41.1 s at 32³), which
 reflects the current MigdalEliashberg working-tree state rather than a GPU change — so the
 cross-row *speedup ratio* is not directly comparable; trend the GPU wall-time column instead.

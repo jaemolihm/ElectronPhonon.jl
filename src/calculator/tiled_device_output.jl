@@ -16,7 +16,7 @@
 #   * full   — the whole output (all `n_full` outer states) is device-resident; the scatter writes
 #              global state `i` at offset 0 with stride `n_full`; one device→host copy at the end.
 #   * block  — only the current outer-k tile is device-resident (i-extent = the largest k-batch);
-#              the scatter writes tile-local row `i − tile_offset`, and each batch is zeroed and then
+#              the scatter writes tile-local row `i - tile_offset`, and each batch is zeroed and then
 #              downloaded to the host. Device memory is bounded by the tile regardless of grid size.
 #
 # Type stability: the lazily-allocated device/host buffers are held as `Vector{Any}` (their concrete

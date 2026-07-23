@@ -590,7 +590,7 @@ bytes and the `per_point` (per batched-inner index) bytes, plus the memory-adapt
 `model.epmat_outer_momentum` (`el` → outer-k, `ph` → outer-q). Returns a `NamedTuple`; the
 committed / per-point fields are also printed by the drivers at `verbosity > 0`.
 
-Note: these counts cover the driver's own device buffers only. Actual device usage starts ~100–150 MB
+Note: these counts cover the driver's own device buffers only. Actual device usage starts ~100-150 MB
 HIGHER than reported here because of a fixed CUDA library context/workspace floor (cuBLAS etc.),
 allocated lazily on the first in-loop kernel launch — this is inherent library overhead, not a
 per-run buffer, so it is not (and cannot be) captured by the byte accounting. The reported figures
