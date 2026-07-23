@@ -79,8 +79,8 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     Sᵢ::Vector{Matrix{FT}} = Vector{Matrix{FT}}()         # per iT, (n_i, n_f)
 
     # --- CPU-path thread buffers (run_calculator!) ---
-    # Allocated lazily on the first CPU `calculator_begin!(…, OuterIteration(), ctx)`; the GPU path
-    # never allocates them (Sᵢ_buffer would be nchunks·nT·rng_band·n_f — prohibitive on production grids).
+    # Built eagerly in `setup_calculator!` on the CPU path (behind `!on_gpu`); the GPU path never
+    # allocates them (Sᵢ_buffer would be nchunks·nT·rng_band·n_f — prohibitive on production grids).
     Sₒ_buffer::Vector{Vector{OffsetVector{FT, Vector{FT}}}} = Vector{Vector{OffsetVector{FT, Vector{FT}}}}()
     Sᵢ_buffer::Vector{Vector{OffsetMatrix{FT, Matrix{FT}}}} = Vector{Vector{OffsetMatrix{FT, Matrix{FT}}}}()
 
@@ -173,25 +173,25 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, qpts, el_states;
             to_device(backend, collect(FT, calc.occ.Tlist)),                    # T
             to_device(backend, calc.smearing_list),                             # smearing (one per T)
         )
+    else
+        # CPU path: build the per-chunk thread buffers here (mirror of the eager device buffers
+        # above). Guarded by `!on_gpu` because they are large (nchunks·nT·rng_band·n_f) and the GPU
+        # path must not allocate them. `calculator_begin!` only zeros them per outer k.
+        rb = calc.rng_band
+        calc.Sₒ_buffer = [[OffsetArray(zeros(FT, length(rb)), rb) for _ in 1:nT] for _ in 1:calc.nchunks]
+        calc.Sᵢ_buffer = [[OffsetArray(zeros(FT, length(rb), n_f), rb, :) for _ in 1:nT] for _ in 1:calc.nchunks]
     end
     calc
 end
 
 # --- CPU (non-batched, EPData) path --------------------------------------------------
 
-# CPU path: allocate the per-chunk thread buffers on the first outer iteration (this runs once,
-# single-threaded, so no lock is needed), then zero them for the new outer k. Dispatched on
-# `SingleMode`; in the batched loop (`BatchedMode`) the explicit no-op below runs (the batched loop
-# fires per-k OuterIteration brackets too, but the device buffers live in OuterIterationBatch).
+# CPU path: zero the per-chunk thread buffers for the new outer k (the buffers are allocated in
+# `setup_calculator!`). Dispatched on `SingleMode`; in the batched loop (`BatchedMode`) the explicit
+# no-op below runs (the batched loop fires per-k OuterIteration brackets too, but the device buffers
+# live in OuterIterationBatch).
 function calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIteration,
         ctx::LoopContext{CPUBackend, SingleMode}) where {FT}
-    if isempty(calc.Sₒ_buffer)
-        rb = calc.rng_band
-        n_f = calc.el_f.n
-        nT = length(calc.occ)
-        calc.Sₒ_buffer = [[OffsetArray(zeros(FT, length(rb)), rb) for _ in 1:nT] for _ in 1:calc.nchunks]
-        calc.Sᵢ_buffer = [[OffsetArray(zeros(FT, length(rb), n_f), rb, :) for _ in 1:nT] for _ in 1:calc.nchunks]
-    end
     for c in eachindex(calc.Sₒ_buffer)
         for x in calc.Sₒ_buffer[c]; x .= 0; end
         for x in calc.Sᵢ_buffer[c]; x .= 0; end
