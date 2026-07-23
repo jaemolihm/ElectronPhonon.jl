@@ -258,7 +258,7 @@ mapped to its own grid node with weight 1 instead of being linearly interpolated
 when `el_f` is the symmetry unfolding of `el_i` on the same grid spec, and avoids the
 uniform-grid assumption of the linear interpolation. `el_f` states with no exact match in `el_i`
 (benign band-edge FP jitter between the windowed k-grid and the IBZ-unfolded k+q grid) have their
-vector field treated as zero silently (the miss count is recorded at debug level only). For
+vector field treated as zero silently. For
 genuinely different el_i/el_f grids (e.g. a much wider `window_kq`) pass `interpolate=true`.
 """
 function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f, symmetry; interpolate::Bool=false) where FT
@@ -270,7 +270,6 @@ function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f,
     inds_unfold = Int[]
     weights_all = FT[]
 
-    n_miss = 0
     xks_f = bt_xks(el_f)
     for i_f in 1:el_f.n
         xk = xks_f[i_f]
@@ -306,7 +305,6 @@ function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f,
                 # IBZ-reduced-then-unfolded, so a few band-edge states can differ by FP jitter.
                 # Treat the vector field as zero there (same convention as the interpolate path);
                 # these states carry tiny -∂f/∂ε weight, so this is physically negligible.
-                n_miss += 1
                 continue
             end
             push!(inds_f, i_f)
@@ -314,9 +312,6 @@ function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f,
             push!(weights_all, one(FT))
         end
     end
-    # Missed el_f states are zeroed silently; record the count at debug level only (no warning/error).
-    (!interpolate && n_miss > 0) &&
-        @debug "vector_field_unfold_and_interpolate_map (interpolate=false): $n_miss / $(el_f.n) el_f states had no exact unfolded el_i match; vector field zeroed."
     map_interpolate = sparse(inds_f, inds_unfold, weights_all, el_f.n, size(map_unfold, 1))
 
     map_interpolate * map_unfold
