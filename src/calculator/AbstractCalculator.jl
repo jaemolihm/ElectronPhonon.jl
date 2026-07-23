@@ -29,10 +29,10 @@ reachable as `ElectronPhonon.<name>`, is: `AbstractCalculator`, `supports`, `set
 `run_calculator!`, `postprocess_calculator!`, `calculator_begin!`, `calculator_end!`, the loop tags
 `OuterKLoop` / `OuterQLoop`, the scope tags `OuterIteration` / `OuterIterationBatch`, the payloads
 `AbstractElPhPayload` / `EPData` / `EPDataQBatched` / `EPDataKBatched`,
-`LoopContext` with the loop modes `SingleMode` / `BatchedMode` and the shared device stacks
-`ElKDeviceStacks`, the backends `CPUBackend` / `GPUBackend` with `alloc` / `free_bytes` /
+`LoopContext` with the loop modes `SingleMode` / `BatchedMode`, the backends `CPUBackend` /
+`GPUBackend` with `alloc` / `free_bytes` /
 `synchronize`, `eph_window_scatter!`, `eph_batched_bytes_per_point`, `allowed_eph_phonon_basis`,
-`required_el_k_quantities`, `required_el_k_device_stacks`, `_indmap_to_device`, the tiled
+`required_el_k_quantities`, `_indmap_to_device`, the tiled
 device-output helper `TiledDeviceOutput` (with `tile_begin!` / `tile_download!` / `tile_free!` /
 `device_array` / `host_array` / `tile_offset` / `tile_length` / `tile_stride` / `is_block` /
 `is_allocated`), the device-memory batch-sizing helpers `plan_batch` / `estimate_device_memory`, and
@@ -140,28 +140,6 @@ end
 # =============================================================================
 #  LoopContext — loop-level state, carried into every hook.
 
-"""
-    ElKDeviceStacks
-
-Whole-run device stacks the outer-k GPU loop (`run_eph_over_k_and_kq`, `use_gpu`) builds once and
-exposes to batched calculators via `LoopContext.el_k_stacks`, so a device-resident outer-k calculator
-does not hand-upload its own copy. Built lazily and only for the quantities some calculator declares
-through [`required_el_k_device_stacks`](@ref); an undeclared quantity's field is `nothing`. The
-per-(band, k) energy grids are addressed by *physical* band `1:nw` (out-of-window entries are 0), so
-a calculator derives its flattened per-state view by gathering through its own `(iband, ik)` index
-map. Fields (any subset may be `nothing`):
-- `e_k`  :: `(nw, nk)`   — outer-k band energies.
-- `e_kq` :: `(nw, nkq)`  — k+q band energies.
-- `wtk`  :: `(nk,)`      — outer-k integration weights.
-- `wtq`  :: `(nkq,)`     — k+q integration weights.
-"""
-struct ElKDeviceStacks
-    e_k  :: Any
-    e_kq :: Any
-    wtk  :: Any
-    wtq  :: Any
-end
-
 # Loop-mode singletons name the SHAPE of the loop driving a hook, independent of the backend: a hook
 # that must behave differently for the per-(k, q) host loop vs the device-batched loop dispatches on
 # the mode, NOT the backend. The two are orthogonal — the batched loop still fires the per-iteration
@@ -189,8 +167,6 @@ Fields:
   batch scope.
 - `batch`       :: outer-iteration range of the current batch (`1:0` on the CPU paths).
 - `n_batch_max` :: loop batch cap, for device-buffer sizing.
-- `el_k_stacks` :: the run's shared [`ElKDeviceStacks`](@ref), or `nothing` — populated only on the
-  outer-k GPU loop when a calculator declares need (see [`required_el_k_device_stacks`](@ref)).
 """
 struct LoopContext{BT <: AbstractBackend, MT <: LoopMode}
     backend     :: BT
@@ -198,26 +174,17 @@ struct LoopContext{BT <: AbstractBackend, MT <: LoopMode}
     outer_index :: Int
     batch       :: UnitRange{Int}
     n_batch_max :: Int
-    el_k_stacks :: Union{Nothing, ElKDeviceStacks}
 end
 
-# Default the shared device stacks to `nothing`, so the CPU / outer-q / test construction sites that
-# do not build them keep their 5-argument call unchanged (only the outer-k GPU loop passes the stacks).
-LoopContext(backend::AbstractBackend, mode::LoopMode, outer_index::Integer, batch::UnitRange,
-    n_batch_max::Integer) =
-    LoopContext(backend, mode, outer_index, batch, n_batch_max, nothing)
-
-# SingleMode context (CPU per-(k, q) host loops): there is no batch and no device stacks, so a
-# SingleMode context cannot be handed a spurious batch — fill `batch = 1:0`, `n_batch_max = 0`,
-# `el_k_stacks = nothing` automatically.
+# SingleMode context (CPU per-(k, q) host loops): there is no batch, so a SingleMode context cannot be
+# handed a spurious batch — fill `batch = 1:0`, `n_batch_max = 0` automatically.
 LoopContext(backend::AbstractBackend, ::SingleMode, outer_index::Integer) =
-    LoopContext(backend, SingleMode(), outer_index, 1:0, 0, nothing)
+    LoopContext(backend, SingleMode(), outer_index, 1:0, 0)
 
 # BatchedMode context at batch scope (device loops): there is no single outer index spanning the whole
 # batch, so `outer_index = 0` is the "no single outer index — use `batch`" sentinel.
-LoopContext(backend::AbstractBackend, ::BatchedMode, batch::UnitRange, n_batch_max::Integer,
-    el_k_stacks::Union{Nothing, ElKDeviceStacks}) =
-    LoopContext(backend, BatchedMode(), 0, batch, n_batch_max, el_k_stacks)
+LoopContext(backend::AbstractBackend, ::BatchedMode, batch::UnitRange, n_batch_max::Integer) =
+    LoopContext(backend, BatchedMode(), 0, batch, n_batch_max)
 
 
 # =============================================================================
@@ -268,17 +235,6 @@ velocity/position interpolation (the dominant setup cost after the eigensolve). 
 conservative full list.
 """
 required_el_k_quantities(::AbstractCalculator) = ["eigenvalue", "eigenvector", "velocity", "position"]
-
-"""
-    required_el_k_device_stacks(calc::AbstractCalculator) -> Vector{Symbol}
-
-Whole-run device stacks the calculator's batched outer-k path needs the loop to build and expose via
-`LoopContext.el_k_stacks` (see [`ElKDeviceStacks`](@ref)). The outer-k GPU loop
-(`run_eph_over_k_and_kq`, `use_gpu`) builds the union over its calculators, so a calculator stops
-hand-uploading data the loop already has. Valid symbols: `:e_k`, `:e_kq`, `:wtk`, `:wtq`. Default is
-empty (no shared stacks needed).
-"""
-required_el_k_device_stacks(::AbstractCalculator) = Symbol[]
 
 function setup_calculator!(::AbstractCalculator, kpts, qpts, el_states; kwargs...)
     error("setup_calculator! has to be implemented")
@@ -338,9 +294,9 @@ if VERSION >= v"1.11.0-DEV.469"
         "postprocess_calculator!, calculator_begin!, calculator_end!, " *
         "OuterKLoop, OuterQLoop, OuterIteration, OuterIterationBatch, " *
         "AbstractElPhPayload, EPData, EPDataQBatched, EPDataKBatched, " *
-        "LoopContext, SingleMode, BatchedMode, ElKDeviceStacks, CPUBackend, GPUBackend, alloc, free_bytes, synchronize, " *
+        "LoopContext, SingleMode, BatchedMode, CPUBackend, GPUBackend, alloc, free_bytes, synchronize, " *
         "eph_window_scatter!, eph_batched_bytes_per_point, allowed_eph_phonon_basis, " *
-        "required_el_k_quantities, required_el_k_device_stacks, _indmap_to_device, " *
+        "required_el_k_quantities, _indmap_to_device, " *
         "TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array, " *
         "tile_offset, tile_length, tile_stride, is_block, is_allocated, residency_use_block, " *
         "to_device, plan_batch, estimate_device_memory"))

@@ -553,12 +553,6 @@ function _loop_eph_over_k_and_kq_gpu(
         "use_gpu requires every calculator to support the EPDataQBatched payload " *
         "(supports(calc, EPDataQBatched) = true); the GPU path does not fall back to the host loop."))
 
-    # Whole-run device stacks (band energies / integration weights), built once and shared with the
-    # batched calculators via `LoopContext.el_k_stacks`, so a device-resident calculator does not
-    # hand-upload its own copy. Built lazily and only for the quantities some calculator declares.
-    stack_syms = union(Symbol[], (required_el_k_device_stacks(c) for c in calculators)...)
-    el_k_stacks = _build_el_k_device_stacks(backend, stack_syms, el_k_save, el_kq_save, kpts, kqpts, nw, FT)
-
     # The k+q side of the interpolation runs full-band (uniform nw×nw, using the full eigenvectors
     # `el.u_full`); the energy window is applied in the calculator scatter, where out-of-window
     # states have imap == 0 and are skipped, so a windowed run needs no special handling there.
@@ -716,7 +710,7 @@ function _loop_eph_over_k_and_kq_gpu(
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
-        ctx_batch = LoopContext(backend, BatchedMode(), iks_batch, nk_batch_max, el_k_stacks)
+        ctx_batch = LoopContext(backend, BatchedMode(), iks_batch, nk_batch_max)
         foreach(c -> calculator_begin!(c, OuterIterationBatch(), ctx_batch), calculators)
 
     for (ik_ind, ik) in enumerate(iks_batch)
@@ -731,7 +725,7 @@ function _loop_eph_over_k_and_kq_gpu(
         # the leading rows and bumps `_id` (the single invalidation entry point).
         @views update_op_r!(ep_ekpR_dev, ep_ekpR_all[:, :, ik_ind]; rows = 1:ndata_ekpR)
 
-        ctx_k = LoopContext(backend, BatchedMode(), ik, iks_batch, nk_batch_max, el_k_stacks)
+        ctx_k = LoopContext(backend, BatchedMode(), ik, iks_batch, nk_batch_max)
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
 
         qstart = 1

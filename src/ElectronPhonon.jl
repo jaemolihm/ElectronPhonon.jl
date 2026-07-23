@@ -98,7 +98,6 @@ include("postprocess/plot_decay.jl")
 
 include("model_new.jl")
 include("calculator/AbstractCalculator.jl")
-include("calculator/el_k_device_stacks.jl")
 include("calculator/tiled_device_output.jl")
 include("calculator/eph_device_staging.jl")
 include("calculator/calculator_utils.jl")
