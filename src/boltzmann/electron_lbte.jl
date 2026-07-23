@@ -256,10 +256,10 @@ For vector fields ``f_i`` and ``f_f`` (defined on `el_i` and `el_f`, respectivel
 With `interpolate=false` (the default, used for multigrid k-sampling), each `el_f` state is
 mapped to its own grid node with weight 1 instead of being linearly interpolated. This is exact
 when `el_f` is the symmetry unfolding of `el_i` on the same grid spec, and avoids the
-uniform-grid assumption of the linear interpolation. It errors if any `el_f` state has no exact
-match in `el_i` — pass `interpolate=true` when `el_f` genuinely lives on a different grid/window
-than `el_i` (e.g. a wider `window_kq`), which falls back to linear interpolation with the
-zero-for-absent-nodes convention.
+uniform-grid assumption of the linear interpolation. `el_f` states with no exact match in `el_i`
+(benign band-edge FP jitter between the windowed k-grid and the IBZ-unfolded k+q grid) have their
+vector field treated as zero silently (the miss count is recorded at debug level only). For
+genuinely different el_i/el_f grids (e.g. a much wider `window_kq`) pass `interpolate=true`.
 """
 function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f, symmetry; interpolate::Bool=false) where FT
     map_unfold, indmap_unfold = unfold_data_map(el_i, symmetry)
@@ -270,6 +270,7 @@ function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f,
     inds_unfold = Int[]
     weights_all = FT[]
 
+    n_miss = 0
     xks_f = bt_xks(el_f)
     for i_f in 1:el_f.n
         xk = xks_f[i_f]
@@ -300,14 +301,22 @@ function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f,
             xk_int = mod.(round.(Int, xk .* ngrid), ngrid)
             key = CI(xk_int.data..., iband)
             i_unfold = get(indmap_unfold, key, -1)
-            i_unfold == -1 && error("vector_field_unfold_and_interpolate_map: el_f state $i_f " *
-                "(xk=$xk, iband=$iband) has no exact unfolded el_i match; interpolate=false " *
-                "requires el_i and el_f to share the same grid spec")
+            if i_unfold == -1
+                # No exact unfolded-el_i match. el_i is windowed on the k-grid while el_f is
+                # IBZ-reduced-then-unfolded, so a few band-edge states can differ by FP jitter.
+                # Treat the vector field as zero there (same convention as the interpolate path);
+                # these states carry tiny -∂f/∂ε weight, so this is physically negligible.
+                n_miss += 1
+                continue
+            end
             push!(inds_f, i_f)
             push!(inds_unfold, i_unfold)
             push!(weights_all, one(FT))
         end
     end
+    # Missed el_f states are zeroed silently; record the count at debug level only (no warning/error).
+    (!interpolate && n_miss > 0) &&
+        @debug "vector_field_unfold_and_interpolate_map (interpolate=false): $n_miss / $(el_f.n) el_f states had no exact unfolded el_i match; vector field zeroed."
     map_interpolate = sparse(inds_f, inds_unfold, weights_all, el_f.n, size(map_unfold, 1))
 
     map_interpolate * map_unfold

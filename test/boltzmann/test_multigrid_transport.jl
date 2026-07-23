@@ -114,8 +114,9 @@ end
     kmg, nbw = EP.filter_kpoints_multigrid((12, 12, 12), (6, 6, 6), w_fine, w_wide,
                                            model.nw, model.el_ham; symmetry = sym, use_gpu = on_gpu)
 
-    # BUG: without the below-window override, the windowed multigrid's μ solve fails to bracket.
-    @test_throws Exception run_grid(occ_auto(), kmg, kmg)
+    # BUG: without the below-window override, the windowed multigrid's μ solve fails to bracket
+    # (Roots.bisection over [-Inf, Inf] cannot bracket the under-counted carrier target).
+    @test_throws "the interval provided does not bracket a root" run_grid(occ_auto(), kmg, kmg)
 
     # FIX: pass the coarse-window nelec_below_window from filter_kpoints_multigrid.
     o_mg = occ_auto()
