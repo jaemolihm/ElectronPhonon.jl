@@ -12,6 +12,7 @@ using ElectronPhonon: Kpoints
 using Interpolations: AbstractInterpolation
 
 export filter_kpoints
+export filter_kpoints_multigrid
 export filter_qpoints
 
 # range of bands inside the window. Assume e is sorted in ascending order.
@@ -197,19 +198,26 @@ end
 
 """
     filter_kpoints_multigrid(nks1, nks2, window1, window2, nw, el_ham;
-                             fourier_mode="gridopt", symmetry=nothing)
+                             fourier_mode="gridopt", symmetry=nothing, use_gpu=false)
+        -> (kpts, nelec_below_window)
 Generate k point grid using the double grid method
 1) Mesh with size nks1 inside window1 (denser mesh, narrower window)
 2) Mesh with size nks2 inside window2 (coarser mesh, wider window)
+
+Also return `nelec_below_window` from the coarse (window2) filter. The coarse filter runs on the
+FULL nks2 grid, so it correctly counts the fully-occupied bands below window2; the merged windowed
+grid has no below-window points, so re-filtering it (as the driver does) cannot recover this. Pass
+it back to `run_eph_over_k_and_kq(...; nelec_below_window_k, nelec_below_window_kq)` so the
+chemical-potential solve sees the true carrier count (window2 is the effective transport window).
 """
 function filter_kpoints_multigrid(nks1, nks2, window1, window2, nw, el_ham;
-                                  fourier_mode="gridopt", symmetry=nothing)
+                                  fourier_mode="gridopt", symmetry=nothing, use_gpu=false)
 
     all(mod.(nks1, nks2) .== 0) || throw(ArgumentError("nks1 must be a multiple of nks2"))
 
-    kpts1, = filter_kpoints(nks1, nw, el_ham, window1; symmetry, fourier_mode)
+    kpts1, = filter_kpoints(nks1, nw, el_ham, window1; symmetry, fourier_mode, use_gpu)
     kpts1 = GridKpoints(kpts1)
-    kpts2, = filter_kpoints(nks2, nw, el_ham, window2; symmetry, fourier_mode)
+    kpts2, _, _, nelec_below_window = filter_kpoints(nks2, nw, el_ham, window2; symmetry, fourier_mode, use_gpu)
     kpts2 = GridKpoints(kpts2)
 
     # Merge kpts1 and kpts2, remove duplicates
@@ -223,5 +231,5 @@ function filter_kpoints_multigrid(nks1, nks2, window1, window2, nw, el_ham;
         end
     end
 
-    GridKpoints(Kpoints(length(vectors), vectors, weights, ngrid))
+    GridKpoints(Kpoints(length(vectors), vectors, weights, ngrid)), nelec_below_window
 end

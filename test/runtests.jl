@@ -34,6 +34,8 @@ include("common_models_from_artifacts.jl")
     include("boltzmann/test_hdf5.jl")
     include("boltzmann/test_QMEVector.jl")
     include("boltzmann/test_gpu_boltzmann_calculator.jl")  # GPU BTE scatter; GPU part skips w/o CUDA
+    include("boltzmann/test_multigrid_weights.jl")  # multigrid k-sampling: pure-BZ quadrature check
+    include("boltzmann/test_multigrid_transport.jl")  # multigrid BTE transport; GPU part skips w/o CUDA
     # include("boltzmann/test_QMEModel.jl")
     # include("boltzmann/test_covariant_derivative.jl")
     # include("boltzmann/test_el_constant_rta.jl")

@@ -85,7 +85,7 @@ using LinearAlgebra
             # LBTE
             bte_scat_mat, el_i_bte, el_f_bte, ph_bte = ElectronPhonon.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice);
             inv_τ = output_serta.inv_τ;
-            output_lbte = ElectronPhonon.solve_electron_bte(el_i_bte, el_f_bte, bte_scat_mat, inv_τ, transport_params, symmetry)
+            output_lbte = ElectronPhonon.solve_electron_bte(el_i_bte, el_f_bte, bte_scat_mat, inv_τ, transport_params, symmetry; interpolate=true)
 
             # Test QME and BTE result is identical (because there is only one band)
             @test qme_model.el.nband == 1

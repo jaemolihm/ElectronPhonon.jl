@@ -65,7 +65,7 @@ using LinearAlgebra
     @test all(size.(bte_scat_mat) .== Ref((el_i.n, el_f.n)))
 
     inv_τ = output_serta.inv_τ
-    @time output_lbte = ElectronPhonon.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model_el.symmetry)
+    @time output_lbte = ElectronPhonon.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, model_el.symmetry; interpolate=true)
 
     σ_SI_serta, _ = transport_print_mobility(output_lbte.σ_serta, transport_params, do_print=false)
     σ_SI_iter1, _ = transport_print_mobility(output_lbte.σ_iter[2,:,:,:], transport_params, do_print=false)
@@ -135,7 +135,7 @@ end
         output_serta = ElectronPhonon.run_serta(filename_btedata, transport_params, symmetry, model.recip_lattice)
         bte_scat_mat, el_i, el_f, ph = ElectronPhonon.compute_bte_scattering_matrix(filename_btedata, transport_params, model.recip_lattice)
         inv_τ = output_serta.inv_τ
-        output_bte[key] = ElectronPhonon.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, symmetry)
+        output_bte[key] = ElectronPhonon.solve_electron_bte(el_i, el_f, bte_scat_mat, inv_τ, transport_params, symmetry; interpolate=true)
     end
 
     @test all(isapprox.(output_bte["sym"].σ_serta, output_bte["nosym"].σ_serta, atol=1e-6))

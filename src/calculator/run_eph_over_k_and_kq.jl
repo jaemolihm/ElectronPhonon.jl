@@ -23,6 +23,12 @@ function run_eph_over_k_and_kq(
         # see outer k SERIALLY (one `OuterIteration` bracket + payload per k); this only sets the
         # interpolation-staging width. No deprecated alias for the former name `nk_batch_max`.
         nk_outer_batch_max = 256,
+        # Override the below-window carrier counts (from `filter_kpoints_multigrid`) instead of
+        # recomputing them by filtering the input grid. Required for a pre-built WINDOWED grid (a
+        # multigrid), whose below-window k-points are absent so the recompute under-counts and the
+        # chemical-potential solve fails to bracket. `nothing` = recompute as usual.
+        nelec_below_window_k = nothing,
+        nelec_below_window_kq = nothing,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -71,6 +77,7 @@ function run_eph_over_k_and_kq(
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, symmetry, calculators, nchunks_threads,
         covariant_derivative_of_g, use_gpu, verbosity,
+        nelec_below_window_k, nelec_below_window_kq,
     )
 
     if use_gpu
@@ -125,30 +132,37 @@ function _setup_eph_over_k_and_kq(
         nchunks_threads = nthreads(),
         covariant_derivative_of_g = false,
         use_gpu = false,
+        nelec_below_window_k = nothing,
+        nelec_below_window_kq = nothing,
         verbosity::Int = 1,
     ) where {FT}
 
     (; nw, nmodes) = model
 
     # Generate k points and electron states at k (shared setup core)
-    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_electron_k(
+    setup_k = _setup_electron_k(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity)
+    (; kpts, iband_min, iband_max, el_k_save) = setup_k
+    # Use the caller-supplied below-window carrier count if given (pre-built windowed grid), else the
+    # recomputed one. Same for k+q below.
+    nelec_below_window_k = nelec_below_window_k === nothing ? setup_k.nelec_below_window_k : nelec_below_window_k
     nk = kpts.n
 
     # Filter the k+q grid to the energy window. With symmetry, filter the k+q points in the
     # irreducible BZ and unfold the kept point set to the full BZ (~nsym× fewer eigensolves; band
     # energies are constant on the star). Electron STATES are still handled per `el_kq_from_unfolding`.
     if symmetry !== nothing
-        kqpts_irr, iband_kq_min, iband_kq_max, nelec_below_window_kq = maybe_time(verbosity) do
+        kqpts_irr, iband_kq_min, iband_kq_max, nelec_below_window_kq_computed = maybe_time(verbosity) do
             filter_kpoints(kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; symmetry, fourier_mode, use_gpu)
         end
         kqpts, ik_to_ikirr_isym_kq = unfold_kpoints(kqpts_irr, symmetry)
     else
-        kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq = maybe_time(verbosity) do
+        kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq_computed = maybe_time(verbosity) do
             filter_kpoints(kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode, use_gpu)
         end
         kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
     end
+    nelec_below_window_kq = nelec_below_window_kq === nothing ? nelec_below_window_kq_computed : nelec_below_window_kq
 
     # Electron states at k+q (directly, or via IBZ + unfolding for gauge consistency). CPU-only
     # unfolding — `run_eph_over_k_and_kq` gates el_kq_from_unfolding off for use_gpu.
