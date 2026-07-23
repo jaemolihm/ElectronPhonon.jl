@@ -33,7 +33,13 @@ function plan_batch(backend::AbstractBackend, per_point::Integer, committed::Int
     end
     nb_mem = free == typemax(Int) ? Int(cap) :
         max(1, ((free - committed) ÷ headroom_den * headroom_num) ÷ per_point)
-    min(Int(cap), nb_mem)
+    nbatch = min(Int(cap), nb_mem)
+    if free != typemax(Int) && nb_mem < cap
+        @warn "WARNING : GPU batch width reduced from the requested cap $(Int(cap)) to $nbatch to fit " *
+            "free device memory in plan_batch$(isempty(what) ? "" : " ($what)"). GPU performance may " *
+            "degrade compared to smaller calculations."
+    end
+    nbatch
 end
 
 

@@ -127,7 +127,7 @@ end
     set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true, gpu_array = nothing)
 If `occ.μlist` is not set, compute the chemical potential and set it.
 If `occ.μlist` is already set to some value that is not NaN, do nothing.
-Pass a device array `gpu_array` (e.g. `to_device(model.el_ham).op_r`) to run the bisection's ncarrier
+Pass a device array `gpu_array` (e.g. `to_device(gpu_backend(), model.el_ham).op_r`) to run the bisection's ncarrier
 sums on that backend (GPU); the default `nothing` keeps the whole solve on the host.
 """
 function set_chemical_potential!(occ, el_states, kpts, nelec_below_window; do_print = true, gpu_array = nothing)

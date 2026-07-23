@@ -35,12 +35,12 @@ gput(f) = (CUDA.@sync f(); minimum(CUDA.@elapsed(CUDA.@sync f()) for _ in 1:3))
 epmat_c   = model.epmat
 epmat_cit = get_interpolator(epmat_c; fourier_mode="batched")            # per-k Fourier
 epmat_ck  = get_interpolator(epmat_c; fourier_mode="batched", batch_size=nk)
-epmat_g   = to_device(epmat_c)
+epmat_g   = to_device(ElectronPhonon.gpu_backend(), epmat_c)
 epmat_git = get_interpolator(epmat_g; fourier_mode="batched")
 epmat_gk  = get_interpolator(epmat_g; fourier_mode="batched", batch_size=nk)
 uks_g = CuArray(uks)
 
-oc = mkobj(); og = to_device(mkobj())
+oc = mkobj(); og = to_device(ElectronPhonon.gpu_backend(), mkobj())
 ep_all_c = zeros(ComplexF64, nw*nband*nmodes, nr_ep, nk)
 ep_all_g = CUDA.zeros(ComplexF64, nw*nband*nmodes, nr_ep, nk)
 
@@ -53,7 +53,7 @@ t = (cput(()->rr_perk!(oc, epmat_cit, uks)),  gput(()->rr_perk!(og, epmat_git, u
 
 # ---- kR_to_kq over nq q-points (fixed k = ks[1]) ----
 obj_k1_c = WannierObject(model.epmat.irvec_next, ep_all_c[:, :, 1])
-obj_k1_g = to_device(WannierObject(model.epmat.irvec_next, Array(ep_all_g[:, :, 1])))
+obj_k1_g = to_device(ElectronPhonon.gpu_backend(), WannierObject(model.epmat.irvec_next, Array(ep_all_g[:, :, 1])))
 itp_c_perq = get_interpolator(obj_k1_c; fourier_mode="batched")          # per-q Fourier
 itp_g_perq = get_interpolator(obj_k1_g; fourier_mode="batched")
 itp_c1 = get_interpolator(obj_k1_c; fourier_mode="batched", batch_size=nq)

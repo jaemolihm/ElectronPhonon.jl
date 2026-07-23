@@ -103,29 +103,29 @@ function compute_debye_waller_active_space(model, kpts, el_mom, window; fourier_
     ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
 
 
-    epdata = EPState(nw, nmodes)
-    epdata.ph = compute_phonon_states(model, ElectronPhonon.Kpoints(xq), ["eigenvalue", "eigenvector"])[1]
+    epstate = EPState(nw, nmodes)
+    epstate.ph = compute_phonon_states(model, ElectronPhonon.Kpoints(xq), ["eigenvalue", "eigenvector"])[1]
 
     dw_active = zeros(ComplexF64, nw, nw, 3, nmodes, kpts.n)
 
     itp_mom = get_interpolator(el_mom; fourier_mode)
 
     for (ik, xk) in enumerate(kpts.vectors)
-        epdata.el_k  = el_k_save[ik]
-        epdata.el_kq = el_k_save[ik]
-        uk = epdata.el_k.u
+        epstate.el_k  = el_k_save[ik]
+        epstate.el_kq = el_k_save[ik]
+        uk = epstate.el_k.u
 
         get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(uk))
-        get_eph_kR_to_kq!(no_offset_view(epdata.ep), ep_ekpR, xq, I(model.nmodes), no_offset_view(uk))
+        get_eph_kR_to_kq!(no_offset_view(epstate.ep), ep_ekpR, xq, I(model.nmodes), no_offset_view(uk))
 
-        ElectronPhonon.set_velocity!(epdata.el_k, itp_mom, xk, :Direct)
+        ElectronPhonon.set_velocity!(epstate.el_k, itp_mom, xk, :Direct)
 
         for imode in 1:nmodes, idir in 1:3
             for ib in 1:nw, jb in 1:nw, pb in 1:nw
-                if window[1] <= epdata.el_k.e[pb] <= window[2]
+                if window[1] <= epstate.el_k.e[pb] <= window[2]
                     dw_active[ib, jb, idir, imode, ik] += im * (
-                        epdata.ep[pb, ib, imode]' * epdata.el_k.v[pb, jb][idir]
-                        - epdata.el_k.v[pb, ib][idir]' * epdata.ep[pb, jb, imode] )
+                        epstate.ep[pb, ib, imode]' * epstate.el_k.v[pb, jb][idir]
+                        - epstate.el_k.v[pb, ib][idir]' * epstate.ep[pb, jb, imode] )
                 end
             end
         end
@@ -166,9 +166,9 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
     epmat = get_interpolator(model.epmat; fourier_mode)
     ep_ekpRs = get_interpolator_channel(ep_ekpR_obj; fourier_mode)
 
-    epdatas = Channel{EPState{Float64}}(nthreads())
+    epstates = Channel{EPState{Float64}}(nthreads())
     foreach(1:nthreads()) do _
-        put!(epdatas, EPState{Float64}(nw, nmodes))
+        put!(epstates, EPState{Float64}(nw, nmodes))
     end
 
     Σ_Fan_channel = [[zeros(nw, length(occupation_params.Tlist)) for _ in 1:kpts.n] for _ in 1:nchunks_threads]
@@ -189,13 +189,13 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
 
         for (id_chunk, iqs) in enumerate(chunks(1:qpts_coarse.n; n = nchunks_threads))
         # @threads for (id_chunk, iqs) in enumerate(chunks(1:qpts_coarse.n; n = nchunks_threads))
-            epdata = take!(epdatas)
+            epstate = take!(epstates)
             ep_ekpR = take!(ep_ekpRs)
             itp_dw = take!(dw_itps)
             Σ_Fan_chunk = Σ_Fan_channel[id_chunk]
             Σ_DW_chunk = Σ_DW_channel[id_chunk]
 
-            epdata.el_k = el_k
+            epstate.el_k = el_k
 
             for iq in iqs
                 xq = qpts_coarse.vectors[iq]
@@ -206,8 +206,8 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
 
                 el_kq = compute_electron_states(model, Kpoints(xk + xq), ["eigenvalue", "eigenvector"])[1]
 
-                epdata.el_kq = el_kq
-                epdata.ph = ph
+                epstate.el_kq = el_kq
+                epstate.ph = ph
 
                 ukq = el_kq.u
                 u_ph = ph_save[iq].u
@@ -246,9 +246,9 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
                 end
 
                 # Add g*g contribution to the Sternheimer matrix
-                get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
-                epdata_set_mmat!(epdata)
-                epdata_compute_eph_dipole!(epdata; model)
+                get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
+                epstate_set_mmat!(epstate)
+                epstate_compute_eph_dipole!(epstate; model)
 
                 for imode in 1:nmodes, ib in 1:nw, jb in 1:nw, pb in 1:nw
                     ek1 = el_k.e[ib]
@@ -256,8 +256,8 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
                     ekq = el_kq.e[pb]
                     if ekq < window_wfpt[1] || ekq > window_wfpt[2]
                         if window_wfpt[1] <= ek1 <= window_wfpt[2] && window_wfpt[1] <= ek2 <= window_wfpt[2]
-                            # sth_k[ib, jb, imode] += dg_k[pb, ib, imode]' * epdata.ep[pb, jb, imode] / (ek1 - ekq)
-                            sth_k[ib, jb, imode] += epdata.ep[pb, ib, imode]' * epdata.ep[pb, jb, imode] / (ek1 - ekq)
+                            # sth_k[ib, jb, imode] += dg_k[pb, ib, imode]' * epstate.ep[pb, jb, imode] / (ek1 - ekq)
+                            sth_k[ib, jb, imode] += epstate.ep[pb, ib, imode]' * epstate.ep[pb, jb, imode] / (ek1 - ekq)
                         end
                     end
                 end
@@ -281,7 +281,7 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
             end # iq
 
             put!(ep_ekpRs, ep_ekpR)
-            put!(epdatas, epdata)
+            put!(epstates, epstate)
             put!(dw_itps, itp_dw)
 
         end # iq chunk

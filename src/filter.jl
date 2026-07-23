@@ -99,7 +99,8 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", use
         # per-chunk device H(k) stack (nw*nw*kchunk complex) stays bounded — a single all-nk solve
         # can exhaust GPU memory on large grids. kchunk caps that stack at ~1 GiB (nk if smaller).
         kchunk = clamp(fld(2^30, nw * nw * 16), 1, kpoints.n)
-        itp_elham = get_interpolator(to_device(el_ham); fourier_mode="batched", batch_size=kchunk)
+        backend = gpu_backend()
+        itp_elham = get_interpolator(to_device(backend, el_ham); fourier_mode="batched", batch_size=kchunk)
         kstart = 1
         while kstart <= kpoints.n
             kstop = min(kstart + kchunk - 1, kpoints.n)

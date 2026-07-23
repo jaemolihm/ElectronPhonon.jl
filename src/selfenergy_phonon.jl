@@ -24,33 +24,33 @@ function PhononSelfEnergy{FT}(nmodes::Int, nq::Int, ntemperatures::Int) where FT
 end
 
 """
-# Compute phonon self-energy for given k and q point data in epdata
+# Compute phonon self-energy for given k and q point data in epstate
 # TODO: Real part
 """
-@timing "selfen_ph" function compute_phonon_selfen!(phself, epdata,
+@timing "selfen_ph" function compute_phonon_selfen!(phself, epstate,
         params::PhononSelfEnergyParams, iq)
-    el_k_occ = epdata.el_k.occupation
-    el_kq_occ = epdata.el_kq.occupation
+    el_k_occ = epstate.el_k.occupation
+    el_kq_occ = epstate.el_kq.occupation
 
     μ = params.μ
     inv_smear = 1 / params.smearing
 
     for (iT, T) in enumerate(params.Tlist)
-        set_occupation!(epdata.el_k, μ, T)
-        set_occupation!(epdata.el_kq, μ, T)
+        set_occupation!(epstate.el_k, μ, T)
+        set_occupation!(epstate.el_kq, μ, T)
 
         # Calculate imaginary part of phonon self-energy
-        for imode in 1:epdata.nmodes
-            omega = epdata.ph.e[imode]
+        for imode in 1:epstate.nmodes
+            omega = epstate.ph.e[imode]
             if omega < omega_acoustic
                 continue
             end
 
-            @inbounds for ib in epdata.el_k.rng, jb in epdata.el_kq.rng
-                delta_e = epdata.el_kq.e[jb] - epdata.el_k.e[ib] - omega
+            @inbounds for ib in epstate.el_k.rng, jb in epstate.el_kq.rng
+                delta_e = epstate.el_kq.e[jb] - epstate.el_k.e[ib] - omega
                 delta = gaussian(delta_e * inv_smear) * inv_smear
-                phself.imsigma[imode, iq, iT] += (epdata.g2[jb, ib, imode]
-                    * epdata.wtk * π * (el_k_occ[ib] - el_kq_occ[jb]) * delta)
+                phself.imsigma[imode, iq, iT] += (epstate.g2[jb, ib, imode]
+                    * epstate.wtk * π * (el_k_occ[ib] - el_kq_occ[jb]) * delta)
             end
         end # mode
     end # temperature

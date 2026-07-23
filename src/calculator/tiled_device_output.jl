@@ -99,9 +99,10 @@ function tile_begin!(t::TiledDeviceOutput{FT}, ctx) where {FT}
         else
             full_bytes = t.narr * sizeof(FT) * prod(t.dims)
             t.block = residency_use_block(backend, full_bytes; headroom = t.headroom)
-            t.block && @info "TiledDeviceOutput: full device-resident output " *
-                "($(t.narr)×$(round(sizeof(FT) * prod(t.dims) / 1e9, digits = 2)) GB) would not fit; " *
-                "using per-tile block residency (bounded device memory)."
+            t.block && @warn "WARNING : full device-resident output " *
+                "($(t.narr)×$(round(sizeof(FT) * prod(t.dims) / 1e9, digits = 2)) GB) does not fit free " *
+                "GPU memory, falling back to per-tile block residency (per-batch device→host streaming) " *
+                "in TiledDeviceOutput.tile_begin!. GPU performance may degrade compared to smaller calculations."
         end
         t.decided = true
         if t.block

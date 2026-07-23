@@ -195,7 +195,7 @@ end
         kpts = [Vec3(rand(), rand(), rand()) for _ in 1:50]
 
         # --- to_device ---
-        obj_gpu = to_device(obj)
+        obj_gpu = to_device(ElectronPhonon.gpu_backend(), obj)
         @test obj_gpu.op_r isa CuArray
         @test obj_gpu.ndata == obj.ndata
         @test Array(obj_gpu.op_r) ≈ obj.op_r
@@ -238,7 +238,7 @@ end
         end
 
         # electron-phonon batched drivers on the GPU vs the per-k/q CPU reference
-        check_eph_batched(to_device, CuArray; rtol=1e-9)
+        check_eph_batched(obj -> to_device(ElectronPhonon.gpu_backend(), obj), CuArray; rtol=1e-9)
     end
 end
 
@@ -251,7 +251,7 @@ end
 function check_eph_partial_view(nw, nmodes; rtol)
     nband, nr_ep, nq, m = nw, 8, 10, 7   # slice width m < full width nq
     irvec_ep = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_ep], by = x -> reverse(x))
-    obj  = to_device(WannierObject(irvec_ep, rand(ComplexF64, nw*nband*nmodes, nr_ep)))
+    obj  = to_device(ElectronPhonon.gpu_backend(), WannierObject(irvec_ep, rand(ComplexF64, nw*nband*nmodes, nr_ep)))
     qs   = [Vec3(rand(3)...) for _ in 1:nq]
     uphs = CuArray(rand(ComplexF64, nmodes, nmodes, nq))
     ukqs = CuArray(rand(ComplexF64, nw, nband, nq))
@@ -280,7 +280,7 @@ end
 
 # A minimal AbstractCalculator that records the mode-resolved g2 and phonon frequency for
 # every (ik, ikq). It mirrors what MigdalEliashberg's EliashbergCalculator reads
-# (epdata.g2[m,n,imode], epdata.ph.e[imode]) but has no external dependency, so it can verify
+# (epstate.g2[m,n,imode], epstate.ph.e[imode]) but has no external dependency, so it can verify
 # the GPU calculator loop (run_eph_over_k_and_kq use_gpu) against the CPU loop here.
 mutable struct _RecordCalc <: ElectronPhonon.AbstractCalculator
     g2::Array{Float64,5}    # (nw, nw, nmodes, nk, nkq)
@@ -289,6 +289,9 @@ mutable struct _RecordCalc <: ElectronPhonon.AbstractCalculator
 end
 ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.OuterKLoop}) = true
 ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.EPData}) = true
+# Nothing per outer iteration; explicit no-op (there is no default bracket). CPU-only ⇒ SingleMode.
+ElectronPhonon.calculator_begin!(::_RecordCalc, ::ElectronPhonon.OuterIteration, ctx) = nothing
+ElectronPhonon.calculator_end!(::_RecordCalc, ::ElectronPhonon.OuterIteration, ctx) = nothing
 function ElectronPhonon.setup_calculator!(c::_RecordCalc, kpts, qpts, el_states;
         el_states_kq, kqpts, nw, nmodes, kwargs...)
     c.g2 = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
@@ -297,10 +300,10 @@ function ElectronPhonon.setup_calculator!(c::_RecordCalc, kpts, qpts, el_states;
 end
 ElectronPhonon.postprocess_calculator!(c::_RecordCalc; kwargs...) = c
 function ElectronPhonon.run_calculator!(c::_RecordCalc, p::ElectronPhonon.EPData, ctx)
-    (; epdata, ik, ikq) = p
-    (; el_k, el_kq, ph) = epdata
+    (; epstate, ik, ikq) = p
+    (; el_k, el_kq, ph) = epstate
     for imode in 1:ph.nmodes, n in el_k.rng, m in el_kq.rng
-        c.g2[m, n, imode, ik, ikq] = epdata.g2[m, n, imode]
+        c.g2[m, n, imode, ik, ikq] = epstate.g2[m, n, imode]
         c.ωq[m, n, imode, ik, ikq] = ph.e[imode]
     end
     c
@@ -317,6 +320,12 @@ mutable struct _RecordCalcBatched <: ElectronPhonon.AbstractCalculator
 end
 ElectronPhonon.supports(::_RecordCalcBatched, ::Type{ElectronPhonon.OuterKLoop}) = true
 ElectronPhonon.supports(::_RecordCalcBatched, ::Type{ElectronPhonon.EPDataQBatched}) = true
+# Device-native (GPU outer-k): the loop fires per-k OuterIteration and per-batch OuterIterationBatch,
+# both in BatchedMode; this calculator needs nothing at either, so define explicit no-ops.
+ElectronPhonon.calculator_begin!(::_RecordCalcBatched, ::ElectronPhonon.OuterIteration, ctx) = nothing
+ElectronPhonon.calculator_end!(::_RecordCalcBatched, ::ElectronPhonon.OuterIteration, ctx) = nothing
+ElectronPhonon.calculator_begin!(::_RecordCalcBatched, ::ElectronPhonon.OuterIterationBatch, ctx) = nothing
+ElectronPhonon.calculator_end!(::_RecordCalcBatched, ::ElectronPhonon.OuterIterationBatch, ctx) = nothing
 function ElectronPhonon.setup_calculator!(c::_RecordCalcBatched, kpts, qpts, el_states;
         el_states_kq, kqpts, nw, nmodes, kwargs...)
     c.g2 = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
@@ -456,10 +465,10 @@ function ElectronPhonon.calculator_end!(c::_RecordCalcOuterQ, ::ElectronPhonon.O
     c
 end
 ElectronPhonon.postprocess_calculator!(c::_RecordCalcOuterQ; kwargs...) = c
-# CPU path: epdata.ep is already an OffsetArray restricted to (el_kq.rng, el_k.rng, :), so summing
+# CPU path: epstate.ep is already an OffsetArray restricted to (el_kq.rng, el_k.rng, :), so summing
 # all of it covers exactly the in-window (m, n, ν) triples.
 function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.EPData, ctx)
-    c.Achunk[p.id_chunk] += p.epdata.wtk * sum(abs2, p.epdata.ep)
+    c.Achunk[p.id_chunk] += p.epstate.wtk * sum(abs2, p.epstate.ep)
     c
 end
 # GPU batched path: `ep_kq` is (nw,nw,nmodes,nkc) on the device, full-band (out-of-window bands already
@@ -604,9 +613,9 @@ end
         # difference, so this must match to machine precision (validates rotation + Berry math).
         ufc = zeros(ComplexF64, nw, nw, nk); ec = zeros(Float64, nw, nk)
         for ik in 1:nk; ufc[:, :, ik] .= els_c[ik].u_full; ec[:, ik] .= els_c[ik].e_full; end
-        itp_v = get_interpolator(ElectronPhonon.to_device(model.el_ham_R); fourier_mode="batched")
+        itp_v = get_interpolator(ElectronPhonon.to_device(ElectronPhonon.gpu_backend(), model.el_ham_R); fourier_mode="batched")
         v_dev = ElectronPhonon.get_el_velocity_direct_batched(itp_v, kpts.vectors, CuArray(ufc))
-        itp_rbar = get_interpolator(ElectronPhonon.to_device(model.el_pos); fourier_mode="batched")
+        itp_rbar = get_interpolator(ElectronPhonon.to_device(ElectronPhonon.gpu_backend(), model.el_pos); fourier_mode="batched")
         rbar_dev = ElectronPhonon.get_el_velocity_direct_batched(itp_rbar, kpts.vectors, CuArray(ufc))
         let E = CuArray(ec)
             v_dev .+= im .* (reshape(E, nw, 1, 1, nk) .- reshape(E, 1, nw, 1, nk)) .* rbar_dev
@@ -734,11 +743,11 @@ end
             len = nm * ni_stride * n_f
             g2c = zeros(FT, len); ωc = zeros(FT, len)
             ElectronPhonon.eph_window_scatter!(g2c, ωc, g2vals, imap_i_col, imap_f, ikqs, ωq,
-                nw, nbandk, nm, nqc, ni_stride; i0)
+                nw, nbandk, nm, nqc, ni_stride, i0)
             g2g = CUDA.zeros(FT, len); ωg = CUDA.zeros(FT, len)
             ElectronPhonon.eph_window_scatter!(g2g, ωg, CUDA.CuArray(g2vals),
                 CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), CUDA.CuArray(ikqs), CUDA.CuArray(ωq),
-                nw, nbandk, nm, nqc, ni_stride; i0)
+                nw, nbandk, nm, nqc, ni_stride, i0)
             @test Array(g2g) == g2c                     # same integer indexing + copy ⇒ bit-identical
             @test Array(ωg) == ωc
         end

@@ -74,7 +74,7 @@ function run_eph_outer_loop_q(
     nq = qpoints.n
     nband = iband_max - iband_min + 1
 
-    epdatas = [EPState{FT}(nw, nmodes, nband) for _ in 1:nthreads()]
+    epstates = [EPState{FT}(nw, nmodes, nband) for _ in 1:nthreads()]
 
     # Initialize data structs (always assign to avoid Core.Box in @threads closure)
     elself = compute_elself ? ElectronSelfEnergy{FT}(iband_min:iband_max, nk, length(elself_params.Tlist)) : nothing
@@ -129,14 +129,14 @@ function run_eph_outer_loop_q(
         end
         omega_save[:, iq] .= ph.e
 
-        for epdata in epdatas
-            epdata.ph = ph
+        for epstate in epstates
+            epstate.ph = ph
         end
 
         get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
 
         @threads for (id_chunk, iks) in enumerate(chunks(1:nk; n = Threads.nthreads()))
-            epdata = epdatas[id_chunk]
+            epstate = epstates[id_chunk]
 
             ham = ham_threads[id_chunk]
             vel = vel_threads[id_chunk]
@@ -150,48 +150,48 @@ function run_eph_outer_loop_q(
                 xk = kpoints.vectors[ik]
                 xkq = xk + xq
 
-                epdata.wtk = kpoints.weights[ik]
-                epdata.wtq = qpoints.weights[iq]
+                epstate.wtk = kpoints.weights[ik]
+                epstate.wtq = qpoints.weights[iq]
 
                 # Use saved data for electron state at k.
-                epdata.el_k = el_k_save[ik]
+                epstate.el_k = el_k_save[ik]
 
                 # Compute electron state at k+q.
-                set_eigen!(epdata.el_kq, ham, xkq)
+                set_eigen!(epstate.el_kq, ham, xkq)
 
                 # Set energy window, skip if no state is inside the window
-                set_window!(epdata.el_kq, window)
+                set_window!(epstate.el_kq, window)
 
                 # Skip this k point
-                if length(epdata.el_kq.rng) == 0
+                if length(epstate.el_kq.rng) == 0
                     # For batched interpolator, we must call skip_registered_kpoint! to advance the internal index.
                     skip_registered_kpoint!(vel)
                     skip_registered_kpoint!(ep_eRpq)
                     continue
                 end
 
-                set_velocity_diag!(epdata.el_kq, vel, xkq, model.el_velocity_mode)
-                get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
+                set_velocity_diag!(epstate.el_kq, vel, xkq, model.el_velocity_mode)
+                get_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
                 if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
-                    epdata_set_mmat!(epdata)
-                    model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
+                    epstate_set_mmat!(epstate)
+                    model.polar_eph.use && epstate_compute_eph_dipole!(epstate)
                 end
-                epdata_set_g2!(epdata)
+                epstate_set_g2!(epstate)
 
-                # Now, we are done with matrix elements. All data saved in epdata.
+                # Now, we are done with matrix elements. All data saved in epstate.
 
                 # Calculate physical quantities.
                 if compute_elself
-                    compute_electron_selfen!(elself, epdata, elself_params, ik)
+                    compute_electron_selfen!(elself, epstate, elself_params, ik)
                 end
                 if compute_phself
-                    compute_phonon_selfen!(phselfs[id_chunk], epdata, phself_params, iq)
+                    compute_phonon_selfen!(phselfs[id_chunk], epstate, phself_params, iq)
                 end
                 if compute_phspec
-                    compute_phonon_spectral!(phspecs[id_chunk], epdata, phspec_params, iq)
+                    compute_phonon_spectral!(phspecs[id_chunk], epstate, phspec_params, iq)
                 end
                 if compute_transport
-                    compute_lifetime_serta!(transport_serta, epdata, transport_params, ik)
+                    compute_lifetime_serta!(transport_serta, epstate, transport_params, ik)
                 end
             end  # ik
         end  # iks chunk

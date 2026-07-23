@@ -1,10 +1,9 @@
 # Shared setup building blocks for the three e-ph drivers (run_eph_over_k_and_q,
 # run_eph_over_q_and_k, run_eph_over_k_and_kq). Their `_setup_*` bodies are ~70% identical, so the
-# common k-side filtering/state computation, the k+q electron-state branch, the per-thread EPState
-# channel, the setup_calculator! fan-out, and the screening evaluation live here, each exactly once.
-
-using Base.Threads: nthreads
-
+# common k-side filtering/state computation, the k+q electron-state branch, and the screening
+# evaluation live here, each exactly once. (The per-thread EPState channel `get_epstates_channel`
+# lives next to `EPState` in src/EPState.jl. The setup_calculator! fan-out is a plain `for` loop
+# inlined in each driver — the shared kwarg contract is written at each call site regardless.)
 
 # k-side setup shared by all three drivers: filter the outer k-points to the energy window and
 # compute the electron states there. `verbosity` selects timing (@time when > 0, via `maybe_time`);
@@ -25,17 +24,20 @@ function _setup_electron_k(
 end
 
 
-# Electron states at k+q, shared by all three drivers. With `el_kq_from_unfolding`, the states are
-# computed only in the irreducible BZ (`kqpts_irr`) and unfolded to `kqpts` (carrying the eigenvector
-# gauge) to keep gauge consistency between symmetry-equivalent k points; otherwise they are computed
-# directly on `kqpts`. `kqpts_irr` / `ik_to_ikirr_isym_kq` are only read on the unfolding path.
-function _setup_electron_kq(
-        model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq, symmetry, el_kq_from_unfolding, window_kq;
-        fourier_mode, use_gpu = false,
-    )
+# Electron states at k+q, shared by all three drivers. Owns the full-`kqpts` → states step including
+# the symmetry handling: with `el_kq_from_unfolding`, it folds the full `kqpts` to the irreducible BZ
+# (`kqpts_irr`), computes the states there, and unfolds them back to `kqpts` (carrying the eigenvector
+# gauge) for gauge consistency between symmetry-equivalent k points; otherwise it computes the states
+# directly on `kqpts`. Callers pass only the full `kqpts` and need not pre-derive the irreducible grid.
+# (`run_eph_over_k_and_kq` filters in the irreducible BZ and unfolds to build `kqpts`, so the fold here
+# re-folds an already-unfolded grid — a cheap redundant fold accepted to keep one code path. It runs
+# only on the CPU symmetry path, which `run_eph_over_k_and_kq` gates `el_kq_from_unfolding` on.)
+function _setup_electron_kq(model, kqpts, symmetry, el_kq_from_unfolding, window_kq;
+        fourier_mode, use_gpu = false)
     quantities = ["eigenvalue", "eigenvector", "velocity", "position"]
     if el_kq_from_unfolding
         symmetry !== nothing || throw(ArgumentError("el_kq_from_unfolding = true requires symmetry"))
+        kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
         el_kq_save_irr = compute_electron_states(model, kqpts_irr, quantities, window_kq; fourier_mode, use_gpu)
         el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
         # el_kq_save_irr is not used anymore.
@@ -47,39 +49,13 @@ function _setup_electron_kq(
 end
 
 
-# Per-thread EPState channel used by the CPU inner loops of the outer-k and over-k-and-kq drivers.
-function _make_epdatas_channel(::Type{FT}, nw, nmodes, nband_max) where {FT}
-    ch = Channel{EPState{FT}}(nthreads())
-    foreach(1:nthreads()) do _
-        put!(ch, EPState{FT}(nw, nmodes, nband_max))
-    end
-    ch
-end
-
-
-# setup_calculator! fan-out shared by all three drivers. The common keyword payload (band range,
-# k+q states/grid, carrier counts, thread chunking) is passed explicitly; driver-specific extras
-# (backend / verbosity) forward through `kwargs`.
-function _setup_calculators!(
-        calculators, kpts, qpts, el_k_save;
-        nw, nmodes, rng_band, el_states_kq, kqpts,
-        nelec_below_window_k, nelec_below_window_kq, nchunks_threads, kwargs...,
-    )
-    for calc in calculators
-        setup_calculator!(calc, kpts, qpts, el_k_save;
-            nw, nmodes, rng_band, el_states_kq, kqpts,
-            nelec_below_window_k, nelec_below_window_kq, nchunks_threads, kwargs...)
-    end
-end
-
-
 # Dielectric screening is currently disabled: ϵ ≡ 1 always. Passing a nontrivial `screening_params`
 # throws (the drivers reject it at entry; this is the defensive guard). The Lindhard evaluation is
 # kept commented for reference — re-enabling it needs a self-contained (T, μ) source, not the
 # `calculators[1].occ[1]` read it used to do (a layering violation that silently used the first
 # calculator's first occupation set even in multi-T runs). See
 # plans/calculator_gpu_extensibility.md [DECISION-3].
-function _apply_screening!(ϵs, calculators, model, xq, epdata, screening_params)
+function _apply_screening!(ϵs, calculators, model, xq, epstate, screening_params)
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")
@@ -87,7 +63,7 @@ function _apply_screening!(ϵs, calculators, model, xq, epdata, screening_params
     # if screening_params !== nothing
     #     (; T, μ) = calculators[1].occ[1]
     #     xq_ = normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
-    #     ϵs .= epsilon_lindhard.(Ref(model.recip_lattice * xq_), epdata.ph.e, T, μ, Ref(screening_params))
+    #     ϵs .= epsilon_lindhard.(Ref(model.recip_lattice * xq_), epstate.ph.e, T, μ, Ref(screening_params))
     #     ϵs .= real.(ϵs)
     # else
     #     ϵs .= 1

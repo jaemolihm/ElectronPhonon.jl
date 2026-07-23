@@ -104,8 +104,9 @@ function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantitie
     (; nw, el_velocity_mode) = model
     (; need_vfull, need_vdiag, need_position) = _electron_state_needs(model, quantities)
 
+    backend = gpu_backend()
     E = nothing; U = nothing; rbar = nothing; vel = nothing
-    itp_elham = get_interpolator(to_device(model.el_ham); fourier_mode="batched", batch_size=kpts.n)
+    itp_elham = get_interpolator(to_device(backend, model.el_ham); fourier_mode="batched", batch_size=kpts.n)
     if quantities == ["eigenvalue"]
         E = Array(get_el_eigen_valueonly_batched(itp_elham, kpts.vectors))
     else
@@ -113,7 +114,7 @@ function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantitie
         E = Array(E_dev); U = Array(U_dev)
         rbar_dev = nothing
         if need_position
-            itp_pos = get_interpolator(to_device(model.el_pos); fourier_mode="batched", batch_size=kpts.n)
+            itp_pos = get_interpolator(to_device(backend, model.el_pos); fourier_mode="batched", batch_size=kpts.n)
             rbar_dev = get_el_velocity_direct_batched(itp_pos, kpts.vectors, U_dev)
             rbar = Array(rbar_dev)
         end
@@ -125,7 +126,7 @@ function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantitie
             else
                 throw(ArgumentError("unknown el_velocity_mode $el_velocity_mode"))
             end
-            itp_vel = get_interpolator(to_device(Mop); fourier_mode="batched", batch_size=kpts.n)
+            itp_vel = get_interpolator(to_device(backend, Mop); fourier_mode="batched", batch_size=kpts.n)
             vel_dev = get_el_velocity_direct_batched(itp_vel, kpts.vectors, U_dev)
             if el_velocity_mode === :BerryConnection && need_vfull
                 nk = kpts.n
@@ -250,7 +251,8 @@ function _compute_phonon_states_gpu!(states, model::Model{FT}, kpts, quantities,
     polar = model.polar_phonon
     polar.use && error("compute_phonon_states use_gpu does not support polar phonons")
 
-    itp_dyn = get_interpolator(to_device(model.ph_dyn); fourier_mode="batched", batch_size=kpts.n)
+    backend = gpu_backend()
+    itp_dyn = get_interpolator(to_device(backend, model.ph_dyn); fourier_mode="batched", batch_size=kpts.n)
     D = _fourier_hk_batched(itp_dyn, kpts.vectors)  # (nmodes,nmodes,nq)
     msqrt_d = similar(D, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
     D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
@@ -261,7 +263,7 @@ function _compute_phonon_states_gpu!(states, model::Model{FT}, kpts, quantities,
     U = Array(U_dev)
     vel = nothing
     if need_velocity
-        itp_phvel = get_interpolator(to_device(model.ph_dyn_R); fourier_mode="batched", batch_size=kpts.n)
+        itp_phvel = get_interpolator(to_device(backend, model.ph_dyn_R); fourier_mode="batched", batch_size=kpts.n)
         vel = Array(get_el_velocity_direct_batched(itp_phvel, kpts.vectors, U_dev))
     end
 

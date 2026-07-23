@@ -78,45 +78,45 @@ function transport_set_μ!(params, energy, weights, nelec_below_window=0; do_pri
 end
 
 """
-    compute_lifetime_serta!(transdata::TransportSERTA, epdata, params::ElectronTransportParams, ik)
-Compute electron inverse lifetime for given k and q point data in epdata
+    compute_lifetime_serta!(transdata::TransportSERTA, epstate, params::ElectronTransportParams, ik)
+Compute electron inverse lifetime for given k and q point data in epstate
 """
 @timing "compute_τ_serta" function compute_lifetime_serta!(transdata::TransportSERTA,
-        epdata, params::ElectronTransportParams, ik)
+        epstate, params::ElectronTransportParams, ik)
 
-    el_kq_occ = epdata.el_kq.occupation
+    el_kq_occ = epstate.el_kq.occupation
 
     for iT in 1:length(params.Tlist)
         T = params.Tlist[iT]
         μ = params.μlist[iT]
 
-        set_occupation!(epdata.el_kq, μ, T)
+        set_occupation!(epstate.el_kq, μ, T)
 
         # Calculate inverse electron lifetime
-        for imode in 1:epdata.nmodes
-            omega = epdata.ph.e[imode]
+        for imode in 1:epstate.nmodes
+            omega = epstate.ph.e[imode]
             if omega < omega_acoustic
                 continue
             end
-            occ_ph = occ_boson(epdata.ph.e[imode], T)
+            occ_ph = occ_boson(epstate.ph.e[imode], T)
 
-            @inbounds for ib in epdata.el_k.rng, jb in epdata.el_kq.rng
+            @inbounds for ib in epstate.el_k.rng, jb in epstate.el_kq.rng
                 # 1: phonon absorption. e_k + phonon -> e_kq
                 # 2: phonon emission.   e_k -> e_kq + phonon
-                delta_e1 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] - omega)
-                delta_e2 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] + omega)
+                delta_e1 = epstate.el_k.e[ib] - (epstate.el_kq.e[jb] - omega)
+                delta_e2 = epstate.el_k.e[ib] - (epstate.el_kq.e[jb] + omega)
                 delta1 = delta_smeared(delta_e1, params.smearing)
                 delta2 = delta_smeared(delta_e2, params.smearing)
                 fcoeff1 = occ_ph + el_kq_occ[jb]
                 fcoeff2 = occ_ph + 1 - el_kq_occ[jb]
 
                 # Uncomment below to use reciprocity-preserving occupation factors
-                # occ_ph_1 = occ_boson(epdata.el_kq.e[jb] - epdata.el_k.e[ib], T)
+                # occ_ph_1 = occ_boson(epstate.el_kq.e[jb] - epstate.el_k.e[ib], T)
                 # fcoeff1 = occ_ph_1 + el_kq_occ[jb]
-                # occ_ph_2 = occ_boson(epdata.el_k.e[ib] - epdata.el_kq.e[jb], T)
+                # occ_ph_2 = occ_boson(epstate.el_k.e[ib] - epstate.el_kq.e[jb], T)
                 # fcoeff2 = (occ_ph_2 + 1 - el_kq_occ[jb])
 
-                transdata.inv_τ[ib, ik, iT] += (2π * epdata.wtq * epdata.g2[jb, ib, imode]
+                transdata.inv_τ[ib, ik, iT] += (2π * epstate.wtq * epstate.g2[jb, ib, imode]
                     * (fcoeff1 * delta1 + fcoeff2 * delta2))
             end
         end # modes
@@ -126,7 +126,7 @@ end
 """
     compute_conductivity_serta!(params::ElectronTransportParams, inv_τ, energy, vel_diag,
         weights, window=(-Inf, Inf))
-Compute electron inverse lifetime for given k and q point data in epdata
+Compute electron inverse lifetime for given k and q point data in epstate
 """
 function compute_conductivity_serta!(params::ElectronTransportParams{R}, inv_τ,
         el_states::Vector{ElectronState{R}}, weights, window=(-Inf, Inf)) where {R <: Real}

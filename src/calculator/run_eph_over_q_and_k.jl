@@ -192,13 +192,8 @@ function _setup_eph_over_q_and_k(
         end
         kqpts = GridKpoints(kqpts)
 
-        if el_kq_from_unfolding
-            kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
-        else
-            kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
-        end
-        el_kq_save = _setup_electron_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
-            symmetry, el_kq_from_unfolding, window_kq; fourier_mode)
+        el_kq_save = _setup_electron_kq(model, kqpts, symmetry, el_kq_from_unfolding, window_kq;
+            fourier_mode)
     else
         kqpts = nothing
         nelec_below_window_kq = nothing
@@ -224,21 +219,23 @@ function _setup_eph_over_q_and_k(
     end
 
 
-    # Backend: one resolution point. On the GPU path upload `model.el_ham` ONCE here (for the k+q
-    # eigensolve in the loop) and wrap it as the backend prototype; the loop reuses this device object
-    # rather than re-uploading. `backend` is carried in `LoopContext` and passed to `setup_calculator!`.
-    el_ham_dev = use_gpu ? to_device(model.el_ham) : nothing
-    backend = use_gpu ? GPUBackend(el_ham_dev.op_r) : CPUBackend()
+    # Backend: one resolution point (`gpu_backend()` carries an empty device-array allocation
+    # template; `alloc(backend, …)` / `similar(backend.proto, …)` use it). `model.el_ham` is uploaded
+    # ONCE here (for the k+q eigensolve in the loop), reused rather than re-uploaded — a separate
+    # device object from the backend. `backend` is carried in `LoopContext` and passed to `setup_calculator!`.
+    backend = use_gpu ? gpu_backend() : CPUBackend()
+    el_ham_dev = use_gpu ? to_device(backend, model.el_ham) : nothing
 
     # Chemical potential is solved inside each calculator's `setup_calculator!` (via
     # `set_chemical_potential!`), not here. On the GPU path a calculator can run its ncarrier sums on
     # the device via `backend.proto` (the bisection sweeps all in-window states many times and
     # dominates the setup at dense grids); the generic `compute_ncarrier` broadcast+sum works for
     # every occ_type on the device, so no occ_type is special-cased.
-    _setup_calculators!(calculators, kpts, qpts, el_k_save;
-        nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        nelec_below_window_k, nelec_below_window_kq, nchunks_threads, verbosity, backend,
-    )
+    for calc in calculators
+        setup_calculator!(calc, kpts, qpts, el_k_save;
+            nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
+            nelec_below_window_k, nelec_below_window_kq, nchunks_threads, verbosity, backend)
+    end
 
     return (;
         kpts, qpts, kqpts,
@@ -268,7 +265,7 @@ function _loop_eph_over_q_and_k(
         verbosity::Int = 1,
     ) where {FT}
 
-    (; epdatas, ep_eRpq_obj, ep_eRpqs, epmat, ham_threads, vel_threads) = eph_buffers
+    (; epstates, ep_eRpq_obj, ep_eRpqs, epmat, ham_threads, vel_threads) = eph_buffers
     nk = kpts.n
     nq = qpts.n
     backend = CPUBackend()
@@ -283,8 +280,8 @@ function _loop_eph_over_q_and_k(
         ph = ph_save[iq]
 
         # Use precomputed data for the phonon state at q
-        for epdata in epdatas.data
-            epdata.ph = ph
+        for epstate in epstates.data
+            epstate.ph = ph
         end
 
         if !skip_eph
@@ -296,7 +293,7 @@ function _loop_eph_over_q_and_k(
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_q), calculators)
 
         @threads for (id_chunk, iks) in enumerate(chunks(1:nk; n=nchunks_threads))
-            epdata = take!(epdatas)
+            epstate = take!(epstates)
             ep_eRpq = take!(ep_eRpqs)
 
             if !precompute_el_kq
@@ -310,54 +307,54 @@ function _loop_eph_over_q_and_k(
                 xk = kpts.vectors[ik]
                 xkq = xk + xq
 
-                epdata.wtk = kpts.weights[ik]
-                epdata.wtq = qpts.weights[iq]
+                epstate.wtk = kpts.weights[ik]
+                epstate.wtq = qpts.weights[iq]
 
                 # Use precomputed data for the electron state at k
-                epdata.el_k = el_k_save[ik]
+                epstate.el_k = el_k_save[ik]
 
                 if precompute_el_kq
                     # Use precomputed data for the electron state at k+q
                     ikq = xk_to_ik(xkq, kqpts)
                     ikq === nothing && continue
-                    epdata.el_kq = el_kq_save[ikq]
+                    epstate.el_kq = el_kq_save[ikq]
                 else
                     # Compute electron state at k+q.
                     ikq = nothing
-                    set_eigen!(epdata.el_kq, ham, xkq)
+                    set_eigen!(epstate.el_kq, ham, xkq)
 
                     # Set energy window, skip if no state is inside the window
-                    set_window!(epdata.el_kq, window_kq)
-                    length(epdata.el_kq.rng) == 0 && continue
+                    set_window!(epstate.el_kq, window_kq)
+                    length(epstate.el_kq.rng) == 0 && continue
 
-                    set_velocity_diag!(epdata.el_kq, vel, xkq, model.el_velocity_mode)
+                    set_velocity_diag!(epstate.el_kq, vel, xkq, model.el_velocity_mode)
                     # TODO: full velocity
                 end
 
                 # If all bands and modes do not satisfy energy conservation, skip this (k, q) point pair.
-                check_energy_conservation_all(epdata, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
+                check_energy_conservation_all(epstate, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
-                epdata_set_mmat!(epdata)
+                epstate_set_mmat!(epstate)
 
                 # Compute electron-phonon coupling
                 if !skip_eph
-                    get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
-                    _apply_screening!(ϵs, calculators, model, xq, epdata, screening_params)
-                    epdata_compute_eph_dipole!(epdata, ϵs; model)
-                    epdata_set_g2!(epdata)
+                    get_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
+                    _apply_screening!(ϵs, calculators, model, xq, epstate, screening_params)
+                    epstate_compute_eph_dipole!(epstate, ϵs; model)
+                    epstate_set_g2!(epstate)
                 end
 
                 # TODO: Screening
 
-                # Now, we are done with matrix elements. All data saved in epdata.
+                # Now, we are done with matrix elements. All data saved in epstate.
 
-                payload = EPData(epdata, ik, iq, ikq, xk, xq, id_chunk, nothing)
+                payload = EPData(epstate, ik, iq, ikq, xk, xq, id_chunk, nothing)
                 foreach(c -> run_calculator!(c, payload, ctx_q), calculators)
 
             end # ik
 
             put!(ep_eRpqs, ep_eRpq)
-            put!(epdatas, epdata)
+            put!(epstates, epstate)
             if !precompute_el_kq
                 put!(ham_threads, ham)
                 put!(vel_threads, vel)
@@ -605,7 +602,7 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
         nk_outer_batch_max::Integer = 256, nq_batch_max = nothing, nk_batch_max::Integer = 2^15,
         calculators = [], use_gpu::Bool = true) where {FT}
     (; nw, nmodes) = model
-    backend = use_gpu ? GPUBackend(to_device(model.epmat).op_r) : CPUBackend()
+    backend = use_gpu ? gpu_backend() : CPUBackend()
     if model.epmat_outer_momentum == "el"
         nr_ep = length(get_next_wannier_object(model.epmat).irvec)
         nk_batch = min(Int(nk_outer_batch_max), Int(nk))

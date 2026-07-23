@@ -181,8 +181,8 @@ end
 
 # CPU path: allocate the per-chunk thread buffers on the first outer iteration (this runs once,
 # single-threaded, so no lock is needed), then zero them for the new outer k. Dispatched on
-# `SingleMode`; in the batched loop (`BatchedMode`) the default no-op runs (the batched loop fires
-# per-k OuterIteration brackets too, but the device buffers live in OuterIterationBatch).
+# `SingleMode`; in the batched loop (`BatchedMode`) the explicit no-op below runs (the batched loop
+# fires per-k OuterIteration brackets too, but the device buffers live in OuterIterationBatch).
 function calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIteration,
         ctx::LoopContext{CPUBackend, SingleMode}) where {FT}
     if isempty(calc.Sₒ_buffer)
@@ -200,14 +200,14 @@ function calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIteration,
 end
 
 # CPU path: called per (ik, iq, ikq) by the host e-ph loop; accumulates into the per-chunk thread
-# buffers, reduced into Sₒ/Sᵢ by the OuterIteration end bracket. The `(m, n, iocc, imode)` loop below
-# mirrors, term for term (`ek`/`ekq`/`ωq`/`so`/`si`/`sₒ`/`sᵢ`), the device work in
+# buffers, reduced into Sₒ/Sᵢ by the OuterIteration end bracket. The `(m, n, iT, imode)` loop below
+# mirrors, term for term (`ek`/`ekq`/`ωq`/`sₒ_ν`/`sᵢ_ν`/`sₒ`/`sᵢ`), the device work in
 # `bte_window_accumulate!` (the EPDataQBatched path); both fold the identical `bte_scattering_increments`.
 function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData, ctx::LoopContext{CPUBackend, SingleMode}) where {FT}
-    (; epdata, ikq, id_chunk) = p
+    (; epstate, ikq, id_chunk) = p
     Sₒ = calc.Sₒ_buffer[id_chunk]
     Sᵢ = calc.Sᵢ_buffer[id_chunk]
-    (; el_k, el_kq, ph, wtq) = epdata
+    (; el_k, el_kq, ph, wtq) = epstate
     method = calc.occupation_method
     @inbounds for n in el_k.rng
         ek = el_k.e[n]
@@ -221,9 +221,9 @@ function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData, ctx::LoopCont
                 for imode in 1:ph.nmodes
                     ωq = ph.e[imode]
                     ωq < calc.omega_cutoff && continue
-                    so, si = bte_scattering_increments(method, ek, ekq, ωq,
-                        epdata.g2[m, n, imode], wtq, μ, T, smearing)
-                    sₒ += so; sᵢ += si
+                    sₒ_ν, sᵢ_ν = bte_scattering_increments(method, ek, ekq, ωq,
+                        epstate.g2[m, n, imode], wtq, μ, T, smearing)
+                    sₒ += sₒ_ν; sᵢ += sᵢ_ν
                 end
                 Sₒ[iT][n] += sₒ
                 Sᵢ[iT][n, ind_el_f] += sᵢ
@@ -250,6 +250,12 @@ function calculator_end!(calc::BoltzmannCalculator, ::OuterIteration,
     end
     calc
 end
+
+# GPU per-k OuterIteration bracket: no-op. The batched outer-k loop fires the per-k `OuterIteration`
+# brackets too (BatchedMode), but this calculator's per-k device work is none — its device buffers
+# are set up once and the per-batch tile lifecycle lives in the OuterIterationBatch brackets below.
+calculator_begin!(::BoltzmannCalculator, ::OuterIteration, ::LoopContext{<:AbstractBackend, BatchedMode}) = nothing
+calculator_end!(::BoltzmannCalculator,   ::OuterIteration, ::LoopContext{<:AbstractBackend, BatchedMode}) = nothing
 
 # --- GPU batched path (EPDataQBatched) -----------------------------------------------
 
@@ -283,7 +289,7 @@ end
 
 """
     bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wq,
-                           μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nq_batch; i0=0)
+                           μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nq_batch, i0)
 
 Accumulate the BTE scattering-out (Sₒ) and scattering-in (Sᵢ) contributions of one k+q batch into
 the (in-energy-window) device buffers — the transport analogue of `eph_window_scatter!`, and the
@@ -302,37 +308,14 @@ device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPDataQBatched
     outer-k batch, so `Sᵢ_out` is the current tile and the row is the tile-local `i - i0`.
 
 `imap_i_at_k` is `imap_i[:, ik]` — the outer-state indices at the batch's fixed outer k `ik`.
-`i0` is the global-i offset of the current `Sᵢ` tile. Generic (CPU/fallback) method; the CUDA
-extension provides the `CuArray` kernel. The physics lives entirely in `bte_scattering_increments`
-so the two paths agree.
+`i0` is the global-i offset of the current `Sᵢ` tile. Only the CUDA extension provides a method
+(`CuArray` kernel): the CPU BoltzmannCalculator never batches — it accumulates per (k, q) via the
+`run_calculator!(::EPData)` host loop above — so a generic CPU method would be dead code (a silent
+fallback risk), and is deliberately not defined. The physics lives entirely in
+`bte_scattering_increments`, so the device kernel agrees with the CPU host loop (validated
+end-to-end in `test/boltzmann/test_gpu_boltzmann_calculator.jl`).
 """
-function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
-        e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
-        nbandkq::Int, nbandk::Int, nmodes::Int, nq_batch::Int; i0::Int = 0)
-    nT = length(μs)
-    @inbounds for j in 1:nq_batch, n in 1:nbandk, m in 1:nbandkq
-        i = imap_i_at_k[n]
-        i > 0 || continue
-        ikq = ikqs[j]
-        f = imap_f[m, ikq]
-        f > 0 || continue
-        ek = e_i[i]; ekq = e_f[f]; wtq = wq[ikq]
-        il = i - i0
-        for iT in 1:nT
-            μ = μs[iT]; T = Ts[iT]; η = ηs[iT]
-            sₒ = zero(eltype(Sₒ_out)); sᵢ = sₒ
-            for ν in 1:nmodes
-                ωq = ωqmat[ν, j]
-                ωq < ω_cutoff && continue
-                so, si = bte_scattering_increments(method, ek, ekq, ωq, g2vals[m, n, ν, j], wtq, μ, T, η)
-                sₒ += so; sᵢ += si
-            end
-            Sₒ_out[i, iT] += sₒ
-            Sᵢ_out[il, f, iT] = sᵢ
-        end
-    end
-    nothing
-end
+function bte_window_accumulate! end
 
 # GPU path: called once per outer-k batch by the device e-ph loop; scatters into the device Sₒ and the
 # current Sᵢ tile via `bte_window_accumulate!` (the device analogue of the CPU EPData loop above —
@@ -354,7 +337,7 @@ function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPDataQBatched, ctx) 
     bte_window_accumulate!(dev.Sₒ, device_array(t, 1), g2s, ωqs,
         imap_i_at_k, dev.imap_f, ikqs, dev.e_i, dev.e_f, dev.wq,
         dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff,
-        nbandkq, nbandk, nmodes, nq_batch; i0 = tile_offset(t))
+        nbandkq, nbandk, nmodes, nq_batch, tile_offset(t))
     calc
 end
 

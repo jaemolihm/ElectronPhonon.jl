@@ -43,12 +43,12 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
     ph_save = compute_phonon_states(model, qpts, ["eigenvector", "eph_dipole_coeff"]; fourier_mode)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdata = EPState(nw, nmodes)
+    epstate = EPState(nw, nmodes)
 
     ik = 1
     xk = kpts.vectors[ik]
     el_k = el_k_save[ik]
-    epdata.el_k = el_k
+    epstate.el_k = el_k
 
     epmat = get_interpolator(model.epmat; fourier_mode)
 
@@ -57,29 +57,29 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
         ep_ekpR_obj = get_next_wannier_object(model.epmat)
         ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
 
-        get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epdata.el_k.u))
+        get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epstate.el_k.u))
 
         # Calculate electron-phonon coupling matrix elements
         for iq in 1:nq
             xkq = kqpts.vectors[iq]
             xq = qpts.vectors[iq]
 
-            # Set electron and phonon states in epdata
-            epdata.el_kq = el_kq_save[iq]
-            epdata.ph = ph_save[iq]
+            # Set electron and phonon states in epstate
+            epstate.el_kq = el_kq_save[iq]
+            epstate.ph = ph_save[iq]
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
+            get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
             if include_polar && any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
-                epdata_set_mmat!(epdata)
-                model.polar_eph.use && epdata_compute_eph_dipole!(epdata; model)
+                epstate_set_mmat!(epstate)
+                model.polar_eph.use && epstate_compute_eph_dipole!(epstate; model)
             end
-            epdata_set_g2!(epdata)
+            epstate_set_g2!(epstate)
 
             @views for imode in 1:nmodes
-                # Here, |g|^2 = |epdata.ep|^2 / 2ω, so 2ω|g|^2 = |epdata.ep|^2.
-                deformation_potential[imode, iq] = norm(epdata.ep[band_rng, band_rng, imode])
-                e_ph[imode, iq] = epdata.ph.e[imode]
+                # Here, |g|^2 = |epstate.ep|^2 / 2ω, so 2ω|g|^2 = |epstate.ep|^2.
+                deformation_potential[imode, iq] = norm(epstate.ep[band_rng, band_rng, imode])
+                e_ph[imode, iq] = epstate.ph.e[imode]
             end
         end # iq
 
@@ -96,24 +96,24 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
             xkq = kqpts.vectors[iq]
             xq = qpts.vectors[iq]
 
-            # Set electron and phonon states in epdata
-            epdata.el_kq = el_kq_save[iq]
-            epdata.ph = ph_save[iq]
+            # Set electron and phonon states in epstate
+            epstate.el_kq = el_kq_save[iq]
+            epstate.ph = ph_save[iq]
 
             # Compute electron-phonon coupling
-            get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, epdata.ph.u)
-            get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
+            get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, epstate.ph.u)
+            get_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
 
             if include_polar && any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
-                epdata_set_mmat!(epdata)
-                model.polar_eph.use && epdata_compute_eph_dipole!(epdata; model)
+                epstate_set_mmat!(epstate)
+                model.polar_eph.use && epstate_compute_eph_dipole!(epstate; model)
             end
-            epdata_set_g2!(epdata)
+            epstate_set_g2!(epstate)
 
             @views for imode in 1:nmodes
-                # Here, |g|^2 = |epdata.ep|^2 / 2ω, so 2ω|g|^2 = |epdata.ep|^2.
-                deformation_potential[imode, iq] = norm(epdata.ep[band_rng, band_rng, imode])
-                e_ph[imode, iq] = epdata.ph.e[imode]
+                # Here, |g|^2 = |epstate.ep|^2 / 2ω, so 2ω|g|^2 = |epstate.ep|^2.
+                deformation_potential[imode, iq] = norm(epstate.ep[band_rng, band_rng, imode])
+                e_ph[imode, iq] = epstate.ph.e[imode]
             end
         end # iq
 

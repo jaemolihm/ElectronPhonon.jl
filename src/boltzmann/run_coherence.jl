@@ -316,8 +316,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     end
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [EPState{Float64}(nw, nmodes, nband_max)]
-    Threads.resize_nthreads!(epdatas)
+    epstates = [EPState{Float64}(nw, nmodes, nband_max)]
+    Threads.resize_nthreads!(epstates)
 
     ep_ekpR_obj = get_next_wannier_object(model.epmat)
     epmat = get_interpolator(model.epmat; fourier_mode)
@@ -352,8 +352,8 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         xk = kpts.vectors[ik]
         el_k = el_k_save[ik]
 
-        for epdata in epdatas
-            epdata.el_k = el_k
+        for epstate in epstates
+            epstate.el_k = el_k
         end
 
         get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
@@ -364,10 +364,10 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         # Threads.@threads :static for ikq in 1:nkq
         for ikq in 1:nkq
             tid = Threads.threadid()
-            epdata = epdatas[tid]
+            epstate = epstates[tid]
 
-            epdata.wtk = kpts.weights[ik]
-            epdata.wtq = kqpts.weights[ikq]
+            epstate.wtk = kpts.weights[ik]
+            epstate.wtq = kqpts.weights[ikq]
 
             xkq = kqpts.vectors[ikq]
 
@@ -375,48 +375,48 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             iq = xk_to_ik(xkq - xk, qpts)
             xq = qpts.vectors[iq]
 
-            # Copy saved electron and phonon states to epdata
-            epdata.ph = ph_save[iq]
-            epdata.el_kq = el_kq_save[ikq]
+            # Copy saved electron and phonon states to epstate
+            epstate.ph = ph_save[iq]
+            epstate.el_kq = el_kq_save[ikq]
 
-            el_kq = epdata.el_kq
-            ph = epdata.ph
+            el_kq = epstate.el_kq
+            ph = epstate.ph
 
             # If all bands and modes do not satisfy energy conservation, skip this (k, q) point pair.
-            check_energy_conservation_all(epdata, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
+            check_energy_conservation_all(epstate, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
+            get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
 
             # Save mmat for computing dipole contribution to electron-phonon coupling
             # The dipole e-ph matrix element itself is computed in compute_qme_scattering_matrix
             @timing "mmat" if model.use_polar_dipole
-                epdata_set_mmat!(epdata)
+                epstate_set_mmat!(epstate)
                 for jb in el_kq.rng, ib in el_k.rng
                     bt_nmmat += 1
                     bt_mmat_ik[bt_nmmat] = ik
                     bt_mmat_ikq[bt_nmmat] = ikq
                     bt_mmat_ib[bt_nmmat] = ib
                     bt_mmat_jb[bt_nmmat] = jb
-                    bt_mmat[bt_nmmat] = epdata.mmat[jb, ib]
+                    bt_mmat[bt_nmmat] = epstate.mmat[jb, ib]
                 end
             end
 
             # Skip calculation of g2 because g2 is not used.
-            # epdata_set_g2!(epdata)
+            # epstate_set_g2!(epstate)
             # # Average g2 over degenerate electron bands
-            # average_degeneracy && epdata_g2_degenerate_average!(epdata)
+            # average_degeneracy && epstate_g2_degenerate_average!(epstate)
 
             @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng
                 # Ignore negative-frequency mode
-                epdata.ph.e[imode] < 0 && continue
+                epstate.ph.e[imode] < 0 && continue
                 # Save only if the scattering satisfies energy conservation
                 econv_p, econv_m = (check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
                 kqpts.ngrid, model.recip_lattice, energy_conservation...) for sign_ph in (1, -1))
                 if econv_p || econv_m
                     bt_nscat += 1
-                    ω = epdata.ph.e[imode]
-                    bt_mel[bt_nscat] = epdata.ep[jb, ib, imode] / sqrt(2ω)
+                    ω = epstate.ph.e[imode]
+                    bt_mel[bt_nscat] = epstate.ep[jb, ib, imode] / sqrt(2ω)
                     bt_econv_p[bt_nscat] = econv_p
                     bt_econv_m[bt_nscat] = econv_m
                     bt_ib[bt_nscat] = ib

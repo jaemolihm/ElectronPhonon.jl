@@ -12,7 +12,7 @@ Create once and pass via the `eph_buffers` keyword argument to `run_eph_over_q_a
                          fourier_mode="gridopt", nband_max=model.nw)
 """
 struct EphOuterQLoopBuffers{FT, IT <: AbstractWannierInterpolator}
-    epdatas::Channel{EPState{FT}}
+    epstates::Channel{EPState{FT}}
     ep_eRpq_obj::HostWannierObject{FT}
     ep_eRpqs::Channel{AbstractWannierInterpolator{FT}}
     epmat::IT
@@ -31,9 +31,9 @@ function EphOuterQLoopBuffers(model::Model{FT};
     nbuffers = min(nthreads(), nchunks_threads)
     threads = nbuffers > 1
 
-    epdatas = Channel{EPState{FT}}(nbuffers)
+    epstates = Channel{EPState{FT}}(nbuffers)
     foreach(1:nbuffers) do _
-        put!(epdatas, EPState{FT}(nw, nmodes, nband_max))
+        put!(epstates, EPState{FT}(nw, nmodes, nband_max))
     end
 
     ep_eRpq_obj = get_next_wannier_object(model.epmat)
@@ -53,5 +53,5 @@ function EphOuterQLoopBuffers(model::Model{FT};
         vel_threads = nothing
     end
 
-    EphOuterQLoopBuffers(epdatas, ep_eRpq_obj, ep_eRpqs, epmat, ham_threads, vel_threads)
+    EphOuterQLoopBuffers(epstates, ep_eRpq_obj, ep_eRpqs, epmat, ham_threads, vel_threads)
 end
