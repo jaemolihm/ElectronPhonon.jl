@@ -20,6 +20,7 @@ include("common/symmetry.jl")
 include("common/fermi_energy.jl")
 include("common/Structure.jl")
 include("common/occupation.jl")
+include("common/smearing.jl")
 include("common/AllocatedLAPACK.jl")
 
 include("interface/quantum_espresso.jl")

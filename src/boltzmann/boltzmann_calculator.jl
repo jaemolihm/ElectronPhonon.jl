@@ -14,9 +14,6 @@
 #   Sₒ :: Vector{Vector}  — Sₒ[iT][i]      (inverse SERTA lifetime γ_{nk})
 #   Sᵢ :: Vector{Matrix}  — Sᵢ[iT][i, f]   (scattering-in kernel)
 #
-# Supported configuration (asserted at setup): FermiDirac occupation + Gaussian smearing — the
-# configuration `bte_scattering_increments` implements and the one used for transport.
-#
 # GPU device memory (Sᵢ): the scattering-in matrix Sᵢ (n_i·n_f·nT) is the large object. On the GPU it
 # is never held whole on the device — it is tiled over outer k, each tile filled by one k-batch and
 # streamed to the host (OuterIterationBatch begin/end brackets), so only one tile (≈ one k-batch of rows)
@@ -38,22 +35,22 @@ export BoltzmannCalculator
 # the calculator; touched only at hook granularity (one kernel launch per call), so the function
 # boundary keeps the hot code type-stable. The tiled Sᵢ output lives in `calc.tiled` (a
 # `TiledDeviceOutput`); the energies/weights are gathered from the run's shared `ctx.el_k_stacks`.
-struct BoltzmannDeviceBuffers{MT, MI, VT}
-    Sₒ      :: MT      # (n_i, nT)  — small, device-resident
-    imap_i  :: MI      # (nw, n_k)  physical-band → outer state index
-    imap_f  :: MI      # (nw, n_kq) physical-band → inner state index
-    e_i     :: VT      # (n_i,) outer energies
-    e_f     :: VT      # (n_f,) inner energies
-    wq      :: VT      # (n_kq,) inner k+q weights
-    μ       :: VT      # (nT,)
-    T       :: VT      # (nT,)
-    η       :: VT      # (nT,)
+struct BoltzmannDeviceBuffers{MT, MI, VT, ST}
+    Sₒ       :: MT      # (n_i, nT)  — small, device-resident
+    imap_i   :: MI      # (nw, n_k)  physical-band → outer state index
+    imap_f   :: MI      # (nw, n_kq) physical-band → inner state index
+    e_i      :: VT      # (n_i,) outer energies
+    e_f      :: VT      # (n_f,) inner energies
+    wq       :: VT      # (n_kq,) inner k+q weights
+    μ        :: VT      # (nT,)
+    T        :: VT      # (nT,)
+    smearing :: ST      # (nT,)
 end
 
 Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # --- Parameters ---
     const occ::ElectronOccupationParams
-    const smearing::Vector{Tuple{Symbol, Float64}}        # one (type, η) per temperature
+    const smearing_list::Vector{SmearingType{FT}}        # One per temperature
     # Occupation-factor convention, an integer 1..6; the six conventions are defined in
     # `bte_scattering_increments` (src/boltzmann/bte_scattering_core.jl).
     const occupation_method::Int = 5
@@ -123,8 +120,6 @@ function ElectronPhonon.setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, q
         throw(ArgumentError("scattering_method :MRTA not implemented"))
     calc.occ.occ_type === :FermiDirac ||
         throw(ArgumentError("BoltzmannCalculator supports occ_type = :FermiDirac only (got $(calc.occ.occ_type))"))
-    all(s -> s[1] === :Gaussian, calc.smearing) ||
-        throw(ArgumentError("BoltzmannCalculator supports :Gaussian smearing only"))
     FT === Float64 ||
         throw(ArgumentError("BoltzmannCalculator requires FT = Float64: FP32 is not tested and " *
                             "FP32 support is not planned (transport accuracy)."))
@@ -190,7 +185,7 @@ end
 # buffers, reduced into Sₒ/Sᵢ by the OuterIteration end bracket. The `(m, n, iocc, imode)` loop below
 # mirrors, term for term (`ek`/`ekq`/`ωq`/`so`/`si`/`sₒ`/`sᵢ`), the device work in
 # `bte_window_accumulate!` (the EPDataQBatched path); both fold the identical `bte_scattering_increments`.
-function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData, ctx) where {FT}
+function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData, ctx::LoopContext{CPUBackend, SingleMode}) where {FT}
     (; epdata, ikq, id_chunk) = p
     Sₒ = calc.Sₒ_buffer[id_chunk]
     Sᵢ = calc.Sᵢ_buffer[id_chunk]
@@ -202,18 +197,18 @@ function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData
             ind_el_f = state_index(calc.el_f, ikq, m)
             ind_el_f == 0 && continue
             ekq = el_kq.e[m]
-            for (iocc, (; μ, T)) in enumerate(calc.occ)
-                η = calc.smearing[iocc][2]
+            for (iT, (; μ, T)) in enumerate(calc.occ)
+                smearing = calc.smearing_list[iT]
                 sₒ = zero(FT); sᵢ = zero(FT)
                 for imode in 1:ph.nmodes
                     ωq = ph.e[imode]
                     ωq < calc.omega_cutoff && continue
                     so, si = bte_scattering_increments(method, ek, ekq, ωq,
-                        epdata.g2[m, n, imode], wtq, μ, T, η)
+                        epdata.g2[m, n, imode], wtq, μ, T, smearing)
                     sₒ += so; sᵢ += si
                 end
-                Sₒ[iocc][n] += sₒ
-                Sᵢ[iocc][n, ind_el_f] += sᵢ
+                Sₒ[iT][n] += sₒ
+                Sᵢ[iT][n, ind_el_f] += sᵢ
             end
         end
     end
@@ -274,9 +269,9 @@ function ElectronPhonon.calculator_begin!(calc::BoltzmannCalculator{FT}, ::Outer
             _gather_state_energies(backend, stacks.e_k, calc.el_i),             # e_i (from shared stack)
             _gather_state_energies(backend, stacks.e_kq, calc.el_f),           # e_f (from shared stack)
             stacks.wtq,                                                         # wq  (shared k+q weights)
-            copyto!(alloc(backend, FT, nT), collect(FT, calc.occ.μlist)),       # μ
-            copyto!(alloc(backend, FT, nT), collect(FT, calc.occ.Tlist)),       # T
-            copyto!(alloc(backend, FT, nT), FT[s[2] for s in calc.smearing]),   # η
+            to_device(backend, collect(FT, calc.occ.μlist)),                    # μ
+            to_device(backend, collect(FT, calc.occ.Tlist)),                    # T
+            to_device(backend, calc.smearing_list),                             # smearing (one per T)
         )
     end
 
@@ -304,20 +299,20 @@ end
 
 """
     bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wq,
-                           μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nqc, nT; i0=0)
+                           μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nqc; i0=0)
 
 Accumulate the BTE scattering-out (Sₒ) and scattering-in (Sᵢ) contributions of one e-ph chunk into
 the (in-energy-window) device buffers — the transport analogue of `eph_window_scatter!`, and the
 device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPDataQBatched, ctx)` (its sole caller, so it lives here). For every
 `(m, n, j)` of the chunk look up the outer/inner states `i = imap_i_at_k[n]`,
 `f = imap_f[m, ikqs[j]]` (skip if either is out-of-window, `== 0`), then for each temperature
-`iocc` sum the shared per-mode physics (`bte_scattering_increments`) over the `nmodes` phonon modes
+`iT` sum the shared per-mode physics (`bte_scattering_increments`) over the `nmodes` phonon modes
 (`ωqmat[ν,j] ≥ ω_cutoff`) and:
 
-  * `Sₒ_out[i, iocc] += Σ_ν sₒ`      — scattering-out, added over `(m, ν, j)` (many `(m,j)` map to
+  * `Sₒ_out[i, iT] += Σ_ν sₒ`      — scattering-out, added over `(m, ν, j)` (many `(m,j)` map to
     the same outer `i`), so the device method uses an atomic add here. `Sₒ` is small (`n_i × nT`)
     and device-resident, so it is indexed by the GLOBAL outer state `i`;
-  * `Sᵢ_out[i−i0, f, iocc] = Σ_ν sᵢ` — scattering-in; each `(i, f)` pair is produced by a unique
+  * `Sᵢ_out[i−i0, f, iT] = Σ_ν sᵢ` — scattering-in; each `(i, f)` pair is produced by a unique
     `(n, m, j)` across the whole run (distinct k → distinct i, distinct k+q → distinct f), so this
     is a collision-free plain write (no atomics needed). `Sᵢ` is streamed to the host one tile per
     outer-k batch, so `Sᵢ_out` is the current tile and the row is the tile-local `i − i0`.
@@ -329,7 +324,8 @@ so the two paths agree.
 """
 function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
         e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
-        nbandkq::Int, nbandk::Int, nmodes::Int, nqc::Int, nT::Int; i0::Int = 0)
+        nbandkq::Int, nbandk::Int, nmodes::Int, nqc::Int; i0::Int = 0)
+    nT = length(μs)
     @inbounds for j in 1:nqc, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_at_k[n]
         i > 0 || continue
@@ -338,8 +334,8 @@ function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k,
         f > 0 || continue
         ek = e_i[i]; ekq = e_f[f]; wtq = wq[ikq]
         il = i - i0
-        for iocc in 1:nT
-            μ = μs[iocc]; T = Ts[iocc]; η = ηs[iocc]
+        for iT in 1:nT
+            μ = μs[iT]; T = Ts[iT]; η = ηs[iT]
             sₒ = zero(eltype(Sₒ_out)); sᵢ = sₒ
             for ν in 1:nmodes
                 ωq = ωqmat[ν, j]
@@ -347,8 +343,8 @@ function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k,
                 so, si = bte_scattering_increments(method, ek, ekq, ωq, g2vals[m, n, ν, j], wtq, μ, T, η)
                 sₒ += so; sᵢ += si
             end
-            Sₒ_out[i, iocc] += sₒ
-            Sᵢ_out[il, f, iocc] = sᵢ
+            Sₒ_out[i, iT] += sₒ
+            Sᵢ_out[il, f, iT] = sᵢ
         end
     end
     nothing
@@ -361,7 +357,6 @@ function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData
     (; ep_kq, g2, ωq, ik, ikqs, ibandk_offset) = p
     dev = calc.dev
     nbandkq, nbandk, nmodes, nqc = size(ep_kq)
-    nT = length(calc.occ)
     # Device buffers (imap/energies/Sₒ in `dev`, the Sᵢ tile in `calc.tiled`) were built once in the
     # first OuterIterationBatch begin. `g2 = |ep|²/(2ω)` is folded by the loop's fused kernel (payload).
 
@@ -374,8 +369,8 @@ function ElectronPhonon.run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData
     t = calc.tiled
     ElectronPhonon.bte_window_accumulate!(dev.Sₒ, device_array(t, 1), g2, ωq,
         imap_i_at_k, dev.imap_f, ikqs, dev.e_i, dev.e_f, dev.wq,
-        dev.μ, dev.T, dev.η, calc.occupation_method, calc.omega_cutoff,
-        nbandkq, nbandk, nmodes, nqc, nT; i0 = tile_offset(t))
+        dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff,
+        nbandkq, nbandk, nmodes, nqc; i0 = tile_offset(t))
     calc
 end
 

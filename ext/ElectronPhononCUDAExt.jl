@@ -44,6 +44,7 @@ that this method intentionally does not provide.
 function ElectronPhonon.to_device(obj::WannierObject{T, <:Array{Complex{T}}}) where {T}
     WannierObject(obj.irvec, CuArray(obj.op_r); irvec_next = obj.irvec_next, ndata = obj.ndata)
 end
+ElectronPhonon.to_device(arr::AbstractArray) = CuArray(arr)
 
 ElectronPhonon.device_free_bytes(::CuArray) = CUDA.free_memory()
 ElectronPhonon.device_synchronize(::CuArray) = CUDA.synchronize()
@@ -320,8 +321,8 @@ function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap
         f > 0 || return
         ek = e_i[i]; ekq = e_f[f]; wtq = wq[ikq]
         il = i - i0                # tile-local outer row (i0 = the current Sᵢ tile's global offset)
-        for iocc in 1:nT           # one entry per temperature
-            μ = μs[iocc]; T = Ts[iocc]; η = ηs[iocc]
+        for iT in 1:nT             # one entry per temperature
+            μ = μs[iT]; T = Ts[iT]; η = ηs[iT]
             sₒ = zero(eltype(Sₒ_out)); sᵢ = sₒ
             for ν in 1:nmodes
                 ωq = ωqmat[ν, j]
@@ -330,8 +331,8 @@ function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap
                     method, ek, ekq, ωq, g2vals[m, n, ν, j], wtq, μ, T, η)
                 sₒ += so; sᵢ += si
             end
-            CUDA.@atomic Sₒ_out[i, iocc] += sₒ
-            Sᵢ_out[il, f, iocc] = sᵢ
+            CUDA.@atomic Sₒ_out[i, iT] += sₒ
+            Sᵢ_out[il, f, iT] = sᵢ
         end
     end
     return
@@ -342,7 +343,8 @@ end
 # (m, n, j) over the chunk, accumulating this chunk's Sₒ/Sᵢ contributions into the device buffers.
 function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
         imap_i_at_k, imap_f, ikqs, e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
-        nbandkq::Int, nbandk::Int, nmodes::Int, nqc::Int, nT::Int; i0::Int = 0)
+        nbandkq::Int, nbandk::Int, nmodes::Int, nqc::Int; i0::Int = 0)
+    nT = length(μs)
     N = nbandkq * nbandk * nqc
     threads = 256
     blocks = cld(N, threads)
