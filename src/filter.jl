@@ -23,12 +23,12 @@ inside_window(e, window_min, window_max) = searchsortedfirst(e, window_min):sear
         -> (kpts, band_min, band_max, nelec_below_window)
 
 DEPRECATED backward-compat alias for `filter_electron_states`. New code should call
-`filter_electron_states(...) -> StateSelection` and read `sel.kpts`, `band_range(sel)`,
+`filter_electron_states(...) -> FilteredStates` and read `sel.kpts`, `band_range(sel)`,
 `sel.nstates_base`. This wrapper unpacks those into the legacy tuple. `mpi_comm` (optional 5th
 positional) is forwarded as the `mpi_comm` keyword.
 """
 function filter_kpoints(kpts_input, nw, el_ham, window; kwargs...)
-    @warn "filter_kpoints is deprecated; use filter_electron_states(...) -> StateSelection " *
+    @warn "filter_kpoints is deprecated; use filter_electron_states(...) -> FilteredStates " *
           "(sel.kpts, band_range(sel), sel.nstates_base)." maxlog=1
     sel = filter_electron_states(kpts_input, nw, el_ham, window; kwargs...)
     br = band_range(sel)
@@ -176,13 +176,13 @@ end
 
 """
     filter_electron_states(kpts_input, nw, el_ham, window; symmetry, fourier_mode, use_gpu,
-                           mpi_comm, shift) -> StateSelection
-    filter_electron_states(model, kpts_input, window; kwargs...) -> StateSelection
+                           mpi_comm, shift) -> FilteredStates
+    filter_electron_states(model, kpts_input, window; kwargs...) -> FilteredStates
 
 The unified electron-state filtering primitive (Generator 1). Filters a k-grid spec (an
 `NTuple{3,Int}`, `Kpoints`, or `GridKpoints`) to the energy `window` — optionally IBZ-reducing with
 `symmetry` and offsetting an `NTuple` grid by `shift` — and returns the selected `(k, band)` states
-as a `StateSelection`: `sel.kpts` is the filtered `GridKpoints`, `band_range(sel)` the global band
+as a `FilteredStates`: `sel.kpts` is the filtered `GridKpoints`, `band_range(sel)` the global band
 range, `sel.nstates_base` the below-window carrier count. Per-state weights are left empty (uniform
 ⇒ derived from `kpts.weights`). Supersedes the legacy tuple-returning `filter_kpoints`.
 
@@ -223,7 +223,7 @@ function filter_electron_states(kpts_input, nw::Integer, el_ham, window;
             push!(iks, ik); push!(ibands, b)
         end
     end
-    StateSelection(gkpts, iks, ibands; nw, nstates_base=nelec)
+    FilteredStates(gkpts, iks, ibands; nw, nstates_base=nelec)
 end
 
 # Convenience: pull nw/el_ham off a Model.
@@ -233,11 +233,11 @@ filter_electron_states(model::Model, kpts_input, window; kwargs...) =
 """
     filter_electron_states_multigrid(nks1, nks2, window1, window2, nw, el_ham;
                                      fourier_mode="gridopt", symmetry=nothing, use_gpu=false)
-        -> StateSelection
+        -> FilteredStates
 
-Generator 2 (double-grid): build a `StateSelection` sampling a FINE grid `nks1` in the narrow
+Generator 2 (double-grid): build a `FilteredStates` sampling a FINE grid `nks1` in the narrow
 `window1` merged with a COARSE grid `nks2` in the wide `window2` (`nks1` a multiple of `nks2`). The
-per-`(k, band)` weight follows the clean double-grid partition ([DECISION 1]):
+per-`(k, band)` weight follows the clean double-grid partition:
 
   * a fine-grid state `(k, b)` with `b` in the narrow window gets the fine BZ weight
     `kpts_fine.weights[k]`;
@@ -293,5 +293,5 @@ function filter_electron_states_multigrid(nks1, nks2, window1, window2, nw, el_h
         push!(iks, ik); push!(ibands, b); push!(wstate, bandw[ik][b])
     end
     gkpts = GridKpoints(Kpoints(length(pt_vectors), pt_vectors, pt_weight, nks1))
-    StateSelection(gkpts, iks, ibands; nw, weights=wstate, nstates_base)
+    FilteredStates(gkpts, iks, ibands; nw, weights=wstate, nstates_base)
 end

@@ -4,10 +4,10 @@ const EP = ElectronPhonon
 using ElectronPhonon: filter_electron_states, band_range, state_xks
 
 # Unit tests for the unified `filter_electron_states` primitive: the MPI construction (redistributing
-# the kept k-points and per-k band ranges together so they stay aligned, [DECISION 4]) and the
-# `shift` kwarg on the NTuple grid path ([DECISION 5]). The MPI test uses `MPI.COMM_SELF` (single
-# rank), which exercises the gather/scatter redistribution path and asserts it reproduces the serial
-# result; a genuine multi-rank alignment check needs `mpiexec -n N` (see the repo's test_kpoints TODO).
+# the kept k-points and per-k band ranges together so they stay aligned) and the `shift` kwarg on the
+# NTuple grid path. The MPI test uses `MPI.COMM_SELF` (single rank), which exercises the
+# gather/scatter redistribution path and asserts it reproduces the serial result; a genuine
+# multi-rank alignment check needs `mpiexec -n N` (see the repo's test_kpoints TODO).
 
 isdefined(@__MODULE__, :_load_model_from_artifacts) ||
     include(joinpath(@__DIR__, "common_models_from_artifacts.jl"))

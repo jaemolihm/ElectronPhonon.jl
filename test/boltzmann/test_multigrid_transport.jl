@@ -1,12 +1,12 @@
 using Test
 using ElectronPhonon
 const EP = ElectronPhonon
-using ElectronPhonon: StateSelection, state_xks
+using ElectronPhonon: FilteredStates, state_xks
 using LinearAlgebra
 
 # Multigrid BTE transport: end-to-end validation on the Pb artifact model (portable fixture; the
-# heavy production numbers are measured on Cu, see plans/multigrid_bandstates.md). The multigrid is a
-# prebuilt `StateSelection` (Generator 2, `filter_electron_states_multigrid`) with the double-grid per-(k,band)
+# heavy production numbers are measured on Cu). The multigrid is a
+# prebuilt `FilteredStates` (Generator 2, `filter_electron_states_multigrid`) with the double-grid per-(k,band)
 # weights; the k+q selection is its explicit symmetry unfold (`unfold_band_states`). Checks:
 #   1. multigrid vs uniform reference — the double-grid σ discrepancy (reported, not pre-toleranced);
 #   2. the fine refinement improves accuracy — multigrid beats the coarse grid alone;
@@ -39,7 +39,7 @@ end
     mkcalc() = BoltzmannCalculator{Float64}(; occ = occ(),
         smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
 
-    # Grid/tuple input runs Generator 1 internally (sugar); a StateSelection passes through as-is.
+    # Grid/tuple input runs Generator 1 internally (sugar); a FilteredStates passes through as-is.
     run_sel(kk, kq; use_gpu) = (c = mkcalc();
         EP.run_eph_over_k_and_kq(model, kk, kq; calculators = [c], symmetry = sym,
             el_kq_from_unfolding = false, window_k = w_wide, window_kq = w_wide,
@@ -54,8 +54,8 @@ end
     c_coarse = run_sel((6, 6, 6), (6, 6, 6); use_gpu = on_gpu)
     sel_k = EP.filter_electron_states_multigrid((12, 12, 12), (6, 6, 6), w_fine, w_wide,
                                         model.nw, model.el_ham; symmetry = sym, use_gpu = on_gpu)
-    sel_kq = EP.unfold_band_states(sel_k, sym)     # explicit full-BZ k+q selection ([DECISION 5])
-    @test sel_k isa StateSelection && sel_kq isa StateSelection
+    sel_kq = EP.unfold_band_states(sel_k, sym)     # explicit full-BZ k+q selection
+    @test sel_k isa FilteredStates && sel_kq isa FilteredStates
     @test sel_k.kpts.ngrid == (12, 12, 12)
     c_mg = run_sel(sel_k, sel_kq; use_gpu = on_gpu)
 
@@ -105,7 +105,7 @@ end
 
 # Chemical-potential solve on a prebuilt WINDOWED multigrid selection. Auto-μ (nlist-based, no μlist)
 # reads `nstates_base`; the selection carries the correct coarse-window below-window count, so the μ
-# bisection brackets normally — no override kwarg, no bracket failure ([DECISION 6]).
+# bisection brackets normally — no override kwarg, no bracket failure.
 @testset "Multigrid μ-solve succeeds on the selection (Pb)" begin
     model = _load_model_from_artifacts("pb")
     model.el_velocity_mode = :BerryConnection

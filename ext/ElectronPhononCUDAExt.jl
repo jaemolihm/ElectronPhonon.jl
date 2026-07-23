@@ -319,7 +319,7 @@ function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap
         ikq = ikqs[j]              # k+q point of this q within the batch
         f = imap_f[m, ikq]         # inner (k+q) state index; 0 = out of window → skip
         f > 0 || return
-        ek = e_i[i]; ekq = e_f[f]; wtq = wf[f]   # per-final-state weight ([DECISION 3])
+        ek = e_i[i]; ekq = e_f[f]; wtq = wf[f]   # per-final-state weight
         il = i - i0                # tile-local outer row (i0 = the current Sᵢ tile's global offset)
         for iT in 1:nT             # one entry per temperature
             μ = μs[iT]; T = Ts[iT]; η = ηs[iT]

@@ -134,7 +134,7 @@ end
 """
     set_window!(el::ElectronState, band_range::UnitRange)
 Set `el.rng`/`el.nband` directly from an explicit physical-band range (clamped to `1:nw`), instead
-of from an energy window. Used by `compute_electron_states(model, ::StateSelection, …)`, where the
+of from an energy window. Used by `compute_electron_states(model, ::FilteredStates, …)`, where the
 per-k band extent is fixed by the selection (e.g. the multigrid, whose per-k range is not a single
 energy window).
 """

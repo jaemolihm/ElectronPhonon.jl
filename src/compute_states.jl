@@ -31,14 +31,14 @@ function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-In
 end
 
 """
-    compute_electron_states(model, sel::StateSelection, quantities; fourier_mode="normal", use_gpu=false)
+    compute_electron_states(model, sel::FilteredStates, quantities; fourier_mode="normal", use_gpu=false)
 
-Compute electron states for exactly the per-k bands selected by `sel` ([DECISION 7]): each state's
-band range is `sel.band_extent[ik]` (from the selection) rather than a single energy window, so a
-multigrid (whose per-k band extent is narrow at fine-only nodes and wide at coincident nodes) gets
-the right bands per k. Returns a vector of `ElectronState` over `sel.kpts`.
+Compute electron states for exactly the per-k bands selected by `sel`: each state's band range is
+`sel.band_extent[ik]` (from the selection) rather than a single energy window, so a multigrid (whose
+per-k band extent is narrow at fine-only nodes and wide at coincident nodes) gets the right bands per
+k. Returns a vector of `ElectronState` over `sel.kpts`.
 """
-function compute_electron_states(model::Model{FT}, sel::StateSelection, quantities;
+function compute_electron_states(model::Model{FT}, sel::FilteredStates, quantities;
         fourier_mode="normal", use_gpu=false) where FT
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
     for quantity in quantities
@@ -55,8 +55,10 @@ function compute_electron_states(model::Model{FT}, sel::StateSelection, quantiti
     states
 end
 
-# The per-k band window for `set_window!`: an energy-window tuple applies to every k; a per-k vector
-# of band ranges (from a `StateSelection`) is indexed by k.
+# `compute_electron_states` accepts either a single energy-window `Tuple` (uniform; applied to every
+# k — still used by the k+q / window-based callers) or a per-k `Vector` of band ranges (from a
+# `FilteredStates`). `_window_for` selects the per-k argument that `set_window!` then applies: the
+# same tuple for every k, or the k-th band range from the vector.
 _window_for(window::Tuple, ik) = window
 _window_for(window::AbstractVector, ik) = window[ik]
 

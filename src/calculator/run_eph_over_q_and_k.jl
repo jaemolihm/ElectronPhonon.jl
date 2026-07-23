@@ -151,7 +151,7 @@ function _setup_eph_over_q_and_k(
     # setup cost after the eigensolve). Default is the conservative full list.
     el_k_quantities = isempty(calculators) ? ["eigenvalue", "eigenvector", "velocity", "position"] :
         unique(reduce(vcat, required_el_k_quantities(c) for c in calculators))
-    (; kpts, iband_min, iband_max, el_k_save, sel) = _setup_electron_k(
+    (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity, el_k_quantities)
     nk = kpts.n
 
@@ -236,7 +236,7 @@ function _setup_eph_over_q_and_k(
     # every occ_type on the device, so no occ_type is special-cased.
     _setup_calculators!(calculators, kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        sel_k = sel, nchunks_threads, verbosity, backend,
+        sel_k, nchunks_threads, verbosity, backend,
     )
 
     return (;

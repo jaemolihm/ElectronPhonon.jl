@@ -15,19 +15,20 @@ function _setup_electron_k(
         el_k_quantities = ["eigenvalue", "eigenvector", "velocity", "position"],
     )
     (; nw) = model
-    sel = maybe_time(verbosity) do
+    sel_k = maybe_time(verbosity) do
         filter_electron_states(kpts_input, nw, model.el_ham, window_k; symmetry, fourier_mode, use_gpu, mpi_comm=mpi_comm_k)
     end
-    kpts = sel.kpts
-    br = band_range(sel)
+    kpts = sel_k.kpts
+    br = band_range(sel_k)
     iband_min, iband_max = first(br), last(br)
-    # State computation stays window-based (per [DECISION 2]): no per-k band extent from the selection.
+    # Compute states for exactly the selection's per-k band extent (identical to the window path,
+    # which applies the same per-k in-window range via set_window!, but reuses the selection directly).
     el_k_save = maybe_time(verbosity) do
-        compute_electron_states(model, kpts, el_k_quantities, window_k; fourier_mode, use_gpu)
+        compute_electron_states(model, sel_k, el_k_quantities; fourier_mode, use_gpu)
     end
-    # Surface `sel` so the driver can forward it to the calculator fan-out (`sel_k`): calculators
-    # that solve μ read `sel_k.nstates_base` (the MPI-summed below-window carrier count).
-    (; kpts, iband_min, iband_max, el_k_save, sel)
+    # Surface `sel_k` so the driver can forward it to the calculator fan-out: calculators that solve μ
+    # read `sel_k.nstates_base` (the MPI-summed below-window carrier count).
+    (; kpts, iband_min, iband_max, el_k_save, sel_k)
 end
 
 

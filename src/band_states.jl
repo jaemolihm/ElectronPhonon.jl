@@ -13,7 +13,7 @@
 #   * A full iterator: `for st in states` yields a non-allocating per-state NamedTuple.
 #   * Generic over `Kpoints`/`GridKpoints`; only k-vector→state queries need the hash.
 
-export AbstractBandStates, BandStates, StateSelection
+export AbstractBandStates, BandStates, FilteredStates
 export state_index, state_weights, state_xks, band_range, electron_states_to_BandStates, unfold_band_states
 
 """
@@ -22,7 +22,7 @@ export state_index, state_weights, state_xks, band_range, electron_states_to_Ban
 A selection of single-particle `(k-point, band)` states over a shared k-grid `kpts`. Two concrete
 subtypes:
 
-  * `StateSelection` — a lean selection (which `(k, band)` pairs, per-state weights, per-k band
+  * `FilteredStates` — a lean selection (which `(k, band)` pairs, per-state weights, per-k band
     extent, `nstates_base`), what the k-point/band generators emit and `compute_electron_states`
     consumes;
   * `BandStates` — the rich, velocity-complete form (adds per-state energies `es` and velocities
@@ -67,21 +67,21 @@ struct BandStates{T, KT <: AbstractKpoints{T}} <: AbstractBandStates{T, KT}
     ibands::Vector{Int}     # per-state band index (mode index for phonons)
     es::Vector{T}           # per-state energy (intrinsic: depends on band + k)
     vs::Vector{Vec3{T}}     # per-state band velocity (intrinsic); empty if not computed
-    weights::Vector{T}      # per-state BZ weight (D1 partition); empty ⇒ derive from kpts.weights[iks]
+    weights::Vector{T}      # per-state BZ weight; empty ⇒ derive from kpts.weights[iks]
     nstates_base::T         # occupied states per cell below the window (electron counting)
     indmap::Matrix{Int}     # (iband - nband_ignore, ik) → state index; 0 where absent
     band_extent::Vector{UnitRange{Int}}  # per-k band extent (one range per kpts point; 1:0 if none)
 end
 
 """
-    StateSelection{T, KT<:AbstractKpoints{T}} <: AbstractBandStates{T, KT}
+    FilteredStates{T, KT<:AbstractKpoints{T}} <: AbstractBandStates{T, KT}
 
 Lean selection of `(k-point, band)` states over a shared `kpts`, before eigenvectors/velocities are
 computed. Mirrors `BandStates` minus `es`/`vs`. Emitted by the k-point/band generators and consumed
 by `compute_electron_states(model, sel, …)`, which computes eigenvectors/velocities for exactly the
 per-k `band_extent` bands. `electron_states_to_BandStates(el_states, sel)` then attaches `es`/`vs`.
 """
-struct StateSelection{T, KT <: AbstractKpoints{T}} <: AbstractBandStates{T, KT}
+struct FilteredStates{T, KT <: AbstractKpoints{T}} <: AbstractBandStates{T, KT}
     n::Int
     nband::Int
     nband_ignore::Int
@@ -145,26 +145,26 @@ function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
 end
 
 """
-    StateSelection(kpts, ik, iband; nw, weights, nstates_base, band_extent)
+    FilteredStates(kpts, ik, iband; nw, weights, nstates_base, band_extent)
 
-Build a `StateSelection` over the shared grid `kpts` from the selected `(ik[i], iband[i])` pairs.
+Build a `FilteredStates` over the shared grid `kpts` from the selected `(ik[i], iband[i])` pairs.
 `weights` (per-state BZ weight; empty ⇒ derived from `kpts.weights`) and `band_extent` (per-k band
 range; defaults to the per-k span of `ik`/`iband`) default as for `BandStates`.
 """
-function StateSelection(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
+function FilteredStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
         iband::AbstractVector{<:Integer};
         nw::Integer, weights::AbstractVector = T[], nstates_base = zero(T),
         band_extent = nothing) where {T}
     n = length(ik)
-    n == length(iband) || error("StateSelection: ik, iband must have equal length")
-    (isempty(weights) || length(weights) == n) || error("StateSelection: weights must be empty or length n")
+    n == length(iband) || error("FilteredStates: ik, iband must have equal length")
+    (isempty(weights) || length(weights) == n) || error("FilteredStates: weights must be empty or length n")
     # Empty selection (no in-window state, e.g. an empty MPI rank): band_range = 1:0, indmap no rows.
     nband_ignore = isempty(iband) ? 0 : minimum(iband) - 1
     nband = isempty(iband) ? 0 : maximum(iband) - nband_ignore
     indmap = _build_indmap(n, kpts.n, nband, nband_ignore, ik, iband)
     be = band_extent === nothing ? _build_band_extent(kpts.n, ik, iband) :
         collect(UnitRange{Int}, band_extent)
-    StateSelection{T, typeof(kpts)}(n, nband, nband_ignore, Int(nw), kpts, collect(Int, ik),
+    FilteredStates{T, typeof(kpts)}(n, nband, nband_ignore, Int(nw), kpts, collect(Int, ik),
         collect(Int, iband), collect(T, weights), T(nstates_base), indmap, be)
 end
 
@@ -214,9 +214,9 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
 end
 
 """
-    _selection_from_computed_states(kpts, el_states, nstates_base; nw) -> StateSelection
+    _selection_from_computed_states(kpts, el_states, nstates_base; nw) -> FilteredStates
 
-Build a `StateSelection` from already-computed `ElectronState`s: each state's per-k band extent is
+Build a `FilteredStates` from already-computed `ElectronState`s: each state's per-k band extent is
 `el.rng`, per-state weights are left empty (uniform ⇒ derived from `kpts.weights`). Used by the
 driver's sugar path to wrap the filter+compute result into a selection, so the calculator consumes a
 selection on both the sugar and prebuilt-selection paths. Promotes `kpts` to `GridKpoints`.
@@ -229,13 +229,13 @@ function _selection_from_computed_states(kpts, el_states, nstates_base; nw)
             push!(iks, ik); push!(ibands, b)
         end
     end
-    StateSelection(gkpts, iks, ibands; nw, nstates_base)
+    FilteredStates(gkpts, iks, ibands; nw, nstates_base)
 end
 
 """
-    electron_states_to_BandStates(el_states, sel::StateSelection) -> BandStates
+    electron_states_to_BandStates(el_states, sel::FilteredStates) -> BandStates
 
-Attach per-state energies/velocities to a prebuilt `StateSelection`, gathering `es[i]`/`vs[i]` from
+Attach per-state energies/velocities to a prebuilt `FilteredStates`, gathering `es[i]`/`vs[i]` from
 `el_states[sel.iks[i]]` at band `sel.ibands[i]`, and carrying over the selection's `kpts`, `iks`,
 `ibands`, per-state `weights`, `nstates_base`, `indmap`, and `band_extent`. `el_states` must have been
 computed with `compute_electron_states(model, sel, …)` so each `el.rng` covers the selected bands.
@@ -243,7 +243,7 @@ This is the selection-path variant used by the driver to build `calc.el_i`/`el_f
 uniform per-k flatten, preserving the multigrid's per-`(k, band)` weights).
 """
 function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
-        sel::StateSelection{T}) where {T}
+        sel::FilteredStates{T}) where {T}
     n = sel.n
     es = zeros(T, n)
     vs = zeros(Vec3{T}, n)
@@ -253,8 +253,13 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
         es[i] = el.e_full[b]
         vs[i] = el.vdiag[b]
     end
+    # Materialize the per-state weights (the selection's own, or derived from kpts.weights when the
+    # selection left them empty) so `es`/`vs`-side consumers can index `el.weights` directly, O(1)
+    # and non-allocating, in a hot loop (the BTE scatter's per-final-state weight). Same values as
+    # `state_weights` derives lazily.
+    weights = collect(T, state_weights(sel))
     BandStates{T, typeof(sel.kpts)}(n, sel.nband, sel.nband_ignore, sel.nw, sel.kpts,
-        copy(sel.iks), copy(sel.ibands), es, vs, copy(sel.weights), sel.nstates_base,
+        copy(sel.iks), copy(sel.ibands), es, vs, weights, sel.nstates_base,
         copy(sel.indmap), copy(sel.band_extent))
 end
 
@@ -318,9 +323,9 @@ function find_unfolding_indices(el_i::AbstractBandStates, el_f::AbstractBandStat
 end
 
 """
-    unfold_band_states(sel::StateSelection, symmetry) -> StateSelection
+    unfold_band_states(sel::FilteredStates, symmetry) -> FilteredStates
 
-Unfold an IBZ `StateSelection` to the full Brillouin zone ([DECISION 5]): the k-points are unfolded
+Unfold an IBZ `FilteredStates` to the full Brillouin zone: the k-points are unfolded
 with `unfold_kpoints`, and each IBZ state `(k, band)` is copied to every point of its symmetry star,
 carrying the same band and a per-state weight divided by the star size (so the star's total BZ weight
 equals the IBZ state's — the full-BZ per-state weight is `1/N` for a uniform level, `1/N_fine` /
@@ -329,7 +334,7 @@ so the caller builds the full-BZ k+q selection explicitly and passes it to `run_
 which then consumes it as-is. `el_f` is then the exact symmetry unfolding of `el_i`, which the
 `interpolate=false` δf feedback map relies on. `symmetry === nothing` returns a copy unchanged.
 """
-function unfold_band_states(sel::StateSelection{T}, symmetry) where {T}
+function unfold_band_states(sel::FilteredStates{T}, symmetry) where {T}
     symmetry === nothing && return deepcopy(sel)
     kpts_u, ik_to_ikirr_isym = unfold_kpoints(sel.kpts, symmetry)
     # Star size of each IBZ point = number of full-BZ points mapping back to it.
@@ -351,13 +356,13 @@ function unfold_band_states(sel::StateSelection{T}, symmetry) where {T}
             push!(weights_u, w_sel[i] / starsize[ibz])
         end
     end
-    StateSelection(kpts_u, iks_u, ibands_u; nw=sel.nw, weights=weights_u, nstates_base=sel.nstates_base)
+    FilteredStates(kpts_u, iks_u, ibands_u; nw=sel.nw, weights=weights_u, nstates_base=sel.nstates_base)
 end
 
 # --- iteration / indexing (non-allocating; only plain array indexing, no hash lookup) ---
 # length/first/lastindex only need `n`, so they are shared on the abstract type; the per-state
 # iterator (getindex/iterate/eltype) yields the state energy `es`, so it stays on `BandStates`
-# (a `StateSelection` has no energies and is not meant to be iterated as states).
+# (a `FilteredStates` has no energies and is not meant to be iterated as states).
 Base.length(s::AbstractBandStates) = s.n
 Base.firstindex(::AbstractBandStates) = 1
 Base.lastindex(s::AbstractBandStates) = s.n

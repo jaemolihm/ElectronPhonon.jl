@@ -42,7 +42,7 @@ let
             imap_i_at_k = collect(1:nw)
             imap_f = reshape(collect(1:nw*nqc), nw, nqc)
             n_i=nw; n_f=nw*nqc
-            e_i=0.01randn(n_i); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight (D3)
+            e_i=0.01randn(n_i); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight
             g2vals=abs.(randn(nw,nw,nmodes,nqc)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,nqc))).*1e-2
             μs=FT[0.0,0.002]; Ts=FT[0.01,0.02]; ωcut=FT(1e-6)
             ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005, 0.005]]
@@ -70,7 +70,7 @@ let
             n_i_global = 10
             imap_f = [ (m+ (kq-1)*nw) % 7 == 0 ? 0 : (m + (kq-1)*nw) for m in 1:nw, kq in 1:nqc ]  # scatter some 0s
             n_f = nw*nqc
-            e_i=0.01randn(n_i_global); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight (D3)
+            e_i=0.01randn(n_i_global); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight
             g2vals=abs.(randn(nw,nw,nmodes,nqc)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,nqc))).*1e-2
             μs=FT[0.0]; Ts=FT[0.01]; ωcut=FT(1e-6)
             ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005]]

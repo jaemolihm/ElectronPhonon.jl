@@ -106,7 +106,7 @@ function _setup_eph_over_k_and_q(
     (; nw, nmodes) = model
 
     # Generate k points and electron states at k (shared setup core)
-    (; kpts, iband_min, iband_max, el_k_save, sel) = _setup_electron_k(
+    (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, verbosity)
     nk = kpts.n
 
@@ -197,7 +197,7 @@ function _setup_eph_over_k_and_q(
 
     _setup_calculators!(calculators, kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        sel_k = sel, nchunks_threads, verbosity, backend,
+        sel_k, nchunks_threads, verbosity, backend,
     )
 
     return (;

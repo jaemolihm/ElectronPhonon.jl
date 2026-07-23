@@ -8,10 +8,10 @@
 # alone — the fine shell recovers near-μ accuracy cheaply.
 #
 # Flow (caller builds, cf. `bte_gpu_taas.jl`):
-#   1. build the k `StateSelection` with `filter_electron_states_multigrid` (fine + coarse spec); it carries
+#   1. build the k `FilteredStates` with `filter_electron_states_multigrid` (fine + coarse spec); it carries
 #      the per-(k,band) double-grid weights and `nstates_base` (the coarse full-grid below-window
 #      carrier count), so the auto-μ solve brackets on the windowed selection with no override,
-#   2. build the k+q `StateSelection` as the explicit symmetry unfold of the k selection
+#   2. build the k+q `FilteredStates` as the explicit symmetry unfold of the k selection
 #      (`unfold_band_states`) — the full-BZ final states,
 #   3. pass BOTH selections to `run_eph_over_k_and_kq` (consumed as-is, WIDE window) and
 #   4. solve with `solve_electron_bte(...; interpolate=false)` — el_f is the symmetry unfolding of
@@ -34,7 +34,7 @@ e_REF   = 17.3494 * eV
 window_narrow = (-0.1, 0.1) .* eV .+ e_REF        # narrow window: dense refinement near μ
 window_wide = (-0.4, 0.4) .* eV .+ e_REF        # wide window: coarse tail
 
-# Auto-μ: nlist set, μlist left unset so the driver solves μ. The multigrid `StateSelection` carries
+# Auto-μ: nlist set, μlist left unset so the driver solves μ. The multigrid `FilteredStates` carries
 # the below-window carrier count (`nstates_base`, from the coarse full-grid filter), so the μ solve
 # brackets on the windowed selection without any override kwarg.
 occupation_params() = ElectronOccupationParams(;
@@ -55,7 +55,7 @@ occupation_params() = ElectronOccupationParams(;
 
 Run one multigrid BTE transport calculation and return the SERTA and full-BTE conductivity
 tensors (SI, `(Ω·cm)⁻¹`, shape `(3,3,nT)`) plus the calculator. `nk_narrow` must be a multiple of
-`nk_wide`. Builds the k `StateSelection` (double grid) and the full-BZ k+q selection (its symmetry
+`nk_wide`. Builds the k `FilteredStates` (double grid) and the full-BZ k+q selection (its symmetry
 unfold).
 """
 function run_bte_multigrid(model, nk_narrow, nk_wide; η, window_narrow, window_wide, occ,

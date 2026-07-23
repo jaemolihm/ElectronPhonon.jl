@@ -1,7 +1,7 @@
 function run_eph_over_k_and_kq(
         model       :: Model{FT},
-        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints, StateSelection},
-        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints, StateSelection},
+        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
+        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
         ;
         calculators = [],
         mpi_comm_k = nothing,
@@ -67,11 +67,11 @@ function run_eph_over_k_and_kq(
     (!use_gpu || symmetry === nothing || !el_kq_from_unfolding) || throw(ArgumentError(
         "use_gpu supports symmetry only with el_kq_from_unfolding = false (GPU k+q unfolding not implemented)."))
 
-    # A prebuilt k+q StateSelection is consumed as-is (the caller already built the full-BZ selection,
+    # A prebuilt k+q FilteredStates is consumed as-is (the caller already built the full-BZ selection,
     # e.g. via unfold_band_states), so the internal IBZ+unfold path does not run — el_kq_from_unfolding
     # is meaningless there.
-    (!(kqpts_input isa StateSelection) || !el_kq_from_unfolding) || throw(ArgumentError(
-        "el_kq_from_unfolding = true is not supported when the k+q argument is a prebuilt StateSelection; " *
+    (!(kqpts_input isa FilteredStates) || !el_kq_from_unfolding) || throw(ArgumentError(
+        "el_kq_from_unfolding = true is not supported when the k+q argument is a prebuilt FilteredStates; " *
         "build the full-BZ k+q selection explicitly (e.g. unfold_band_states) and pass el_kq_from_unfolding = false."))
 
     setup = _setup_eph_over_k_and_kq(model, kpts_input, kqpts_input;
@@ -118,8 +118,8 @@ end
 # _loop_eph_over_k_and_kq are typed function arguments, avoiding Core.Box wrapping.
 function _setup_eph_over_k_and_kq(
         model       :: Model{FT},
-        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints, StateSelection},
-        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints, StateSelection},
+        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
+        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
         ;
         mpi_comm_k = nothing,
         mpi_comm_q = nothing,
@@ -139,11 +139,11 @@ function _setup_eph_over_k_and_kq(
     el_quantities = ["eigenvalue", "eigenvector", "velocity", "position"]
 
     # --- outer k: a state selection consumed as-is ---
-    # A prebuilt `StateSelection` (e.g. a multigrid) passes straight through and is used verbatim; a
+    # A prebuilt `FilteredStates` (e.g. a multigrid) passes straight through and is used verbatim; a
     # grid/`Kpoints`/tuple runs Generator 1 (`filter_electron_states`) internally (the sugar path).
     # Either way `sel_k` fixes the per-k band extent, so `compute_electron_states(model, sel_k)`
     # computes eigenvectors/velocities for exactly those bands.
-    sel_k = kpts_input isa StateSelection ? kpts_input :
+    sel_k = kpts_input isa FilteredStates ? kpts_input :
         maybe_time(verbosity) do
             filter_electron_states(model, kpts_input, window_k; symmetry, fourier_mode, use_gpu, mpi_comm=mpi_comm_k)
         end
@@ -156,12 +156,12 @@ function _setup_eph_over_k_and_kq(
     iband_max = sel_k.nband_ignore + sel_k.nband
 
     # --- k+q: a state selection consumed as-is (no hidden filter/unfold on the selection path) ---
-    # A prebuilt k+q `StateSelection` is used verbatim — the caller has already built the full-BZ
+    # A prebuilt k+q `FilteredStates` is used verbatim — the caller has already built the full-BZ
     # k+q selection (e.g. via `unfold_band_states`), so no internal `filter_kpoints` + `unfold_kpoints`
-    # runs here ([DECISION 5]). A grid/tuple runs the sugar path: filter to the window (IBZ-reduce
+    # runs here. A grid/tuple runs the sugar path: filter to the window (IBZ-reduce
     # with symmetry) and unfold to the full BZ, matching the prior behavior; electron states are then
     # computed directly or via IBZ + unfolding per `el_kq_from_unfolding`.
-    if kqpts_input isa StateSelection
+    if kqpts_input isa FilteredStates
         sel_kq = kqpts_input
         kqpts = sel_kq.kpts
         el_kq_save = maybe_time(verbosity) do
