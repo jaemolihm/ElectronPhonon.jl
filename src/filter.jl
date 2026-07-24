@@ -231,75 +231,74 @@ filter_electron_states(kpts_input, model::Model, window; kwargs...) =
     filter_electron_states(kpts_input, model.nw, model.el_ham, window; kwargs...)
 
 """
-    filter_electron_states_multigrid(nks1, nks2, window1, window2, nw, el_ham;
+    filter_electron_states_multigrid(nks_f, nks_c, window_f, window_c, nw, el_ham;
                                      fourier_mode="gridopt", symmetry=nothing, use_gpu=false)
         -> FilteredStates
 
-Generator 2 (double-grid): build a `FilteredStates` sampling a FINE grid `nks1` in the narrow
-`window1` merged with a COARSE grid `nks2` in the wide `window2` (`nks1` a multiple of `nks2`). The
-per-`(k, band)` weight follows the clean double-grid partition:
+Generator 2 (double-grid): build a `FilteredStates` sampling a FINE grid `nks_f` in the narrow
+window `window_f` merged with a COARSE grid `nks_c` in the wide window `window_c` (`nks_f` a multiple
+of `nks_c`, `window_f` contained in `window_c`). The per-`(k, band)` weight follows the clean
+double-grid partition:
 
   * a fine-grid state `(k, b)` with `b` in the narrow window gets the fine BZ weight
     `kpts_fine.weights[k]`;
   * a coarse-grid state `(k, b)` with `b` in the wide window but NOT in the narrow window gets the
     coarse BZ weight `kpts_coarse.weights[k]`.
 
-Every coarse node coincides with a fine node (coarse ⊂ fine), so the k-points dedup on the fine
-grid: a coarse node coincident with a kept fine point shares its shared-grid index, contributing its
-wide-only bands at the coarse weight while the fine point's narrow bands stay at the fine weight — a
-single physical node carrying two weights across its bands, which a merged single-window k-set
-cannot express. `nstates_base` is the coarse full-grid below-`window2` carrier count. The shared
-grid is stamped with the FINE `ngrid` (`nks1`) so every k lies on a common grid for the q-lookup;
-its per-point `weights` are informational (the per-state `weights` on the selection are the
-authoritative BZ weights).
+Concretely, at a fine-grid k point `ik`, a band `ib1` inside the narrow window gets the fine-grid
+weight, while a band `ib2` outside the narrow window but inside the wide window gets the coarse-grid
+weight — so a single physical node carries two different weights across its bands, which a merged
+single-window k-set cannot express. Every coarse node coincides with a fine node (coarse ⊂ fine), so
+the two grids merge on the shared node. `nstates_base` is the coarse full-grid below-`window_c`
+carrier count. The merged grid is stamped with the FINE `ngrid` (`nks_f`) so every k lies on a common
+grid for the q-lookup; its per-point `weights` are informational (the per-state `weights` on the
+selection are the authoritative BZ weights).
 """
-function filter_electron_states_multigrid(nks1, nks2, window1, window2, nw, el_ham;
+function filter_electron_states_multigrid(nks_f, nks_c, window_f, window_c, nw, el_ham;
                                   fourier_mode="gridopt", symmetry=nothing, use_gpu=false)
 
-    all(mod.(nks1, nks2) .== 0) || throw(ArgumentError("nks1 must be a multiple of nks2"))
-    (window1[1] >= window2[1] && window1[2] <= window2[2]) ||
-        throw(ArgumentError("the fine window1 must be contained in the coarse window2"))
+    all(mod.(nks_f, nks_c) .== 0) || throw(ArgumentError("nks_f must be a multiple of nks_c"))
+    (window_f[1] >= window_c[1] && window_f[2] <= window_c[2]) ||
+        throw(ArgumentError("the fine window_f must be contained in the coarse window_c"))
 
-    kpts1, ibmin1, ibmax1, _            = _filter_with_band_ranges(nks1, nw, el_ham, window1; symmetry, fourier_mode, use_gpu)  # fine, narrow
-    kpts2, ibmin2, ibmax2, nstates_base = _filter_with_band_ranges(nks2, nw, el_ham, window2; symmetry, fourier_mode, use_gpu)  # coarse, wide
+    kpts_f, ibmin_f, ibmax_f, _            = _filter_with_band_ranges(nks_f, nw, el_ham, window_f; symmetry, fourier_mode, use_gpu)  # fine, narrow
+    kpts_c, ibmin_c, ibmax_c, nstates_base = _filter_with_band_ranges(nks_c, nw, el_ham, window_c; symmetry, fourier_mode, use_gpu)  # coarse, wide
 
-    T = eltype(kpts1.weights)
+    T = eltype(kpts_f.weights)
 
-    # Shared grid points 1..kpts1.n are the fine points; coarse-only points are appended. A coarse node
-    # coincides exactly with a fine node, and window1 is contained in window2 (asserted above), so at a
-    # coincident point the narrow in-window bands `ibmin1:ibmax1` are a contiguous subset of the wide
-    # bands `ibmin2:ibmax2`. Invert the coarse->fine node map: for each fine point that a coarse node
-    # coincides with, record that wide band range and coarse weight (`wide_lo`/`wide_hi`/`wide_w`, 0 =
-    # no coincident coarse node); coarse nodes with no surviving fine point become appended points
-    # (`extra_*`). No dedup or per-band sort is needed since the ranges are contiguous and nested.
-    xks = collect(kpts1.vectors)
-    k_weights = collect(kpts1.weights)
-    wide_lo = zeros(Int, kpts1.n); wide_hi = zeros(Int, kpts1.n); wide_w = zeros(T, kpts1.n)
-    extra_lo = Int[]; extra_hi = Int[]; extra_w = T[]
-    for i2 in 1:kpts2.n
-        i1 = xk_to_ik(kpts2.vectors[i2], kpts1)   # exact: a coarse node lies on the fine grid
-        if i1 === nothing
-            push!(xks, kpts2.vectors[i2]); push!(k_weights, kpts2.weights[i2])
-            push!(extra_lo, ibmin2[i2]); push!(extra_hi, ibmax2[i2]); push!(extra_w, kpts2.weights[i2])
-        else
-            wide_lo[i1] = ibmin2[i2]; wide_hi[i1] = ibmax2[i2]; wide_w[i1] = kpts2.weights[i2]
+    # Merge the two grids into one on the FINE ngrid: the fine points first (in order), then the coarse
+    # points not already on the (filtered) fine grid. A coarse node coincides exactly with a fine node,
+    # but the fine grid was filtered to window_f, so a coarse node whose fine counterpart has no
+    # narrow-window band is absent from it.
+    xks = collect(kpts_f.vectors)
+    k_weights = collect(kpts_f.weights)
+    for i2 in 1:kpts_c.n
+        if xk_to_ik(kpts_c.vectors[i2], kpts_f) === nothing
+            # coarse k point i2 not part of fine grid
+            push!(xks, kpts_c.vectors[i2]); push!(k_weights, kpts_c.weights[i2])
         end
     end
+    merged = GridKpoints(Kpoints(length(xks), xks, k_weights, nks_f))
 
-    # Emit per-state arrays directly, points in order (fine points first, then coarse-only), bands
-    # ascending: narrow bands take the fine weight, the wide-only bands take the coarse weight.
-    iks = Int[]; ibands = Int[]; wstate = T[]
-    for i1 in 1:kpts1.n
-        nlo, nhi = ibmin1[i1], ibmax1[i1]
-        blo, bhi = wide_lo[i1] == 0 ? (nlo, nhi) : (wide_lo[i1], wide_hi[i1])
-        for b in blo:bhi
-            push!(iks, i1); push!(ibands, b)
-            push!(wstate, nlo <= b <= nhi ? kpts1.weights[i1] : wide_w[i1])
+    iks = Int[]; ibands = Int[]; weights = T[]
+    # (1) fine points: narrow-window bands at the fine BZ weight.
+    for i1 in 1:kpts_f.n, b in ibmin_f[i1]:ibmax_f[i1]
+        push!(iks, i1); push!(ibands, b); push!(weights, kpts_f.weights[i1])
+    end
+    # (2) coarse points: wide-window bands OUTSIDE the narrow window, at the coarse BZ weight. A band
+    # is inside the narrow window iff it lies in the coincident fine point's narrow range (the shared
+    # node has identical eigenvalues, so this band-index test equals testing e_kb against window_f).
+    for i2 in 1:kpts_c.n
+        ik = xk_to_ik(kpts_c.vectors[i2], merged)
+        i1 = xk_to_ik(kpts_c.vectors[i2], kpts_f)          # coincident fine point (nothing if none)
+        narrow = i1 === nothing ? (1:0) : (ibmin_f[i1]:ibmax_f[i1])
+        for b in ibmin_c[i2]:ibmax_c[i2]
+            b in narrow && continue                        # inside narrow window -> already at fine weight
+            push!(iks, ik); push!(ibands, b); push!(weights, kpts_c.weights[i2])
         end
     end
-    for j in eachindex(extra_lo), b in extra_lo[j]:extra_hi[j]
-        push!(iks, kpts1.n + j); push!(ibands, b); push!(wstate, extra_w[j])
-    end
-    gkpts = GridKpoints(Kpoints(length(xks), xks, k_weights, nks1))
-    FilteredStates(gkpts, iks, ibands; nw, weights=wstate, nstates_base)
+    # (3) order states so each k point's states form a contiguous, band-ascending block (the GPU
+    # outer-k tiling maps a contiguous k-range to a contiguous state range; see ind_range_for_k_range).
+    p = sortperm(collect(zip(iks, ibands)))
+    FilteredStates(merged, iks[p], ibands[p]; nw, weights=weights[p], nstates_base)
 end
