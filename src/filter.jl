@@ -272,29 +272,31 @@ function filter_electron_states_multigrid(nks_f, nks_c, window_f, window_c, nw, 
     # narrow-window band is absent from it.
     xks = collect(kpts_f.vectors)
     k_weights = collect(kpts_f.weights)
-    for i2 in 1:kpts_c.n
-        if xk_to_ik(kpts_c.vectors[i2], kpts_f) === nothing
-            # coarse k point i2 not part of fine grid
-            push!(xks, kpts_c.vectors[i2]); push!(k_weights, kpts_c.weights[i2])
+    for ik_c in 1:kpts_c.n
+        if xk_to_ik(kpts_c.vectors[ik_c], kpts_f) === nothing
+            # coarse k point ik_c not part of fine grid
+            push!(xks, kpts_c.vectors[ik_c]); push!(k_weights, kpts_c.weights[ik_c])
         end
     end
     merged = GridKpoints(Kpoints(length(xks), xks, k_weights, nks_f))
 
-    iks = Int[]; ibands = Int[]; weights = T[]
+    iks = Int[]
+    ibands = Int[]
+    weights = T[]
     # (1) fine points: narrow-window bands at the fine BZ weight.
-    for i1 in 1:kpts_f.n, b in ibmin_f[i1]:ibmax_f[i1]
-        push!(iks, i1); push!(ibands, b); push!(weights, kpts_f.weights[i1])
+    for ik_f in 1:kpts_f.n, ib in ibmin_f[ik_f]:ibmax_f[ik_f]
+        push!(iks, ik_f); push!(ibands, ib); push!(weights, kpts_f.weights[ik_f])
     end
     # (2) coarse points: wide-window bands OUTSIDE the narrow window, at the coarse BZ weight. A band
     # is inside the narrow window iff it lies in the coincident fine point's narrow range (the shared
     # node has identical eigenvalues, so this band-index test equals testing e_kb against window_f).
-    for i2 in 1:kpts_c.n
-        ik = xk_to_ik(kpts_c.vectors[i2], merged)
-        i1 = xk_to_ik(kpts_c.vectors[i2], kpts_f)          # coincident fine point (nothing if none)
-        narrow = i1 === nothing ? (1:0) : (ibmin_f[i1]:ibmax_f[i1])
-        for b in ibmin_c[i2]:ibmax_c[i2]
-            b in narrow && continue                        # inside narrow window -> already at fine weight
-            push!(iks, ik); push!(ibands, b); push!(weights, kpts_c.weights[i2])
+    for ik_c in 1:kpts_c.n
+        ik = xk_to_ik(kpts_c.vectors[ik_c], merged)
+        ik_f = xk_to_ik(kpts_c.vectors[ik_c], kpts_f)      # coincident fine point (nothing if none)
+        rng_narrow_ik = ik_f === nothing ? (1:0) : (ibmin_f[ik_f]:ibmax_f[ik_f])
+        for ib in ibmin_c[ik_c]:ibmax_c[ik_c]
+            ib in rng_narrow_ik && continue                # inside narrow window -> already at fine weight
+            push!(iks, ik); push!(ibands, ib); push!(weights, kpts_c.weights[ik_c])
         end
     end
     # (3) order states so each k point's states form a contiguous, band-ascending block (the GPU
