@@ -28,36 +28,36 @@ function ElectronSelfEnergy{FT}(rng_band, nk::Int, ntemps::Int) where FT
 end
 
 """
-# Compute electron self-energy for given k and q point data in epdata
+# Compute electron self-energy for given k and q point data in epstate
 # TODO: Real part
 """
-@timing "selfen_el" function compute_electron_selfen!(elself, epdata,
+@timing "selfen_el" function compute_electron_selfen!(elself, epstate,
         params::ElectronSelfEnergyParams, ik)
-    el_kq_occ = epdata.el_kq.occupation
+    el_kq_occ = epstate.el_kq.occupation
 
     μ = params.μ
     inv_smear = 1 / params.smearing
 
     for (iT, T) in enumerate(params.Tlist)
 
-        set_occupation!(epdata.el_kq, μ, T)
+        set_occupation!(epstate.el_kq, μ, T)
 
         # Calculate imaginary part of electron self-energy
-        for imode in 1:epdata.nmodes
-            omega = epdata.ph.e[imode]
+        for imode in 1:epstate.nmodes
+            omega = epstate.ph.e[imode]
             if (omega < omega_acoustic)
                 continue
             end
-            occ_ph = occ_boson(epdata.ph.e[imode], T)
+            occ_ph = occ_boson(epstate.ph.e[imode], T)
 
-            @inbounds for ib in epdata.el_k.rng, jb in epdata.el_kq.rng
-                delta_e1 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] - omega)
-                delta_e2 = epdata.el_k.e[ib] - (epdata.el_kq.e[jb] + omega)
+            @inbounds for ib in epstate.el_k.rng, jb in epstate.el_kq.rng
+                delta_e1 = epstate.el_k.e[ib] - (epstate.el_kq.e[jb] - omega)
+                delta_e2 = epstate.el_k.e[ib] - (epstate.el_kq.e[jb] + omega)
                 delta1 = gaussian(delta_e1 * inv_smear) * inv_smear
                 delta2 = gaussian(delta_e2 * inv_smear) * inv_smear
                 fcoeff1 = occ_ph + el_kq_occ[jb]
                 fcoeff2 = occ_ph + 1.0 - el_kq_occ[jb]
-                elself.imsigma[ib, ik, iT] += (epdata.g2[jb, ib, imode] * epdata.wtq
+                elself.imsigma[ib, ik, iT] += (epstate.g2[jb, ib, imode] * epstate.wtq
                     * π * (fcoeff1 * delta1 + fcoeff2 * delta2)
                 )
             end

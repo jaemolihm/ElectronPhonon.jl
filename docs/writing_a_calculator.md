@@ -72,10 +72,10 @@ end
 # Called CONCURRENTLY from @threads over inner-k+q chunks at fixed outer k. Accumulate into THIS
 # chunk's slot (`p.id_chunk`) — never a shared slot — so there is no data race.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, p::EPData, ctx)
-    epdata = p.epdata
+    epstate = p.epstate
     s = 0.0
-    for ν in 1:epdata.ph.nmodes, n in epdata.el_k.rng, m in epdata.el_kq.rng
-        s += epdata.wtq * epdata.g2[m, n, ν]
+    for ν in 1:epstate.ph.nmodes, n in epstate.el_k.rng, m in epstate.el_kq.rng
+        s += epstate.wtq * epstate.g2[m, n, ν]
     end
     c.chunk[p.id_chunk] += s
     c

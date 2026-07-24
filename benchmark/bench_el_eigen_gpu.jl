@@ -34,7 +34,7 @@ kpts = kpoints_grid((nk, nk, nk)).vectors
 @printf "Number of k-points: %d\n\n" length(kpts)
 
 ham_cpu = model.el_ham
-ham_gpu = to_device(model.el_ham)
+ham_gpu = to_device(ElectronPhonon.gpu_backend(), model.el_ham)
 
 # ---------------------------------------------------------------------------
 # Benchmark one driver on both backends.

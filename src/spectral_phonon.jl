@@ -36,17 +36,17 @@ function PhononSpectralData(params::PhononSpectralParams, nmodes, nq)
 end
 
 """
-    function compute_phonon_spectral!(phspec::PhononSpectralData, epdata,
+    function compute_phonon_spectral!(phspec::PhononSpectralData, epstate,
         params::PhononSpectralParams, iq)
-Compute phonon spectral function for given k and q point data in epdata.
+Compute phonon spectral function for given k and q point data in epstate.
 Implements Eq.(145) of RMP 89, 015003 (2017) (except for using g instead of g^b)
 Currently, only the diagonal self-energy is implemented.
 TODO: off-diagonal self-energy
 """
-@timing "spectral_ph" function compute_phonon_spectral!(phspec::PhononSpectralData, epdata,
+@timing "spectral_ph" function compute_phonon_spectral!(phspec::PhononSpectralData, epstate,
         params::PhononSpectralParams, iq)
-    f_k = epdata.el_k.occupation
-    f_kq = epdata.el_kq.occupation
+    f_k = epstate.el_k.occupation
+    f_kq = epstate.el_kq.occupation
 
     buffer = phspec.buffer
     ωlist = params.ωlist
@@ -55,13 +55,13 @@ TODO: off-diagonal self-energy
     inv_η = 1 / η
 
     # Calculate static and dynamic phonon self-energy
-    @inbounds for ib in epdata.el_k.rng, jb in epdata.el_kq.rng
-        δe = epdata.el_kq.e[jb] - epdata.el_k.e[ib]
+    @inbounds for ib in epstate.el_k.rng, jb in epstate.el_kq.rng
+        δe = epstate.el_kq.e[jb] - epstate.el_k.e[ib]
         update_buffer = true # Need to update buffer because ib or jb changed.
 
         for (iT, T) in enumerate(params.Tlist)
-            set_occupation!(epdata.el_k, μ, T)
-            set_occupation!(epdata.el_kq, μ, T)
+            set_occupation!(epstate.el_k, μ, T)
+            set_occupation!(epstate.el_kq, μ, T)
 
             delta_occ = f_kq[jb] - f_k[ib]
             if abs(delta_occ) < 1E-10
@@ -87,12 +87,12 @@ TODO: off-diagonal self-energy
 
             # selfen_static = numerator * real(1 / (δe + im * η))
             # selfen(ω) = numerator / (δe - ω + im * η)
-            for imode in 1:epdata.nmodes
-                if epdata.ph.e[imode] < omega_acoustic
+            for imode in 1:epstate.nmodes
+                if epstate.ph.e[imode] < omega_acoustic
                     continue
                 end
 
-                numerator = epdata.g2[jb, ib, imode] * epdata.wtk * delta_occ
+                numerator = epstate.g2[jb, ib, imode] * epstate.wtk * delta_occ
                 phspec.selfen_static[imode, iT, iq] += numerator * δe / (δe^2 + η^2)
                 for (iω, ω) in enumerate(ωlist)
                     phspec.selfen[iω, imode, iT, iq] += numerator * buffer[iω]

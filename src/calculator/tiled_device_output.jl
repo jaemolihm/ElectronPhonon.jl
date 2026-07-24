@@ -16,7 +16,7 @@
 #   * full   — the whole output (all `n_full` outer states) is device-resident; the scatter writes
 #              global state `i` at offset 0 with stride `n_full`; one device→host copy at the end.
 #   * block  — only the current outer-k tile is device-resident (i-extent = the largest k-batch);
-#              the scatter writes tile-local row `i − tile_offset`, and each batch is zeroed and then
+#              the scatter writes tile-local row `i - tile_offset`, and each batch is zeroed and then
 #              downloaded to the host. Device memory is bounded by the tile regardless of grid size.
 #
 # Type stability: the lazily-allocated device/host buffers are held as `Vector{Any}` (their concrete
@@ -99,9 +99,10 @@ function tile_begin!(t::TiledDeviceOutput{FT}, ctx) where {FT}
         else
             full_bytes = t.narr * sizeof(FT) * prod(t.dims)
             t.block = residency_use_block(backend, full_bytes; headroom = t.headroom)
-            t.block && @info "TiledDeviceOutput: full device-resident output " *
-                "($(t.narr)×$(round(sizeof(FT) * prod(t.dims) / 1e9, digits = 2)) GB) would not fit; " *
-                "using per-tile block residency (bounded device memory)."
+            t.block && @warn "WARNING : full device-resident output " *
+                "($(t.narr)×$(round(sizeof(FT) * prod(t.dims) / 1e9, digits = 2)) GB) does not fit free " *
+                "GPU memory, falling back to per-tile block residency (per-batch device→host streaming) " *
+                "in TiledDeviceOutput.tile_begin!. GPU performance may degrade compared to smaller calculations."
         end
         t.decided = true
         if t.block

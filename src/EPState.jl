@@ -6,9 +6,9 @@ using OffsetArrays
 using OffsetArrays: no_offset_view
 
 export EPState
-export epdata_set_g2!
-export epdata_set_mmat!
-export epdata_compute_eph_dipole!
+export epstate_set_g2!
+export epstate_set_mmat!
+export epstate_compute_eph_dipole!
 
 # Energy and matrix elements at a single k and q point
 @kwdef mutable struct EPState{T <: Real}
@@ -54,93 +54,93 @@ end
 
 EPState(nw, nmodes, nband_bound=nw) = EPState{Float64}(nw, nmodes, nband_bound)
 
-@inline function Base.getproperty(epdata::EPState, name::Symbol)
+@inline function Base.getproperty(epstate::EPState, name::Symbol)
     if name === :mmat
-        OffsetArray(view(getfield(epdata, name), 1:getfield(epdata, :el_kq).nband, 1:getfield(epdata, :el_k).nband),
-            getfield(epdata, :el_kq).rng, getfield(epdata, :el_k).rng)
+        OffsetArray(view(getfield(epstate, name), 1:getfield(epstate, :el_kq).nband, 1:getfield(epstate, :el_k).nband),
+            getfield(epstate, :el_kq).rng, getfield(epstate, :el_k).rng)
     elseif name === :ep || name === :g2 || name === :buffer2
-        n1 = getfield(epdata, :el_kq).nband
-        n2 = getfield(epdata, :el_k).nband
-        n3 = getfield(epdata, :nmodes)
-        OffsetArray(reshape(view(getfield(epdata, name), 1:n1*n2*n3, 1, 1), n1, n2, n3),
-            getfield(epdata, :el_kq).rng, getfield(epdata, :el_k).rng, :)
+        n1 = getfield(epstate, :el_kq).nband
+        n2 = getfield(epstate, :el_k).nband
+        n3 = getfield(epstate, :nmodes)
+        OffsetArray(reshape(view(getfield(epstate, name), 1:n1*n2*n3, 1, 1), n1, n2, n3),
+            getfield(epstate, :el_kq).rng, getfield(epstate, :el_k).rng, :)
     else
-        getfield(epdata, name)
+        getfield(epstate, name)
     end
 end
 
-" Set epdata.g2[:, :, imode] = |epdata.ep[:, :, imode]|^2 / (2 omega)"
-function epdata_set_g2!(epdata)
-    for imode in 1:epdata.nmodes
+" Set epstate.g2[:, :, imode] = |epstate.ep[:, :, imode]|^2 / (2 omega)"
+function epstate_set_g2!(epstate)
+    for imode in 1:epstate.nmodes
         # The lower bound for phonon frequency is not set here. If ω is close to 0, g2 may
         # be very large. This should be handled when calculating physical quantities.
-        ω = epdata.ph.e[imode]
+        ω = epstate.ph.e[imode]
         inv_2ω = 1 / (2 * ω)
-        @views epdata.g2[:, :, imode] .= (abs2.(epdata.ep[:, :, imode]) .* inv_2ω)
+        @views epstate.g2[:, :, imode] .= (abs2.(epstate.ep[:, :, imode]) .* inv_2ω)
     end
 end
 
 "Set mmat = ukq' * uk"
-@timing "setmmat" function epdata_set_mmat!(epdata)
-    @views mul!(no_offset_view(epdata.mmat), no_offset_view(epdata.el_kq.u)', no_offset_view(epdata.el_k.u))
+@timing "setmmat" function epstate_set_mmat!(epstate)
+    @views mul!(no_offset_view(epstate.mmat), no_offset_view(epstate.el_kq.u)', no_offset_view(epstate.el_k.u))
 end
 
 # Define wrappers of wannier_to_bloch functions
 
 """
-    get_eph_Rq_to_kq!(epdata::EPState, epobj_eRpq, xk)
+    get_eph_Rq_to_kq!(epstate::EPState, epobj_eRpq, xk)
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
-function get_eph_Rq_to_kq!(epdata::EPState, epobj_eRpq, xk)
-    ep_kq = no_offset_view(epdata.ep)
-    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, no_offset_view(epdata.el_k.u), no_offset_view(epdata.el_kq.u))
+function get_eph_Rq_to_kq!(epstate::EPState, epobj_eRpq, xk)
+    ep_kq = no_offset_view(epstate.ep)
+    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, no_offset_view(epstate.el_k.u), no_offset_view(epstate.el_kq.u))
 end
 
 """
-    get_eph_kR_to_kq!(epdata::EPState, epobj_ekpR, xq)
+    get_eph_kR_to_kq!(epstate::EPState, epobj_ekpR, xq)
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
-function get_eph_kR_to_kq!(epdata::EPState, epobj_ekpR, xq)
-    ep_kq = no_offset_view(epdata.ep)
-    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epdata.ph.u, no_offset_view(epdata.el_kq.u))
+function get_eph_kR_to_kq!(epstate::EPState, epobj_ekpR, xq)
+    ep_kq = no_offset_view(epstate.ep)
+    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epstate.ph.u, no_offset_view(epstate.el_kq.u))
 end
 
 """
-    epdata_compute_eph_dipole!(epdata::EPState, polar::Polar, factor=1)
+    epstate_compute_eph_dipole!(epstate::EPState, polar::Polar, factor=1)
 Compute electron-phonon coupling matrix elements using pre-computed `ph.eph_dipole_coeff` and `mmat`.
 Divide by `factor` if given. Can be used to screen the dipole term (`factor = ϵ`)
-or to subtracting the dipole term from `epdata.ep` (`factor = -1`).
+or to subtracting the dipole term from `epstate.ep` (`factor = -1`).
 """
-function epdata_compute_eph_dipole!(epdata::EPState, factor=nothing; model = nothing)
-    # epdata.ep .= 0
+function epstate_compute_eph_dipole!(epstate::EPState, factor=nothing; model = nothing)
+    # epstate.ep .= 0
     # return
-    coeff = epdata.ph.eph_dipole_coeff
-    coeff_r = epdata.ph.eph_r_coeff
+    coeff = epstate.ph.eph_dipole_coeff
+    coeff_r = epstate.ph.eph_r_coeff
     if factor === nothing
-        @views for imode in 1:epdata.nmodes
-            @. epdata.ep[:, :, imode] += coeff[imode] * epdata.mmat
+        @views for imode in 1:epstate.nmodes
+            @. epstate.ep[:, :, imode] += coeff[imode] * epstate.mmat
         end
     else
         # THIS
-        # r = epdata.el_kq.u' * epdata.el_k.u * epdata.el_k.rbar
+        # r = epstate.el_kq.u' * epstate.el_k.u * epstate.el_k.rbar
 
-        # r = epdata.el_kq.rbar * epdata.el_kq.u' * epdata.el_k.u
+        # r = epstate.el_kq.rbar * epstate.el_kq.u' * epstate.el_k.u
 
-        # epdata.ep .= 0
+        # epstate.ep .= 0
 
-        @views for imode in 1:epdata.nmodes
-            # @. epdata.ep[:, :, imode] += (coeff[imode] / factor[imode]) * epdata.mmat
-            for m in epdata.el_kq.rng, n in epdata.el_k.rng
-                for iw in 1:epdata.nw
-                    epdata.ep[m, n, imode] += (coeff[imode] / factor[imode]) * epdata.el_kq.u[iw, m]' * epdata.el_k.u[iw, n]
+        @views for imode in 1:epstate.nmodes
+            # @. epstate.ep[:, :, imode] += (coeff[imode] / factor[imode]) * epstate.mmat
+            for m in epstate.el_kq.rng, n in epstate.el_k.rng
+                for iw in 1:epstate.nw
+                    epstate.ep[m, n, imode] += (coeff[imode] / factor[imode]) * epstate.el_kq.u[iw, m]' * epstate.el_k.u[iw, n]
                 end
             end
         end
 
-        @views for imode in 1:epdata.nmodes
-            for m in epdata.el_kq.rng, n in epdata.el_k.rng
+        @views for imode in 1:epstate.nmodes
+            for m in epstate.el_kq.rng, n in epstate.el_k.rng
                 for i in 1:3
-                    # epdata.ep[m, n, imode] += (coeff_r[imode, i] / factor[imode]) * r[m, n][i]
+                    # epstate.ep[m, n, imode] += (coeff_r[imode, i] / factor[imode]) * r[m, n][i]
                 end
             end
         end
@@ -154,7 +154,7 @@ function epdata_compute_eph_dipole!(epdata::EPState, factor=nothing; model = not
     (; η, cutoff) = polar.method
     natom = length(atom_pos)
     metric = (2π / alat)^2  # Conversion factor for G^2, unit bohr⁻²
-    xq = epdata.ph.xq
+    xq = epstate.ph.xq
     xq = normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
 
     fac = 1im * ElectronPhonon.e2 * 4π / volume
@@ -186,26 +186,26 @@ function epdata_compute_eph_dipole!(epdata::EPState, factor=nothing; model = not
         end
     end
 
-    coeff_r = Transpose(epdata.ph.u) * tmp
+    coeff_r = Transpose(epstate.ph.u) * tmp
 
-    r = epdata.el_kq.u' * epdata.el_k.u * epdata.el_k.rbar
+    r = epstate.el_kq.u' * epstate.el_k.u * epstate.el_k.rbar
 
-    @views for imode in 1:epdata.nmodes
-        for m in epdata.el_kq.rng, n in epdata.el_k.rng
-            epdata.ep[m, n, imode] += conj.(coeff_r[imode])' * r[m, n]
+    @views for imode in 1:epstate.nmodes
+        for m in epstate.el_kq.rng, n in epstate.el_k.rng
+            epstate.ep[m, n, imode] += conj.(coeff_r[imode])' * r[m, n]
         end
     end
 end
 
 
 """
-    epdata_g2_degenerate_average!(epdata::EPState)
+    epstate_g2_degenerate_average!(epstate::EPState)
 Avearage g2 over degenerate bands of el_k and el_kq
 """
-function epdata_g2_degenerate_average!(epdata::EPState{FT}) where {FT}
-    el_k = epdata.el_k
-    el_kq = epdata.el_kq
-    g2_avg = epdata.buffer2
+function epstate_g2_degenerate_average!(epstate::EPState{FT}) where {FT}
+    el_k = epstate.el_k
+    el_kq = epstate.el_kq
+    g2_avg = epstate.buffer2
 
     # average over bands at k
     g2_avg .= 0
@@ -213,13 +213,13 @@ function epdata_g2_degenerate_average!(epdata::EPState{FT}) where {FT}
         ndegen = 0
         for jb in el_k.rng
             if abs(el_k.e[ib] - el_k.e[jb]) <= electron_degen_cutoff
-                g2_avg[el_kq.rng, ib, :] .+= epdata.g2[el_kq.rng, jb, :]
+                g2_avg[el_kq.rng, ib, :] .+= epstate.g2[el_kq.rng, jb, :]
                 ndegen += 1
             end
         end
         g2_avg[:, ib, :] ./= ndegen
     end
-    epdata.g2 .= g2_avg
+    epstate.g2 .= g2_avg
 
     # average over bands at k+q
     g2_avg .= 0
@@ -227,12 +227,22 @@ function epdata_g2_degenerate_average!(epdata::EPState{FT}) where {FT}
         ndegen = 0
         for jb in el_kq.rng
             if abs(el_kq.e[ib] - el_kq.e[jb]) <= electron_degen_cutoff
-                g2_avg[ib, el_k.rng, :] .+= epdata.g2[jb, el_k.rng, :]
+                g2_avg[ib, el_k.rng, :] .+= epstate.g2[jb, el_k.rng, :]
                 ndegen += 1
             end
         end
         g2_avg[ib, :, :] ./= ndegen
     end
-    epdata.g2 .= g2_avg
+    epstate.g2 .= g2_avg
     nothing
+end
+
+
+# Per-thread EPState channel used by the CPU inner loops of the outer-k and over-k-and-kq drivers.
+function get_epstates_channel(::Type{FT}, nw, nmodes, nband_max) where {FT}
+    ch = Channel{EPState{FT}}(Base.Threads.nthreads())
+    foreach(1:Base.Threads.nthreads()) do _
+        put!(ch, EPState{FT}(nw, nmodes, nband_max))
+    end
+    ch
 end

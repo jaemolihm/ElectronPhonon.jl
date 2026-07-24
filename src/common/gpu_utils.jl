@@ -1,62 +1,61 @@
-# Backend/device primitives. Each has a generic (CPU / host) method here and a `CuArray` method in
-# the CUDA extension (`ext/ElectronPhononCUDAExt.jl`); the batched Wannier→Bloch drivers and the
-# device-resident calculators dispatch on the backend of their arrays. Nothing here is exported.
+# Architecture/backend primitives, in the spirit of DFTK's `architecture.jl`: a backend object
+# (`CPUBackend()` / `GPUBackend(proto)`) selects device placement, and `to_device` / `free_bytes` /
+# `synchronize` dispatch on it. The `GPUBackend` methods live in the CUDA extension
+# (`ext/ElectronPhononCUDAExt.jl`); the base package defines only the CPU methods, so it loads and
+# runs on CPU-only machines. Nothing here is exported (use `ElectronPhonon.<name>`).
 
-"""
-    to_device(obj)
-Move an object (e.g. a Wannier object / interpolator) to a compute device such as a GPU.
-Methods are provided by package extensions (e.g. `ElectronPhononCUDAExt` for CUDA); the base
-package defines no method, so calling this without the relevant extension loaded raises a
-`MethodError`. Not exported (the name is generic); use `ElectronPhonon.to_device`.
-"""
-function to_device end
-
-"""
-    device_free_bytes(gpu_array) -> Int
-
-Free memory (bytes) on the backend `gpu_array` lives on, used to decide whether a large buffer fits
-on the device. Generic fallback returns `typemax(Int)` (host memory: assume it always fits — the
-caller's host allocation is governed by RAM, not this check). The CUDA extension returns
-`CUDA.free_memory()` for a `CuArray` gpu_array.
-"""
-device_free_bytes(gpu_array) = typemax(Int)
-
-"""
-    device_synchronize(gpu_array)
-
-Block until queued device work on `gpu_array`'s backend completes. Generic fallback is a no-op
-(host work is synchronous); the CUDA extension calls `CUDA.synchronize()`. Used to bound the
-host look-ahead in the GPU e-ph loop so per-tile scratch does not pile up in the memory pool.
-"""
-device_synchronize(gpu_array) = nothing
-
-# Backend objects: one resolution point per driver entry (`backend = use_gpu ? GPUBackend(proto)
-# : CPUBackend()`), then carried in `LoopContext` (see calculator/AbstractCalculator.jl). Below the
-# driver entry, calculators allocate device/host buffers via `alloc(backend, T, dims...)` and query
-# `free_bytes(backend)` / `synchronize(backend)`, so `use_gpu`/`gpu_array` never thread through the
-# calculator interface. No extension code is needed for the types themselves: `GPUBackend` carries a
-# device-array prototype, and `free_bytes`/`synchronize` route through the `device_*` primitives
-# above whose `CuArray` methods already live in the extension.
+# Backend objects: one resolution point per driver entry (`backend = use_gpu ? gpu_backend() :
+# CPUBackend()`), then carried in `LoopContext` (see calculator/AbstractCalculator.jl). Below the
+# driver entry, code allocates buffers via `alloc(backend, T, dims...)`, moves data with
+# `to_device(backend, x)`, and queries `free_bytes(backend)` / `synchronize(backend)`, so `use_gpu`
+# never threads through the interfaces. `GPUBackend` carries a device-array prototype that `alloc`
+# uses as a `similar` template; `gpu_backend()` (extension) builds one with an empty prototype so a
+# backend can be constructed before any array is moved.
 abstract type AbstractBackend end
 struct CPUBackend <: AbstractBackend end
 struct GPUBackend{AT <: AbstractArray} <: AbstractBackend
-    proto :: AT     # allocation prototype (a device array, e.g. `to_device(model.epmat).op_r`)
+    proto :: AT     # allocation prototype (a device array); `alloc` uses `similar(proto, T, dims...)`
 end
+
+"""
+    gpu_backend() -> GPUBackend
+
+Construct a GPU backend carrying a device-array prototype. Provided by a package extension (e.g.
+`ElectronPhononCUDAExt` for CUDA); calling it without the relevant extension loaded raises a
+`MethodError`. Not exported; use `ElectronPhonon.gpu_backend`.
+"""
+function gpu_backend end
+
+"""
+    to_device(backend, x)
+
+Move `x` (a host array or `WannierObject`) onto `backend`'s device. `CPUBackend` is the identity;
+the CUDA extension converts to a `CuArray`-backed object for a `GPUBackend`. The backend always
+says where "device" is (mirrors DFTK's `to_device(architecture, x)`); there is deliberately no 1-arg
+form. Not exported; use `ElectronPhonon.to_device`.
+"""
+to_device(::CPUBackend, x) = x
 
 alloc(::CPUBackend, ::Type{T}, dims...) where {T} = Array{T}(undef, dims...)
 alloc(b::GPUBackend, ::Type{T}, dims...) where {T} = similar(b.proto, T, dims...)
-free_bytes(::CPUBackend)  = typemax(Int)
-free_bytes(b::GPUBackend) = device_free_bytes(b.proto)
-synchronize(::CPUBackend)  = nothing
-synchronize(b::GPUBackend) = device_synchronize(b.proto)
 
-# Backend-routed move-to-device: the CPU backend is an identity (host object stays host); the GPU
-# backend forwards to the extension's converting `to_device(obj)`. Loop bodies below the driver
-# entry call this 2-arg form so no `use_gpu`/backend `Bool` threads through them — the backend
-# object alone decides. (The base has no 1-arg `to_device` method; only the extension defines one,
-# so `to_device(::CPUBackend, obj)` is what lets the base package load and run on the host.)
-to_device(::CPUBackend, obj) = obj
-to_device(b::GPUBackend, obj) = to_device(obj)
+"""
+    free_bytes(backend) -> Int
+
+Free device memory (bytes) on `backend`, used to decide whether a large buffer fits. `CPUBackend`
+returns `typemax(Int)` (host allocation is governed by RAM, not this check); the CUDA extension
+returns `CUDA.free_memory()` for a `GPUBackend`.
+"""
+free_bytes(::CPUBackend) = typemax(Int)
+
+"""
+    synchronize(backend)
+
+Block until queued device work on `backend` completes. No-op on `CPUBackend` (host work is
+synchronous); the CUDA extension calls `CUDA.synchronize()`. Used to bound the host look-ahead in
+the GPU e-ph loop so per-tile scratch does not pile up in the memory pool.
+"""
+synchronize(::CPUBackend) = nothing
 
 @inline _batched_op(t::Char, X) = t == 'N' ? X : (t == 'T' ? transpose(X) : adjoint(X))
 

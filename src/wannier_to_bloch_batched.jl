@@ -359,7 +359,7 @@ end
     add_eph_dipole_batched!(eps, coeffs, ukqs, uks, mmats)
 
 Add the polar (long-range) e-ph dipole term to a batch of e-ph matrices `eps` `(nw, nw, nmodes, nk)`,
-the batched counterpart of the per-k `epdata_compute_eph_dipole!` (unscreened, ϵ ≡ 1):
+the batched counterpart of the per-k `epstate_compute_eph_dipole!` (unscreened, ϵ ≡ 1):
 `eps[m,n,ν,k] += coeffs[ν] · Σ_iw conj(ukqs[iw,m,k]) uks[iw,n,k]`. Window-masked eigenvector columns
 make the overlap vanish for out-of-window `m`/`n`. `mmats` is `(nw, nw, nk)` scratch on the same
 backend. Runs on the backend of `eps` (the `batched_gemm!` + broadcast are backend-generic).

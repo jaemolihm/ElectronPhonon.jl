@@ -47,10 +47,10 @@ using OffsetArrays: no_offset_view
         for model in [model_ph, model_el]
         # for model in [model_ph, model_ph_disk, model_el, model_el_disk]
             i += 1
-            epdata = EPState(nw, nmodes, nband)
-            epdata.ph = ph
-            epdata.el_k = el_k
-            epdata.el_kq = el_kq
+            epstate = EPState(nw, nmodes, nband)
+            epstate.ph = ph
+            epstate.el_k = el_k
+            epstate.el_kq = el_kq
 
             @info "$(typeof(model)), epmat_outer_momentum = $(model.epmat_outer_momentum), $fourier_mode"
             epmat = get_interpolator(model.epmat; fourier_mode)
@@ -59,20 +59,20 @@ using OffsetArrays: no_offset_view
                             zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
                 ep_eRpq = get_interpolator(ep_eRpq_obj; fourier_mode)
                 get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
-                get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
+                get_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
             else
                 ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
-                            zeros(ComplexF64, (nw*epdata.nband_bound*nmodes, length(model.epmat.irvec_next))))
+                            zeros(ComplexF64, (nw*epstate.nband_bound*nmodes, length(model.epmat.irvec_next))))
                 ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
-                get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epdata.el_k.u))
-                get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
+                get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epstate.el_k.u))
+                get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
             end
 
-            @test axes(epdata.ep) == (el_kq.rng, el_k.rng, 1:ph.nmodes)
+            @test axes(epstate.ep) == (el_kq.rng, el_k.rng, 1:ph.nmodes)
             if i == 1
-                ep_ref .= no_offset_view(epdata.ep)
+                ep_ref .= no_offset_view(epstate.ep)
             else
-                @test no_offset_view(epdata.ep) ≈ ep_ref
+                @test no_offset_view(epstate.ep) ≈ ep_ref
             end
         end
     end

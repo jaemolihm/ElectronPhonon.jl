@@ -71,7 +71,7 @@ function run_eph_over_k_and_q(
         setup.kpts, setup.qpts, setup.kqpts,
         setup.el_k_save, setup.el_kq_save, setup.ph_save,
         setup.precompute_el_kq,
-        setup.epdatas, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
+        setup.epstates, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
         setup.ham_threads, setup.vel_threads, setup.pos_threads;
         calculators, skip_eph, window_kq,
         energy_conservation, screening_params,
@@ -165,7 +165,7 @@ function _setup_eph_over_k_and_q(
                                        maximum(el.nband for el in el_kq_save)) : nw
 
 
-    epdatas = _make_epdatas_channel(FT, nw, nmodes, nband_max)
+    epstates = get_epstates_channel(FT, nw, nmodes, nband_max)
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
     ep_ekpR_obj = get_next_wannier_object(model.epmat)
@@ -206,7 +206,7 @@ function _setup_eph_over_k_and_q(
         kpts, qpts, kqpts,
         el_k_save, el_kq_save, ph_save,
         precompute_el_kq, nband_max,
-        epdatas, ep_ekpRs, epmat, ep_ekpR_obj,
+        epstates, ep_ekpRs, epmat, ep_ekpR_obj,
         ham_threads, vel_threads, pos_threads,
         iband_min, iband_max,
     )
@@ -218,7 +218,7 @@ function _loop_eph_over_k_and_q(
         kpts, qpts, kqpts,
         el_k_save, el_kq_save, ph_save,
         precompute_el_kq,
-        epdatas, ep_ekpRs, epmat, ep_ekpR_obj,
+        epstates, ep_ekpRs, epmat, ep_ekpR_obj,
         ham_threads, vel_threads, pos_threads;
         calculators = [],
         skip_eph = false,
@@ -244,8 +244,8 @@ function _loop_eph_over_k_and_q(
         el_k = el_k_save[ik]
 
         # Use precomputed data for the electron state at k
-        for epdata in epdatas.data
-            epdata.el_k = el_k
+        for epstate in epstates.data
+            epstate.el_k = el_k
         end
 
         if !skip_eph
@@ -257,7 +257,7 @@ function _loop_eph_over_k_and_q(
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_k), calculators)
 
         @threads for (id_chunk, iqs) in enumerate(chunks(1:nq; n=nchunks_threads))
-            epdata = take!(epdatas)
+            epstate = take!(epstates)
             ep_ekpR = take!(ep_ekpRs)
 
             if !precompute_el_kq
@@ -272,55 +272,55 @@ function _loop_eph_over_k_and_q(
                 xq = qpts.vectors[iq]
                 xkq = xk + xq
 
-                epdata.wtk = kpts.weights[ik]
-                epdata.wtq = qpts.weights[iq]
+                epstate.wtk = kpts.weights[ik]
+                epstate.wtq = qpts.weights[iq]
 
                 # Use precomputed data for the phonon state at q
-                epdata.ph = ph_save[iq]
+                epstate.ph = ph_save[iq]
 
                 if precompute_el_kq
                     # Use precomputed data for the electron state at k+q
                     ikq = xk_to_ik(xkq, kqpts)
                     ikq === nothing && continue
-                    epdata.el_kq = el_kq_save[ikq]
+                    epstate.el_kq = el_kq_save[ikq]
                 else
                     # Compute electron state at k+q.
                     ikq = nothing
-                    set_eigen!(epdata.el_kq, ham, xkq)
+                    set_eigen!(epstate.el_kq, ham, xkq)
 
                     # Set energy window, skip if no state is inside the window
-                    set_window!(epdata.el_kq, window_kq)
-                    length(epdata.el_kq.rng) == 0 && continue
+                    set_window!(epstate.el_kq, window_kq)
+                    length(epstate.el_kq.rng) == 0 && continue
 
-                    set_velocity_diag!(epdata.el_kq, vel, xkq, model.el_velocity_mode)
-                    set_position!(epdata.el_kq, pos, xkq)
+                    set_velocity_diag!(epstate.el_kq, vel, xkq, model.el_velocity_mode)
+                    set_position!(epstate.el_kq, pos, xkq)
                     # TODO: full velocity
                 end
 
                 # If all bands and modes do not satisfy energy conservation, skip this (k, q) point pair.
-                check_energy_conservation_all(epdata, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
+                check_energy_conservation_all(epstate, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
-                epdata_set_mmat!(epdata)
+                epstate_set_mmat!(epstate)
 
                 # Compute electron-phonon coupling
                 if !skip_eph
-                    get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
-                    _apply_screening!(ϵs, calculators, model, xq, epdata, screening_params)
-                    epdata_compute_eph_dipole!(epdata, ϵs; model)
-                    epdata_set_g2!(epdata)
+                    get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
+                    _apply_screening!(ϵs, calculators, model, xq, epstate, screening_params)
+                    epstate_compute_eph_dipole!(epstate, ϵs; model)
+                    epstate_set_g2!(epstate)
                 end
 
                 # TODO: Screening
 
-                # Now, we are done with matrix elements. All data saved in epdata.
+                # Now, we are done with matrix elements. All data saved in epstate.
 
-                payload = EPData(epdata, ik, iq, ikq, xk, xq, id_chunk, nothing)
+                payload = EPData(epstate, ik, iq, ikq, xk, xq, id_chunk, nothing)
                 foreach(c -> run_calculator!(c, payload, ctx_k), calculators)
 
             end # iq
 
             put!(ep_ekpRs, ep_ekpR)
-            put!(epdatas, epdata)
+            put!(epstates, epstate)
             if !precompute_el_kq
                 put!(ham_threads, ham)
                 put!(vel_threads, vel)

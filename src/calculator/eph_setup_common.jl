@@ -1,10 +1,9 @@
 # Shared setup building blocks for the three e-ph drivers (run_eph_over_k_and_q,
 # run_eph_over_q_and_k, run_eph_over_k_and_kq). Their `_setup_*` bodies are ~70% identical, so the
-# common k-side filtering/state computation, the k+q electron-state branch, the per-thread EPState
-# channel, the setup_calculator! fan-out, and the screening evaluation live here, each exactly once.
-
-using Base.Threads: nthreads
-
+# common k-side filtering/state computation, the k+q electron-state branch, and the screening
+# evaluation live here, each exactly once. (The per-thread EPState channel `get_epstates_channel`
+# lives next to `EPState` in src/EPState.jl. The setup_calculator! fan-out is `_setup_calculators!`,
+# shared by all three drivers.)
 
 # k-side setup shared by all three drivers: obtain the outer-k selection (a prebuilt `FilteredStates`
 # passed through verbatim, or filtered from a grid to the energy window) and compute the electron
@@ -104,16 +103,6 @@ function _setup_electron_kq(model, kqpts_input;
 end
 
 
-# Per-thread EPState channel used by the CPU inner loops of the outer-k and over-k-and-kq drivers.
-function _make_epdatas_channel(::Type{FT}, nw, nmodes, nband_max) where {FT}
-    ch = Channel{EPState{FT}}(nthreads())
-    foreach(1:nthreads()) do _
-        put!(ch, EPState{FT}(nw, nmodes, nband_max))
-    end
-    ch
-end
-
-
 # setup_calculator! fan-out shared by all three drivers. The common keyword payload (band range,
 # k+q states/grid, carrier counts, thread chunking) is passed explicitly; driver-specific extras
 # (backend / verbosity) forward through `kwargs`.
@@ -136,7 +125,7 @@ end
 # `calculators[1].occ[1]` read it used to do (a layering violation that silently used the first
 # calculator's first occupation set even in multi-T runs). See
 # plans/calculator_gpu_extensibility.md [DECISION-3].
-function _apply_screening!(ϵs, calculators, model, xq, epdata, screening_params)
+function _apply_screening!(ϵs, calculators, model, xq, epstate, screening_params)
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")
@@ -144,7 +133,7 @@ function _apply_screening!(ϵs, calculators, model, xq, epdata, screening_params
     # if screening_params !== nothing
     #     (; T, μ) = calculators[1].occ[1]
     #     xq_ = normalize_kpoint_coordinate(xq .+ 0.5) .- 0.5
-    #     ϵs .= epsilon_lindhard.(Ref(model.recip_lattice * xq_), epdata.ph.e, T, μ, Ref(screening_params))
+    #     ϵs .= epsilon_lindhard.(Ref(model.recip_lattice * xq_), epstate.ph.e, T, μ, Ref(screening_params))
     #     ϵs .= real.(ϵs)
     # else
     #     ϵs .= 1

@@ -161,7 +161,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
     nband_max = max(maximum(el.nband for el in el_k_save),
                     maximum(el.nband for el in el_kq_save))
 
-    epdatas = [EPState{Float64}(nw, nmodes, nband_max) for _ in 1:nthreads()]
+    epstates = [EPState{Float64}(nw, nmodes, nband_max) for _ in 1:nthreads()]
 
     epmat = get_interpolator(model.epmat; fourier_mode)
 
@@ -192,8 +192,8 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
         xk = kpts.vectors[ik]
         el_k = el_k_save[ik]
 
-        for epdata in epdatas
-            epdata.el_k = el_k
+        for epstate in epstates
+            epstate.el_k = el_k
         end
 
         get_eph_RR_to_kR!(epobj_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
@@ -202,12 +202,12 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
 
         Threads.@threads :static for ikq in 1:nkq
             tid = Threads.threadid()
-            epdata = epdatas[tid]
+            epstate = epstates[tid]
             bt_scat = bt_scat_threads[tid]
             epobj_ekpR = epobj_ekpR_threads[tid]
 
-            epdata.wtk = kpts.weights[ik]
-            epdata.wtq = kqpts.weights[ikq]
+            epstate.wtk = kpts.weights[ik]
+            epstate.wtq = kqpts.weights[ikq]
 
             xkq = kqpts.vectors[ikq]
 
@@ -215,27 +215,27 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
             iq = xk_to_ik(xkq - xk, qpts)
             xq = qpts.vectors[iq]
 
-            # Copy saved electron and phonon states to epdata
-            epdata.ph = ph_save[iq]
-            epdata.el_kq = el_kq_save[ikq]
+            # Copy saved electron and phonon states to epstate
+            epstate.ph = ph_save[iq]
+            epstate.el_kq = el_kq_save[ikq]
 
-            el_kq = epdata.el_kq
-            ph = epdata.ph
+            el_kq = epstate.el_kq
+            ph = epstate.ph
 
             # If all bands and modes do not satisfy energy conservation, skip this (k, q) point pair.
-            check_energy_conservation_all(epdata, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
+            check_energy_conservation_all(epstate, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epdata, epobj_ekpR, xq)
+            get_eph_kR_to_kq!(epstate, epobj_ekpR, xq)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
-                epdata_set_mmat!(epdata)
-                model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
+                epstate_set_mmat!(epstate)
+                model.polar_eph.use && epstate_compute_eph_dipole!(epstate)
             end
-            epdata_set_g2!(epdata)
+            epstate_set_g2!(epstate)
 
             # Average g2 over degenerate electron bands
             if average_degeneracy
-                epdata_g2_degenerate_average!(epdata)
+                epstate_g2_degenerate_average!(epstate)
             end
 
             @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
@@ -243,7 +243,7 @@ function compute_electron_phonon_bte_data(model, btedata_prefix, window_k, windo
                 check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
                     kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
-                data = (imap_el_k[ib, ik], imap_el_kq[jb, ikq], imap_ph[imode, iq], sign_ph, epdata.g2[jb, ib, imode])
+                data = (imap_el_k[ib, ik], imap_el_kq[jb, ikq], imap_ph[imode, iq], sign_ph, epstate.g2[jb, ib, imode])
                 push!(bt_scat, data)
             end
         end # ikq
@@ -284,8 +284,8 @@ function check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph, ngri
 end
 
 # Check if energy-conserving scattering exists for all bands, modes, and sign_ph, and return true if so.
-@timing "econv_all" function check_energy_conservation_all(epdata, ngrid, recip_lattice, econv_mode, econv_tol)
-    (; el_k, el_kq, ph) = epdata
+@timing "econv_all" function check_energy_conservation_all(epstate, ngrid, recip_lattice, econv_mode, econv_tol)
+    (; el_k, el_kq, ph) = epstate
 
     # If econv_mode is :None, do not check energy conservation. Always return true.
     econv_mode == :None && return true

@@ -316,7 +316,7 @@ function combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
     # end
     # Optimization using a 3d array
     if ng1 * ng2 * ng3 > 1e9
-        error("ngrid_kq is too large, use smaller grid or use the old Dict implementation")
+        throw(ArgumentError("ngrid_kq is too large, use smaller grid or use the old Dict implementation"))
         # TODO: Specialize uniform grid kpoints type ?
     end
     xkq_hash_to_ikq = zeros(Int, ng1, ng2, ng3)

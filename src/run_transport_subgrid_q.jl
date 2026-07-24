@@ -121,8 +121,8 @@ function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_pref
                     maximum(el.nband for el in el_kq_save))
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [EPState{FT}(nw, nmodes, nband_max)]
-    Threads.resize_nthreads!(epdatas)
+    epstates = [EPState{FT}(nw, nmodes, nband_max)]
+    Threads.resize_nthreads!(epstates)
     epmat = get_interpolator(model.epmat; fourier_mode)
     ep_eRpq_obj = get_next_wannier_object(model.epmat)
     ep_eRpq = get_interpolator(ep_eRpq_obj; fourier_mode)
@@ -150,8 +150,8 @@ function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_pref
         xq = qpts.vectors[iq]
         ph = ph_save[iq]
 
-        for epdata in epdatas
-            epdata.ph = ph
+        for epstate in epstates
+            epstate.ph = ph
         end
 
         get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
@@ -161,41 +161,41 @@ function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_pref
         # Threads.@threads :static for ikq in 1:nkq
         for ik in 1:nk
             tid = Threads.threadid()
-            epdata = epdatas[tid]
+            epstate = epstates[tid]
 
-            epdata.wtk = kpts.weights[ik]
-            epdata.wtq = qpts.weights[iq]
+            epstate.wtk = kpts.weights[ik]
+            epstate.wtq = qpts.weights[iq]
 
             xk = kpts.vectors[ik]
 
             # Reusing k+q states: map xkq to ikq, the index of k+q point in the global list
             ikq = xk_to_ik(xk + xq, kqpts)
 
-            # Copy saved electron and phonon states to epdata
-            epdata.el_k = el_k_save[ik]
-            epdata.el_kq = el_kq_save[ikq]
+            # Copy saved electron and phonon states to epstate
+            epstate.el_k = el_k_save[ik]
+            epstate.el_kq = el_kq_save[ikq]
 
-            el_k = epdata.el_k
-            el_kq = epdata.el_kq
-            ph = epdata.ph
+            el_k = epstate.el_k
+            el_kq = epstate.el_kq
+            ph = epstate.ph
 
             # If all bands and modes do not satisfy energy conservation, skip this (k, q) point pair.
-            check_energy_conservation_all(epdata, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
+            check_energy_conservation_all(epstate, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_Rq_to_kq!(epdata, ep_eRpq, xk)
+            get_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
-                epdata_set_mmat!(epdata)
-                model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
+                epstate_set_mmat!(epstate)
+                model.polar_eph.use && epstate_compute_eph_dipole!(epstate)
             end
-            epdata_set_g2!(epdata)
+            epstate_set_g2!(epstate)
 
             @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
                 # Save only if the scattering satisfies energy conservation
                 check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
                     qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
-                data = (imap_el_k[ib, ik], imap_el_kq[jb, ikq], imap_ph[imode, iq], sign_ph, epdata.g2[jb, ib, imode])
+                data = (imap_el_k[ib, ik], imap_el_kq[jb, ikq], imap_ph[imode, iq], sign_ph, epstate.g2[jb, ib, imode])
                 push!(bt_scat, data)
             end
         end # ik
@@ -256,8 +256,8 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
                     maximum(el.nband for el in el_kq_save))
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
-    epdatas = [EPState{Float64}(nw, nmodes, nband_max)]
-    Threads.resize_nthreads!(epdatas)
+    epstates = [EPState{Float64}(nw, nmodes, nband_max)]
+    Threads.resize_nthreads!(epstates)
 
     ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
             zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
@@ -287,8 +287,8 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
         xk = kpts.vectors[ik]
         el_k = el_k_save[ik]
 
-        for epdata in epdatas
-            epdata.el_k = el_k
+        for epstate in epstates
+            epstate.el_k = el_k
         end
         get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
 
@@ -297,41 +297,41 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
         # Threads.@threads :static for ikq in 1:nkq
         for iq in 1:nq
             tid = Threads.threadid()
-            epdata = epdatas[tid]
+            epstate = epstates[tid]
 
-            epdata.wtk = kpts.weights[ik]
-            epdata.wtq = qpts.weights[iq]
+            epstate.wtk = kpts.weights[ik]
+            epstate.wtq = qpts.weights[iq]
 
             xq = qpts.vectors[iq]
 
             # Reusing k+q states: map xkq to ikq, the index of k+q point in the global list
             ikq = xk_to_ik(xk + xq, kqpts)
 
-            # Copy saved electron and phonon states to epdata
-            epdata.ph = ph_save[iq]
-            epdata.el_kq = el_kq_save[ikq]
+            # Copy saved electron and phonon states to epstate
+            epstate.ph = ph_save[iq]
+            epstate.el_kq = el_kq_save[ikq]
 
-            el_k = epdata.el_k
-            el_kq = epdata.el_kq
-            ph = epdata.ph
+            el_k = epstate.el_k
+            el_kq = epstate.el_kq
+            ph = epstate.ph
 
             # If all bands and modes do not satisfy energy conservation, skip this (k, q) point pair.
-            check_energy_conservation_all(epdata, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
+            check_energy_conservation_all(epstate, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
+            get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
-                epdata_set_mmat!(epdata)
-                model.polar_eph.use && epdata_compute_eph_dipole!(epdata)
+                epstate_set_mmat!(epstate)
+                model.polar_eph.use && epstate_compute_eph_dipole!(epstate)
             end
-            epdata_set_g2!(epdata)
+            epstate_set_g2!(epstate)
 
             @timing "bt_push" @inbounds for imode in 1:nmodes, jb in el_kq.rng, ib in el_k.rng, sign_ph in (-1, 1)
                 # Save only if the scattering satisfies energy conservation
                 check_energy_conservation(el_k, el_kq, ph, ib, jb, imode, sign_ph,
                     qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
-                data = (imap_el_k[ib, ik], imap_el_kq[jb, ikq], imap_ph[imode, iq], sign_ph, epdata.g2[jb, ib, imode])
+                data = (imap_el_k[ib, ik], imap_el_kq[jb, ikq], imap_ph[imode, iq], sign_ph, epstate.g2[jb, ib, imode])
                 push!(bt_scat, data)
             end
         end # iq

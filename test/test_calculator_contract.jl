@@ -26,6 +26,10 @@ ElectronPhonon.supports(::_CountCalc, ::Type{EPData}) = true
 ElectronPhonon.setup_calculator!(c::_CountCalc, kpts, qpts, el_states; kwargs...) = c
 ElectronPhonon.postprocess_calculator!(c::_CountCalc; kwargs...) = c
 ElectronPhonon.run_calculator!(c::_CountCalc, ::EPData, ctx) = (c.n += 1; c)
+# CPU-only (SingleMode): nothing per outer iteration, but there is no default bracket, so the no-op
+# must be defined explicitly or the CPU loop's OuterIteration bracket would error.
+ElectronPhonon.calculator_begin!(::_CountCalc, ::OuterIteration, ctx) = nothing
+ElectronPhonon.calculator_end!(::_CountCalc, ::OuterIteration, ctx) = nothing
 
 @testset "supports contract (DECISION-1)" begin
     c = _CountCalc()
@@ -83,23 +87,26 @@ ElectronPhonon.calculator_begin!(c::_ModeDispatchCalc, ::OuterIterationBatch, ::
     # The backend-first order keeps the partial annotation `LoopContext{<:GPUBackend}` valid (any mode).
     @test LoopContext{CPUBackend, SingleMode} <: LoopContext{CPUBackend}
 
-    # A calculator's per-point `OuterIteration` bracket fires only in SingleMode; the batched loop's
-    # per-iteration `OuterIteration` bracket hits the default no-op (does NOT trigger the point path).
+    # `_ModeDispatchCalc` defines only OuterIteration/SingleMode and OuterIterationBatch/BatchedMode.
+    # There is no default bracket, so the other two (scope, mode) combinations ERROR — a missing
+    # bracket is loud, not a silent no-op. The two defined combinations still select by MODE, not
+    # backend (the batched loop fires the per-k `OuterIteration` in BatchedMode).
     c = _ModeDispatchCalc()
-    calculator_begin!(c, OuterIteration(), ctx_pt)          # -> (:iter, :point)
-    calculator_begin!(c, OuterIteration(), ctx_bt)          # -> default no-op (no method for BatchedMode)
-    calculator_begin!(c, OuterIterationBatch(), ctx_bt)     # -> (:batch, :batched)
-    calculator_begin!(c, OuterIterationBatch(), ctx_pt)     # -> default no-op (no method for SingleMode)
+    calculator_begin!(c, OuterIteration(), ctx_pt)                                  # -> (:iter, :point)
+    @test_throws ErrorException calculator_begin!(c, OuterIteration(), ctx_bt)       # no BatchedMode method
+    calculator_begin!(c, OuterIterationBatch(), ctx_bt)                             # -> (:batch, :batched)
+    @test_throws ErrorException calculator_begin!(c, OuterIterationBatch(), ctx_pt)  # no SingleMode method
     @test c.fired == [(:iter, :point), (:batch, :batched)]
 
-    # The two reference calculators dispatch their real brackets by mode, not backend: the batched
-    # loop fires per-k `OuterIteration` on a GPU backend, which must resolve to the default no-op
-    # (not the CPU per-point reduction).
+    # The reference calculators dispatch their real brackets by mode, not backend, and every combination
+    # the loops fire resolves to a calculator-owned method — never the AbstractCalculator error fallback.
+    # BoltzmannCalculator does real work in OuterIteration/SingleMode and defines an explicit no-op for
+    # OuterIteration/BatchedMode (the batched outer-k loop fires the per-k bracket on a device backend).
     BC = ElectronPhonon.BoltzmannCalculator
-    @test which(calculator_begin!, (BC, OuterIteration, LoopContext{CPUBackend, SingleMode})).module === ElectronPhonon
-    # OuterIteration on any backend in BatchedMode -> AbstractCalculator no-op default.
-    m_noop = which(calculator_begin!, (BC, OuterIteration, LoopContext{CPUBackend, BatchedMode}))
-    @test m_noop.sig.parameters[2] === AbstractCalculator
+    m_single = which(calculator_begin!, (BC, OuterIteration, LoopContext{CPUBackend, SingleMode}))
+    @test Base.unwrap_unionall(m_single.sig).parameters[2] !== AbstractCalculator
+    m_batched = which(calculator_begin!, (BC, OuterIteration, LoopContext{CPUBackend, BatchedMode}))
+    @test Base.unwrap_unionall(m_batched.sig).parameters[2] !== AbstractCalculator
 
     # Backend-routed `to_device`: the CPU backend is an identity (no CUDA needed on the host path).
     v = [1.0, 2.0, 3.0]

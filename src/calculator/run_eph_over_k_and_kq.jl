@@ -99,7 +99,7 @@ function run_eph_over_k_and_kq(
             setup.kpts, setup.qpts, setup.kqpts,
             setup.el_k_save, setup.el_kq_save,
             setup.ph_save, setup.precompute_ph,
-            setup.epdatas, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
+            setup.epstates, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
             setup.dyn_threads,
             setup.epmat_R, setup.epobj_ekpR_R, setup.ep_ekpR_Rs;
             calculators, skip_eph,
@@ -177,8 +177,8 @@ function _setup_eph_over_k_and_kq(
 
 
     # The CPU loop takes/puts one EPState buffer per thread; the GPU loop is device-batched and
-    # never touches epdata, so it does not allocate the (nw, nmodes, nband_max) thread buffers.
-    epdatas = use_gpu ? nothing : _make_epdatas_channel(FT, nw, nmodes, nband_max)
+    # never touches epstate, so it does not allocate the (nw, nmodes, nband_max) thread buffers.
+    epstates = use_gpu ? nothing : get_epstates_channel(FT, nw, nmodes, nband_max)
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
     ep_ekpR_obj = get_next_wannier_object(model.epmat)
@@ -226,11 +226,12 @@ function _setup_eph_over_k_and_kq(
     end
 
 
-    # Backend: one resolution point. On the GPU path upload `model.epmat` ONCE here and wrap it as
-    # the backend prototype; `_loop_eph_over_k_and_kq_gpu` reuses this device object rather than
+    # Backend: one resolution point (`gpu_backend()` carries an empty device-array allocation
+    # template used by `alloc(backend, …)` / `similar(backend.proto, …)`). `model.epmat` is uploaded
+    # ONCE here — a separate device object that `_loop_eph_over_k_and_kq_gpu` reuses rather than
     # re-uploading. `backend` is carried in `LoopContext` and passed to `setup_calculator!`.
-    epmat_dev = use_gpu ? to_device(model.epmat) : nothing
-    backend = use_gpu ? GPUBackend(epmat_dev.op_r) : CPUBackend()
+    backend = use_gpu ? gpu_backend() : CPUBackend()
+    epmat_dev = use_gpu ? to_device(backend, model.epmat) : nothing
 
     # Initialize calculators. `sel_k`/`sel_kq` carry the per-state weights, per-k band extent, and
     # `nstates_base`, so the calculator builds `el_i`/`el_f` (and the auto-μ carrier count) from the
@@ -251,7 +252,7 @@ function _setup_eph_over_k_and_kq(
         el_k_save, el_kq_save,
         ph_save, precompute_ph,
         nband_max,
-        epdatas, ep_ekpRs, epmat, ep_ekpR_obj,
+        epstates, ep_ekpRs, epmat, ep_ekpR_obj,
         dyn_threads,
         epmat_R, epobj_ekpR_R, ep_ekpR_Rs,
         epmat_dev, backend,
@@ -266,7 +267,7 @@ function _loop_eph_over_k_and_kq(
         kpts, qpts, kqpts,
         el_k_save, el_kq_save,
         ph_save, precompute_ph,
-        epdatas, ep_ekpRs, epmat, ep_ekpR_obj,
+        epstates, ep_ekpRs, epmat, ep_ekpR_obj,
         dyn_threads,
         epmat_R, epobj_ekpR_R, ep_ekpR_Rs;
         calculators = [],
@@ -292,8 +293,8 @@ function _loop_eph_over_k_and_kq(
         xk = kpts.vectors[ik]
         el_k = el_k_save[ik]
 
-        for epdata in epdatas.data
-            epdata.el_k = el_k
+        for epstate in epstates.data
+            epstate.el_k = el_k
         end
 
         if !skip_eph
@@ -313,7 +314,7 @@ function _loop_eph_over_k_and_kq(
 
         @threads for (id_chunk, ikqs) in enumerate(chunks(1:kqpts.n; n=nchunks_threads))
         # @time for (id_chunk, ikqs) in enumerate(collect(chunks(1:kqpts.n; n=nchunks_threads))[1:1])
-            epdata = take!(epdatas)
+            epstate = take!(epstates)
             ep_ekpR = take!(ep_ekpRs)
 
             if covariant_derivative_of_g
@@ -328,14 +329,14 @@ function _loop_eph_over_k_and_kq(
                 dyn = nothing
             end
 
-            _run_eph_over_k_and_kq_inner(model, epdata, ik, ep_ekpR, el_kq_save,
+            _run_eph_over_k_and_kq_inner(model, epstate, ik, ep_ekpR, el_kq_save,
                 xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk,
                 energy_conservation, screening_params, skip_eph, ctx;
                 ep_ekpR_R, calculators,
             )
 
             put!(ep_ekpRs, ep_ekpR)
-            put!(epdatas, epdata)
+            put!(epstates, epstate)
             if ! precompute_ph
                 put!(dyn_threads, dyn)
             end
@@ -353,7 +354,7 @@ function _loop_eph_over_k_and_kq(
 end
 
 
-function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epdata, ik, ep_ekpR, el_kq_save,
+function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epstate, ik, ep_ekpR, el_kq_save,
         xk, ph_save, dyn, kpts, qpts, kqpts, ikqs, precompute_ph, id_chunk,
         energy_conservation, screening_params, skip_eph, ctx;
         ep_ekpR_R, calculators,
@@ -368,9 +369,9 @@ function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epdata, ik, ep_ekpR, e
         xq = xkq - xk
         xq = normalize_kpoint_coordinate(xq .+ 1/2) .- 1/2
 
-        epdata.el_kq = el_kq_save[ikq]
-        epdata.wtk = kpts.weights[ik]
-        epdata.wtq = kqpts.weights[ikq]
+        epstate.el_kq = el_kq_save[ikq]
+        epstate.wtk = kpts.weights[ik]
+        epstate.wtq = kqpts.weights[ikq]
 
         # Use precomputed data for the phonon state at q
 
@@ -380,37 +381,37 @@ function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epdata, ik, ep_ekpR, e
             if iq === nothing
                 throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
             end
-            epdata.ph = ph_save[iq]
+            epstate.ph = ph_save[iq]
         else
             # Compute phonon state at q.
             iq = nothing
-            set_eigen!(epdata.ph, xq, dyn, model.mass, model.polar_phonon)
+            set_eigen!(epstate.ph, xq, dyn, model.mass, model.polar_phonon)
             if ! skip_eph
-                set_eph_dipole_coeff!(epdata.ph, xq, model.polar_eph)
+                set_eph_dipole_coeff!(epstate.ph, xq, model.polar_eph)
             end
         end
 
         # If all bands and modes do not satisfy energy conservation, skip this (k, q) point pair.
-        check_energy_conservation_all(epdata, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
+        check_energy_conservation_all(epstate, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
-        epdata_set_mmat!(epdata)
+        epstate_set_mmat!(epstate)
 
         # Compute electron-phonon coupling
         if !skip_eph
-            get_eph_kR_to_kq!(epdata, ep_ekpR, xq)
+            get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
 
             if ep_ekpR_R !== nothing
                 # This must be done before the long-range calculation
 
                 get_fourier!(ep_ekpR_R.out, ep_ekpR_R, xq)
                 dg_wan = Base.ReshapedArray(ep_ekpR_R.out, (nw, nw, nmodes, 3), ())
-                dg = zeros(ComplexF64, (epdata.el_kq.nband, epdata.el_k.nband, nmodes, 3))
+                dg = zeros(ComplexF64, (epstate.el_kq.nband, epstate.el_k.nband, nmodes, 3))
 
                 # Apply electron gauge matrices (Wannier to eigenstate)
                 tmp1 = zeros(ComplexF64, nw, nw)
                 @views for idir in 1:3, imode in 1:nmodes
                     tmp1 .= dg_wan[:, :, imode, idir]
-                    dg[:, :, imode, idir] .= no_offset_view(epdata.el_kq.u)' * tmp1 * no_offset_view(epdata.el_k.u)
+                    dg[:, :, imode, idir] .= no_offset_view(epstate.el_kq.u)' * tmp1 * no_offset_view(epstate.el_k.u)
                 end
 
                 # Apply phonon gauge matrix (Wannier to eigenstate)
@@ -418,7 +419,7 @@ function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epdata, ik, ep_ekpR, e
                 @views for idir in 1:3
                     for iw in axes(dg, 2)
                         tmp2 .= dg[:, iw, :, idir]
-                        dg[:, iw, :, idir] .= tmp2 * epdata.ph.u
+                        dg[:, iw, :, idir] .= tmp2 * epstate.ph.u
                     end
                 end
 
@@ -434,10 +435,10 @@ function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epdata, ik, ep_ekpR, e
                 # (i.e. derivative in tight-binding gauge, where phase factor is e^{i*k*(R + rj - ri)}).
                 # # Add Berry connection term : im * (g * rbar_k - rbar_kq * g)
                 # @views for idir in 1:3
-                #     ξk  = no_offset_view(getindex.(epdata.el_k.rbar,  idir))
-                #     ξkq = no_offset_view(getindex.(epdata.el_kq.rbar, idir))
+                #     ξk  = no_offset_view(getindex.(epstate.el_k.rbar,  idir))
+                #     ξkq = no_offset_view(getindex.(epstate.el_kq.rbar, idir))
                 #     for imode in 1:nmodes
-                #         g = no_offset_view(epdata.ep[:, :, imode])
+                #         g = no_offset_view(epstate.ep[:, :, imode])
                 #         dg[:, :, imode, idir] .+= im .* (g * ξk .- ξkq * g)
                 #     end
                 # end
@@ -448,24 +449,24 @@ function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epdata, ik, ep_ekpR, e
                 #     print("$(abs(dk_dir' * dg[1, 1, 6, :])), ")
                 # end
 
-                epdata_dg = OffsetArray(dg, epdata.el_kq.rng, epdata.el_k.rng, :, :)
+                epstate_dg = OffsetArray(dg, epstate.el_kq.rng, epstate.el_k.rng, :, :)
 
             else
-                epdata_dg = nothing
+                epstate_dg = nothing
 
             end
 
-            _apply_screening!(ϵs, calculators, model, xq, epdata, screening_params)
-            epdata_compute_eph_dipole!(epdata, ϵs; model)
-            epdata_set_g2!(epdata)
+            _apply_screening!(ϵs, calculators, model, xq, epstate, screening_params)
+            epstate_compute_eph_dipole!(epstate, ϵs; model)
+            epstate_set_g2!(epstate)
         end
 
         # TODO: Screening
 
-        # Now, we are done with matrix elements. All data saved in epdata.
+        # Now, we are done with matrix elements. All data saved in epstate.
 
-        # FIXME: Find out better way to pass epdata_dg (now a typed payload field)
-        payload = EPData(epdata, ik, iq, ikq, xk, xq, id_chunk, epdata_dg)
+        # FIXME: Find out better way to pass epstate_dg (now a typed payload field)
+        payload = EPData(epstate, ik, iq, ikq, xk, xq, id_chunk, epstate_dg)
         foreach(c -> run_calculator!(c, payload, ctx), calculators)
 
     end # ikq
