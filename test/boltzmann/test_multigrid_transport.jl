@@ -141,3 +141,29 @@ end
     @test isfinite(o_mg.μlist[1])
     @test abs(o_mg.μlist[1] - μ_ref) < 0.3eV        # sane on tiny Pb grids (Cu 100/50: Δμ≈2 meV)
 end
+
+# Independent value-pinning of the auto-μ path. The transport tests above run at fixed μ and the
+# multigrid μ test compares to a reference from the SAME new code path, so neither pins the μ VALUE
+# that `bte_compute_μ!` produces. This guards it with hardcoded golden values: on a uniform windowed
+# Pb selection, the below-window carrier count `nstates_base` and the solved metal μ are fixed
+# regression targets (recompute + update deliberately if the μ convention ever changes).
+@testset "auto-μ solve pinned values (Pb, uniform)" begin
+    model = _load_model_from_artifacts("pb")
+    eV = EP.unit_to_aru(:eV); K = EP.unit_to_aru(:K)
+    e_fermi = 11.594123 * eV
+    window = (e_fermi - 0.4eV, e_fermi + 0.4eV)
+
+    sel = EP.filter_electron_states((12, 12, 12), model, window; symmetry = model.symmetry, fourier_mode = "gridopt")
+    els = EP.compute_electron_states(model, sel, ["eigenvalue", "eigenvector", "velocity"]; fourier_mode = "gridopt")
+    el  = EP.electron_states_to_BandStates(els, sel)
+
+    # nstates_base = below-window fully-occupied carriers per cell (rides on the selection).
+    @test el.nstates_base ≈ 1.898726851851852 rtol = 1e-10
+
+    # Auto-μ (nlist set, μlist unset): metal branch, solved by bisection on the selection's states.
+    occ = ElectronOccupationParams(; Tlist = [300.0 * K], nlist = 4.0, μlist = nothing,
+        volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac)
+    EP.bte_compute_μ!(occ, el; do_print = false)
+    @test occ.type == :Metal
+    @test occ.μlist[1] ≈ 0.8631722535557365 rtol = 1e-8      # 11.7441 eV
+end
