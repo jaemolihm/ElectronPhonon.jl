@@ -151,7 +151,7 @@ function _setup_eph_over_q_and_k(
     # setup cost after the eigensolve). Default is the conservative full list.
     el_k_quantities = isempty(calculators) ? ["eigenvalue", "eigenvector", "velocity", "position"] :
         unique(reduce(vcat, required_el_k_quantities(c) for c in calculators))
-    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_electron_k(
+    (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity, el_k_quantities)
     nk = kpts.n
 
@@ -187,17 +187,23 @@ function _setup_eph_over_q_and_k(
     # Otherwise, it is computed on the fly for each k and each q.
     if precompute_el_kq
         shift_kq = kpts.shift + qpts.shift
-        kqpts, iband_min_kq, iband_max_kq, nelec_below_window_kq = maybe_time(verbosity) do
-            filter_kpoints(qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
+        sel_kq = maybe_time(verbosity) do
+            filter_electron_states(qpts.ngrid, nw, model.el_ham, window_kq; shift=shift_kq, fourier_mode)
         end
-        kqpts = GridKpoints(kqpts)
+        kqpts = GridKpoints(sel_kq.kpts)
 
-        el_kq_save = _setup_electron_kq(model, kqpts, symmetry, el_kq_from_unfolding, window_kq;
-            fourier_mode)
+        if el_kq_from_unfolding
+            kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
+        else
+            kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
+        end
+        el_kq_save = _compute_electron_states_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
+            symmetry, el_kq_from_unfolding, window_kq;
+            quantities=["eigenvalue", "eigenvector", "velocity", "position"], fourier_mode)
     else
         kqpts = nothing
-        nelec_below_window_kq = nothing
         el_kq_save = nothing
+        sel_kq = nothing
     end
 
 
@@ -231,11 +237,10 @@ function _setup_eph_over_q_and_k(
     # the device via `backend.proto` (the bisection sweeps all in-window states many times and
     # dominates the setup at dense grids); the generic `compute_ncarrier` broadcast+sum works for
     # every occ_type on the device, so no occ_type is special-cased.
-    for calc in calculators
-        setup_calculator!(calc, kpts, qpts, el_k_save;
-            nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-            nelec_below_window_k, nelec_below_window_kq, nchunks_threads, verbosity, backend)
-    end
+    _setup_calculators!(calculators, kpts, qpts, el_k_save;
+        nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
+        sel_k, sel_kq, nchunks_threads, verbosity, backend,
+    )
 
     return (;
         kpts, qpts, kqpts,
@@ -243,7 +248,6 @@ function _setup_eph_over_q_and_k(
         precompute_el_kq, nband_max,
         eph_buffers, el_ham_dev, backend,
         iband_min, iband_max,
-        nelec_below_window_k, nelec_below_window_kq,
     )
 end
 

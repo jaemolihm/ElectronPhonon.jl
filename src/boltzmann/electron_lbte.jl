@@ -30,11 +30,11 @@ const BTorBandStates{FT} = Union{BTStates{FT}, BandStates{FT}}
 end
 
 bt_weights(el::BTStates) = el.k_weight
-bt_weights(el::BandStates) = state_weights(el)
+bt_weights(el::AbstractBandStates) = state_weights(el)
 bt_xks(el::BTStates) = el.xks
-bt_xks(el::BandStates) = state_xks(el)
+bt_xks(el::AbstractBandStates) = state_xks(el)
 bt_ngrid(el::BTStates) = el.ngrid
-bt_ngrid(el::BandStates) = el.kpts.ngrid
+bt_ngrid(el::AbstractBandStates) = el.kpts.ngrid
 
 """
     occupation_to_conductivity(δf, el, params)
@@ -150,7 +150,7 @@ Solve Boltzmann transport equation for electrons.
 scat_mat is a rectangular matrix, mapping states in `el_f` to states in `el_i`.
 δf[j] is the occupations for states `el_f` and is calculated by unfolding `δf_i`.
 """
-function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; max_iter=100, rtol=1e-10, mixing = 1.0) where {FT}
+function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; max_iter=100, rtol=1e-10, mixing = 1.0, interpolate = false) where {FT}
     output = (σ_serta = zeros(FT, 3, 3, length(params.Tlist)),
               σ = zeros(FT, 3, 3, length(params.Tlist)),
               δf_i_serta = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
@@ -158,7 +158,7 @@ function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, 
               σ_iter = fill(FT(NaN), (max_iter+1, 3, 3, length(params.Tlist))),
     )
 
-    map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
+    map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry; interpolate)
     vdiag_i = el_i.vs
 
     for iT in 1:length(params.Tlist)
@@ -246,17 +246,26 @@ function unfold_data_map(state::BTorBandStates{FT}, ::Nothing) where {FT}
 end
 
 """
-    vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry) -> map_i_to_f
+    vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry; interpolate=false) -> map_i_to_f
 Construct a sparse matrix that unfolds and interpolates a vector field defined on states
 in `el_i` to states in `el_f`. For unfolding, use `symmetry`. Assume the vector field is
 polar (i.e. not a pseudovector) and even under time reversal.
 For vector fields ``f_i`` and ``f_f`` (defined on `el_i` and `el_f`, respectively),
 ``f_f = map_i_to_f * f_i`` holds.
+
+With `interpolate=false` (the default, used for multigrid k-sampling), each `el_f` state is
+mapped to its own grid node with weight 1 instead of being linearly interpolated. This is exact
+when `el_f` is the symmetry unfolding of `el_i` on the same grid spec, and avoids the
+uniform-grid assumption of the linear interpolation. `el_f` states with no exact match in `el_i`
+(benign band-edge FP jitter between the windowed k-grid and the IBZ-unfolded k+q grid) have their
+vector field treated as zero silently. For
+genuinely different el_i/el_f grids (e.g. a much wider `window_kq`) pass `interpolate=true`.
 """
-function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f, symmetry) where FT
+function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f, symmetry; interpolate::Bool=false) where FT
     map_unfold, indmap_unfold = unfold_data_map(el_i, symmetry)
 
-    ranges = map(n -> range(0, 1, length=n+1)[1:end-1], bt_ngrid(el_i))
+    ngrid = bt_ngrid(el_i)
+    ranges = map(n -> range(0, 1, length=n+1)[1:end-1], ngrid)
     inds_f = Int[]
     inds_unfold = Int[]
     weights_all = FT[]
@@ -266,23 +275,41 @@ function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f,
         xk = xks_f[i_f]
         iband = el_f.ibands[i_f]
 
-        indexes, weights = linear_interpolation_weights(ranges, xk.data)
-        for (ind_k, weight) in zip(indexes, weights)
-            key = CI((ind_k.-1)..., iband)
-            i_unfold = get(indmap_unfold, key, -1)
-            if i_unfold != -1
-                if weight > 1e-14
-                    push!(inds_f, i_f)
-                    push!(inds_unfold, i_unfold)
-                    push!(weights_all, weight)
+        if interpolate
+            indexes, weights = linear_interpolation_weights(ranges, xk.data)
+            for (ind_k, weight) in zip(indexes, weights)
+                key = CI((ind_k.-1)..., iband)
+                i_unfold = get(indmap_unfold, key, -1)
+                if i_unfold != -1
+                    if weight > 1e-14
+                        push!(inds_f, i_f)
+                        push!(inds_unfold, i_unfold)
+                        push!(weights_all, weight)
+                    end
+                else
+                    # Interpolation point for state at el_f not found in el_i.
+                    # This may happen when using a different window for el_i and el_f, or due to
+                    # slight breaking of symmetry.
+                    # We ignore this case, assuming that the vector field is zero for states
+                    # not included in el_i.
                 end
-            else
-                # Interpolation point for state at el_f not found in el_i.
-                # This may happen when using a different window for el_i and el_f, or due to
-                # slight breaking of symmetry.
-                # We ignore this case, assuming that the vector field is zero for states
-                # not included in el_i.
             end
+        else
+            # Unfold-only: map el_f to its exact grid node (weight 1), no linear interpolation.
+            # Exact when el_f is the symmetry unfolding of el_i on the same grid spec.
+            xk_int = mod.(round.(Int, xk .* ngrid), ngrid)
+            key = CI(xk_int.data..., iband)
+            i_unfold = get(indmap_unfold, key, -1)
+            if i_unfold == -1
+                # No exact unfolded-el_i match. el_i is windowed on the k-grid while el_f is
+                # IBZ-reduced-then-unfolded, so a few band-edge states can differ by FP jitter.
+                # Treat the vector field as zero there (same convention as the interpolate path);
+                # these states carry tiny -∂f/∂ε weight, so this is physically negligible.
+                continue
+            end
+            push!(inds_f, i_f)
+            push!(inds_unfold, i_unfold)
+            push!(weights_all, one(FT))
         end
     end
     map_interpolate = sparse(inds_f, inds_unfold, weights_all, el_f.n, size(map_unfold, 1))

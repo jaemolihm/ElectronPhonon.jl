@@ -2,42 +2,45 @@
 # run_eph_over_q_and_k, run_eph_over_k_and_kq). Their `_setup_*` bodies are ~70% identical, so the
 # common k-side filtering/state computation, the k+q electron-state branch, and the screening
 # evaluation live here, each exactly once. (The per-thread EPState channel `get_epstates_channel`
-# lives next to `EPState` in src/EPState.jl. The setup_calculator! fan-out is a plain `for` loop
-# inlined in each driver — the shared kwarg contract is written at each call site regardless.)
+# lives next to `EPState` in src/EPState.jl. The setup_calculator! fan-out is `_setup_calculators!`,
+# shared by all three drivers.)
 
-# k-side setup shared by all three drivers: filter the outer k-points to the energy window and
-# compute the electron states there. `verbosity` selects timing (@time when > 0, via `maybe_time`);
-# `el_k_quantities` lets the outer-q GPU-batched path skip velocity/position.
+# k-side setup shared by all three drivers: obtain the outer-k selection (a prebuilt `FilteredStates`
+# passed through verbatim, or filtered from a grid to the energy window) and compute the electron
+# states there. `verbosity` selects timing (@time when > 0, via `maybe_time`); `el_k_quantities` lets
+# the outer-q GPU-batched path skip velocity/position. The prebuilt pass-through is dead for the two
+# grid-only sibling callers (they always pass a grid), so their behavior is unchanged.
 function _setup_electron_k(
         model :: Model, kpts_input;
         window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu = false, verbosity = 1,
         el_k_quantities = ["eigenvalue", "eigenvector", "velocity", "position"],
     )
     (; nw) = model
-    kpts, iband_min, iband_max, nelec_below_window_k = maybe_time(verbosity) do
-        filter_kpoints(kpts_input, nw, model.el_ham, window_k, mpi_comm_k; symmetry, fourier_mode, use_gpu)
-    end
+    sel_k = kpts_input isa FilteredStates ? kpts_input :
+        maybe_time(verbosity) do
+            filter_electron_states(kpts_input, nw, model.el_ham, window_k; symmetry, fourier_mode, use_gpu, mpi_comm=mpi_comm_k)
+        end
+    kpts = sel_k.kpts
+    br = band_range(sel_k)
+    iband_min, iband_max = first(br), last(br)
+
     el_k_save = maybe_time(verbosity) do
-        compute_electron_states(model, kpts, el_k_quantities, window_k; fourier_mode, use_gpu)
+        compute_electron_states(model, sel_k, el_k_quantities; fourier_mode, use_gpu)
     end
-    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save)
+    (; kpts, iband_min, iband_max, el_k_save, sel_k)
 end
 
 
-# Electron states at k+q, shared by all three drivers. Owns the full-`kqpts` → states step including
-# the symmetry handling: with `el_kq_from_unfolding`, it folds the full `kqpts` to the irreducible BZ
-# (`kqpts_irr`), computes the states there, and unfolds them back to `kqpts` (carrying the eigenvector
-# gauge) for gauge consistency between symmetry-equivalent k points; otherwise it computes the states
-# directly on `kqpts`. Callers pass only the full `kqpts` and need not pre-derive the irreducible grid.
-# (`run_eph_over_k_and_kq` filters in the irreducible BZ and unfolds to build `kqpts`, so the fold here
-# re-folds an already-unfolded grid — a cheap redundant fold accepted to keep one code path. It runs
-# only on the CPU symmetry path, which `run_eph_over_k_and_kq` gates `el_kq_from_unfolding` on.)
-function _setup_electron_kq(model, kqpts, symmetry, el_kq_from_unfolding, window_kq;
-        fourier_mode, use_gpu = false)
-    quantities = ["eigenvalue", "eigenvector", "velocity", "position"]
+# Electron states at k+q, shared by all three drivers. With `el_kq_from_unfolding`, the states are
+# computed only in the irreducible BZ (`kqpts_irr`) and unfolded to `kqpts` (carrying the eigenvector
+# gauge) to keep gauge consistency between symmetry-equivalent k points; otherwise they are computed
+# directly on `kqpts`. `kqpts_irr` / `ik_to_ikirr_isym_kq` are only read on the unfolding path.
+function _compute_electron_states_kq(
+        model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq, symmetry, el_kq_from_unfolding, window_kq;
+        quantities, fourier_mode, use_gpu = false,
+    )
     if el_kq_from_unfolding
         symmetry !== nothing || throw(ArgumentError("el_kq_from_unfolding = true requires symmetry"))
-        kqpts_irr, ik_to_ikirr_isym_kq = fold_kpoints(kqpts, symmetry)
         el_kq_save_irr = compute_electron_states(model, kqpts_irr, quantities, window_kq; fourier_mode, use_gpu)
         el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
         # el_kq_save_irr is not used anymore.
@@ -46,6 +49,73 @@ function _setup_electron_kq(model, kqpts, symmetry, el_kq_from_unfolding, window
         el_kq_save = compute_electron_states(model, kqpts, quantities, window_kq; fourier_mode, use_gpu)
     end
     el_kq_save
+end
+
+
+# k+q-side setup for `run_eph_over_k_and_kq`: obtain the inner (k+q) selection and its electron
+# states, returning `(; kqpts, el_kq_save, sel_kq)`. Three sub-branches:
+#   (1) a prebuilt full-BZ `FilteredStates` (e.g. from `unfold_band_states`) — consumed as-is;
+#   (2) a grid — filtered to the window (IBZ-reduced then `unfold_kpoints` to the full BZ under
+#       symmetry, else filtered directly), yielding `kqpts` + `nelec_kq`;
+#   (3) the electron states — computed directly, or via the gauge-consistent IBZ→full unfolding
+#       inside `_compute_electron_states_kq` (the one path that must stay special, so `el_f` is the
+#       exact symmetry unfolding of `el_i` for the interpolate=false δf feedback).
+# The grid path wraps the computed states into a `FilteredStates` via `electron_states_to_FilteredStates`
+# so the calculator sees a selection on both paths. `el_kq_quantities` (the electron-state quantities
+# to compute at k+q) is supplied by the caller.
+function _setup_electron_kq(model, kqpts_input;
+        window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
+        fourier_mode, use_gpu = false, verbosity = 1)
+    (; nw) = model
+
+    # (1) prebuilt full-BZ selection: consume as-is
+    if kqpts_input isa FilteredStates
+        sel_kq = kqpts_input
+        el_kq_save = maybe_time(verbosity) do
+            compute_electron_states(model, sel_kq, el_kq_quantities; fourier_mode, use_gpu)
+        end
+        return (; kqpts = sel_kq.kpts, el_kq_save, sel_kq)
+    end
+
+    # (2) grid: filter to the window (IBZ-reduce + unfold under symmetry), get full kqpts + nelec_kq
+    if symmetry !== nothing
+        sel_irr = maybe_time(verbosity) do
+            filter_electron_states(kqpts_input, nw, model.el_ham, window_kq;
+                mpi_comm=mpi_comm_q, symmetry, fourier_mode, use_gpu)
+        end
+        nelec_kq = sel_irr.nstates_base
+        kqpts, ik_to_ikirr_isym_kq = unfold_kpoints(sel_irr.kpts, symmetry)
+        kqpts_irr = sel_irr.kpts
+    else
+        sel_kqf = maybe_time(verbosity) do
+            filter_electron_states(kqpts_input, nw, model.el_ham, window_kq;
+                mpi_comm=mpi_comm_q, fourier_mode, use_gpu)
+        end
+        kqpts = sel_kqf.kpts; nelec_kq = sel_kqf.nstates_base
+        kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
+    end
+
+    # (3) states: direct, or gauge-consistent IBZ→full unfolding (the one genuinely special path)
+    el_kq_save = _compute_electron_states_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
+        symmetry, el_kq_from_unfolding, window_kq; quantities=el_kq_quantities, fourier_mode, use_gpu)
+    sel_kq = electron_states_to_FilteredStates(kqpts, el_kq_save, nelec_kq; nw)
+    return (; kqpts, el_kq_save, sel_kq)
+end
+
+
+# setup_calculator! fan-out shared by all three drivers. The common keyword payload (band range,
+# k+q states/grid, carrier counts, thread chunking) is passed explicitly; driver-specific extras
+# (backend / verbosity) forward through `kwargs`.
+function _setup_calculators!(
+        calculators, kpts, qpts, el_k_save;
+        nw, nmodes, rng_band, el_states_kq, kqpts, nchunks_threads,
+        sel_k, sel_kq, kwargs...,
+    )
+    for calc in calculators
+        setup_calculator!(calc, kpts, qpts, el_k_save;
+            nw, nmodes, rng_band, el_states_kq, kqpts, nchunks_threads,
+            sel_k, sel_kq, kwargs...)
+    end
 end
 
 

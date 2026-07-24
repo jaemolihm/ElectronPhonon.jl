@@ -142,6 +142,14 @@ function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true, gpu
     # Move a host vector onto `gpu_array`'s backend for the ncarrier sums (identity on the host).
     _to_device(x) = gpu_array === nothing ? x : copyto!(similar(gpu_array, eltype(x), size(x)), x)
 
+    # Per-state energies / BZ weights / band indices, read through the accessors both state types
+    # share: `es`/`ibands` (BTStates via its getproperty bridge, BandStates/FilteredStates natively)
+    # and `bt_weights` (BTStates -> k_weight, AbstractBandStates -> state_weights). This lets μ be
+    # solved directly on a BandStates selection (its per-state weights) as well as a BTStates.
+    es = el.es
+    ws = bt_weights(el)
+    ibs = el.ibands
+
     if occ.type == :Metal
         # For metals, compute the total electron density.
         # Since occ.n is the difference of number of electrons per cell from nband_valence,
@@ -149,8 +157,8 @@ function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true, gpu
         # Also, el.nstates_base is the contribution to the ncarrier from occupied states
         # outside the window (i.e. not included in `energy`). So it is subtracted.
         ncarrier_target = @. (occ.nlist + occ.nelec) / occ.spin_degeneracy - el.nstates_base
-        e_solve = _to_device(el.e)
-        w_solve = _to_device(el.k_weight)
+        e_solve = _to_device(es)
+        w_solve = _to_device(ws)
     elseif occ.type == :Semiconductor
         # For semiconductors, count the doped carriers to minimize floating point error.
         # FIXME: nband_valence needs to be a field
@@ -159,10 +167,10 @@ function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true, gpu
         ncarrier_target = @. occ.nlist / occ.spin_degeneracy
         # Band masking is a host operation; the resulting energy/weight lists are then moved to the
         # solve backend.
-        e_e = _to_device(el.e[el.iband .>  nband_valence])
-        e_h = _to_device(el.e[el.iband .<= nband_valence])
-        w_e = _to_device(el.k_weight[el.iband .>  nband_valence])
-        w_h = _to_device(el.k_weight[el.iband .<= nband_valence])
+        e_e = _to_device(es[ibs .>  nband_valence])
+        e_h = _to_device(es[ibs .<= nband_valence])
+        w_e = _to_device(ws[ibs .>  nband_valence])
+        w_h = _to_device(ws[ibs .<= nband_valence])
     else
         throw(DomainError("Invalid occ.type $(occ.type)"))
     end

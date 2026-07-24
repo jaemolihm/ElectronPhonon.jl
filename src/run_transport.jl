@@ -78,15 +78,20 @@ using HDF5
         # Generate k points
         mpi_isroot() && println("Setting k-point grid")
         symmetry_k = use_irr_k ? symmetry : nothing
-        @time kpts, iband_min_k, iband_max_k, nstates_base_k = filter_kpoints(k_input, nw,
-            model.el_ham, window_k, mpi_comm_k, symmetry=symmetry_k; fourier_mode)
+        @time sel_k = filter_electron_states(k_input, nw, model.el_ham, window_k;
+            symmetry=symmetry_k, mpi_comm=mpi_comm_k, fourier_mode)
+        kpts = sel_k.kpts
+        nstates_base_k = sel_k.nstates_base
 
         # Generate k+q points
         mpi_isroot() && println("Setting k+q-point grid")
         # If k_input is a GridKpoint, set shift for kqpts so that qpts includes the Gamma point.
         shift_k = k_input isa GridKpoints ? Vec3{FT}(k_input.shift) : Vec3{FT}(0, 0, 0)
         shift_kq = shift_k .+ shift_q ./ qgrid
-        @time kqpts, iband_min_kq, iband_max_kq, nstates_base_kq = filter_kpoints(qgrid, nw, model.el_ham, window_kq, mpi_comm_k, shift=shift_kq; fourier_mode)
+        @time sel_kq = filter_electron_states(qgrid, nw, model.el_ham, window_kq;
+            shift=shift_kq, mpi_comm=mpi_comm_k, fourier_mode)
+        kqpts = sel_kq.kpts
+        nstates_base_kq = sel_kq.nstates_base
         if mpi_comm_k !== nothing
             # k+q points are not distributed over mpi_comm_k in the remaining part.
             kqpts = mpi_allgather(kqpts, mpi_comm_k)

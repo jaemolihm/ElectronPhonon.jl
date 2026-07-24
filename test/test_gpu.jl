@@ -549,16 +549,17 @@ end
         # identical IBZ Kpoints object. (Eigenvectors / gauge are not involved here; cf. the g2
         # gauge caveat in the calculator-loop test above.)
         for nk in (12, 24)
-            rk, rbmin, rbmax, rnel = filter_kpoints((nk, nk, nk), model.nw, model.el_ham, window;
+            rsel = filter_electron_states((nk, nk, nk), model.nw, model.el_ham, window;
                 symmetry = model.symmetry, use_gpu = false)
-            gk, gbmin, gbmax, gnel = filter_kpoints((nk, nk, nk), model.nw, model.el_ham, window;
+            gsel = filter_electron_states((nk, nk, nk), model.nw, model.el_ham, window;
                 symmetry = model.symmetry, use_gpu = true)
+            rk = rsel.kpts; gk = gsel.kpts
             @test gk.n == rk.n
             @test gk.ngrid == rk.ngrid
             @test gk.vectors == rk.vectors
             @test gk.weights == rk.weights
-            @test (gbmin, gbmax) == (rbmin, rbmax)
-            @test gnel == rnel
+            @test band_range(gsel) == band_range(rsel)
+            @test gsel.nstates_base == rsel.nstates_base
         end
     end
 end
@@ -577,8 +578,8 @@ end
         # does not apply the per-k EPW degeneracy gauge-fixing, so within Pb's cubic-degenerate
         # subspaces u_full differs by a (physically equivalent) unitary rotation — same caveat as the
         # velocity test below and the g2 gauge note in the calculator-loop test.
-        kpts_ibz = filter_kpoints((24, 24, 24), model.nw, model.el_ham, window;
-            symmetry = model.symmetry, use_gpu = false)[1]
+        kpts_ibz = filter_electron_states((24, 24, 24), model.nw, model.el_ham, window;
+            symmetry = model.symmetry, use_gpu = false).kpts
         qv = ["eigenvalue", "eigenvector", "velocity", "position"]
         els_c = ElectronPhonon.compute_electron_states(model, kpts_ibz, qv, window; fourier_mode="gridopt")
         els_g = ElectronPhonon.compute_electron_states(model, kpts_ibz, qv, window; use_gpu=true)

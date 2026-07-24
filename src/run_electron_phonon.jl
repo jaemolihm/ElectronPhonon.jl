@@ -53,8 +53,10 @@ function run_eph_outer_loop_q(
     end
 
     # Generate k points
-    kpoints, iband_min, iband_max, nelec_below_window = filter_kpoints(k_input, nw,
-        model.el_ham, window, mpi_comm_k; fourier_mode)
+    sel = filter_electron_states(k_input, nw, model.el_ham, window; mpi_comm=mpi_comm_k, fourier_mode)
+    kpoints = sel.kpts
+    _br = band_range(sel); iband_min, iband_max = first(_br), last(_br)
+    nelec_below_window = sel.nstates_base
 
     # Generate q points
     if q_input isa Kpoints

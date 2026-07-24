@@ -311,7 +311,7 @@ end
 # i) and writes the scattering-in term into Sᵢ (each (i,f) is hit by a unique thread across the whole
 # run → no atomic). See the generic method's docstring for the full accumulation semantics.
 function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
-        e_i, e_f, wq, μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nq_batch, nT, i0)
+        e_i, e_f, wf, μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nq_batch, nT, i0)
     # Flat thread index ind_mnq ∈ 1:N over the (m, n, iq_batch) grid (N = nbandkq·nbandk·nq_batch).
     # TODO: the CUDA index intrinsics are Int32, so this overflows if N ≥ 2^31. Unreachable today (a
     # grid that large would exceed device memory), and systemic to all kernels in this extension;
@@ -326,7 +326,7 @@ function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap
         ikq = ikqs[iq_batch]       # k+q point of this q within the batch
         f = imap_f[m, ikq]         # inner (k+q) state index; 0 = out of window → skip
         f > 0 || return
-        ek = e_i[i]; ekq = e_f[f]; wtq = wq[ikq]
+        ek = e_i[i]; ekq = e_f[f]; wtq = wf[f]   # per-final-state weight
         il = i - i0                # tile-local outer row (i0 = the current Sᵢ tile's global offset)
         for iT in 1:nT             # one entry per temperature
             μ = μs[iT]; T = Ts[iT]; η = ηs[iT]
@@ -349,14 +349,14 @@ end
 # src/boltzmann/boltzmann_calculator.jl): launches `_bte_window_accumulate_kernel!` with one thread per
 # (m, n, j) over the batch, accumulating this batch's Sₒ/Sᵢ contributions into the device buffers.
 function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
-        imap_i_at_k, imap_f, ikqs, e_i, e_f, wq, μs, Ts, ηs, method::Int, ω_cutoff,
+        imap_i_at_k, imap_f, ikqs, e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff,
         nbandkq::Int, nbandk::Int, nmodes::Int, nq_batch::Int, i0::Int)
     nT = length(μs)
     N = nbandkq * nbandk * nq_batch
     threads = 256
     blocks = cld(N, threads)
     @cuda threads=threads blocks=blocks _bte_window_accumulate_kernel!(
-        Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wq,
+        Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
         μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nq_batch, nT, i0)
     nothing
 end

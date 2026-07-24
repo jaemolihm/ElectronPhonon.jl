@@ -1,7 +1,7 @@
 function run_eph_over_k_and_kq(
         model       :: Model{FT},
-        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
-        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
+        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
+        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
         ;
         calculators = [],
         mpi_comm_k = nothing,
@@ -67,6 +67,13 @@ function run_eph_over_k_and_kq(
     (!use_gpu || symmetry === nothing || !el_kq_from_unfolding) || throw(ArgumentError(
         "use_gpu supports symmetry only with el_kq_from_unfolding = false (GPU k+q unfolding not implemented)."))
 
+    # A prebuilt k+q FilteredStates is consumed as-is (the caller already built the full-BZ selection,
+    # e.g. via unfold_band_states), so the internal IBZ+unfold path does not run — el_kq_from_unfolding
+    # is meaningless there.
+    (!(kqpts_input isa FilteredStates) || !el_kq_from_unfolding) || throw(ArgumentError(
+        "el_kq_from_unfolding = true is not supported when the k+q argument is a prebuilt FilteredStates; " *
+        "build the full-BZ k+q selection explicitly (e.g. unfold_band_states) and pass el_kq_from_unfolding = false."))
+
     setup = _setup_eph_over_k_and_kq(model, kpts_input, kqpts_input;
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, symmetry, calculators, nchunks_threads,
@@ -111,8 +118,8 @@ end
 # _loop_eph_over_k_and_kq are typed function arguments, avoiding Core.Box wrapping.
 function _setup_eph_over_k_and_kq(
         model       :: Model{FT},
-        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
-        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints},
+        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
+        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
         ;
         mpi_comm_k = nothing,
         mpi_comm_q = nothing,
@@ -130,30 +137,18 @@ function _setup_eph_over_k_and_kq(
 
     (; nw, nmodes) = model
 
-    # Generate k points and electron states at k (shared setup core)
-    (; kpts, iband_min, iband_max, nelec_below_window_k, el_k_save) = _setup_electron_k(
-        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity)
+    # Outer k and k+q setup via the shared role helpers. Each yields a `FilteredStates` selection
+    # (a prebuilt one passed through verbatim, or filtered from a grid — the k+q grid path also
+    # IBZ-reduces + unfolds under symmetry) plus its `kpts` and computed electron states. Same calls,
+    # same order as the prior inline block.
+    (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(model, kpts_input;
+        window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity)
     nk = kpts.n
 
-    # Filter the k+q grid to the energy window. With symmetry, filter the k+q points in the
-    # irreducible BZ and unfold the kept point set to the full BZ (~nsym× fewer eigensolves; band
-    # energies are constant on the star). Electron STATES are still handled per `el_kq_from_unfolding`.
-    if symmetry !== nothing
-        kqpts_irr, iband_kq_min, iband_kq_max, nelec_below_window_kq = maybe_time(verbosity) do
-            filter_kpoints(kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; symmetry, fourier_mode, use_gpu)
-        end
-        kqpts, _ = unfold_kpoints(kqpts_irr, symmetry)
-    else
-        kqpts, iband_kq_min, iband_kq_max, nelec_below_window_kq = maybe_time(verbosity) do
-            filter_kpoints(kqpts_input, nw, model.el_ham, window_kq, mpi_comm_q; fourier_mode, use_gpu)
-        end
-    end
-
-    # Electron states at k+q (directly, or via IBZ + unfolding for gauge consistency; `_setup_electron_kq`
-    # folds `kqpts` to the IBZ itself). CPU-only unfolding — `run_eph_over_k_and_kq` gates
-    # el_kq_from_unfolding off for use_gpu.
-    el_kq_save = _setup_electron_kq(model, kqpts, symmetry, el_kq_from_unfolding, window_kq;
-        fourier_mode, use_gpu)
+    el_kq_quantities = ["eigenvalue", "eigenvector", "velocity", "position"]
+    (; kqpts, el_kq_save, sel_kq) = _setup_electron_kq(model, kqpts_input;
+        window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
+        fourier_mode, use_gpu, verbosity)
 
 
     # Precompute qpts and phonon states if k and k+q meshes are commensurate
@@ -238,12 +233,13 @@ function _setup_eph_over_k_and_kq(
     backend = use_gpu ? gpu_backend() : CPUBackend()
     epmat_dev = use_gpu ? to_device(backend, model.epmat) : nothing
 
-    # Initialize calculators
-    for calc in calculators
-        setup_calculator!(calc, kpts, qpts, el_k_save;
-            nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-            nelec_below_window_k, nelec_below_window_kq, nchunks_threads, verbosity, backend)
-    end
+    # Initialize calculators. `sel_k`/`sel_kq` carry the per-state weights, per-k band extent, and
+    # `nstates_base`, so the calculator builds `el_i`/`el_f` (and the auto-μ carrier count) from the
+    # selection rather than from a below-window override.
+    _setup_calculators!(calculators, kpts, qpts, el_k_save;
+        nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
+        sel_k, sel_kq, nchunks_threads, verbosity, backend,
+    )
 
     if verbosity > 0 && mpi_isroot()
         @info "Number of k points = $(kpts.n)"
@@ -261,7 +257,7 @@ function _setup_eph_over_k_and_kq(
         epmat_R, epobj_ekpR_R, ep_ekpR_Rs,
         epmat_dev, backend,
         iband_min, iband_max,
-        nelec_below_window_k, nelec_below_window_kq,
+        sel_k, sel_kq,
     )
 end
 
