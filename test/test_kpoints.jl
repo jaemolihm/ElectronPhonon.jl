@@ -123,10 +123,12 @@ end
     atoms = ["B" => [ones(3)/8], "N" => [-ones(3)/8]]
     symmetry = symmetry_operations(lattice, atoms)
 
-    # Reference `hash => ik` map, built independently of the production index: the packed grid
-    # index is re-derived here rather than obtained from `_hash_xk`, so the sweep below pins the
-    # hash convention as well as the lookup. Ascending `ik` with plain assignment, so a repeated
-    # point resolves to the last one — the documented tie-break.
+    # Reference `hash => ik` map, built independently of the *builder* the production index uses:
+    # the packing `(c1*ng2 + c2)*ng3 + c3` is re-derived here instead of calling `_hash_xk`, so a
+    # change to the packing (including a transposed table layout, which the non-cubic grid below
+    # makes visible) is caught. The coordinate normalization is deliberately the same expression as
+    # `_hash_xk`'s, so this does NOT independently check normalization. Ascending `ik` with plain
+    # assignment, so a repeated point resolves to the last one — the documented tie-break.
     function reference_hash_to_ik(kpts)
         ng1, ng2, ng3 = kpts.ngrid
         ref = Dict{Int,Int}()
@@ -138,13 +140,13 @@ end
     end
 
     # The index must agree with the reference over the WHOLE hash domain, hits and misses alike.
-    function test_index_equivalence(kpts)
-        # Exactly one of the two indices is populated.
-        @test isempty(kpts._xk_hash_to_ik) == !isempty(kpts._dense_hash_to_ik)
+    # `dense` pins which of the two indices is expected to be the live one, so a future change to
+    # the gate cannot silently move these grids onto the other path.
+    function test_index_equivalence(kpts; dense = true)
+        @test isempty(kpts._dense_hash_to_ik) == !dense
+        @test isempty(kpts._xk_hash_to_ik) == dense
         ref = reference_hash_to_ik(kpts)
-        for h in 0:prod(kpts.ngrid)-1
-            @test _ik_from_hash(kpts, h) == get(ref, h, 0)
-        end
+        @test count(h -> _ik_from_hash(kpts, h) != get(ref, h, 0), 0:prod(kpts.ngrid)-1) == 0
         @test all(xk_to_ik.(kpts.vectors, Ref(kpts)) .== 1:kpts.n)
     end
 
@@ -152,12 +154,24 @@ end
     full = GridKpoints(kpoints_grid((N, N, N)))
     shifted = GridKpoints(kpoints_grid((N, N, N); shift = (1//2, 1//2, 1//2) ./ N))
     subset = GridKpoints(get_filtered_kpoints(kpoints_grid((N, N, N)), rand(Bool, N^3)))
+    @test subset.n > 0   # the sweep below assumes a non-empty selection
     irr = GridKpoints(kpoints_grid((N, N, N); symmetry))
     combined = combine_kpoint_grids(GridKpoints(kpoints_grid((2, 2, 2))), full, +, (N, N, N))
     unfolded, _ = unfold_kpoints(irr, symmetry)
     folded, _ = fold_kpoints(full, symmetry)
     for kpts in (full, shifted, subset, irr, combined, unfolded, folded)
         test_index_equivalence(kpts)
+    end
+
+    # An empty GridKpoints has NEITHER index; it is the one case where "exactly one" does not hold.
+    # (The `GridKpoints{T}()` placeholder carries ngrid == (0,0,0), on which `_hash_xk` divides by
+    # zero, so lookups are only meaningful on the empty-with-a-real-grid form.)
+    @test isempty(GridKpoints{Float64}()._dense_hash_to_ik)
+    @test isempty(GridKpoints{Float64}()._xk_hash_to_ik)
+    let empty_kpts = GridKpoints(Kpoints{Float64}(0, Vec3{Float64}[], Float64[], (N, N, N)))
+        @test empty_kpts.n == 0
+        @test isempty(empty_kpts._dense_hash_to_ik) && isempty(empty_kpts._xk_hash_to_ik)
+        @test xk_to_ik(Vec3(0.0, 0.0, 0.0), empty_kpts) === nothing
     end
 
     # Gate: dense for a grid as dense as it gets, Dict for a huge grid holding few points.
@@ -171,12 +185,26 @@ end
     # multigrid/AMR grid takes).
     @test xk_to_ik(Vec3(1/1000, 0.0, 0.0), sparse_kpts) === nothing
 
-    # The Dict fallback must satisfy the same whole-domain equivalence. Its grid can never be small
-    # (the node floor makes every small grid dense), so sweep it in one reduction.
+    # The Dict fallback must satisfy the same whole-domain equivalence, and so must the paths that
+    # only it exercises: `unfold_kpoints`/`fold_kpoints` hand their own Dict to the constructor
+    # (discarded on a dense grid, so untested there) and `sort!` has a separate Dict branch. A
+    # Dict-path grid can never be small — the node floor makes every small grid dense — so these
+    # run on a (2,2,2) point set stamped with a (128,128,128) grid, the shape `filter.jl` and
+    # `band_states.jl` produce for AMR composite grids. Shift 0, as `unfold_kpoints` requires.
     dict_kpts = GridKpoints(kpoints_grid((2, 2, 2)), (128, 128, 128))
-    @test isempty(dict_kpts._dense_hash_to_ik) && !isempty(dict_kpts._xk_hash_to_ik)
-    let ref = reference_hash_to_ik(dict_kpts)
-        @test all(_ik_from_hash(dict_kpts, h) == get(ref, h, 0) for h in 0:prod(dict_kpts.ngrid)-1)
+    test_index_equivalence(dict_kpts; dense = false)
+
+    dict_unfolded, _ = unfold_kpoints(dict_kpts, symmetry)
+    test_index_equivalence(dict_unfolded; dense = false)          # `() -> sk_hash_dict` hand-through
+    dict_folded, _ = fold_kpoints(dict_unfolded, symmetry)
+    test_index_equivalence(dict_folded; dense = false)            # `() -> hash_dict_irr` hand-through
+
+    let inds = randperm(dict_kpts.n)                              # `sort!`'s Dict branch
+        mixed = GridKpoints(Kpoints(dict_kpts.n, dict_kpts.vectors[inds], dict_kpts.weights[inds],
+                                    dict_kpts.ngrid), dict_kpts.ngrid)
+        sort!(mixed)
+        test_index_equivalence(mixed; dense = false)
+        @test sortperm(mixed) == 1:mixed.n
     end
 
     # Gate policy at its boundaries. Small grids are always dense; a grid sparser than 8 nodes per
@@ -214,7 +242,8 @@ end
     shift_center!(centered, (0, 0, 0))
     test_index_equivalence(centered)
 
-    # sort! renumbers the points and must renumber both indices.
+    # sort! renumbers the points and must renumber the live index (dense branch here, Dict branch
+    # covered above).
     inds = randperm(full.n)
     mixed = GridKpoints(Kpoints(full.n, full.vectors[inds], full.weights[inds], full.ngrid))
     sort!(mixed)

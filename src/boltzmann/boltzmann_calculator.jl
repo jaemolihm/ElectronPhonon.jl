@@ -263,8 +263,9 @@ end
 
 # Batched path: called by the GPU e-ph loop once per outer-k batch, before its k iterations. The
 # run's device buffers (`calc.dev`) were built once in `setup_calculator!`; here it only records this
-# batch's Sᵢ tile range and zeros the tile's active region (via `calc.tiled`). Dispatched on
-# `BatchedMode`; the per-point (`SingleMode`) path runs the default no-op.
+# batch's Sᵢ tile range and zeros the tile's active region (via `calc.tiled`). The `BatchedMode`
+# annotation records the only mode this scope is ever fired in (`OuterIterationBatch`/`SingleMode`
+# does not occur); brackets have no default, so this method is required rather than an override.
 function calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIterationBatch,
         ctx::LoopContext{<:AbstractBackend, BatchedMode}) where {FT}
     # Sᵢ tile for this batch (block mode: zeroed and its range recorded by the helper).
