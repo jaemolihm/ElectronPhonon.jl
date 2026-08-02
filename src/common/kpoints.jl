@@ -245,42 +245,41 @@ function kpoints_create_subgrid(k::Kpoints, nsubgrid)
     Kpoints(new_n, new_vectors, new_weights, new_ngrid)
 end
 
-# Two dense tables of `prod(ngrid)` `Int`s are built in this file, and each has its own size
-# budget. They are deliberately two constants, not one: the de-duplication table is a transient
-# freed when `combine_kpoint_grids` returns, while the inverse index is retained for the lifetime of
-# every `GridKpoints` (and `split_kpoints` makes N of them), so the retained one is budgeted much
-# more tightly. Exceeding either budget selects the Dict implementation of the same map: slower,
-# O(number of points) memory, and identical results.
+# Two places in this file need an `xk -> ik` map for `xk` on a grid of size `ngrid`:
+# `combine_kpoint_grids` below, to de-duplicate k+q, and `GridKpoints` further down, as its inverse
+# index. There are two ways to build such a map — a hash `Dict` keyed by the packed grid coordinate,
+# or a dense table with one slot per grid node — and they return identical results.
 #
-# The index budget is a soft cap, not a ceiling. A `GridKpoints` keeps at most one of the two
-# indices, but how far the dense table can exceed the Dict it replaces depends on which clause of
-# `_use_dense_index` admitted it (table 8 B per grid node, Dict ~34 B per point):
-#   - waiver, `prod <= 4n` (includes every full grid at any size): `8·prod <= 32n` bytes against
-#     ~34n, so the table is never the bigger of the two. This is the clause that lets the retained
-#     index exceed 256 MB, and it is safe precisely because the Dict would have cost more.
-#   - density band, `4n < prod <= 8n`: up to `64n` bytes against ~34n, so up to ~1.9x the Dict —
-#     bounded in absolute terms by the 256 MB cap.
-#   - node floor, `prod <= 2^20`: the ratio is unbounded (5000 points on a (101,101,101) grid is an
-#     8.2 MB table for a ~170 kB Dict, ~48x), which is acceptable only because the floor itself
-#     bounds the table at 8 MB. That absolute bound is why this clause may ignore density at all.
-# Outside the waiver, exceeding the cap selects the Dict.
-const _DEDUP_TABLE_MAX_BYTES = 8 * 1024^3    # transient in `combine_kpoint_grids`
-const _DENSE_INDEX_MAX_BYTES = 256 * 1024^2  # retained in `GridKpoints._dense_hash_to_ik`
+# The tradeoff. The `Dict` costs ~34 B per stored point (17 B per slot at a load factor of at most
+# 0.75), so its memory scales with the number of points `n`: it is the cheap one on a grid far
+# sparser than its point count. The dense table costs a fixed 8 B per grid node whatever `n` is, so
+# it wins on a nearly full grid: at `n >= prod(ngrid)/4` it already uses less memory than the Dict,
+# which costs ~4x (34/8) the bytes per point that the table costs per node. Dense access is also
+# faster — an array load instead of a hash probe.
+#
+# So each map is built dense while it fits a memory cap and as a `Dict` above it. The caps are per
+# map, not shared: the de-duplication table is transient (freed when `combine_kpoint_grids`
+# returns), while the index is retained for the lifetime of every `GridKpoints` (and
+# `split_kpoints` makes N of them), so the retained one is budgeted much more tightly. A
+# `GridKpoints` keeps at most one of the two index maps; `_use_dense_index` is the authority on
+# which one it gets.
 
 """
     _combine_kq_dedup_dense(BkS, BqS, sgn, ngrid_kq, shift_kq)
-De-duplicate `op(k, q)` over all (k, q) pairs with a dense `prod(ngrid_kq)` table indexed by the
+De-duplicate `k + sgn * q` over all (k, q) pairs with a dense `prod(ngrid_kq)` table indexed by the
 integer grid coordinates. Returns the unique k+q points in order of first appearance.
+- `BkS`, `BqS`: integer grid coordinates of the k and of the q points on the common `ngrid_kq`
+    grid, i.e. the `b` of `xk = shift + b ./ ngrid_kq`. Built by `combine_kpoint_grids`.
 
-The table is `[c1+1, c2+1, c3+1]` on `(ng1, ng2, ng3)`; de-duplication only needs *a* bijection
-from grid coordinates to table slots, so the order is free here. It is deliberately **not** the
-`hash + 1` order of `GridKpoints._dense_hash_to_ik`, which is the transposed `(ng3, ng2, ng1)`
-layout — the two tables are unrelated and neither is derived from the other.
+The table is `(ng3, ng2, ng1)` indexed `[c3+1, c2+1, c1+1]`, making `c3` the unit-stride index so
+that a sweep over consecutive `c3` walks the table sequentially. With those dims the linear index
+of a slot is exactly `hash + 1` for the `(c1*ng2 + c2)*ng3 + c3` packing, so this table and
+`GridKpoints._dense_hash_to_ik` share one layout.
 """
 function _combine_kq_dedup_dense(BkS, BqS, sgn, ngrid_kq, shift_kq::Vec3{T}) where {T}
     ng1, ng2, ng3 = ngrid_kq
     xkqs = Vector{Vec3{T}}()
-    xkq_hash_to_ikq = zeros(Int, ng1, ng2, ng3)
+    xkq_hash_to_ikq = zeros(Int, ng3, ng2, ng1)
     ikq = 0
     for bq in BqS
         for bk in BkS
@@ -289,9 +288,9 @@ function _combine_kq_dedup_dense(BkS, BqS, sgn, ngrid_kq, shift_kq::Vec3{T}) whe
             c3 = mod(bk[3] + sgn * bq[3], ng3)
 
             # Find new k+q points, append to xkq_hash_to_ikq and xkqs
-            if xkq_hash_to_ikq[c1 + 1, c2 + 1, c3 + 1] == 0
+            if xkq_hash_to_ikq[c3 + 1, c2 + 1, c1 + 1] == 0
                 ikq += 1
-                xkq_hash_to_ikq[c1 + 1, c2 + 1, c3 + 1] = ikq
+                xkq_hash_to_ikq[c3 + 1, c2 + 1, c1 + 1] = ikq
                 push!(xkqs, Vec3(c1 / ng1, c2 / ng2, c3 / ng3) + shift_kq)
             end
         end
@@ -302,8 +301,8 @@ end
 """
     _combine_kq_dedup_dict(BkS, BqS, sgn, ngrid_kq, shift_kq)
 Same map as `_combine_kq_dedup_dense`, keyed by the packed hash in a `Dict` so the memory is
-O(number of unique points) instead of O(prod(ngrid_kq)). Used when the dense table would exceed
-`_DEDUP_TABLE_MAX_BYTES`.
+O(number of unique points) instead of O(prod(ngrid_kq)). Used when the dense table would exceed the
+transient memory budget in `combine_kpoint_grids`.
 """
 function _combine_kq_dedup_dict(BkS, BqS, sgn, ngrid_kq, shift_kq::Vec3{T}) where {T}
     ng1, ng2, ng3 = ngrid_kq
@@ -379,10 +378,12 @@ function combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
     BkS = [Vec3(round.(Int, (xk - shift_k).data .* kpts.ngrid) .* fk) for xk in kpts.vectors]
     BqS = [Vec3(round.(Int, (xq - shift_q).data .* qpts.ngrid) .* fq) for xq in qpts.vectors]
 
-    # Dense lookup table while it fits in the transient budget, Dict above it. `Int128` because
-    # `prod(ngrid_kq)` itself may overflow `Int` here (it is only checked in the `GridKpoints`
-    # constructor below, which the Dict path reaches).
-    xkqs = if prod(Int128.(ngrid_kq)) * sizeof(Int) <= _DEDUP_TABLE_MAX_BYTES
+    # Dense lookup table while it fits in the transient budget, Dict above it. The budget is loose
+    # because the table lives only until this function returns. `Int128` because `prod(ngrid_kq)`
+    # itself may overflow `Int` here (it is only checked in the `GridKpoints` constructor below,
+    # which the Dict path reaches).
+    dedup_table_max_bytes = 8 * 1024^3  # 8 GB
+    xkqs = if prod(Int128.(ngrid_kq)) * sizeof(Int) <= dedup_table_max_bytes
         _combine_kq_dedup_dense(BkS, BqS, sgn, ngrid_kq, shift_kq)
     else
         _combine_kq_dedup_dict(BkS, BqS, sgn, ngrid_kq, shift_kq)
@@ -415,8 +416,9 @@ Additional arguments for `GridKpoints`:
 Both of the following are derived caches of the same `_hash_xk(kpts.vectors[ik], kpts) -> ik` map,
 and at most one of them is populated — exactly one when `n > 0`, and `_use_dense_index` picks which;
 an empty `GridKpoints` has neither. Read them only through `_ik_from_hash`.
-- `_dense_hash_to_ik`: a flat `prod(ngrid)` vector indexed by `hash + 1`, where `0` marks a grid
-    node that is not a k point. Empty when the grid is too sparse or too large for it.
+- `_dense_hash_to_ik`: a `(ngrid[3], ngrid[2], ngrid[1])` table of `ik`, where `0` marks a grid node
+    that is not a k point. Those dims make the linear index of a node exactly `hash + 1`, which is
+    how `_ik_from_hash` reads it. Empty when the grid is too sparse or too large for it.
 - `_xk_hash_to_ik`: the fallback for those grids, a `Dict` of `hash => ik`. Empty when the dense
     table was built.
 """
@@ -427,31 +429,35 @@ struct GridKpoints{T} <: AbstractKpoints{T}
     ngrid::NTuple{3,Int}
     shift::Vec3{T}
     _xk_hash_to_ik::Dict{Int,Int}
-    _dense_hash_to_ik::Vector{Int}
+    _dense_hash_to_ik::Array{Int,3}
 end
 
-# Whether `n` points on a `prod(ngrid)`-node grid get a dense inverse index, which costs one `Int`
-# per grid node whereas the `Dict` costs ~34 B per stored point (17 B per slot at a load factor of
-# at most 0.75).
-function _use_dense_index(n, ngrid)
+# The index-map policy for `GridKpoints`: whether `n` points on a `prod(ngrid)`-node grid get the
+# dense inverse index (8 B per grid node) or the `Dict` (~34 B per stored point). See the discussion
+# of the tradeoff above `_combine_kq_dedup_dense`.
+# `index` overrides the policy: `:auto` applies it, `:dense`/`:dict` force one map regardless of
+# size (`:dense` on a huge grid will happily try to allocate it).
+function _use_dense_index(n, ngrid; index = :auto)
+    index === :dense && return true
+    index === :dict && return false
+    index === :auto || throw(ArgumentError("index must be :auto, :dense or :dict, got $index"))
+
     nnode = prod(ngrid)
     # Not for a grid far sparser than its point count: a multigrid/AMR grid can have a huge `ngrid`
     # holding a handful of points, where the Dict is small, L2-resident and already fast.
     dense_enough = nnode <= max(8 * n, 2^20)
     # Not above the size cap either — unless the Dict it would fall back to is the bigger of the
     # two, which is the case below 34/8 = 4.25 nodes per point (rounded down to stay conservative).
-    fits_cap = nnode <= _DENSE_INDEX_MAX_BYTES ÷ sizeof(Int)
+    dense_index_max_bytes = 256 * 1024^2  # 256 MB, retained for the lifetime of the GridKpoints
+    fits_cap = nnode <= dense_index_max_bytes ÷ sizeof(Int)
     beats_dict = nnode <= 4 * n
     dense_enough && (fits_cap || beats_dict)
 end
 
-# Build the dense inverse index, or return an empty vector if it should not be built.
+# Build the dense inverse index. Shaped so that the linear index of `[c3+1, c2+1, c1+1]` is exactly
+# `_hash_xk + 1`, which is how `_ik_from_hash` and `sort!` address it.
 function _build_dense_index(n, vectors, ngrid, shift)
-    n == 0 && return Int[]
-    _use_dense_index(n, ngrid) || return Int[]
-
-    nnode = prod(ngrid)
-    table = zeros(Int, nnode)
+    table = zeros(Int, ngrid[3], ngrid[2], ngrid[1])
     # Serial and ascending, so a repeated point resolves to the last `ik` — the same tie-break as
     # `Dict(hashes .=> 1:n)`, where later pairs overwrite earlier ones.
     for ik in 1:n
@@ -461,19 +467,31 @@ function _build_dense_index(n, vectors, ngrid, shift)
 end
 
 # Every construction site that fills all fields goes through this, so the index policy lives in one
-# place: the dense table where `_use_dense_index` allows one, the Dict otherwise, never both. The
-# table is either empty or exactly `prod(ngrid)` long — the length that makes `_ik_from_hash`'s
-# `@inbounds` safe for any hash `_hash_xk` produces. `make_dict` supplies the Dict and is called
-# only when the Dict is the index that will be kept, so a caller that would have to build one from
-# scratch does not pay for it on a dense grid; callers holding one already can pass `() -> dict`.
+# place: exactly one of the two index maps is built, never both. `make_dict` supplies the Dict and
+# is called only when the Dict is the index that will be kept, so a caller that would have to build
+# one from scratch does not pay for it on a dense grid; callers holding one already can pass
+# `() -> dict`. `index` is forwarded to `_use_dense_index`.
 function _make_grid_kpoints(n, vectors::Vector{Vec3{T}}, weights, ngrid, shift,
-                            make_dict = () -> Dict{Int,Int}()) where {T}
-    _dense_hash_to_ik = _build_dense_index(n, vectors, ngrid, shift)
-    _xk_hash_to_ik = isempty(_dense_hash_to_ik) ? make_dict() : Dict{Int,Int}()
-    GridKpoints{T}(n, vectors, weights, ngrid, shift, _xk_hash_to_ik, _dense_hash_to_ik)
+                            make_dict = () -> Dict{Int,Int}(); index = :auto) where {T}
+    no_table = zeros(Int, 0, 0, 0)
+    if n == 0
+        # Nothing to look up, so neither map is built (and `ngrid` may be (0,0,0) here).
+        GridKpoints{T}(n, vectors, weights, ngrid, shift, Dict{Int,Int}(), no_table)
+    elseif _use_dense_index(n, ngrid; index)
+        GridKpoints{T}(n, vectors, weights, ngrid, shift, Dict{Int,Int}(),
+                       _build_dense_index(n, vectors, ngrid, shift))
+    else
+        GridKpoints{T}(n, vectors, weights, ngrid, shift, make_dict(), no_table)
+    end
 end
 
-function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; atol = sqrt(eps(T))) where {T}
+"""
+    GridKpoints(kpts::Kpoints, ngrid = kpts.ngrid; atol, index = :auto)
+`index` selects the xk->ik index map: `:auto` leaves it to `_use_dense_index`, `:dense` and `:dict`
+force one of the two.
+"""
+function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; atol = sqrt(eps(T)),
+                     index = :auto) where {T}
     all(ngrid .> 0) || throw(ArgumentError("ngrid must be set or provided to make GridKpoints"))
     # `_hash_xk` packs the grid index into a single Int and can reach prod(ngrid) - 1, so
     # prod(ngrid) must fit in Int. Widen the product so prod(ngrid) itself cannot overflow.
@@ -494,7 +512,7 @@ function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; atol = sqrt(eps(T))) 
     end
 
     _make_grid_kpoints(kpts.n, kpts.vectors, kpts.weights, ngrid, shift,
-        () -> Dict(_hash_xk.(kpts.vectors, Ref(ngrid), Ref(shift)) .=> 1:kpts.n))
+        () -> Dict(_hash_xk.(kpts.vectors, Ref(ngrid), Ref(shift)) .=> 1:kpts.n); index)
 end
 
 GridKpoints(xk::Vec3{T}) where {T <: Real} = GridKpoints(Kpoints(xk))
@@ -549,16 +567,16 @@ _hash_xk(xk, kpts::GridKpoints) = _hash_xk(xk, kpts.ngrid, kpts.shift)
 
 # Index of the k point with the given hash, 0 if there is none. `ik` is 1-based, so 0 is
 # unambiguous even though 0 is itself a legal hash (Γ on an unshifted grid).
-# PRECONDITION: `0 <= hash < prod(kpts.ngrid)`. Every hash built by `_hash_xk` satisfies it (it mods
-# each coordinate by `ngrid`), as does the equivalent integer-coordinate arithmetic in the GPU
-# outer-k loop. A caller that packs a hash by hand against a different `ngrid` violates it, and the
-# `@inbounds` below then reads out of bounds instead of reporting a miss.
+# `hash` must be in `0:prod(kpts.ngrid)-1`, which every hash from `_hash_xk` is (it mods each
+# coordinate by `ngrid`), as is the equivalent integer-coordinate arithmetic in the GPU outer-k
+# loop. The dense index is bounds-checked, so a caller that packs a hash by hand against a different
+# `ngrid` gets a `BoundsError` rather than a silently wrong `ik`.
 @inline function _ik_from_hash(kpts::GridKpoints, hash::Int)
     dense = kpts._dense_hash_to_ik
     if isempty(dense)
         get(kpts._xk_hash_to_ik, hash, 0)
     else
-        @inbounds dense[hash + 1]
+        dense[hash + 1]
     end
 end
 
@@ -601,15 +619,18 @@ get_filtered_kpoints(k::GridKpoints, ik_keep) = GridKpoints(get_filtered_kpoints
 kpoints_create_subgrid(k::GridKpoints, nsubgrid) = GridKpoints(kpoints_create_subgrid(Kpoints(k), nsubgrid))
 
 """
-    unfold_kpoints(kpts::GridKpoints, symmetry) => kpts_unfold, ik_to_ikirr_isym
+    unfold_kpoints(kpts::GridKpoints, symmetry; index = :auto) => kpts_unfold, ik_to_ikirr_isym
 
 Unfold k points using symmetry to the full Brillouin zone.
 Output `ik_to_ikirr_isym` gives a map ik => (ikirr, isym) such that ``xk[ik] = S[isym](xkirr[ikirr])``.
+`index` is the `GridKpoints` index-map override, see `_use_dense_index`.
 """
-function unfold_kpoints(kpts::GridKpoints, symmetry)
+function unfold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
     # If symmetry is trivial, do nothing and return a copy of input kpts
     if symmetry.nsym == 1
-        return deepcopy(kpts), [(ik, 1) for ik in 1:kpts.n]
+        kpts_unfold = index === :auto ? deepcopy(kpts) : _make_grid_kpoints(
+            kpts.n, copy(kpts.vectors), copy(kpts.weights), kpts.ngrid, kpts.shift; index)
+        return kpts_unfold, [(ik, 1) for ik in 1:kpts.n]
     end
 
     ngrid = kpts.ngrid
@@ -653,7 +674,8 @@ function unfold_kpoints(kpts::GridKpoints, symmetry)
     # Each k point is mapped to length(symmetry) sk points, so divide weights by length(symmetry).
     sk_weights ./= length(symmetry)
 
-    kpts_unfold = _make_grid_kpoints(length(sk_vectors), sk_vectors, sk_weights, ngrid, shift, () -> sk_hash_dict)
+    kpts_unfold = _make_grid_kpoints(length(sk_vectors), sk_vectors, sk_weights, ngrid, shift,
+                                     () -> sk_hash_dict; index)
     ik_to_ikirr_isym = ik_to_ikirr_isym[sortperm(kpts_unfold)]
     sort!(kpts_unfold)
 
@@ -661,13 +683,16 @@ function unfold_kpoints(kpts::GridKpoints, symmetry)
 end
 
 """
-    fold_kpoints(kpts, symmetry) => kpts_irr, ik_to_ikirr_isym
+    fold_kpoints(kpts, symmetry; index = :auto) => kpts_irr, ik_to_ikirr_isym
 Inverse of `unfold_kpoints`. Reduce `kpts` to the irreducible BZ using `symmetry`.
 Output ik_to_ikirr_isym gives a map ik => (ikirr, isym) such that ``xk[ik] = S[isym](xkirr[ikirr])``.
+`index` is the `GridKpoints` index-map override, see `_use_dense_index`.
 """
-function fold_kpoints(kpts::GridKpoints, symmetry)
+function fold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
     if symmetry.nsym == 1
-        return deepcopy(kpts), [(ik, 1) for ik = 1:kpts.n]
+        kpts_irr = index === :auto ? deepcopy(kpts) : _make_grid_kpoints(
+            kpts.n, copy(kpts.vectors), copy(kpts.weights), kpts.ngrid, kpts.shift; index)
+        return kpts_irr, [(ik, 1) for ik = 1:kpts.n]
     end
 
     ngrid = kpts.ngrid
@@ -709,7 +734,8 @@ function fold_kpoints(kpts::GridKpoints, symmetry)
         end
     end
 
-    kpts_irr = _make_grid_kpoints(length(vectors_irr), vectors_irr, weights_irr, ngrid, shift, () -> hash_dict_irr)
+    kpts_irr = _make_grid_kpoints(length(vectors_irr), vectors_irr, weights_irr, ngrid, shift,
+                                  () -> hash_dict_irr; index)
 
     inds = invperm(sortperm(kpts_irr))
     sort!(kpts_irr)

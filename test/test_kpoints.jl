@@ -116,7 +116,7 @@ end
 
 @testset "kpoints: dense inverse index" begin
     using ElectronPhonon: get_filtered_kpoints, kpoints_grid, combine_kpoint_grids, unfold_kpoints,
-        fold_kpoints, _hash_xk, _ik_from_hash, _use_dense_index, _DENSE_INDEX_MAX_BYTES
+        fold_kpoints, _hash_xk, _ik_from_hash, _use_dense_index
 
     Random.seed!(222)
     lattice = 2.0 * [[0 1 1.]; [1 0 1.]; [1 1 0.]]
@@ -187,23 +187,27 @@ end
 
     # The Dict fallback must satisfy the same whole-domain equivalence, and so must the paths that
     # only it exercises: `unfold_kpoints`/`fold_kpoints` hand their own Dict to the constructor
-    # (discarded on a dense grid, so untested there) and `sort!` has a separate Dict branch. A
-    # Dict-path grid can never be small — the node floor makes every small grid dense — so these
-    # run on a (2,2,2) point set stamped with a (128,128,128) grid, the shape `filter.jl` and
-    # `band_states.jl` produce for AMR composite grids. Shift 0, as `unfold_kpoints` requires.
-    dict_kpts = GridKpoints(kpoints_grid((2, 2, 2)), (128, 128, 128))
-    test_index_equivalence(dict_kpts; dense = false)
+    # (discarded on a dense grid, so untested there) and `sort!` has a separate Dict branch. The
+    # `index = :dict` override reaches the fallback on these same small grids, instead of depending
+    # on a grid shape sparse enough for the policy to pick the Dict by itself (`sparse_kpts` above
+    # is the one that pins the policy). Shift 0 on `irr`, as `unfold_kpoints` requires.
+    for kpts in (full, shifted, subset, irr)
+        test_index_equivalence(GridKpoints(Kpoints(kpts), kpts.ngrid; index = :dict); dense = false)
+    end
 
-    dict_unfolded, _ = unfold_kpoints(dict_kpts, symmetry)
+    dict_kpts = GridKpoints(Kpoints(irr), irr.ngrid; index = :dict)
+    dict_unfolded, _ = unfold_kpoints(dict_kpts, symmetry; index = :dict)
     test_index_equivalence(dict_unfolded; dense = false)          # `() -> sk_hash_dict` hand-through
-    dict_folded, _ = fold_kpoints(dict_unfolded, symmetry)
+    dict_folded, _ = fold_kpoints(dict_unfolded, symmetry; index = :dict)
     test_index_equivalence(dict_folded; dense = false)            # `() -> hash_dict_irr` hand-through
 
-    let inds = randperm(dict_kpts.n)                              # `sort!`'s Dict branch
-        mixed = GridKpoints(Kpoints(dict_kpts.n, dict_kpts.vectors[inds], dict_kpts.weights[inds],
-                                    dict_kpts.ngrid), dict_kpts.ngrid)
+    # Both branches of `sort!`'s index renumbering.
+    for index in (:dense, :dict)
+        inds = randperm(full.n)
+        mixed = GridKpoints(Kpoints(full.n, full.vectors[inds], full.weights[inds], full.ngrid),
+                            full.ngrid; index)
         sort!(mixed)
-        test_index_equivalence(mixed; dense = false)
+        test_index_equivalence(mixed; dense = index === :dense)
         @test sortperm(mixed) == 1:mixed.n
     end
 
@@ -212,20 +216,33 @@ end
     @test _use_dense_index(1, (100, 100, 100))            # below the node floor
     @test _use_dense_index(10^6, (200, 200, 200))         # 8 nodes per point, under the cap
     @test !_use_dense_index(10^6 - 1, (200, 200, 200))    # just over 8 nodes per point
-    nnode_over_cap = 2 * _DENSE_INDEX_MAX_BYTES ÷ sizeof(Int)
+    # The 256 MB cap is a local of `_use_dense_index` in src/common/kpoints.jl, so it is repeated
+    # here rather than imported; keep the two in sync.
+    dense_index_max_bytes = 256 * 1024^2
+    nnode_over_cap = 2 * dense_index_max_bytes ÷ sizeof(Int)
     @test !_use_dense_index(nnode_over_cap ÷ 8, (nnode_over_cap, 1, 1))  # cap binds
     @test _use_dense_index(nnode_over_cap ÷ 4, (nnode_over_cap, 1, 1))   # cap waived: Dict is bigger
 
-    # Layout: the flat table is a (ng3, ng2, ng1) array indexed by the integer grid coordinates,
-    # i.e. the linear index is exactly `hash + 1`. Flipping the dims would silently return wrong
-    # indices. The grid must have three distinct sizes, or a reshape to the wrong dims still fits.
+    # The `index` override wins over the policy in both directions, and rejects a bad value.
+    @test _use_dense_index(1, (1000, 1000, 1000); index = :dense)
+    @test !_use_dense_index(10^6, (100, 100, 100); index = :dict)
+    @test_throws ArgumentError _use_dense_index(1, (4, 4, 4); index = :nonsense)
+
+    # Layout: the table is a (ng3, ng2, ng1) array indexed by the integer grid coordinates, so that
+    # its linear index — how `_ik_from_hash` reads it — is exactly `hash + 1`. Flipping the dims
+    # would silently return wrong indices. The grid must have three distinct sizes, or the wrong
+    # dims would still be the right total length.
     noncubic = GridKpoints(kpoints_grid((2, 3, 4); shift = (1//4, 1//6, 1//8)))
     test_index_equivalence(noncubic)
     ng1, ng2, ng3 = noncubic.ngrid
-    table_3d = reshape(noncubic._dense_hash_to_ik, ng3, ng2, ng1)
+    table_3d = noncubic._dense_hash_to_ik
+    @test table_3d isa Array{Int,3}
+    @test size(table_3d) == (ng3, ng2, ng1)
     for xk in noncubic.vectors
         c = mod.(round.(Int, (xk - noncubic.shift) .* noncubic.ngrid), noncubic.ngrid)
         @test table_3d[c[3]+1, c[2]+1, c[1]+1] == xk_to_ik(xk, noncubic)
+        # The cartesian slot and the linear `hash + 1` slot are the same slot.
+        @test LinearIndices(table_3d)[c[3]+1, c[2]+1, c[1]+1] == _hash_xk(xk, noncubic) + 1
     end
 
     # A duplicated point resolves to the last index, matching the reference's tie-break.
