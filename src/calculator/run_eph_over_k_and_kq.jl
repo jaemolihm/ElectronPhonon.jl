@@ -601,7 +601,9 @@ function _loop_eph_over_k_and_kq_gpu(
     # ----- kR->kq GEMM strip width -----
     # `nk_b` consecutive outer-k are stacked into one tall kR->kq GEMM, so the k-invariant phase tile
     # is read nk_b times less and the GEMM's M dimension fills a cuBLAS tile. Shape-derived; it is 1
-    # (no strip, nothing changes) at large ndata or when the fused rotation kernel is not used.
+    # (no strip, nothing changes) at large ndata or when the fused rotation kernel is not used. The
+    # M-target rule bounds the extra per-q staging (a wider `kRkq_ws.g`) at
+    # `16·(_KRKQ_GEMM_M_TARGET - ndata)` bytes for any model, so the q-tile below cannot collapse.
     nk_b = _krkq_strip_width(; nw, nbandk_max, nmodes, nk_batch_max)
 
     # ----- memory-adaptive q-batch size (§7) -----
@@ -620,23 +622,6 @@ function _loop_eph_over_k_and_kq_gpu(
         @info "GPU outer-k device memory: committed = $(round(committed / 1e9, digits = 2)) GB, " *
               "$(round(per_point / 1e3, digits = 1)) kB/q; q-batch size = $nq_batch_max, " *
               "kR->kq strip nk_b = $nk_b"
-    end
-    # The strip widens `ws.g`, which is spent out of the same per-q budget as the phase tile. At the
-    # shapes where the strip switches on it is a small share of that budget, but a model with a large
-    # `ndata` and a small `nr_ep` inverts the ratio. Report the quantity that actually matters — how
-    # much q-tile the strip cost — by re-asking the accountant at `nk_b = 1`, so this stays right if
-    # another buffer ever becomes strip-sized. Only when the tile is memory-bound (`< nq_batch_cap`):
-    # a user-supplied `nq_batch_max` is not the strip's fault.
-    if nk_b > 1 && nq_batch_max < nq_batch_cap && mpi_isroot()
-        per_point_1, _ = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
-            nq_grid = qpts.n, nk_batch_max, calculators,
-            ndata_epmat = epmat_dev.ndata, nr_epmat = epmat_dev.nr, nk_b = 1, FT)
-        nq_batch_1 = plan_batch(backend, per_point_1, committed, nq_batch_cap; warn = false)
-        if nq_batch_max * 2 < nq_batch_1
-            @warn "GPU outer-k: the kR->kq strip (nk_b = $nk_b) more than halved the q-tile " *
-                  "($nq_batch_1 -> $nq_batch_max of $nkq k+q). Lower `nk_outer_batch_max` (it " *
-                  "clamps nk_b) if this run is slower than one with nk_b = 1."
-        end
     end
 
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
@@ -660,6 +645,7 @@ function _loop_eph_over_k_and_kq_gpu(
     # allocated per call. Sized for the max batch width `nq_batch_max`; only the first `nq_batch`
     # columns are used for a partial final batch. `g` holds a whole strip of `nk_b` k; `g_strip5`
     # is its (nw, nbandk, nmodes, nk_b, nq) view, from which each k takes a q-strided 4-D slice.
+    # Only at `nk_b > 1`: see `_strip_g_slice` for why `nk_b = 1` slices the 2-D buffer instead.
     kRkq_ws = KRtoKQWorkspace(epmat_dev.op_r, ndata_ekpR, nw, nbandk_max, nmodes, nq_batch_max; nk_b)
     g_strip5 = reshape(kRkq_ws.g, nw, nbandk_max, nmodes, nk_b, nq_batch_max)
 
@@ -848,7 +834,7 @@ function _loop_eph_over_k_and_kq_gpu(
                     # nk_b > 1 - which only the fused kernel reads, hence the `_krkq_strip_width` gate.
                     kloc = ik_ind - sstart + 1
                     eph_apply_rotations!(view(epkq_dev, :, :, :, rng_q),
-                        view(g_strip5, :, :, :, kloc, rng_q), ukqs_used,
+                        _strip_g_slice(kRkq_ws.g, g_strip5, kloc, rng_q), ukqs_used,
                         view(uphs_dev, :, :, rng_q), view(kRkq_ws.tmp, :, :, rng_q);
                         g2_out = view(g2_dev, :, :, :, rng_q), ωq = view(ωq_dev, :, rng_q))
 

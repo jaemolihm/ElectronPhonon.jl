@@ -410,7 +410,12 @@ function check_krkq_strip(arr_dev; nw, nmodes, nk, nk_b, rtol, exact = false)
         rows = ndata * (sstart - 1) + 1 : ndata * (sstart - 1 + nks)
         ElectronPhonon.eph_kR_to_kq_fourier!(view(ws.g, 1:ndata*nks, :), view(ep2d, rows, :), phase)
         for ik in sstart:(sstart + nks - 1)
-            eph_apply_rotations!(view(out, :, :, :, :, ik), view(g5, :, :, :, ik - sstart + 1, :),
+            # Build the rotation's operand exactly as the loop does. `nk_b = 1` must give a dense
+            # one — that is what lets a large-`nw` run, which has no fused kernel to fall back on,
+            # take the strip code path at all; `nk_b > 1` gives a q-strided one, fused-kernel only.
+            gk = ElectronPhonon._strip_g_slice(ws.g, g5, ik - sstart + 1, 1:nq)
+            @test ElectronPhonon._is_dense(gk) == (nk_b == 1)
+            eph_apply_rotations!(view(out, :, :, :, :, ik), gk,
                 ukqs, uphs, ws.tmp; g2_out = view(out_g2, :, :, :, :, ik), ωq)
         end
     end
@@ -444,6 +449,20 @@ end
         # nw*nmodes = 12 ≤ 24 → fused rotation, so the q-strided strip slice is allowed.
         # nk = 7, nk_b = 3 → strips of 3, 3, 1: the last one is partial.
         check_krkq_strip(CuArray; nw=3, nmodes=4, nk=7, nk_b=3, rtol=1e-13)
+        # nw*nmodes = 36 > 24 → nk_b is forced to 1 and the rotation is the cuBLAS two-GEMM branch,
+        # which needs an operand it can take a pointer to. This is the combination a full-band
+        # large-`nw` model ships with, and it is NOT the driver's nk_outer_batch_max = 1 clamp.
+        @test ElectronPhonon._krkq_strip_width(; nw=6, nbandk_max=6, nmodes=6, nk_batch_max=256) == 1
+        check_krkq_strip(CuArray; nw=6, nmodes=6, nk=3, nk_b=1, rtol=0, exact=true)
+        # Same operand at a PARTIAL final q-tile: dense is not enough for cuBLAS, the `reshape`
+        # that merges the band and mode axes must stay a device array (a `ReshapedArray` has no
+        # pointer). The shapes above only cover the full-width tile.
+        let nw = 6, nband = 6, nmodes = 6, nqmax = 5, nq = 3
+            g2d = CuArray(zeros(ComplexF64, nw*nband*nmodes, nqmax))
+            gk  = ElectronPhonon._strip_g_slice(g2d, reshape(g2d, nw, nband, nmodes, 1, nqmax), 1, 1:nq)
+            @test size(gk) == (nw, nband, nmodes, nq)
+            @test reshape(gk, nw, nband * nmodes, nq) isa CuArray
+        end
     end
 end
 
@@ -571,9 +590,12 @@ end
             nk_outer_batch_max=5, nq_batch_max=7, progress_print_step=10^9)
         @test maximum(abs, cg.g2 .- cbk.g2) < 1e-9 * scale
 
-        # nk_outer_batch_max = 1 clamps the kR→kq strip to nk_b = 1 (the auto-disable path the
-        # loop also takes at large ndata / above the fused-rotation threshold); the runs above use
-        # nk_b = _krkq_strip_width(...) > 1 for this model, so this covers both branches.
+        # nk_outer_batch_max = 1 clamps the kR→kq strip to nk_b = 1; the runs above use
+        # nk_b = _krkq_strip_width(...) > 1 for this model, so both strip widths are exercised at
+        # driver level. This is NOT the shape-derived auto-disable (large ndata / above the
+        # fused-rotation threshold): the clamp degenerates the k-batch too, so the phase tile is
+        # rebuilt per k and `ep_ekpR_all` is one k wide. That combination — nk_b = 1 with a full
+        # k-batch and the cuBLAS rotation — is covered by the `kR→kq GEMM strip` testset above.
         cb1 = _RecordCalcBatched()
         ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
             calculators=[cb1], symmetry=nothing, use_gpu=true,
@@ -1003,26 +1025,14 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
                                                nk_batch_max = 256) == 1   # nw·nmodes = 36 > 24
     end
 
-    @testset "kR→kq strip q-tile shrinkage warning (predicate + quiet plan_batch)" begin
-        # The loop warns when the strip more than halved a memory-bound q-tile. Its condition is the
-        # accountant asked twice, so pin it here on a shape where `ws.g` dominates `per_point`
-        # (small nr_ep, small ndata ⇒ large nk_b) — the driver's own shapes never reach it.
-        shape = (; nw = 3, nbandk_max = 1, nmodes = 4, nr_ep = 8, nk = 10, nkq = 500,
-                 nq_grid = 500, nk_batch_max = 64, calculators = [],
-                 ndata_epmat = 3 * 3 * 4 * 8, nr_epmat = 5, FT)
-        nk_b = ElectronPhonon._krkq_strip_width(; shape.nw, shape.nbandk_max, shape.nmodes,
-                                               shape.nk_batch_max)
-        @test nk_b == 11
-        per_point, committed = _outer_k_staging_bytes(; shape..., nk_b)
-        per_point_1, _       = _outer_k_staging_bytes(; shape..., nk_b = 1)
-        @test per_point > 2 * per_point_1
-        b = _StubBackend(committed + 20 * per_point)          # memory-bound q-tile
-        nq  = plan_batch(b, per_point,   committed, shape.nkq; warn = false)
-        nq1 = plan_batch(b, per_point_1, committed, shape.nkq; warn = false)
-        @test nq * 2 < nq1                                   # (14 vs 38) — the loop warns here
-        # A counterfactual query must not tell the user their batch was reduced.
-        @test_logs plan_batch(b, per_point, committed, shape.nkq; warn = false)
-        @test_logs (:warn,) plan_batch(b, per_point, committed, shape.nkq)
+    @testset "plan_batch memory-bound warning is opt-out" begin
+        # A batch narrowed by free memory tells the user; a counterfactual query ("how wide would
+        # the batch be at a different `per_point`?") must stay quiet.
+        per_point, committed, cap = 1000, 10^6, 500
+        b = _StubBackend(committed + 20 * per_point)          # memory-bound: 14 of the 500 asked
+        @test plan_batch(b, per_point, committed, cap; warn = false) == 14
+        @test_logs plan_batch(b, per_point, committed, cap; warn = false)
+        @test_logs (:warn,) plan_batch(b, per_point, committed, cap)
     end
 
     @testset "outer-q parity" begin

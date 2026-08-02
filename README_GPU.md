@@ -160,8 +160,10 @@ by all `nk_outer_batch_max` outer k, and the q-vector never enters the interpola
 The k-strip level exists because that phase tile is not only built once but also **read** once per
 k: `nk_b = _krkq_strip_width(...)` consecutive outer k are stacked into a single tall kR→kq GEMM
 whose `M = nw·nbandk_max·nmodes·nk_b` also fills a cuBLAS DMMA tile that `M = ndata` alone leaves
-2/3 empty. `ep_ekpR_all` is therefore laid out `(ndata, nk, nr_ep)`, k in the middle, so a strip is
-a plain `lda` view of its 2-D reshape. `nk_b` is shape-derived and internal (not a knob): it is 1 —
+partly empty: the selected kernel `cutlass_80_tensorop_z884gemm_32x32_16x4_nn_align1` has a 32-row
+M-tile, so `M = ndata = 21` at the Cu shapes leaves 1/3 of it idle. `ep_ekpR_all` is therefore laid
+out `(ndata, nk, nr_ep)`, k in the middle, so a strip is a plain `lda` view of its 2-D reshape.
+`nk_b` is shape-derived and internal (not a knob): it is 1 —
 the loop exactly as it was — when `ndata` already fills the M-tile, and also whenever
 `nw·nmodes > _FUSED_ROT_MAX_NWNM`, because a strip's per-k `g` slice is strided in q and only the
 fused rotation kernel reads that. So it is a narrow-window / small-`nw` optimization; a full-band

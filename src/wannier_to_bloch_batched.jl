@@ -484,6 +484,9 @@ end
 # densely packed — a reshape of a strided view is a `ReshapedArray`, which the batched GEMMs reject.
 # A non-strided array is `false`, not an error, so the caller's own assertion message is what the
 # user sees. Axes of length 1 carry no meaningful stride, so they are skipped.
+# Necessary but not sufficient on the device: a `view` that drops an axis can be dense and still
+# reshape to a pointerless `ReshapedArray`. Callers must hand over an operand that survives the
+# reshape — that is what [`_strip_g_slice`](@ref) is for.
 function _is_dense(a::AbstractArray)
     a isa StridedArray || return false
     st, sz = strides(a), size(a)
@@ -493,6 +496,23 @@ function _is_dense(a::AbstractArray)
         expected *= sz[d]
     end
     true
+end
+
+# One k's operand for `eph_apply_rotations!`, taken out of a kR→kq strip: `g_2d` is the strip's
+# `(ndata*nk_b, nq_max)` Fourier buffer and `g_strip5` its `(nw, nbandk, nmodes, nk_b, nq_max)`
+# view; `kloc` is the k's position in the strip and `rng_q` the q-tile's column range.
+#
+# At `nk_b > 1` the slice is q-strided, which only the fused rotation kernel reads. At `nk_b = 1`
+# the strip IS the k, and the slice is taken off the 2-D buffer instead of as `g_strip5[…, 1, rng_q]`
+# even though the two address the same elements: a `view` that drops the k axis is dense but its
+# `reshape` — which the two-GEMM branches do to merge the band and mode axes — is a `ReshapedArray`
+# with no pointer, while a contiguous 2-D column slice reshapes back to a plain device array. That
+# is the operand shape the two-GEMM branches need, and `nk_b = 1` is exactly the case a large-`nw`
+# model gets, where the fused kernel is not available (see [`_krkq_strip_width`](@ref)).
+function _strip_g_slice(g_2d::AbstractMatrix, g_strip5::AbstractArray{<:Any,5}, kloc::Int, rng_q)
+    nw, nbandk, nmodes, nk_b, _ = size(g_strip5)
+    nk_b == 1 && return reshape(view(g_2d, :, rng_q), nw, nbandk, nmodes, length(rng_q))
+    view(g_strip5, :, :, :, kloc, rng_q)
 end
 
 """
