@@ -652,12 +652,6 @@ function _loop_eph_over_k_and_kq_gpu(
     iqs_batch  = Vector{Int}(undef, nq_batch_max)
     iqs_batch_dev    = similar(epmat_dev.op_r, Int, nq_batch_max)
 
-    # q-index lookup without an O(prod(ngrid)) dense table (ngrid can be ~1e6/dim with few points).
-    # `combine_kpoint_grids` sorts `qpts` by hash, so a FULL grid has iq == hash+1 (pure arithmetic);
-    # otherwise fall back to the O(n) hash Dict `GridKpoints` carries. Decide once:
-    qpts_is_full = qpts.n == prod(qpts.ngrid) &&
-        all(_hash_xk(qpts.vectors[iq], qpts) == iq - 1 for iq in 1:qpts.n)
-
     # Integer grid-coord hash for iq, replacing the per-(k,q) float normalize + `_hash_xk`:
     #   hc_i = mod(xkqs_int[i,ikq] - xks_int[i,ik], ng_i),  hash = (hc1*ng2 + hc2)*ng3 + hc3,
     # reproducing `_hash_xk` bit-identically with no Float64 in the hot loop. Requires every k and
@@ -738,9 +732,8 @@ function _loop_eph_over_k_and_kq_gpu(
                 h2 = mod(xkqs_int[2, ikq] - xks_int[2, ik], ng2)
                 h3 = mod(xkqs_int[3, ikq] - xks_int[3, ik], ng3)
                 hash = (h1 * ng2 + h2) * ng3 + h3
-                # Full sorted grid → iq = hash+1 (no table); else O(n) Dict (no ngrid³ array).
-                iq = qpts_is_full ? hash + 1 : get(qpts._xk_hash_to_ik, hash, 0)
-                # Guard both paths: Dict miss → iq==0; full-grid fast path → iq>qpts.n if off-grid.
+                iq = _ik_from_hash(qpts, hash)
+                # 0 = miss on either index.
                 (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
                 # q-vector from the O(n) qpts.vectors (a cached gather — cheaper than recomputing it
                 # with 3 float divisions; qpts.vectors is O(n), never ngrid³). ≡ (xkq-xk) mod G.

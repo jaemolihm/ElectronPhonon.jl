@@ -66,8 +66,10 @@ Base.iterate(s::QMEStates, state=1) = state > s.n ? nothing : (s[state], state+1
 end
 
 function dump_BTData(f, obj::AbstractKpoints{T}) where T
+    # Underscore-prefixed fields are private caches derived from the other fields (the xk->ik
+    # indices); they are not written and are rebuilt by the constructor on load.
     for name in fieldnames(typeof(obj))
-        if name !== :_xk_hash_to_ik
+        if !startswith(String(name), "_")
             f[String(name)] = _data_julia_to_hdf5(getfield(obj, name))
         end
     end

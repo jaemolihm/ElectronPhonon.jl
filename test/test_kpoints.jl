@@ -114,6 +114,86 @@ end
     @test all([k isa GridKpoints for k in kpts_split])
 end
 
+@testset "kpoints: dense inverse index" begin
+    using ElectronPhonon: get_filtered_kpoints, kpoints_grid, combine_kpoint_grids, unfold_kpoints,
+        fold_kpoints, _hash_xk, _ik_from_hash, _use_dense_index, _DENSE_INDEX_MAX_BYTES
+
+    Random.seed!(222)
+    lattice = 2.0 * [[0 1 1.]; [1 0 1.]; [1 1 0.]]
+    atoms = ["B" => [ones(3)/8], "N" => [-ones(3)/8]]
+    symmetry = symmetry_operations(lattice, atoms)
+
+    # The dense table and the Dict must agree over the WHOLE hash domain, hits and misses alike.
+    function test_index_equivalence(kpts)
+        @test !isempty(kpts._dense_hash_to_ik)
+        for h in 0:prod(kpts.ngrid)-1
+            @test _ik_from_hash(kpts, h) == get(kpts._xk_hash_to_ik, h, 0)
+        end
+        @test all(xk_to_ik.(kpts.vectors, Ref(kpts)) .== 1:kpts.n)
+    end
+
+    N = 4
+    full = GridKpoints(kpoints_grid((N, N, N)))
+    shifted = GridKpoints(kpoints_grid((N, N, N); shift = (1//2, 1//2, 1//2) ./ N))
+    subset = GridKpoints(get_filtered_kpoints(kpoints_grid((N, N, N)), rand(Bool, N^3)))
+    irr = GridKpoints(kpoints_grid((N, N, N); symmetry))
+    combined = combine_kpoint_grids(GridKpoints(kpoints_grid((2, 2, 2))), full, +, (N, N, N))
+    unfolded, _ = unfold_kpoints(irr, symmetry)
+    folded, _ = fold_kpoints(full, symmetry)
+    for kpts in (full, shifted, subset, irr, combined, unfolded, folded)
+        test_index_equivalence(kpts)
+    end
+
+    # Gate: dense for a grid as dense as it gets, Dict for a huge grid holding few points.
+    @test !isempty(full._dense_hash_to_ik)
+    sparse_kpts = GridKpoints(kpoints_grid((2, 2, 2)), (1000, 1000, 1000))
+    @test !_use_dense_index(sparse_kpts.n, sparse_kpts.ngrid)
+    @test isempty(sparse_kpts._dense_hash_to_ik)
+    @test all(xk_to_ik.(sparse_kpts.vectors, Ref(sparse_kpts)) .== 1:sparse_kpts.n)
+    # A grid node that holds no k point must miss on the Dict fallback (the branch every
+    # multigrid/AMR grid takes).
+    @test xk_to_ik(Vec3(1/1000, 0.0, 0.0), sparse_kpts) === nothing
+
+    # Gate policy at its boundaries. Small grids are always dense; a grid sparser than 8 nodes per
+    # point is not; and the size cap is waived only when the Dict would be the bigger of the two.
+    @test _use_dense_index(1, (100, 100, 100))            # below the node floor
+    @test _use_dense_index(10^6, (200, 200, 200))         # 8 nodes per point, under the cap
+    @test !_use_dense_index(10^6 - 1, (200, 200, 200))    # just over 8 nodes per point
+    nnode_over_cap = 2 * _DENSE_INDEX_MAX_BYTES ÷ sizeof(Int)
+    @test !_use_dense_index(nnode_over_cap ÷ 8, (nnode_over_cap, 1, 1))  # cap binds
+    @test _use_dense_index(nnode_over_cap ÷ 4, (nnode_over_cap, 1, 1))   # cap waived: Dict is bigger
+
+    # Layout: the flat table is a (ng3, ng2, ng1) array indexed by the integer grid coordinates,
+    # i.e. the linear index is exactly `hash + 1`. Flipping the dims would silently return wrong
+    # indices. The grid must have three distinct sizes, or a reshape to the wrong dims still fits.
+    noncubic = GridKpoints(kpoints_grid((2, 3, 4); shift = (1//4, 1//6, 1//8)))
+    test_index_equivalence(noncubic)
+    ng1, ng2, ng3 = noncubic.ngrid
+    table_3d = reshape(noncubic._dense_hash_to_ik, ng3, ng2, ng1)
+    for xk in noncubic.vectors
+        c = mod.(round.(Int, (xk - noncubic.shift) .* noncubic.ngrid), noncubic.ngrid)
+        @test table_3d[c[3]+1, c[2]+1, c[1]+1] == xk_to_ik(xk, noncubic)
+    end
+
+    # A duplicated point resolves to the last index on both paths.
+    dup_vectors = push!(copy(full.vectors), full.vectors[3])
+    dup = GridKpoints(Kpoints(length(dup_vectors), dup_vectors, ones(length(dup_vectors)) / N^3, (N, N, N)))
+    @test _ik_from_hash(dup, _hash_xk(dup.vectors[3], dup)) == dup.n
+    @test _ik_from_hash(dup, _hash_xk(dup.vectors[3], dup)) == get(dup._xk_hash_to_ik, _hash_xk(dup.vectors[3], dup), 0)
+
+    # shift_center! folds by integer lattice vectors, which leaves every hash unchanged.
+    centered = GridKpoints(kpoints_grid((N, N, N)))
+    shift_center!(centered, (0, 0, 0))
+    test_index_equivalence(centered)
+
+    # sort! renumbers the points and must renumber both indices.
+    inds = randperm(full.n)
+    mixed = GridKpoints(Kpoints(full.n, full.vectors[inds], full.weights[inds], full.ngrid))
+    sort!(mixed)
+    test_index_equivalence(mixed)
+    @test mixed.vectors ≈ full.vectors
+end
+
 @testset "kpoints: combine_kpoint_grids" begin
     using ElectronPhonon: kpoints_grid, combine_kpoint_grids, add_two_kpoint_grids
 
@@ -178,6 +258,23 @@ end
     @test_throws ArgumentError combine_kpoint_grids(kpts, qpts, +, (3, 3, 3))  # not divisible by kpts
     @test_throws ArgumentError combine_kpoint_grids(kpts, qpts, +, (2, 2, 2))  # not divisible by qpts
     @test combine_kpoint_grids(kpts, qpts, +, (6, 6, 6)) isa GridKpoints       # divisible by both
+
+    # The dense and the Dict de-duplication (selected by the size of the dense table) must return
+    # the same points in the same order. Only the dense one is reachable at these grid sizes, so
+    # call both directly on the same integer grid coordinates.
+    using ElectronPhonon: _combine_kq_dedup_dense, _combine_kq_dedup_dict
+    Random.seed!(333)
+    ngrid_kq = (4, 6, 5)
+    for sgn in (1, -1)
+        # Coordinates repeat across pairs, so both paths must hit their "already seen" branch.
+        BkS = [Vec3(rand(-6:6, 3)) for _ in 1:20]
+        BqS = [Vec3(rand(-6:6, 3)) for _ in 1:20]
+        shift_kq = Vec3(0.0, 1/12, 0.0)
+        xkqs_dense = _combine_kq_dedup_dense(BkS, BqS, sgn, ngrid_kq, shift_kq)
+        xkqs_dict = _combine_kq_dedup_dict(BkS, BqS, sgn, ngrid_kq, shift_kq)
+        @test 0 < length(xkqs_dense) < length(BkS) * length(BqS)  # de-duplication happened
+        @test xkqs_dense == xkqs_dict
+    end
 
     # Overflow guard: prod(ngrid) must fit in Int (checked in the GridKpoints constructor).
     @test GridKpoints(kpoints_grid((1, 1, 1)), (1000, 1000, 1000)) isa GridKpoints
