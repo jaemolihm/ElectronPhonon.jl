@@ -123,11 +123,27 @@ end
     atoms = ["B" => [ones(3)/8], "N" => [-ones(3)/8]]
     symmetry = symmetry_operations(lattice, atoms)
 
-    # The dense table and the Dict must agree over the WHOLE hash domain, hits and misses alike.
+    # Reference `hash => ik` map, built independently of the production index: the packed grid
+    # index is re-derived here rather than obtained from `_hash_xk`, so the sweep below pins the
+    # hash convention as well as the lookup. Ascending `ik` with plain assignment, so a repeated
+    # point resolves to the last one — the documented tie-break.
+    function reference_hash_to_ik(kpts)
+        ng1, ng2, ng3 = kpts.ngrid
+        ref = Dict{Int,Int}()
+        for (ik, xk) in enumerate(kpts.vectors)
+            c1, c2, c3 = mod.(round.(Int, (xk - kpts.shift) .* kpts.ngrid), kpts.ngrid)
+            ref[(c1 * ng2 + c2) * ng3 + c3] = ik
+        end
+        ref
+    end
+
+    # The index must agree with the reference over the WHOLE hash domain, hits and misses alike.
     function test_index_equivalence(kpts)
-        @test !isempty(kpts._dense_hash_to_ik)
+        # Exactly one of the two indices is populated.
+        @test isempty(kpts._xk_hash_to_ik) == !isempty(kpts._dense_hash_to_ik)
+        ref = reference_hash_to_ik(kpts)
         for h in 0:prod(kpts.ngrid)-1
-            @test _ik_from_hash(kpts, h) == get(kpts._xk_hash_to_ik, h, 0)
+            @test _ik_from_hash(kpts, h) == get(ref, h, 0)
         end
         @test all(xk_to_ik.(kpts.vectors, Ref(kpts)) .== 1:kpts.n)
     end
@@ -149,10 +165,19 @@ end
     sparse_kpts = GridKpoints(kpoints_grid((2, 2, 2)), (1000, 1000, 1000))
     @test !_use_dense_index(sparse_kpts.n, sparse_kpts.ngrid)
     @test isempty(sparse_kpts._dense_hash_to_ik)
+    @test !isempty(sparse_kpts._xk_hash_to_ik)   # the Dict is the index here, not dead weight
     @test all(xk_to_ik.(sparse_kpts.vectors, Ref(sparse_kpts)) .== 1:sparse_kpts.n)
     # A grid node that holds no k point must miss on the Dict fallback (the branch every
     # multigrid/AMR grid takes).
     @test xk_to_ik(Vec3(1/1000, 0.0, 0.0), sparse_kpts) === nothing
+
+    # The Dict fallback must satisfy the same whole-domain equivalence. Its grid can never be small
+    # (the node floor makes every small grid dense), so sweep it in one reduction.
+    dict_kpts = GridKpoints(kpoints_grid((2, 2, 2)), (128, 128, 128))
+    @test isempty(dict_kpts._dense_hash_to_ik) && !isempty(dict_kpts._xk_hash_to_ik)
+    let ref = reference_hash_to_ik(dict_kpts)
+        @test all(_ik_from_hash(dict_kpts, h) == get(ref, h, 0) for h in 0:prod(dict_kpts.ngrid)-1)
+    end
 
     # Gate policy at its boundaries. Small grids are always dense; a grid sparser than 8 nodes per
     # point is not; and the size cap is waived only when the Dict would be the bigger of the two.
@@ -175,11 +200,14 @@ end
         @test table_3d[c[3]+1, c[2]+1, c[1]+1] == xk_to_ik(xk, noncubic)
     end
 
-    # A duplicated point resolves to the last index on both paths.
+    # A duplicated point resolves to the last index, matching the reference's tie-break.
     dup_vectors = push!(copy(full.vectors), full.vectors[3])
     dup = GridKpoints(Kpoints(length(dup_vectors), dup_vectors, ones(length(dup_vectors)) / N^3, (N, N, N)))
     @test _ik_from_hash(dup, _hash_xk(dup.vectors[3], dup)) == dup.n
-    @test _ik_from_hash(dup, _hash_xk(dup.vectors[3], dup)) == get(dup._xk_hash_to_ik, _hash_xk(dup.vectors[3], dup), 0)
+    # (not `test_index_equivalence`: the point-to-index identity it asserts cannot hold here)
+    let ref = reference_hash_to_ik(dup)
+        @test all(_ik_from_hash(dup, h) == get(ref, h, 0) for h in 0:prod(dup.ngrid)-1)
+    end
 
     # shift_center! folds by integer lattice vectors, which leaves every hash unchanged.
     centered = GridKpoints(kpoints_grid((N, N, N)))
