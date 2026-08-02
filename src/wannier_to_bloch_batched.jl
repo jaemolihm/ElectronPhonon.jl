@@ -163,8 +163,11 @@ One batched Fourier (`get_fourier_batched!`) over `R_el`, then one `batched_gemm
 per-k rotation by `uk` (recast as `transpose(uk(k)) * permute(g(k))`).
 
 # k+q convention
-`kq_convention_phase`, if given, is `(nr_ep × nk)` with `P[ip, k] = exp(2πi R_p · x_k)` (build it
-with [`fourier_phase!`](@ref)); the child object is then stored in the **k+q convention**
+`kq_convention_phase`, if given, is `(nr_ep × nk)` with `P[ip, k] = exp(2πi R_p · x_k)`, where
+`R_p` must be the parent's **`irvec_next`** list, in order (build it with
+[`fourier_phase!`](@ref) from `_irvec_matrix(epmat.irvec_next, …)` — the size assert cannot catch a
+phase built from the wrong R list when `nr_el == nr_ep`); the child object is then stored in the
+**k+q convention**
 `g̃(k, R_p) = conj(P[ip, k]) · g(k, R_p)` instead of the plain `g(k, R_p)`. Because `R_p` is an
 integer vector, the following `R_p` Fourier can then be evaluated at `x_{k+q}` directly rather than
 at `q = x_{k+q} - x_k`: `exp(2πi R_p·q) = exp(2πi R_p·x_{k+q}) · conj(exp(2πi R_p·x_k))`. Its phase
@@ -241,7 +244,9 @@ The routine really consumes three things: the kR intermediate `g(k, R_p)`, the F
 `(nw*nbandk*nmodes, nr)` and `phase` is `(nr, nq)` — so a caller that can build one phase matrix
 and reuse it over many `k` (the GPU outer-k loop, via the k+q convention of
 [`get_eph_RR_to_kR_batched!`](@ref)) never rebuilds it. The **second method** is the convenience
-form: it builds the phase from the q-list `qs` into the interpolator's scratch and delegates.
+form: it builds the phase from the q-list `qs` into the interpolator's scratch and delegates; it
+needs an **in-memory** parent (it reads `parent.op_r`), so unlike [`fourier_batched!`](@ref) it does
+not support a `DiskWannierObject` parent.
 
 Pass a [`KRtoKQWorkspace`](@ref) as `ws` (sized for at least this `nq`) to reuse the `g` / `tmp`
 scratch across calls instead of allocating it each call — the per-k hot path in the GPU loop does

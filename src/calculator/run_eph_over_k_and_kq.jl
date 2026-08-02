@@ -679,8 +679,9 @@ function _loop_eph_over_k_and_kq_gpu(
     irvecp_mat = _irvec_matrix(model.epmat.irvec_next, epmat_dev, FT)
     P_k  = similar(epmat_dev.op_r, Complex{FT}, nr_ep, nk_batch_max)
     P_kq = similar(epmat_dev.op_r, Complex{FT}, nr_ep, nq_batch_max)
-    # A partial k-batch leaves P_k's padded tail columns unwritten; 1 keeps the padded (discarded)
-    # slices of ep_ekpR_all finite.
+    # Defensive: only columns 1:nk_batch are rewritten per batch. `nk_batch_max = min(…, nk)` makes
+    # the first batch full, so the tail is in practice always written, but 1 is the identity of the
+    # convention multiply and keeps a padded (never-read) slice of ep_ekpR_all meaningful.
     fill!(P_k, 1)
 
     iqs_batch  = Vector{Int}(undef, nq_batch_max)

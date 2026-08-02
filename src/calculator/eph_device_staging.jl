@@ -56,6 +56,8 @@ end
 # built at `batch_size = nk_batch_max`, was omitted from the original hand-count — validated against a
 # direct pool-stat measurement of `BatchedWannierInterpolator(epmat_dev)`) PLUS the k+q-convention
 # terms `24·(nk + nkq) + 8·nkq + 16·nr_ep·nk_batch_max`. All transition-pinned by test/test_gpu.jl.
+# Not counted: the loop's `irvecp_mat` (`24·nr_ep`, 20 kB at Cu shapes), matching how the
+# `BatchedFourierCore.irvec_mat` of the same shape has never been counted.
 function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_grid, nk_batch_max,
         calculators, ndata_epmat, nr_epmat, FT = Float64)
     cx = sizeof(Complex{FT})    # 16

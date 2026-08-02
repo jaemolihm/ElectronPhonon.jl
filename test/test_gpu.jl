@@ -411,8 +411,9 @@ mutable struct _RecordCalcBatched <: ElectronPhonon.AbstractCalculator
 end
 ElectronPhonon.supports(::_RecordCalcBatched, ::Type{ElectronPhonon.OuterKLoop}) = true
 ElectronPhonon.supports(::_RecordCalcBatched, ::Type{ElectronPhonon.EPDataQBatched}) = true
-# Device-native (GPU outer-k): the loop fires per-k OuterIteration and per-batch OuterIterationBatch,
-# both in BatchedMode; this calculator needs nothing at either, so define explicit no-ops.
+# Device-native (GPU outer-k): that loop fires only the per-batch OuterIterationBatch bracket
+# (BatchedMode); this calculator needs nothing there, so define an explicit no-op. The
+# `OuterIteration` no-ops keep it usable under the CPU outer-k loop too, which does fire them.
 ElectronPhonon.calculator_begin!(::_RecordCalcBatched, ::ElectronPhonon.OuterIteration, ctx) = nothing
 ElectronPhonon.calculator_end!(::_RecordCalcBatched, ::ElectronPhonon.OuterIteration, ctx) = nothing
 ElectronPhonon.calculator_begin!(::_RecordCalcBatched, ::ElectronPhonon.OuterIterationBatch, ctx) = nothing

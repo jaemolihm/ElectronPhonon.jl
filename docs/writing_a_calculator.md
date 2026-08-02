@@ -26,8 +26,9 @@ A calculator must implement:
   payload it does not declare.
 
 Optionally, `calculator_begin!(calc, scope, ctx)` / `calculator_end!(calc, scope, ctx)` bracket one
-outer iteration (`OuterIteration()`) or one batch of outer iterations (`OuterIterationBatch()`);
-their defaults are no-ops.
+outer iteration (`OuterIteration()`) or one batch of outer iterations (`OuterIterationBatch()`).
+There is no default: define a method for every (scope, loop-mode) combination the loops you support
+fire, even as an explicit no-op — see the table under "Adding a GPU path" for which those are.
 
 Which loop shape? `OuterKLoop` calculators run under `run_eph_over_k_and_q` /
 `run_eph_over_k_and_kq` (outer loop over k); `OuterQLoop` calculators run under
@@ -159,16 +160,27 @@ To add a GPU path to an existing CPU calculator:
 3. Manage device buffers. `setup_calculator!` is passed the run's `backend`, so build whole-run
    device buffers (index maps, band energies, weights — anything intrinsic to the state sets) there
    with `alloc(backend, …)` / `to_device(backend, …)` (only when `backend isa GPUBackend`). Use the
-   brackets only for per-iteration state: allocate/zero the per-iteration device accumulator in
-   `calculator_begin!(calc, OuterIteration(), ctx)` (or `OuterIterationBatch()` for outer-k
-   per-batch buffers) using `ctx.backend`, and copy the result device→host in the matching
-   `calculator_end!`. Declare per-point device scratch via
-   `eph_batched_bytes_per_point(calc, PayloadType; nw, nmodes)` so the loop's memory-adaptive batch
-   sizing accounts for it.
+   brackets only for per-iteration state, and mind **which brackets the loop you are targeting
+   actually fires**:
 
-   If a bracket is shared between the CPU and GPU loop shapes (e.g. the `OuterIteration` bracket,
-   which the batched outer-k loop fires per k in addition to the CPU per-point loop), select the
-   batched behavior from the loop **mode** carried in `ctx`, never the backend: either dispatch on
+   | loop | brackets fired |
+   |---|---|
+   | CPU outer-k / outer-q (`SingleMode`) | `OuterIteration` per k / per q |
+   | GPU outer-q (`BatchedMode`) | `OuterIteration` per q |
+   | **GPU outer-k (`BatchedMode`)** | **`OuterIterationBatch` only — no per-k bracket** |
+
+   The GPU outer-k loop runs its q-tile loop *outside* the k loop (one Fourier phase tile is reused
+   by every k of the batch), so a single k's work is spread over the whole batch and has no
+   begin/end point. A per-k device reduction there must move to `OuterIterationBatch`; a
+   `calculator_begin!(calc, OuterIteration(), ctx)` method written for that loop would simply never
+   run. Allocate/zero the per-iteration device accumulator in the bracket the loop does fire, using
+   `ctx.backend`, and copy the result device→host in the matching `calculator_end!`. Declare
+   per-point device scratch via `eph_batched_bytes_per_point(calc, PayloadType; nw, nmodes)` so the
+   loop's memory-adaptive batch sizing accounts for it.
+
+   If a bracket is shared between loop shapes (e.g. the `OuterIteration` bracket, fired by the CPU
+   loops in `SingleMode` and by the GPU outer-q loop in `BatchedMode`), select the batched behavior
+   from the loop **mode** carried in `ctx`, never the backend: either dispatch on
    `ctx::LoopContext{<:AbstractBackend, SingleMode}` vs `{<:AbstractBackend, BatchedMode}`, or branch
    on `ctx.mode isa ElectronPhonon.BatchedMode`. `ctx.backend` is only for allocation
    (`alloc(ctx.backend, …)`) / `free_bytes` / `synchronize`, not for telling the loop shapes apart.
