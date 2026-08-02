@@ -1003,6 +1003,28 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
                                                nk_batch_max = 256) == 1   # nw·nmodes = 36 > 24
     end
 
+    @testset "kR→kq strip q-tile shrinkage warning (predicate + quiet plan_batch)" begin
+        # The loop warns when the strip more than halved a memory-bound q-tile. Its condition is the
+        # accountant asked twice, so pin it here on a shape where `ws.g` dominates `per_point`
+        # (small nr_ep, small ndata ⇒ large nk_b) — the driver's own shapes never reach it.
+        shape = (; nw = 3, nbandk_max = 1, nmodes = 4, nr_ep = 8, nk = 10, nkq = 500,
+                 nq_grid = 500, nk_batch_max = 64, calculators = [],
+                 ndata_epmat = 3 * 3 * 4 * 8, nr_epmat = 5, FT)
+        nk_b = ElectronPhonon._krkq_strip_width(; shape.nw, shape.nbandk_max, shape.nmodes,
+                                               shape.nk_batch_max)
+        @test nk_b == 11
+        per_point, committed = _outer_k_staging_bytes(; shape..., nk_b)
+        per_point_1, _       = _outer_k_staging_bytes(; shape..., nk_b = 1)
+        @test per_point > 2 * per_point_1
+        b = _StubBackend(committed + 20 * per_point)          # memory-bound q-tile
+        nq  = plan_batch(b, per_point,   committed, shape.nkq; warn = false)
+        nq1 = plan_batch(b, per_point_1, committed, shape.nkq; warn = false)
+        @test nq * 2 < nq1                                   # (14 vs 38) — the loop warns here
+        # A counterfactual query must not tell the user their batch was reduced.
+        @test_logs plan_batch(b, per_point, committed, shape.nkq; warn = false)
+        @test_logs (:warn,) plan_batch(b, per_point, committed, shape.nkq)
+    end
+
     @testset "outer-q parity" begin
         nw, nmodes, nr_el_ham, nr_ep_eRpq = 4, 21, 250, 419
         for use_polar_eph in (false, true)

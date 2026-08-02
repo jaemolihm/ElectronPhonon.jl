@@ -12,7 +12,8 @@
 # the batch-sizing check are centralized here.
 
 """
-    plan_batch(backend, per_point, committed, cap; headroom_num = 7, headroom_den = 10, what = "") -> nbatch
+    plan_batch(backend, per_point, committed, cap; headroom_num = 7, headroom_den = 10, what = "",
+               warn = true) -> nbatch
 
 Size a batched GPU e-ph loop's batch to free device memory:
 `nbatch = min(cap, (free - committed) · headroom ÷ per_point)`, clamped to at least 1, where
@@ -21,10 +22,13 @@ CPU backend `free_bytes` is `typemax(Int)`, so `nbatch = cap`. Errors if the who
 alone exceed free device memory (a clear early failure instead of an OOM mid-loop); `what` names the
 loop in that message. `headroom_num / headroom_den` is the usable fraction of free memory (default
 `7/10`, i.e. a 30% headroom for the batched drivers' recycled temporaries), applied as
-`x ÷ den * num` to match the integer arithmetic of the formulas this replaces.
+`x ÷ den * num` to match the integer arithmetic of the formulas this replaces. Pass `warn = false`
+for a counterfactual query ("how wide would the batch be at a different `per_point`?"), which must
+not tell the user their batch was reduced.
 """
 function plan_batch(backend::AbstractBackend, per_point::Integer, committed::Integer, cap::Integer;
-        headroom_num::Integer = 7, headroom_den::Integer = 10, what::AbstractString = "")
+        headroom_num::Integer = 7, headroom_den::Integer = 10, what::AbstractString = "",
+        warn::Bool = true)
     free = free_bytes(backend)
     if free != typemax(Int) && committed > free
         error("GPU $(what): committed device memory ($(round(committed / 1e9, digits = 2)) GB, " *
@@ -34,7 +38,7 @@ function plan_batch(backend::AbstractBackend, per_point::Integer, committed::Int
     nb_mem = free == typemax(Int) ? Int(cap) :
         max(1, ((free - committed) ÷ headroom_den * headroom_num) ÷ per_point)
     nbatch = min(Int(cap), nb_mem)
-    if free != typemax(Int) && nb_mem < cap
+    if warn && free != typemax(Int) && nb_mem < cap
         @warn "WARNING : GPU batch width reduced from the requested cap $(Int(cap)) to $nbatch to fit " *
             "free device memory in plan_batch$(isempty(what) ? "" : " ($what)"). GPU performance may " *
             "degrade compared to smaller calculations."

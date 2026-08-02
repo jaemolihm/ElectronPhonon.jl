@@ -454,8 +454,12 @@ const _FUSED_ROT_MAX_NWNM = 24
 # Target `M` for the kR→kq GEMM `(ndata*nk_b) × nr_ep` × `nr_ep × nq`. `M = ndata` alone is far
 # below a cuBLAS M-tile at small `ndata`, so each phase element feeds only `ndata` rows of MACs and
 # the k-invariant phase tile is re-read once per k. Measured on an A100-80GB (225 W cap, Cu shapes
-# ndata = 21, nr_ep = 833, nq = 226380): 7.45 TFLOP/s at M = 21 rising to 11.93 at M = 168 and
-# saturating by M ≈ 336.
+# ndata = 21, nr_ep = 833, nq = 226380): 7.45 TFLOP/s at M = 21, 10.67 at M = 84, 11.93 at M = 168,
+# saturating at 12.41 by M = 336.
+# 128 sits deliberately below the saturation point, because `M` is bought with per-q device memory:
+# it gives nk_b = 7 at those Cu shapes (M = 147, ~2.0 kB/q of extra `ws.g`), where chasing the last
+# ~4% of throughput at M = 336 would cost ~4.9 kB/q out of a 14.7 kB/q per-q budget and shrink the
+# q-tile by a third on a memory-bound run.
 const _KRKQ_GEMM_M_TARGET = 128
 
 """
@@ -478,7 +482,18 @@ end
 
 # The two-GEMM rotation paths merge `g`'s band and mode axes with a `reshape`, which needs `g` to be
 # densely packed — a reshape of a strided view is a `ReshapedArray`, which the batched GEMMs reject.
-_is_dense(a::AbstractArray) = strides(a) == Base.size_to_strides(1, size(a)...)
+# A non-strided array is `false`, not an error, so the caller's own assertion message is what the
+# user sees. Axes of length 1 carry no meaningful stride, so they are skipped.
+function _is_dense(a::AbstractArray)
+    a isa StridedArray || return false
+    st, sz = strides(a), size(a)
+    expected = 1
+    for d in eachindex(sz)
+        (sz[d] == 1 || st[d] == expected) || return false
+        expected *= sz[d]
+    end
+    true
+end
 
 """
     eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp; g2_out=nothing, ωq=nothing)

@@ -621,15 +621,22 @@ function _loop_eph_over_k_and_kq_gpu(
               "$(round(per_point / 1e3, digits = 1)) kB/q; q-batch size = $nq_batch_max, " *
               "kR->kq strip nk_b = $nk_b"
     end
-    # The strip's extra `ws.g` rows are spent out of the same per-q budget as the phase tile. At the
-    # shapes where the strip switches on they are a small share of it, but a model with a large
-    # `ndata` and a small `nr_ep` inverts that; say so rather than silently starving the q-tile.
-    strip_bytes = sizeof(Complex{FT}) * ndata_ekpR * (nk_b - 1)
-    if nk_b > 1 && nq_batch_max < nq_batch_cap && strip_bytes * 4 > per_point
-        @warn "GPU outer-k: the kR->kq strip (nk_b = $nk_b) takes " *
-              "$(round(Int, 100 * strip_bytes / per_point))% of the per-q device budget while the " *
-              "q-tile is memory-limited ($nq_batch_max of $nq_batch_cap). Lower _KRKQ_GEMM_M_TARGET if this " *
-              "run is slower than one with nk_b = 1."
+    # The strip widens `ws.g`, which is spent out of the same per-q budget as the phase tile. At the
+    # shapes where the strip switches on it is a small share of that budget, but a model with a large
+    # `ndata` and a small `nr_ep` inverts the ratio. Report the quantity that actually matters — how
+    # much q-tile the strip cost — by re-asking the accountant at `nk_b = 1`, so this stays right if
+    # another buffer ever becomes strip-sized. Only when the tile is memory-bound (`< nq_batch_cap`):
+    # a user-supplied `nq_batch_max` is not the strip's fault.
+    if nk_b > 1 && nq_batch_max < nq_batch_cap && mpi_isroot()
+        per_point_1, _ = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
+            nq_grid = qpts.n, nk_batch_max, calculators,
+            ndata_epmat = epmat_dev.ndata, nr_epmat = epmat_dev.nr, nk_b = 1, FT)
+        nq_batch_1 = plan_batch(backend, per_point_1, committed, nq_batch_cap; warn = false)
+        if nq_batch_max * 2 < nq_batch_1
+            @warn "GPU outer-k: the kR->kq strip (nk_b = $nk_b) more than halved the q-tile " *
+                  "($nq_batch_1 -> $nq_batch_max of $nkq k+q). Lower `nk_outer_batch_max` (it " *
+                  "clamps nk_b) if this run is slower than one with nk_b = 1."
+        end
     end
 
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
@@ -796,6 +803,9 @@ function _loop_eph_over_k_and_kq_gpu(
             # (unit stride down the rows, `lda = ndata_ekpR*nk_batch_max` across) - a plain view,
             # no copy. A partial final strip just uses a shorter row range: `M` is a runtime GEMM
             # dimension, so nothing needs padding. Everything below the GEMM stays strictly per-k.
+            # NOT an invitation to overlap the k of a strip: `g` is the only strip-wide buffer.
+            # `epkq_dev`, `g2_dev`, `uphs_dev`, `ωq_dev` and `kRkq_ws.tmp` are all single-k and are
+            # overwritten by each k below, correct only because the k are serialized on one stream.
             for sstart in 1:nk_b:nk_batch
                 nks  = min(nk_b, nk_batch - sstart + 1)
                 rows = ndata_ekpR * (sstart - 1) + 1 : ndata_ekpR * (sstart - 1 + nks)
