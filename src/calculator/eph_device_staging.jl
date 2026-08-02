@@ -49,49 +49,47 @@ end
 # e-ph data size (`= nw²·nmodes` full-band); `nr_ep` = number of R-vectors of g(k, R_ep); `nkq` /
 # `nq_grid` = k+q / q grid sizes; `nk_batch_max` = the fixed outer-k batch width; `ndata_epmat` /
 # `nr_epmat` = the parent e-ph object's (`epmat_dev`) data size / R-vector count, for the RR→kR
-# interpolator's scratch. The per-q term sums to `72·nw·nbandk_max·nmodes + 24·nr_ep + 16·nmodes² +
-# 8·nmodes + 40 + Σcalc`; the committed to the old hand-counted `16·nw²·nkq + (16·nmodes²+8·nmodes)·
+# interpolator's scratch. The per-q term sums to `56·nw·nbandk_max·nmodes + 16·nr_ep + 16·nmodes² +
+# 8·nmodes + 8 + Σcalc`; the committed to the old hand-counted `16·nw²·nkq + (16·nmodes²+8·nmodes)·
 # nq_grid + 16·nw·nbandk_max·(nmodes·nr_ep+1)·nk_batch_max` PLUS the `itp_epmat` Fourier scratch
-# `(16·ndata_epmat + 24·nr_epmat + 24)·nk_batch_max` (added 2026-07-18; the parent RR→kR interpolator,
+# `(16·ndata_epmat + 16·nr_epmat + 24)·nk_batch_max` (added 2026-07-18; the parent RR→kR interpolator,
 # built at `batch_size = nk_batch_max`, was omitted from the original hand-count — validated against a
-# direct pool-stat measurement of `BatchedWannierInterpolator(epmat_dev)`). Both transition-pinned by
-# test/test_gpu.jl.
-function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nkq, nq_grid, nk_batch_max,
+# direct pool-stat measurement of `BatchedWannierInterpolator(epmat_dev)`) PLUS the k+q-convention
+# terms `24·(nk + nkq) + 8·nkq + 16·nr_ep·nk_batch_max`. All transition-pinned by test/test_gpu.jl.
+function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_grid, nk_batch_max,
         calculators, ndata_epmat, nr_epmat, FT = Float64)
     cx = sizeof(Complex{FT})    # 16
     rl = sizeof(FT)             # 8
     iz = sizeof(Int)            # 8
     ndata = nw * nbandk_max * nmodes
-    # Per-q device buffers (batched-inner axis = q): epkq/g2/uphs/ωq/iqs/ikqs are the loop's own
-    # staging; kRkq_ws.{g,tmp} + the itp_ep_ekpR Fourier scratch (cached_results / phase / rdotk /
-    # xkmat) scale with the q-batch too.
+    # Per-q device buffers (batched-inner axis = q): epkq/g2/uphs/ωq/iqs are the loop's own staging;
+    # kRkq_ws.{g,tmp} and the kR→kq phase tile P_kq scale with the q-tile too.
     per_point =
         cx * ndata +                       # epkq_dev
         rl * ndata +                       # g2_dev
         cx * ndata +                       # kRkq_ws.g   (ndata_ekpR)
         cx * nw * (nbandk_max * nmodes) +  # kRkq_ws.tmp (nbandkq=nw, nbandk·nmodes)
-        cx * ndata +                       # itp_ep_ekpR.cached_results (ndata_ekpR)
-        cx * nr_ep +                       # itp_ep_ekpR.core.phase
-        rl * nr_ep +                       # itp_ep_ekpR.core.rdotk
-        rl * 3 +                           # itp_ep_ekpR.core.xkmat (3 rows)
+        cx * nr_ep +                       # P_kq (kR→kq phase tile)
         cx * nmodes * nmodes +             # uphs_dev
         rl * nmodes +                      # ωq_dev
-        iz + iz                            # iqs_batch_dev + ikqs_dev
+        iz                                 # iqs_batch_dev
     for c in calculators
         per_point += eph_batched_bytes_per_point(c, EPDataQBatched; nw, nmodes)
     end
     # Whole-run + per-k-batch commitments (allocated after the sizing point; subtracted from free).
     # The `itp_epmat` term uses `nk_batch_max` (the outer-k batch width, a SEPARATE fixed cap from the
-    # sized q-batch), so it belongs here in `committed`, not in the per-q term. Its layout mirrors how
-    # the child `itp_ep_ekpR` scratch is counted in `per_point`: cached_results (16·ndata_epmat) +
-    # phase (16·nr_epmat) + rdotk (8·nr_epmat) + xkmat (24), all × nk_batch_max.
+    # sized q-tile), so it belongs here in `committed`, not in the per-q term: cached_results
+    # (16·ndata_epmat) + phase (16·nr_epmat) + xkmat (24), all × nk_batch_max.
     committed =
         cx * nw * nw * nkq +                                  # ukqs_all_dev
         cx * nmodes * nmodes * nq_grid +                      # uph_all_dev
         rl * nmodes * nq_grid +                               # ωq_all_dev
         cx * ndata * nr_ep * nk_batch_max +                   # ep_ekpR_all
         cx * nw * nbandk_max * nk_batch_max +                 # uks_dev
-        (cx * ndata_epmat + (cx + rl) * nr_epmat + rl * 3) * nk_batch_max  # itp_epmat Fourier scratch
+        (cx * ndata_epmat + cx * nr_epmat + rl * 3) * nk_batch_max + # itp_epmat Fourier scratch
+        rl * 3 * (nk + nkq) +                                 # xk_dev + xkq_dev
+        iz * nkq +                                            # ikqs_all_dev (1:nkq)
+        cx * nr_ep * nk_batch_max                             # P_k (k+q-convention phase)
     (per_point, committed)
 end
 
@@ -110,7 +108,7 @@ function _outer_q_staging_bytes(; nw, nmodes, nr_el_ham, nr_ep_eRpq, use_polar_e
         cx * nw^2 * 8 +                       # Hkq_flat + Uk_batch + Ukq_batch + itp_el_ham.cached_results
                                              #   + eigen_batched (E,U) & rotation transients (historical margin)
         (use_polar_eph ? cx * nw^2 : 0) +    # mmats_batch (polar only)
-        (cx + rl) * (nr_el_ham + nr_ep_eRpq) # interpolator core phase (cx) + rdotk (rl) = 24·nr, both interpolators
+        cx * (nr_el_ham + nr_ep_eRpq)        # interpolator core phase, both interpolators
     for c in calculators
         per_point += eph_batched_bytes_per_point(c, EPDataKBatched; nw, nmodes)
     end

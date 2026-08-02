@@ -610,7 +610,7 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
     if model.epmat_outer_momentum == "el"
         nr_ep = length(get_next_wannier_object(model.epmat).irvec)
         nk_batch = min(Int(nk_outer_batch_max), Int(nk))
-        per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max = nw, nmodes, nr_ep, nkq,
+        per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max = nw, nmodes, nr_ep, nk, nkq,
             nq_grid = nkq, nk_batch_max = nk_batch, calculators,
             ndata_epmat = model.epmat.ndata, nr_epmat = model.epmat.nr, FT)
         cap = nq_batch_max === nothing ? Int(nkq) : min(Int(nq_batch_max), Int(nkq))
