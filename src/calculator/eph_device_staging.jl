@@ -49,9 +49,11 @@ end
 # e-ph data size (`= nw²·nmodes` full-band); `nr_ep` = number of R-vectors of g(k, R_ep); `nkq` /
 # `nq_grid` = k+q / q grid sizes; `nk_batch_max` = the fixed outer-k batch width; `ndata_epmat` /
 # `nr_epmat` = the parent e-ph object's (`epmat_dev`) data size / R-vector count, for the RR→kR
-# interpolator's scratch. The per-q term sums to `56·nw·nbandk_max·nmodes + 16·nr_ep + 16·nmodes² +
-# 8·nmodes + 8 + Σcalc`; the committed to the old hand-counted `16·nw²·nkq + (16·nmodes²+8·nmodes)·
-# nq_grid + 16·nw·nbandk_max·(nmodes·nr_ep+1)·nk_batch_max` PLUS the `itp_epmat` Fourier scratch
+# interpolator's scratch. `nk_b` is the kR→kq GEMM strip width (`_krkq_strip_width`), which widens
+# `kRkq_ws.g` and nothing else. The per-q term sums to `(40 + 16·nk_b)·nw·nbandk_max·nmodes +
+# 16·nr_ep + 16·nmodes² + 8·nmodes + 8 + Σcalc`; the committed to the old hand-counted
+# `16·nw²·nkq + (16·nmodes²+8·nmodes)·nq_grid +
+# 16·nw·nbandk_max·(nmodes·nr_ep+1)·nk_batch_max` PLUS the `itp_epmat` Fourier scratch
 # `(16·ndata_epmat + 16·nr_epmat + 24)·nk_batch_max` (added 2026-07-18; the parent RR→kR interpolator,
 # built at `batch_size = nk_batch_max`, was omitted from the original hand-count — validated against a
 # direct pool-stat measurement of `BatchedWannierInterpolator(epmat_dev)`) PLUS the k+q-convention
@@ -59,7 +61,7 @@ end
 # Not counted: the loop's `irvecp_mat` (`24·nr_ep`, 20 kB at Cu shapes), matching how the
 # `BatchedFourierCore.irvec_mat` of the same shape has never been counted.
 function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_grid, nk_batch_max,
-        calculators, ndata_epmat, nr_epmat, FT = Float64)
+        calculators, ndata_epmat, nr_epmat, nk_b = 1, FT = Float64)
     cx = sizeof(Complex{FT})    # 16
     rl = sizeof(FT)             # 8
     iz = sizeof(Int)            # 8
@@ -69,7 +71,7 @@ function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_gri
     per_point =
         cx * ndata +                       # epkq_dev
         rl * ndata +                       # g2_dev
-        cx * ndata +                       # kRkq_ws.g   (ndata_ekpR)
+        cx * ndata * nk_b +                # kRkq_ws.g   (ndata_ekpR × the GEMM strip width)
         cx * nw * (nbandk_max * nmodes) +  # kRkq_ws.tmp (nbandkq=nw, nbandk·nmodes)
         cx * nr_ep +                       # P_kq (kR→kq phase tile)
         cx * nmodes * nmodes +             # uphs_dev

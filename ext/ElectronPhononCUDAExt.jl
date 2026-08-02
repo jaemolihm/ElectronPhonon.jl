@@ -133,9 +133,8 @@ end
 # Above a threshold the matmuls are large enough that cuBLAS wins, so we fall back to the two GEMMs.
 # Per-thread work grows ~nw³·nmodes², so we gate on the single product nw·nmodes (nmodes = 3·N_atoms
 # ≥ 3, so the product bounds the aspect ratio — no separate per-dim cap needed). Assumes nbandk,
-# nbandkq ≤ nw (true in the full-band loop). The crossover is hardware-dependent: the value below
-# was tuned on one GPU and should be retuned elsewhere.
-const _FUSED_ROT_MAX_NWNM = 24
+# nbandkq ≤ nw (true in the full-band loop). The threshold itself is
+# `ElectronPhonon._FUSED_ROT_MAX_NWNM`, in `src` because the outer-k loop also reads it.
 
 # g : (nw, nbandk, nmodes, nq) ; ukq : (nw, nbandkq, nq) ; uph : (nmodes, nmodes, nq)
 # ep : (nbandkq, nbandk, nmodes, nq) ; g2 / ωq optional (g2 : same as ep ; ωq : (nmodes, nq)).
@@ -173,19 +172,23 @@ end
 # `DenseCuArray` (not `CuArray`): the GPU e-ph loop passes contiguous device VIEWS
 # (e.g. `view(epkq_dev, :,:,:, 1:nq_batch)`) for a partial final q-batch. The fused kernel takes
 # them through `@cuda` (cudaconvert handles strided views) and the cuBLAS path takes their
-# reshapes (strided), so no padding to a fixed batch width is needed.
-function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},4}, g,
+# reshapes (strided), so no padding to a fixed batch width is needed. `g` alone may also be strided
+# in `q` (one k of a kR→kq strip); only the fused branch accepts that, which is why the loop caps
+# the strip width at 1 above `_FUSED_ROT_MAX_NWNM`.
+function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},4},
+        g::AnyCuArray{Complex{T},4},
         ukqs::DenseCuArray, u_phs::DenseCuArray, tmp; g2_out=nothing, ωq=nothing) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
-    if nw * nmodes <= _FUSED_ROT_MAX_NWNM
-        g4 = reshape(g, nw, nbandk, nmodes, nq)
+    @assert size(g) == (nw, nbandk, nmodes, nq)
+    if nw * nmodes <= ElectronPhonon._FUSED_ROT_MAX_NWNM
         threads = 256
         blocks = cld(nbandkq * nbandk * nq, threads)
         @cuda threads=threads blocks=blocks _fused_eph_rot_kernel!(
-            ep_kq_all, g2_out, g4, ukqs, u_phs, ωq, nw, nbandkq, nbandk, nmodes, nq)
+            ep_kq_all, g2_out, g, ukqs, u_phs, ωq, nw, nbandkq, nbandk, nmodes, nq)
     else
         # Large nw/nmodes: cuBLAS strided-batched is efficient; keep the two-GEMM path.
+        @assert ElectronPhonon._is_dense(g)
         gemm_strided_batched!('C', 'N', one(Complex{T}), ukqs,
                               reshape(g, nw, nbandk * nmodes, nq), zero(Complex{T}), tmp)
         gemm_strided_batched!('N', 'N', one(Complex{T}),

@@ -59,12 +59,12 @@ function check_eph_batched(to_dev, arr_dev; rtol)
 
     epmat_d = to_dev(epmat_obj)
 
-    # list-batched RR→kR over all k — check every column
-    ep_all = arr_dev(zeros(ComplexF64, nwe*nband*nmodes, nr_ep, nk2))
+    # list-batched RR→kR over all k — check every k slice (k is the MIDDLE axis)
+    ep_all = arr_dev(zeros(ComplexF64, nwe*nband*nmodes, nk2, nr_ep))
     get_eph_RR_to_kR_batched!(ep_all, get_interpolator(epmat_d; fourier_mode="batched", batch_size=nk2), ks, arr_dev(uks))
     ep_all_h = Array(ep_all)
     for ik in 1:nk2
-        @test isapprox(ep_all_h[:, :, ik], refs_RR[ik]; rtol)
+        @test isapprox(ep_all_h[:, ik, :], refs_RR[ik]; rtol)
     end
 
     # list-batched kR→kq over all q (fixed k = ks[1]) — check every slice
@@ -164,9 +164,9 @@ function check_eph_kq_convention(to_dev, arr_dev; rtol)
     ndata = nwe * nband * nmodes
 
     # (a) reference: q convention, interpolator + qs method
-    ep_kR_q = arr_dev(zeros(ComplexF64, ndata, nr_ep, 1))
+    ep_kR_q = arr_dev(zeros(ComplexF64, ndata, 1, nr_ep))
     get_eph_RR_to_kR_batched!(ep_kR_q, itp_epmat, [xk], uk)
-    obj_q = to_dev(WannierObject(irvec_ep, Array(ep_kR_q)[:, :, 1]))
+    obj_q = to_dev(WannierObject(irvec_ep, Array(ep_kR_q)[:, 1, :]))
     ref = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq))
     get_eph_kR_to_kq_batched!(ref, get_interpolator(obj_q; fourier_mode="batched", batch_size=nq),
                               qs, uphs, ukqs)
@@ -176,19 +176,19 @@ function check_eph_kq_convention(to_dev, arr_dev; rtol)
     ElectronPhonon.fourier_phase!(phase_q, irvecp_mat,
                                   arr_dev([q[d] for d in 1:3, q in qs]))
     out_b = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq))
-    get_eph_kR_to_kq_batched!(out_b, view(ep_kR_q, :, :, 1), phase_q, uphs, ukqs)
+    get_eph_kR_to_kq_batched!(out_b, view(ep_kR_q, :, 1, :), phase_q, uphs, ukqs)
     @test Array(out_b) == Array(ref)
 
     # (c) k+q convention: fold conj(exp(2πi R_p·x_k)) into the child, transform at x_{k+q}
     P_k = arr_dev(zeros(ComplexF64, nr_ep, 1))
     ElectronPhonon.fourier_phase!(P_k, irvecp_mat, arr_dev(reshape([xk[d] for d in 1:3], 3, 1)))
-    ep_kR_kq = arr_dev(zeros(ComplexF64, ndata, nr_ep, 1))
+    ep_kR_kq = arr_dev(zeros(ComplexF64, ndata, 1, nr_ep))
     get_eph_RR_to_kR_batched!(ep_kR_kq, itp_epmat, [xk], uk; kq_convention_phase = P_k)
     P_kq = arr_dev(zeros(ComplexF64, nr_ep, nq))
     ElectronPhonon.fourier_phase!(P_kq, irvecp_mat,
                                   arr_dev([xkq[d] for d in 1:3, xkq in xkqs]))
     out_c = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq))
-    get_eph_kR_to_kq_batched!(out_c, view(ep_kR_kq, :, :, 1), P_kq, uphs, ukqs)
+    get_eph_kR_to_kq_batched!(out_c, view(ep_kR_kq, :, 1, :), P_kq, uphs, ukqs)
     @test isapprox(Array(out_c), Array(ref); rtol)
 end
 
@@ -369,6 +369,85 @@ end
 end
 
 
+"""
+The kR→kq GEMM strip (`_krkq_strip_width`): stacking `nk_b` outer-k into one tall
+`eph_kR_to_kq_fourier!` and rotating each k off a q-strided slice of the result must reproduce the
+`nk_b` separate skinny per-k `get_eph_kR_to_kq_batched!` calls. `nk` is chosen so the last strip is
+partial, the case a `k`-batch that is not a multiple of `nk_b` produces in the loop.
+
+At `nk_b = 1` on the GPU the GEMM shape and the kernel are identical to the per-k path, so the
+result must be BITWISE equal (`exact`). At `nk_b > 1` it is not: a different `M` lets cuBLAS pick a
+different kernel and reduction order — the in-repo precedent for k-batching moving last bits. On
+the CPU even `nk_b = 1` moves last bits, because the strip hands the generic rotation a `SubArray`
+whose `reshape` is a `ReshapedArray` and so takes the generic `mul!` instead of BLAS `gemm!`.
+"""
+function check_krkq_strip(arr_dev; nw, nmodes, nk, nk_b, rtol, exact = false)
+    nband, nr_ep, nq = nw, 9, 11
+    ndata = nw * nband * nmodes
+    ep3   = arr_dev(rand(ComplexF64, ndata, nk, nr_ep))     # k in the middle: k-strips are row ranges
+    ep2d  = reshape(ep3, ndata * nk, nr_ep)
+    phase = arr_dev(rand(ComplexF64, nr_ep, nq))
+    uphs  = arr_dev(rand(ComplexF64, nmodes, nmodes, nq))
+    ukqs  = arr_dev(rand(ComplexF64, nw, nband, nq))
+    ωq    = arr_dev(rand(nmodes, nq) .+ 0.5)
+
+    # Reference: one skinny GEMM + rotation per k (the pre-strip code path).
+    ref    = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq, nk))
+    ref_g2 = arr_dev(zeros(nband, nband, nmodes, nq, nk))
+    ws1 = KRtoKQWorkspace(ep3, ndata, nband, nband, nmodes, nq)
+    for ik in 1:nk
+        get_eph_kR_to_kq_batched!(view(ref, :, :, :, :, ik), view(ep3, :, ik, :), phase, uphs, ukqs;
+            ws = ws1, g2_out = view(ref_g2, :, :, :, :, ik), ωq)
+    end
+
+    # Strip: one tall GEMM per strip of `nks ≤ nk_b` k, then the rotation per k.
+    out    = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq, nk))
+    out_g2 = arr_dev(zeros(nband, nband, nmodes, nq, nk))
+    ws = KRtoKQWorkspace(ep3, ndata, nband, nband, nmodes, nq; nk_b)
+    g5 = reshape(ws.g, nw, nband, nmodes, nk_b, nq)
+    for sstart in 1:nk_b:nk
+        nks  = min(nk_b, nk - sstart + 1)
+        rows = ndata * (sstart - 1) + 1 : ndata * (sstart - 1 + nks)
+        ElectronPhonon.eph_kR_to_kq_fourier!(view(ws.g, 1:ndata*nks, :), view(ep2d, rows, :), phase)
+        for ik in sstart:(sstart + nks - 1)
+            eph_apply_rotations!(view(out, :, :, :, :, ik), view(g5, :, :, :, ik - sstart + 1, :),
+                ukqs, uphs, ws.tmp; g2_out = view(out_g2, :, :, :, :, ik), ωq)
+        end
+    end
+
+    if exact
+        @test Array(out) == Array(ref)
+        @test Array(out_g2) == Array(ref_g2)
+    else
+        @test isapprox(Array(out), Array(ref); rtol)
+        @test isapprox(Array(out_g2), Array(ref_g2); rtol)
+    end
+end
+
+@testset "kR→kq GEMM strip" begin
+    # nk_b = 1 is the auto-disabled path (large ndata, or a k-batch of one).
+    check_krkq_strip(identity; nw=3, nmodes=4, nk=3, nk_b=1, rtol=1e-13)
+    # A strided per-k `g` is only readable by the CUDA fused kernel; the generic two-GEMM method
+    # must say so rather than silently reshaping into a `ReshapedArray`.
+    let nw = 3, nband = 3, nmodes = 4, nq = 5
+        g_strided = view(reshape(rand(ComplexF64, nw*nband*nmodes*2, nq), nw, nband, nmodes, 2, nq),
+                         :, :, :, 1, :)
+        @test_throws AssertionError eph_apply_rotations!(
+            zeros(ComplexF64, nband, nband, nmodes, nq), g_strided,
+            rand(ComplexF64, nw, nband, nq), rand(ComplexF64, nmodes, nmodes, nq),
+            zeros(ComplexF64, nband, nband * nmodes, nq))
+    end
+    if !GPU_AVAILABLE
+        @info "CUDA not available/functional — skipping GPU kR→kq strip test"
+    else
+        check_krkq_strip(CuArray; nw=3, nmodes=4, nk=3, nk_b=1, rtol=0, exact=true)
+        # nw*nmodes = 12 ≤ 24 → fused rotation, so the q-strided strip slice is allowed.
+        # nk = 7, nk_b = 3 → strips of 3, 3, 1: the last one is partial.
+        check_krkq_strip(CuArray; nw=3, nmodes=4, nk=7, nk_b=3, rtol=1e-13)
+    end
+end
+
+
 # A minimal AbstractCalculator that records the mode-resolved g2 and phonon frequency for
 # every (ik, ikq). It mirrors what MigdalEliashberg's EliashbergCalculator reads
 # (epstate.g2[m,n,imode], epstate.ph.e[imode]) but has no external dependency, so it can verify
@@ -491,6 +570,17 @@ end
             calculators=[cbk], symmetry=nothing, use_gpu=true,
             nk_outer_batch_max=5, nq_batch_max=7, progress_print_step=10^9)
         @test maximum(abs, cg.g2 .- cbk.g2) < 1e-9 * scale
+
+        # nk_outer_batch_max = 1 clamps the kR→kq strip to nk_b = 1 (the auto-disable path the
+        # loop also takes at large ndata / above the fused-rotation threshold); the runs above use
+        # nk_b = _krkq_strip_width(...) > 1 for this model, so this covers both branches.
+        cb1 = _RecordCalcBatched()
+        ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
+            calculators=[cb1], symmetry=nothing, use_gpu=true,
+            nk_outer_batch_max=1, progress_print_step=10^9)
+        @test maximum(abs, cg.g2 .- cb1.g2) < 1e-9 * scale
+        @test ElectronPhonon._krkq_strip_width(; nw = model.nw, nbandk_max = model.nw,
+                  nmodes = model.nmodes, nk_batch_max = 256) > 1
 
         # Fully-GPU policy: a non-batched calculator (does not support EPDataQBatched) must be
         # rejected, not silently run on the host path.
@@ -876,12 +966,13 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
     @testset "outer-k parity" begin
         nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_grid, nk_batch_max = 7, 5, 6, 137, 90, 200, 64, 32
         ndata_epmat, nr_epmat = 2064, 43
-        per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
-            nq_grid, nk_batch_max, calculators = calcs, ndata_epmat, nr_epmat, FT)
         # Formulas reproduced inline (ground truth). The per-q term dropped the child interpolator
         # (cached_results / rdotk / xkmat) and `ikqs_dev` when the k+q-convention phase hoist made
         # them unnecessary; `24·nr_ep` (phase + rdotk) became `16·nr_ep` (the caller-owned P_kq tile).
-        exp_per_q = 56 * nw * nbandk_max * nmodes + 16 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 8 +
+        # `kRkq_ws.g` is the only term that carries the kR→kq strip width `nk_b`, so the `56` splits
+        # into `40 + 16·nk_b`.
+        exp_per_q(nk_b) = (40 + 16 * nk_b) * nw * nbandk_max * nmodes +
+            16 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 8 +
             sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataQBatched; nw, nmodes) for c in calcs)
         old_committed = 16 * nw^2 * nkq + (16 * nmodes^2 + 8 * nmodes) * nq_grid +
             16 * nw * nbandk_max * (nmodes * nr_ep + 1) * nk_batch_max
@@ -889,8 +980,27 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
         itp_epmat_term = (16 * ndata_epmat + 16 * nr_epmat + 24) * nk_batch_max
         # k+q-convention commitments: xk_dev + xkq_dev, the 1:nkq index vector, and P_k.
         convention_term = 24 * (nk + nkq) + 8 * nkq + 16 * nr_ep * nk_batch_max
-        @test per_point == exp_per_q
-        @test committed == old_committed + itp_epmat_term + convention_term
+        for nk_b in (1, 4)
+            per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
+                nq_grid, nk_batch_max, calculators = calcs, ndata_epmat, nr_epmat, nk_b, FT)
+            @test per_point == exp_per_q(nk_b)
+            @test committed == old_committed + itp_epmat_term + convention_term
+        end
+        # `nk_b = 1` (the default) must reproduce the pre-strip formula exactly.
+        @test exp_per_q(1) == 56 * nw * nbandk_max * nmodes + 16 * nr_ep + 16 * nmodes^2 +
+            8 * nmodes + 8 +
+            sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataQBatched; nw, nmodes) for c in calcs)
+
+        # The strip width itself: shape-derived, auto-off at large ndata and above the fused-rotation
+        # threshold, and clamped by the outer-k batch width.
+        @test ElectronPhonon._krkq_strip_width(; nw = 7, nbandk_max = 1, nmodes = 3,
+                                               nk_batch_max = 256) == 7   # cld(128, 21)
+        @test ElectronPhonon._krkq_strip_width(; nw = 7, nbandk_max = 1, nmodes = 3,
+                                               nk_batch_max = 4) == 4     # clamped by the k-batch
+        @test ElectronPhonon._krkq_strip_width(; nw = 32, nbandk_max = 4, nmodes = 24,
+                                               nk_batch_max = 256) == 1   # ndata = 3072 > M_TARGET
+        @test ElectronPhonon._krkq_strip_width(; nw = 12, nbandk_max = 1, nmodes = 3,
+                                               nk_batch_max = 256) == 1   # nw·nmodes = 36 > 24
     end
 
     @testset "outer-q parity" begin

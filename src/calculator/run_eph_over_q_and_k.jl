@@ -610,9 +610,12 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
     if model.epmat_outer_momentum == "el"
         nr_ep = length(get_next_wannier_object(model.epmat).irvec)
         nk_batch = min(Int(nk_outer_batch_max), Int(nk))
+        # The loop derives its kR→kq strip width from the same rule, so apply it here too or the
+        # estimate would under-report `kRkq_ws.g`.
+        nk_b = _krkq_strip_width(; nw, nbandk_max = nw, nmodes, nk_batch_max = nk_batch)
         per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max = nw, nmodes, nr_ep, nk, nkq,
             nq_grid = nkq, nk_batch_max = nk_batch, calculators,
-            ndata_epmat = model.epmat.ndata, nr_epmat = model.epmat.nr, FT)
+            ndata_epmat = model.epmat.ndata, nr_epmat = model.epmat.nr, nk_b, FT)
         cap = nq_batch_max === nothing ? Int(nkq) : min(Int(nq_batch_max), Int(nkq))
         loop = :outer_k
     elseif model.epmat_outer_momentum == "ph"

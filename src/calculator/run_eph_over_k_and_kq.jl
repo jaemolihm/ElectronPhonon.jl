@@ -501,12 +501,18 @@ end
 #  Buffer reuse: device buffers are allocated once before the k loop and reused for every
 #  (k, q), so the loop itself allocates almost nothing.
 #
-#  Loop shape: `k-batch -> q-tile -> k -> q(device)`. The q-tile loop sits OUTSIDE the per-k loop
-#  because the kR->kq Fourier phase is built from the fixed k+q list (the k+q convention, see
-#  `get_eph_RR_to_kR_batched!`) and is therefore the same for every k of the batch: one built tile
-#  is reused `nk_batch` times. Consequence for calculators: a k's work no longer finishes at a
+#  Loop shape: `k-batch -> q-tile -> k-strip -> k -> q(device)`. The q-tile loop sits OUTSIDE the
+#  per-k loop because the kR->kq Fourier phase is built from the fixed k+q list (the k+q convention,
+#  see `get_eph_RR_to_kR_batched!`) and is therefore the same for every k of the batch: one built
+#  tile is reused `nk_batch` times. Consequence for calculators: a k's work no longer finishes at a
 #  single point in the loop, so this loop fires only the `OuterIterationBatch` bracket — there is
 #  no per-k `OuterIteration` bracket in the batched outer-k loop.
+#  The k-strip level runs the kR->kq Fourier for `nk_b` k at once (`_krkq_strip_width`), so that
+#  phase tile is also READ once per strip rather than once per k and the GEMM's M dimension fills a
+#  cuBLAS tile. It helps only where `ndata = nw·nbandk_max·nmodes` is small — a narrow-window,
+#  small-`nw` regime; a full-band large-`nw` run gets `nk_b = 1` and the loop as it was. k are
+#  visited in the same order and everything below the GEMM is per-k, so the payload stream and the
+#  bracket order are unchanged.
 function _loop_eph_over_k_and_kq_gpu(
         model       :: Model{FT},
         kpts, qpts, kqpts,
@@ -592,6 +598,12 @@ function _loop_eph_over_k_and_kq_gpu(
     ndata_ekpR = nw * nbandk_max * nmodes
     nr_ep = length(model.epmat.irvec_next)
 
+    # ----- kR->kq GEMM strip width -----
+    # `nk_b` consecutive outer-k are stacked into one tall kR->kq GEMM, so the k-invariant phase tile
+    # is read nk_b times less and the GEMM's M dimension fills a cuBLAS tile. Shape-derived; it is 1
+    # (no strip, nothing changes) at large ndata or when the fused rotation kernel is not used.
+    nk_b = _krkq_strip_width(; nw, nbandk_max, nmodes, nk_batch_max)
+
     # ----- memory-adaptive q-batch size (§7) -----
     # Every per-q staging buffer scales with the q-batch width, so cap it at what free device memory
     # allows (30% headroom for the batched drivers' recycled temporaries). The whole-run + per-k-batch
@@ -601,12 +613,23 @@ function _loop_eph_over_k_and_kq_gpu(
     # (Int, or nkq when nothing) stays a hard cap.
     per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
         nq_grid = qpts.n, nk_batch_max, calculators,
-        ndata_epmat = epmat_dev.ndata, nr_epmat = epmat_dev.nr, FT)
+        ndata_epmat = epmat_dev.ndata, nr_epmat = epmat_dev.nr, nk_b, FT)
     nq_batch_cap = nq_batch_user === nothing ? nkq : min(nq_batch_user, nkq)
     nq_batch_max = plan_batch(backend, per_point, committed, nq_batch_cap; what = "outer-k")
     if verbosity > 0 && mpi_isroot()
         @info "GPU outer-k device memory: committed = $(round(committed / 1e9, digits = 2)) GB, " *
-              "$(round(per_point / 1e3, digits = 1)) kB/q; q-batch size = $nq_batch_max"
+              "$(round(per_point / 1e3, digits = 1)) kB/q; q-batch size = $nq_batch_max, " *
+              "kR->kq strip nk_b = $nk_b"
+    end
+    # The strip's extra `ws.g` rows are spent out of the same per-q budget as the phase tile. At the
+    # shapes where the strip switches on they are a small share of it, but a model with a large
+    # `ndata` and a small `nr_ep` inverts that; say so rather than silently starving the q-tile.
+    strip_bytes = sizeof(Complex{FT}) * ndata_ekpR * (nk_b - 1)
+    if nk_b > 1 && nq_batch_max < nq_batch_cap && strip_bytes * 4 > per_point
+        @warn "GPU outer-k: the kR->kq strip (nk_b = $nk_b) takes " *
+              "$(round(Int, 100 * strip_bytes / per_point))% of the per-q device budget while the " *
+              "q-tile is memory-limited ($nq_batch_max of $nq_batch_cap). Lower _KRKQ_GEMM_M_TARGET if this " *
+              "run is slower than one with nk_b = 1."
     end
 
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
@@ -614,20 +637,24 @@ function _loop_eph_over_k_and_kq_gpu(
     # batch-sliced views), so the batched drivers' reshape/cuBLAS calls stay on dense arrays.
 
     # RR->kR over a batch of `nk_batch_max` outer-k at once: one batched kernel per batch instead of one
-    # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole batch; the inner
-    # kR->kq driver reads each k's slice `ep_ekpR_all[:, :, ik_ind]` directly.
+    # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole batch, k in the
+    # MIDDLE axis so that a strip of `nk_b` consecutive k is the plain row range
+    # `ep_ekpR_2d[ndata*(s-1)+1 : ndata*(s-1+nk_b), :]` — an `lda` view, no copy.
     uks_dev     = similar(epmat_dev.op_r, Complex{FT}, nw, nbandk_max, nk_batch_max)
     uks_host    = Array{Complex{FT}}(undef, nw, nbandk_max, nk_batch_max)
-    ep_ekpR_all = similar(epmat_dev.op_r, Complex{FT}, ndata_ekpR, nr_ep, nk_batch_max)
+    ep_ekpR_all = similar(epmat_dev.op_r, Complex{FT}, ndata_ekpR, nk_batch_max, nr_ep)
+    ep_ekpR_2d  = reshape(ep_ekpR_all, ndata_ekpR * nk_batch_max, nr_ep)
     ks_batch     = Vector{Vec3{FT}}(undef, nk_batch_max)
 
     uphs_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, nq_batch_max)
     epkq_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nbandk_max, nmodes, nq_batch_max)
 
-    # In-place scratch for the per-k kR->kq driver (g / tmp), reused across all (k, q) so the
-    # driver allocates nothing per call. Sized for the max batch width `nq_batch_max`; the driver
-    # uses the first `nq_batch` columns for a partial final batch.
-    kRkq_ws = KRtoKQWorkspace(epmat_dev.op_r, ndata_ekpR, nw, nbandk_max, nmodes, nq_batch_max)
+    # In-place scratch for the kR->kq step (g / tmp), reused across all (k, q) so nothing is
+    # allocated per call. Sized for the max batch width `nq_batch_max`; only the first `nq_batch`
+    # columns are used for a partial final batch. `g` holds a whole strip of `nk_b` k; `g_strip5`
+    # is its (nw, nbandk, nmodes, nk_b, nq) view, from which each k takes a q-strided 4-D slice.
+    kRkq_ws = KRtoKQWorkspace(epmat_dev.op_r, ndata_ekpR, nw, nbandk_max, nmodes, nq_batch_max; nk_b)
+    g_strip5 = reshape(kRkq_ws.g, nw, nbandk_max, nmodes, nk_b, nq_batch_max)
 
     # Collect the k+q electron eigenvectors on the host and copy to the device once (they do not
     # depend on the outer k), reused across all k. Each q-batch reads a contiguous slice directly.
@@ -763,51 +790,67 @@ function _loop_eph_over_k_and_kq_gpu(
             ukqs_used = view(ukqs_all_dev, :, :, qstart:qend)
             ikqs_used = view(ikqs_all_dev, qstart:qend)
 
-            for (ik_ind, ik) in enumerate(iks_batch)
-                # Build this (k, tile)'s q-index list (host-side integers only); the phonon
-                # eigenvectors `u` and frequencies `e` are gathered on the device by iq below.
-                for j in 1:nq_batch
-                    ikq = qstart + j - 1
-                    # Integer grid-coord hash for iq (no Float64 normalize/_hash_xk per pair).
-                    h1 = mod(xkqs_int[1, ikq] - xks_int[1, ik], ng1)
-                    h2 = mod(xkqs_int[2, ikq] - xks_int[2, ik], ng2)
-                    h3 = mod(xkqs_int[3, ikq] - xks_int[3, ik], ng3)
-                    hash = (h1 * ng2 + h2) * ng3 + h3
-                    iq = _ik_from_hash(qpts, hash)
-                    # 0 = miss on either index.
-                    (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
-                    iqs_batch[j] = iq
-                end
+            # Strip-mine the k loop for the kR->kq Fourier: one tall GEMM stacks `nks` outer-k
+            # into a single left operand, so the k-invariant phase tile is read once per strip
+            # instead of once per k. The left operand is the strip's row range of `ep_ekpR_2d`
+            # (unit stride down the rows, `lda = ndata_ekpR*nk_batch_max` across) - a plain view,
+            # no copy. A partial final strip just uses a shorter row range: `M` is a runtime GEMM
+            # dimension, so nothing needs padding. Everything below the GEMM stays strictly per-k.
+            for sstart in 1:nk_b:nk_batch
+                nks  = min(nk_b, nk_batch - sstart + 1)
+                rows = ndata_ekpR * (sstart - 1) + 1 : ndata_ekpR * (sstart - 1 + nks)
+                eph_kR_to_kq_fourier!(view(kRkq_ws.g, 1:ndata_ekpR*nks, rng_q),
+                    view(ep_ekpR_2d, rows, :), view(P_kq, :, rng_q))
 
-                # Gather this tile's phonon eigenvectors/frequencies on the device by iq
-                # (uphs_dev[:,:,j] = uph_all_dev[:,:,iq[j]]); ωq gathered here too so the fused kernel
-                # can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs at width nq_batch
-                # via views into the nq_batch_max-sized buffers, so there is no padded tail.
-                # H2D copy of just the first nq_batch indices (5-arg contiguous copy — copying a host↔
-                # device SubArray view instead would fall back to scalar indexing); the device gather
-                # then reads only `view(iqs_batch_dev, rng_q)`, so the untouched tail is never used.
-                # `@inbounds`: bounds-checking a device INDEX ARRAY costs a Bool map+reduce kernel and
-                # a D2H round trip of the result per (k, tile); `iq` is already validated on the host
-                # (the guard above), so the device-side re-check is pure overhead.
-                copyto!(iqs_batch_dev, 1, iqs_batch, 1, nq_batch)
-                @inbounds @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, view(iqs_batch_dev, rng_q)]
-                @inbounds @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, view(iqs_batch_dev, rng_q)]
+                for ik_ind in sstart:(sstart + nks - 1)
+                    ik = iks_batch[ik_ind]
+                    # Build this (k, tile)'s q-index list (host-side integers only); the phonon
+                    # eigenvectors `u` and frequencies `e` are gathered on the device by iq below.
+                    for j in 1:nq_batch
+                        ikq = qstart + j - 1
+                        # Integer grid-coord hash for iq (no Float64 normalize/_hash_xk per pair).
+                        h1 = mod(xkqs_int[1, ikq] - xks_int[1, ik], ng1)
+                        h2 = mod(xkqs_int[2, ikq] - xks_int[2, ik], ng2)
+                        h3 = mod(xkqs_int[3, ikq] - xks_int[3, ik], ng3)
+                        hash = (h1 * ng2 + h2) * ng3 + h3
+                        iq = _ik_from_hash(qpts, hash)
+                        # 0 = miss on either index.
+                        (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
+                        iqs_batch[j] = iq
+                    end
 
-                # One batched Wannier->Bloch over this tile's q: ep_kq(q) (nw, nw, nmodes), folding
-                # g2 = |ep|²/(2ω) into the same fused kernel pass.
-                get_eph_kR_to_kq_batched!(view(epkq_dev, :, :, :, rng_q),
-                    view(ep_ekpR_all, :, :, ik_ind), view(P_kq, :, rng_q),
-                    view(uphs_dev, :, :, rng_q), ukqs_used; ws=kRkq_ws,
-                    g2_out = view(g2_dev, :, :, :, rng_q), ωq = view(ωq_dev, :, rng_q))
+                    # Gather this tile's phonon eigenvectors/frequencies on the device by iq
+                    # (uphs_dev[:,:,j] = uph_all_dev[:,:,iq[j]]); ωq gathered here too so the fused kernel
+                    # can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs at width nq_batch
+                    # via views into the nq_batch_max-sized buffers, so there is no padded tail.
+                    # H2D copy of just the first nq_batch indices (5-arg contiguous copy — copying a host↔
+                    # device SubArray view instead would fall back to scalar indexing); the device gather
+                    # then reads only `view(iqs_batch_dev, rng_q)`, so the untouched tail is never used.
+                    # `@inbounds`: bounds-checking a device INDEX ARRAY costs a Bool map+reduce kernel and
+                    # a D2H round trip of the result per (k, tile); `iq` is already validated on the host
+                    # (the guard above), so the device-side re-check is pure overhead.
+                    copyto!(iqs_batch_dev, 1, iqs_batch, 1, nq_batch)
+                    @inbounds @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, view(iqs_batch_dev, rng_q)]
+                    @inbounds @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, view(iqs_batch_dev, rng_q)]
 
-                # Hand the tile's e-ph matrix (still on the device) to each calculator, which forms
-                # g2 / scatters it on the device; no D2H of the e-ph matrix here.
-                ctx_k = LoopContext(backend, BatchedMode(), ik, iks_batch, nk_batch_max)
-                payload = EPDataQBatched(
-                    view(epkq_dev, :, :, :, rng_q), view(g2_dev, :, :, :, rng_q),
-                    view(ωq_dev, :, rng_q), ik, ikqs_used, ibandk_offsets[ik])
-                foreach(c -> run_calculator!(c, payload, ctx_k), calculators)
-            end # ik within batch
+                    # Gauge rotations for this k, folding g2 = |ep|²/(2ω) into the same fused kernel
+                    # pass. This k's Fourier output is the strip's `kloc`-th slice, strided in q when
+                    # nk_b > 1 - which only the fused kernel reads, hence the `_krkq_strip_width` gate.
+                    kloc = ik_ind - sstart + 1
+                    eph_apply_rotations!(view(epkq_dev, :, :, :, rng_q),
+                        view(g_strip5, :, :, :, kloc, rng_q), ukqs_used,
+                        view(uphs_dev, :, :, rng_q), view(kRkq_ws.tmp, :, :, rng_q);
+                        g2_out = view(g2_dev, :, :, :, rng_q), ωq = view(ωq_dev, :, rng_q))
+
+                    # Hand the tile's e-ph matrix (still on the device) to each calculator, which forms
+                    # g2 / scatters it on the device; no D2H of the e-ph matrix here.
+                    ctx_k = LoopContext(backend, BatchedMode(), ik, iks_batch, nk_batch_max)
+                    payload = EPDataQBatched(
+                        view(epkq_dev, :, :, :, rng_q), view(g2_dev, :, :, :, rng_q),
+                        view(ωq_dev, :, rng_q), ik, ikqs_used, ibandk_offsets[ik])
+                    foreach(c -> run_calculator!(c, payload, ctx_k), calculators)
+                end # ik within strip
+            end # strip
 
             qstart = qend + 1
         end # q tile
