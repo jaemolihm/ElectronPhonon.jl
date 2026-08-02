@@ -102,7 +102,15 @@ Two batched eigensolves over a stack `Hk :: (nw, nw, nk)`: `eigvals_batched` (va
 `eigen_batched` (values + vectors). CPU methods loop over LAPACK `syev!`; the extension uses
 `CUSOLVER.heevjBatched!` (batched Jacobi). The `nw ≤ 32` figure often quoted for that solver is
 a *performance* characteristic, not a correctness bound (verified correct to `nw=256`,
-agreeing with LAPACK to ~1e-11), so no size guard is imposed.
+agreeing with LAPACK to ~1e-11), so no size guard is imposed. Accuracy matches LAPACK for
+eigenvalues *and* eigenvectors (relative residual ≤ 3e-15 for `nw ≤ 16`); CUDA.jl runs the Jacobi
+sweeps at `tol = eps(Float64)`.
+
+`eigvals_batched` / `eigen_batched` chunk the batch at `heevj_batch_max` (2^16 for small `nw`).
+Two reasons: the solver reports its workspace size as a 32-bit int, and that workspace is ~16 kB
+per matrix and is cached on the cuSOLVER handle for the lifetime of the process — neither GC nor
+`CUDA.reclaim()` returns it, so an oversized chunk permanently parks memory the device-resident
+e-ph tiles need. Chunking is exact (results are batch-position independent).
 
 Drivers `get_el_eigen_valueonly_batched` / `get_el_eigen_batched` mirror the per-k API names:
 each interpolates `H(k)` for all k with `get_fourier_batched!`, then calls the matching
@@ -236,8 +244,11 @@ unchanged). No window handling is needed in the calculator beyond addressing its
   enough that a `prod(ngrid)` array fits — could carry an `is_full` field and use a simple integer
   hash, replacing the special-casing here.
 - **A QR-based batched eigensolve (future).** The batched eigensolve uses `CUSOLVER.heevjBatched!`
-  (Jacobi). A QR-based `HEEV` (e.g. via cuSolverDx) may be faster/more accurate for the small
-  matrices here; worth evaluating, but not in this PR.
+  (Jacobi). A QR-based `HEEV` (e.g. via cuSolverDx) may be faster for the small matrices here;
+  worth evaluating, but not in this PR. Accuracy is not a motivation — Jacobi is already at
+  machine precision. Note that `cusolverDnXsyevBatched` is *not* the answer: it is 2–3× faster per
+  matrix but needs ~1.05 MB of workspace per matrix (65× heevj), which caps one call at ~72k
+  matrices on an 80 GB A100 and competes with the device-resident e-ph tiles.
 - **Parametrize `Model` over its `WannierObject` array type (future).** Widening `WannierObject`
   to `WannierObject{T, AT}` turned `WannierObject{FT}` into a `UnionAll`, so `Model`'s Wannier
   fields (`el_ham`, `el_pos`, …) are currently pinned to the concrete host type

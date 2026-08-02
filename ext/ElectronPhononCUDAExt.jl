@@ -21,13 +21,12 @@ using CUDA.cuBLAS: gemm_strided_batched!
 #   - The often-quoted "n ≤ 32" is a performance figure, not a correctness bound; it solves
 #     correctly well past 32. We do not guard on size — cuSOLVER raises its own error if a
 #     particular version cannot handle the requested n.
-#   - EIGENVALUE vs EIGENVECTOR accuracy (ComplexF64/Float64 throughout — NOT a Float32 effect):
-#     the Jacobi sweeps converge eigenVALUES to ~machine eps but stop eigenVECTORS at the looser
-#     Jacobi tolerance (~1e-8 residual floor, vs LAPACK QR ~1e-15). So `eigvals_batched` (filter,
-#     eigenvalues only) is machine-precision, while `eigen_batched`'s eigenvectors carry that floor
-#     into anything using them (e-ph matrix / g2, band velocities) — negligible for converged
-#     BZ-summed observables, but looser than the CPU path. Tightenable via the cuSOLVER Jacobi
-#     tolerance / max-sweeps knobs; not done here.
+#   - Accuracy is machine precision, matching LAPACK, for eigenvalues AND eigenvectors: relative
+#     residual ‖Hu−ue‖/‖H‖ ≤ 3e-15 for nw ≤ 16 and ≤ 2.2e-14 at nw = 64, measured on random,
+#     exactly-degenerate, near-degenerate (1e-10 splitting) and real interpolated H(k) batches.
+#     CUDA.jl passes `tol = eps(Float64)` and `max_sweeps = 100`, so the sweeps run to convergence.
+#   - Eigenvectors of degenerate bands still differ from the per-k CPU path by a gauge (no EPW
+#     gauge-fixing here). That is a basis choice, not an accuracy loss.
 
 # GPU backend prototype: an empty `CuArray` carries only the device array TYPE, which is all `alloc`
 # needs (`similar(proto, T, dims...)` ignores the prototype's element type and shape). This lets a
@@ -60,14 +59,23 @@ ElectronPhonon.to_device(::ElectronPhonon.GPUBackend, arr::AbstractArray) = CuAr
 Eigenvalues `(nw, nk)` of a stack of Hermitian matrices `(nw, nw, nk)` in a single batched
 Jacobi eigensolve, on the device. Best suited to small `nw` (see module notes).
 """
-# cuSOLVER's `<t>heevjBatched` returns its workspace size as a 32-bit int; the requirement grows as
-# batchSize·nw², so above a batch-size threshold the bufferSize query overflows and throws
-# CUSOLVER_STATUS_INVALID_VALUE (128³ = 2.097M k-points first trips it at nw=4). Cap the per-chunk
-# batch to keep batchSize·nw² under budget (2^20 is validated safe at nw=4, and is the hard cap for
-# small nw), then chunk above it. The split is exact — results are batch-position independent — so
-# all callers (filter, compute_states) are transparently covered.
-# TODO: switch to the 64-bit-workspace `XsyevBatched!` solver, which removes the need to chunk.
-heevj_batch_max(nw::Int) = min(2^20, 2^24 ÷ nw^2)   # 2^24 = 2^20·4²: the nw=4 budget
+# Two limits force the batch to be chunked:
+#   1. `<t>heevjBatched` returns its workspace size as a 32-bit int, so a large enough batch
+#      overflows the bufferSize query and throws CUSOLVER_STATUS_INVALID_VALUE (128³ = 2.097M
+#      k-points first trips it at nw=4). The requirement grows as batchSize·nw².
+#   2. The workspace is ~16 kB per matrix and the cuSOLVER handle caches it for the lifetime of the
+#      process — neither GC nor `CUDA.reclaim()` returns it — so a 2^20 chunk would park 16 GB that
+#      the device-resident e-ph tiles then cannot use.
+# The cap below keeps the cached workspace under ~1.3 GB at every nw. It is chosen for (2), not (1):
+# on 2.097M 4×4 solves (nk=128) it costs ~3% against an arbitrarily large chunk once the allocator
+# is warm, and is faster on the first call, which has no 16 GB to allocate. The split is exact —
+# results are batch-position independent — so all callers (filter, compute_states) are covered.
+#
+# The 64-bit-workspace `XsyevBatched!` does not help here: it wants ~1.05 MB per matrix almost
+# independently of nw (capping one call at ~72k matrices on an 80 GB A100), and it grows the same
+# shared handle cache past the 32-bit `lwork` that these Jacobi calls pass, which makes any later
+# `heevjBatched!` in the process throw `InexactError`.
+heevj_batch_max(nw::Int) = min(2^16, 2^24 ÷ nw^2)
 
 function ElectronPhonon.eigvals_batched(Hk::CuArray{Complex{T},3}) where {T}
     nw, _, nk = size(Hk)
