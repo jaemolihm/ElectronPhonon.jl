@@ -70,13 +70,13 @@ function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_gri
     iz = sizeof(Int)            # 8
     ndata = nw * nbandk_max * nmodes
     # Per-q device buffers (batched-inner axis = q): epkq/g2/uphs/ωq/iqs are the loop's own staging;
-    # kRkq_ws.{g,tmp} and the kR→kq phase tile P_mkq scale with the q-tile too.
+    # kRkq_ws.{g,tmp} and the kR→kq phase tile P_kq scale with the q-tile too.
     per_point =
         cx * ndata +                       # epkq_dev
         rl * ndata +                       # g2_dev
         cx * ndata +                       # kRkq_ws.g   (ndata_ekpR)
         cx * nw * (nbandk_max * nmodes) +  # kRkq_ws.tmp (nbandkq=nw, nbandk·nmodes)
-        cx * nr_ep +                       # P_mkq (kR→kq phase tile)
+        cx * nr_ep +                       # P_kq (kR→kq phase tile)
         cx * nmodes * nmodes +             # uphs_dev
         rl * nmodes +                      # ωq_dev
         iz                                 # iqs_batch_dev
@@ -94,7 +94,7 @@ function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_gri
         cx * ndata * nr_ep * nk_batch_max +                   # ep_ekpR_all
         cx * nw * nbandk_max * nk_batch_max +                 # uks_dev
         (cx * ndata_epmat + cx * nr_epmat + rl * 3) * nk_batch_max + # itp_epmat Fourier scratch
-        rl * 3 * (nk + nkq) +                                 # xk_dev + xkq_dev
+        rl * 3 * (nk + nkq) +                                 # mxk_dev + xkq_dev
         cx * nr_ep * nk_batch_max                             # P_mk (k+q-convention phase)
     (per_point, committed)
 end

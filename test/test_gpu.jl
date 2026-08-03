@@ -198,11 +198,11 @@ function check_eph_kq_convention(to_dev, arr_dev; rtol)
     P_mk .= conj.(P_mk)
     ep_kR_kq = arr_dev(zeros(ComplexF64, ndata, nr_ep, 1))
     get_eph_RR_to_kR_batched!(ep_kR_kq, itp_epmat, [xk], uk; additional_phase = P_mk)
-    P_mkq = arr_dev(zeros(ComplexF64, nr_ep, nq))
-    ElectronPhonon.fourier_phase!(P_mkq, irvecp_mat,
+    P_kq = arr_dev(zeros(ComplexF64, nr_ep, nq))
+    ElectronPhonon.fourier_phase!(P_kq, irvecp_mat,
                                   arr_dev([xkq[d] for d in 1:3, xkq in xkqs]))
     out_c = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq))
-    get_eph_kR_to_kq_batched!(out_c, view(ep_kR_kq, :, :, 1), P_mkq, uphs, ukqs)
+    get_eph_kR_to_kq_batched!(out_c, view(ep_kR_kq, :, :, 1), P_kq, uphs, ukqs)
     @test isapprox(Array(out_c), Array(ref); rtol)
 end
 
@@ -934,7 +934,7 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
             nq_grid, nk_batch_max, calculators = calcs, ndata_epmat, nr_epmat, FT)
         # Formulas reproduced inline (ground truth). The per-q term dropped the child interpolator
         # (cached_results / rdotk / xkmat) and `ikqs_dev` when the k+q-convention phase hoist made
-        # them unnecessary; `24·nr_ep` (phase + rdotk) became `16·nr_ep` (the caller-owned P_mkq tile).
+        # them unnecessary; `24·nr_ep` (phase + rdotk) became `16·nr_ep` (the caller-owned P_kq tile).
         exp_per_q = 56 * nw * nbandk_max * nmodes + 16 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 8 +
             sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataQBatched; nw, nmodes) for c in calcs)
         old_committed = 16 * nw^2 * nkq + (16 * nmodes^2 + 8 * nmodes) * nq_grid +
