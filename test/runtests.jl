@@ -8,6 +8,7 @@ include("common_models_from_artifacts.jl")
     include("test_occupation.jl")
     include("test_smearing.jl")
     include("test_kpoints.jl")
+    include("test_iq_build.jl")  # GPU outer-k loop's `iq` index build (host arithmetic, CPU-only)
     include("test_symmetry.jl")
     include("test_wannier.jl")
     include("test_gpu.jl")  # skips gracefully when CUDA is unavailable

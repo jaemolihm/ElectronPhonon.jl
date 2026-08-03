@@ -956,6 +956,21 @@ end
             @test Array(g2g) == g2c                     # same integer indexing + copy ⇒ bit-identical
             @test Array(ωg) == ωc
         end
+
+        # The outer-k driver always hands a contiguous k+q tile, so `ikqs` reaches the kernel as a
+        # `UnitRange` (isbits, passed in the launch parameters) rather than a device array. Same
+        # values, same result — but it is a different argument type through `cudaconvert`.
+        rng_ikqs = 2:6
+        len = nm * n_i * n_f
+        g2c = zeros(FT, len); ωc = zeros(FT, len)
+        ElectronPhonon.eph_window_scatter!(g2c, ωc, g2vals, imap_i_col, imap_f, rng_ikqs, ωq,
+            nw, nbandk, nm, nqc, n_i, 0)
+        g2g = CUDA.zeros(FT, len); ωg = CUDA.zeros(FT, len)
+        ElectronPhonon.eph_window_scatter!(g2g, ωg, CUDA.CuArray(g2vals),
+            CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), rng_ikqs, CUDA.CuArray(ωq),
+            nw, nbandk, nm, nqc, n_i, 0)
+        @test Array(g2g) == g2c
+        @test Array(ωg) == ωc
     end
 end
 
@@ -991,17 +1006,18 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
         # Formulas reproduced inline (ground truth). The per-q term dropped the child interpolator
         # (cached_results / rdotk / xkmat) and `ikqs_dev` when the k+q-convention phase hoist made
         # them unnecessary; `24·nr_ep` (phase + rdotk) became `16·nr_ep` (the caller-owned P_kq tile).
-        # `kRkq_ws.g` is the only term that carries the kR→kq strip width `nk_b`, so the `56` splits
-        # into `40 + 16·nk_b`.
+        # Two terms carry the kR→kq strip width `nk_b`: `kRkq_ws.g` (so the `56` splits into
+        # `40 + 16·nk_b`) and the `iq` index staging, which is one strip wide (`8·nk_b`).
         exp_per_q(nk_b) = (40 + 16 * nk_b) * nw * nbandk_max * nmodes +
-            16 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 8 +
+            16 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 8 * nk_b +
             sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataQBatched; nw, nmodes) for c in calcs)
         old_committed = 16 * nw^2 * nkq + (16 * nmodes^2 + 8 * nmodes) * nq_grid +
             16 * nw * nbandk_max * (nmodes * nr_ep + 1) * nk_batch_max
         # itp_epmat RR→kR interpolator Fourier scratch (2026-07-18), now rdotk-free.
         itp_epmat_term = (16 * ndata_epmat + 16 * nr_epmat + 24) * nk_batch_max
-        # k+q-convention commitments: xk_dev + xkq_dev, the 1:nkq index vector, and P_k.
-        convention_term = 24 * (nk + nkq) + 8 * nkq + 16 * nr_ep * nk_batch_max
+        # k+q-convention commitments: xk_dev + xkq_dev and P_k. The 1:nkq index vector is gone —
+        # the payload's `ikqs` is the tile's `UnitRange`, passed in the kernel launch parameters.
+        convention_term = 24 * (nk + nkq) + 16 * nr_ep * nk_batch_max
         for nk_b in (1, 4)
             per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
                 nq_grid, nk_batch_max, calculators = calcs, ndata_epmat, nr_epmat, nk_b, FT)

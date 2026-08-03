@@ -56,7 +56,9 @@ Fields:
   fused kernel (separate type param `AT4R` from `eps`'s `AT4C`: complex vs real element type).
 - `ωqs`           :: `(nmodes, nq)` — phonon frequencies of this batch.
 - `ik`            :: outer k index.
-- `ikqs`          :: `(nq,)` k+q indices of this batch (device).
+- `ikqs`          :: `(nq,)` k+q indices of this batch. The loop tiles k+q contiguously, so this is
+  the `UnitRange` `qstart:qend` — `isbits`, hence passed in the kernel launch parameters rather than
+  read from device memory. Consumers must index it, not assume a device array.
 - `ibandk_offset` :: k-side window-projection band offset (0-based; 0 for full-band). `eps`'s
   band-of-k axis `n` (1-based) is PHYSICAL band `ibandk_offset + n`.
 """

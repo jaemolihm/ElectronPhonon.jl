@@ -557,11 +557,29 @@ end
 mpi_gather_and_scatter(k::GridKpoints, comm::MPI.Comm) = mpi_scatter(mpi_gather(k, comm), comm)
 mpi_gather_and_scatter(k::GridKpoints, comm::Nothing) = k
 
+# Integer grid coordinates of `xk`, reduced into `0:ngrid[d]-1`: the `c` of `xk ≡ shift + c ./ ngrid`
+# (mod 1). These are what `_hash_xk` packs; they are exposed separately so that a loop over pairs of
+# grid points can reduce both operands ONCE and then fold their sum or difference with
+# `_wrap_reduced`, instead of paying `mod`'s runtime integer division per pair.
+@inline _grid_coords_reduced(xk::Vec3, ngrid, shift) = Vec3(
+    mod(round(Int, (xk[1] - shift[1]) * ngrid[1]), ngrid[1]),
+    mod(round(Int, (xk[2] - shift[2]) * ngrid[2]), ngrid[2]),
+    mod(round(Int, (xk[3] - shift[3]) * ngrid[3]), ngrid[3]))
+
+# Same reduction for coordinates that are already integers on `ngrid` — the `b` lists
+# `combine_kpoint_grids` builds are in that form.
+@inline _grid_coords_reduced(b::Vec3{Int}, ngrid) =
+    Vec3(mod(b[1], ngrid[1]), mod(b[2], ngrid[2]), mod(b[3], ngrid[3]))
+
+# Fold `d` into `0:ng-1` given `-ng < d < 2ng`, which the sum or the difference of two coordinates
+# already reduced by `_grid_coords_reduced` always satisfies. Two compares (cmov) instead of a
+# 64-bit integer division; worth naming only because the per-(k, k+q) pair loops of the GPU drivers
+# run it ~1e9 times per run.
+@inline _wrap_reduced(d::Int, ng::Int) = ifelse(d < 0, d + ng, ifelse(d >= ng, d - ng, d))
+
 function _hash_xk(xk::Vec3, ngrid, shift)
-    xk_int_1 = mod(round(Int, (xk[1] - shift[1]) * ngrid[1]), ngrid[1])
-    xk_int_2 = mod(round(Int, (xk[2] - shift[2]) * ngrid[2]), ngrid[2])
-    xk_int_3 = mod(round(Int, (xk[3] - shift[3]) * ngrid[3]), ngrid[3])
-    (xk_int_1 * ngrid[2] + xk_int_2) * ngrid[3] + xk_int_3
+    c = _grid_coords_reduced(xk, ngrid, shift)
+    (c[1] * ngrid[2] + c[2]) * ngrid[3] + c[3]
 end
 _hash_xk(xk, kpts::GridKpoints) = _hash_xk(xk, kpts.ngrid, kpts.shift)
 
