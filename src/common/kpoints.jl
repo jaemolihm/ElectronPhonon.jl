@@ -319,8 +319,9 @@ end
 
 # Pass 1 of `_combine_kq_dedup_dense`, as a standalone function so the threaded chunks capture
 # typed arguments rather than `Core.Box`. Partitioned over `BqS` (the longer list in the k+q use),
-# each chunk sweeping the whole `BkS` — chunks share `seen` but only ever write the same value into
-# a slot, so no synchronization is needed and the result does not depend on the partition.
+# each chunk sweeping the whole `BkS`. Chunks share `seen` without synchronization: `Bool` is one
+# byte, so a mark is a lone `store i8 1` — no read-modify-write to lose a neighbour's byte, and
+# same-slot writers store the same value. (A `BitArray` would be a word RMW, hence unsafe.)
 function _mark_kq_pairs!(seen::Array{Bool,3}, BkS::Vector{Vec3{Int}}, BqS::Vector{Vec3{Int}},
                          sgn::Int, ng1::Int, ng2::Int, ng3::Int)
     @threads for iq in eachindex(BqS)
