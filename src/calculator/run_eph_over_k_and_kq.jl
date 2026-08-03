@@ -639,28 +639,28 @@ function _loop_eph_over_k_and_kq_gpu(
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
     # All device staging is sized to the full batch and used as plain CuArrays (not
     # batch-sliced views), so the batched drivers' reshape/cuBLAS calls stay on dense arrays.
-    # `proto` is the `similar` template every device buffer below is allocated from.
-    proto = epmat_dev.op_r
+    # Every buffer below comes from `alloc(backend, ...)`, so the backend is the single authority on
+    # where "device" is.
 
     # RR->kR over a batch of `nk_batch_max` outer-k at once: one batched kernel per batch instead of one
     # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole batch; the inner
     # kR->kq driver reads each k's slice `ep_ekpR_all[:, :, ik_ind]` directly.
-    uks_dev     = similar(proto, Complex{FT}, nw, nbandk_max, nk_batch_max)
+    uks_dev     = alloc(backend, Complex{FT}, nw, nbandk_max, nk_batch_max)
     uks_host    = Array{Complex{FT}}(undef, nw, nbandk_max, nk_batch_max)
-    ep_ekpR_all = similar(proto, Complex{FT}, ndata_ekpR, nr_ep, nk_batch_max)
+    ep_ekpR_all = alloc(backend, Complex{FT}, ndata_ekpR, nr_ep, nk_batch_max)
     ks_batch     = Vector{Vec3{FT}}(undef, nk_batch_max)
 
-    uphs_dev = similar(proto, Complex{FT}, nmodes, nmodes, nq_batch_max)
-    epkq_dev = similar(proto, Complex{FT}, nw, nbandk_max, nmodes, nq_batch_max)
+    uphs_dev = alloc(backend, Complex{FT}, nmodes, nmodes, nq_batch_max)
+    epkq_dev = alloc(backend, Complex{FT}, nw, nbandk_max, nmodes, nq_batch_max)
 
     # In-place scratch for the per-k kR->kq driver (g / tmp), reused across all (k, q) so the
     # driver allocates nothing per call. Sized for the max batch width `nq_batch_max`; the driver
     # uses the first `nq_batch` columns for a partial final batch.
-    kRkq_ws = KRtoKQWorkspace(proto, ndata_ekpR, nw, nbandk_max, nmodes, nq_batch_max)
+    kRkq_ws = KRtoKQWorkspace(epmat_dev.op_r, ndata_ekpR, nw, nbandk_max, nmodes, nq_batch_max)
 
     # Collect the k+q electron eigenvectors on the host and copy to the device once (they do not
     # depend on the outer k), reused across all k. Each q-batch reads a contiguous slice directly.
-    ukqs_all_dev = similar(proto, Complex{FT}, nw, nw, nkq)
+    ukqs_all_dev = alloc(backend, Complex{FT}, nw, nw, nkq)
     let ukqs_all_host = Array{Complex{FT}}(undef, nw, nw, nkq)
         for ikq in 1:nkq
             @views ukqs_all_host[:, :, ikq] .= el_kq_save[ikq].u_full
@@ -674,8 +674,8 @@ function _loop_eph_over_k_and_kq_gpu(
     # `_compute_phonon_states_gpu!` built them on the device before scattering them into per-q
     # `PhononState`s — so this gather + H2D undoes a D2H. Have the setup hand `use_gpu` the device
     # stacks directly and drop this block; see the TODO at `_scatter_phonon_states!`.
-    uph_all_dev = similar(proto, Complex{FT}, nmodes, nmodes, qpts.n)
-    ωq_all_dev  = similar(proto, FT, nmodes, qpts.n)
+    uph_all_dev = alloc(backend, Complex{FT}, nmodes, nmodes, qpts.n)
+    ωq_all_dev  = alloc(backend, FT, nmodes, qpts.n)
     let uph_all_host = Array{Complex{FT}}(undef, nmodes, nmodes, qpts.n),
         ωq_all_host  = Array{FT}(undef, nmodes, qpts.n)
         for iq in 1:qpts.n
@@ -700,8 +700,8 @@ function _loop_eph_over_k_and_kq_gpu(
     # host mirror plus a per-batch D2H, whereas P_kq is an input-side, q-indexed,
     # write-once-read-many device buffer with no host side and no D2H at all.
     irvecp_mat = _irvec_to_device_matrix(model.epmat.irvec_next, epmat_dev, FT)
-    P_k  = similar(proto, Complex{FT}, nr_ep, nk_batch_max)
-    P_kq = similar(proto, Complex{FT}, nr_ep, nq_batch_max)
+    P_k  = alloc(backend, Complex{FT}, nr_ep, nk_batch_max)
+    P_kq = alloc(backend, Complex{FT}, nr_ep, nq_batch_max)
     # Defensive: only columns 1:nk_batch are rewritten per batch, so a partial final batch leaves the
     # tail columns holding whatever the previous batch wrote. Nothing reads them — the k loop runs
     # `1:nk_batch` — and 1 is the identity of the convention multiply, so the padded (never-read)
@@ -710,7 +710,7 @@ function _loop_eph_over_k_and_kq_gpu(
 
     # `iq` index staging for one (k, q-tile).
     iqs_batch     = Vector{Int}(undef, nq_batch_max)
-    iqs_batch_dev = similar(proto, Int, nq_batch_max)
+    iqs_batch_dev = alloc(backend, Int, nq_batch_max)
 
     # Integer grid-coord hash for iq, replacing the per-(k,q) float normalize + `_hash_xk`:
     #   hc_i = fold(xkqs_int[i,ikq] - xks_int[i,ik], ng_i),  hash = (hc1*ng2 + hc2)*ng3 + hc3,
@@ -732,8 +732,8 @@ function _loop_eph_over_k_and_kq_gpu(
         xks_int[:, ik] .= _grid_coords_reduced(kpts.vectors[ik], qpts.ngrid, zero(Vec3{FT}))
     end
 
-    ωq_dev    = similar(proto, FT, nmodes, nq_batch_max)
-    g2_dev    = similar(proto, FT, nw, nbandk_max, nmodes, nq_batch_max)
+    ωq_dev    = alloc(backend, FT, nmodes, nq_batch_max)
+    g2_dev    = alloc(backend, FT, nw, nbandk_max, nmodes, nq_batch_max)
 
     for kstart in 1:nk_batch_max:nk
         kend = min(kstart + nk_batch_max - 1, nk)

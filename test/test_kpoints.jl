@@ -344,7 +344,13 @@ end
     kpts = GridKpoints(kpoints_grid((2, 2, 2)))
     qpts = GridKpoints(kpoints_grid((2, 2, 2)))
     deprecated = @test_deprecated add_two_kpoint_grids(kpts, qpts, +, (2, 2, 2))
-    @test deprecated == combine_kpoint_grids(kpts, qpts, +, (2, 2, 2))
+    combined = combine_kpoint_grids(kpts, qpts, +, (2, 2, 2))
+    # `GridKpoints` has no `==` (the index maps are derived caches), so compare the fields.
+    @test deprecated.n == combined.n
+    @test deprecated.vectors == combined.vectors
+    @test deprecated.weights == combined.weights
+    @test deprecated.ngrid == combined.ngrid
+    @test deprecated.shift == combined.shift
 
     # ngrid_kq must be divisible by both input grids.
     kpts = GridKpoints(kpoints_grid((2, 2, 2)))

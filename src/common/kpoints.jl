@@ -509,12 +509,18 @@ function _build_dense_index(n, vectors, ngrid, shift)
     table
 end
 
-# Every construction site that fills all fields goes through this, so the index policy lives in one
-# place: exactly one of the two index maps is built, never both. Pass `dict` if you already hold the
-# `hash => ik` map; leave it `nothing` and one is built here, but only on the branch that keeps it,
-# so a dense grid never pays for a Dict. `index` is forwarded to `_use_dense_index`.
-function _make_grid_kpoints(n, vectors::Vector{Vec3{T}}, weights, ngrid, shift,
-                            dict::Union{Nothing,Dict{Int,Int}} = nothing; index = :auto) where {T}
+"""
+    GridKpoints{T}(n, vectors, weights, ngrid, shift; index = :auto)
+
+Build a `GridKpoints` and its xk->ik index. Every construction site that fills all fields goes
+through here, so the index policy lives in one place: exactly one of the two maps is built, never
+both, and `index` is forwarded to [`_use_dense_index`](@ref) to pick which.
+"""
+GridKpoints(n, vectors::Vector{Vec3{T}}, weights, ngrid, shift; index = :auto) where {T} =
+    GridKpoints{T}(n, vectors, weights, ngrid, shift; index)
+
+function GridKpoints{T}(n, vectors::Vector{Vec3{T}}, weights, ngrid, shift;
+                        index = :auto) where {T}
     no_table = zeros(Int, 0, 0, 0)
     if n == 0
         # Nothing to look up, so neither map is built (and `ngrid` may be (0,0,0) here).
@@ -523,8 +529,10 @@ function _make_grid_kpoints(n, vectors::Vector{Vec3{T}}, weights, ngrid, shift,
         GridKpoints{T}(n, vectors, weights, ngrid, shift, Dict{Int,Int}(),
                        _build_dense_index(n, vectors, ngrid, shift))
     else
-        d = dict === nothing ? Dict(_hash_xk.(vectors, Ref(ngrid), Ref(shift)) .=> 1:n) : dict
-        GridKpoints{T}(n, vectors, weights, ngrid, shift, d, no_table)
+        # 30 ms at n = 536k, and only on this branch, so it is not worth threading an
+        # already-built Dict through every caller.
+        GridKpoints{T}(n, vectors, weights, ngrid, shift,
+                       Dict(_hash_xk.(vectors, Ref(ngrid), Ref(shift)) .=> 1:n), no_table)
     end
 end
 
@@ -541,7 +549,7 @@ function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; atol = sqrt(eps(T)),
     prod(Int128.(ngrid)) < typemax(Int) || throw(ArgumentError(
         "prod(ngrid) = $(prod(Int128.(ngrid))) must be < typemax(Int) to avoid overflow in the k-point hash"))
     if kpts.n == 0
-        return _make_grid_kpoints(0, Vector{Vec3{T}}(), Vector{T}(), ngrid, zero(Vec3{T}))
+        return GridKpoints(0, Vector{Vec3{T}}(), Vector{T}(), ngrid, zero(Vec3{T}))
     end
 
     shift = mod.(first(kpts.vectors) .* ngrid, 1) ./ ngrid
@@ -554,13 +562,13 @@ function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; atol = sqrt(eps(T)),
         end
     end
 
-    _make_grid_kpoints(kpts.n, kpts.vectors, kpts.weights, ngrid, shift; index)
+    GridKpoints(kpts.n, kpts.vectors, kpts.weights, ngrid, shift; index)
 end
 
 GridKpoints(xk::Vec3{T}) where {T <: Real} = GridKpoints(Kpoints(xk))
 
 # Empty GridKpoints (e.g. the receive-side placeholder on non-root ranks before mpi_scatter).
-GridKpoints{T}() where {T} = _make_grid_kpoints(0, Vector{Vec3{T}}(), Vector{T}(), (0, 0, 0), zero(Vec3{T}))
+GridKpoints{T}() where {T} = GridKpoints(0, Vector{Vec3{T}}(), Vector{T}(), (0, 0, 0), zero(Vec3{T}))
 
 # Reduce GridKpoints to Kpoints
 Kpoints(k::GridKpoints{T}) where {T} = Kpoints{T}(k.n, k.vectors, k.weights, k.ngrid)
@@ -668,14 +676,6 @@ function Base.sort!(k::GridKpoints)
     k
 end
 
-# The two indices are derived from (vectors, ngrid, shift), so they are not compared.
-Base.:(==)(k1::GridKpoints, k2::GridKpoints) = (k1.n ≈ k2.n
-    && k1.vectors ≈ k2.vectors
-    && k1.weights ≈ k2.weights
-    && k1.shift ≈ k2.shift
-    && k1.ngrid == k2.ngrid
-)
-
 get_filtered_kpoints(k::GridKpoints, ik_keep) = GridKpoints(get_filtered_kpoints(Kpoints(k), ik_keep))
 kpoints_create_subgrid(k::GridKpoints, nsubgrid) = GridKpoints(kpoints_create_subgrid(Kpoints(k), nsubgrid))
 
@@ -689,7 +689,7 @@ Output `ik_to_ikirr_isym` gives a map ik => (ikirr, isym) such that ``xk[ik] = S
 function unfold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
     # If symmetry is trivial, do nothing and return a copy of input kpts
     if symmetry.nsym == 1
-        kpts_unfold = index === :auto ? deepcopy(kpts) : _make_grid_kpoints(
+        kpts_unfold = index === :auto ? deepcopy(kpts) : GridKpoints(
             kpts.n, copy(kpts.vectors), copy(kpts.weights), kpts.ngrid, kpts.shift; index)
         return kpts_unfold, [(ik, 1) for ik in 1:kpts.n]
     end
@@ -735,8 +735,7 @@ function unfold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
     # Each k point is mapped to length(symmetry) sk points, so divide weights by length(symmetry).
     sk_weights ./= length(symmetry)
 
-    kpts_unfold = _make_grid_kpoints(length(sk_vectors), sk_vectors, sk_weights, ngrid, shift,
-                                     sk_hash_dict; index)
+    kpts_unfold = GridKpoints(length(sk_vectors), sk_vectors, sk_weights, ngrid, shift; index)
     ik_to_ikirr_isym = ik_to_ikirr_isym[sortperm(kpts_unfold)]
     sort!(kpts_unfold)
 
@@ -751,7 +750,7 @@ Output ik_to_ikirr_isym gives a map ik => (ikirr, isym) such that ``xk[ik] = S[i
 """
 function fold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
     if symmetry.nsym == 1
-        kpts_irr = index === :auto ? deepcopy(kpts) : _make_grid_kpoints(
+        kpts_irr = index === :auto ? deepcopy(kpts) : GridKpoints(
             kpts.n, copy(kpts.vectors), copy(kpts.weights), kpts.ngrid, kpts.shift; index)
         return kpts_irr, [(ik, 1) for ik = 1:kpts.n]
     end
@@ -795,8 +794,7 @@ function fold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
         end
     end
 
-    kpts_irr = _make_grid_kpoints(length(vectors_irr), vectors_irr, weights_irr, ngrid, shift,
-                                  hash_dict_irr; index)
+    kpts_irr = GridKpoints(length(vectors_irr), vectors_irr, weights_irr, ngrid, shift; index)
 
     inds = invperm(sortperm(kpts_irr))
     sort!(kpts_irr)

@@ -1,5 +1,9 @@
 using Test
 using ElectronPhonon
+
+# `GridKpoints` has no `==`: the index maps are derived caches. Compare the defining fields.
+kpoints_fields_equal(a, b) = (a.n == b.n && a.vectors == b.vectors && a.weights == b.weights
+                              && a.ngrid == b.ngrid && a.shift == b.shift)
 using LinearAlgebra
 
 @testset "unfold" begin
@@ -18,7 +22,7 @@ using LinearAlgebra
         kpts = GridKpoints(kpoints_grid((nk, nk, nk); model.symmetry));
         kpts_unfold_ref = GridKpoints(kpoints_grid((nk, nk, nk)));
         kpts_unfold = unfold_kpoints(kpts, model.symmetry);
-        @test kpts_unfold == kpts_unfold_ref
+        @test kpoints_fields_equal(kpts_unfold, kpts_unfold_ref)
 
         # Unfolding of irreducible BZ inside given energy window to full BZ
         nk = 53
@@ -28,7 +32,7 @@ using LinearAlgebra
         kpts_unfold_ref = GridKpoints(filter_electron_states((nk, nk, nk), model.nw, model.el_ham, window;
             symmetry=nothing).kpts)
         kpts_unfold = unfold_kpoints(kpts, model.symmetry);
-        @test kpts_unfold == kpts_unfold_ref
+        @test kpoints_fields_equal(kpts_unfold, kpts_unfold_ref)
 
         # Test folding of kpoints (inverse of unfolding)
         kpts_by_folding, ik_to_ikirr_isym = fold_kpoints(kpts_unfold, model.symmetry)
@@ -125,7 +129,7 @@ using LinearAlgebra
         @test el_unfold.e2[inds] ≈ el_unfold_ref.e2
         @test el_unfold.ib_rng == el_unfold_ref.ib_rng
         @test el_unfold.nstates_base ≈ el_unfold_ref.nstates_base
-        @test el_unfold.kpts == el_unfold_ref.kpts
+        @test kpoints_fields_equal(el_unfold.kpts, el_unfold_ref.kpts)
 
         # Test constant RTA conductivity is the same with el and el_unfold.
         transport_params = ElectronTransportParams{Float64}(
