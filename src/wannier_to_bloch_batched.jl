@@ -226,7 +226,6 @@ end
 
 """
     get_eph_kR_to_kq_batched!(ep_kq_all, ep_kR::AbstractMatrix, phase::AbstractMatrix, u_phs, ukqs; ws=nothing)
-    get_eph_kR_to_kq_batched!(ep_kq_all, itp_ep_ekpR::BatchedWannierInterpolator, qs, u_phs, ukqs; ws=nothing)
 
 Batched over a list of q-points (for a fixed k). `ukqs` is `(nw, nbandkq, nq)` and
 `u_phs` is `(nmodes, nmodes, nq)`. Writes `ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nq)`.
@@ -234,16 +233,10 @@ Batched over a list of q-points (for a fixed k). `ukqs` is `(nw, nbandkq, nq)` a
 One batched Fourier over `R_ep`, then two `batched_gemm!`s for the per-q rotations
 (`ukq(q)'` on the left, `u_ph(q)` on the right).
 
-The routine really consumes three things: the kR intermediate `g(k, R_p)`, the Fourier phase
-`exp(2πi R_p · x_q)` and the rotations. The **first method** takes those directly — `ep_kR` is
-`(nw*nbandk*nmodes, nr)` and `phase` is `(nr, nq)` — so a caller that can build one phase matrix
-and reuse it over many `k` (the GPU outer-k loop, via the k+q convention of
-[`get_eph_RR_to_kR_batched!`](@ref)) never rebuilds it; it is the form the driver uses.
-The **second method** is the convenience form for a caller that just has a q-list: it builds the
-phase from `qs` into the interpolator's scratch and delegates. No `src` caller uses it — it is what
-`test/test_gpu.jl` calls, so that the tests exercise the routine without duplicating the phase build
-at every call site. It needs an **in-memory** parent (it reads `parent.op_r`), so unlike
-[`fourier_batched!`](@ref) it does not support a `DiskWannierObject` parent.
+The three inputs are the kR intermediate `g(k, R_p)` as `ep_kR`, `(nw*nbandk*nmodes, nr)`; the
+Fourier phase `exp(2πi R_p · x_q)` as `phase`, `(nr, nq)`; and the rotations. Taking the phase
+rather than a q-list is what lets a caller build it once and reuse it over many `k` — the GPU
+outer-k loop does that via the k+q convention of [`get_eph_RR_to_kR_batched!`](@ref).
 
 Pass a [`KRtoKQWorkspace`](@ref) as `ws` (sized for at least this `nq`) to reuse the `g` / `tmp`
 scratch across calls instead of allocating it each call — the per-k hot path in the GPU loop does
@@ -277,17 +270,6 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
     eph_apply_rotations!(ep_kq_all, reshape(g, nw, nbandk, nmodes, nq), ukqs, u_phs, tmp;
                          g2_out, ωq)
     ep_kq_all
-end
-
-function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
-                                   itp_ep_ekpR::BatchedWannierInterpolator{T}, qs, u_phs, ukqs;
-                                   ws::Union{Nothing,KRtoKQWorkspace}=nothing,
-                                   g2_out=nothing, ωq=nothing) where {T}
-    parent = itp_ep_ekpR.parent
-    ndata = parent.ndata
-    phase = _build_phase!(itp_ep_ekpR.core, qs)
-    @views get_eph_kR_to_kq_batched!(ep_kq_all, parent.op_r[1:ndata, :], phase, u_phs, ukqs;
-                                     ws, g2_out, ωq)
 end
 
 """
@@ -414,8 +396,13 @@ end
 # extension's fused kernel; see `_fused_eph_rot_kernel!` for the full rationale. It lives here
 # rather than in the extension so the base package documents the crossover the generic
 # `eph_apply_rotations!` docstring refers to. The crossover is hardware-dependent: the value was
-# tuned on one GPU and should be retuned elsewhere. Worth measuring before removing it: on the Cu
-# outer-k BTE loop (nw=7, nmodes=3, A100) the fused path is 31.1 s against 47.0 s for the two GEMMs.
+# tuned on one GPU and should be retuned elsewhere.
+#
+# Measured, so it does not get removed as a "small-size optimization": at nw=7, nmodes=3 (Cu,
+# ndata=21) the fused kernel is **1.51x faster than cuBLAS** — 34% less wall on the whole outer-k
+# BTE loop, 31.07 s vs 47.00 s at nk=150 on an A100-80GB. Note the two paths are not bit-identical
+# (the fused one folds g2 = |ep|^2/(2w) from registers instead of in a second full-array pass), so
+# compare them with a tolerance, not bitwise.
 const _FUSED_ROT_MAX_NWNM = 24
 
 # The two-GEMM rotation paths merge `g`'s band and mode axes with a `reshape`, which needs `g` to be

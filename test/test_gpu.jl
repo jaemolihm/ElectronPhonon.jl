@@ -16,6 +16,18 @@ catch
     false
 end
 
+# `get_eph_kR_to_kq_batched!` takes the Fourier phase, not a q-list, because the driver builds one
+# phase and reuses it over many k. The tests mostly have a q-list instead, so this wrapper does the
+# phase build for them. It lives here rather than in `src` because no `src` caller needs it.
+# Requires an in-memory parent (it reads `parent.op_r`), so no `DiskWannierObject`.
+function kR_to_kq_from_qs!(ep_kq_all, itp_ep_ekpR, qs, u_phs, ukqs; ws = nothing,
+                           g2_out = nothing, ωq = nothing)
+    parent = itp_ep_ekpR.parent
+    phase = ElectronPhonon._build_phase!(itp_ep_ekpR.core, qs)
+    @views get_eph_kR_to_kq_batched!(ep_kq_all, parent.op_r[1:parent.ndata, :], phase, u_phs, ukqs;
+                                     ws, g2_out, ωq)
+end
+
 # A mis-dispatch (a device view falling back to the generic scalar `batched_gemm!` instead of the
 # GPU method) must fail loudly rather than silently limp — forbid scalar indexing on the device.
 GPU_AVAILABLE && CUDA.allowscalar(false)
@@ -70,7 +82,7 @@ function check_eph_batched(to_dev, arr_dev; rtol)
     # list-batched kR→kq over all q (fixed k = ks[1]) — check every slice
     obj_k1 = to_dev(WannierObject(irvec_ep, copy(refs_RR[1])))
     ep_kq_all = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq2))
-    get_eph_kR_to_kq_batched!(ep_kq_all, get_interpolator(obj_k1; fourier_mode="batched", batch_size=nq2), qs, arr_dev(uphs), arr_dev(ukqs))
+    kR_to_kq_from_qs!(ep_kq_all, get_interpolator(obj_k1; fourier_mode="batched", batch_size=nq2), qs, arr_dev(uphs), arr_dev(ukqs))
     ep_kq_h = Array(ep_kq_all)
     for iq in 1:nq2
         @test isapprox(ep_kq_h[:, :, :, iq], ep_ref[:, :, :, iq]; rtol)
@@ -99,7 +111,7 @@ function check_eph_batched(to_dev, arr_dev; rtol)
     ωq_g2  = rand(nmodes, nq2) .+ 0.5
     g2_out = arr_dev(zeros(nband, nband, nmodes, nq2))
     ep_g2  = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq2))
-    get_eph_kR_to_kq_batched!(ep_g2, get_interpolator(obj_k1; fourier_mode="batched", batch_size=nq2),
+    kR_to_kq_from_qs!(ep_g2, get_interpolator(obj_k1; fourier_mode="batched", batch_size=nq2),
         qs, arr_dev(uphs), arr_dev(ukqs); g2_out, ωq=arr_dev(ωq_g2))
     g2_ref = abs2.(ep_ref) ./ (2 .* reshape(ωq_g2, 1, 1, nmodes, nq2))
     @test isapprox(Array(g2_out), g2_ref; rtol)
@@ -168,7 +180,7 @@ function check_eph_kq_convention(to_dev, arr_dev; rtol)
     get_eph_RR_to_kR_batched!(ep_kR_q, itp_epmat, [xk], uk)
     obj_q = to_dev(WannierObject(irvec_ep, Array(ep_kR_q)[:, :, 1]))
     ref = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq))
-    get_eph_kR_to_kq_batched!(ref, get_interpolator(obj_q; fourier_mode="batched", batch_size=nq),
+    kR_to_kq_from_qs!(ref, get_interpolator(obj_q; fourier_mode="batched", batch_size=nq),
                               qs, uphs, ukqs)
 
     # (b) same phase, phase-taking method: must agree bit for bit
@@ -349,11 +361,11 @@ function check_eph_partial_view(nw, nmodes; rtol)
     ws   = ElectronPhonon.KRtoKQWorkspace(obj.op_r, nw*nband*nmodes, nband, nband, nmodes, nq)
 
     full = CuArray(zeros(ComplexF64, nband, nband, nmodes, nq))
-    get_eph_kR_to_kq_batched!(full, get_interpolator(obj; fourier_mode="batched", batch_size=nq),
+    kR_to_kq_from_qs!(full, get_interpolator(obj; fourier_mode="batched", batch_size=nq),
                               qs, uphs, ukqs; ws)
     # Same call restricted to the first m q-points via views into the max-width buffers, reusing ws.
     part = CuArray(zeros(ComplexF64, nband, nband, nmodes, nq))
-    get_eph_kR_to_kq_batched!(view(part, :, :, :, 1:m),
+    kR_to_kq_from_qs!(view(part, :, :, :, 1:m),
         get_interpolator(obj; fourier_mode="batched", batch_size=nq),
         view(qs, 1:m), view(uphs, :, :, 1:m), view(ukqs, :, :, 1:m); ws)
     @test isapprox(Array(view(part, :, :, :, 1:m)), Array(view(full, :, :, :, 1:m)); rtol)
