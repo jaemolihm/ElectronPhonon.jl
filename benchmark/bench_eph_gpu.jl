@@ -41,11 +41,11 @@ epmat_git = get_interpolator(epmat_g; fourier_mode="batched", batch_size=1)
 epmat_gk  = get_interpolator(epmat_g; fourier_mode="batched", batch_size=nk)
 uks_g = CuArray(uks)
 
-# `ep_ekpR_all` is (ndata, nk, nr_ep) — k in the MIDDLE axis (see get_eph_RR_to_kR_batched!).
-ep_all_c = zeros(ComplexF64, nw*nband*nmodes, nk, nr_ep)
-ep_all_g = CUDA.zeros(ComplexF64, nw*nband*nmodes, nk, nr_ep)
-ep_one_c = zeros(ComplexF64, nw*nband*nmodes, 1, nr_ep)
-ep_one_g = CUDA.zeros(ComplexF64, nw*nband*nmodes, 1, nr_ep)
+# `ep_ekpR_all` is (ndata, nr_ep, nk) — one k per trailing slice (see get_eph_RR_to_kR_batched!).
+ep_all_c = zeros(ComplexF64, nw*nband*nmodes, nr_ep, nk)
+ep_all_g = CUDA.zeros(ComplexF64, nw*nband*nmodes, nr_ep, nk)
+ep_one_c = zeros(ComplexF64, nw*nband*nmodes, nr_ep, 1)
+ep_one_g = CUDA.zeros(ComplexF64, nw*nband*nmodes, nr_ep, 1)
 
 rr_perk!(out, itp, U) = for ik in 1:nk
     get_eph_RR_to_kR_batched!(out, itp, view(ks, ik:ik), @view U[:, :, ik:ik])
@@ -57,8 +57,8 @@ t = (cput(()->rr_perk!(ep_one_c, epmat_cit, uks)),  gput(()->rr_perk!(ep_one_g, 
 @printf "RR_to_kR (%d k)   per-k:  CPU %6.2f  GPU %6.2f ms  |  batched:  CPU %6.2f  GPU %6.2f ms\n" nk (t.*1e3)...
 
 # ---- kR_to_kq over nq q-points (fixed k = ks[1]) ----
-obj_k1_c = WannierObject(model.epmat.irvec_next, ep_all_c[:, 1, :])
-obj_k1_g = to_device(ElectronPhonon.gpu_backend(), WannierObject(model.epmat.irvec_next, Array(ep_all_g)[:, 1, :]))
+obj_k1_c = WannierObject(model.epmat.irvec_next, ep_all_c[:, :, 1])
+obj_k1_g = to_device(ElectronPhonon.gpu_backend(), WannierObject(model.epmat.irvec_next, Array(ep_all_g)[:, :, 1]))
 itp_c_perq = get_interpolator(obj_k1_c; fourier_mode="batched", batch_size=1)   # per-q Fourier
 itp_g_perq = get_interpolator(obj_k1_g; fourier_mode="batched", batch_size=1)
 itp_c1 = get_interpolator(obj_k1_c; fourier_mode="batched", batch_size=nq)

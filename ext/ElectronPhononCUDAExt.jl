@@ -134,7 +134,7 @@ end
 # Per-thread work grows ~nw³·nmodes², so we gate on the single product nw·nmodes (nmodes = 3·N_atoms
 # ≥ 3, so the product bounds the aspect ratio — no separate per-dim cap needed). Assumes nbandk,
 # nbandkq ≤ nw (true in the full-band loop). The threshold itself is
-# `ElectronPhonon._FUSED_ROT_MAX_NWNM`, in `src` because the outer-k loop also reads it.
+# `ElectronPhonon._FUSED_ROT_MAX_NWNM`, in `src` next to the generic method it selects against.
 
 # g : (nw, nbandk, nmodes, nq) ; ukq : (nw, nbandkq, nq) ; uph : (nmodes, nmodes, nq)
 # ep : (nbandkq, nbandk, nmodes, nq) ; g2 / ωq optional (g2 : same as ep ; ωq : (nmodes, nq)).
@@ -172,9 +172,8 @@ end
 # `DenseCuArray` (not `CuArray`): the GPU e-ph loop passes contiguous device VIEWS
 # (e.g. `view(epkq_dev, :,:,:, 1:nq_batch)`) for a partial final q-batch. The fused kernel takes
 # them through `@cuda` (cudaconvert handles strided views) and the cuBLAS path takes their
-# reshapes (strided), so no padding to a fixed batch width is needed. `g` alone may also be strided
-# in `q` (one k of a kR→kq strip); only the fused branch accepts that, which is why the loop caps
-# the strip width at 1 above `_FUSED_ROT_MAX_NWNM`.
+# reshapes (strided), so no padding to a fixed batch width is needed. `g` alone may be any strided
+# device array: only the fused branch accepts that, hence the density assert on the cuBLAS branch.
 function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},4},
         g::AnyCuArray{Complex{T},4},
         ukqs::DenseCuArray, u_phs::DenseCuArray, tmp; g2_out=nothing, ωq=nothing) where {T}

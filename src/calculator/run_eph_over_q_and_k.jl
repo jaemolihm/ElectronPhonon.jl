@@ -610,15 +610,9 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
     if model.epmat_outer_momentum == "el"
         nr_ep = length(get_next_wannier_object(model.epmat).irvec)
         nk_batch = min(Int(nk_outer_batch_max), Int(nk))
-        # Apply the loop's kR→kq strip rule so the two stay in step. Note this estimate is full-band
-        # by convention (`nbandk_max = nw`, see the docstring), so a WINDOWED run picks a different
-        # `nk_b` than is computed here — but the strip term is `16·ndata·nk_b`, which is
-        # `≈ 16·max(ndata, _KRKQ_GEMM_M_TARGET)` at either shape, and the full-band `ndata` is the
-        # larger of the two, so the estimate does not under-report it.
-        nk_b = _krkq_strip_width(; nw, nbandk_max = nw, nmodes, nk_batch_max = nk_batch)
         per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max = nw, nmodes, nr_ep, nk, nkq,
             nq_grid = nkq, nk_batch_max = nk_batch, calculators,
-            ndata_epmat = model.epmat.ndata, nr_epmat = model.epmat.nr, nk_b, FT)
+            ndata_epmat = model.epmat.ndata, nr_epmat = model.epmat.nr, FT)
         cap = nq_batch_max === nothing ? Int(nkq) : min(Int(nq_batch_max), Int(nkq))
         loop = :outer_k
     elseif model.epmat_outer_momentum == "ph"

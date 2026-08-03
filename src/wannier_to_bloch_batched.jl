@@ -156,13 +156,8 @@ end
     get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat::BatchedWannierInterpolator, ks, uks; kq_convention_phase=nothing)
 
 Batched over a list of k-points `ks`. `uks` is `(nw, nband, nk)` (one `uk` per k).
-Writes `ep_ekpR_all`, shape `(nw*nband*nmodes, nk, nr_ep)` — slice `[:, k, :]` is the `op_r` of the
+Writes `ep_ekpR_all`, shape `(nw*nband*nmodes, nr_ep, nk)` — column `k` is the `op_r` of the
 electron-Bloch / phonon-Wannier object at `ks[k]`.
-
-The `k` axis sits in the MIDDLE so that a contiguous run of `nk_b` k-points is a plain `lda` view
-of the 2-D reshape `(nw*nband*nmodes*nk, nr_ep)`: the outer-k GPU loop stacks such a run into one
-tall kR→kq GEMM (see `_krkq_strip_width`), which needs the stacked k to be adjacent in the row
-index. A per-k slice is then strided in `R_p`, which the kR→kq GEMM handles as an `lda`.
 
 One batched Fourier (`get_fourier_batched!`) over `R_el`, then one `batched_gemm!` for the
 per-k rotation by `uk` (recast as `transpose(uk(k)) * permute(g(k))`).
@@ -195,7 +190,7 @@ function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
     M = nmodes * nr_ep
     @assert nmodes * nw^2 * nr_ep == epmat.ndata
     @assert length(ks) == nk
-    @assert size(ep_ekpR_all) == (nw * nband * nmodes, nk, nr_ep)
+    @assert size(ep_ekpR_all) == (nw * nband * nmodes, nr_ep, nk)
 
     g = similar(epmat.op_r, Complex{T}, epmat.ndata, nk)
     get_fourier_batched!(g, itp_epmat, ks)                              # (nw^2*nmodes*nr_ep, nk)
@@ -204,59 +199,34 @@ function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
     C = similar(g, Complex{T}, nband, nw * M, nk)
     batched_gemm!('T', 'N', uks, reshape(gp, nw, nw * M, nk), C)        # C(k)=transpose(uk(k))*gp(k)
     out = permutedims(reshape(C, nband, nw, M, nk), (2, 1, 3, 4))       # (nw, nband, M, k)
-    out3 = PermutedDimsArray(reshape(out, nw * nband * nmodes, nr_ep, nk), (1, 3, 2))
+    out3 = reshape(out, nw * nband * nmodes, nr_ep, nk)
     if kq_convention_phase === nothing
         copyto!(ep_ekpR_all, out3)
     else
         @assert size(kq_convention_phase) == (nr_ep, nk)
-        # `P'` is the lazy conjugate transpose, i.e. `P'[k, ip] = conj(P[ip, k])`.
-        ep_ekpR_all .= out3 .* reshape(kq_convention_phase', 1, nk, nr_ep)
+        ep_ekpR_all .= out3 .* conj.(reshape(kq_convention_phase, 1, nr_ep, nk))
     end
     ep_ekpR_all
 end
 
 """
-    KRtoKQWorkspace(gpu_array, ndata, nbandkq, nbandk, nmodes, nq; nk_b = 1)
+    KRtoKQWorkspace(gpu_array, ndata, nbandkq, nbandk, nmodes, nq)
 
 Preallocated scratch for [`get_eph_kR_to_kq_batched!`](@ref), reused across the per-k calls so the
 driver does no per-call `similar`. `gpu_array` is an array on the target backend (e.g. `parent.op_r`);
 the buffers follow its backend and element type. `ndata = nw*nbandk*nmodes`.
 
-`nk_b` is the kR→kq GEMM strip width ([`_krkq_strip_width`](@ref)): `g` holds the Fourier output of
-`nk_b` stacked outer-k, so it is `(ndata*nk_b, nq)`. `tmp` is per-k and does not scale with it.
-
 TODO: merge this with the other Wannier→Bloch scratch (the eigensolve / velocity buffers) into a
 single shared workspace so a whole computation allocates its device scratch once.
 """
 struct KRtoKQWorkspace{MT<:AbstractMatrix, AT<:AbstractArray}
-    g::MT      # (ndata*nk_b, nq)             — Fourier output g(k+R_ep) for all q, nk_b k stacked
+    g::MT      # (ndata, nq)                  — Fourier output g(k+R_ep) for all q
     tmp::AT    # (nbandkq, nbandk*nmodes, nq) — after the ukq' rotation
 end
-function KRtoKQWorkspace(gpu_array, ndata::Int, nbandkq::Int, nbandk::Int, nmodes::Int, nq::Int;
-                         nk_b::Int = 1)
+function KRtoKQWorkspace(gpu_array, ndata::Int, nbandkq::Int, nbandk::Int, nmodes::Int, nq::Int)
     T = real(eltype(gpu_array))
-    KRtoKQWorkspace(similar(gpu_array, Complex{T}, ndata * nk_b, nq),
+    KRtoKQWorkspace(similar(gpu_array, Complex{T}, ndata, nq),
                     similar(gpu_array, Complex{T}, nbandkq, nbandk * nmodes, nq))
-end
-
-"""
-    eph_kR_to_kq_fourier!(g, ep_kR, phase)
-
-Fourier half of the kR→kq step: `g = ep_kR * phase`, i.e. `g(k, q) = Σ_p g̃(k, R_p) exp(2πi R_p·x_q)`
-(`x_q` is `x_{k+q}` in the k+q convention of [`get_eph_RR_to_kR_batched!`](@ref)). `ep_kR` is
-`(m, nr)`, `phase` is `(nr, nq)`, `g` is `(m, nq)`; all three may be strided views.
-
-`m` is deliberately unconstrained: the caller may stack several outer-k on top of each other
-(`m = ndata*nk_b`, see [`_krkq_strip_width`](@ref)) to turn `nk_b` skinny GEMMs into one tall one
-that reads the `k`-invariant `phase` once. Splitting this out of
-[`get_eph_kR_to_kq_batched!`](@ref) is what lets the Fourier and the rotation run at different loop
-levels, exactly as the phase build was hoisted above the transform.
-"""
-function eph_kR_to_kq_fourier!(g, ep_kR, phase)
-    @assert size(g) == (size(ep_kR, 1), size(phase, 2))
-    @assert size(ep_kR, 2) == size(phase, 1)
-    mul!(g, ep_kR, phase)
-    g
 end
 
 """
@@ -306,7 +276,7 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
         tmp = view(ws.tmp, :, :, 1:nq)
     end
 
-    eph_kR_to_kq_fourier!(g, ep_kR, phase)                             # (nw*nbandk*nmodes, nq)
+    mul!(g, ep_kR, phase)                                              # (nw*nbandk*nmodes, nq)
     eph_apply_rotations!(ep_kq_all, reshape(g, nw, nbandk, nmodes, nq), ukqs, u_phs, tmp;
                          g2_out, ωq)
     ep_kq_all
@@ -445,48 +415,18 @@ end
 
 # Above this `nw*nmodes` the two rotation GEMMs are large enough that cuBLAS beats the CUDA
 # extension's fused kernel; see `_fused_eph_rot_kernel!` for the full rationale. It lives here
-# rather than in the extension because the outer-k loop reads it to decide whether it may hand
-# `eph_apply_rotations!` a strided `g` (only the fused kernel takes one) — see
-# [`_krkq_strip_width`](@ref). The crossover is hardware-dependent: the value was tuned on one GPU
-# and should be retuned elsewhere.
+# rather than in the extension so the base package documents the crossover the generic
+# `eph_apply_rotations!` docstring refers to. The crossover is hardware-dependent: the value was
+# tuned on one GPU and should be retuned elsewhere.
 const _FUSED_ROT_MAX_NWNM = 24
-
-# Target `M` for the kR→kq GEMM `(ndata*nk_b) × nr_ep` × `nr_ep × nq`. `M = ndata` alone is far
-# below a cuBLAS M-tile at small `ndata`, so each phase element feeds only `ndata` rows of MACs and
-# the k-invariant phase tile is re-read once per k. Measured on an A100-80GB (225 W cap, Cu shapes
-# ndata = 21, nr_ep = 833, nq = 226380): 7.45 TFLOP/s at M = 21, 10.67 at M = 84, 11.93 at M = 168,
-# saturating at 12.41 by M = 336.
-# 128 sits deliberately below the saturation point, because `M` is bought with per-q device memory:
-# it gives nk_b = 7 at those Cu shapes (M = 147, ~2.0 kB/q of extra `ws.g`), where chasing the last
-# ~4% of throughput at M = 336 would cost ~4.9 kB/q out of a 14.7 kB/q per-q budget and shrink the
-# q-tile by a third on a memory-bound run.
-const _KRKQ_GEMM_M_TARGET = 128
-
-"""
-    _krkq_strip_width(; nw, nbandk_max, nmodes, nk_batch_max) -> nk_b
-
-Number of outer-k the GPU outer-k loop stacks into one tall kR→kq GEMM
-([`eph_kR_to_kq_fourier!`](@ref)). Shape-derived from `ndata = nw*nbandk_max*nmodes` so that the
-GEMM's `M = ndata*nk_b` reaches `_KRKQ_GEMM_M_TARGET`; the extra device memory is therefore
-`16·(M_target - ndata)` bytes per q, independent of the model.
-
-Returns 1 — no strip, the layout of every buffer as before — when `ndata` already fills the M-tile
-(large `nw`/`nmodes`, where the strip would only cost memory) or when `nw*nmodes` exceeds
-`_FUSED_ROT_MAX_NWNM`: a strip's per-k `g` slice is strided in `q`, which only the fused rotation
-kernel can read.
-"""
-function _krkq_strip_width(; nw, nbandk_max, nmodes, nk_batch_max)
-    nw * nmodes <= _FUSED_ROT_MAX_NWNM || return 1
-    clamp(cld(_KRKQ_GEMM_M_TARGET, nw * nbandk_max * nmodes), 1, Int(nk_batch_max))
-end
 
 # The two-GEMM rotation paths merge `g`'s band and mode axes with a `reshape`, which needs `g` to be
 # densely packed — a reshape of a strided view is a `ReshapedArray`, which the batched GEMMs reject.
 # A non-strided array is `false`, not an error, so the caller's own assertion message is what the
 # user sees. Axes of length 1 carry no meaningful stride, so they are skipped.
 # Necessary but not sufficient on the device: a `view` that drops an axis can be dense and still
-# reshape to a pointerless `ReshapedArray`. Callers must hand over an operand that survives the
-# reshape — that is what [`_strip_g_slice`](@ref) is for.
+# reshape to a pointerless `ReshapedArray`, while a contiguous 2-D column slice reshapes back to a
+# plain device array. Callers must hand over an operand that survives the reshape.
 function _is_dense(a::AbstractArray)
     a isa StridedArray || return false
     st, sz = strides(a), size(a)
@@ -498,23 +438,6 @@ function _is_dense(a::AbstractArray)
     true
 end
 
-# One k's operand for `eph_apply_rotations!`, taken out of a kR→kq strip: `g_2d` is the strip's
-# `(ndata*nk_b, nq_max)` Fourier buffer and `g_strip5` its `(nw, nbandk, nmodes, nk_b, nq_max)`
-# view; `kloc` is the k's position in the strip and `rng_q` the q-tile's column range.
-#
-# At `nk_b > 1` the slice is q-strided, which only the fused rotation kernel reads. At `nk_b = 1`
-# the strip IS the k, and the slice is taken off the 2-D buffer instead of as `g_strip5[…, 1, rng_q]`
-# even though the two address the same elements: a `view` that drops the k axis is dense but its
-# `reshape` — which the two-GEMM branches do to merge the band and mode axes — is a `ReshapedArray`
-# with no pointer, while a contiguous 2-D column slice reshapes back to a plain device array. That
-# is the operand shape the two-GEMM branches need, and `nk_b = 1` is exactly the case a large-`nw`
-# model gets, where the fused kernel is not available (see [`_krkq_strip_width`](@ref)).
-function _strip_g_slice(g_2d::AbstractMatrix, g_strip5::AbstractArray{<:Any,5}, kloc::Int, rng_q)
-    nw, nbandk, nmodes, nk_b, _ = size(g_strip5)
-    nk_b == 1 && return reshape(view(g_2d, :, rng_q), nw, nbandk, nmodes, length(rng_q))
-    view(g_strip5, :, :, :, kloc, rng_q)
-end
-
 """
     eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp; g2_out=nothing, ωq=nothing)
 
@@ -523,9 +446,8 @@ writing the eigenbasis e-ph matrix `ep_kq_all`
 `(nbandkq, nbandk, nmodes, nq)` = `ukq(q)' * g(q) * u_ph(q)`. If `g2_out !== nothing`, also write
 `g2 = |ep_kq|² / (2 ωq)` (with `ωq` `(nmodes, nq)`) in the same pass.
 
-`g` may be a view strided in `q` — one k's slice of a `nk_b`-wide kR→kq strip
-([`_krkq_strip_width`](@ref)) is exactly that — but only on the CUDA extension's fused path, which
-indexes `g` elementwise. The generic two-GEMM method below requires a dense `g`.
+The two-GEMM paths merge `g`'s band and mode axes with a `reshape`, so they require a dense `g`
+(asserted); the CUDA extension's fused path indexes `g` elementwise and takes any strided view.
 
 Generic method: the two strided-batched GEMMs (`ukq'` on the left, `u_ph` on the right) plus an
 optional `g2` broadcast — identical to the previous inline code, so any backend works. The CUDA
@@ -537,7 +459,7 @@ function eph_apply_rotations!(ep_kq_all::AbstractArray{Complex{T},4}, g::Abstrac
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
     @assert size(g) == (nw, nbandk, nmodes, nq)
-    @assert _is_dense(g) "the two-GEMM rotation path needs a dense g; a strided kR→kq strip slice is only supported by the CUDA fused kernel"
+    @assert _is_dense(g) "the two-GEMM rotation path needs a dense g; a strided g is only supported by the CUDA fused kernel"
     batched_gemm!('C', 'N', ukqs, reshape(g, nw, nbandk * nmodes, nq), tmp)   # ukq(q)' * g(q)
     batched_gemm!('N', 'N', reshape(tmp, nbandkq * nbandk, nmodes, nq), u_phs,
                   reshape(ep_kq_all, nbandkq * nbandk, nmodes, nq))           # * u_ph(q)

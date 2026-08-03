@@ -147,28 +147,14 @@ device loop. `use_gpu` is the only user-facing switch; below the driver entry a 
 (`CPUBackend()` / `GPUBackend(proto)`) is resolved once, uploaded `to_device(model.epmat)` once,
 and carried in `LoopContext`. The CPU loop and per-(k,q) CPU e-ph functions are unchanged. The GPU
 outer-k loop processes a batch of outer k with one list-batched `get_eph_RR_to_kR_batched!` and
-batches the inner `ikq` loop (in tiles of `nq_batch_max`) through `eph_kR_to_kq_fourier!` +
-`eph_apply_rotations!`.
+batches the inner `ikq` loop (in tiles of `nq_batch_max`) through one `get_eph_kR_to_kq_batched!`.
 
-Its nesting is `k-batch -> q-tile -> k-strip -> k -> q(device)`: the q-tile loop sits **outside**
-the per-k loop. `get_eph_RR_to_kR_batched!` stores the kR intermediate in the **k+q convention**
+Its nesting is `k-batch -> q-tile -> k -> q(device)`: the q-tile loop sits **outside** the per-k
+loop. `get_eph_RR_to_kR_batched!` stores the kR intermediate in the **k+q convention**
 (`g̃(k, R_p) = conj(exp(2πi R_p·x_k)) · g(k, R_p)`, folded into its output copy via the
 `kq_convention_phase` argument), so the kR→kq Fourier phase is `exp(2πi R_p·x_{k+q})` — built from
 the fixed k+q list and therefore identical for every k of the batch. One built phase tile is reused
 by all `nk_outer_batch_max` outer k, and the q-vector never enters the interpolation.
-
-The k-strip level exists because that phase tile is not only built once but also **read** once per
-k: `nk_b = _krkq_strip_width(...)` consecutive outer k are stacked into a single tall kR→kq GEMM
-whose `M = nw·nbandk_max·nmodes·nk_b` also fills a cuBLAS DMMA tile that `M = ndata` alone leaves
-partly empty: the selected kernel `cutlass_80_tensorop_z884gemm_32x32_16x4_nn_align1` has a 32-row
-M-tile, so `M = ndata = 21` at the Cu shapes leaves 1/3 of it idle. `ep_ekpR_all` is therefore laid
-out `(ndata, nk, nr_ep)`, k in the middle, so a strip is a plain `lda` view of its 2-D reshape.
-`nk_b` is shape-derived and internal (not a knob): it is 1 —
-the loop exactly as it was — when `ndata` already fills the M-tile, and also whenever
-`nw·nmodes > _FUSED_ROT_MAX_NWNM`, because a strip's per-k `g` slice is strided in q and only the
-fused rotation kernel reads that. So it is a narrow-window / small-`nw` optimization; a full-band
-large-`nw` run is unaffected. Everything below the GEMM stays strictly per-k, so the payload
-stream, the call order and the brackets are unchanged.
 
 To run on the GPU a calculator opts into a **device-native batched payload** so the e-ph matrix for
 a whole batch stays on the device and the reduction/scatter happens there. Each loop has its own
