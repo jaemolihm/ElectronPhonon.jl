@@ -661,6 +661,10 @@ function _loop_eph_over_k_and_kq_gpu(
     # Phonon eigenvectors `u` and frequencies `e` depend only on iq, so (like ukqs_all_dev above)
     # collect the full q-grid stacks on the host and copy to the device once, then gather per
     # batch on the device by index (below).
+    # TODO: these two are the only fields of `ph_save` this loop ever reads, and
+    # `_compute_phonon_states_gpu!` built them on the device before scattering them into per-q
+    # `PhononState`s — so this gather + H2D undoes a D2H. Have the setup hand `use_gpu` the device
+    # stacks directly and drop this block; see the TODO at `_scatter_phonon_states!`.
     uph_all_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, qpts.n)
     ωq_all_dev  = similar(epmat_dev.op_r, FT, nmodes, qpts.n)
     let uph_all_host = Array{Complex{FT}}(undef, nmodes, nmodes, qpts.n),

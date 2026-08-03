@@ -37,18 +37,20 @@ end
 # directly on `kqpts`. `kqpts_irr` / `ik_to_ikirr_isym_kq` are only read on the unfolding path.
 function _compute_electron_states_kq(
         model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq, symmetry, el_kq_from_unfolding, window_kq;
-        quantities, fourier_mode, use_gpu = false,
+        quantities, fourier_mode, use_gpu = false, verbosity = 1,
     )
-    if el_kq_from_unfolding
-        symmetry !== nothing || throw(ArgumentError("el_kq_from_unfolding = true requires symmetry"))
-        el_kq_save_irr = compute_electron_states(model, kqpts_irr, quantities, window_kq; fourier_mode, use_gpu)
-        el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
-        # el_kq_save_irr is not used anymore.
-        el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
-    else
-        el_kq_save = compute_electron_states(model, kqpts, quantities, window_kq; fourier_mode, use_gpu)
+    maybe_time(verbosity) do
+        if el_kq_from_unfolding
+            symmetry !== nothing || throw(ArgumentError("el_kq_from_unfolding = true requires symmetry"))
+            el_kq_save_irr = compute_electron_states(model, kqpts_irr, quantities, window_kq; fourier_mode, use_gpu)
+            el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
+            # el_kq_save_irr is not used anymore.
+            el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
+        else
+            el_kq_save = compute_electron_states(model, kqpts, quantities, window_kq; fourier_mode, use_gpu)
+        end
+        el_kq_save
     end
-    el_kq_save
 end
 
 
@@ -97,7 +99,8 @@ function _setup_electron_kq(model, kqpts_input;
 
     # (3) states: direct, or gauge-consistent IBZ→full unfolding (the one genuinely special path)
     el_kq_save = _compute_electron_states_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
-        symmetry, el_kq_from_unfolding, window_kq; quantities=el_kq_quantities, fourier_mode, use_gpu)
+        symmetry, el_kq_from_unfolding, window_kq;
+        quantities=el_kq_quantities, fourier_mode, use_gpu, verbosity)
     sel_kq = electron_states_to_FilteredStates(kqpts, el_kq_save, nelec_kq; nw)
     return (; kqpts, el_kq_save, sel_kq)
 end
