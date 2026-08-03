@@ -1,6 +1,7 @@
 # Data and functions for k points
 using MPI
 using Printf
+using Base.Threads: @threads
 
 export Kpoints
 export kpoints_grid
@@ -267,54 +268,96 @@ end
 """
     _combine_kq_dedup_dense(BkS, BqS, sgn, ngrid_kq, shift_kq)
 De-duplicate `k + sgn * q` over all (k, q) pairs with a dense `prod(ngrid_kq)` table indexed by the
-integer grid coordinates. Returns the unique k+q points in order of first appearance.
+integer grid coordinates. Returns the unique k+q points, in grid order.
 - `BkS`, `BqS`: integer grid coordinates of the k and of the q points on the common `ngrid_kq`
-    grid, i.e. the `b` of `xk = shift + b ./ ngrid_kq`. Built by `combine_kpoint_grids`.
+    grid, i.e. the `b` of `xk = shift + b ./ ngrid_kq`, each already reduced into `0:ng-1` by
+    `combine_kpoint_grids` so that `bk + sgn*bq` needs only `_wrap_reduced`.
 
 The table is `(ng3, ng2, ng1)` indexed `[c3+1, c2+1, c1+1]`, making `c3` the unit-stride index so
 that a sweep over consecutive `c3` walks the table sequentially. With those dims the linear index
 of a slot is exactly `hash + 1` for the `(c1*ng2 + c2)*ng3 + c3` packing, so this table and
 `GridKpoints._dense_hash_to_ik` share one layout.
+
+Two passes rather than one. Pass 1 only MARKS which slots occur, in a `Vector{UInt8}` instead of
+the `Array{Int,3}` of indices the single-pass version needed: the pair loop's access into the table
+is a random probe, so at 8 B per node it missed cache on nearly every pair, and 1 B per node is 8×
+more of the grid resident (8 MB vs 64 MB at 200³). Marking is also idempotent — every writer stores
+the same 1 — which is what lets the pass be threaded with no synchronization. (A `BitArray` would
+be smaller still but its writes race at word granularity.)
+Pass 2 sweeps the table in index order and emits the points. That discards first-appearance order,
+which is safe because `combine_kpoint_grids` sorts the result on the integer grid coordinates — a
+total order, the points being distinct — and `sort!(::GridKpoints)` renumbers the index afterwards.
 """
 function _combine_kq_dedup_dense(BkS, BqS, sgn, ngrid_kq, shift_kq::Vec3{T}) where {T}
     ng1, ng2, ng3 = ngrid_kq
-    xkqs = Vector{Vec3{T}}()
-    xkq_hash_to_ikq = zeros(Int, ng3, ng2, ng1)
-    ikq = 0
-    for bq in BqS
-        for bk in BkS
-            c1 = mod(bk[1] + sgn * bq[1], ng1)
-            c2 = mod(bk[2] + sgn * bq[2], ng2)
-            c3 = mod(bk[3] + sgn * bq[3], ng3)
+    _check_reduced_coords(BkS, BqS, ngrid_kq)
+    seen = zeros(UInt8, ng3, ng2, ng1)
+    _mark_kq_pairs!(seen, BkS, BqS, sgn, ng1, ng2, ng3)
 
-            # Find new k+q points, append to xkq_hash_to_ikq and xkqs
-            if xkq_hash_to_ikq[c3 + 1, c2 + 1, c1 + 1] == 0
-                ikq += 1
-                xkq_hash_to_ikq[c3 + 1, c2 + 1, c1 + 1] = ikq
-                push!(xkqs, Vec3(c1 / ng1, c2 / ng2, c3 / ng3) + shift_kq)
+    xkqs = Vector{Vec3{T}}(undef, count(!iszero, seen))
+    ikq = 0
+    @inbounds for c1 in 0:(ng1 - 1), c2 in 0:(ng2 - 1), c3 in 0:(ng3 - 1)
+        iszero(seen[c3 + 1, c2 + 1, c1 + 1]) && continue
+        ikq += 1
+        xkqs[ikq] = Vec3(c1 / ng1, c2 / ng2, c3 / ng3) + shift_kq
+    end
+    xkqs
+end
+
+# The `0:ng-1` precondition of the two de-duplication routines, enforced once over the two lists
+# (O(nk + nkq), microseconds) rather than per pair. Not optional politeness: the pair loops fold
+# with `_wrap_reduced` and write the table under `@inbounds`, so an unreduced coordinate is a
+# segfault rather than a wrong answer.
+function _check_reduced_coords(BkS, BqS, ngrid)
+    for (name, B) in (("BkS", BkS), ("BqS", BqS)), b in B
+        all(0 .<= b.data .< ngrid) || throw(ArgumentError(
+            "$name entry $b is not reduced into 0:ngrid-1 for ngrid = $ngrid; " *
+            "call _grid_coords_reduced on the integer grid coordinates first"))
+    end
+end
+
+# Pass 1 of `_combine_kq_dedup_dense`, as a standalone function so the threaded chunks capture
+# typed arguments rather than `Core.Box`. Partitioned over `BqS` (the longer list in the k+q use),
+# each chunk sweeping the whole `BkS` — chunks share `seen` but only ever write the same value into
+# a slot, so no synchronization is needed and the result does not depend on the partition.
+function _mark_kq_pairs!(seen::Array{UInt8,3}, BkS::Vector{Vec3{Int}}, BqS::Vector{Vec3{Int}},
+                         sgn::Int, ng1::Int, ng2::Int, ng3::Int)
+    @threads for iq in eachindex(BqS)
+        @inbounds begin
+            bq = BqS[iq]
+            q1, q2, q3 = sgn * bq[1], sgn * bq[2], sgn * bq[3]
+            for bk in BkS
+                c1 = _wrap_reduced(bk[1] + q1, ng1)
+                c2 = _wrap_reduced(bk[2] + q2, ng2)
+                c3 = _wrap_reduced(bk[3] + q3, ng3)
+                seen[c3 + 1, c2 + 1, c1 + 1] = 0x01
             end
         end
     end
-    xkqs
+    seen
 end
 
 """
     _combine_kq_dedup_dict(BkS, BqS, sgn, ngrid_kq, shift_kq)
 Same map as `_combine_kq_dedup_dense`, keyed by the packed hash in a `Dict` so the memory is
 O(number of unique points) instead of O(prod(ngrid_kq)). Used when the dense table would exceed the
-transient memory budget in `combine_kpoint_grids`.
+transient memory budget in `combine_kpoint_grids`. Same reduced-coordinate precondition, and it
+returns the points in order of FIRST APPEARANCE (a `Dict` has no order to sweep), where the dense
+path returns them in grid order — `combine_kpoint_grids` sorts either, so the two agree as sets.
 """
 function _combine_kq_dedup_dict(BkS, BqS, sgn, ngrid_kq, shift_kq::Vec3{T}) where {T}
     ng1, ng2, ng3 = ngrid_kq
+    _check_reduced_coords(BkS, BqS, ngrid_kq)
     xkqs = Vector{Vec3{T}}()
     cs = Vector{NTuple{3,Int}}()  # integer coords per stored point, for the collision guard
     xkq_hash_to_ikq = Dict{Int, Int}()
     ikq = 0
     for bq in BqS
+        q1, q2, q3 = sgn * bq[1], sgn * bq[2], sgn * bq[3]
         for bk in BkS
-            c1 = mod(bk[1] + sgn * bq[1], ng1)
-            c2 = mod(bk[2] + sgn * bq[2], ng2)
-            c3 = mod(bk[3] + sgn * bq[3], ng3)
+            c1 = _wrap_reduced(bk[1] + q1, ng1)
+            c2 = _wrap_reduced(bk[2] + q2, ng2)
+            c3 = _wrap_reduced(bk[3] + q3, ng3)
             xk_hash_value = (c1 * ng2 + c2) * ng3 + c3
 
             # Find new k+q points, append to xkq_hash_to_ikq and xkqs
@@ -373,10 +416,14 @@ function combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
     # point uniquely, so it is also the de-duplication key: the Dict path packs it as
     # `(c1*ng2 + c2)*ng3 + c3` (which happens to equal `_hash_xk(xkq)`), the dense path indexes an
     # array by it directly.
+    # Both lists are reduced into `0:ng-1` here, once per point, so that the O(nk·nkq) fold is
+    # `_wrap_reduced` (a compare-and-add) rather than three runtime 64-bit integer divisions.
     fk = ngrid_kq .÷ kpts.ngrid
     fq = ngrid_kq .÷ qpts.ngrid
-    BkS = [Vec3(round.(Int, (xk - shift_k).data .* kpts.ngrid) .* fk) for xk in kpts.vectors]
-    BqS = [Vec3(round.(Int, (xq - shift_q).data .* qpts.ngrid) .* fq) for xq in qpts.vectors]
+    BkS = [_grid_coords_reduced(Vec3(round.(Int, (xk - shift_k).data .* kpts.ngrid) .* fk), ngrid_kq)
+           for xk in kpts.vectors]
+    BqS = [_grid_coords_reduced(Vec3(round.(Int, (xq - shift_q).data .* qpts.ngrid) .* fq), ngrid_kq)
+           for xq in qpts.vectors]
 
     # Dense lookup table while it fits in the transient budget, Dict above it. The budget is loose
     # because the table lives only until this function returns. `Int128` because `prod(ngrid_kq)`

@@ -313,6 +313,26 @@ end
     test_combine(kpts, qpts, +, (4, 4, 4))
     test_combine(kpts, qpts, -, (4, 4, 4))
 
+    # Non-cubic ngrid, so a transposed table layout or a coordinate swap cannot pass by accident.
+    kpts = GridKpoints(kpoints_grid((3, 4, 5)))
+    qpts = GridKpoints(kpoints_grid((3, 4, 5)))
+    test_combine(kpts, qpts, +, (3, 4, 5))
+    test_combine(kpts, qpts, -, (3, 4, 5))
+
+    # Grids of different density in each direction, combined on the finer common grid.
+    kpts = GridKpoints(kpoints_grid((2, 4, 6)))
+    qpts = GridKpoints(kpoints_grid((1, 2, 3)))
+    test_combine(kpts, qpts, +, (2, 4, 6))
+    test_combine(kpts, qpts, -, (2, 4, 6))
+
+    # Subsets of a grid (what a windowed driver run actually passes), on a non-cubic grid.
+    let g = kpoints_grid((4, 5, 6))
+        Random.seed!(2026)
+        sel = sort(randperm(g.n)[1:(g.n ÷ 3)])
+        sub = GridKpoints(Kpoints(length(sel), g.vectors[sel], g.weights[sel], g.ngrid), g.ngrid)
+        test_combine(sub, GridKpoints(g), -, (4, 5, 6))
+    end
+
     # Shifted q grid, and plain Kpoints input (converted to GridKpoints internally).
     shift = (0, 1//2, 1//2) ./ 3
     kpts = kpoints_grid((3, 3, 3))            # plain Kpoints, no shift
@@ -334,20 +354,34 @@ end
     @test combine_kpoint_grids(kpts, qpts, +, (6, 6, 6)) isa GridKpoints       # divisible by both
 
     # The dense and the Dict de-duplication (selected by the size of the dense table) must return
-    # the same points in the same order. Only the dense one is reachable at these grid sizes, so
-    # call both directly on the same integer grid coordinates.
-    using ElectronPhonon: _combine_kq_dedup_dense, _combine_kq_dedup_dict
+    # the same SET of points: the dense path sweeps its table, so it emits them in grid order, while
+    # the Dict path has no table to sweep and emits them in order of first appearance.
+    # `combine_kpoint_grids` sorts the result either way. Only the dense one is reachable at these
+    # grid sizes, so call both directly on the same integer grid coordinates.
+    using ElectronPhonon: _combine_kq_dedup_dense, _combine_kq_dedup_dict, _grid_coords_reduced
     Random.seed!(333)
     ngrid_kq = (4, 6, 5)
     for sgn in (1, -1)
         # Coordinates repeat across pairs, so both paths must hit their "already seen" branch.
-        BkS = [Vec3(rand(-6:6, 3)) for _ in 1:20]
-        BqS = [Vec3(rand(-6:6, 3)) for _ in 1:20]
+        BkS = [_grid_coords_reduced(Vec3(rand(-6:6, 3)), ngrid_kq) for _ in 1:20]
+        BqS = [_grid_coords_reduced(Vec3(rand(-6:6, 3)), ngrid_kq) for _ in 1:20]
         shift_kq = Vec3(0.0, 1/12, 0.0)
         xkqs_dense = _combine_kq_dedup_dense(BkS, BqS, sgn, ngrid_kq, shift_kq)
         xkqs_dict = _combine_kq_dedup_dict(BkS, BqS, sgn, ngrid_kq, shift_kq)
         @test 0 < length(xkqs_dense) < length(BkS) * length(BqS)  # de-duplication happened
-        @test xkqs_dense == xkqs_dict
+        @test sort(xkqs_dense) == sort(xkqs_dict)
+        @test issorted(xkqs_dense; by = x -> round.(Int, (x - shift_kq).data .* ngrid_kq))
+    end
+
+    # Both paths fold with `_wrap_reduced` and write their table under `@inbounds`, so an unreduced
+    # coordinate would be memory corruption rather than a wrong answer. The precondition is checked
+    # once per list at entry; without that check this call segfaults.
+    let ngrid_kq = (4, 6, 5), shift_kq = Vec3(0.0, 0.0, 0.0)
+        raw = [Vec3(7, -3, 11)]
+        ok = [Vec3(1, 2, 3)]
+        @test_throws ArgumentError _combine_kq_dedup_dense(raw, ok, -1, ngrid_kq, shift_kq)
+        @test_throws ArgumentError _combine_kq_dedup_dense(ok, raw, -1, ngrid_kq, shift_kq)
+        @test_throws ArgumentError _combine_kq_dedup_dict(raw, ok, 1, ngrid_kq, shift_kq)
     end
 
     # Overflow guard: prod(ngrid) must fit in Int (checked in the GridKpoints constructor).
