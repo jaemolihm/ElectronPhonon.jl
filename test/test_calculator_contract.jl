@@ -89,8 +89,7 @@ ElectronPhonon.calculator_begin!(c::_ModeDispatchCalc, ::OuterIterationBatch, ::
 
     # `_ModeDispatchCalc` defines only OuterIteration/SingleMode and OuterIterationBatch/BatchedMode.
     # There is no default bracket, so the other two (scope, mode) combinations ERROR — a missing
-    # bracket is loud, not a silent no-op. The two defined combinations still select by MODE, not
-    # backend (the batched loop fires the per-k `OuterIteration` in BatchedMode).
+    # bracket is loud, not a silent no-op. The two defined combinations select by MODE, not backend.
     c = _ModeDispatchCalc()
     calculator_begin!(c, OuterIteration(), ctx_pt)                                  # -> (:iter, :point)
     @test_throws ErrorException calculator_begin!(c, OuterIteration(), ctx_bt)       # no BatchedMode method
@@ -98,15 +97,20 @@ ElectronPhonon.calculator_begin!(c::_ModeDispatchCalc, ::OuterIterationBatch, ::
     @test_throws ErrorException calculator_begin!(c, OuterIterationBatch(), ctx_pt)  # no SingleMode method
     @test c.fired == [(:iter, :point), (:batch, :batched)]
 
-    # The reference calculators dispatch their real brackets by mode, not backend, and every combination
-    # the loops fire resolves to a calculator-owned method — never the AbstractCalculator error fallback.
-    # BoltzmannCalculator does real work in OuterIteration/SingleMode and defines an explicit no-op for
-    # OuterIteration/BatchedMode (the batched outer-k loop fires the per-k bracket on a device backend).
+    # The reference calculators dispatch their real brackets by mode, not backend, and every
+    # combination the loops FIRE resolves to a calculator-owned method — never the AbstractCalculator
+    # error fallback. For BoltzmannCalculator those are OuterIteration/SingleMode (the CPU outer-k
+    # loop) and OuterIterationBatch/BatchedMode (the GPU outer-k loop). OuterIteration/BatchedMode is
+    # NOT one of them: the GPU outer-k loop runs its q-tile loop outside the k loop, so a single k has
+    # no begin/end point and no per-k bracket is fired; that combination correctly falls through to
+    # the erroring fallback, which is what makes a calculator relying on it fail loudly.
     BC = ElectronPhonon.BoltzmannCalculator
     m_single = which(calculator_begin!, (BC, OuterIteration, LoopContext{CPUBackend, SingleMode}))
     @test Base.unwrap_unionall(m_single.sig).parameters[2] !== AbstractCalculator
-    m_batched = which(calculator_begin!, (BC, OuterIteration, LoopContext{CPUBackend, BatchedMode}))
-    @test Base.unwrap_unionall(m_batched.sig).parameters[2] !== AbstractCalculator
+    m_batch = which(calculator_begin!, (BC, OuterIterationBatch, LoopContext{CPUBackend, BatchedMode}))
+    @test Base.unwrap_unionall(m_batch.sig).parameters[2] !== AbstractCalculator
+    m_unfired = which(calculator_begin!, (BC, OuterIteration, LoopContext{CPUBackend, BatchedMode}))
+    @test Base.unwrap_unionall(m_unfired.sig).parameters[2] === AbstractCalculator
 
     # Backend-routed `to_device`: the CPU backend is an identity (no CUDA needed on the host path).
     v = [1.0, 2.0, 3.0]

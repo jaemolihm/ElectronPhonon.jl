@@ -137,75 +137,81 @@ function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantitie
     (; need_vfull, need_vdiag, need_position) = _electron_state_needs(model, quantities)
 
     backend = gpu_backend()
-    E = nothing; U = nothing; rbar = nothing; vel = nothing
     itp_elham = get_interpolator(to_device(backend, model.el_ham); fourier_mode="batched", batch_size=kpts.n)
+
     if quantities == ["eigenvalue"]
         E = Array(get_el_eigen_valueonly_batched(itp_elham, kpts.vectors))
+        return _scatter_electron_states!(states, kpts.vectors, window, E, nothing, nothing, nothing,
+                                        need_vfull, need_vdiag)
+    end
+
+    E_dev, U_dev = get_el_eigen_batched(itp_elham, kpts.vectors)
+    rbar_dev = if need_position
+        itp_pos = get_interpolator(to_device(backend, model.el_pos); fourier_mode="batched", batch_size=kpts.n)
+        get_el_velocity_direct_batched(itp_pos, kpts.vectors, U_dev)
     else
-        E_dev, U_dev = get_el_eigen_batched(itp_elham, kpts.vectors)
-        E = Array(E_dev); U = Array(U_dev)
-        rbar_dev = nothing
-        if need_position
-            itp_pos = get_interpolator(to_device(backend, model.el_pos); fourier_mode="batched", batch_size=kpts.n)
-            rbar_dev = get_el_velocity_direct_batched(itp_pos, kpts.vectors, U_dev)
-            rbar = Array(rbar_dev)
+        nothing
+    end
+    vel_dev = if need_vfull || need_vdiag
+        Mop = if el_velocity_mode === :Direct
+            model.el_vel
+        elseif el_velocity_mode === :BerryConnection
+            model.el_ham_R
+        else
+            throw(ArgumentError("unknown el_velocity_mode $el_velocity_mode"))
         end
-        if need_vfull || need_vdiag
-            Mop = if el_velocity_mode === :Direct
-                model.el_vel
-            elseif el_velocity_mode === :BerryConnection
-                model.el_ham_R
-            else
-                throw(ArgumentError("unknown el_velocity_mode $el_velocity_mode"))
-            end
-            itp_vel = get_interpolator(to_device(backend, Mop); fourier_mode="batched", batch_size=kpts.n)
-            vel_dev = get_el_velocity_direct_batched(itp_vel, kpts.vectors, U_dev)
-            if el_velocity_mode === :BerryConnection && need_vfull
-                nk = kpts.n
-                vel_dev .+= im .* (reshape(E_dev, nw, 1, 1, nk) .- reshape(E_dev, 1, nw, 1, nk)) .* rbar_dev
-            end
-            vel = Array(vel_dev)
+        itp_vel = get_interpolator(to_device(backend, Mop); fourier_mode="batched", batch_size=kpts.n)
+        v_dev = get_el_velocity_direct_batched(itp_vel, kpts.vectors, U_dev)
+        if el_velocity_mode === :BerryConnection && need_vfull
+            nk = kpts.n
+            v_dev .+= im .* (reshape(E_dev, nw, 1, 1, nk) .- reshape(E_dev, 1, nw, 1, nk)) .* rbar_dev
         end
+        v_dev
+    else
+        nothing
     end
 
-    # Copy the batched device results into the per-k states (on the host).
-    @threads for iks in chunks(kpts.vectors; n=2nthreads())
+    _scatter_electron_states!(states, kpts.vectors, window, Array(E_dev), Array(U_dev),
+                             rbar_dev === nothing ? nothing : Array(rbar_dev),
+                             vel_dev === nothing ? nothing : Array(vel_dev),
+                             need_vfull, need_vdiag)
+end
+
+# Function barrier: `U`/`rbar`/`vel` are `nothing` or an `Array` depending on `quantities`, so they
+# must arrive as typed arguments for the reads below to be static.
+function _scatter_electron_states!(states::Vector{ElectronState{FT}}, xks, window, E, U, rbar, vel,
+                                   need_vfull, need_vdiag) where FT
+    @threads for iks in chunks(xks; n=2nthreads())
         for ik in iks
-            xk = kpts.vectors[ik]
             el = states[ik]
-
-            if quantities == ["eigenvalue"]
-                el.xk = xk; @views el.e_full .= E[:, ik]; el.nband = 0; el.rng = 1:0
-                set_window!(el, _window_for(window, ik))
-            else
-                el.xk = xk
-                @views el.e_full .= E[:, ik]
-                @views el.u_full .= U[:, :, ik]
-                el.nband = 0; el.rng = 1:0
-                set_window!(el, _window_for(window, ik))
-                r = el.rng
-                if need_position
-                    rbar_w = reshape(reinterpret(Complex{FT}, no_offset_view(el.rbar)), 3, el.nband, el.nband)
-                    @views for idir in 1:3
-                        rbar_w[idir, :, :] .= rbar[r, r, idir, ik]
-                    end
-                end
-                if need_vfull
-                    v_w = reshape(reinterpret(Complex{FT}, no_offset_view(el.v)), 3, el.nband, el.nband)
-                    @views for idir in 1:3
-                        v_w[idir, :, :] .= vel[r, r, idir, ik]
-                    end
-                    for i in el.rng
-                        el.vdiag[i] = real.(el.v[i, i])
-                    end
-                elseif need_vdiag
-                    for i in el.rng
-                        el.vdiag[i] = real.(Vec3(vel[i, i, 1, ik], vel[i, i, 2, ik], vel[i, i, 3, ik]))
-                    end
+            el.xk = xks[ik]
+            @views el.e_full .= E[:, ik]
+            U === nothing || (@views el.u_full .= U[:, :, ik])
+            el.nband = 0; el.rng = 1:0
+            set_window!(el, _window_for(window, ik))
+            U === nothing && continue
+            r = el.rng
+            if rbar !== nothing
+                rbar_w = reshape(reinterpret(Complex{FT}, no_offset_view(el.rbar)), 3, el.nband, el.nband)
+                @views for idir in 1:3
+                    rbar_w[idir, :, :] .= rbar[r, r, idir, ik]
                 end
             end
-        end
-    end
+            if need_vfull
+                v_w = reshape(reinterpret(Complex{FT}, no_offset_view(el.v)), 3, el.nband, el.nband)
+                @views for idir in 1:3
+                    v_w[idir, :, :] .= vel[r, r, idir, ik]
+                end
+                for i in el.rng
+                    el.vdiag[i] = real.(el.v[i, i])
+                end
+            elseif need_vdiag
+                for i in el.rng
+                    el.vdiag[i] = real.(Vec3(vel[i, i, 1, ik], vel[i, i, 2, ik], vel[i, i, 3, ik]))
+                end
+            end
+        end  # ik
+    end  # iks
 end
 
 """
@@ -282,6 +288,7 @@ function _compute_phonon_states_gpu!(states, model::Model{FT}, kpts, quantities,
     need_velocity = "velocity_diagonal" ∈ quantities
     polar = model.polar_phonon
     polar.use && error("compute_phonon_states use_gpu does not support polar phonons")
+    "velocity" ∈ quantities && error("full velocity for phonons not implemented")
 
     backend = gpu_backend()
     itp_dyn = get_interpolator(to_device(backend, model.ph_dyn); fourier_mode="batched", batch_size=kpts.n)
@@ -292,37 +299,53 @@ function _compute_phonon_states_gpu!(states, model::Model{FT}, kpts, quantities,
     E_dev, U_dev = eigen_batched(D)              # E_dev = ω² (nmodes,nq), U_dev (nmodes,nmodes,nq)
     U_dev ./= reshape(msqrt_d, nmodes, 1, 1)     # eigenvector mass factor: u[i,:] /= sqrt(mass[i])
     E = Array(sign.(E_dev) .* sqrt.(abs.(E_dev)))  # ω = sign(ω²)·√|ω²|
-    U = Array(U_dev)
-    vel = nothing
-    if need_velocity
+    U = quantities == ["eigenvalue"] ? nothing : Array(U_dev)
+    vel = if need_velocity
         itp_phvel = get_interpolator(to_device(backend, model.ph_dyn_R); fourier_mode="batched", batch_size=kpts.n)
-        vel = Array(get_el_velocity_direct_batched(itp_phvel, kpts.vectors, U_dev))
+        Array(get_el_velocity_direct_batched(itp_phvel, kpts.vectors, U_dev))
+    else
+        nothing
     end
 
-    # Copy the batched device results into the per-q states (on the host).
-    @threads for iks in chunks(kpts.vectors; n = nthreads())
-        for ik in iks
-            xk = kpts.vectors[ik]
-            ph = states[ik]
+    _scatter_phonon_states!(states, kpts.vectors, E, U, vel,
+                            "eph_dipole_coeff" ∈ quantities, eph_phonon_basis, polar)
+end
 
-            if quantities == ["eigenvalue"]
-                ph.xq = xk; @views ph.e .= E[:, ik]
-            else
-                ph.xq = xk; @views ph.e .= E[:, ik]; @views ph.u .= U[:, :, ik]
-                if "velocity" ∈ quantities
-                    # not implemented
-                    error("full velocity for phonons not implemented")
-                elseif "velocity_diagonal" ∈ quantities
-                    for i in 1:nmodes
-                        ph.vdiag[i] = real.(Vec3(vel[i, i, 1, ik], vel[i, i, 2, ik], vel[i, i, 3, ik])) ./ (2 * ph.e[i])
-                    end
-                end
-                if "eph_dipole_coeff" ∈ quantities
-                    # Use ph.u for eigenmode basis, nothing for Cartesian basis
-                    u_ph_for_dipole = (eph_phonon_basis == :eigenmode) ? ph.u : nothing
-                    get_eph_dipole_coeffs!(ph.eph_dipole_coeff, ph.eph_r_coeff, xk, polar, u_ph_for_dipole)
+# Function barrier: `U`/`vel` are `nothing` or an `Array` depending on `quantities`, so they must
+# arrive as typed arguments for the reads below to be static.
+#
+# TODO: replace the `Vector{PhononState}` with a struct-of-arrays `BatchedPhononState{T, AT}` holding
+# the whole q-grid in dense stacks — `e` (nmodes, nq), `u` (nmodes, nmodes, nq), `vdiag`,
+# `eph_dipole_coeff` — with `AT` selecting host or device storage, so the same type serves both
+# backends and the GPU path never leaves the device. A `Vector` of per-q mutable structs costs ~13
+# allocations and ~1.5 kB per q point, which at the q-grids the outer-k driver builds (nq = 6.9 M for
+# Cu at nk = 200) is ~90 M allocations and ~10 GiB of churn, most of the setup's GC time.
+# `_loop_eph_over_k_and_kq_gpu` shows how little of it is wanted: it reads only `.u` and `.e`, and
+# gathers them straight back into dense stacks to re-upload — data `E_dev`/`U_dev` above already hold
+# on the device — while `velocity_diagonal` and `eph_dipole_coeff`, which that driver requests, are
+# never read. Measured on Cu at nq = 436 k: 1.62 s / 5.67 M allocations / 669 MiB for the per-q
+# states, versus 0.60 s / ~3 k allocations for the device stacks alone.
+# Blast radius: `PhononState` is also consumed per-q by the CPU drivers (`epstate.ph = ph_save[iq]`),
+# `run_eph_over_q_and_k`, `wfpt.jl`, `run_coherence.jl` and `gamma_adaptive.jl`, so a per-q view into
+# the batch has to keep the `set_*!`/`copyto!` interface those rely on.
+function _scatter_phonon_states!(states, xqs, E, U, vel, need_dipole, eph_phonon_basis, polar)
+    @threads for iqs in chunks(xqs; n = nthreads())
+        for iq in iqs
+            ph = states[iq]
+            ph.xq = xqs[iq]
+            @views ph.e .= E[:, iq]
+            U === nothing && continue
+            @views ph.u .= U[:, :, iq]
+            if vel !== nothing
+                for i in 1:ph.nmodes
+                    ph.vdiag[i] = real.(Vec3(vel[i, i, 1, iq], vel[i, i, 2, iq], vel[i, i, 3, iq])) ./ (2 * ph.e[i])
                 end
             end
-        end  # ik
-    end  # iks
+            if need_dipole
+                # Use ph.u for eigenmode basis, nothing for Cartesian basis
+                u_ph_for_dipole = (eph_phonon_basis == :eigenmode) ? ph.u : nothing
+                get_eph_dipole_coeffs!(ph.eph_dipole_coeff, ph.eph_r_coeff, ph.xq, polar, u_ph_for_dipole)
+            end
+        end  # iq
+    end  # iqs
 end

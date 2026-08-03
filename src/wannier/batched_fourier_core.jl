@@ -7,6 +7,30 @@ _alloc_array(parent::WannierObject, ::Type{S}, dims...) where {S} = similar(pare
 
 
 """
+    fourier_phase!(phase, irvec_mat, xkmat)
+
+Wannier → Bloch phase matrix `phase[ip, j] = exp(2πi R_p · x_j)` for the R-vectors in `irvec_mat`
+(`(nr × 3)` real, row `ip` = `R_p`) and the crystal-coordinate points in `xkmat` (`(3 × nk)` real).
+All three arrays live on the same backend; the whole thing is a single broadcast (no scalar
+indexing, no scratch), so it runs unchanged on CPU and GPU.
+
+Stateless on purpose: the phase depends only on `(R_p, x)`, so a caller whose `x` list is
+loop-invariant can build it once and apply it many times (this is what the GPU outer-k e-ph loop
+does with its k+q-convention phase tile).
+"""
+# `phase` is `(nr, nk)`: entry `[ir, ik]` is `exp(2πi R[ir] · x[ik])`, an outer product over the
+# `(nr × 3)` R-vectors and the `(3 × nk)` crystal coordinates. Verified allocation-free (`@allocated`
+# returns 0 on CPU), so it needs no `rdotk` temporary.
+function fourier_phase!(phase, irvec_mat, xkmat)
+    # `xkmat[d:d, :]` is the `1 × nk` row of coordinate `d`, broadcast against the `nr` R-vectors.
+    @views phase .= cispi.(2 .* (irvec_mat[:, 1] .* xkmat[1:1, :] .+
+                                 irvec_mat[:, 2] .* xkmat[2:2, :] .+
+                                 irvec_mat[:, 3] .* xkmat[3:3, :]))
+    phase
+end
+
+
+"""
     BatchedFourierCore{T, WT, MC, MR}
 
 Stateless whole-batch Wannier → Bloch Fourier engine. Holds only the persistent GEMM scratch
@@ -34,7 +58,6 @@ struct BatchedFourierCore{T, WT <: AbstractWannierObject, MC, MR}
     irvec_mat::MR
 
     # Scratch for the batched phase computation, on parent's backend
-    rdotk::MR                # (nr × batch_cap) real, scratch for irvec·k
     phase::MC                # (nr × batch_cap) complex
 
     # Persistent k-point matrix (3 × batch_cap): built on the host, copied to the backend.
@@ -45,39 +68,27 @@ end
 function BatchedFourierCore(parent::WT; batch_cap::Int=32) where {WT <: AbstractWannierObject{T}} where {T}
     nr = length(parent.irvec)
 
-    # R-vectors as an (nr × 3) real matrix on the backend, for the GEMM phase computation.
-    irvec_host = Matrix{T}(undef, nr, 3)
-    for ir in 1:nr, d in 1:3
-        irvec_host[ir, d] = parent.irvec[ir][d]
-    end
-    irvec_mat = _alloc_array(parent, T, nr, 3)
-    copyto!(irvec_mat, irvec_host)
-
-    rdotk = _alloc_array(parent, T, nr, batch_cap)
+    irvec_mat = _irvec_to_device_matrix(parent.irvec, parent, T)
     phase = _alloc_array(parent, Complex{T}, nr, batch_cap)
 
     xkmat_host = Matrix{T}(undef, 3, batch_cap)
     xkmat = _alloc_array(parent, T, 3, batch_cap)
 
     BatchedFourierCore{T, WT, typeof(phase), typeof(irvec_mat)}(
-        parent, batch_cap, irvec_mat, rdotk, phase, xkmat_host, xkmat)
+        parent, batch_cap, irvec_mat, phase, xkmat_host, xkmat)
 end
 
 
 """
-    fourier_batched!(out, core::BatchedFourierCore, xks)
+    _build_phase!(core::BatchedFourierCore, xks) -> view of `core.phase`
 
-Fourier-transform `core.parent` at all k-points in `xks` at once, writing into `out`
-(`(ndata, length(xks))` on the backend of `core.parent.op_r`). `length(xks)` must be
-`≤ core.batch_cap`. Uses one GEMM for the phases (`irvec_mat * xkmat`) and one GEMM for the
-transform (`op_r * phase`), so it works on any backend (no scalar indexing of device buffers).
+Stage the k-points `xks` into `core`'s persistent `(3 × batch_cap)` k-matrix and build
+`core.phase[:, 1:nk] = exp(2πi R · x)` there, returning that view. `length(xks) ≤ core.batch_cap`.
 """
-function fourier_batched!(out, core::BatchedFourierCore{T, WT}, xks) where {T, WT}
-    (; parent, irvec_mat, rdotk, phase, xkmat_host, xkmat) = core
-    ndata = parent.ndata
+function _build_phase!(core::BatchedFourierCore, xks)
+    (; irvec_mat, phase, xkmat_host, xkmat) = core
     nk = length(xks)
     @assert nk <= core.batch_cap
-    @assert size(out) == (ndata, nk)
 
     # k-point matrix (3 × nk), built in the persistent host buffer then copied to the backend.
     # For a CPU parent this copy is a redundant host→host move, but it is what lets the same code
@@ -90,8 +101,26 @@ function fourier_batched!(out, core::BatchedFourierCore{T, WT}, xks) where {T, W
     # host-SubArray → device-view `copyto!` would fall back to scalar indexing on the GPU).
     copyto!(xkmat, 1, xkmat_host, 1, 3 * nk)
 
-    @views mul!(rdotk[:, 1:nk], irvec_mat, xkmat[:, 1:nk])       # (nr × nk) real
-    @views @. phase[:, 1:nk] = cispi(2 * rdotk[:, 1:nk])
+    @views fourier_phase!(phase[:, 1:nk], irvec_mat, xkmat[:, 1:nk])
+    @view phase[:, 1:nk]
+end
+
+
+"""
+    fourier_batched!(out, core::BatchedFourierCore, xks)
+
+Fourier-transform `core.parent` at all k-points in `xks` at once, writing into `out`
+(`(ndata, length(xks))` on the backend of `core.parent.op_r`). `length(xks)` must be
+`≤ core.batch_cap`. Uses one broadcast for the phases ([`fourier_phase!`](@ref)) and one GEMM for
+the transform (`op_r * phase`), so it works on any backend (no scalar indexing of device buffers).
+"""
+function fourier_batched!(out, core::BatchedFourierCore{T, WT}, xks) where {T, WT}
+    (; parent, phase) = core
+    ndata = parent.ndata
+    nk = length(xks)
+    @assert size(out) == (ndata, nk)
+
+    _build_phase!(core, xks)
 
     if WT <: DiskWannierObject
         # For disk objects, still need to loop over R

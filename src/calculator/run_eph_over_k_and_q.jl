@@ -151,7 +151,7 @@ function _setup_eph_over_k_and_q(
         end
         el_kq_save = _compute_electron_states_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
             symmetry, el_kq_from_unfolding, window_kq;
-            quantities=["eigenvalue", "eigenvector", "velocity", "position"], fourier_mode)
+            quantities=["eigenvalue", "eigenvector", "velocity", "position"], fourier_mode, verbosity)
     else
         kqpts = nothing
         el_kq_save = nothing

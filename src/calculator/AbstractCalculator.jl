@@ -18,7 +18,8 @@ Users subtype `AbstractCalculator` and implement:
   around one outer iteration (`OuterIteration()`) or one batch of outer iterations
   (`OuterIterationBatch()`). There is NO default: a calculator must define these for every
   (scope, loop-mode) combination its supported loops fire, even as an explicit no-op (`= nothing`);
-  a missing method is a loud error, not a silent skip.
+  a missing method is a loud error, not a silent skip. The GPU outer-k loop fires only
+  `OuterIterationBatch` (see the bracket comment below).
 
 Optionally:
 * `eph_batched_bytes_per_point(calc, PayloadType; nw, nmodes)` — per-point device scratch (bytes)
@@ -168,9 +169,12 @@ struct OuterIterationBatch end   # one batch of consecutive outer iterations (GP
 # (scope, loop-mode) combination the drivers fire on it, even when it wants a no-op — a missing
 # method is a loud error, never a silent skip (a silently-skipped bracket is a hard-to-find bug). The
 # combinations follow what the calculator `supports`: OuterIteration/SingleMode (CPU loops),
-# OuterIteration/BatchedMode (GPU outer-k per-k bracket; GPU outer-q per-q accumulator), and
-# OuterIterationBatch/BatchedMode (GPU outer-k per-batch). OuterIterationBatch/SingleMode is never
-# fired. A calculator that does nothing at a scope defines an explicit no-op (`= nothing`).
+# OuterIteration/BatchedMode (GPU outer-q per-q accumulator), and OuterIterationBatch/BatchedMode
+# (GPU outer-k per-batch). OuterIterationBatch/SingleMode is never fired, and neither is
+# OuterIteration/BatchedMode in the GPU OUTER-K loop: there the q-tile loop runs outside the k loop,
+# so a single k's work is spread over the whole batch and has no per-k begin/end point — a
+# calculator needing a per-k device reduction there must do it at OuterIterationBatch scope.
+# A calculator that does nothing at a scope defines an explicit no-op (`= nothing`).
 function calculator_begin!(calc::AbstractCalculator, scope, ctx)
     error("calculator_begin!($(typeof(calc)), ::$(typeof(scope)), ::$(typeof(ctx))) is not " *
           "defined. Every calculator must define the begin/end brackets for the (scope, loop-mode) " *

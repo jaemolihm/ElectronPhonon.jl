@@ -77,18 +77,20 @@ on the host).
 The existing `BatchedWannierInterpolator` (`src/wannier/batched_interpolator.jl`) is the single
 batching mechanism for CPU and GPU:
 
-- Buffer fields (`cached_results`, `phase_batch`, `rdotk`, `out`, …) follow the backend of
+- Buffer fields (`cached_results`, `phase_batch`, `out`, …) follow the backend of
   `parent.op_r` (allocated via `similar`; host fallback for `DiskWannierObject`).
-- The phase computation is a GEMM + broadcast (no scalar indexing), so it runs on any backend
-  and is faster on the CPU too:
+- The phase computation is a single fused broadcast (no scalar indexing, no `nr × batch` real
+  scratch), so it runs on any backend and is faster on the CPU too:
 
   ```julia
   # irvec_mat :: (nr × 3) real, on backend (built once in the constructor)
   # xkmat     :: (3 × batch) real, on backend
-  mul!(rdotk, irvec_mat, xkmat)              # (nr × batch) real    GEMM
-  phase_batch .= cispi.(2 .* rdotk)          # (nr × batch) complex broadcast
-  mul!(cached_results, op_r, phase_batch)    # (ndata × batch) GEMM → op_k for all k
+  fourier_phase!(phase_batch, irvec_mat, xkmat)   # (nr × batch) complex, one broadcast
+  mul!(cached_results, op_r, phase_batch)         # (ndata × batch) GEMM → op_k for all k
   ```
+
+  `fourier_phase!` is stateless, so a caller whose k-list is loop-invariant can build one phase
+  matrix and reuse it — which is what the GPU outer-k e-ph loop does (next section).
 
 - The per-k query API (`register_kpoints!` + sequential `get_fourier!`) used by the calculators
   is unchanged. A new whole-batch entry point `get_fourier_batched!(out, itp, xk_list)` returns
@@ -145,7 +147,14 @@ device loop. `use_gpu` is the only user-facing switch; below the driver entry a 
 (`CPUBackend()` / `GPUBackend(proto)`) is resolved once, uploaded `to_device(model.epmat)` once,
 and carried in `LoopContext`. The CPU loop and per-(k,q) CPU e-ph functions are unchanged. The GPU
 outer-k loop processes a batch of outer k with one list-batched `get_eph_RR_to_kR_batched!` and
-batches the inner `ikq` loop (in batches of `nq_batch_max`) through one `get_eph_kR_to_kq_batched!`.
+batches the inner `ikq` loop (in tiles of `nq_batch_max`) through one `get_eph_kR_to_kq_batched!`.
+
+Its nesting is `k-batch -> q-tile -> k -> q(device)`: the q-tile loop sits **outside** the per-k
+loop. `get_eph_RR_to_kR_batched!` stores the kR intermediate in the **k+q convention**
+(`g̃(k, R_p) = conj(exp(2πi R_p·x_k)) · g(k, R_p)`, folded into its output copy via the
+`additional_phase` argument), so the kR→kq Fourier phase is `exp(2πi R_p·x_{k+q})` — built from
+the fixed k+q list and therefore identical for every k of the batch. One built phase tile is reused
+by all `nk_outer_batch_max` outer k, and the q-vector never enters the interpolation.
 
 To run on the GPU a calculator opts into a **device-native batched payload** so the e-ph matrix for
 a whole batch stays on the device and the reduction/scatter happens there. Each loop has its own
@@ -155,7 +164,11 @@ payload, named for which momentum is the outer loop and which is batched on the 
   (1) declare `supports(calc, ::Type{EPDataQBatched}) = true` and (2) implement
   `run_calculator!(calc, p::EPDataQBatched, ctx)`. The payload `p` carries the batch's
   `eps` / `g2s` / `ωqs` on the device plus `ik`, `ikqs`, `ibandk_offset`. The loop calls it once
-  per `(k, {k+q})` batch (outer k is still serial: one `OuterIteration` bracket + payload per k).
+  per `(k, q-tile)`, once per outer k when there is a single q-tile. Outer k is still serial and
+  each payload carries exactly one `ik`, but a k's q-tiles are **not** contiguous (the tile loop is
+  outside the k loop), and this loop fires **only** the `OuterIterationBatch` bracket — there is no
+  per-k `OuterIteration` bracket in the batched outer-k loop. A calculator that needs a per-k device
+  reduction must do it at `OuterIterationBatch` scope.
 - **Outer-q loop (`run_eph_over_q_and_k`, outer q / inner k batched).** A calculator MUST
   (1) declare `supports(calc, ::Type{EPDataKBatched}) = true` and (2) implement
   `run_calculator!(calc, p::EPDataKBatched, ctx)`. The payload carries `eps`, k/k+q
@@ -187,7 +200,7 @@ payload, named for which momentum is the outer loop and which is batched on the 
 **Distinguishing the per-point host loop from the device-batched loop.** `LoopContext` carries a
 loop *mode* (`SingleMode` / `BatchedMode`) that names the loop shape independently of the backend.
 Hooks a calculator shares between the two loop shapes — most commonly the `OuterIteration` brackets,
-which the batched outer-k loop *also* fires per k — must key off the mode, not the backend: either
+which the batched outer-**q** loop also fires per q — must key off the mode, not the backend: either
 dispatch (`ctx::LoopContext{<:AbstractBackend, SingleMode}` vs `{<:AbstractBackend, BatchedMode}`, as
 `BoltzmannCalculator` / `EliashbergCalculator` do) or branch at runtime on `ctx.mode isa BatchedMode`
 (as the outer-q calculators do). Dispatching these on `LoopContext{CPUBackend}` / `{<:GPUBackend}`

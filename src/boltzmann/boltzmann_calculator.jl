@@ -190,9 +190,8 @@ end
 # --- CPU (non-batched, EPData) path --------------------------------------------------
 
 # CPU path: zero the per-chunk thread buffers for the new outer k (the buffers are allocated in
-# `setup_calculator!`). Dispatched on `SingleMode`; in the batched loop (`BatchedMode`) the explicit
-# no-op below runs (the batched loop fires per-k OuterIteration brackets too, but the device buffers
-# live in OuterIterationBatch).
+# `setup_calculator!`). Dispatched on `SingleMode`; the batched outer-k loop fires no per-k
+# `OuterIteration` bracket at all — its device lifecycle lives in the OuterIterationBatch brackets.
 function calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIteration,
         ctx::LoopContext{CPUBackend, SingleMode}) where {FT}
     for c in eachindex(calc.Sₒ_buffer)
@@ -260,18 +259,13 @@ function calculator_end!(calc::BoltzmannCalculator, ::OuterIteration,
     calc
 end
 
-# GPU per-k OuterIteration bracket: no-op. The batched outer-k loop fires the per-k `OuterIteration`
-# brackets too (BatchedMode), but this calculator's per-k device work is none — its device buffers
-# are set up once and the per-batch tile lifecycle lives in the OuterIterationBatch brackets below.
-calculator_begin!(::BoltzmannCalculator, ::OuterIteration, ::LoopContext{<:AbstractBackend, BatchedMode}) = nothing
-calculator_end!(::BoltzmannCalculator,   ::OuterIteration, ::LoopContext{<:AbstractBackend, BatchedMode}) = nothing
-
 # --- GPU batched path (EPDataQBatched) -----------------------------------------------
 
 # Batched path: called by the GPU e-ph loop once per outer-k batch, before its k iterations. The
 # run's device buffers (`calc.dev`) were built once in `setup_calculator!`; here it only records this
-# batch's Sᵢ tile range and zeros the tile's active region (via `calc.tiled`). Dispatched on
-# `BatchedMode`; the per-point (`SingleMode`) path runs the default no-op.
+# batch's Sᵢ tile range and zeros the tile's active region (via `calc.tiled`). The `BatchedMode`
+# annotation records the only mode this scope is ever fired in (`OuterIterationBatch`/`SingleMode`
+# does not occur); brackets have no default, so this method is required rather than an override.
 function calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIterationBatch,
         ctx::LoopContext{<:AbstractBackend, BatchedMode}) where {FT}
     # Sᵢ tile for this batch (block mode: zeroed and its range recorded by the helper).

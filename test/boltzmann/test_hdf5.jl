@@ -101,5 +101,21 @@ end
     arr_read = @inferred test_hdf_io_btdata(arr)
     @test arr ≈ arr_read
 
-    # TODO: Kpoints, GridKpoints, ...
+    # GridKpoints: the xk->ik indices are derived caches, so they are not written and are rebuilt
+    # by the constructor on load.
+    kpts = GridKpoints(ElectronPhonon.kpoints_grid((2, 2, 3)))
+    kpts_read = test_hdf_io_btdata(kpts)
+    # Compare the written fields; the index maps are derived caches, rebuilt on load.
+    @test kpts_read.n == kpts.n
+    @test kpts_read.vectors == kpts.vectors
+    @test kpts_read.weights == kpts.weights
+    @test kpts_read.ngrid == kpts.ngrid
+    @test kpts_read.shift == kpts.shift
+    @test all(xk_to_ik.(kpts_read.vectors, Ref(kpts_read)) .== 1:kpts_read.n)
+    @test !isempty(kpts_read._dense_hash_to_ik)
+    h5open(joinpath(tmp_dir, "tmp_data.h5"), "r") do f
+        @test Set(keys(f)) == Set(["n", "vectors", "weights", "ngrid", "shift"])
+    end
+
+    # TODO: Kpoints, ...
 end

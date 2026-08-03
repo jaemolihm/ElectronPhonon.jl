@@ -153,7 +153,7 @@ end
 #  wins on the GPU. Rotation matrices are stacked along the batch dimension.
 
 """
-    get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat::BatchedWannierInterpolator, ks, uks)
+    get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat::BatchedWannierInterpolator, ks, uks; additional_phase=nothing)
 
 Batched over a list of k-points `ks`. `uks` is `(nw, nband, nk)` (one `uk` per k).
 Writes `ep_ekpR_all`, shape `(nw*nband*nmodes, nr_ep, nk)` — column `k` is the `op_r` of the
@@ -162,6 +162,13 @@ electron-Bloch / phonon-Wannier object at `ks[k]`.
 One batched Fourier (`get_fourier_batched!`) over `R_el`, then one `batched_gemm!` for the
 per-k rotation by `uk` (recast as `transpose(uk(k)) * permute(g(k))`).
 
+`additional_phase`, if given, is `(nr_ep × nk)` — one entry per (parent `irvec_next` R-vector, k) —
+and multiplies the output, so the stored child object is `additional_phase[ip, k] · g(k, R_p)`
+instead of the plain `g(k, R_p)`. It is folded into the final `copyto!`, which already reads and
+writes the whole array, so it costs nothing. The GPU outer-k loop passes `conj(exp(2πi R_p · x_k))`
+here to store `g` in the k+q convention, which makes the following `R_p` Fourier a function of
+`x_{k+q}` alone and hence independent of the outer `k`.
+
 Requires a UNIFORM `nband` across the batch: `ep_ekpR_all` is sized exactly
 `(nw*nband*nmodes, …)`, so all `nk` k-points must share the same `nband` (unlike the per-k
 `get_eph_RR_to_kR!`, which handles a per-k window). A windowed run satisfies this by projecting
@@ -169,7 +176,8 @@ every k onto the same `nbandk_max`-wide eigenvector window (`nband = nbandk_max`
 `nband = nw` special case.
 """
 function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
-                                   itp_epmat::BatchedWannierInterpolator{T}, ks, uks) where {T}
+                                   itp_epmat::BatchedWannierInterpolator{T}, ks, uks;
+                                   additional_phase=nothing) where {T}
     epmat = itp_epmat.parent
     nr_ep = length(epmat.irvec_next)
     nw, nband, nk = size(uks)
@@ -186,7 +194,13 @@ function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
     C = similar(g, Complex{T}, nband, nw * M, nk)
     batched_gemm!('T', 'N', uks, reshape(gp, nw, nw * M, nk), C)        # C(k)=transpose(uk(k))*gp(k)
     out = permutedims(reshape(C, nband, nw, M, nk), (2, 1, 3, 4))       # (nw, nband, M, k)
-    copyto!(ep_ekpR_all, reshape(out, nw * nband * nmodes, nr_ep, nk))
+    out3 = reshape(out, nw * nband * nmodes, nr_ep, nk)
+    if additional_phase === nothing
+        copyto!(ep_ekpR_all, out3)
+    else
+        @assert size(additional_phase) == (nr_ep, nk)
+        ep_ekpR_all .= out3 .* reshape(additional_phase, 1, nr_ep, nk)
+    end
     ep_ekpR_all
 end
 
@@ -211,43 +225,50 @@ function KRtoKQWorkspace(gpu_array, ndata::Int, nbandkq::Int, nbandk::Int, nmode
 end
 
 """
-    get_eph_kR_to_kq_batched!(ep_kq_all, itp_ep_ekpR::BatchedWannierInterpolator, qs, u_phs, ukqs; ws=nothing)
+    get_eph_kR_to_kq_batched!(ep_kq_all, ep_kR::AbstractMatrix, phase::AbstractMatrix, u_phs, ukqs; ws=nothing)
 
-Batched over a list of q-points `qs` (for a fixed k). `ukqs` is `(nw, nbandkq, nq)` and
+Batched over a list of q-points (for a fixed k). `ukqs` is `(nw, nbandkq, nq)` and
 `u_phs` is `(nmodes, nmodes, nq)`. Writes `ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nq)`.
 
 One batched Fourier over `R_ep`, then two `batched_gemm!`s for the per-q rotations
 (`ukq(q)'` on the left, `u_ph(q)` on the right).
+
+The three inputs are the kR intermediate `g(k, R_p)` as `ep_kR`, `(nw*nbandk*nmodes, nr)`; the
+Fourier phase `exp(2πi R_p · x_q)` as `phase`, `(nr, nq)`; and the rotations. Taking the phase
+rather than a q-list is what lets a caller build it once and reuse it over many `k` — the GPU
+outer-k loop does that via the k+q convention of [`get_eph_RR_to_kR_batched!`](@ref).
 
 Pass a [`KRtoKQWorkspace`](@ref) as `ws` (sized for at least this `nq`) to reuse the `g` / `tmp`
 scratch across calls instead of allocating it each call — the per-k hot path in the GPU loop does
 this, sizing `ws` for the max batch width and passing `nq ≤` that for a partial final batch.
 """
 function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
-                                   itp_ep_ekpR::BatchedWannierInterpolator{T}, qs, u_phs, ukqs;
+                                   ep_kR::AbstractMatrix, phase::AbstractMatrix, u_phs, ukqs;
                                    ws::Union{Nothing,KRtoKQWorkspace}=nothing,
                                    g2_out=nothing, ωq=nothing) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
+    ndata = nw * nbandk * nmodes
     @assert size(ukqs) == (nw, nbandkq, nq)
     @assert size(u_phs) == (nmodes, nmodes, nq)
-    parent = itp_ep_ekpR.parent
-    @assert parent.ndata == nw * nbandk * nmodes
+    @assert size(ep_kR, 1) == ndata
+    @assert size(phase) == (size(ep_kR, 2), nq)
 
     if ws === nothing
-        g   = similar(parent.op_r, Complex{T}, parent.ndata, nq)
-        tmp = similar(parent.op_r, Complex{T}, nbandkq, nbandk * nmodes, nq)
+        g   = similar(ep_kR, Complex{T}, ndata, nq)
+        tmp = similar(ep_kR, Complex{T}, nbandkq, nbandk * nmodes, nq)
     else
         # `ws` is sized for the max batch width; use the first `nq` columns (a partial final batch
         # passes nq < capacity), so the whole loop runs without padding the batch back up.
-        @assert size(ws.g, 1) == parent.ndata && size(ws.g, 2) >= nq
+        @assert size(ws.g, 1) == ndata && size(ws.g, 2) >= nq
         @assert size(ws.tmp, 1) == nbandkq && size(ws.tmp, 2) == nbandk * nmodes && size(ws.tmp, 3) >= nq
         g   = view(ws.g, :, 1:nq)
         tmp = view(ws.tmp, :, :, 1:nq)
     end
 
-    get_fourier_batched!(g, itp_ep_ekpR, qs)                           # (nw*nbandk*nmodes, nq)
-    eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp; g2_out, ωq)
+    mul!(g, ep_kR, phase)                                              # (nw*nbandk*nmodes, nq)
+    eph_apply_rotations!(ep_kq_all, reshape(g, nw, nbandk, nmodes, nq), ukqs, u_phs, tmp;
+                         g2_out, ωq)
     ep_kq_all
 end
 
@@ -371,23 +392,59 @@ function add_eph_dipole_batched!(eps, coeffs, ukqs, uks, mmats)
     eps
 end
 
+# Above this `nw*nmodes` the two rotation GEMMs are large enough that cuBLAS beats the CUDA
+# extension's fused kernel; see `_fused_eph_rot_kernel!` for the full rationale. It lives here
+# rather than in the extension so the base package documents the crossover the generic
+# `eph_apply_rotations!` docstring refers to. The crossover is hardware-dependent: the value was
+# tuned on one GPU and should be retuned elsewhere.
+#
+# Measured, so it does not get removed as a "small-size optimization": at nw=7, nmodes=3 (Cu,
+# ndata=21) the fused kernel is **1.51x faster than cuBLAS** — 34% less wall on the whole outer-k
+# BTE loop, 31.07 s vs 47.00 s at nk=150 on an A100-80GB. Note the two paths are not bit-identical
+# (the fused one folds g2 = |ep|^2/(2w) from registers instead of in a second full-array pass), so
+# compare them with a tolerance, not bitwise.
+const _FUSED_ROT_MAX_NWNM = 24
+
+# The two-GEMM rotation paths merge `g`'s band and mode axes with a `reshape`, which needs `g` to be
+# densely packed — a reshape of a strided view is a `ReshapedArray`, which the batched GEMMs reject.
+# A non-strided array is `false`, not an error, so the caller's own assertion message is what the
+# user sees. Axes of length 1 carry no meaningful stride, so they are skipped.
+# Necessary but not sufficient on the device: a `view` that drops an axis can be dense and still
+# reshape to a pointerless `ReshapedArray`, while a contiguous 2-D column slice reshapes back to a
+# plain device array. Callers must hand over an operand that survives the reshape.
+function _is_dense(a::AbstractArray)
+    a isa StridedArray || return false
+    st, sz = strides(a), size(a)
+    expected = 1
+    for d in eachindex(sz)
+        (sz[d] == 1 || st[d] == expected) || return false
+        expected *= sz[d]
+    end
+    true
+end
+
 """
     eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp; g2_out=nothing, ωq=nothing)
 
-Apply the two e-ph gauge rotations to the Fourier-interpolated `g` (`(ndata, nq)`, reshaped to
-`(nw, nbandk, nmodes, nq)`), writing the eigenbasis e-ph matrix `ep_kq_all`
+Apply the two e-ph gauge rotations to the Fourier-interpolated `g` `(nw, nbandk, nmodes, nq)`,
+writing the eigenbasis e-ph matrix `ep_kq_all`
 `(nbandkq, nbandk, nmodes, nq)` = `ukq(q)' * g(q) * u_ph(q)`. If `g2_out !== nothing`, also write
 `g2 = |ep_kq|² / (2 ωq)` (with `ωq` `(nmodes, nq)`) in the same pass.
+
+The two-GEMM paths merge `g`'s band and mode axes with a `reshape`, so they require a dense `g`
+(asserted); the CUDA extension's fused path indexes `g` elementwise and takes any strided view.
 
 Generic method: the two strided-batched GEMMs (`ukq'` on the left, `u_ph` on the right) plus an
 optional `g2` broadcast — identical to the previous inline code, so any backend works. The CUDA
 extension overrides this with a fused per-q kernel for small `nw*nmodes`, which avoids cuBLAS'
 tiny-matmul inefficiency (the 4×4 / nmodes×nmodes strided-batched GEMMs run at ~2% of FP64 peak).
 """
-function eph_apply_rotations!(ep_kq_all::AbstractArray{Complex{T},4}, g,
+function eph_apply_rotations!(ep_kq_all::AbstractArray{Complex{T},4}, g::AbstractArray{Complex{T},4},
                               ukqs, u_phs, tmp; g2_out=nothing, ωq=nothing) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
+    @assert size(g) == (nw, nbandk, nmodes, nq)
+    @assert _is_dense(g) "the two-GEMM rotation path needs a dense g; a strided g is only supported by the CUDA fused kernel"
     batched_gemm!('C', 'N', ukqs, reshape(g, nw, nbandk * nmodes, nq), tmp)   # ukq(q)' * g(q)
     batched_gemm!('N', 'N', reshape(tmp, nbandkq * nbandk, nmodes, nq), u_phs,
                   reshape(ep_kq_all, nbandkq * nbandk, nmodes, nq))           # * u_ph(q)
