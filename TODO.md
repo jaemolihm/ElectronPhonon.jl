@@ -23,7 +23,7 @@
   `tile_offset` / `tile_length`, used by `BoltzmannCalculator`'s batched path).
 
 - [ ] Unify the CPU/GPU e-ph loop signatures (`_loop_eph_over_k_and_kq` vs
-  `_loop_eph_over_k_and_kq_gpu`, `src/calculator/run_eph_over_k_and_kq.jl`). Decided direction (JML,
+  `_loop_eph_over_k_and_kq_batched`, `src/calculator/run_eph_over_k_and_kq.jl`). Decided direction (JML,
   PR #9): keep **two functions with different names**, but give them the **identical positional
   argument list** and push the path-specific data into **keyword arguments** — CPU kwargs
   `(epstates, ep_ekpRs, epmat, ep_ekpR_obj, dyn_threads, epmat_R, epobj_ekpR_R, ep_ekpR_Rs)`, GPU
@@ -31,17 +31,22 @@
   destructure any NamedTuple into locals at the top before `@threads`, never index it inside the
   threaded closure.
 
-- [ ] Reconsider whether `backend` should be built inside `_loop_eph_over_k_and_kq_gpu` rather than in
-  `_setup_eph_over_k_and_kq`. It currently lives in `_setup` because `_setup_calculators!` runs there
-  and passes `backend` into `setup_calculator!`, and because `backend` wraps the once-uploaded
-  `epmat_dev.op_r` as its allocation prototype (the loop reuses that device object). Moving it into
-  the loop would re-plumb where `setup_calculator!` gets its backend.
+- [x] ~~Reconsider whether `backend` should be built inside `_loop_eph_over_k_and_kq_batched` rather
+  than in `_setup_eph_over_k_and_kq`.~~ Subsumed: `backend` is now a user-facing driver keyword, so it
+  is built by the caller and nothing inside the package resolves it. (The item's stated rationale was
+  also wrong: `gpu_backend()` builds an EMPTY prototype, `GPUBackend(CuArray{ComplexF64}(undef, 0))`
+  — it never wrapped `epmat_dev.op_r`.)
 
-- [ ] Clean up `calculator_begin!` for `BoltzmannCalculator`: `tile_begin!` (the batched
-  `OuterIterationBatch` bracket) is not needed on the CPU path, so limit its context — restrict the
-  batched begin/end brackets to the GPU path rather than defining CPU no-ops.
+- [x] ~~Clean up `calculator_begin!` for `BoltzmannCalculator`~~ — done, but not as written. There
+  were no CPU no-op brackets to restrict: the `OuterIterationBatch` brackets were already correctly
+  keyed on the loop MODE (`LoopContext{<:AbstractBackend, BatchedMode}`) and are backend-agnostic,
+  which is exactly right now that batched-on-`CPUBackend` is a supported configuration. The real
+  defect was the flag: `calc.on_gpu = backend isa GPUBackend` inferred the loop shape from the
+  backend, which builds the wrong buffers under CPU+batched. It is now `calc.batched = mode isa
+  BatchedMode`, from the `mode::LoopMode` keyword the drivers pass to `setup_calculator!`.
 
-- [ ] Clean up the `LoopContext` construction at the batch/per-k scope
+- [ ] Clean up the `LoopContext` construction at the batch/per-k scope (deferred out of the
+  `backend`/`batched` PR as an independent follow-up)
   (`src/calculator/run_eph_over_k_and_kq.jl` ~L713/L728). The batch-scope `ctx_batch` and per-k
   `ctx_k` are built from positional constructors that are disambiguated by whether the argument is an
   `Integer` outer index (`ik`) or a `UnitRange` batch (`iks_batch`) — flagged as flaky in review.

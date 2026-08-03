@@ -14,7 +14,7 @@ On the GPU:
 - Batched band eigenvalues/eigenvectors — `src/wannier_to_bloch_batched.jl`.
 - e-ph interpolation `get_eph_RR_to_kR!` / `get_eph_kR_to_kq!` (per-k/q and list-batched
   forms) — `src/wannier_to_bloch_batched.jl`.
-- The e-ph calculator loop `run_eph_over_k_and_kq` via a `use_gpu` branch, including a
+- The e-ph calculator loop `run_eph_over_k_and_kq` via a `batched` branch, including a
   device-native calculator hook.
 
 Deliberately **not** on the GPU (stays on the CPU per-k path):
@@ -141,11 +141,24 @@ ctx::LoopContext)` has one method per payload type. The full spec is in the docs
 `src/calculator/AbstractCalculator.jl`, and `docs/writing_a_calculator.md` is the tutorial (start
 there for a CPU-only calculator). This section covers only the GPU side.
 
-`run_eph_over_k_and_kq` / `run_eph_over_q_and_k` take a `use_gpu` keyword (with `nq_batch_max` /
-`nk_outer_batch_max` for outer-k, `nk_batch_max` for outer-q) that branches to a backend-generic
-device loop. `use_gpu` is the only user-facing switch; below the driver entry a `backend` object
-(`CPUBackend()` / `GPUBackend(proto)`) is resolved once, uploaded `to_device(model.epmat)` once,
-and carried in `LoopContext`. The CPU loop and per-(k,q) CPU e-ph functions are unchanged. The GPU
+`run_eph_over_k_and_kq` / `run_eph_over_q_and_k` take two orthogonal keywords (plus `nq_batch_max` /
+`nk_outer_batch_max` for outer-k, `nk_batch_max` for outer-q):
+
+- `backend :: AbstractBackend = CPUBackend()` — where arrays live. Pass
+  `backend = ElectronPhonon.gpu_backend()` for a GPU run; it is uploaded `to_device(model.epmat)`
+  once and carried in `LoopContext` as `ctx.backend`.
+- `batched :: Union{Nothing, Bool} = nothing` — which payload/loop shape runs, carried as `ctx.mode`.
+  `nothing` derives it from the backend, so a **production GPU run passes `backend` alone** and a
+  production CPU run passes neither. An explicit `batched = false` on a GPU backend is an
+  `ArgumentError`.
+
+Because the batched loop holds no device-specific code, `batched = true` on a `CPUBackend` runs it on
+host arrays. That is a **validation configuration only** — serial k-batches, `batched_gemm!` degrades
+to a `mul!` loop, and `plan_batch` returns the requested cap verbatim (`free_bytes(::CPUBackend)` is
+`typemax(Int)`, so pass a small `nq_batch_max`) — but it is what lets the batched path, the tiling
+brackets and the calculators' batched hooks be tested with no CUDA present. It does **not** cover the
+CUDA kernels (`_bte_window_accumulate_kernel!`, `_window_scatter_kernel!`, the fused rotation kernel,
+`CUBLAS.gemm_strided_batched!`, the cuSOLVER batched eigensolve): those still need the GPU box. The CPU loop and per-(k,q) CPU e-ph functions are unchanged. The GPU
 outer-k loop processes a batch of outer k with one list-batched `get_eph_RR_to_kR_batched!` and
 batches the inner `ikq` loop (in tiles of `nq_batch_max`) through one `get_eph_kR_to_kq_batched!`.
 
@@ -243,11 +256,13 @@ unchanged). No window handling is needed in the calculator beyond addressing its
   correctness component, so benchmark it on its own before adopting.
 - **Energy window and long-range/polar on the GPU** — left on the CPU per-k path for now.
 - **MPI / multi-GPU** for the GPU loop — not in this foundation.
-- **Backend as a type parameter instead of a `use_gpu` keyword (future).** The backend is
-  currently selected by the `use_gpu` keyword + `to_device`. A cleaner long-term design might
-  carry it as a type (e.g. dispatch the loop on the array backend). Note a `ModelGPU` that puts
-  the whole `Model` on the device is *not* obviously right: `Model` is large, and one may want
-  it resident on the CPU while only the calculation runs on the GPU.
+- **Backend as a type parameter instead of a backend object (future).** The `use_gpu` keyword is
+  gone: the backend is now the user-facing `backend::AbstractBackend` argument, and the loop shape
+  is the separate `batched` keyword. Renaming `GPUBackend(proto)` to a DFTK-style `GPU{AT}` was
+  considered and **decided against**: `similar(proto, ...)` propagates CUDA.jl 6's memory-type
+  parameter where a bare type constructor would not, and nothing dispatches on `AT`. Note a
+  `ModelGPU` that puts the whole `Model` on the device is *not* obviously right either: `Model` is
+  large, and one may want it resident on the CPU while only the calculation runs on the GPU.
 - **Keep `el_kq_save` (k+q electron states) on the device (future).** The GPU loop already hoists
   every k+q eigenvector onto the device once (`ukqs_all_dev`); keeping the `el_kq_save` states
   themselves device-resident would avoid the host staging entirely, but needs a states refactor.
@@ -288,9 +303,9 @@ unchanged). No window handling is needed in the calculator beyond addressing its
 - `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`, `eigvals_batched`/
   `eigen_batched` (`heevjBatched!`), `batched_gemm!` (`gemm_strided_batched!`), and the fused
   rotation / window-scatter kernels.
-- `src/calculator/run_eph_over_k_and_kq.jl` — `use_gpu` / `nq_batch_max` / `nk_outer_batch_max`
-  keywords; backend-generic `_loop_eph_over_k_and_kq_gpu` and the device-native calculator payload.
-  CPU path unchanged.
+- `src/calculator/run_eph_over_k_and_kq.jl` — `backend` / `batched` / `nq_batch_max` / `nk_outer_batch_max`
+  keywords; backend-generic `_loop_eph_over_k_and_kq_batched` and the batched calculator payload.
+  Per-point path unchanged.
 - `benchmark/bench_el_eigen_gpu.jl`, `benchmark/bench_eph_gpu.jl`,
   `benchmark/bench_eliashberg_loop_gpu.jl` — CPU-vs-GPU benchmarks.
 - `test/test_gpu.jl` — GPU-guarded tests (skip when CUDA is unavailable or the Pb data dir is

@@ -33,12 +33,19 @@ function run_eph_over_k_and_q(
         progress_print_step = 20,
         symmetry = model.symmetry,
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
+        # This driver has no batched path, so the only backend it accepts is the CPU one. The kwarg
+        # exists (and is validated rather than ignored) so all three e-ph drivers take the same
+        # vocabulary and a caller sweeping over drivers cannot silently get a host run.
+        backend :: AbstractBackend = CPUBackend(),
         verbosity::Int = 1,
     ) where {FT}
 
     if model.epmat_outer_momentum != "el"
         throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_over_k_and_q"))
     end
+    backend isa CPUBackend || throw(ArgumentError(
+        "run_eph_over_k_and_q has no batched path and supports backend = CPUBackend() only. " *
+        "Use run_eph_over_k_and_kq (outer-k) or run_eph_over_q_and_k (outer-q) for a GPU run."))
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")
@@ -193,13 +200,14 @@ function _setup_eph_over_k_and_q(
         @info "Number of q points = $nq"
     end
 
-    # Backend: one resolution point. This driver has no GPU loop, so it is always the CPU backend;
-    # it is carried in `LoopContext` and passed to `setup_calculator!` for interface uniformity.
+    # This driver has no batched loop, so the backend is always the CPU one (the entry rejects any
+    # other) and the loop shape is always per-point; both are carried in `LoopContext` and passed to
+    # `setup_calculator!` for interface uniformity across the three drivers.
     backend = CPUBackend()
 
     _setup_calculators!(calculators, kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        sel_k, sel_kq, nchunks_threads, verbosity, backend,
+        sel_k, sel_kq, nchunks_threads, verbosity, backend, mode = SingleMode(),
     )
 
     return (;

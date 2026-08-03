@@ -15,7 +15,7 @@
     plan_batch(backend, per_point, committed, cap; headroom_num = 7, headroom_den = 10, what = "",
                warn = true) -> nbatch
 
-Size a batched GPU e-ph loop's batch to free device memory:
+Size a batched e-ph loop's batch to free device memory:
 `nbatch = min(cap, (free - committed) · headroom ÷ per_point)`, clamped to at least 1, where
 `per_point` / `committed` are the per-(batched-inner index) and whole-run device-byte counts. On a
 CPU backend `free_bytes` is `typemax(Int)`, so `nbatch = cap`. Errors if the whole-run commitments
@@ -31,7 +31,7 @@ function plan_batch(backend::AbstractBackend, per_point::Integer, committed::Int
         warn::Bool = true)
     free = free_bytes(backend)
     if free != typemax(Int) && committed > free
-        error("GPU $(what): committed device memory ($(round(committed / 1e9, digits = 2)) GB, " *
+        error("batched $(what): committed device memory ($(round(committed / 1e9, digits = 2)) GB, " *
               "whole-run stacks) exceeds free device memory ($(round(free / 1e9, digits = 2)) GB). " *
               "Reduce the batch cap or the grid size.")
     end
@@ -39,8 +39,8 @@ function plan_batch(backend::AbstractBackend, per_point::Integer, committed::Int
         max(1, ((free - committed) ÷ headroom_den * headroom_num) ÷ per_point)
     nbatch = min(Int(cap), nb_mem)
     if warn && free != typemax(Int) && nb_mem < cap
-        @warn "WARNING : GPU batch width reduced from the requested cap $(Int(cap)) to $nbatch to fit " *
-            "free device memory in plan_batch$(isempty(what) ? "" : " ($what)"). GPU performance may " *
+        @warn "WARNING : batch width reduced from the requested cap $(Int(cap)) to $nbatch to fit " *
+            "free device memory in plan_batch$(isempty(what) ? "" : " ($what)"). Performance may " *
             "degrade compared to smaller calculations."
     end
     nbatch
