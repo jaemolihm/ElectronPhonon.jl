@@ -54,9 +54,8 @@ end
 # `nq_grid` = k+q / q grid sizes; `nk_batch_max` = the fixed outer-k batch width; `ndata_epmat` /
 # `nr_epmat` = the parent e-ph object's (`epmat_dev`) data size / R-vector count, for the RR→kR
 # interpolator's scratch. `nk_b` is the kR→kq GEMM strip width (`_krkq_strip_width`), which widens
-# `kRkq_ws.g` and the `iq` index staging. The per-q term sums to
-# `(40 + 16·nk_b)·nw·nbandk_max·nmodes + 16·nr_ep + 16·nmodes² + 8·nmodes + 8·nk_b + Σcalc`;
-# the committed to the old hand-counted
+# `kRkq_ws.g` and nothing else. The per-q term sums to `(40 + 16·nk_b)·nw·nbandk_max·nmodes +
+# 16·nr_ep + 16·nmodes² + 8·nmodes + 8 + Σcalc`; the committed to the old hand-counted
 # `16·nw²·nkq + (16·nmodes²+8·nmodes)·nq_grid +
 # 16·nw·nbandk_max·(nmodes·nr_ep+1)·nk_batch_max` PLUS the `itp_epmat` Fourier scratch
 # `(16·ndata_epmat + 16·nr_epmat + 24)·nk_batch_max` (added 2026-07-18; the parent RR→kR interpolator,
@@ -81,7 +80,7 @@ function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_gri
         cx * nr_ep +                       # P_kq (kR→kq phase tile)
         cx * nmodes * nmodes +             # uphs_dev
         rl * nmodes +                      # ωq_dev
-        iz * nk_b                          # iqs_strip_dev (staged one kR->kq strip wide)
+        iz                                 # iqs_batch_dev
     for c in calculators
         per_point += eph_batched_bytes_per_point(c, EPDataQBatched; nw, nmodes)
     end

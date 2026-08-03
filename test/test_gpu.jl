@@ -1006,10 +1006,10 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
         # Formulas reproduced inline (ground truth). The per-q term dropped the child interpolator
         # (cached_results / rdotk / xkmat) and `ikqs_dev` when the k+q-convention phase hoist made
         # them unnecessary; `24·nr_ep` (phase + rdotk) became `16·nr_ep` (the caller-owned P_kq tile).
-        # Two terms carry the kR→kq strip width `nk_b`: `kRkq_ws.g` (so the `56` splits into
-        # `40 + 16·nk_b`) and the `iq` index staging, which is one strip wide (`8·nk_b`).
+        # `kRkq_ws.g` is the only term that carries the kR→kq strip width `nk_b`, so the `56` splits
+        # into `40 + 16·nk_b`.
         exp_per_q(nk_b) = (40 + 16 * nk_b) * nw * nbandk_max * nmodes +
-            16 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 8 * nk_b +
+            16 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 8 +
             sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataQBatched; nw, nmodes) for c in calcs)
         old_committed = 16 * nw^2 * nkq + (16 * nmodes^2 + 8 * nmodes) * nq_grid +
             16 * nw * nbandk_max * (nmodes * nr_ep + 1) * nk_batch_max

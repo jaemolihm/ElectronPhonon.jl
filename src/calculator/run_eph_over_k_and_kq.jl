@@ -478,12 +478,15 @@ end
 #  GPU calculator loop (see README_GPU.md).
 #
 #  This mirrors `_loop_eph_over_k_and_kq` but moves the e-ph Wannier->Bloch interpolation
-#  onto the device using the batched drivers from `wannier_to_bloch_batched.jl`. The code here is
-#  backend-generic: it only calls `to_device` and the generic batched drivers, so no CUDA
-#  code lives in the base package (the device methods are provided by the CUDA extension). It
-#  is a separate function from the CPU `_loop_eph_over_k_and_kq` because its control flow —
-#  batched over k-batches and q-batches with device staging — differs from the per-(k,q) CPU loop,
-#  not because it holds any device-specific code.
+#  onto the device using the batched drivers from `wannier_to_bloch_batched.jl`. No CUDA code lives
+#  in the base package: the loop only calls `to_device` and the generic batched drivers, and the
+#  device methods are provided by the CUDA extension. That is not the same as running on any
+#  backend — at `nk_b > 1` the per-k `g` slice handed to `eph_apply_rotations!` is strided in q, and
+#  only the extension's fused kernel reads such an operand (the generic two-GEMM method asserts a
+#  dense `g`). The loop has one call site, inside the `use_gpu` branch, so a CPU backend never
+#  reaches that assert. It is a separate function from the CPU `_loop_eph_over_k_and_kq` because its
+#  control flow — batched over k-batches and q-batches with device staging — differs from the
+#  per-(k,q) CPU loop.
 #
 #  Supported (all handled upstream in the shared `_setup`, so this loop itself is agnostic to them):
 #    * energy windows (window_k / window_kq): the k side carries only its in-window bands, the
@@ -513,53 +516,27 @@ end
 #  small-`nw` regime; a full-band large-`nw` run gets `nk_b = 1` and the loop as it was. k are
 #  visited in the same order and everything below the GEMM is per-k, so the payload stream and the
 #  bracket order are unchanged.
-# ---- per-(k-strip, q-tile) `iq` index build ------------------------------------------------------
+# ---- per-(k, q-tile) `iq` index build ------------------------------------------------------------
 #
-# `prepare_iqs!(builder, iqs_dev, iks, kloc0, qstart, nq)` fills `iqs_dev[1:nq, kloc0 + i - 1]` with
-# the index into `qpts` of `x_{k+q} - x_k` for the `i`-th outer k of `iks` and every k+q of the tile
-# `qstart .+ (0:nq-1)`, leaving the device buffer ready for the phonon gather. The builder owns its
-# host staging matrix and ends with the H2D.
-#
-# The staging is per k-STRIP (`nk_b` columns), not per k: one stream drain per strip instead of
-# `nk_b` of them, for `nk_b * nq_batch_max * 8` B of host and device staging (12.7 MB at Cu nk=150).
-# That drain count is most of what this block costs — see `plans/qindex_build_threaded_vs_device.md`.
-# At `nk_b == 1` it degenerates to per-k staging exactly.
-struct SerialHostIqBuilder{GK}
-    qpts     :: GK
-    xkqs_int :: Matrix{Int}   # (3, nkq), reduced into 0:ngrid[d]-1
-    xks_int  :: Matrix{Int}   # (3, nk),  reduced into 0:ngrid[d]-1
-    iqs_host :: Matrix{Int}   # (nq_batch_max, nk_b) host staging
-end
-
-function prepare_iqs!(b::SerialHostIqBuilder, iqs_dev, iks, kloc0::Int, qstart::Int, nq::Int)
-    _fill_iqs_serial!(b.iqs_host, b.qpts, b.xkqs_int, b.xks_int, iks, kloc0, qstart, nq)
-    # One contiguous 5-arg H2D of the columns just written (a host↔device SubArray copy would fall
-    # back to scalar indexing). Full columns: the rows past `nq` are never read by the gather.
-    copyto!(iqs_dev, size(b.iqs_host, 1) * (kloc0 - 1) + 1,
-            b.iqs_host, size(b.iqs_host, 1) * (kloc0 - 1) + 1, size(b.iqs_host, 1) * length(iks))
-    iqs_dev
-end
-
-# The build itself, as a standalone function so the `iks`/`qstart`/`nq` it closes over are typed
-# arguments rather than `Core.Box`-wrapped captures of the enclosing loop bodies.
-function _fill_iqs_serial!(iqs, qpts, xkqs_int, xks_int, iks, kloc0, qstart, nq)
+# Fill `iqs[1:nq]` with the index into `qpts` of `x_{k+q} - x_k` for outer k `ik` and every k+q of
+# the tile `qstart .+ (0:nq-1)`; the caller uploads it for the device phonon gather. A standalone
+# function so the `ik`/`qstart`/`nq` it works on are typed arguments rather than `Core.Box`-wrapped
+# captures of the three enclosing loop bodies.
+function _fill_iqs!(iqs, qpts, xkqs_int, xks_int, ik, qstart, nq)
     ng1, ng2, ng3 = qpts.ngrid
-    for (i, ik) in enumerate(iks)
-        kloc = kloc0 + i - 1
-        k1, k2, k3 = xks_int[1, ik], xks_int[2, ik], xks_int[3, ik]
-        for j in 1:nq
-            ikq = qstart + j - 1
-            # Integer grid-coord hash for iq (no Float64 normalize/_hash_xk per pair). Both operands
-            # are pre-reduced into 0:ng-1 at setup, so the fold is a compare-and-add.
-            h1 = _wrap_reduced(xkqs_int[1, ikq] - k1, ng1)
-            h2 = _wrap_reduced(xkqs_int[2, ikq] - k2, ng2)
-            h3 = _wrap_reduced(xkqs_int[3, ikq] - k3, ng3)
-            hash = (h1 * ng2 + h2) * ng3 + h3
-            iq = _ik_from_hash(qpts, hash)
-            # 0 = miss on either index.
-            (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
-            iqs[j, kloc] = iq
-        end
+    k1, k2, k3 = xks_int[1, ik], xks_int[2, ik], xks_int[3, ik]
+    for j in 1:nq
+        ikq = qstart + j - 1
+        # Integer grid-coord hash for iq (no Float64 normalize/_hash_xk per pair). Both operands
+        # are pre-reduced into 0:ng-1 at setup, so the fold is a compare-and-add.
+        h1 = _wrap_reduced(xkqs_int[1, ikq] - k1, ng1)
+        h2 = _wrap_reduced(xkqs_int[2, ikq] - k2, ng2)
+        h3 = _wrap_reduced(xkqs_int[3, ikq] - k3, ng3)
+        hash = (h1 * ng2 + h2) * ng3 + h3
+        iq = _ik_from_hash(qpts, hash)
+        # 0 = miss on either index.
+        (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
+        iqs[j] = iq
     end
     iqs
 end
@@ -754,16 +731,15 @@ function _loop_eph_over_k_and_kq_gpu(
     irvecp_mat = _irvec_matrix(model.epmat.irvec_next, epmat_dev, FT)
     P_k  = similar(epmat_dev.op_r, Complex{FT}, nr_ep, nk_batch_max)
     P_kq = similar(epmat_dev.op_r, Complex{FT}, nr_ep, nq_batch_max)
-    # Defensive: only columns 1:nk_batch are rewritten per batch. `nk_batch_max = min(…, nk)` makes
-    # the first batch full, so the tail is in practice always written, but 1 is the identity of the
-    # convention multiply and keeps a padded (never-read) slice of ep_ekpR_all meaningful.
+    # Defensive: only columns 1:nk_batch are rewritten per batch, so a partial final batch leaves the
+    # tail columns holding whatever the previous batch wrote. Nothing reads them — the strip loop runs
+    # `1:nk_b:nk_batch` — and 1 is the identity of the convention multiply, so the padded (never-read)
+    # slice of ep_ekpR_all stays meaningful whether or not it has been written yet.
     fill!(P_k, 1)
 
-    # `iq` index staging, one k-STRIP wide (see `prepare_iqs!`). Filled to 1 so that the rows past a
-    # partial q-tile's width — copied along with the rest, never read by the gather — are a valid
-    # index rather than garbage.
-    iqs_strip     = fill(1, nq_batch_max, nk_b)
-    iqs_strip_dev = similar(epmat_dev.op_r, Int, nq_batch_max, nk_b)
+    # `iq` index staging for one (k, q-tile).
+    iqs_batch     = Vector{Int}(undef, nq_batch_max)
+    iqs_batch_dev = similar(epmat_dev.op_r, Int, nq_batch_max)
 
     # Integer grid-coord hash for iq, replacing the per-(k,q) float normalize + `_hash_xk`:
     #   hc_i = fold(xkqs_int[i,ikq] - xks_int[i,ik], ng_i),  hash = (hc1*ng2 + hc2)*ng3 + hc3,
@@ -784,8 +760,6 @@ function _loop_eph_over_k_and_kq_gpu(
     for ik in 1:nk
         xks_int[:, ik] .= _grid_coords_reduced(kpts.vectors[ik], qpts.ngrid, zero(Vec3{FT}))
     end
-
-    iq_builder = SerialHostIqBuilder(qpts, xkqs_int, xks_int, iqs_strip)
 
     ωq_dev    = similar(epmat_dev.op_r, FT, nmodes, nq_batch_max)
     g2_dev    = similar(epmat_dev.op_r, FT, nw, nbandk_max, nmodes, nq_batch_max)
@@ -858,25 +832,24 @@ function _loop_eph_over_k_and_kq_gpu(
                 eph_kR_to_kq_fourier!(view(kRkq_ws.g, 1:ndata_ekpR*nks, rng_q),
                     view(ep_ekpR_2d, rows, :), view(P_kq, :, rng_q))
 
-                # Build this (strip, tile)'s q-index lists; the phonon eigenvectors `u` and
-                # frequencies `e` are gathered on the device by iq below. One entry and one stream
-                # drain for the whole strip.
-                prepare_iqs!(iq_builder, iqs_strip_dev,
-                    iks_batch[sstart:(sstart + nks - 1)], 1, qstart, nq_batch)
-
                 for ik_ind in sstart:(sstart + nks - 1)
                     ik = iks_batch[ik_ind]
                     kloc = ik_ind - sstart + 1
 
-                    # Gather this tile's phonon eigenvectors/frequencies on the device by iq
+                    # Build this (k, tile)'s q-index list (host-side integers only), then gather this
+                    # tile's phonon eigenvectors/frequencies on the device by iq
                     # (uphs_dev[:,:,j] = uph_all_dev[:,:,iq[j]]); ωq gathered here too so the fused kernel
                     # can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs at width nq_batch
-                    # via views into the nq_batch_max-sized buffers, so there is no padded tail. This k's
-                    # indices are column `kloc` of the strip staging — contiguous, so no strided read.
+                    # via views into the nq_batch_max-sized buffers, so there is no padded tail.
+                    # H2D copy of just the first nq_batch indices (5-arg contiguous copy — copying a host↔
+                    # device SubArray view instead would fall back to scalar indexing); the device gather
+                    # then reads only `view(iqs_batch_dev, rng_q)`, so the untouched tail is never used.
                     # `@inbounds`: bounds-checking a device INDEX ARRAY costs a Bool map+reduce kernel and
-                    # a D2H round trip of the result per (k, tile); `iq` is already validated where it is
-                    # built (the guard in `_fill_iqs_serial!`), so the device-side re-check is pure overhead.
-                    iqs_used = view(iqs_strip_dev, rng_q, kloc)
+                    # a D2H round trip of the result per (k, tile); `iq` is already validated on the host
+                    # (the guard in `_fill_iqs!`), so the device-side re-check is pure overhead.
+                    _fill_iqs!(iqs_batch, qpts, xkqs_int, xks_int, ik, qstart, nq_batch)
+                    copyto!(iqs_batch_dev, 1, iqs_batch, 1, nq_batch)
+                    iqs_used = view(iqs_batch_dev, rng_q)
                     @inbounds @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, iqs_used]
                     @inbounds @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, iqs_used]
 
