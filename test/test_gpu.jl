@@ -172,7 +172,7 @@ function check_eph_kq_convention(to_dev, arr_dev; rtol)
     uphs = arr_dev(cat([rand(ComplexF64, nmodes, nmodes) for _ in 1:nq]...; dims=3))
     ukqs = arr_dev(cat([rand(ComplexF64, nwe, nband) for _ in 1:nq]...; dims=3))
 
-    irvecp_mat = ElectronPhonon._irvec_matrix_to_device(irvec_ep, epmat_obj, Float64)
+    irvecp_mat = ElectronPhonon._irvec_to_device_matrix(irvec_ep, epmat_obj, Float64)
     ndata = nwe * nband * nmodes
 
     # (a) reference: q convention, interpolator + qs method
@@ -191,9 +191,11 @@ function check_eph_kq_convention(to_dev, arr_dev; rtol)
     get_eph_kR_to_kq_batched!(out_b, view(ep_kR_q, :, :, 1), phase_q, uphs, ukqs)
     @test Array(out_b) == Array(ref)
 
-    # (c) k+q convention: fold conj(exp(2πi R_p·x_k)) into the child, transform at x_{k+q}
+    # (c) k+q convention: fold conj(exp(2πi R_p·x_k)) into the child, transform at x_{k+q}.
+    # `get_eph_RR_to_kR_batched!` multiplies by whatever it is handed, so conjugate here.
     P_k = arr_dev(zeros(ComplexF64, nr_ep, 1))
     ElectronPhonon.fourier_phase!(P_k, irvecp_mat, arr_dev(reshape([xk[d] for d in 1:3], 3, 1)))
+    P_k .= conj.(P_k)
     ep_kR_kq = arr_dev(zeros(ComplexF64, ndata, nr_ep, 1))
     get_eph_RR_to_kR_batched!(ep_kR_kq, itp_epmat, [xk], uk; additional_phase = P_k)
     P_kq = arr_dev(zeros(ComplexF64, nr_ep, nq))

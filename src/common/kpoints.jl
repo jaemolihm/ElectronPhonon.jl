@@ -510,12 +510,11 @@ function _build_dense_index(n, vectors, ngrid, shift)
 end
 
 # Every construction site that fills all fields goes through this, so the index policy lives in one
-# place: exactly one of the two index maps is built, never both. `make_dict` supplies the Dict and
-# is called only when the Dict is the index that will be kept, so a caller that would have to build
-# one from scratch does not pay for it on a dense grid; callers holding one already can pass
-# `() -> dict`. `index` is forwarded to `_use_dense_index`.
+# place: exactly one of the two index maps is built, never both. Pass `dict` if you already hold the
+# `hash => ik` map; leave it `nothing` and one is built here, but only on the branch that keeps it,
+# so a dense grid never pays for a Dict. `index` is forwarded to `_use_dense_index`.
 function _make_grid_kpoints(n, vectors::Vector{Vec3{T}}, weights, ngrid, shift,
-                            make_dict = () -> Dict{Int,Int}(); index = :auto) where {T}
+                            dict::Union{Nothing,Dict{Int,Int}} = nothing; index = :auto) where {T}
     no_table = zeros(Int, 0, 0, 0)
     if n == 0
         # Nothing to look up, so neither map is built (and `ngrid` may be (0,0,0) here).
@@ -524,7 +523,8 @@ function _make_grid_kpoints(n, vectors::Vector{Vec3{T}}, weights, ngrid, shift,
         GridKpoints{T}(n, vectors, weights, ngrid, shift, Dict{Int,Int}(),
                        _build_dense_index(n, vectors, ngrid, shift))
     else
-        GridKpoints{T}(n, vectors, weights, ngrid, shift, make_dict(), no_table)
+        d = dict === nothing ? Dict(_hash_xk.(vectors, Ref(ngrid), Ref(shift)) .=> 1:n) : dict
+        GridKpoints{T}(n, vectors, weights, ngrid, shift, d, no_table)
     end
 end
 
@@ -554,8 +554,7 @@ function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; atol = sqrt(eps(T)),
         end
     end
 
-    _make_grid_kpoints(kpts.n, kpts.vectors, kpts.weights, ngrid, shift,
-        () -> Dict(_hash_xk.(kpts.vectors, Ref(ngrid), Ref(shift)) .=> 1:kpts.n); index)
+    _make_grid_kpoints(kpts.n, kpts.vectors, kpts.weights, ngrid, shift; index)
 end
 
 GridKpoints(xk::Vec3{T}) where {T <: Real} = GridKpoints(Kpoints(xk))
@@ -737,7 +736,7 @@ function unfold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
     sk_weights ./= length(symmetry)
 
     kpts_unfold = _make_grid_kpoints(length(sk_vectors), sk_vectors, sk_weights, ngrid, shift,
-                                     () -> sk_hash_dict; index)
+                                     sk_hash_dict; index)
     ik_to_ikirr_isym = ik_to_ikirr_isym[sortperm(kpts_unfold)]
     sort!(kpts_unfold)
 
@@ -797,7 +796,7 @@ function fold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
     end
 
     kpts_irr = _make_grid_kpoints(length(vectors_irr), vectors_irr, weights_irr, ngrid, shift,
-                                  () -> hash_dict_irr; index)
+                                  hash_dict_irr; index)
 
     inds = invperm(sortperm(kpts_irr))
     sort!(kpts_irr)
@@ -820,19 +819,16 @@ end
 
 
 """
-    _kpoint_vectors_to_device(backend, kpts::AbstractKpoints) -> (3 × kpts.n) real matrix
+    _kpoints_to_device_matrix(backend, kpts::AbstractKpoints) -> (3 × kpts.n) real matrix
 
 Crystal coordinates of `kpts` as a `(3 × kpts.n)` real matrix on `backend`'s device — the layout the
-batched Fourier phase builds ([`fourier_phase!`](@ref)) read. Assembled on the host from the `Vec3`
-list and moved over once with [`to_device`](@ref).
+batched Fourier phase builds ([`fourier_phase!`](@ref)) read. `Vec3{T}` is three contiguous `T`, so
+the host side is a `reinterpret` view of `kpts.vectors` rather than a copy; [`to_device`](@ref) then
+materializes it on the device. On `CPUBackend` the result therefore **aliases `kpts.vectors`** — it
+is read-only in every caller, but do not write through it.
 """
-function _kpoint_vectors_to_device(backend, kpts::AbstractKpoints{T}) where {T}
-    xk_host = Matrix{T}(undef, 3, kpts.n)
-    for (ik, xk) in enumerate(kpts.vectors)
-        xk_host[:, ik] .= xk
-    end
-    to_device(backend, xk_host)
-end
+_kpoints_to_device_matrix(backend, kpts::AbstractKpoints{T}) where {T} =
+    to_device(backend, reshape(reinterpret(T, kpts.vectors), 3, kpts.n))
 
 
 """

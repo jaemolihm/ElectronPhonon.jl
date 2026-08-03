@@ -163,11 +163,11 @@ One batched Fourier (`get_fourier_batched!`) over `R_el`, then one `batched_gemm
 per-k rotation by `uk` (recast as `transpose(uk(k)) * permute(g(k))`).
 
 `additional_phase`, if given, is `(nr_ep × nk)` — one entry per (parent `irvec_next` R-vector, k) —
-and is conjugated into the output, so the stored child object is
-`conj(additional_phase[ip, k]) · g(k, R_p)` instead of the plain `g(k, R_p)`. It is folded into the
-final `copyto!`, which already reads and writes the whole array, so it costs nothing. The GPU
-outer-k loop passes `exp(2πi R_p · x_k)` here to store `g` in the k+q convention, which makes the
-following `R_p` Fourier a function of `x_{k+q}` alone and hence independent of the outer `k`.
+and multiplies the output, so the stored child object is `additional_phase[ip, k] · g(k, R_p)`
+instead of the plain `g(k, R_p)`. It is folded into the final `copyto!`, which already reads and
+writes the whole array, so it costs nothing. The GPU outer-k loop passes `conj(exp(2πi R_p · x_k))`
+here to store `g` in the k+q convention, which makes the following `R_p` Fourier a function of
+`x_{k+q}` alone and hence independent of the outer `k`.
 
 Requires a UNIFORM `nband` across the batch: `ep_ekpR_all` is sized exactly
 `(nw*nband*nmodes, …)`, so all `nk` k-points must share the same `nband` (unlike the per-k
@@ -199,7 +199,7 @@ function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
         copyto!(ep_ekpR_all, out3)
     else
         @assert size(additional_phase) == (nr_ep, nk)
-        ep_ekpR_all .= out3 .* conj.(reshape(additional_phase, 1, nr_ep, nk))
+        ep_ekpR_all .= out3 .* reshape(additional_phase, 1, nr_ep, nk)
     end
     ep_ekpR_all
 end

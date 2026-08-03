@@ -688,8 +688,8 @@ function _loop_eph_over_k_and_kq_gpu(
 
     # Grid coordinates as (3 × n) real device matrices, uploaded once. Both phase builds below read
     # them directly, so nothing on the phase path is staged on the host or copied H2D inside the loop.
-    xk_dev  = _kpoint_vectors_to_device(backend, kpts)
-    xkq_dev = _kpoint_vectors_to_device(backend, kqpts)
+    xk_dev  = _kpoints_to_device_matrix(backend, kpts)
+    xkq_dev = _kpoints_to_device_matrix(backend, kqpts)
 
     # The two Fourier phase matrices of the k+q convention (see `get_eph_RR_to_kR_batched!`):
     #   P_k [ip, k] = exp(2πi R_p · x_k)      — conjugated into g(k, R_ep) once per outer-k batch
@@ -699,7 +699,7 @@ function _loop_eph_over_k_and_kq_gpu(
     # Not a `TiledDeviceOutput`: that tiles the OUTPUT side over the outer-state axis and owns a
     # host mirror plus a per-batch D2H, whereas P_kq is an input-side, q-indexed,
     # write-once-read-many device buffer with no host side and no D2H at all.
-    irvecp_mat = _irvec_matrix_to_device(model.epmat.irvec_next, epmat_dev, FT)
+    irvecp_mat = _irvec_to_device_matrix(model.epmat.irvec_next, epmat_dev, FT)
     P_k  = similar(proto, Complex{FT}, nr_ep, nk_batch_max)
     P_kq = similar(proto, Complex{FT}, nr_ep, nq_batch_max)
     # Defensive: only columns 1:nk_batch are rewritten per batch, so a partial final batch leaves the
@@ -763,7 +763,11 @@ function _loop_eph_over_k_and_kq_gpu(
 
         # One batched RR->kR over the whole batch: g(k, R_ep) for all k in the batch, stored in the
         # k+q convention (multiplied by conj(P_k)) so the kR->kq phase below is k-independent.
-        @views fourier_phase!(P_k[:, 1:nk_batch], irvecp_mat, xk_dev[:, iks_batch])
+        # `get_eph_RR_to_kR_batched!` multiplies by whatever it is handed, so conjugate here.
+        @views begin
+            fourier_phase!(P_k[:, 1:nk_batch], irvecp_mat, xk_dev[:, iks_batch])
+            P_k[:, 1:nk_batch] .= conj.(P_k[:, 1:nk_batch])
+        end
         get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat, ks_batch, uks_dev;
             additional_phase = P_k)
 

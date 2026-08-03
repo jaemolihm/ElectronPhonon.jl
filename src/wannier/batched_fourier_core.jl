@@ -18,29 +18,15 @@ Stateless on purpose: the phase depends only on `(R_p, x)`, so a caller whose `x
 loop-invariant can build it once and apply it many times (this is what the GPU outer-k e-ph loop
 does with its k+q-convention phase tile).
 """
+# `phase` is `(nr, nk)`: entry `[ir, ik]` is `exp(2πi R[ir] · x[ik])`, an outer product over the
+# `(nr × 3)` R-vectors and the `(3 × nk)` crystal coordinates. Verified allocation-free (`@allocated`
+# returns 0 on CPU), so it needs no `rdotk` temporary.
 function fourier_phase!(phase, irvec_mat, xkmat)
     # `xkmat[d:d, :]` is the `1 × nk` row of coordinate `d`, broadcast against the `nr` R-vectors.
     @views phase .= cispi.(2 .* (irvec_mat[:, 1] .* xkmat[1:1, :] .+
                                  irvec_mat[:, 2] .* xkmat[2:2, :] .+
                                  irvec_mat[:, 3] .* xkmat[3:3, :]))
     phase
-end
-
-"""
-    _irvec_matrix_to_device(irvec, proto, ::Type{T}) -> (nr × 3) real matrix
-
-R-vectors as an `(nr × 3)` real matrix on the backend of `proto` (a `WannierObject`), the layout
-[`fourier_phase!`](@ref) expects. Built on the host and copied over once.
-"""
-function _irvec_matrix_to_device(irvec, proto, ::Type{T}) where {T}
-    nr = length(irvec)
-    irvec_host = Matrix{T}(undef, nr, 3)
-    for ir in 1:nr, d in 1:3
-        irvec_host[ir, d] = irvec[ir][d]
-    end
-    irvec_mat = _alloc_array(proto, T, nr, 3)
-    copyto!(irvec_mat, irvec_host)
-    irvec_mat
 end
 
 
@@ -82,7 +68,7 @@ end
 function BatchedFourierCore(parent::WT; batch_cap::Int=32) where {WT <: AbstractWannierObject{T}} where {T}
     nr = length(parent.irvec)
 
-    irvec_mat = _irvec_matrix_to_device(parent.irvec, parent, T)
+    irvec_mat = _irvec_to_device_matrix(parent.irvec, parent, T)
     phase = _alloc_array(parent, Complex{T}, nr, batch_cap)
 
     xkmat_host = Matrix{T}(undef, 3, batch_cap)

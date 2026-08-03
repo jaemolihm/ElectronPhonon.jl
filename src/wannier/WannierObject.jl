@@ -132,3 +132,21 @@ function get_next_wannier_object(parent :: WannierObject{T}; ndata_child = nothi
     end
     WannierObject(parent.irvec_next, zeros(Complex{T}, (ndata_child_full, nr_child)); ndata = ndata_child)
 end
+
+
+"""
+    _irvec_to_device_matrix(irvec, proto, ::Type{T}) -> (nr × 3) real matrix
+
+R-vectors of a `WannierObject` as an `(nr × 3)` real matrix on the backend of `proto`, the layout
+[`fourier_phase!`](@ref) expects. Built on the host and copied over once.
+"""
+function _irvec_to_device_matrix(irvec, proto, ::Type{T}) where {T}
+    nr = length(irvec)
+    irvec_host = Matrix{T}(undef, nr, 3)
+    for ir in 1:nr, d in 1:3
+        irvec_host[ir, d] = irvec[ir][d]
+    end
+    irvec_mat = _alloc_array(proto, T, nr, 3)
+    copyto!(irvec_mat, irvec_host)
+    irvec_mat
+end
