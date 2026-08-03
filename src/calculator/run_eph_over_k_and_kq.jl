@@ -691,7 +691,9 @@ function _loop_eph_over_k_and_kq_gpu(
     # Negated once here rather than conjugating the phase tile every batch: the convention needs
     # conj(exp(2πi R_p·x_k)) = exp(2πi R_p·(−x_k)), and the two are bitwise identical (FP negation is
     # exact, and `cispi` is exactly symmetric). This is the only consumer of the k coordinates.
-    mxk_dev = -_kpoints_to_device_matrix(backend, kpts)
+    # Out-of-place on purpose: on `CPUBackend` `_kpoints_to_device_matrix` returns a view onto
+    # `kpts.vectors`, so negating in place would corrupt the k-points.
+    mxk_dev = -1 .* _kpoints_to_device_matrix(backend, kpts)
     xkq_dev = _kpoints_to_device_matrix(backend, kqpts)
 
     # The two Fourier phase matrices of the k+q convention (see `get_eph_RR_to_kR_batched!`):
