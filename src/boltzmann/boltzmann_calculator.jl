@@ -312,18 +312,53 @@ device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPDataQBatched
     outer-k batch, so `Sᵢ_out` is the current tile and the row is the tile-local `i - i0`.
 
 `imap_i_at_k` is `imap_i[:, ik]` — the outer-state indices at the batch's fixed outer k `ik`.
-`i0` is the global-i offset of the current `Sᵢ` tile. Only the CUDA extension provides a method
-(`CuArray` kernel): the CPU BoltzmannCalculator never batches — it accumulates per (k, q) via the
-`run_calculator!(::EPData)` host loop above — so a generic CPU method would be dead code (a silent
-fallback risk), and is deliberately not defined. The physics lives entirely in
-`bte_scattering_increments`, so the device kernel agrees with the CPU host loop (validated
-end-to-end in `test/boltzmann/test_gpu_boltzmann_calculator.jl`).
-"""
-function bte_window_accumulate! end
+`i0` is the global-i offset of the current `Sᵢ` tile.
 
-# GPU path: called once per outer-k batch by the device e-ph loop; scatters into the device Sₒ and the
-# current Sᵢ tile via `bte_window_accumulate!` (the device analogue of the CPU EPData loop above —
-# same `bte_scattering_increments`). No per-chunk reduction: the scatter writes the global buffers.
+The generic method below serves the CPU+batched validation configuration
+(`run_eph_over_k_and_kq(...; batched = true)` on a `CPUBackend`), where the whole batched loop runs
+on host arrays; the CUDA extension provides a `CuArray` kernel. Dispatch is on
+`Sₒ_out::CuArray, Sᵢ_out::CuArray`, so a GPU run can only reach the generic method if `calc.dev` was
+itself built on a `CPUBackend`, i.e. only in that deliberate configuration (and
+`CUDA.allowscalar(false)` turns any accidental host/device mixing into a hard error). The physics
+lives entirely in `bte_scattering_increments`, so both methods and the per-(k,q) host loop above
+compute the same scattering (validated in `test/boltzmann/test_gpu_boltzmann_calculator.jl`).
+`eph_window_scatter!` (src/calculator/calculator_utils.jl) ships the same generic + `CuArray` pair.
+
+The generic method adds into `Sₒ_out` with a plain `+=` where the device kernel needs an atomic: the
+batched loop is single-threaded over its (k, q-tile) iterations, so there is no host counterpart to
+the kernel's concurrent writes.
+"""
+function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
+        e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff,
+        nbandkq::Int, nbandk::Int, nmodes::Int, nq_batch::Int, i0::Int)
+    nT = length(μs)
+    @inbounds for iq_batch in 1:nq_batch, n in 1:nbandk, m in 1:nbandkq
+        i = imap_i_at_k[n]         # outer (k) state index; 0 = out of window → skip
+        i > 0 || continue
+        f = imap_f[m, ikqs[iq_batch]]   # inner (k+q) state index; 0 = out of window → skip
+        f > 0 || continue
+        ek = e_i[i]; ekq = e_f[f]; wtq = wf[f]   # per-final-state weight
+        il = i - i0                # tile-local outer row (i0 = the current Sᵢ tile's global offset)
+        for iT in 1:nT             # one entry per temperature
+            μ = μs[iT]; T = Ts[iT]; η = ηs[iT]
+            sₒ = zero(eltype(Sₒ_out)); sᵢ = sₒ
+            for ν in 1:nmodes
+                ωq = ωqmat[ν, iq_batch]
+                ωq < ω_cutoff && continue
+                sₒ_ν, sᵢ_ν = bte_scattering_increments(method, ek, ekq, ωq,
+                    g2vals[m, n, ν, iq_batch], wtq, μ, T, η)
+                sₒ += sₒ_ν; sᵢ += sᵢ_ν
+            end
+            Sₒ_out[i, iT] += sₒ
+            Sᵢ_out[il, f, iT] = sᵢ
+        end
+    end
+    nothing
+end
+
+# Batched path: called once per outer-k batch by the batched e-ph loop; scatters into `dev.Sₒ` and the
+# current Sᵢ tile via `bte_window_accumulate!` (the batched analogue of the per-point EPData loop
+# above — same `bte_scattering_increments`). No per-chunk reduction: the scatter writes the global buffers.
 function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPDataQBatched, ctx) where {FT}
     (; g2s, ωqs, ik, ikqs, ibandk_offset) = p
     dev = calc.dev
