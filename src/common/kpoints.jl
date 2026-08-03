@@ -278,12 +278,13 @@ that a sweep over consecutive `c3` walks the table sequentially. With those dims
 of a slot is exactly `hash + 1` for the `(c1*ng2 + c2)*ng3 + c3` packing, so this table and
 `GridKpoints._dense_hash_to_ik` share one layout.
 
-Two passes rather than one. Pass 1 only MARKS which slots occur, in a `Vector{UInt8}` instead of
-the `Array{Int,3}` of indices the single-pass version needed: the pair loop's access into the table
-is a random probe, so at 8 B per node it missed cache on nearly every pair, and 1 B per node is 8×
-more of the grid resident (8 MB vs 64 MB at 200³). Marking is also idempotent — every writer stores
-the same 1 — which is what lets the pass be threaded with no synchronization. (A `BitArray` would
-be smaller still but its writes race at word granularity.)
+Two passes rather than one. Pass 1 only MARKS which slots occur, in an `Array{Bool}` instead of the
+`Array{Int}` of indices the single-pass version needed: the pair loop's access into the table is a
+random probe, so at 8 B per node it missed cache on nearly every pair, and `Bool` is 1 B per node,
+putting 8× more of the grid in cache (8 MB vs 64 MB at 200³). Marking is also idempotent — every
+writer stores the same `true` — which is what lets the pass be threaded with no synchronization.
+(A `BitArray` would be smaller still but its writes race at word granularity; `Array{Bool}` stores
+one byte per element, so its writes do not.)
 Pass 2 sweeps the table in index order and emits the points. That discards first-appearance order,
 which is safe because `combine_kpoint_grids` sorts the result on the integer grid coordinates — a
 total order, the points being distinct — and `sort!(::GridKpoints)` renumbers the index afterwards.
@@ -291,13 +292,13 @@ total order, the points being distinct — and `sort!(::GridKpoints)` renumbers 
 function _combine_kq_dedup_dense(BkS, BqS, sgn, ngrid_kq, shift_kq::Vec3{T}) where {T}
     ng1, ng2, ng3 = ngrid_kq
     _check_reduced_coords(BkS, BqS, ngrid_kq)
-    seen = zeros(UInt8, ng3, ng2, ng1)
+    seen = zeros(Bool, ng3, ng2, ng1)
     _mark_kq_pairs!(seen, BkS, BqS, sgn, ng1, ng2, ng3)
 
-    xkqs = Vector{Vec3{T}}(undef, count(!iszero, seen))
+    xkqs = Vector{Vec3{T}}(undef, count(seen))
     ikq = 0
-    @inbounds for c1 in 0:(ng1 - 1), c2 in 0:(ng2 - 1), c3 in 0:(ng3 - 1)
-        iszero(seen[c3 + 1, c2 + 1, c1 + 1]) && continue
+    for c1 in 0:(ng1 - 1), c2 in 0:(ng2 - 1), c3 in 0:(ng3 - 1)
+        seen[c3 + 1, c2 + 1, c1 + 1] || continue
         ikq += 1
         xkqs[ikq] = Vec3(c1 / ng1, c2 / ng2, c3 / ng3) + shift_kq
     end
@@ -320,9 +321,14 @@ end
 # typed arguments rather than `Core.Box`. Partitioned over `BqS` (the longer list in the k+q use),
 # each chunk sweeping the whole `BkS` — chunks share `seen` but only ever write the same value into
 # a slot, so no synchronization is needed and the result does not depend on the partition.
-function _mark_kq_pairs!(seen::Array{UInt8,3}, BkS::Vector{Vec3{Int}}, BqS::Vector{Vec3{Int}},
+function _mark_kq_pairs!(seen::Array{Bool,3}, BkS::Vector{Vec3{Int}}, BqS::Vector{Vec3{Int}},
                          sgn::Int, ng1::Int, ng2::Int, ng3::Int)
     @threads for iq in eachindex(BqS)
+        # `@inbounds` here is load-bearing for performance, not tidiness: this block runs
+        # nk*nkq ~ 1e9 times. It is safe because `_check_reduced_coords` has already established
+        # `0 <= b < ng` for every entry of both lists, so `_wrap_reduced` returns a value in
+        # `0:ng-1` on all three axes and every index below is in range. It also elides
+        # `_wrap_reduced`'s own `@boundscheck`, whose precondition that guard is what establishes.
         @inbounds begin
             bq = BqS[iq]
             q1, q2, q3 = sgn * bq[1], sgn * bq[2], sgn * bq[3]
@@ -330,7 +336,7 @@ function _mark_kq_pairs!(seen::Array{UInt8,3}, BkS::Vector{Vec3{Int}}, BqS::Vect
                 c1 = _wrap_reduced(bk[1] + q1, ng1)
                 c2 = _wrap_reduced(bk[2] + q2, ng2)
                 c3 = _wrap_reduced(bk[3] + q3, ng3)
-                seen[c3 + 1, c2 + 1, c1 + 1] = 0x01
+                seen[c3 + 1, c2 + 1, c1 + 1] = true
             end
         end
     end
@@ -406,24 +412,13 @@ function combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
     shift_kq = op(shift_k, shift_q)
     sgn = Symbol(op) === :+ ? 1 : -1
 
-    # Work in integer grid coordinates on the common ngrid_kq grid. Each input point is exactly
-    # `shift + b / ngrid` with integer `b = round((xk - shift) * ngrid)`; rescaled onto ngrid_kq
-    # (an integer multiple of both input grids, checked above) the coordinate is `b * (ngrid_kq ÷
-    # ngrid)`. Then `op(k, q)` folded into the cell is plain integer arithmetic
-    #   c = mod(b_k ± b_q, ngrid_kq)  ∈ [0, ngrid_kq),
-    # which is exact and gcd-free (the old Rational arithmetic was the bottleneck), and recomputing
-    # `b` once per point (not per pair) avoids O(nk·nkq) redundant work. `c` identifies the k+q
-    # point uniquely, so it is also the de-duplication key: the Dict path packs it as
-    # `(c1*ng2 + c2)*ng3 + c3` (which happens to equal `_hash_xk(xkq)`), the dense path indexes an
-    # array by it directly.
-    # Both lists are reduced into `0:ng-1` here, once per point, so that the O(nk·nkq) fold is
-    # `_wrap_reduced` (a compare-and-add) rather than three runtime 64-bit integer divisions.
-    fk = ngrid_kq .÷ kpts.ngrid
-    fq = ngrid_kq .÷ qpts.ngrid
-    BkS = [_grid_coords_reduced(Vec3(round.(Int, (xk - shift_k).data .* kpts.ngrid) .* fk), ngrid_kq)
-           for xk in kpts.vectors]
-    BqS = [_grid_coords_reduced(Vec3(round.(Int, (xq - shift_q).data .* qpts.ngrid) .* fq), ngrid_kq)
-           for xq in qpts.vectors]
+    # Integer coordinates on the common grid, in `0:ng-1`. Every input point sits on ngrid_kq exactly
+    # (it is a multiple of both input grids, checked above), so `op(k, q)` is integer arithmetic —
+    # exact, and the reduced operands let the O(nk·nkq) fold be `_wrap_reduced` rather than `mod`.
+    # These coordinates are also the de-duplication key: `_combine_kq_dedup_dict` packs them as
+    # `(c1*ng2 + c2)*ng3 + c3` (which equals `_hash_xk(xkq)`), the dense path indexes by them.
+    BkS = [_grid_coords_reduced(xk, ngrid_kq, shift_k) for xk in kpts.vectors]
+    BqS = [_grid_coords_reduced(xq, ngrid_kq, shift_q) for xq in qpts.vectors]
 
     # Dense lookup table while it fits in the transient budget, Dict above it. The budget is loose
     # because the table lives only until this function returns. `Int128` because `prod(ngrid_kq)`
@@ -613,16 +608,17 @@ mpi_gather_and_scatter(k::GridKpoints, comm::Nothing) = k
     mod(round(Int, (xk[2] - shift[2]) * ngrid[2]), ngrid[2]),
     mod(round(Int, (xk[3] - shift[3]) * ngrid[3]), ngrid[3]))
 
-# Same reduction for coordinates that are already integers on `ngrid` — the `b` lists
-# `combine_kpoint_grids` builds are in that form.
-@inline _grid_coords_reduced(b::Vec3{Int}, ngrid) =
-    Vec3(mod(b[1], ngrid[1]), mod(b[2], ngrid[2]), mod(b[3], ngrid[3]))
-
-# Fold `d` into `0:ng-1` given `-ng < d < 2ng`, which the sum or the difference of two coordinates
-# already reduced by `_grid_coords_reduced` always satisfies. Two compares (cmov) instead of a
-# 64-bit integer division; worth naming only because the per-(k, k+q) pair loops of the GPU drivers
-# run it ~1e9 times per run.
-@inline _wrap_reduced(d::Int, ng::Int) = ifelse(d < 0, d + ng, ifelse(d >= ng, d - ng, d))
+# Fold `d` into `0:ng-1` given `-ng < d < 2ng`, which the sum or difference of two already-reduced
+# coordinates satisfies. Two compares instead of a 64-bit division, worth naming because the pair
+# loops run it ~1e9 times. Outside that range one fold does not reach `0:ng-1` and the result then
+# indexes out of bounds, so it is checked — in a `@boundscheck`, so callers that have established
+# the precondition another way (`_check_reduced_coords`) can say `@inbounds` and pay nothing.
+@inline function _wrap_reduced(d::Int, ng::Int)
+    @boundscheck -ng < d < 2ng || throw(ArgumentError(
+        "_wrap_reduced($d, $ng): argument outside (-ng, 2ng), so one fold cannot reduce it into " *
+        "0:ng-1; reduce both operands with _grid_coords_reduced before folding"))
+    ifelse(d < 0, d + ng, ifelse(d >= ng, d - ng, d))
+end
 
 function _hash_xk(xk::Vec3, ngrid, shift)
     c = _grid_coords_reduced(xk, ngrid, shift)

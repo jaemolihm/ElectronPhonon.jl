@@ -358,13 +358,14 @@ end
     # the Dict path has no table to sweep and emits them in order of first appearance.
     # `combine_kpoint_grids` sorts the result either way. Only the dense one is reachable at these
     # grid sizes, so call both directly on the same integer grid coordinates.
-    using ElectronPhonon: _combine_kq_dedup_dense, _combine_kq_dedup_dict, _grid_coords_reduced
+    using ElectronPhonon: _combine_kq_dedup_dense, _combine_kq_dedup_dict
     Random.seed!(333)
     ngrid_kq = (4, 6, 5)
     for sgn in (1, -1)
         # Coordinates repeat across pairs, so both paths must hit their "already seen" branch.
-        BkS = [_grid_coords_reduced(Vec3(rand(-6:6, 3)), ngrid_kq) for _ in 1:20]
-        BqS = [_grid_coords_reduced(Vec3(rand(-6:6, 3)), ngrid_kq) for _ in 1:20]
+        # Both routines require their inputs already reduced into 0:ng-1.
+        BkS = [Vec3(mod.(rand(-6:6, 3), ngrid_kq)) for _ in 1:20]
+        BqS = [Vec3(mod.(rand(-6:6, 3), ngrid_kq)) for _ in 1:20]
         shift_kq = Vec3(0.0, 1/12, 0.0)
         xkqs_dense = _combine_kq_dedup_dense(BkS, BqS, sgn, ngrid_kq, shift_kq)
         xkqs_dict = _combine_kq_dedup_dict(BkS, BqS, sgn, ngrid_kq, shift_kq)
