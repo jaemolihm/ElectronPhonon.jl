@@ -76,11 +76,11 @@ end
                 @test _wrap_reduced(mod(a, ng) + mod(b, ng), ng) == mod(a + b, ng)
             end
         end
-        # And the array-level reduction it relies on.
-        for ng in ((3, 4, 5), (150, 150, 150))
-            b = Vec3(rand(-1000:1000, 3))
-            @test _grid_coords_reduced(b, ng) == Vec3(mod.(b.data, ng))
-        end
+        # Outside (-ng, 2ng) one fold cannot reduce into 0:ng-1, so the precondition is checked
+        # (and the pair loops elide the check with `@inbounds` once they have established it).
+        @test_throws ArgumentError _wrap_reduced(-8, 4)
+        @test_throws ArgumentError _wrap_reduced(8, 4)
+        @test _wrap_reduced(-3, 4) == 1 && _wrap_reduced(7, 4) == 3
     end
 
     @testset "partial final tile and strip" begin
