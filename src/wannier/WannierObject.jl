@@ -135,18 +135,18 @@ end
 
 
 """
-    _irvec_to_device_matrix(irvec, proto, ::Type{T}) -> (nr × 3) real matrix
+    _irvec_to_device_matrix(irvec, device, ::Type{T}) -> (nr × 3) real matrix
 
-R-vectors of a `WannierObject` as an `(nr × 3)` real matrix on the backend of `proto`, the layout
-[`fourier_phase!`](@ref) expects. Built on the host and copied over once.
+R-vectors of a `WannierObject` as an `(nr × 3)` real matrix on the backend of `device` (the
+`WannierObject` whose storage the result should match), the layout [`fourier_phase!`](@ref) expects.
+Built on the host and copied over once.
+
+Uses [`_alloc_array`](@ref) rather than `to_device`: `to_device` needs a backend, and this is reached
+from `BatchedFourierCore(parent)`, which has only the object. `_alloc_array` also keeps a
+`DiskWannierObject`'s matrix on the host, which a backend cannot express.
 """
-function _irvec_to_device_matrix(irvec, proto, ::Type{T}) where {T}
+function _irvec_to_device_matrix(irvec, device, ::Type{T}) where {T}
     nr = length(irvec)
-    irvec_host = Matrix{T}(undef, nr, 3)
-    for ir in 1:nr, d in 1:3
-        irvec_host[ir, d] = irvec[ir][d]
-    end
-    irvec_mat = _alloc_array(proto, T, nr, 3)
-    copyto!(irvec_mat, irvec_host)
-    irvec_mat
+    irvec_host = T[irvec[ir][d] for ir in 1:nr, d in 1:3]
+    copyto!(_alloc_array(device, T, nr, 3), irvec_host)
 end

@@ -692,21 +692,21 @@ function _loop_eph_over_k_and_kq_gpu(
     xkq_dev = _kpoints_to_device_matrix(backend, kqpts)
 
     # The two Fourier phase matrices of the k+q convention (see `get_eph_RR_to_kR_batched!`):
-    #   P_k [ip, k] = exp(2πi R_p · x_k)      — conjugated into g(k, R_ep) once per outer-k batch
-    #   P_kq[ip, j] = exp(2πi R_p · x_{k+q_j}) — the kR->kq phase, INDEPENDENT of the outer k
-    # so one built P_kq tile serves every k of the batch. That reuse factor is `nk_batch`, i.e.
+    #   P_mk [ip, k] = exp(2πi R_p · x_k)      — conjugated into g(k, R_ep) once per outer-k batch
+    #   P_mkq[ip, j] = exp(2πi R_p · x_{k+q_j}) — the kR->kq phase, INDEPENDENT of the outer k
+    # so one built P_mkq tile serves every k of the batch. That reuse factor is `nk_batch`, i.e.
     # `nk_outer_batch_max`: lowering that cap shrinks this saving proportionally.
     # Not a `TiledDeviceOutput`: that tiles the OUTPUT side over the outer-state axis and owns a
-    # host mirror plus a per-batch D2H, whereas P_kq is an input-side, q-indexed,
+    # host mirror plus a per-batch D2H, whereas P_mkq is an input-side, q-indexed,
     # write-once-read-many device buffer with no host side and no D2H at all.
     irvecp_mat = _irvec_to_device_matrix(model.epmat.irvec_next, epmat_dev, FT)
-    P_k  = alloc(backend, Complex{FT}, nr_ep, nk_batch_max)
-    P_kq = alloc(backend, Complex{FT}, nr_ep, nq_batch_max)
+    P_mk  = alloc(backend, Complex{FT}, nr_ep, nk_batch_max)
+    P_mkq = alloc(backend, Complex{FT}, nr_ep, nq_batch_max)
     # Defensive: only columns 1:nk_batch are rewritten per batch, so a partial final batch leaves the
     # tail columns holding whatever the previous batch wrote. Nothing reads them — the k loop runs
     # `1:nk_batch` — and 1 is the identity of the convention multiply, so the padded (never-read)
     # slice of ep_ekpR_all stays meaningful whether or not it has been written yet.
-    fill!(P_k, 1)
+    fill!(P_mk, 1)
 
     # `iq` index staging for one (k, q-tile).
     iqs_batch     = Vector{Int}(undef, nq_batch_max)
@@ -762,14 +762,14 @@ function _loop_eph_over_k_and_kq_gpu(
         end
 
         # One batched RR->kR over the whole batch: g(k, R_ep) for all k in the batch, stored in the
-        # k+q convention (multiplied by conj(P_k)) so the kR->kq phase below is k-independent.
+        # k+q convention (multiplied by conj(P_mk)) so the kR->kq phase below is k-independent.
         # `get_eph_RR_to_kR_batched!` multiplies by whatever it is handed, so conjugate here.
         @views begin
-            fourier_phase!(P_k[:, 1:nk_batch], irvecp_mat, xk_dev[:, iks_batch])
-            P_k[:, 1:nk_batch] .= conj.(P_k[:, 1:nk_batch])
+            fourier_phase!(P_mk[:, 1:nk_batch], irvecp_mat, xk_dev[:, iks_batch])
+            P_mk[:, 1:nk_batch] .= conj.(P_mk[:, 1:nk_batch])
         end
         get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat, ks_batch, uks_dev;
-            additional_phase = P_k)
+            additional_phase = P_mk)
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
@@ -785,7 +785,7 @@ function _loop_eph_over_k_and_kq_gpu(
             # kR->kq phase for this q-tile, built ONCE and reused by every k of the outer-k batch —
             # the reason the q-tile loop sits outside the k loop. In the k+q convention it reads
             # x_{k+q} directly, so it is a contiguous slice of the fixed k+q list.
-            @views fourier_phase!(P_kq[:, rng_q], irvecp_mat, xkq_dev[:, qstart:qend])
+            @views fourier_phase!(P_mkq[:, rng_q], irvecp_mat, xkq_dev[:, qstart:qend])
             # k+q rotations: a contiguous slice of the prebuilt device stack (no copy). The payload's
             # k+q index list is the plain range of this tile — `isbits`, so it rides in the kernel
             # launch parameters instead of costing a device buffer and a global load per thread.
@@ -813,7 +813,7 @@ function _loop_eph_over_k_and_kq_gpu(
                 # One batched Wannier->Bloch over this tile's q: ep_kq(q) (nw, nbandk_max, nmodes),
                 # folding g2 = |ep|²/(2ω) into the same fused kernel pass.
                 get_eph_kR_to_kq_batched!(view(epkq_dev, :, :, :, rng_q),
-                    view(ep_ekpR_all, :, :, ik_ind), view(P_kq, :, rng_q),
+                    view(ep_ekpR_all, :, :, ik_ind), view(P_mkq, :, rng_q),
                     view(uphs_dev, :, :, rng_q), ukqs_used; ws = kRkq_ws,
                     g2_out = view(g2_dev, :, :, :, rng_q), ωq = view(ωq_dev, :, rng_q))
 

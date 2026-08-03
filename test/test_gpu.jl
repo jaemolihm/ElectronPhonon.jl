@@ -193,16 +193,16 @@ function check_eph_kq_convention(to_dev, arr_dev; rtol)
 
     # (c) k+q convention: fold conj(exp(2πi R_p·x_k)) into the child, transform at x_{k+q}.
     # `get_eph_RR_to_kR_batched!` multiplies by whatever it is handed, so conjugate here.
-    P_k = arr_dev(zeros(ComplexF64, nr_ep, 1))
-    ElectronPhonon.fourier_phase!(P_k, irvecp_mat, arr_dev(reshape([xk[d] for d in 1:3], 3, 1)))
-    P_k .= conj.(P_k)
+    P_mk = arr_dev(zeros(ComplexF64, nr_ep, 1))
+    ElectronPhonon.fourier_phase!(P_mk, irvecp_mat, arr_dev(reshape([xk[d] for d in 1:3], 3, 1)))
+    P_mk .= conj.(P_mk)
     ep_kR_kq = arr_dev(zeros(ComplexF64, ndata, nr_ep, 1))
-    get_eph_RR_to_kR_batched!(ep_kR_kq, itp_epmat, [xk], uk; additional_phase = P_k)
-    P_kq = arr_dev(zeros(ComplexF64, nr_ep, nq))
-    ElectronPhonon.fourier_phase!(P_kq, irvecp_mat,
+    get_eph_RR_to_kR_batched!(ep_kR_kq, itp_epmat, [xk], uk; additional_phase = P_mk)
+    P_mkq = arr_dev(zeros(ComplexF64, nr_ep, nq))
+    ElectronPhonon.fourier_phase!(P_mkq, irvecp_mat,
                                   arr_dev([xkq[d] for d in 1:3, xkq in xkqs]))
     out_c = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq))
-    get_eph_kR_to_kq_batched!(out_c, view(ep_kR_kq, :, :, 1), P_kq, uphs, ukqs)
+    get_eph_kR_to_kq_batched!(out_c, view(ep_kR_kq, :, :, 1), P_mkq, uphs, ukqs)
     @test isapprox(Array(out_c), Array(ref); rtol)
 end
 
@@ -934,14 +934,14 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
             nq_grid, nk_batch_max, calculators = calcs, ndata_epmat, nr_epmat, FT)
         # Formulas reproduced inline (ground truth). The per-q term dropped the child interpolator
         # (cached_results / rdotk / xkmat) and `ikqs_dev` when the k+q-convention phase hoist made
-        # them unnecessary; `24·nr_ep` (phase + rdotk) became `16·nr_ep` (the caller-owned P_kq tile).
+        # them unnecessary; `24·nr_ep` (phase + rdotk) became `16·nr_ep` (the caller-owned P_mkq tile).
         exp_per_q = 56 * nw * nbandk_max * nmodes + 16 * nr_ep + 16 * nmodes^2 + 8 * nmodes + 8 +
             sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataQBatched; nw, nmodes) for c in calcs)
         old_committed = 16 * nw^2 * nkq + (16 * nmodes^2 + 8 * nmodes) * nq_grid +
             16 * nw * nbandk_max * (nmodes * nr_ep + 1) * nk_batch_max
         # itp_epmat RR→kR interpolator Fourier scratch (2026-07-18), now rdotk-free.
         itp_epmat_term = (16 * ndata_epmat + 16 * nr_epmat + 24) * nk_batch_max
-        # k+q-convention commitments: xk_dev + xkq_dev and P_k. The 1:nkq index vector is gone —
+        # k+q-convention commitments: xk_dev + xkq_dev and P_mk. The 1:nkq index vector is gone —
         # the payload's `ikqs` is the tile's `UnitRange`, passed in the kernel launch parameters.
         convention_term = 24 * (nk + nkq) + 16 * nr_ep * nk_batch_max
         @test per_point == exp_per_q
