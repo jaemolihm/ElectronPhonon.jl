@@ -820,6 +820,22 @@ end
 
 
 """
+    _kpoint_vectors_to_device(backend, kpts::AbstractKpoints) -> (3 × kpts.n) real matrix
+
+Crystal coordinates of `kpts` as a `(3 × kpts.n)` real matrix on `backend`'s device — the layout the
+batched Fourier phase builds ([`fourier_phase!`](@ref)) read. Assembled on the host from the `Vec3`
+list and moved over once with [`to_device`](@ref).
+"""
+function _kpoint_vectors_to_device(backend, kpts::AbstractKpoints{T}) where {T}
+    xk_host = Matrix{T}(undef, 3, kpts.n)
+    for (ik, xk) in enumerate(kpts.vectors)
+        xk_host[:, ik] .= xk
+    end
+    to_device(backend, xk_host)
+end
+
+
+"""
     print_in_qe_format(kpts::AbstractKpoints, unit = :Crystal; recip_lattice = nothing, alat = nothing)
 Print k points in the format of Quantum ESPRESSO input.
 - `unit`: Unit of k points. Must be :Crystal, :Cartesian, or :tpiba. Default is :Crystal.

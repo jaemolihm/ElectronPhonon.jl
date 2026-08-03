@@ -152,7 +152,7 @@ batches the inner `ikq` loop (in tiles of `nq_batch_max`) through one `get_eph_k
 Its nesting is `k-batch -> q-tile -> k -> q(device)`: the q-tile loop sits **outside** the per-k
 loop. `get_eph_RR_to_kR_batched!` stores the kR intermediate in the **k+q convention**
 (`g̃(k, R_p) = conj(exp(2πi R_p·x_k)) · g(k, R_p)`, folded into its output copy via the
-`kq_convention_phase` argument), so the kR→kq Fourier phase is `exp(2πi R_p·x_{k+q})` — built from
+`additional_phase` argument), so the kR→kq Fourier phase is `exp(2πi R_p·x_{k+q})` — built from
 the fixed k+q list and therefore identical for every k of the batch. One built phase tile is reused
 by all `nk_outer_batch_max` outer k, and the q-vector never enters the interpolation.
 

@@ -153,7 +153,7 @@ end
 #  wins on the GPU. Rotation matrices are stacked along the batch dimension.
 
 """
-    get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat::BatchedWannierInterpolator, ks, uks; kq_convention_phase=nothing)
+    get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat::BatchedWannierInterpolator, ks, uks; additional_phase=nothing)
 
 Batched over a list of k-points `ks`. `uks` is `(nw, nband, nk)` (one `uk` per k).
 Writes `ep_ekpR_all`, shape `(nw*nband*nmodes, nr_ep, nk)` — column `k` is the `op_r` of the
@@ -162,17 +162,12 @@ electron-Bloch / phonon-Wannier object at `ks[k]`.
 One batched Fourier (`get_fourier_batched!`) over `R_el`, then one `batched_gemm!` for the
 per-k rotation by `uk` (recast as `transpose(uk(k)) * permute(g(k))`).
 
-# k+q convention
-`kq_convention_phase`, if given, is `(nr_ep × nk)` with `P[ip, k] = exp(2πi R_p · x_k)`, where
-`R_p` must be the parent's **`irvec_next`** list, in order (build it with
-[`fourier_phase!`](@ref) from `_irvec_matrix(epmat.irvec_next, …)` — the size assert cannot catch a
-phase built from the wrong R list when `nr_el == nr_ep`); the child object is then stored in the
-**k+q convention**
-`g̃(k, R_p) = conj(P[ip, k]) · g(k, R_p)` instead of the plain `g(k, R_p)`. Because `R_p` is an
-integer vector, the following `R_p` Fourier can then be evaluated at `x_{k+q}` directly rather than
-at `q = x_{k+q} - x_k`: `exp(2πi R_p·q) = exp(2πi R_p·x_{k+q}) · conj(exp(2πi R_p·x_k))`. Its phase
-matrix therefore depends only on the k+q list and is loop-invariant in `k`. Folded into the final
-`copyto!`, which already reads and writes the whole array, so it costs nothing.
+`additional_phase`, if given, is `(nr_ep × nk)` — one entry per (parent `irvec_next` R-vector, k) —
+and is conjugated into the output, so the stored child object is
+`conj(additional_phase[ip, k]) · g(k, R_p)` instead of the plain `g(k, R_p)`. It is folded into the
+final `copyto!`, which already reads and writes the whole array, so it costs nothing. The GPU
+outer-k loop passes `exp(2πi R_p · x_k)` here to store `g` in the k+q convention, which makes the
+following `R_p` Fourier a function of `x_{k+q}` alone and hence independent of the outer `k`.
 
 Requires a UNIFORM `nband` across the batch: `ep_ekpR_all` is sized exactly
 `(nw*nband*nmodes, …)`, so all `nk` k-points must share the same `nband` (unlike the per-k
@@ -182,7 +177,7 @@ every k onto the same `nbandk_max`-wide eigenvector window (`nband = nbandk_max`
 """
 function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
                                    itp_epmat::BatchedWannierInterpolator{T}, ks, uks;
-                                   kq_convention_phase=nothing) where {T}
+                                   additional_phase=nothing) where {T}
     epmat = itp_epmat.parent
     nr_ep = length(epmat.irvec_next)
     nw, nband, nk = size(uks)
@@ -200,11 +195,11 @@ function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
     batched_gemm!('T', 'N', uks, reshape(gp, nw, nw * M, nk), C)        # C(k)=transpose(uk(k))*gp(k)
     out = permutedims(reshape(C, nband, nw, M, nk), (2, 1, 3, 4))       # (nw, nband, M, k)
     out3 = reshape(out, nw * nband * nmodes, nr_ep, nk)
-    if kq_convention_phase === nothing
+    if additional_phase === nothing
         copyto!(ep_ekpR_all, out3)
     else
-        @assert size(kq_convention_phase) == (nr_ep, nk)
-        ep_ekpR_all .= out3 .* conj.(reshape(kq_convention_phase, 1, nr_ep, nk))
+        @assert size(additional_phase) == (nr_ep, nk)
+        ep_ekpR_all .= out3 .* conj.(reshape(additional_phase, 1, nr_ep, nk))
     end
     ep_ekpR_all
 end
@@ -243,10 +238,12 @@ The routine really consumes three things: the kR intermediate `g(k, R_p)`, the F
 `exp(2πi R_p · x_q)` and the rotations. The **first method** takes those directly — `ep_kR` is
 `(nw*nbandk*nmodes, nr)` and `phase` is `(nr, nq)` — so a caller that can build one phase matrix
 and reuse it over many `k` (the GPU outer-k loop, via the k+q convention of
-[`get_eph_RR_to_kR_batched!`](@ref)) never rebuilds it. The **second method** is the convenience
-form: it builds the phase from the q-list `qs` into the interpolator's scratch and delegates; it
-needs an **in-memory** parent (it reads `parent.op_r`), so unlike [`fourier_batched!`](@ref) it does
-not support a `DiskWannierObject` parent.
+[`get_eph_RR_to_kR_batched!`](@ref)) never rebuilds it; it is the form the driver uses.
+The **second method** is the convenience form for a caller that just has a q-list: it builds the
+phase from `qs` into the interpolator's scratch and delegates. No `src` caller uses it — it is what
+`test/test_gpu.jl` calls, so that the tests exercise the routine without duplicating the phase build
+at every call site. It needs an **in-memory** parent (it reads `parent.op_r`), so unlike
+[`fourier_batched!`](@ref) it does not support a `DiskWannierObject` parent.
 
 Pass a [`KRtoKQWorkspace`](@ref) as `ws` (sized for at least this `nq`) to reuse the `g` / `tmp`
 scratch across calls instead of allocating it each call — the per-k hot path in the GPU loop does
@@ -417,7 +414,8 @@ end
 # extension's fused kernel; see `_fused_eph_rot_kernel!` for the full rationale. It lives here
 # rather than in the extension so the base package documents the crossover the generic
 # `eph_apply_rotations!` docstring refers to. The crossover is hardware-dependent: the value was
-# tuned on one GPU and should be retuned elsewhere.
+# tuned on one GPU and should be retuned elsewhere. Worth measuring before removing it: on the Cu
+# outer-k BTE loop (nw=7, nmodes=3, A100) the fused path is 31.1 s against 47.0 s for the two GEMMs.
 const _FUSED_ROT_MAX_NWNM = 24
 
 # The two-GEMM rotation paths merge `g`'s band and mode axes with a `reshape`, which needs `g` to be

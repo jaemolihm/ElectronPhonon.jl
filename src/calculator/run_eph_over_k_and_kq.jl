@@ -498,15 +498,17 @@ end
 #    * el_kq_from_unfolding (directly-computed k+q only)
 #    * energy_conservation other than (:None, 0.0)
 #
+#  Calculator brackets: only `OuterIterationBatch` fires, never `OuterIteration` — a k's work is
+#  spread over the q-tiles, so it does not finish at a single point in the loop.
+#
 #  Buffer reuse: device buffers are allocated once before the k loop and reused for every
 #  (k, q), so the loop itself allocates almost nothing.
 #
 #  Loop shape: `k-batch -> q-tile -> k -> q(device)`. The q-tile loop sits OUTSIDE the per-k loop
 #  because the kR->kq Fourier phase is built from the fixed k+q list (the k+q convention, see
 #  `get_eph_RR_to_kR_batched!`) and is therefore the same for every k of the batch: one built tile
-#  is reused `nk_batch` times. Consequence for calculators: a k's work no longer finishes at a
-#  single point in the loop, so this loop fires only the `OuterIterationBatch` bracket — there is
-#  no per-k `OuterIteration` bracket in the batched outer-k loop.
+#  is reused `nk_batch` times.
+
 # ---- per-(k, q-tile) `iq` index build ------------------------------------------------------------
 #
 # Fill `iqs[1:nq]` with the index into `qpts` of `x_{k+q} - x_k` for outer k `ik` and every k+q of
@@ -637,26 +639,28 @@ function _loop_eph_over_k_and_kq_gpu(
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
     # All device staging is sized to the full batch and used as plain CuArrays (not
     # batch-sliced views), so the batched drivers' reshape/cuBLAS calls stay on dense arrays.
+    # `proto` is the `similar` template every device buffer below is allocated from.
+    proto = epmat_dev.op_r
 
     # RR->kR over a batch of `nk_batch_max` outer-k at once: one batched kernel per batch instead of one
     # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole batch; the inner
     # kR->kq driver reads each k's slice `ep_ekpR_all[:, :, ik_ind]` directly.
-    uks_dev     = similar(epmat_dev.op_r, Complex{FT}, nw, nbandk_max, nk_batch_max)
+    uks_dev     = similar(proto, Complex{FT}, nw, nbandk_max, nk_batch_max)
     uks_host    = Array{Complex{FT}}(undef, nw, nbandk_max, nk_batch_max)
-    ep_ekpR_all = similar(epmat_dev.op_r, Complex{FT}, ndata_ekpR, nr_ep, nk_batch_max)
+    ep_ekpR_all = similar(proto, Complex{FT}, ndata_ekpR, nr_ep, nk_batch_max)
     ks_batch     = Vector{Vec3{FT}}(undef, nk_batch_max)
 
-    uphs_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, nq_batch_max)
-    epkq_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nbandk_max, nmodes, nq_batch_max)
+    uphs_dev = similar(proto, Complex{FT}, nmodes, nmodes, nq_batch_max)
+    epkq_dev = similar(proto, Complex{FT}, nw, nbandk_max, nmodes, nq_batch_max)
 
     # In-place scratch for the per-k kR->kq driver (g / tmp), reused across all (k, q) so the
     # driver allocates nothing per call. Sized for the max batch width `nq_batch_max`; the driver
     # uses the first `nq_batch` columns for a partial final batch.
-    kRkq_ws = KRtoKQWorkspace(epmat_dev.op_r, ndata_ekpR, nw, nbandk_max, nmodes, nq_batch_max)
+    kRkq_ws = KRtoKQWorkspace(proto, ndata_ekpR, nw, nbandk_max, nmodes, nq_batch_max)
 
     # Collect the k+q electron eigenvectors on the host and copy to the device once (they do not
     # depend on the outer k), reused across all k. Each q-batch reads a contiguous slice directly.
-    ukqs_all_dev = similar(epmat_dev.op_r, Complex{FT}, nw, nw, nkq)
+    ukqs_all_dev = similar(proto, Complex{FT}, nw, nw, nkq)
     let ukqs_all_host = Array{Complex{FT}}(undef, nw, nw, nkq)
         for ikq in 1:nkq
             @views ukqs_all_host[:, :, ikq] .= el_kq_save[ikq].u_full
@@ -670,8 +674,8 @@ function _loop_eph_over_k_and_kq_gpu(
     # `_compute_phonon_states_gpu!` built them on the device before scattering them into per-q
     # `PhononState`s — so this gather + H2D undoes a D2H. Have the setup hand `use_gpu` the device
     # stacks directly and drop this block; see the TODO at `_scatter_phonon_states!`.
-    uph_all_dev = similar(epmat_dev.op_r, Complex{FT}, nmodes, nmodes, qpts.n)
-    ωq_all_dev  = similar(epmat_dev.op_r, FT, nmodes, qpts.n)
+    uph_all_dev = similar(proto, Complex{FT}, nmodes, nmodes, qpts.n)
+    ωq_all_dev  = similar(proto, FT, nmodes, qpts.n)
     let uph_all_host = Array{Complex{FT}}(undef, nmodes, nmodes, qpts.n),
         ωq_all_host  = Array{FT}(undef, nmodes, qpts.n)
         for iq in 1:qpts.n
@@ -684,18 +688,8 @@ function _loop_eph_over_k_and_kq_gpu(
 
     # Grid coordinates as (3 × n) real device matrices, uploaded once. Both phase builds below read
     # them directly, so nothing on the phase path is staged on the host or copied H2D inside the loop.
-    xk_dev  = similar(epmat_dev.op_r, FT, 3, nk)
-    xkq_dev = similar(epmat_dev.op_r, FT, 3, nkq)
-    let xk_host = Matrix{FT}(undef, 3, nk), xkq_host = Matrix{FT}(undef, 3, nkq)
-        for ik in 1:nk, d in 1:3
-            xk_host[d, ik] = kpts.vectors[ik][d]
-        end
-        for ikq in 1:nkq, d in 1:3
-            xkq_host[d, ikq] = kqpts.vectors[ikq][d]
-        end
-        copyto!(xk_dev, xk_host)
-        copyto!(xkq_dev, xkq_host)
-    end
+    xk_dev  = _kpoint_vectors_to_device(backend, kpts)
+    xkq_dev = _kpoint_vectors_to_device(backend, kqpts)
 
     # The two Fourier phase matrices of the k+q convention (see `get_eph_RR_to_kR_batched!`):
     #   P_k [ip, k] = exp(2πi R_p · x_k)      — conjugated into g(k, R_ep) once per outer-k batch
@@ -705,9 +699,9 @@ function _loop_eph_over_k_and_kq_gpu(
     # Not a `TiledDeviceOutput`: that tiles the OUTPUT side over the outer-state axis and owns a
     # host mirror plus a per-batch D2H, whereas P_kq is an input-side, q-indexed,
     # write-once-read-many device buffer with no host side and no D2H at all.
-    irvecp_mat = _irvec_matrix(model.epmat.irvec_next, epmat_dev, FT)
-    P_k  = similar(epmat_dev.op_r, Complex{FT}, nr_ep, nk_batch_max)
-    P_kq = similar(epmat_dev.op_r, Complex{FT}, nr_ep, nq_batch_max)
+    irvecp_mat = _irvec_matrix_to_device(model.epmat.irvec_next, epmat_dev, FT)
+    P_k  = similar(proto, Complex{FT}, nr_ep, nk_batch_max)
+    P_kq = similar(proto, Complex{FT}, nr_ep, nq_batch_max)
     # Defensive: only columns 1:nk_batch are rewritten per batch, so a partial final batch leaves the
     # tail columns holding whatever the previous batch wrote. Nothing reads them — the k loop runs
     # `1:nk_batch` — and 1 is the identity of the convention multiply, so the padded (never-read)
@@ -716,7 +710,7 @@ function _loop_eph_over_k_and_kq_gpu(
 
     # `iq` index staging for one (k, q-tile).
     iqs_batch     = Vector{Int}(undef, nq_batch_max)
-    iqs_batch_dev = similar(epmat_dev.op_r, Int, nq_batch_max)
+    iqs_batch_dev = similar(proto, Int, nq_batch_max)
 
     # Integer grid-coord hash for iq, replacing the per-(k,q) float normalize + `_hash_xk`:
     #   hc_i = fold(xkqs_int[i,ikq] - xks_int[i,ik], ng_i),  hash = (hc1*ng2 + hc2)*ng3 + hc3,
@@ -738,8 +732,8 @@ function _loop_eph_over_k_and_kq_gpu(
         xks_int[:, ik] .= _grid_coords_reduced(kpts.vectors[ik], qpts.ngrid, zero(Vec3{FT}))
     end
 
-    ωq_dev    = similar(epmat_dev.op_r, FT, nmodes, nq_batch_max)
-    g2_dev    = similar(epmat_dev.op_r, FT, nw, nbandk_max, nmodes, nq_batch_max)
+    ωq_dev    = similar(proto, FT, nmodes, nq_batch_max)
+    g2_dev    = similar(proto, FT, nw, nbandk_max, nmodes, nq_batch_max)
 
     for kstart in 1:nk_batch_max:nk
         kend = min(kstart + nk_batch_max - 1, nk)
@@ -771,7 +765,7 @@ function _loop_eph_over_k_and_kq_gpu(
         # k+q convention (multiplied by conj(P_k)) so the kR->kq phase below is k-independent.
         @views fourier_phase!(P_k[:, 1:nk_batch], irvecp_mat, xk_dev[:, iks_batch])
         get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat, ks_batch, uks_dev;
-            kq_convention_phase = P_k)
+            additional_phase = P_k)
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
