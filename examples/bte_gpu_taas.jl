@@ -2,10 +2,10 @@
 #
 # Demonstrates the full flow with `BoltzmannCalculator`:
 #   1. extract the scattering matrices Sₒ (SERTA lifetime) and Sᵢ (scattering-in) in ONE GPU pass
-#      of `run_eph_over_k_and_kq` (use_gpu = true), then
+#      of `run_eph_over_k_and_kq` (backend = EP.gpu_backend()), then
 #   2. solve the linearized BTE with `solve_electron_bte` (now BandStates-aware) to get σ.
 #
-# The same calculator runs on the CPU (use_gpu = false) for validation. Uses IBZ symmetry
+# The same calculator runs on the CPU (backend = EP.CPUBackend()) for validation. Uses IBZ symmetry
 # (`symmetry = model.symmetry`, `el_kq_from_unfolding = false`) — the outer k-grid is reduced to
 # the irreducible BZ, the dominant transport speedup. FermiDirac occupation + Gaussian smearing.
 
@@ -37,19 +37,19 @@ occupation_params() = ElectronOccupationParams(;
 σ_to_SI(σ) = σ .* EP.e2 / (unit_to_aru(:A) / unit_to_aru(:V) / unit_to_aru(:cm))
 
 """
-    run_bte_gpu(model, nk; η, window, occ, method=5, use_gpu=true, symmetry=model.symmetry)
+    run_bte_gpu(model, nk; η, window, occ, method=5, backend=EP.gpu_backend(), symmetry=model.symmetry)
 
 Run one BTE transport calculation on an `nk³` grid and return the SERTA and full-BTE
 conductivity tensors (SI, `(Ω·cm)⁻¹`, shape `(3,3,nT)`) plus the calculator. `method` is the
 occupation-factor convention 1..6 (see `bte_scattering_increments`).
 """
 function run_bte_gpu(model, nk; η, window, occ, method = 5,
-        use_gpu = true, symmetry = model.symmetry)
+        backend = EP.gpu_backend(), symmetry = model.symmetry)
     calc = BoltzmannCalculator{Float64}(; occ, smearing = [(:Gaussian, η) for _ in 1:length(occ)],
         occupation_method = method)
     EP.run_eph_over_k_and_kq(model, (nk, nk, nk), (nk, nk, nk);
         calculators = [calc], symmetry, el_kq_from_unfolding = false,
-        window_k = window, window_kq = window, use_gpu,
+        window_k = window, window_kq = window, backend,
         nchunks_threads = Threads.nthreads(), progress_print_step = 200)
     res = EP.solve_electron_bte(calc.el_i, calc.el_f, calc.Sᵢ, stack(calc.Sₒ), occ, symmetry)
     (; σ_serta_SI = σ_to_SI(res.σ_serta), σ_bte_SI = σ_to_SI(res.σ), res, calc)
@@ -59,7 +59,7 @@ end
 nk = 16
 η  = 10.0 * meV
 occ = occupation_params()
-out = run_bte_gpu(model, nk; η, window, occ, method = :Method5, use_gpu = true)
+out = run_bte_gpu(model, nk; η, window, occ, method = :Method5, backend = EP.gpu_backend())
 
 println("\nTaAs σ (GPU BTE), trace/3, per temperature:")
 for (iT, T) in enumerate(occ.Tlist)

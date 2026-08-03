@@ -154,16 +154,44 @@ end
         occ = ElectronOccupationParams(; Tlist = [300.0 * K], nlist = 4.0, μlist = μ,
             volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac),
         smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
-    runbte(use_gpu) = (c = mkcalc(); EP.run_eph_over_k_and_kq(model, (6, 6, 6), (6, 6, 6);
-        calculators = [c], symmetry = nothing, window_k = window, window_kq = window,
-        fourier_mode = "gridopt", use_gpu, progress_print_step = 10^9); c)
+    runbte(grid, backend, batched; nq_batch_max = nothing) =
+        (c = mkcalc(); EP.run_eph_over_k_and_kq(model, grid, grid;
+            calculators = [c], symmetry = nothing, window_k = window, window_kq = window,
+            fourier_mode = "gridopt", backend, batched, nq_batch_max,
+            progress_print_step = 10^9, verbosity = 0); c)
 
-    cc = runbte(false)
+    cc = runbte((6, 6, 6), EP.CPUBackend(), false)
     @test length(cc.Sₒ[1]) > 0
     @test all(isfinite, stack(cc.Sₒ)) && all(isfinite, stack(cc.Sᵢ))
+
+    # CPU + batched (no CUDA needed): the batched loop on host arrays must reproduce the per-point
+    # result on the SAME grid, to summation order. It is slow by construction (serial k-batches,
+    # `mul!`-loop `batched_gemm!`), so the grid is kept at 6³ — measured 0.04 s there, versus 0.06 s
+    # for the per-point arm, small enough not to need a separate smaller grid. (4³ is NOT usable: this
+    # ±0.5 eV window keeps zero k-points on that grid, and an empty selection cannot build a q-grid.)
+    # `nq_batch_max` is passed explicitly for two reasons: on a `CPUBackend` `plan_batch` returns the
+    # cap verbatim (`free_bytes` is unbounded), so without it the q-tile would be the whole k+q grid
+    # and every per-q buffer would be sized to it; and a cap below nkq is what forces ntiles > 1,
+    # exercising the `tile_begin!`/`tile_download!` bracket path on the host.
+    @testset "CPU+batched == CPU+per-point" begin
+        c_ba = runbte((6, 6, 6), EP.CPUBackend(), true; nq_batch_max = 7)
+        @test stack(c_ba.Sₒ) ≈ stack(cc.Sₒ) rtol = 1e-9
+        @test stack(c_ba.Sᵢ) ≈ stack(cc.Sᵢ) rtol = 1e-9
+        # Measured 2026-08-03 (Pb 6³): Sₒ 6.1e-16, Sᵢ 1.3e-15 — pure batched-GEMM reassociation.
+        @info "CPU+batched vs CPU+per-point (Pb 6³)" Sₒ_reldev =
+            maximum(abs, stack(c_ba.Sₒ) .- stack(cc.Sₒ)) / maximum(abs, stack(cc.Sₒ)) Sᵢ_reldev =
+            maximum(abs, stack(c_ba.Sᵢ) .- stack(cc.Sᵢ)) / maximum(abs, stack(cc.Sᵢ))
+    end
+
     if _CUDA_OK
-        cg = runbte(true)
+        # `batched` omitted: it derives from the backend, which is the production GPU spelling.
+        cg = runbte((6, 6, 6), EP.gpu_backend(), nothing)
+        # rtol, not ==: the setup eigensolve differs by a degeneracy gauge on the device, and Sₒ is an
+        # atomic fold there (not bitwise reproducible run-to-run; measured 5e-16 relative at 6³, while
+        # Sᵢ IS bitwise reproducible). Measured CPU-vs-GPU at 6³: Sₒ 1.8e-13, Sᵢ 2.5e-13.
         @test stack(cg.Sₒ) ≈ stack(cc.Sₒ) rtol = 1e-9
         @test stack(cg.Sᵢ) ≈ stack(cc.Sᵢ) rtol = 1e-9
+        # Explicit `batched = false` on a GPU backend: rejected at the driver entry.
+        @test_throws ArgumentError runbte((6, 6, 6), EP.gpu_backend(), false)
     end
 end

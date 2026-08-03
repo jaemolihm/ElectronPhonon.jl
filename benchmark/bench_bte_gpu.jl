@@ -5,7 +5,7 @@
 # `bte_scattering_increments` core, so CPU and GPU compute the same scattering (to round-off).
 #
 #   CPU : fourier_mode="gridopt", capped to 12 threads (nchunks_threads=12)
-#   GPU : use_gpu=true, device-native batched calculator + device-resident Sₒ/Sᵢ scatter
+#   GPU : backend=EP.gpu_backend(), device-native batched calculator + device-resident Sₒ/Sᵢ scatter
 #
 # Methodology (see GPU_PROGRESS.md): benchmark with a realistic *energy window* around E_F
 # (production transport uses an fsthick window). For large grids (a run > ~60 s) warm up on a
@@ -61,7 +61,7 @@ run_cpu(g, win) = (c = newcalc(); EP.run_eph_over_k_and_kq(model, (g,g,g), (g,g,
 
 run_gpu(g, win) = (c = newcalc(); EP.run_eph_over_k_and_kq(model, (g,g,g), (g,g,g); calculators=[c],
     symmetry=nothing, window_k=win, window_kq=win,
-    use_gpu=true, progress_print_step=10^9); c)
+    backend=EP.gpu_backend(), progress_print_step=10^9); c)
 
 # Max relative error of the SERTA scattering-out Sₒ (γ_{nk}) between two runs.
 function relerr_So(cc, cg)

@@ -3,7 +3,7 @@ using ElectronPhonon
 using Random
 using ElectronPhonon: Vec3, _grid_coords_reduced, _wrap_reduced, _fill_iqs!
 
-# The per-(k, q-tile) `iq` index build of the GPU outer-k loop (`_loop_eph_over_k_and_kq_gpu`). The
+# The per-(k, q-tile) `iq` index build of the batched outer-k loop (`_loop_eph_over_k_and_kq_batched`). The
 # loop hashes integer grid coordinates instead of calling `xk_to_ik` per pair, so the whole
 # correctness story is "the fast hash agrees with `xk_to_ik`".
 # CPU-only: the build is host arithmetic and the loop it feeds is never reached on `CPUBackend`.
