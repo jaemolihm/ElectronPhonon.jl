@@ -693,7 +693,7 @@ function _loop_eph_over_k_and_kq_gpu(
     # exact, and `cispi` is exactly symmetric). This is the only consumer of the k coordinates.
     # Out-of-place on purpose: on `CPUBackend` `_kpoints_to_device_matrix` returns a view onto
     # `kpts.vectors`, so negating in place would corrupt the k-points.
-    mxk_dev = -1 .* _kpoints_to_device_matrix(backend, kpts)
+    mxk_dev = _kpoints_to_device_matrix(backend, kpts) .* -1
     xkq_dev = _kpoints_to_device_matrix(backend, kqpts)
 
     # The two Fourier phase matrices of the k+q convention (see `get_eph_RR_to_kR_batched!`):
