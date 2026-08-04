@@ -1,3 +1,22 @@
+"""
+    run_eph_over_k_and_kq(model, kpts, kqpts; calculators, backend, batched, kwargs...)
+
+Sweep the outer k points and, for each, the inner k+q points, handing each calculator the e-ph
+coupling. Two keywords select where the arrays live and which payload the calculators receive:
+
+* `backend :: AbstractBackend = CPUBackend()` — array placement. Pass
+  `backend = ElectronPhonon.gpu_backend()` for a GPU run (requires a loaded GPU extension, e.g. CUDA).
+* `batched :: Union{Nothing, Bool} = nothing` — payload/loop shape: the per-(k,q) host
+  [`EPData`](@ref) (`false`) or the batched [`EPDataQBatched`](@ref) (`true`). `nothing` derives it
+  from `backend` (batched on any non-CPU backend), so a production GPU run passes `backend` alone and
+  a production CPU run passes neither. An explicit `batched = false` on a GPU backend is an
+  `ArgumentError`; `batched = true` on a `CPUBackend` is a validation configuration (the batched loop
+  on host arrays — serial and unoptimized, see the notice it prints at `verbosity > 0`).
+
+The batched path has a narrower scope than the per-point one (no polar/long-range, no screening,
+`energy_conservation = (:None, 0.0)`, commensurate grids, no `covariant_derivative_of_g`, no
+`skip_eph`, no `el_kq_from_unfolding` under symmetry); it asserts each of these.
+"""
 function run_eph_over_k_and_kq(
         model       :: Model{FT},
         kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
@@ -17,9 +36,10 @@ function run_eph_over_k_and_kq(
         progress_print_step = 20,
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
         covariant_derivative_of_g = false,  # Compute cov. derivative of g
-        use_gpu = false,   # Run the e-ph Wannier->Bloch interpolation on the GPU
-        nq_batch_max = nothing,  # GPU: k+q points per batched kR->kq kernel (nothing = all k+q in one batch)
-        # GPU: number of outer k points per batched RR->kR kernel + D2H tile extent. Calculators still
+        backend :: AbstractBackend = CPUBackend(),   # Where arrays live (gpu_backend() for a GPU run)
+        batched :: Union{Nothing, Bool} = nothing,   # Payload/loop shape (nothing = derive from `backend`)
+        nq_batch_max = nothing,  # Batched: k+q points per batched kR->kq kernel (nothing = all k+q in one batch)
+        # Batched: number of outer k points per batched RR->kR kernel + D2H tile extent. Calculators still
         # see one payload per outer k, but a k's q-tiles are no longer contiguous (the q-tile loop is
         # outside the k loop) and only the `OuterIterationBatch` bracket is fired; this also sets how
         # many outer k reuse one kR->kq phase tile. No deprecated alias for the former `nk_batch_max`.
@@ -33,19 +53,32 @@ function run_eph_over_k_and_kq(
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")
+
+    # Resolve the loop shape once, here: `nothing` derives it from the backend (there is exactly one
+    # sensible shape per backend), so nothing below this entry ever sees anything but a `Bool`. An
+    # EXPLICIT `batched = false` on a GPU backend is an error rather than silently overridden.
+    batched_resolved = batched === nothing ? !(backend isa CPUBackend) : batched
+    (backend isa CPUBackend || batched_resolved) || throw(ArgumentError(
+        "batched = false is not supported on a GPU backend: the per-(k,q) host `EPData` payload " *
+        "cannot be built from device arrays. Pass backend = CPUBackend() for the per-point path."))
+    if batched_resolved && backend isa CPUBackend && verbosity > 0 && mpi_isroot()
+        @info "batched e-ph loop on CPUBackend: validation configuration (serial, unoptimized); " *
+              "omit `batched` for production CPU runs."
+    end
+
     for calc in calculators
         if !supports(calc, OuterKLoop)
             throw(ArgumentError("$calc does not support the outer-k loop. Use run_eph_over_q_and_k instead."))
         end
-        # CPU path hands each calculator the per-(k,q) host `EPData`; the GPU path hands the device
-        # `EPDataQBatched`. Fail fast up front (before the expensive device upload / state setup),
-        # symmetric with the CPU check, rather than only inside `_loop_eph_over_k_and_kq_gpu`.
-        if !use_gpu && !supports(calc, EPData)
+        # The per-point path hands each calculator the per-(k,q) host `EPData`; the batched path hands
+        # `EPDataQBatched`. Fail fast up front (before the expensive device upload / state setup)
+        # rather than only inside `_loop_eph_over_k_and_kq_batched`.
+        if !batched_resolved && !supports(calc, EPData)
             throw(ArgumentError("$calc does not declare support for the per-(k,q) host payload; " *
                 "define supports(::$(typeof(calc)), ::Type{EPData}) = true."))
         end
-        if use_gpu && !supports(calc, EPDataQBatched)
-            throw(ArgumentError("$calc does not declare support for the GPU outer-k batched payload; " *
+        if batched_resolved && !supports(calc, EPDataQBatched)
+            throw(ArgumentError("$calc does not declare support for the outer-k batched payload; " *
                 "define supports(::$(typeof(calc)), ::Type{EPDataQBatched}) = true."))
         end
     end
@@ -61,12 +94,14 @@ function run_eph_over_k_and_kq(
         "mpi_comm_k requires el_kq_from_unfolding = false (k+q stays full per rank; the unfolding " *
         "path is not split-aware)."))
 
-    # Symmetry (IBZ outer k) is supported on the GPU path, but only with directly-computed k+q
-    # (el_kq_from_unfolding = false): the IBZ reduction happens in the shared setup and the GPU loop
-    # is symmetry-agnostic (validated: filter/states/scatter match CPU). GPU unfolding of the k+q
-    # electron states is not implemented. Checked before setup so the unfolding branch is not entered.
-    (!use_gpu || symmetry === nothing || !el_kq_from_unfolding) || throw(ArgumentError(
-        "use_gpu supports symmetry only with el_kq_from_unfolding = false (GPU k+q unfolding not implemented)."))
+    # Symmetry (IBZ outer k) is supported on the batched path, but only with directly-computed k+q
+    # (el_kq_from_unfolding = false): the IBZ reduction happens in the shared setup and the batched
+    # loop is symmetry-agnostic (validated: filter/states/scatter match the per-point path). Unfolding
+    # of the k+q electron states is not implemented there. Checked before setup so the unfolding
+    # branch is not entered.
+    (!batched_resolved || symmetry === nothing || !el_kq_from_unfolding) || throw(ArgumentError(
+        "the batched path supports symmetry only with el_kq_from_unfolding = false " *
+        "(batched k+q unfolding not implemented)."))
 
     # A prebuilt k+q FilteredStates is consumed as-is (the caller already built the full-BZ selection,
     # e.g. via unfold_band_states), so the internal IBZ+unfold path does not run — el_kq_from_unfolding
@@ -78,15 +113,16 @@ function run_eph_over_k_and_kq(
     setup = _setup_eph_over_k_and_kq(model, kpts_input, kqpts_input;
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, symmetry, calculators, nchunks_threads,
-        covariant_derivative_of_g, use_gpu, verbosity,
+        covariant_derivative_of_g, backend, batched = batched_resolved, verbosity,
     )
 
-    if use_gpu
-        # GPU path: minimal scope. Extra flags must be off; the loop asserts the
-        # rest (no polar, full bands, commensurate grids, no symmetry/screening/MPI).
-        covariant_derivative_of_g && throw(ArgumentError("use_gpu does not support covariant_derivative_of_g"))
-        skip_eph && throw(ArgumentError("use_gpu requires skip_eph = false"))
-        _loop_eph_over_k_and_kq_gpu(model,
+    if batched_resolved
+        # Batched path: minimal scope. Extra flags must be off; the loop asserts the
+        # rest (no polar, full bands, commensurate grids, no screening).
+        covariant_derivative_of_g && throw(ArgumentError(
+            "the batched path does not support covariant_derivative_of_g"))
+        skip_eph && throw(ArgumentError("the batched path requires skip_eph = false"))
+        _loop_eph_over_k_and_kq_batched(model,
             setup.kpts, setup.qpts, setup.kqpts,
             setup.el_k_save, setup.el_kq_save,
             setup.ph_save, setup.precompute_ph,
@@ -132,7 +168,8 @@ function _setup_eph_over_k_and_kq(
         calculators = [],
         nchunks_threads = nthreads(),
         covariant_derivative_of_g = false,
-        use_gpu = false,
+        backend :: AbstractBackend = CPUBackend(),
+        batched :: Bool = false,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -143,13 +180,13 @@ function _setup_eph_over_k_and_kq(
     # IBZ-reduces + unfolds under symmetry) plus its `kpts` and computed electron states. Same calls,
     # same order as the prior inline block.
     (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(model, kpts_input;
-        window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity)
+        window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity)
     nk = kpts.n
 
     el_kq_quantities = ["eigenvalue", "eigenvector", "velocity", "position"]
     (; kqpts, el_kq_save, sel_kq) = _setup_electron_kq(model, kqpts_input;
         window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
-        fourier_mode, use_gpu, verbosity)
+        fourier_mode, backend, verbosity)
 
 
     # Precompute qpts and phonon states if k and k+q meshes are commensurate
@@ -177,9 +214,9 @@ function _setup_eph_over_k_and_kq(
                     maximum(el.nband for el in el_kq_save))
 
 
-    # The CPU loop takes/puts one EPState buffer per thread; the GPU loop is device-batched and
-    # never touches epstate, so it does not allocate the (nw, nmodes, nband_max) thread buffers.
-    epstates = use_gpu ? nothing : get_epstates_channel(FT, nw, nmodes, nband_max)
+    # The per-point loop takes/puts one EPState buffer per thread; the batched loop never touches
+    # epstate, so it does not allocate the (nw, nmodes, nband_max) thread buffers.
+    epstates = batched ? nothing : get_epstates_channel(FT, nw, nmodes, nband_max)
 
     # E-ph matrix in electron Bloch, phonon Wannier representation
     ep_ekpR_obj = get_next_wannier_object(model.epmat)
@@ -217,7 +254,7 @@ function _setup_eph_over_k_and_kq(
     # Precompute phonon states if precompute_ph == true
     if precompute_ph
         ph_save = maybe_time(verbosity) do
-            compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, use_gpu)
+            compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, backend)
         end
         dyn_threads = nothing
     else
@@ -227,19 +264,22 @@ function _setup_eph_over_k_and_kq(
     end
 
 
-    # Backend: one resolution point (`gpu_backend()` carries an empty device-array allocation
-    # template used by `alloc(backend, …)` / `similar(backend.proto, …)`). `model.epmat` is uploaded
-    # ONCE here — a separate device object that `_loop_eph_over_k_and_kq_gpu` reuses rather than
-    # re-uploading. `backend` is carried in `LoopContext` and passed to `setup_calculator!`.
-    backend = use_gpu ? gpu_backend() : CPUBackend()
-    epmat_dev = use_gpu ? to_device(backend, model.epmat) : nothing
+    # `model.epmat` is uploaded to the backend ONCE here — a separate device object that
+    # `_loop_eph_over_k_and_kq_batched` reuses rather than re-uploading. On a `CPUBackend`
+    # `to_device` is the identity (`common/gpu_utils.jl`), so `epmat_dev === model.epmat`.
+    # `backend` is carried in `LoopContext` and passed to `setup_calculator!`.
+    epmat_dev = batched ? to_device(backend, model.epmat) : nothing
 
     # Initialize calculators. `sel_k`/`sel_kq` carry the per-state weights, per-k band extent, and
     # `nstates_base`, so the calculator builds `el_i`/`el_f` (and the auto-μ carrier count) from the
-    # selection rather than from a below-window override.
-    _setup_calculators!(calculators, kpts, qpts, el_k_save;
+    # selection rather than from a below-window override. `backend` and `mode` are positional: `mode`
+    # tells each calculator which loop shape it is being set up for, in the same vocabulary the
+    # `calculator_begin!/end!` brackets dispatch on — the backend alone cannot say (CPU+batched is a
+    # valid configuration).
+    _setup_calculators!(calculators, backend, batched ? BatchedMode() : SingleMode(),
+        kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        sel_k, sel_kq, nchunks_threads, verbosity, backend,
+        sel_k, sel_kq, nchunks_threads, verbosity,
     )
 
     if verbosity > 0 && mpi_isroot()
@@ -475,22 +515,29 @@ end
 
 
 # =============================================================================
-#  GPU calculator loop (see README_GPU.md).
+#  Batched calculator loop (see README_GPU.md).
 #
 #  This mirrors `_loop_eph_over_k_and_kq` but moves the e-ph Wannier->Bloch interpolation
-#  onto the device using the batched drivers from `wannier_to_bloch_batched.jl`. The code here is
+#  onto the backend using the batched drivers from `wannier_to_bloch_batched.jl`. The code here is
 #  backend-generic: it only calls `to_device` and the generic batched drivers, so no CUDA
 #  code lives in the base package (the device methods are provided by the CUDA extension). It
-#  is a separate function from the CPU `_loop_eph_over_k_and_kq` because its control flow —
-#  batched over k-batches and q-batches with device staging — differs from the per-(k,q) CPU loop,
+#  is a separate function from `_loop_eph_over_k_and_kq` because its control flow —
+#  batched over k-batches and q-batches with device staging — differs from the per-(k,q) loop,
 #  not because it holds any device-specific code.
+#
+#  Backend: `GPUBackend` is the production configuration. Because nothing here is device-specific,
+#  the loop also runs on `CPUBackend` (`batched = true`), which is a VALIDATION configuration only:
+#  the k-batch loop is serial, `batched_gemm!` degrades to a `mul!` loop, and `plan_batch` returns
+#  the requested cap verbatim (`free_bytes(::CPUBackend) == typemax(Int)`), so pass a small
+#  `nq_batch_max` there. Naming: the `_dev` suffix on the locals below means "on `backend`", which
+#  is the host under `CPUBackend()`.
 #
 #  Supported (all handled upstream in the shared `_setup`, so this loop itself is agnostic to them):
 #    * energy windows (window_k / window_kq): the k side carries only its in-window bands, the
 #      window is applied in the calculator scatter
 #    * IBZ outer-k symmetry
 #    * outer-k MPI decomposition (mpi_comm_k)
-#  Not supported — asserted off on the GPU path (see the scope-assert block below):
+#  Not supported — asserted off on the batched path (see the scope-assert block below):
 #    * polar / long-range terms
 #    * incommensurate k / k+q grids: requires precompute_ph (phonon states precomputed)
 #    * covariant derivative of g
@@ -534,7 +581,7 @@ function _fill_iqs!(iqs, qpts, xkqs_int, xks_int, ik, qstart, nq)
     iqs
 end
 
-function _loop_eph_over_k_and_kq_gpu(
+function _loop_eph_over_k_and_kq_batched(
         model       :: Model{FT},
         kpts, qpts, kqpts,
         el_k_save, el_kq_save,
@@ -554,14 +601,16 @@ function _loop_eph_over_k_and_kq_gpu(
     nk = kpts.n
     nkq = kqpts.n
 
-    # ----- scope asserts (minimal GPU step) -----
+    # ----- scope asserts (minimal batched step) -----
     precompute_ph || throw(ArgumentError(
-        "use_gpu requires commensurate k / k+q grids so phonon states are precomputed (precompute_ph)."))
+        "the batched path requires commensurate k / k+q grids so phonon states are precomputed (precompute_ph)."))
     (!model.polar_phonon.use && !model.polar_eph.use) || throw(ArgumentError(
-        "use_gpu does not support polar / long-range terms. Use the CPU path."))
+        "the batched path does not support polar / long-range terms. Use the per-point path " *
+        "(backend = CPUBackend(), batched = false)."))
     energy_conservation === (:None, 0.0) || throw(ArgumentError(
-        "use_gpu supports only energy_conservation = (:None, 0.0)."))
-    screening_params === nothing || throw(ArgumentError("use_gpu does not support screening_params."))
+        "the batched path supports only energy_conservation = (:None, 0.0)."))
+    screening_params === nothing || throw(ArgumentError(
+        "the batched path does not support screening_params."))
     # symmetry (IBZ outer k) is allowed: the reduction is done in the shared setup and this loop is
     # symmetry-agnostic — `symmetry` is only passed through to `postprocess_calculator!`. The
     # dispatcher gates the unsupported el_kq_from_unfolding = true case.
@@ -575,15 +624,15 @@ function _loop_eph_over_k_and_kq_gpu(
     nq_batch_user = nq_batch_max   # nothing = size to memory (capped at nkq); Int = hard upper cap
     nk_batch_max = min(nk_outer_batch_max, nk)
 
-    # The GPU path is always device-native/batched: the e-ph matrix for a whole (k, {k+q}) batch
-    # stays on the device and each calculator does its reduction/scatter there (no per-(k,q) host
-    # callback, no host g2, no complex-ep D2H). Every calculator must therefore implement the
-    # batched device hook; a non-batched calculator fails loudly rather than silently falling back
-    # to a slow host path — a hard-to-spot performance cliff (see README_GPU.md "Decisions").
-    isempty(calculators) && throw(ArgumentError("use_gpu requires at least one calculator."))
+    # The batched path keeps the e-ph matrix for a whole (k, {k+q}) batch on the backend and each
+    # calculator does its reduction/scatter there (no per-(k,q) host callback, no host g2, no
+    # complex-ep D2H). Every calculator must therefore implement the batched hook; a non-batched
+    # calculator fails loudly rather than silently falling back to a slow per-point path — a
+    # hard-to-spot performance cliff (see README_GPU.md "Decisions").
+    isempty(calculators) && throw(ArgumentError("the batched path requires at least one calculator."))
     all(c -> supports(c, EPDataQBatched), calculators) || throw(ArgumentError(
-        "use_gpu requires every calculator to support the EPDataQBatched payload " *
-        "(supports(calc, EPDataQBatched) = true); the GPU path does not fall back to the host loop."))
+        "the batched path requires every calculator to support the EPDataQBatched payload " *
+        "(supports(calc, EPDataQBatched) = true); it does not fall back to the per-point loop."))
 
     # The k+q side of the interpolation runs full-band (uniform nw×nw, using the full eigenvectors
     # `el.u_full`); the energy window is applied in the calculator scatter, where out-of-window
@@ -632,7 +681,7 @@ function _loop_eph_over_k_and_kq_gpu(
     nq_batch_cap = nq_batch_user === nothing ? nkq : min(nq_batch_user, nkq)
     nq_batch_max = plan_batch(backend, per_point, committed, nq_batch_cap; what = "outer-k")
     if verbosity > 0 && mpi_isroot()
-        @info "GPU outer-k device memory: committed = $(round(committed / 1e9, digits = 2)) GB, " *
+        @info "batched outer-k staging: committed = $(round(committed / 1e9, digits = 2)) GB, " *
               "$(round(per_point / 1e3, digits = 1)) kB/q; q-batch size = $nq_batch_max"
     end
 
@@ -671,8 +720,8 @@ function _loop_eph_over_k_and_kq_gpu(
     # collect the full q-grid stacks on the host and copy to the device once, then gather per
     # batch on the device by index (below).
     # TODO: these two are the only fields of `ph_save` this loop ever reads, and
-    # `_compute_phonon_states_gpu!` built them on the device before scattering them into per-q
-    # `PhononState`s — so this gather + H2D undoes a D2H. Have the setup hand `use_gpu` the device
+    # `_compute_phonon_states_device!` built them on the device before scattering them into per-q
+    # `PhononState`s — so this gather + H2D undoes a D2H. Have the setup hand this loop the device
     # stacks directly and drop this block; see the TODO at `_scatter_phonon_states!`.
     uph_all_dev = alloc(backend, Complex{FT}, nmodes, nmodes, qpts.n)
     ωq_all_dev  = alloc(backend, FT, nmodes, qpts.n)

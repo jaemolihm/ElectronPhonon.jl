@@ -7,25 +7,26 @@
 
 # k-side setup shared by all three drivers: obtain the outer-k selection (a prebuilt `FilteredStates`
 # passed through verbatim, or filtered from a grid to the energy window) and compute the electron
-# states there. `verbosity` selects timing (@time when > 0, via `maybe_time`); `el_k_quantities` lets
-# the outer-q GPU-batched path skip velocity/position. The prebuilt pass-through is dead for the two
+# states there. `backend` says where the eigensolves run (a non-CPU backend takes the batched device
+# path). `verbosity` selects timing (@time when > 0, via `maybe_time`); `el_k_quantities` lets
+# the outer-q batched path skip velocity/position. The prebuilt pass-through is dead for the two
 # grid-only sibling callers (they always pass a grid), so their behavior is unchanged.
 function _setup_electron_k(
         model :: Model, kpts_input;
-        window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu = false, verbosity = 1,
+        window_k, mpi_comm_k, symmetry, fourier_mode, backend = CPUBackend(), verbosity = 1,
         el_k_quantities = ["eigenvalue", "eigenvector", "velocity", "position"],
     )
     (; nw) = model
     sel_k = kpts_input isa FilteredStates ? kpts_input :
         maybe_time(verbosity) do
-            filter_electron_states(kpts_input, nw, model.el_ham, window_k; symmetry, fourier_mode, use_gpu, mpi_comm=mpi_comm_k)
+            filter_electron_states(kpts_input, nw, model.el_ham, window_k; symmetry, fourier_mode, backend, mpi_comm=mpi_comm_k)
         end
     kpts = sel_k.kpts
     br = band_range(sel_k)
     iband_min, iband_max = first(br), last(br)
 
     el_k_save = maybe_time(verbosity) do
-        compute_electron_states(model, sel_k, el_k_quantities; fourier_mode, use_gpu)
+        compute_electron_states(model, sel_k, el_k_quantities; fourier_mode, backend)
     end
     (; kpts, iband_min, iband_max, el_k_save, sel_k)
 end
@@ -37,17 +38,17 @@ end
 # directly on `kqpts`. `kqpts_irr` / `ik_to_ikirr_isym_kq` are only read on the unfolding path.
 function _compute_electron_states_kq(
         model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq, symmetry, el_kq_from_unfolding, window_kq;
-        quantities, fourier_mode, use_gpu = false, verbosity = 1,
+        quantities, fourier_mode, backend = CPUBackend(), verbosity = 1,
     )
     maybe_time(verbosity) do
         if el_kq_from_unfolding
             symmetry !== nothing || throw(ArgumentError("el_kq_from_unfolding = true requires symmetry"))
-            el_kq_save_irr = compute_electron_states(model, kqpts_irr, quantities, window_kq; fourier_mode, use_gpu)
+            el_kq_save_irr = compute_electron_states(model, kqpts_irr, quantities, window_kq; fourier_mode, backend)
             el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
             # el_kq_save_irr is not used anymore.
             el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
         else
-            el_kq_save = compute_electron_states(model, kqpts, quantities, window_kq; fourier_mode, use_gpu)
+            el_kq_save = compute_electron_states(model, kqpts, quantities, window_kq; fourier_mode, backend)
         end
         el_kq_save
     end
@@ -67,14 +68,14 @@ end
 # to compute at k+q) is supplied by the caller.
 function _setup_electron_kq(model, kqpts_input;
         window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
-        fourier_mode, use_gpu = false, verbosity = 1)
+        fourier_mode, backend = CPUBackend(), verbosity = 1)
     (; nw) = model
 
     # (1) prebuilt full-BZ selection: consume as-is
     if kqpts_input isa FilteredStates
         sel_kq = kqpts_input
         el_kq_save = maybe_time(verbosity) do
-            compute_electron_states(model, sel_kq, el_kq_quantities; fourier_mode, use_gpu)
+            compute_electron_states(model, sel_kq, el_kq_quantities; fourier_mode, backend)
         end
         return (; kqpts = sel_kq.kpts, el_kq_save, sel_kq)
     end
@@ -83,7 +84,7 @@ function _setup_electron_kq(model, kqpts_input;
     if symmetry !== nothing
         sel_irr = maybe_time(verbosity) do
             filter_electron_states(kqpts_input, nw, model.el_ham, window_kq;
-                mpi_comm=mpi_comm_q, symmetry, fourier_mode, use_gpu)
+                mpi_comm=mpi_comm_q, symmetry, fourier_mode, backend)
         end
         nelec_kq = sel_irr.nstates_base
         kqpts, ik_to_ikirr_isym_kq = unfold_kpoints(sel_irr.kpts, symmetry)
@@ -91,7 +92,7 @@ function _setup_electron_kq(model, kqpts_input;
     else
         sel_kqf = maybe_time(verbosity) do
             filter_electron_states(kqpts_input, nw, model.el_ham, window_kq;
-                mpi_comm=mpi_comm_q, fourier_mode, use_gpu)
+                mpi_comm=mpi_comm_q, fourier_mode, backend)
         end
         kqpts = sel_kqf.kpts; nelec_kq = sel_kqf.nstates_base
         kqpts_irr, ik_to_ikirr_isym_kq = nothing, nothing
@@ -100,22 +101,26 @@ function _setup_electron_kq(model, kqpts_input;
     # (3) states: direct, or gauge-consistent IBZ→full unfolding (the one genuinely special path)
     el_kq_save = _compute_electron_states_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
         symmetry, el_kq_from_unfolding, window_kq;
-        quantities=el_kq_quantities, fourier_mode, use_gpu, verbosity)
+        quantities=el_kq_quantities, fourier_mode, backend, verbosity)
     sel_kq = electron_states_to_FilteredStates(kqpts, el_kq_save, nelec_kq; nw)
     return (; kqpts, el_kq_save, sel_kq)
 end
 
 
-# setup_calculator! fan-out shared by all three drivers. The common keyword payload (band range,
-# k+q states/grid, carrier counts, thread chunking) is passed explicitly; driver-specific extras
-# (backend / verbosity) forward through `kwargs`.
+# setup_calculator! fan-out shared by all three drivers. `backend` and the loop-shape `mode` are
+# POSITIONAL (mirroring `setup_calculator!` itself, so they cannot be silently absorbed by a
+# calculator's `kwargs...`); the common keyword payload (band range, k+q states/grid, carrier counts,
+# thread chunking) is passed explicitly and the rest (`verbosity`) forwards through `kwargs`. A
+# calculator that keys off the loop shape uses `mode` (`SingleMode()`/`BatchedMode()`), the same
+# vocabulary its `calculator_begin!/end!` brackets dispatch on, because the backend alone cannot say
+# (batched-on-CPUBackend is a valid configuration).
 function _setup_calculators!(
-        calculators, kpts, qpts, el_k_save;
+        calculators, backend::AbstractBackend, mode::LoopMode, kpts, qpts, el_k_save;
         nw, nmodes, rng_band, el_states_kq, kqpts, nchunks_threads,
         sel_k, sel_kq, kwargs...,
     )
     for calc in calculators
-        setup_calculator!(calc, kpts, qpts, el_k_save;
+        setup_calculator!(calc, backend, mode, kpts, qpts, el_k_save;
             nw, nmodes, rng_band, el_states_kq, kqpts, nchunks_threads,
             sel_k, sel_kq, kwargs...)
     end

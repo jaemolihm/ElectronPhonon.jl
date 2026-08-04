@@ -51,7 +51,7 @@ occupation_params() = ElectronOccupationParams(;
 
 """
     run_bte_multigrid(model, nk_narrow, nk_wide; η, window_narrow, window_wide, occ,
-                      method, use_gpu, symmetry)
+                      method, backend, symmetry)
 
 Run one multigrid BTE transport calculation and return the SERTA and full-BTE conductivity
 tensors (SI, `(Ω·cm)⁻¹`, shape `(3,3,nT)`) plus the calculator. `nk_narrow` must be a multiple of
@@ -59,10 +59,10 @@ tensors (SI, `(Ω·cm)⁻¹`, shape `(3,3,nT)`) plus the calculator. `nk_narrow`
 unfold).
 """
 function run_bte_multigrid(model, nk_narrow, nk_wide; η, window_narrow, window_wide, occ,
-        method = 5, use_gpu = true, symmetry = model.symmetry)
+        method = 5, backend = EP.gpu_backend(), symmetry = model.symmetry)
     sel_k = EP.filter_electron_states_multigrid(
         (nk_narrow, nk_narrow, nk_narrow), (nk_wide, nk_wide, nk_wide),
-        window_narrow, window_wide, model.nw, model.el_ham; symmetry, use_gpu)
+        window_narrow, window_wide, model.nw, model.el_ham; symmetry, backend)
     sel_kq = EP.unfold_band_states(sel_k, symmetry)   # explicit full-BZ k+q selection
 
     calc = BoltzmannCalculator{Float64}(; occ,
@@ -70,7 +70,7 @@ function run_bte_multigrid(model, nk_narrow, nk_wide; η, window_narrow, window_
         occupation_method = method)
     EP.run_eph_over_k_and_kq(model, sel_k, sel_kq;
         calculators = [calc], symmetry, el_kq_from_unfolding = false,
-        window_k = window_wide, window_kq = window_wide, use_gpu,
+        window_k = window_wide, window_kq = window_wide, backend,
         nchunks_threads = Threads.nthreads(), progress_print_step = 200)
 
     # interpolate=false: exact unfold-only δf feedback on the shared multigrid spec.
@@ -85,7 +85,7 @@ nk_wide = 50
 η   = 5.0 * meV
 occ = occupation_params()
 out = run_bte_multigrid(model, nk_narrow, nk_wide; η, window_narrow, window_wide, occ,
-                        method = 5, use_gpu = true)
+                        method = 5, backend = EP.gpu_backend())
 
 println("\nmultigrid: fine $(nk_narrow)³/±0.1eV + coarse $(nk_wide)³/±0.4eV")
 println("  el_i.n = $(out.calc.el_i.n)   el_f.n = $(out.calc.el_f.n)")

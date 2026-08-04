@@ -8,7 +8,17 @@ using OffsetArrays: no_offset_view
 
 
 """
-    run_eph_over_q_and_k(model, kpts, qpts; calculators, kwargs...)
+    run_eph_over_q_and_k(model, kpts, qpts; calculators, backend, batched, kwargs...)
+
+Sweep the outer q points and, for each, the inner k points. `backend` and `batched` mean exactly what
+they do in [`run_eph_over_k_and_kq`](@ref):
+
+* `backend :: AbstractBackend = CPUBackend()` — array placement
+  (`backend = ElectronPhonon.gpu_backend()` for a GPU run).
+* `batched :: Union{Nothing, Bool} = nothing` — payload/loop shape: the per-(k,q) host
+  [`EPData`](@ref) (`false`) or the batched [`EPDataKBatched`](@ref) (`true`). `nothing` derives it
+  from `backend`. An explicit `batched = false` on a GPU backend is an `ArgumentError`;
+  `batched = true` on a `CPUBackend` is a validation configuration.
 
 * `el_kq_from_unfolding`: If true, compute the electron states at k+q by computing the
     states at k+q in the irreducible BZ and unfolding them to the full BZ. This is useful to
@@ -38,8 +48,9 @@ function run_eph_over_q_and_k(
         eph_phonon_basis::Symbol = :eigenmode,  # :eigenmode or :cartesian
         verbosity::Int = 1,
         eph_buffers::Union{Nothing, EphOuterQLoopBuffers} = nothing,
-        use_gpu = false,          # Run the inner-k e-ph interpolation + calculator on the GPU
-        nk_batch_max = 2^15,      # GPU: max number of outer k points processed per batch
+        backend :: AbstractBackend = CPUBackend(),   # Where arrays live (gpu_backend() for a GPU run)
+        batched :: Union{Nothing, Bool} = nothing,   # Payload/loop shape (nothing = derive from `backend`)
+        nk_batch_max = 2^15,      # Batched: max number of outer k points processed per batch
     ) where {FT}
 
     if model.epmat_outer_momentum != "ph"
@@ -48,13 +59,25 @@ function run_eph_over_q_and_k(
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")
+    # Resolve the loop shape once, here (see `run_eph_over_k_and_kq` for the full rationale):
+    # `nothing` derives it from the backend, and an EXPLICIT `batched = false` on a GPU backend is an
+    # error rather than silently overridden. Nothing below this entry sees anything but a `Bool`.
+    batched_resolved = batched === nothing ? !(backend isa CPUBackend) : batched
+    (backend isa CPUBackend || batched_resolved) || throw(ArgumentError(
+        "batched = false is not supported on a GPU backend: the per-(k,q) host `EPData` payload " *
+        "cannot be built from device arrays. Pass backend = CPUBackend() for the per-point path."))
+    if batched_resolved && backend isa CPUBackend && verbosity > 0 && mpi_isroot()
+        @info "batched e-ph loop on CPUBackend: validation configuration (serial, unoptimized); " *
+              "omit `batched` for production CPU runs."
+    end
+
     for calc in calculators
         if !supports(calc, OuterQLoop)
             throw(ArgumentError("$calc does not support the outer-q loop. Use run_eph_over_k_and_q instead."))
         end
-        # CPU path hands each calculator the per-(k,q) host `EPData`; it must declare support.
-        # The GPU path uses `EPDataKBatched` (checked in `_loop_eph_over_q_and_k_gpu`).
-        if !use_gpu && !supports(calc, EPData)
+        # The per-point path hands each calculator the per-(k,q) host `EPData`; it must declare
+        # support. The batched path uses `EPDataKBatched` (checked in `_loop_eph_over_q_and_k_batched`).
+        if !batched_resolved && !supports(calc, EPData)
             throw(ArgumentError("$calc does not declare support for the per-(k,q) host payload; " *
                 "define supports(::$(typeof(calc)), ::Type{EPData}) = true."))
         end
@@ -81,17 +104,17 @@ function run_eph_over_q_and_k(
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, precompute_el_kq, use_symmetry,
         keep_all_qpts, eph_phonon_basis, calculators, nchunks_threads,
-        verbosity, eph_buffers, use_gpu,
+        verbosity, eph_buffers, backend, batched = batched_resolved,
     )
 
-    if use_gpu
-        # GPU path: setup stays on the host (filter/states/setup_calculator!); the inner-k e-ph
-        # interpolation, k+q eigensolve, and calculator reduction run on the device. Extra flags
-        # must be off; `_loop_eph_over_q_and_k_gpu` asserts the rest (no polar/screening, full-band via
-        # window masking, directly-computed k+q, energy_conservation = (:None, 0.0)).
+    if batched_resolved
+        # Batched path: setup stays on the host (filter/states/setup_calculator!); the inner-k e-ph
+        # interpolation, k+q eigensolve, and calculator reduction run on the backend. Extra flags
+        # must be off; `_loop_eph_over_q_and_k_batched` asserts the rest (no polar/screening, full-band
+        # via window masking, directly-computed k+q, energy_conservation = (:None, 0.0)).
         precompute_el_kq && throw(ArgumentError(
-            "use_gpu does not support precompute_el_kq (k+q states are eigensolved on the device)."))
-        _loop_eph_over_q_and_k_gpu(model,
+            "the batched path does not support precompute_el_kq (k+q states are eigensolved in the loop)."))
+        _loop_eph_over_q_and_k_batched(model,
             setup.kpts, setup.qpts,
             setup.el_k_save, setup.ph_save, setup.eph_buffers,
             setup.el_ham_dev, setup.backend;
@@ -137,22 +160,24 @@ function _setup_eph_over_q_and_k(
         nchunks_threads = nthreads(),
         verbosity::Int = 1,
         eph_buffers::Union{Nothing, EphOuterQLoopBuffers} = nothing,
-        use_gpu = false,
+        backend :: AbstractBackend = CPUBackend(),
+        batched :: Bool = false,
     ) where {FT}
 
     (; nw, nmodes) = model
 
     symmetry = use_symmetry ? model.symmetry : nothing
 
-    # Generate k points and electron states at k (shared setup core; use_gpu: batched device
-    # eigensolve for the window test). Each calculator declares the k-side quantities it needs via
+    # Generate k points and electron states at k (shared setup core; a non-CPU backend takes the
+    # batched device eigensolve for the window test). Each calculator declares the k-side quantities
+    # it needs via
     # `required_el_k_quantities`; the driver computes the union, so a calculator that only reads
     # eigenvalues/eigenvectors skips the velocity/position interpolation+rotation (the dominant
     # setup cost after the eigensolve). Default is the conservative full list.
     el_k_quantities = isempty(calculators) ? ["eigenvalue", "eigenvector", "velocity", "position"] :
         unique(reduce(vcat, required_el_k_quantities(c) for c in calculators))
     (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(
-        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, use_gpu, verbosity, el_k_quantities)
+        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity, el_k_quantities)
     nk = kpts.n
 
     # Generate q points
@@ -225,21 +250,21 @@ function _setup_eph_over_q_and_k(
     end
 
 
-    # Backend: one resolution point (`gpu_backend()` carries an empty device-array allocation
-    # template; `alloc(backend, …)` / `similar(backend.proto, …)` use it). `model.el_ham` is uploaded
-    # ONCE here (for the k+q eigensolve in the loop), reused rather than re-uploaded — a separate
-    # device object from the backend. `backend` is carried in `LoopContext` and passed to `setup_calculator!`.
-    backend = use_gpu ? gpu_backend() : CPUBackend()
-    el_ham_dev = use_gpu ? to_device(backend, model.el_ham) : nothing
+    # `model.el_ham` is uploaded to the backend ONCE here (for the k+q eigensolve in the loop),
+    # reused rather than re-uploaded. On a `CPUBackend` `to_device` is the identity
+    # (`common/gpu_utils.jl`), so `el_ham_dev === model.el_ham`. `backend` is carried in
+    # `LoopContext` and passed to `setup_calculator!`.
+    el_ham_dev = batched ? to_device(backend, model.el_ham) : nothing
 
     # Chemical potential is solved inside each calculator's `setup_calculator!` (via
-    # `set_chemical_potential!`), not here. On the GPU path a calculator can run its ncarrier sums on
+    # `set_chemical_potential!`), not here. On a GPU backend a calculator can run its ncarrier sums on
     # the device via `backend.proto` (the bisection sweeps all in-window states many times and
     # dominates the setup at dense grids); the generic `compute_ncarrier` broadcast+sum works for
     # every occ_type on the device, so no occ_type is special-cased.
-    _setup_calculators!(calculators, kpts, qpts, el_k_save;
+    _setup_calculators!(calculators, backend, batched ? BatchedMode() : SingleMode(),
+        kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        sel_k, sel_kq, nchunks_threads, verbosity, backend,
+        sel_k, sel_kq, nchunks_threads, verbosity,
     )
 
     return (;
@@ -375,11 +400,11 @@ end
 
 
 # =============================================================================
-#  GPU calculator loop for the outer-q e-ph sweep.
+#  Batched calculator loop for the outer-q e-ph sweep.
 #
-#  Mirrors `_loop_eph_over_k_and_kq_gpu` (run_eph_over_k_and_kq.jl): the shared `_setup_eph_over_q_and_k`
+#  Mirrors `_loop_eph_over_k_and_kq_batched` (run_eph_over_k_and_kq.jl): the shared `_setup_eph_over_q_and_k`
 #  runs on the host, and this loop moves the inner-k work — the e-ph Rq→kq interpolation, the k+q
-#  eigensolve, and the calculator reduction — onto the device via the generic batched drivers
+#  eigensolve, and the calculator reduction — onto the backend via the generic batched drivers
 #  (`get_eph_Rq_to_kq_batched!`, `eigen_batched`, `get_fourier_batched!`) and the outer-q batched
 #  calculator hook. The code is backend-generic: it calls only `to_device` and the batched drivers,
 #  so no CUDA code lives here (the device methods live in the CUDA extension).
@@ -390,12 +415,17 @@ end
 #  `run_calculator!(calc, ::EPDataKBatched, ctx)`. The per-q device accumulator is bracketed
 #  by the `calculator_begin!/end!(…, OuterIteration(), ctx)` brackets, the same ones the CPU loop uses.
 #
-#  Scope (asserted below; the CPU path handles the rest): no screening,
+#  Backend: `GPUBackend` is the production configuration; nothing here is device-specific, so the
+#  loop also runs on `CPUBackend` (`batched = true`) as a validation configuration (serial k-batches,
+#  `mul!`-loop `batched_gemm!`, and `plan_batch` returns the `nk_batch_max` cap verbatim). The `_dev`
+#  suffix means "on `backend`", which is the host there.
+#
+#  Scope (asserted below; the per-point path handles the rest): no screening,
 #  energy_conservation = (:None, 0.0), skip_eph = false, and every calculator supports the
 #  `EPDataKBatched` payload. Windows are supported via eigenvector-column masking (out-of-window
 #  states contribute exactly 0), so the batched full-band nw×nw shapes stay uniform. Polar models are
 #  supported: the `polar_eph` dipole term is added on the device per batch (`add_eph_dipole_batched!`).
-function _loop_eph_over_q_and_k_gpu(
+function _loop_eph_over_q_and_k_batched(
         model       :: Model{FT},
         kpts, qpts,
         el_k_save, ph_save,
@@ -417,14 +447,15 @@ function _loop_eph_over_q_and_k_gpu(
     nq = qpts.n
 
     # ----- scope asserts -----
-    skip_eph && throw(ArgumentError("use_gpu requires skip_eph = false."))
+    skip_eph && throw(ArgumentError("the batched path requires skip_eph = false."))
     energy_conservation === (:None, 0.0) || throw(ArgumentError(
-        "use_gpu supports only energy_conservation = (:None, 0.0)."))
+        "the batched path supports only energy_conservation = (:None, 0.0)."))
     # screening_params === nothing also guarantees ϵ ≡ 1 in the polar dipole term below.
-    screening_params === nothing || throw(ArgumentError("use_gpu does not support screening_params."))
+    screening_params === nothing || throw(ArgumentError(
+        "the batched path does not support screening_params."))
     (!isempty(calculators) && all(c -> supports(c, EPDataKBatched), calculators)) || throw(ArgumentError(
-        "use_gpu (outer-q) requires every calculator to support the EPDataKBatched payload. " *
-        "Use the CPU path otherwise."))
+        "the batched outer-q path requires every calculator to support the EPDataKBatched payload. " *
+        "Use the per-point path otherwise."))
 
     # `el_ham_dev` (device Hamiltonian for the k+q eigensolve) was uploaded ONCE in the shared setup
     # and threaded here through `backend`; the loop reuses it rather than re-uploading.
@@ -458,7 +489,7 @@ function _loop_eph_over_q_and_k_gpu(
     nk_batch_cap = min(Int(nk_batch_max), nk)
     nk_batch_max = plan_batch(backend, per_point, committed, nk_batch_cap; what = "outer-q")
     if verbosity > 0 && mpi_isroot()
-        @info "GPU outer-q device memory: committed = $(round(committed / 1e9, digits = 2)) GB, " *
+        @info "batched outer-q staging: committed = $(round(committed / 1e9, digits = 2)) GB, " *
               "$(round(per_point / 1e3, digits = 1)) kB/k; k-batch size = $nk_batch_max"
     end
 
@@ -584,15 +615,20 @@ end
 
 """
     estimate_device_memory(model; nk, nkq, nk_outer_batch_max = 256, nq_batch_max = nothing,
-                           nk_batch_max = 2^15, calculators = [], use_gpu = true) -> NamedTuple
+                           nk_batch_max = 2^15, calculators = [], backend = CPUBackend()) -> NamedTuple
 
-Estimate the GPU device memory a batched e-ph run would use, WITHOUT running it, so a batch width can
+Estimate the device memory a batched e-ph run would use, WITHOUT running it, so a batch width can
 be sized ahead of time. Uses the same byte functions as the drivers (`_outer_{k,q}_staging_bytes`,
 full-band: `nbandk_max = nw`, so windowed runs use less), and reports both the whole-run `committed`
 bytes and the `per_point` (per batched-inner index) bytes, plus the memory-adaptive batch width
-`plan_batch` would pick against the current backend. Which loop is estimated follows
+`plan_batch` would pick against `backend`. Which loop is estimated follows
 `model.epmat_outer_momentum` (`el` → outer-k, `ph` → outer-q). Returns a `NamedTuple`; the
 committed / per-point fields are also printed by the drivers at `verbosity > 0`.
+
+The byte counts themselves are backend-independent, so no GPU is needed for them and the default
+`backend = CPUBackend()` reports them fine. Only the `batch` and `free` fields depend on the backend:
+on a `CPUBackend` `free_bytes` is unbounded, so `batch` is the requested cap verbatim. Pass
+`backend = ElectronPhonon.gpu_backend()` to see the memory-adaptive width an actual GPU run would pick.
 
 Note: these counts cover the driver's own device buffers only. Actual device usage starts ~100-150 MB
 HIGHER than reported here because of a fixed CUDA library context/workspace floor (cuBLAS etc.),
@@ -604,9 +640,8 @@ it is sized by the calculator, not by this estimate.)
 """
 function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
         nk_outer_batch_max::Integer = 256, nq_batch_max = nothing, nk_batch_max::Integer = 2^15,
-        calculators = [], use_gpu::Bool = true) where {FT}
+        calculators = [], backend::AbstractBackend = CPUBackend()) where {FT}
     (; nw, nmodes) = model
-    backend = use_gpu ? gpu_backend() : CPUBackend()
     if model.epmat_outer_momentum == "el"
         nr_ep = length(get_next_wannier_object(model.epmat).irvec)
         nk_batch = min(Int(nk_outer_batch_max), Int(nk))

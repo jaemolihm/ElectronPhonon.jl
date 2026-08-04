@@ -40,13 +40,14 @@ end
 """
     EPDataQBatched{AT4C, AT4R, AT2, VI} <: AbstractElPhPayload
 
-Device payload of the GPU outer-k loop (`run_eph_over_k_and_kq`, `use_gpu`): one outer k-point with a
-batch of its k+q points. Runs on the backend of `eps` (CPU or GPU); consumers stay backend-generic
-(`similar`, `copyto!`, broadcasting, scatter) so no CUDA dependency leaks in.
+Batched payload of the outer-k loop (`run_eph_over_k_and_kq`, `batched = true`; production spelling
+`backend = gpu_backend()`): one outer k-point with a batch of its k+q points. Runs on the backend of
+`eps` (CPU or GPU); consumers stay backend-generic (`similar`, `copyto!`, broadcasting, scatter) so no
+CUDA dependency leaks in.
 
 The batched fields carry a batch of quantities (the trailing axis is the k+q batch), so they take the
 plural names `eps`/`g2s`/`ωqs` (cf. `ikqs`). This payload differs from [`EPDataKBatched`](@ref)
-because the two GPU loops feed different consumers: this outer-k loop pre-fuses `g2s` in its kernel
+because the two batched loops feed different consumers: this outer-k loop pre-fuses `g2s` in its kernel
 (what the BTE scatter needs), whereas the outer-q loop hands eigenvectors and lets the consumer form
 its own contraction (so `EPDataKBatched` carries `uk`/`ukq` and no `g2s`).
 
@@ -74,8 +75,9 @@ end
 """
     EPDataKBatched{AT4, AT3, AT2, AT1, VK} <: AbstractElPhPayload
 
-Device payload of the GPU outer-q loop (`run_eph_over_q_and_k`, `use_gpu`): one phonon momentum q with
-a batch of outer k-points. Runs on the backend of `eps`; consumers stay backend-generic.
+Batched payload of the outer-q loop (`run_eph_over_q_and_k`, `batched = true`; production spelling
+`backend = gpu_backend()`): one phonon momentum q with a batch of outer k-points. Runs on the backend
+of `eps`; consumers stay backend-generic.
 
 Unlike [`EPDataQBatched`](@ref) it carries no fused `g2s`: the outer-q loop hands the raw e-ph
 matrices `eps` plus the eigenvectors `uk`/`ukq`, and the consumer forms its own contraction (that is

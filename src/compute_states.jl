@@ -9,7 +9,7 @@ export compute_phonon_states
 Compute the quantities listed in `quantities` and return a vector of ElectronState.
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "velocity"
 """
-function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-Inf, Inf); fourier_mode="normal", use_gpu=false) where FT
+function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-Inf, Inf); fourier_mode="normal", backend=CPUBackend()) where FT
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
     for quantity in quantities
@@ -22,16 +22,16 @@ function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-In
         return states
     end
 
-    if use_gpu
-        _compute_electron_states_gpu!(states, model, kpts, quantities, window)
-    else
+    if backend isa CPUBackend
         _compute_electron_states_cpu!(states, model, kpts, quantities, window; fourier_mode)
+    else
+        _compute_electron_states_device!(states, model, kpts, quantities, window, backend)
     end
     states
 end
 
 """
-    compute_electron_states(model, sel::FilteredStates, quantities; fourier_mode="normal", use_gpu=false)
+    compute_electron_states(model, sel::FilteredStates, quantities; fourier_mode="normal", backend=CPUBackend())
 
 Compute electron states for exactly the per-k bands selected by `sel`: each state's band range is
 `sel.band_extent[ik]` (from the selection) rather than a single energy window, so a multigrid (whose
@@ -39,7 +39,7 @@ per-k band extent is narrow at fine-only nodes and wide at coincident nodes) get
 k. Returns a vector of `ElectronState` over `sel.kpts`.
 """
 function compute_electron_states(model::Model{FT}, sel::FilteredStates, quantities;
-        fourier_mode="normal", use_gpu=false) where FT
+        fourier_mode="normal", backend=CPUBackend()) where FT
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
     for quantity in quantities
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
@@ -47,10 +47,10 @@ function compute_electron_states(model::Model{FT}, sel::FilteredStates, quantiti
     kpts = sel.kpts
     states = [ElectronState{FT}(model.nw) for _ in 1:kpts.n]
     isempty(quantities) && return states
-    if use_gpu
-        _compute_electron_states_gpu!(states, model, kpts, quantities, sel.band_extent)
-    else
+    if backend isa CPUBackend
         _compute_electron_states_cpu!(states, model, kpts, quantities, sel.band_extent; fourier_mode)
+    else
+        _compute_electron_states_device!(states, model, kpts, quantities, sel.band_extent, backend)
     end
     states
 end
@@ -121,7 +121,7 @@ function _compute_electron_states_cpu!(states, model::Model{FT}, kpts, quantitie
     end # ik
 end
 
-# GPU: one batched eigensolve on the device replaces the per-k solve, then a host loop copies the
+# Device: one batched eigensolve on the backend replaces the per-k solve, then a host loop copies the
 # results into the states. The energy window is applied by set_window! after the full-band
 # eigenpair is copied in (e_full/u_full); windowed quantities (rbar/velocity) then read the
 # in-window block of the full-band device result.
@@ -132,11 +132,11 @@ end
 # get_el_eigen!, so for degenerate bands the eigenvectors (and per-band-pair e-ph matrix elements /
 # g2) can differ from the CPU path by a unitary rotation within the degenerate subspace. Gauge-
 # independent quantities (eigenvalues, ωq, BZ-summed observables) are unaffected.
-function _compute_electron_states_gpu!(states, model::Model{FT}, kpts, quantities, window) where FT
+function _compute_electron_states_device!(states, model::Model{FT}, kpts, quantities, window,
+                                          backend) where FT
     (; nw, el_velocity_mode) = model
     (; need_vfull, need_vdiag, need_position) = _electron_state_needs(model, quantities)
 
-    backend = gpu_backend()
     itp_elham = get_interpolator(to_device(backend, model.el_ham); fourier_mode="batched", batch_size=kpts.n)
 
     if quantities == ["eigenvalue"]
@@ -220,7 +220,7 @@ Compute the quantities listed in `quantities` and return a vector of PhononState
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"
 TODO: Implement quantities "velocity"
 """
-function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode="normal", eph_phonon_basis::Symbol = :eigenmode, use_gpu=false) where FT
+function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode="normal", eph_phonon_basis::Symbol = :eigenmode, backend=CPUBackend()) where FT
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]
     for quantity in quantities
@@ -234,10 +234,10 @@ function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode=
         return states
     end
 
-    if use_gpu
-        _compute_phonon_states_gpu!(states, model, kpts, quantities, eph_phonon_basis)
-    else
+    if backend isa CPUBackend
         _compute_phonon_states_cpu!(states, model, kpts, quantities, eph_phonon_basis; fourier_mode)
+    else
+        _compute_phonon_states_device!(states, model, kpts, quantities, eph_phonon_basis, backend)
     end
     states
 end
@@ -278,19 +278,18 @@ function _compute_phonon_states_cpu!(states, model::Model{FT}, kpts, quantities,
     end  # iks
 end
 
-# GPU: batch the phonon eigensolve on the device (same idea as _compute_electron_states_gpu!),
+# Device: batch the phonon eigensolve on the backend (same idea as _compute_electron_states_device!),
 # then a host loop copies the results into the states. velocity_diagonal is rotated on the device
-# too. polar is unsupported (the GPU e-ph loop asserts no polar). Same degeneracy-gauge caveat as
+# too. polar is unsupported (the batched e-ph loop asserts no polar). Same degeneracy-gauge caveat as
 # the electrons — small g2 differences for degenerate modes, most visible on COARSE q grids.
-function _compute_phonon_states_gpu!(states, model::Model{FT}, kpts, quantities,
-                                     eph_phonon_basis) where FT
+function _compute_phonon_states_device!(states, model::Model{FT}, kpts, quantities,
+                                        eph_phonon_basis, backend) where FT
     (; nmodes, mass) = model
     need_velocity = "velocity_diagonal" ∈ quantities
     polar = model.polar_phonon
-    polar.use && error("compute_phonon_states use_gpu does not support polar phonons")
+    polar.use && error("compute_phonon_states on a non-CPU backend does not support polar phonons")
     "velocity" ∈ quantities && error("full velocity for phonons not implemented")
 
-    backend = gpu_backend()
     itp_dyn = get_interpolator(to_device(backend, model.ph_dyn); fourier_mode="batched", batch_size=kpts.n)
     D = _fourier_hk_batched(itp_dyn, kpts.vectors)  # (nmodes,nmodes,nq)
     msqrt_d = similar(D, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
@@ -320,7 +319,7 @@ end
 # backends and the GPU path never leaves the device. A `Vector` of per-q mutable structs costs ~13
 # allocations and ~1.5 kB per q point, which at the q-grids the outer-k driver builds (nq = 6.9 M for
 # Cu at nk = 200) is ~90 M allocations and ~10 GiB of churn, most of the setup's GC time.
-# `_loop_eph_over_k_and_kq_gpu` shows how little of it is wanted: it reads only `.u` and `.e`, and
+# `_loop_eph_over_k_and_kq_batched` shows how little of it is wanted: it reads only `.u` and `.e`, and
 # gathers them straight back into dense stacks to re-upload — data `E_dev`/`U_dev` above already hold
 # on the device — while `velocity_diagonal` and `eph_dipole_coeff`, which that driver requests, are
 # never read. Measured on Cu at nq = 436 k: 1.62 s / 5.67 M allocations / 669 MiB for the per-q

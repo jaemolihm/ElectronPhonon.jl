@@ -23,7 +23,7 @@ mutable struct _CountCalc <: AbstractCalculator
 end
 ElectronPhonon.supports(::_CountCalc, ::Type{OuterKLoop}) = true
 ElectronPhonon.supports(::_CountCalc, ::Type{EPData}) = true
-ElectronPhonon.setup_calculator!(c::_CountCalc, kpts, qpts, el_states; kwargs...) = c
+ElectronPhonon.setup_calculator!(c::_CountCalc, backend, mode, kpts, qpts, el_states; kwargs...) = c
 ElectronPhonon.postprocess_calculator!(c::_CountCalc; kwargs...) = c
 ElectronPhonon.run_calculator!(c::_CountCalc, ::EPData, ctx) = (c.n += 1; c)
 # CPU-only (SingleMode): nothing per outer iteration, but there is no default bracket, so the no-op

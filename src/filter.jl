@@ -37,20 +37,19 @@ end
 filter_kpoints(kpts_input, nw, el_ham, window, mpi_comm; kwargs...) =
     filter_kpoints(kpts_input, nw, el_ham, window; mpi_comm, kwargs...)
 
-function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", use_gpu=false)
+function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", backend=CPUBackend())
     ik_keep = zeros(Bool, kpoints.n)
     nelec_below_window_ = zeros(eltype(window), kpoints.n)
     band_min_ = zeros(Int, kpoints.n)
     band_max_ = zeros(Int, kpoints.n)
 
-    if use_gpu
-        # GPU: batched valueonly eigensolve (the band-eigenvalues are the expensive part of
+    if !(backend isa CPUBackend)
+        # Device: batched valueonly eigensolve (the band-eigenvalues are the expensive part of
         # filtering); the cheap window test stays on the host. `to_device` /
         # `get_el_eigen_valueonly_batched` come from the base + CUDA extension. Chunk over k so the
         # per-chunk device H(k) stack (nw*nw*kchunk complex) stays bounded — a single all-nk solve
         # can exhaust GPU memory on large grids. kchunk caps that stack at ~1 GiB (nk if smaller).
         kchunk = clamp(fld(2^30, nw * nw * 16), 1, kpoints.n)
-        backend = gpu_backend()
         itp_elham = get_interpolator(to_device(backend, el_ham); fourier_mode="batched", batch_size=kchunk)
         kstart = 1
         while kstart <= kpoints.n
@@ -158,7 +157,7 @@ end
 # min/max. Non-MPI (the selection generators are single-node); a trivial window keeps the whole grid
 # with all bands `1:nw`.
 function _filter_with_band_ranges(kpts_input, nw, el_ham, window;
-                                  symmetry=nothing, fourier_mode="gridopt", use_gpu=false, shift=(0, 0, 0))
+                                  symmetry=nothing, fourier_mode="gridopt", backend=CPUBackend(), shift=(0, 0, 0))
     if kpts_input isa NTuple{3,Integer}
         (symmetry === nothing || all(shift .== 0)) ||
             error("nonzero shift and symmetry incompatible (not implemented)")
@@ -170,13 +169,13 @@ function _filter_with_band_ranges(kpts_input, nw, el_ham, window;
         gkpts = kpoints isa GridKpoints ? kpoints : GridKpoints(kpoints)
         return gkpts, fill(1, gkpts.n), fill(nw, gkpts.n), zero(eltype(window))
     end
-    r = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, use_gpu)
+    r = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, backend)
     gkpts = GridKpoints(get_filtered_kpoints(kpoints, r.ik_keep))
     gkpts, r.band_min_per_k[r.ik_keep], r.band_max_per_k[r.ik_keep], r.nelec_below_window
 end
 
 """
-    filter_electron_states(kpts_input, nw, el_ham, window; symmetry, fourier_mode, use_gpu,
+    filter_electron_states(kpts_input, nw, el_ham, window; symmetry, fourier_mode, backend,
                            mpi_comm, shift) -> FilteredStates
     filter_electron_states(kpts_input, model::Model, window; kwargs...) -> FilteredStates
 
@@ -194,10 +193,10 @@ k-points and per-k band ranges are redistributed together through the same gathe
 stay aligned, and the local below-window counts are summed.
 """
 function filter_electron_states(kpts_input, nw::Integer, el_ham, window;
-        symmetry=nothing, fourier_mode="gridopt", use_gpu=false, mpi_comm=nothing, shift=(0, 0, 0))
+        symmetry=nothing, fourier_mode="gridopt", backend=CPUBackend(), mpi_comm=nothing, shift=(0, 0, 0))
     if mpi_comm === nothing
         gkpts, ibmin, ibmax, nelec = _filter_with_band_ranges(kpts_input, nw, el_ham, window;
-            symmetry, fourier_mode, use_gpu, shift)
+            symmetry, fourier_mode, backend, shift)
     else
         kpts_input isa NTuple{3,Integer} ||
             throw(ArgumentError("filter_electron_states with mpi_comm requires an NTuple grid spec"))
@@ -206,7 +205,7 @@ function filter_electron_states(kpts_input, nw::Integer, el_ham, window;
         # Build the grid distributed and filter each rank's slice once (single eigensolve pass).
         kpoints = kpoints_grid(kpts_input, mpi_comm; shift, symmetry)
         gkpts_l, ibmin_l, ibmax_l, nelec_l = _filter_with_band_ranges(kpoints, nw, el_ham, window;
-            fourier_mode, use_gpu)
+            fourier_mode, backend)
         # Redistribute the kept k-points via the shared GridKpoints wrapper (rank-concatenate +
         # even-split, no reorder; preserves the global ngrid). The per-k band ranges follow with the
         # SAME gather/scatter, so they stay aligned to `gkpts`. Sum the local below-window counts.
@@ -233,7 +232,7 @@ filter_electron_states(kpts_input, model::Model, window; kwargs...) =
 
 """
     filter_electron_states_multigrid(nks_f, nks_c, window_f, window_c, nw, el_ham;
-                                     fourier_mode="gridopt", symmetry=nothing, use_gpu=false)
+                                     fourier_mode="gridopt", symmetry=nothing, backend=CPUBackend())
         -> FilteredStates
 
 Generator 2 (double-grid): build a `FilteredStates` sampling a FINE grid `nks_f` in the narrow
@@ -256,14 +255,14 @@ grid for the q-lookup; its per-point `weights` are informational (the per-state 
 selection are the authoritative BZ weights).
 """
 function filter_electron_states_multigrid(nks_f, nks_c, window_f, window_c, nw, el_ham;
-                                  fourier_mode="gridopt", symmetry=nothing, use_gpu=false)
+                                  fourier_mode="gridopt", symmetry=nothing, backend=CPUBackend())
 
     all(mod.(nks_f, nks_c) .== 0) || throw(ArgumentError("nks_f must be a multiple of nks_c"))
     (window_f[1] >= window_c[1] && window_f[2] <= window_c[2]) ||
         throw(ArgumentError("the fine window_f must be contained in the coarse window_c"))
 
-    kpts_f, ibmin_f, ibmax_f, _            = _filter_with_band_ranges(nks_f, nw, el_ham, window_f; symmetry, fourier_mode, use_gpu)  # fine, narrow
-    kpts_c, ibmin_c, ibmax_c, nstates_base = _filter_with_band_ranges(nks_c, nw, el_ham, window_c; symmetry, fourier_mode, use_gpu)  # coarse, wide
+    kpts_f, ibmin_f, ibmax_f, _            = _filter_with_band_ranges(nks_f, nw, el_ham, window_f; symmetry, fourier_mode, backend)  # fine, narrow
+    kpts_c, ibmin_c, ibmax_c, nstates_base = _filter_with_band_ranges(nks_c, nw, el_ham, window_c; symmetry, fourier_mode, backend)  # coarse, wide
 
     T = eltype(kpts_f.weights)
 

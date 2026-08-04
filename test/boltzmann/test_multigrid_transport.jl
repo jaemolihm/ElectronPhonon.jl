@@ -10,7 +10,8 @@ using LinearAlgebra
 # weights; the k+q selection is its explicit symmetry unfold (`unfold_band_states`). Checks:
 #   1. multigrid vs uniform reference — the double-grid σ discrepancy (reported, not pre-toleranced);
 #   2. the fine refinement improves accuracy — multigrid beats the coarse grid alone;
-#   3. CPU-vs-GPU equality on the multigrid — the per-final-state weight is bit-identical on both;
+#   3. per-point-vs-batched equality on the multigrid — the per-final-state weight is bit-identical on
+#      both (run for CPU+batched always, and for GPU+batched when CUDA is available);
 #   4. over-selection regression — a wide-tail band at a fine-only node is absent from el_i/el_f;
 #   5. auto-μ succeeds on the windowed multigrid selection (no bracket failure).
 # All solved with interpolate=false (unfold-only δf feedback, exact on the shared multigrid spec).
@@ -40,24 +41,28 @@ end
         smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
 
     # Grid/tuple input runs Generator 1 internally (sugar); a FilteredStates passes through as-is.
-    run_sel(kk, kq; use_gpu) = (c = mkcalc();
+    run_sel(kk, kq; backend, batched = nothing, nq_batch_max = nothing,
+            nk_outer_batch_max = 256) = (c = mkcalc();
         EP.run_eph_over_k_and_kq(model, kk, kq; calculators = [c], symmetry = sym,
             el_kq_from_unfolding = false, window_k = w_wide, window_kq = w_wide,
-            fourier_mode = "gridopt", use_gpu, progress_print_step = 10^9); c)
+            fourier_mode = "gridopt", backend, batched, nq_batch_max, nk_outer_batch_max,
+            progress_print_step = 10^9, verbosity = 0); c)
     solve(c) = EP.solve_electron_bte(c.el_i, c.el_f, c.Sᵢ, stack(c.Sₒ), occ(), sym; interpolate = false)
     reldiff(a, b) = norm(a - b) / norm(b)
 
-    on_gpu = _CUDA_OK
+    # The reference arms run on whichever backend is available (they only need to be self-consistent);
+    # `batched` derives from it.
+    bk = _CUDA_OK ? EP.gpu_backend() : EP.CPUBackend()
 
     # Reference uniform 12/±0.4; coarse-only uniform 6/±0.4; multigrid fine 12/±0.1 + coarse 6/±0.4.
-    c_ref = run_sel((12, 12, 12), (12, 12, 12); use_gpu = on_gpu)
-    c_coarse = run_sel((6, 6, 6), (6, 6, 6); use_gpu = on_gpu)
+    c_ref = run_sel((12, 12, 12), (12, 12, 12); backend = bk)
+    c_coarse = run_sel((6, 6, 6), (6, 6, 6); backend = bk)
     sel_k = EP.filter_electron_states_multigrid((12, 12, 12), (6, 6, 6), w_fine, w_wide,
-                                        model.nw, model.el_ham; symmetry = sym, use_gpu = on_gpu)
+                                        model.nw, model.el_ham; symmetry = sym, backend = bk)
     sel_kq = EP.unfold_band_states(sel_k, sym)     # explicit full-BZ k+q selection
     @test sel_k isa FilteredStates && sel_kq isa FilteredStates
     @test sel_k.kpts.ngrid == (12, 12, 12)
-    c_mg = run_sel(sel_k, sel_kq; use_gpu = on_gpu)
+    c_mg = run_sel(sel_k, sel_kq; backend = bk)
 
     r_ref = solve(c_ref); r_coarse = solve(c_coarse); r_mg = solve(c_mg)
     @test all(isfinite, r_mg.σ) && all(isfinite, r_mg.σ_serta)
@@ -89,17 +94,43 @@ end
         end
     end
 
-    # CPU-vs-GPU equality on the multigrid: same calculator, both backends fold the identical
-    # bte_scattering_increments with the per-final-state weight, so Sₒ/Sᵢ and σ agree to ~machine eps.
+    # Per-point-vs-batched equality on the multigrid: the same calculator, both loop shapes fold the
+    # identical bte_scattering_increments with the per-final-state weight, so Sₒ/Sᵢ and σ agree to
+    # ~machine eps. The CPU+per-point reference is the ground truth for both batched arms.
+    #
+    # The CPU+batched arm needs no CUDA, so this block does real work on a CPU-only machine — which is
+    # the point: it covers the multigrid's per-(k,band) weights through the batched payload and the
+    # tiled Sᵢ path. Both caps are explicit because `plan_batch` returns the requested cap verbatim on
+    # a `CPUBackend`, and they tile different axes: `nq_batch_max` the per-q staging within a k-batch,
+    # `nk_outer_batch_max` the outer-k axis that the Sᵢ `TiledDeviceOutput` is tiled over. Only the
+    # latter makes ntiles > 1, so 3 (against this selection's small nk) is what gives a nonzero
+    # `tile_offset` and exercises the per-tile Sᵢ writeback rather than a single whole-run tile.
+    #
+    # Under CUDA, `c_mg` is already the GPU+batched arm and this is a genuinely different run; without
+    # CUDA `c_mg` IS a CPU+per-point multigrid pass, so reuse it rather than paying for an identical
+    # second one on every CPU-only CI run.
+    c_mg_pt = _CUDA_OK ? run_sel(sel_k, sel_kq; backend = EP.CPUBackend(), batched = false) : c_mg
+    @testset "multigrid: CPU+batched == CPU+per-point" begin
+        c_mg_cb = run_sel(sel_k, sel_kq; backend = EP.CPUBackend(), batched = true,
+                          nq_batch_max = 64, nk_outer_batch_max = 3)
+        # See the note above: assert the precondition for ntiles > 1, since `tile_offset` is reset at
+        # postprocess. Here the tiled axis is the multigrid selection's outer k.
+        @test c_mg_cb.el_i.kpts.n > 3
+        @test stack(c_mg_cb.Sₒ) ≈ stack(c_mg_pt.Sₒ) rtol = 1e-9
+        @test stack(c_mg_cb.Sᵢ) ≈ stack(c_mg_pt.Sᵢ) rtol = 1e-9
+        r_cb = solve(c_mg_cb); r_pt = solve(c_mg_pt)
+        @test r_cb.σ_serta ≈ r_pt.σ_serta rtol = 1e-9
+        @test r_cb.σ       ≈ r_pt.σ       rtol = 1e-9
+    end
+
     if _CUDA_OK
-        c_mg_cpu = run_sel(sel_k, sel_kq; use_gpu = false)
-        @test stack(c_mg_cpu.Sₒ) ≈ stack(c_mg.Sₒ) rtol = 1e-9
-        @test stack(c_mg_cpu.Sᵢ) ≈ stack(c_mg.Sᵢ) rtol = 1e-9
-        r_mg_cpu = solve(c_mg_cpu)
+        @test stack(c_mg_pt.Sₒ) ≈ stack(c_mg.Sₒ) rtol = 1e-9
+        @test stack(c_mg_pt.Sᵢ) ≈ stack(c_mg.Sᵢ) rtol = 1e-9
+        r_mg_cpu = solve(c_mg_pt)
         @test r_mg_cpu.σ_serta ≈ r_mg.σ_serta rtol = 1e-9
         @test r_mg_cpu.σ       ≈ r_mg.σ       rtol = 1e-9
     else
-        @info "CUDA not functional — skipping CPU-vs-GPU multigrid equality"
+        @info "CUDA not functional — skipping the GPU+batched multigrid arm"
     end
 end
 
@@ -114,7 +145,7 @@ end
     w_wide = (e_fermi - 0.4eV, e_fermi + 0.4eV)
     w_fine = (e_fermi - 0.1eV, e_fermi + 0.1eV)
     sym = model.symmetry
-    on_gpu = _CUDA_OK
+    bk = _CUDA_OK ? EP.gpu_backend() : EP.CPUBackend()
 
     # Auto-μ occupation: nlist set, μlist NOT set → the driver solves μ.
     occ_auto() = ElectronOccupationParams(; Tlist = [300.0 * K], nlist = 4.0,
@@ -123,8 +154,8 @@ end
         smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
     run_grid(o, kk, kq) = EP.run_eph_over_k_and_kq(model, kk, kq;
         calculators = [mkcalc(o)], symmetry = sym, el_kq_from_unfolding = false,
-        window_k = w_wide, window_kq = w_wide, fourier_mode = "gridopt", use_gpu = on_gpu,
-        progress_print_step = 10^9)
+        window_k = w_wide, window_kq = w_wide, fourier_mode = "gridopt", backend = bk,
+        progress_print_step = 10^9, verbosity = 0)
 
     # Uniform reference: the full grid is filtered, so the μ solve brackets.
     o_ref = occ_auto()
@@ -134,7 +165,7 @@ end
 
     # Multigrid selection: `nstates_base` rides on the selection, so auto-μ SUCCEEDS (does not throw).
     sel_k = EP.filter_electron_states_multigrid((12, 12, 12), (6, 6, 6), w_fine, w_wide,
-                                        model.nw, model.el_ham; symmetry = sym, use_gpu = on_gpu)
+                                        model.nw, model.el_ham; symmetry = sym, backend = bk)
     sel_kq = EP.unfold_band_states(sel_k, sym)
     o_mg = occ_auto()
     run_grid(o_mg, sel_k, sel_kq)

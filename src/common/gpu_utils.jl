@@ -4,13 +4,15 @@
 # (`ext/ElectronPhononCUDAExt.jl`); the base package defines only the CPU methods, so it loads and
 # runs on CPU-only machines. Nothing here is exported (use `ElectronPhonon.<name>`).
 
-# Backend objects: one resolution point per driver entry (`backend = use_gpu ? gpu_backend() :
-# CPUBackend()`), then carried in `LoopContext` (see calculator/AbstractCalculator.jl). Below the
-# driver entry, code allocates buffers via `alloc(backend, T, dims...)`, moves data with
-# `to_device(backend, x)`, and queries `free_bytes(backend)` / `synchronize(backend)`, so `use_gpu`
-# never threads through the interfaces. `GPUBackend` carries a device-array prototype that `alloc`
-# uses as a `similar` template; `gpu_backend()` (extension) builds one with an empty prototype so a
-# backend can be constructed before any array is moved.
+# Backend objects: the user passes one to a driver entry (`backend = CPUBackend()` or
+# `backend = gpu_backend()`), which carries it in `LoopContext` (see calculator/AbstractCalculator.jl).
+# Everywhere below, code allocates buffers via `alloc(backend, T, dims...)`, moves data with
+# `to_device(backend, x)`, and queries `free_bytes(backend)` / `synchronize(backend)`, so the backend
+# object is the only thing that says where "device" is. `GPUBackend` carries a device-array prototype
+# that `alloc` uses as a `similar` template; `gpu_backend()` (extension) builds one with an empty
+# prototype so a backend can be constructed before any array is moved. Note the backend does NOT say
+# which loop SHAPE runs — that is the drivers' separate `batched` keyword, which defaults from the
+# backend but can be set independently (batched-on-`CPUBackend` is a validation configuration).
 abstract type AbstractBackend end
 struct CPUBackend <: AbstractBackend end
 struct GPUBackend{AT <: AbstractArray} <: AbstractBackend
