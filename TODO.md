@@ -14,10 +14,12 @@
   https://github.com/JuliaMolSim/DFTK.jl/blob/master/src/architecture.jl and follow the pattern in
   https://docs.dftk.org/stable/developer/gpu_computations/ .
 
-- [ ] Remove all the `nk_batch+1:nk_batch_max` dummy padding fills (e.g.
-  `src/calculator/run_eph_over_k_and_kq.jl` ~L702) by passing the actual `nk_batch` through to the
-  batched interpolation/kernels instead of padding partial tails with duplicated valid data to run on
-  dense `nk_batch_max`-sized arrays.
+- [x] Remove all the `nk_batch+1:nk_batch_max` dummy padding fills — done at both sites
+  (`run_eph_over_k_and_kq.jl`, `run_eph_over_q_and_k.jl`). The batched interpolation/eigensolve/kernels
+  are handed contiguous width-`nk_batch` trailing-prefix views of the max-width staging buffers, so a
+  partial final batch computes only its own columns. `get_eph_Rq_to_kq_batched!` now asserts its
+  workspace sizes with `>=` and prefix-views them internally, as its sibling
+  `get_eph_kR_to_kq_batched!` already did.
 
 - [ ] JML should review `TiledDeviceOutput` (the Sᵢ tiling machinery: `tile_begin!` / `tile_download!` /
   `tile_offset` / `tile_length`, used by `BoltzmannCalculator`'s batched path).

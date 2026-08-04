@@ -507,9 +507,15 @@ function _loop_eph_over_q_and_k_batched(
     itp_ep_eRpq = BatchedWannierInterpolator(ep_eRpq_dev; batch_size = nk_batch_max)
 
     # ----- persistent per-batch device workspace (sized to nk_batch_max) -----
+    # Consumed through contiguous trailing-prefix views of width `nk_batch`, so a partial final batch
+    # computes only its own columns and every argument the batched drivers see is still a dense array
+    # (such a view of a device array is a device array, not a `SubArray`).
     ep_ws     = RqToKQWorkspace(ep_eRpq_dev.op_r, ndata_eRpq, nw, nw, nmodes, nk_batch_max)
     ep_batch  = alloc(backend, Complex{FT}, nw, nw, nmodes, nk_batch_max)
     Hkq_flat  = alloc(backend, Complex{FT}, nw * nw, nk_batch_max)
+    # The k+q eigensolve wants H as an (nw, nw, k) stack; reshape the dense parent once here so the
+    # per-batch argument is a plain prefix view of a dense array.
+    Hkq3      = reshape(Hkq_flat, nw, nw, nk_batch_max)
     Uk_batch  = alloc(backend, Complex{FT}, nw, nw, nk_batch_max)
     Ukq_batch = alloc(backend, Complex{FT}, nw, nw, nk_batch_max)
     ek_batch  = alloc(backend, FT, nw, nk_batch_max)
@@ -554,14 +560,13 @@ function _loop_eph_over_q_and_k_batched(
             kend = min(kstart + nk_batch_max - 1, nk)
             iks_batch = kstart:kend
             nk_batch = length(iks_batch)
+            rng_k = 1:nk_batch   # this batch's columns within the nk_batch_max-sized buffers
 
             # k / k+q lists + k-side data staged on the host, then uploaded (streaming). `Uk` is
             # zero-padded outside each k's in-window range `rng`, so the full nw×nw Rq→kq rotation
-            # reproduces the CPU's windowed rotation with zeros outside. The tail (partial final
-            # batch) is padded with the last valid k so the batched Fourier / eigensolve see finite
-            # data; its weight is zeroed so — unlike the outer-k loop, where padded duplicates scatter
-            # to a unique in-window index harmlessly — a padded k column cannot double-count into the
-            # q-summed χ (the calculator multiplies by `wtk`).
+            # reproduces the CPU's windowed rotation with zeros outside. A partial final batch fills
+            # only its own `nk_batch` columns: everything below runs at width `nk_batch` via prefix
+            # views into the max-width buffers, so there is no padded tail to neutralise.
             for (ik_ind, ik) in enumerate(iks_batch)
                 el = el_k_save[ik]
                 ks_batch[ik_ind]  = kpts.vectors[ik]
@@ -571,40 +576,37 @@ function _loop_eph_over_q_and_k_batched(
                 ek_host[:, ik_ind] .= el.e_full
                 wtk_host[ik_ind]    = kpts.weights[ik]
             end
-            for ik_ind in (nk_batch + 1):nk_batch_max
-                ks_batch[ik_ind]  = ks_batch[nk_batch]
-                kqs_batch[ik_ind] = kqs_batch[nk_batch]
-                @views Uk_host[:, :, ik_ind] .= Uk_host[:, :, nk_batch]
-                @views ek_host[:, ik_ind]    .= ek_host[:, nk_batch]
-                wtk_host[ik_ind]  = 0
-            end
-            copyto!(Uk_batch, Uk_host)
-            copyto!(ek_batch, ek_host)
-            copyto!(wtk_batch, wtk_host)
+            # H2D of just this batch's columns (5-arg contiguous copies — copying a host<->device
+            # SubArray view instead would fall back to scalar indexing).
+            copyto!(Uk_batch, 1, Uk_host, 1, nw * nw * nk_batch)
+            copyto!(ek_batch, 1, ek_host, 1, nw * nk_batch)
+            copyto!(wtk_batch, 1, wtk_host, 1, nk_batch)
 
             # k+q eigensolve on the device (batched). No gauge fixing needed: χ is gauge-invariant.
             # TODO: `eigen_batched` allocates (E, U) each batch; an in-place variant into ek/Ukq
             #       scratch would remove the per-batch allocation.
-            get_fourier_batched!(Hkq_flat, itp_el_ham, kqs_batch)
-            Ekq, Ukq = eigen_batched(reshape(Hkq_flat, nw, nw, nk_batch_max))   # (nw,·), (nw,nw,·)
+            get_fourier_batched!(view(Hkq_flat, :, rng_k), itp_el_ham, view(kqs_batch, rng_k))
+            Ekq, Ukq = eigen_batched(view(Hkq3, :, :, rng_k))   # (nw, nk_batch), (nw, nw, nk_batch)
 
             # k+q window mask: zero eigenvector COLUMNS m outside [wmin, wmax] (Ekq[m,k]). This
             # zeroes ep_kq[m,·] and every k+q-side matrix element for out-of-window m, so those
             # (m,n) pairs contribute exactly 0 — reproducing the CPU's `for m in el_kq.rng` loop.
-            mask_kq = (Ekq .>= wmin) .& (Ekq .<= wmax)                    # (nw, ·) Bool
-            Ukq_batch .= Ukq .* reshape(mask_kq, 1, nw, nk_batch_max)
+            mask_kq = (Ekq .>= wmin) .& (Ekq .<= wmax)                    # (nw, nk_batch) Bool
+            @views Ukq_batch[:, :, rng_k] .= Ukq .* reshape(mask_kq, 1, nw, nk_batch)
 
             # Batched Rq→kq e-ph interpolation: ep_batch[m,n,ν,k] = Ukq(k)' * g(k) * Uk(k).
-            get_eph_Rq_to_kq_batched!(ep_batch, itp_ep_eRpq, ks_batch, Uk_batch, Ukq_batch; ws = ep_ws)
+            get_eph_Rq_to_kq_batched!(view(ep_batch, :, :, :, rng_k), itp_ep_eRpq,
+                view(ks_batch, rng_k), view(Uk_batch, :, :, rng_k), view(Ukq_batch, :, :, rng_k);
+                ws = ep_ws)
 
-            use_polar_eph && add_eph_dipole_batched!(ep_batch, coeffs_dev, Ukq_batch, Uk_batch, mmats_batch)
+            use_polar_eph && add_eph_dipole_batched!(view(ep_batch, :, :, :, rng_k), coeffs_dev,
+                view(Ukq_batch, :, :, rng_k), view(Uk_batch, :, :, rng_k),
+                view(mmats_batch, :, :, rng_k))
 
-            # Hand the calculator width-`nk_batch` views (the outer-k convention): the internal
-            # staging stays padded to `nk_batch_max` for the dense batched eigensolve / Fourier, but
-            # the payload is trimmed so an unweighted reduction cannot count padded columns. (The
-            # internal `wtk` zero-padding above is kept as defense-in-depth.) A trailing-prefix view
-            # of a device array is contiguous, so the extension kernels take these directly.
-            rng_k = 1:nk_batch
+            # The payload is the same width-`nk_batch` prefix views the drivers above were handed, so a
+            # consumer reads its own size from any field (`size(eps, 4)`) and there is no padded tail
+            # anywhere. `Ekq`/`Ukq` are already exactly this batch's width; they are viewed anyway so
+            # `ek`/`ekq` (which share one type parameter) stay the same type.
             payload = EPDataKBatched(
                 view(ep_batch, :, :, :, rng_k), view(ek_batch, :, rng_k), view(Ekq, :, rng_k),
                 view(Uk_batch, :, :, rng_k), view(Ukq_batch, :, :, rng_k), view(wtk_batch, rng_k),

@@ -698,10 +698,11 @@ function _loop_eph_over_k_and_kq_batched(
     end
 
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
-    # All device staging is sized to the full batch and used as plain CuArrays (not
-    # batch-sliced views), so the batched drivers' reshape/cuBLAS calls stay on dense arrays.
-    # Every buffer below comes from `alloc(backend, ...)`, so the backend is the single authority on
-    # where "device" is.
+    # All device staging is sized to the MAX batch width and consumed through contiguous
+    # trailing-prefix views of width `nk_batch` / `nq_batch`, so a partial final batch computes only
+    # its own columns and every argument the batched drivers see is still a dense array (such a view
+    # of a device array is a device array, not a `SubArray`). Every buffer below comes from
+    # `alloc(backend, ...)`, so the backend is the single authority on where "device" is.
 
     # RR->kR over a batch of `nk_batch_max` outer-k at once: one batched kernel per batch instead of one
     # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole batch; the inner
@@ -768,11 +769,6 @@ function _loop_eph_over_k_and_kq_batched(
     irvecp_mat = _irvec_to_device_matrix(model.epmat.irvec_next, epmat_dev, FT)
     P_mk  = alloc(backend, Complex{FT}, nr_ep, nk_batch_max)
     P_kq = alloc(backend, Complex{FT}, nr_ep, nq_batch_max)
-    # Defensive: only columns 1:nk_batch are rewritten per batch, so a partial final batch leaves the
-    # tail columns holding whatever the previous batch wrote. Nothing reads them — the k loop runs
-    # `1:nk_batch` — and 1 is the identity of the convention multiply, so the padded (never-read)
-    # slice of ep_ekpR_all stays meaningful whether or not it has been written yet.
-    fill!(P_mk, 1)
 
     # `iq` index staging for one (k, q-tile).
     iqs_batch     = Vector{Int}(undef, nq_batch_max)
@@ -805,9 +801,11 @@ function _loop_eph_over_k_and_kq_batched(
         kend = min(kstart + nk_batch_max - 1, nk)
         iks_batch = kstart:kend
         nk_batch = length(iks_batch)
+        rng_k = 1:nk_batch   # this batch's columns within the nk_batch_max-sized staging buffers
 
-        # Stack U(k) and the k list for this outer-k batch (pad the partial tail with valid
-        # duplicated data so the batched RR->kR runs on dense `nk_batch_max`-sized arrays).
+        # Stack U(k) and the k list for this outer-k batch. A partial final batch fills only its own
+        # `nk_batch` columns: everything below runs at width `nk_batch` via prefix views into the
+        # max-width buffers, the same convention the q axis of this loop already uses.
         for (ik_ind, ik) in enumerate(iks_batch)
             # k-side window projection: the `nbandk_max` contiguous eigenvector columns around this
             # k's in-window range (all nw columns when full-band). The window selection itself
@@ -816,11 +814,9 @@ function _loop_eph_over_k_and_kq_batched(
             @views uks_host[:, :, ik_ind] .= el_k_save[ik].u_full[:, nb0+1:nb0+nbandk_max]
             ks_batch[ik_ind] = kpts.vectors[ik]
         end
-        for ik_ind in (nk_batch+1):nk_batch_max
-            @views uks_host[:, :, ik_ind] .= uks_host[:, :, nk_batch]
-            ks_batch[ik_ind] = ks_batch[nk_batch]
-        end
-        copyto!(uks_dev, uks_host)
+        # H2D of just this batch's columns (5-arg contiguous copy — copying a host<->device SubArray
+        # view instead would fall back to scalar indexing; same reason as the `iqs_batch` copy below).
+        copyto!(uks_dev, 1, uks_host, 1, nw * nbandk_max * nk_batch)
 
         if mpi_isroot() && div(kend, progress_print_step) > div(kstart - 1, progress_print_step)
             @info "$(now()) ik = $kstart:$kend / $nk"
@@ -829,10 +825,12 @@ function _loop_eph_over_k_and_kq_batched(
 
         # One batched RR->kR over the whole batch: g(k, R_ep) for all k in the batch, stored in the
         # k+q convention (multiplied by P_mk, the phase at −x_k) so the kR->kq phase below is
-        # k-independent.
-        @views fourier_phase!(P_mk[:, 1:nk_batch], irvecp_mat, mxk_dev[:, iks_batch])
-        get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat, ks_batch, uks_dev;
-            additional_phase = P_mk)
+        # k-independent. The driver derives the batch width from `size(uks, 3)` and asserts that the
+        # other three arguments agree, so handing it four width-`nk_batch` views is within its contract.
+        @views fourier_phase!(P_mk[:, rng_k], irvecp_mat, mxk_dev[:, iks_batch])
+        get_eph_RR_to_kR_batched!(view(ep_ekpR_all, :, :, rng_k), itp_epmat,
+            view(ks_batch, rng_k), view(uks_dev, :, :, rng_k);
+            additional_phase = view(P_mk, :, rng_k))
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.

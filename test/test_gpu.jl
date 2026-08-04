@@ -384,6 +384,65 @@ end
     end
 end
 
+# Partial final K-batch (the q-axis analogue above is per-k). Both batched loops run a narrower final
+# batch by handing the k-side drivers width-`m` contiguous prefix views of their max-width staging:
+# `get_eph_RR_to_kR_batched!` takes the batch width from `size(uks, 3)` and asserts the rest, and
+# `get_eph_Rq_to_kq_batched!` asserts its workspace with `>=` and prefix-views it internally. A
+# width-`m` view run must reproduce the first `m` slices of the full-width run and leave the tail
+# untouched. Backend-agnostic (`to_dev`/`arr_dev` as in `check_eph_batched`), so it runs without CUDA.
+function check_eph_partial_view_k(to_dev, arr_dev; rtol)
+    nwe, nmodes, nr_el, nr_ep = 3, 4, 12, 9
+    nband, nk, m = nwe, 9, 5          # view width m < full width nk
+    irvec_el = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_el], by = x -> reverse(x))
+    irvec_ep = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_ep], by = x -> reverse(x))
+    ks   = [Vec3(rand(3)...) for _ in 1:nk]
+    uks  = arr_dev(rand(ComplexF64, nwe, nband, nk))
+    ukqs = arr_dev(rand(ComplexF64, nwe, nband, nk))
+
+    # (a) RR→kR, the outer-k loop's k-axis: output / k list / uks / additional_phase all prefix-viewed.
+    epmat_d = to_dev(WannierObject(irvec_el, rand(ComplexF64, nwe^2*nmodes*nr_ep, nr_el);
+                                  irvec_next = irvec_ep))
+    itp_epmat = get_interpolator(epmat_d; fourier_mode="batched", batch_size=nk)
+    P = arr_dev(rand(ComplexF64, nr_ep, nk))
+    ndata = nwe * nband * nmodes
+    full = arr_dev(zeros(ComplexF64, ndata, nr_ep, nk))
+    get_eph_RR_to_kR_batched!(full, itp_epmat, ks, uks; additional_phase = P)
+    part = arr_dev(zeros(ComplexF64, ndata, nr_ep, nk))
+    get_eph_RR_to_kR_batched!(view(part, :, :, 1:m), itp_epmat, view(ks, 1:m),
+        view(uks, :, :, 1:m); additional_phase = view(P, :, 1:m))
+    @test isapprox(Array(view(part, :, :, 1:m)), Array(view(full, :, :, 1:m)); rtol)
+    @test all(Array(view(part, :, :, m+1:nk)) .== 0)   # the narrow call wrote only its own columns
+
+    # (b) Rq→kq, the outer-q loop's k-axis: same ONE max-width workspace serves the full and the
+    # narrow call, which is what the `>=` workspace assertions and internal prefix views are for.
+    eRpq_d = to_dev(WannierObject(irvec_el, rand(ComplexF64, nwe^2*nmodes, nr_el)))
+    itp_eRpq = get_interpolator(eRpq_d; fourier_mode="batched", batch_size=nk)
+    ws = ElectronPhonon.RqToKQWorkspace(eRpq_d.op_r, nwe^2*nmodes, nband, nband, nmodes, nk)
+    full_q = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nk))
+    get_eph_Rq_to_kq_batched!(full_q, itp_eRpq, ks, uks, ukqs; ws)
+    part_q = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nk))
+    get_eph_Rq_to_kq_batched!(view(part_q, :, :, :, 1:m), itp_eRpq, view(ks, 1:m),
+        view(uks, :, :, 1:m), view(ukqs, :, :, 1:m); ws)
+    @test isapprox(Array(view(part_q, :, :, :, 1:m)), Array(view(full_q, :, :, :, 1:m)); rtol)
+    @test all(Array(view(part_q, :, :, :, m+1:nk)) .== 0)
+end
+
+@testset "partial k-batch (prefix views into max-width buffers, CPU)" begin
+    check_eph_partial_view_k(identity, identity; rtol=1e-10)
+end
+
+@testset "GPU partial k-batch (prefix views into max-width buffers)" begin
+    if !GPU_AVAILABLE
+        @info "CUDA not available/functional — skipping GPU partial k-batch test"
+    else
+        # A trailing-prefix view of a CuArray is itself a CuArray, which is why the extension's
+        # `CuArray`-annotated eigensolve / cuBLAS methods still dispatch on these arguments.
+        @test view(CuArray(zeros(ComplexF64, 2, 3, 4)), :, :, 1:2) isa CuArray
+        check_eph_partial_view_k(obj -> to_device(ElectronPhonon.gpu_backend(), obj), CuArray;
+                                 rtol=1e-9)
+    end
+end
+
 
 @testset "eph_apply_rotations! rejects a non-dense g" begin
     # The two-GEMM rotation paths merge `g`'s band and mode axes with a `reshape`, so a strided `g`

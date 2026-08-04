@@ -196,7 +196,9 @@ payload, named for which momentum is the outer loop and which is batched on the 
   `eph_batched_bytes_per_point(calc, EPDataKBatched)` for the loop's memory-adaptive batch
   sizing. The k side is streamed per k-batch (host-staged, no whole-grid device stack), and the
   payload is trimmed to the batch's actual width — a consumer reads its own size from any field
-  (e.g. `size(eps, 4)`) and never sees a padded tail (the outer-k convention).
+  (e.g. `size(eps, 4)`) and never sees a padded tail (the outer-k convention). Both loops consume
+  their max-width staging buffers through contiguous trailing-prefix views, so a partial final batch
+  computes only its own columns; nothing is padded with duplicated data.
 - Both loops fold their device-buffer byte accounting into `src/calculator/eph_device_staging.jl`:
   `_outer_{k,q}_staging_bytes(…)` return the loop's `(per_point, committed)` device-byte counts, and
   `plan_batch(backend, per_point, committed, cap; …)` turns those into the memory-adaptive batch
@@ -254,10 +256,6 @@ unchanged). No window handling is needed in the calculator beyond addressing its
   benchmarked and validated bit-identical, but the gain is small on the GPU (CUDA's pool already
   recycles device buffers), so it is deferred. Best done together with the calculator loop, where
   one workspace allocated at loop setup is reused across all (k, q).
-- **View-instead-of-fill for the outer-q staging buffers.** `run_eph_over_q_and_k`'s per-batch
-  staging fills padded per-k buffers (`Uk_batch`, …). Passing `nk_batch` and taking width-`nk` views
-  into the padded buffers (instead of filling) would avoid the copy. A hot-path change with no
-  correctness component, so benchmark it on its own before adopting.
 - **Energy window and long-range/polar on the GPU** — left on the CPU per-k path for now.
 - **MPI / multi-GPU** for the GPU loop — not in this foundation.
 - **Backend as a type parameter instead of a backend object (future).** The `use_gpu` keyword is
