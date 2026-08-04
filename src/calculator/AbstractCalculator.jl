@@ -7,12 +7,19 @@ phonon states and the e-ph matrix elements are formed, the driver hands them to 
 **payload** (a subtype of [`AbstractElPhPayload`]) together with a [`LoopContext`].
 
 Users subtype `AbstractCalculator` and implement:
-* `setup_calculator!(calc, kpts, qpts, el_states; kwargs...)` — run once, before the loop. Among its
-  keywords, two describe the run itself: `backend::AbstractBackend` (where arrays live) and
-  `mode::LoopMode` (`SingleMode()` / `BatchedMode()`, which loop shape will run). **Gate device-buffer
-  construction on `mode`, never on `backend isa GPUBackend`** — the two are independent, and the
-  batched loop also runs on a `CPUBackend` (a validation configuration), where a backend test builds
-  the wrong buffers while still compiling and running. Splat everything else with `kwargs...`.
+* `setup_calculator!(calc, backend::AbstractBackend, mode::LoopMode, kpts, qpts, el_states; kwargs...)`
+  — run once, before the loop. The two arguments describing the run come first and are POSITIONAL:
+  `backend` (where arrays live) and `mode` (`SingleMode()` / `BatchedMode()`, which loop shape will
+  run). Splat everything else with `kwargs...`.
+
+  **Dispatch device-buffer construction on `mode`, never on `backend isa GPUBackend`.** The two axes
+  are independent: the batched loop also runs on a `CPUBackend` (a validation configuration), where a
+  backend test silently builds the per-point buffers and skips the batched readback. That was a real
+  bug in `BoltzmannCalculator` (its `on_gpu` flag), which is why these are positional rather than
+  keywords — a required keyword is absorbed by any `kwargs...` signature, so an out-of-date calculator
+  keeps compiling and computes the wrong thing; a positional argument breaks loudly at load time, and
+  it lets a calculator write `setup_calculator!(c, ::CPUBackend, ::BatchedMode, …)` instead of
+  branching inside one method.
 * `run_calculator!(calc, payload::AbstractElPhPayload, ctx::LoopContext)` — one method per payload
   type the calculator consumes (host per-(k,q), or one of the device-batched payloads).
 * `postprocess_calculator!(calc; kwargs...)` — run once, after the loop.
@@ -157,11 +164,18 @@ conservative full list.
 """
 required_el_k_quantities(::AbstractCalculator) = ["eigenvalue", "eigenvector", "velocity", "position"]
 
-# Mandatory hook, no default. The drivers always supply `backend::AbstractBackend` and
-# `mode::LoopMode` among the keywords (plus the state/grid payload documented above); a calculator
-# that needs neither just splats them. `mode`, not `backend`, is the per-point-vs-batched
-# discriminator — see the `AbstractCalculator` docstring.
-function setup_calculator!(::AbstractCalculator, kpts, qpts, el_states; kwargs...)
+# Mandatory hook, no working default. `backend` and `mode` are POSITIONAL and come before the
+# state/grid arguments, so a calculator can dispatch on them (`::CPUBackend`, `::BatchedMode`) instead
+# of branching, and so a calculator still on the old signature fails loudly here instead of silently
+# absorbing them into `kwargs...`. `mode`, not `backend`, is the per-point-vs-batched discriminator —
+# see the `AbstractCalculator` docstring.
+#
+# Arguments 2 and 3 are deliberately UNANNOTATED. Annotating them `::AbstractBackend, ::LoopMode`
+# makes this method ambiguous with any calculator method that leaves them untyped (the natural
+# spelling: `setup_calculator!(c::MyCalc, backend, mode, kpts, qpts, el_states; kwargs...)`), because
+# neither candidate is more specific — the subtype wins on argument 1, the abstract types win on 2-3.
+# A catch-all must not compete on the arguments it does not dispatch on.
+function setup_calculator!(::AbstractCalculator, backend, mode, kpts, qpts, el_states; kwargs...)
     error("setup_calculator! has to be implemented")
 end
 

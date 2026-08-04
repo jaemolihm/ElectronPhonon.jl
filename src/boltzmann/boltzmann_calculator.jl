@@ -112,9 +112,10 @@ supports(::BoltzmannCalculator, ::Type{OuterKLoop}) = true
 supports(::BoltzmannCalculator, ::Type{EPData}) = true
 supports(::BoltzmannCalculator, ::Type{EPDataQBatched}) = true
 
-function setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, qpts, el_states;
+function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBackend, mode::LoopMode,
+        kpts, qpts, el_states;
         el_states_kq, kqpts, sel_k, sel_kq, nchunks_threads, rng_band,
-        nw, backend, mode, kwargs...) where {FT}
+        nw, kwargs...) where {FT}
     mpi_isroot() && println("Setting up BoltzmannCalculator")
     calc.done &&
         throw(ArgumentError("this BoltzmannCalculator has already been run; reconstruct the " *
@@ -161,11 +162,12 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, kpts, qpts, el_states;
     # cheap on the per-point path where `tile_begin!` never runs.
     calc.tiled = TiledDeviceOutput{FT}((n_i, n_f, nT), 1, calc.el_i; narr = 1, force_block = true)
 
-    # Batched path: build the whole-run device buffers now (backend is available here). The band
-    # energies/weights/index maps are intrinsic to the state sets and temperatures, so they are set
-    # up once here rather than lazily during the loop. `alloc`/`to_device`/`_indmap_to_device` are
+    # Batched path: build the whole-run device buffers now (backend is a positional argument here). The
+    # band energies/weights/index maps are intrinsic to the state sets and temperatures, so they are
+    # set up once here rather than lazily during the loop. `alloc`/`to_device`/`_indmap_to_device` are
     # backend-generic, so on a `CPUBackend` these are host arrays. On the per-point path nothing is
-    # built (`dev` stays `nothing`; it uses the `run_calculator!(::EPData)` loop instead).
+    # built (`dev` stays `nothing`; it uses the `run_calculator!(::EPData)` loop instead). Keyed on
+    # `mode`, NOT on `backend isa GPUBackend` — see the `AbstractCalculator` docstring.
     calc.batched = mode isa BatchedMode
     if calc.batched
         calc.dev = BoltzmannDeviceBuffers(

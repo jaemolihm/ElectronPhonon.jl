@@ -14,7 +14,8 @@ rot.
 
 A calculator must implement:
 
-- `setup_calculator!(calc, kpts, qpts, el_states; kwargs...)` — run once, before the loop.
+- `setup_calculator!(calc, backend, mode, kpts, qpts, el_states; kwargs...)` — run once, before the
+  loop. `backend` and `mode` are positional; see "What `setup_calculator!` receives" below.
 - `run_calculator!(calc, payload, ctx)` — one method per payload *type* the calculator consumes.
   The host per-(k,q) payload is `EPData`; the batched payloads (`EPDataQBatched` / `EPDataKBatched`)
   are for the batched path — normally a GPU run (see "Migrating to the GPU" below).
@@ -57,7 +58,7 @@ ElectronPhonon.supports(::EphG2SumCalculator, ::Type{EPData}) = true
 
 # Run once before the loop. `nchunks_threads` is the number of thread chunks the inner loop uses;
 # allocate one partial-sum slot per chunk so concurrent calls never touch the same slot.
-function ElectronPhonon.setup_calculator!(c::EphG2SumCalculator, kpts, qpts, el_states;
+function ElectronPhonon.setup_calculator!(c::EphG2SumCalculator, backend, mode, kpts, qpts, el_states;
         nchunks_threads, kwargs...)
     c.per_k = zeros(kpts.n)
     c.chunk = zeros(nchunks_threads)
@@ -124,22 +125,33 @@ rather than trivial — if you need many tiny operations, batch them inside the 
 
 ## What `setup_calculator!` receives
 
-`setup_calculator!(calc, kpts, qpts, el_states; kwargs...)` is called with the outer k-points
-`kpts`, the q-points `qpts` (may be `nothing` when phonons are computed on the fly), the electron
-states at k `el_states`, and these keyword arguments (splat the rest with `kwargs...`):
+`setup_calculator!(calc, backend, mode, kpts, qpts, el_states; kwargs...)` is called with the run's
+`backend::AbstractBackend` and loop-shape `mode::LoopMode` (both POSITIONAL, so they can be dispatched
+on and cannot be silently absorbed by `kwargs...`), then the outer k-points `kpts`, the q-points `qpts`
+(may be `nothing` when phonons are computed on the fly), the electron states at k `el_states`, and
+these keyword arguments (splat the rest with `kwargs...`):
 
 - `nw`, `nmodes` — number of Wannier bands / phonon modes.
 - `rng_band` — the in-window band range at k.
 - `el_states_kq`, `kqpts` — electron states / k-points at k+q (may be `nothing`).
 - `nelec_below_window_k`, `nelec_below_window_kq` — carrier counts below the window.
 - `nchunks_threads` — number of inner-loop thread chunks (size per-chunk buffers to this).
-- `verbosity`, `backend` — printing verbosity and the compute backend (`CPUBackend()` /
-  `GPUBackend(proto)`). A CPU-only calculator ignores `backend`.
+- `verbosity` — printing verbosity.
+
+The two positional arguments:
+
+- `backend :: AbstractBackend` — the compute backend (`CPUBackend()` / `GPUBackend(proto)`), i.e. where
+  arrays live. A CPU-only calculator ignores it.
 - `mode :: LoopMode` — the loop SHAPE this run will use: `SingleMode()` (the driver will hand you
-  per-(k,q) `EPData`) or `BatchedMode()` (it will hand you a batched payload). This is what to branch
-  on when deciding which buffers to build, NOT `backend`: the two axes are independent, and
+  per-(k,q) `EPData`) or `BatchedMode()` (it will hand you a batched payload). This is what to dispatch
+  or branch on when deciding which buffers to build, NOT `backend`: the two axes are independent, and
   batched-on-`CPUBackend` is a supported validation configuration. A per-point-only calculator ignores
-  it.
+  it. Being positional, both can be dispatched on:
+  `setup_calculator!(c::MyCalc, backend, ::BatchedMode, kpts, qpts, el_states; kwargs...)`.
+
+Leaving them untyped (`backend, mode`) is fine and is the normal spelling — the erroring
+`AbstractCalculator` fallback deliberately leaves them untyped too, so your method wins on the
+calculator type without needing annotations.
 
 If your calculator only reads eigenvalues/eigenvectors of the outer-k states (not velocity or
 position), override `required_el_k_quantities(calc) = ["eigenvalue", "eigenvector"]` so the outer-q
@@ -165,13 +177,13 @@ To add a GPU path to an existing CPU calculator:
    `p.ωqs`, batch indices …). Write it backend-generically — only `alloc(ctx.backend, T, dims...)`,
    `similar`, `copyto!`, broadcasting, `mul!`, and scatter-assignment — so the same method runs on
    CPU arrays and `CuArray`s and adds no CUDA dependency of its own.
-3. Manage device buffers. `setup_calculator!` is passed both the run's `backend` and its `mode`, so
-   build whole-run device buffers (index maps, band energies, weights — anything intrinsic to the
-   state sets) there with `alloc(backend, …)` / `to_device(backend, …)`, gated on
-   `mode isa BatchedMode`. Do **not** gate on `backend isa GPUBackend`: that builds the wrong buffers
-   under the CPU+batched validation configuration (the bug this guide used to recommend). The alloc
-   helpers are backend-generic, so on a `CPUBackend` they yield host arrays and the same code path
-   works. Use the brackets only for per-iteration state, and mind **which brackets the loop you are
+3. Manage device buffers. `setup_calculator!` receives the run's `backend` and `mode` as its first two
+   arguments, so build whole-run device buffers (index maps, band energies, weights — anything
+   intrinsic to the state sets) there with `alloc(backend, …)` / `to_device(backend, …)`, dispatched or
+   gated on `mode isa BatchedMode`. Do **not** key on `backend isa GPUBackend`: that builds the wrong
+   buffers under the CPU+batched validation configuration (the bug this guide used to recommend). The
+   alloc helpers are backend-generic, so on a `CPUBackend` they yield host arrays and the same code
+   path works. Use the brackets only for per-iteration state, and mind **which brackets the loop you are
    targeting actually fires**:
 
    | loop | brackets fired |
@@ -228,8 +240,8 @@ Band energies, integration weights, and state-index maps are intrinsic to the st
 one loop iteration, so build them once in `setup_calculator!` from the `backend` it is handed (they
 would otherwise pollute `LoopContext`, which describes only the current iteration). Upload arrays
 with `to_device(backend, host_array)` and build the device state-index map with
-`_indmap_to_device(backend, states, nw)`. Gate this on the **loop shape**, not the backend:
-`setup_calculator!` also receives a `mode::LoopMode` keyword, so build these buffers when
+`_indmap_to_device(backend, states, nw)`. Key this on the **loop shape**, not the backend:
+`setup_calculator!` also receives `mode::LoopMode` positionally, so build these buffers when
 `mode isa BatchedMode` (the per-point path uses the `EPData` method and needs no such buffers). Do
 not test `backend isa GPUBackend` — that would build the wrong buffers under the CPU+batched
 validation configuration. All three helpers are backend-generic, so on a `CPUBackend` they simply

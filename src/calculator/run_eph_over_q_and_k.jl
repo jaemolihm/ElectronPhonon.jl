@@ -261,10 +261,10 @@ function _setup_eph_over_q_and_k(
     # the device via `backend.proto` (the bisection sweeps all in-window states many times and
     # dominates the setup at dense grids); the generic `compute_ncarrier` broadcast+sum works for
     # every occ_type on the device, so no occ_type is special-cased.
-    _setup_calculators!(calculators, kpts, qpts, el_k_save;
+    _setup_calculators!(calculators, backend, batched ? BatchedMode() : SingleMode(),
+        kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        sel_k, sel_kq, nchunks_threads, verbosity, backend,
-        mode = batched ? BatchedMode() : SingleMode(),
+        sel_k, sel_kq, nchunks_threads, verbosity,
     )
 
     return (;

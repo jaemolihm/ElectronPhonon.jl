@@ -413,7 +413,7 @@ ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.EPData}) = true
 # Nothing per outer iteration; explicit no-op (there is no default bracket). CPU-only ⇒ SingleMode.
 ElectronPhonon.calculator_begin!(::_RecordCalc, ::ElectronPhonon.OuterIteration, ctx) = nothing
 ElectronPhonon.calculator_end!(::_RecordCalc, ::ElectronPhonon.OuterIteration, ctx) = nothing
-function ElectronPhonon.setup_calculator!(c::_RecordCalc, kpts, qpts, el_states;
+function ElectronPhonon.setup_calculator!(c::_RecordCalc, backend, mode, kpts, qpts, el_states;
         el_states_kq, kqpts, nw, nmodes, kwargs...)
     c.g2 = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
     c.ωq = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
@@ -448,7 +448,7 @@ ElectronPhonon.calculator_begin!(::_RecordCalcBatched, ::ElectronPhonon.OuterIte
 ElectronPhonon.calculator_end!(::_RecordCalcBatched, ::ElectronPhonon.OuterIteration, ctx) = nothing
 ElectronPhonon.calculator_begin!(::_RecordCalcBatched, ::ElectronPhonon.OuterIterationBatch, ctx) = nothing
 ElectronPhonon.calculator_end!(::_RecordCalcBatched, ::ElectronPhonon.OuterIterationBatch, ctx) = nothing
-function ElectronPhonon.setup_calculator!(c::_RecordCalcBatched, kpts, qpts, el_states;
+function ElectronPhonon.setup_calculator!(c::_RecordCalcBatched, backend, mode, kpts, qpts, el_states;
         el_states_kq, kqpts, nw, nmodes, kwargs...)
     c.g2 = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
     c.ωq = zeros(nw, nw, nmodes, kpts.n, kqpts.n)
@@ -609,7 +609,7 @@ ElectronPhonon.supports(::_RecordCalcOuterQ, ::Type{ElectronPhonon.EPDataKBatche
 ElectronPhonon.allowed_eph_phonon_basis(::_RecordCalcOuterQ) = [:eigenmode]
 # Reads only the e-ph matrix (→ eigenvalues/eigenvectors); skips velocity/position.
 ElectronPhonon.required_el_k_quantities(::_RecordCalcOuterQ) = ["eigenvalue", "eigenvector"]
-function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, kpts, qpts, el_states;
+function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, backend, mode, kpts, qpts, el_states;
         nchunks_threads=nthreads(), kwargs...)
     c.A = zeros(qpts.n)
     c.Achunk = zeros(nchunks_threads)

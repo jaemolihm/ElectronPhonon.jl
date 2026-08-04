@@ -107,19 +107,20 @@ function _setup_electron_kq(model, kqpts_input;
 end
 
 
-# setup_calculator! fan-out shared by all three drivers. The common keyword payload (band range,
-# k+q states/grid, carrier counts, thread chunking) is passed explicitly; the rest (`backend`, the
-# loop-shape `mode`, `verbosity`) forwards through `kwargs`. Every driver supplies `backend` and
-# `mode`: a calculator that keys off the loop shape reads `mode` (`SingleMode()`/`BatchedMode()`),
-# the same vocabulary its `calculator_begin!/end!` brackets dispatch on, because the backend alone
-# cannot say (batched-on-CPUBackend is a valid configuration).
+# setup_calculator! fan-out shared by all three drivers. `backend` and the loop-shape `mode` are
+# POSITIONAL (mirroring `setup_calculator!` itself, so they cannot be silently absorbed by a
+# calculator's `kwargs...`); the common keyword payload (band range, k+q states/grid, carrier counts,
+# thread chunking) is passed explicitly and the rest (`verbosity`) forwards through `kwargs`. A
+# calculator that keys off the loop shape uses `mode` (`SingleMode()`/`BatchedMode()`), the same
+# vocabulary its `calculator_begin!/end!` brackets dispatch on, because the backend alone cannot say
+# (batched-on-CPUBackend is a valid configuration).
 function _setup_calculators!(
-        calculators, kpts, qpts, el_k_save;
+        calculators, backend::AbstractBackend, mode::LoopMode, kpts, qpts, el_k_save;
         nw, nmodes, rng_band, el_states_kq, kqpts, nchunks_threads,
         sel_k, sel_kq, kwargs...,
     )
     for calc in calculators
-        setup_calculator!(calc, kpts, qpts, el_k_save;
+        setup_calculator!(calc, backend, mode, kpts, qpts, el_k_save;
             nw, nmodes, rng_band, el_states_kq, kqpts, nchunks_threads,
             sel_k, sel_kq, kwargs...)
     end

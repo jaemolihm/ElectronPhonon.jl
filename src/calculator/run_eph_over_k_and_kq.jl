@@ -272,13 +272,14 @@ function _setup_eph_over_k_and_kq(
 
     # Initialize calculators. `sel_k`/`sel_kq` carry the per-state weights, per-k band extent, and
     # `nstates_base`, so the calculator builds `el_i`/`el_f` (and the auto-μ carrier count) from the
-    # selection rather than from a below-window override. `mode` tells each calculator which loop
-    # shape it is being set up for, in the same vocabulary the `calculator_begin!/end!` brackets
-    # dispatch on — the backend alone cannot say (CPU+batched is a valid configuration).
-    _setup_calculators!(calculators, kpts, qpts, el_k_save;
+    # selection rather than from a below-window override. `backend` and `mode` are positional: `mode`
+    # tells each calculator which loop shape it is being set up for, in the same vocabulary the
+    # `calculator_begin!/end!` brackets dispatch on — the backend alone cannot say (CPU+batched is a
+    # valid configuration).
+    _setup_calculators!(calculators, backend, batched ? BatchedMode() : SingleMode(),
+        kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        sel_k, sel_kq, nchunks_threads, verbosity, backend,
-        mode = batched ? BatchedMode() : SingleMode(),
+        sel_k, sel_kq, nchunks_threads, verbosity,
     )
 
     if verbosity > 0 && mpi_isroot()

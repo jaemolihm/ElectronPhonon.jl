@@ -211,9 +211,9 @@ function _setup_eph_over_k_and_q(
     # `setup_calculator!` for interface uniformity across the three drivers.
     backend = CPUBackend()
 
-    _setup_calculators!(calculators, kpts, qpts, el_k_save;
+    _setup_calculators!(calculators, backend, SingleMode(), kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
-        sel_k, sel_kq, nchunks_threads, verbosity, backend, mode = SingleMode(),
+        sel_k, sel_kq, nchunks_threads, verbosity,
     )
 
     return (;
