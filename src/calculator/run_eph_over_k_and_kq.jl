@@ -125,8 +125,8 @@ function run_eph_over_k_and_kq(
         _loop_eph_over_k_and_kq_batched(model,
             setup.kpts, setup.qpts, setup.kqpts,
             setup.el_k_save, setup.el_kq_save,
-            setup.ph_save, setup.precompute_ph,
-            setup.epmat_dev, setup.backend;
+            setup.ph_save, setup.precompute_ph, setup.backend;
+            setup.epmat_dev,
             calculators,
             energy_conservation, screening_params,
             progress_print_step, nq_batch_max, nk_outer_batch_max, symmetry, verbosity,
@@ -135,10 +135,10 @@ function run_eph_over_k_and_kq(
         _loop_eph_over_k_and_kq(model,
             setup.kpts, setup.qpts, setup.kqpts,
             setup.el_k_save, setup.el_kq_save,
-            setup.ph_save, setup.precompute_ph,
+            setup.ph_save, setup.precompute_ph, setup.backend;
             setup.epstates, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
             setup.dyn_threads,
-            setup.epmat_R, setup.epobj_ekpR_R, setup.ep_ekpR_Rs;
+            setup.epmat_R, setup.epobj_ekpR_R, setup.ep_ekpR_Rs,
             calculators, skip_eph,
             energy_conservation, screening_params,
             progress_print_step, nchunks_threads,
@@ -303,14 +303,30 @@ function _setup_eph_over_k_and_kq(
 end
 
 
+# CANONICAL statement of the `_loop_*` argument convention; the other three `_loop_*` functions point
+# here instead of restating it.
+#
+# A driver family's per-point and batched loop shapes take the IDENTICAL positional list — exactly what
+# BOTH shapes need, in the same order — and each takes only its own path-specific data as keyword
+# arguments. So the two call sites read as two shapes of one call rather than two unrelated functions.
+# For this family that list is
+#   (model, kpts, qpts, kqpts, el_k_save, el_kq_save, ph_save, precompute_ph, backend)
+# and this shape's kwargs are the host interpolators / per-thread channels (the batched shape's is
+# `epmat_dev`). `backend` is shared rather than batched-only: both shapes use it for the same thing,
+# the `LoopContext`.
+#
+# Path-specific data stays INDIVIDUAL kwargs rather than one bundled NamedTuple, so every name is a
+# typed argument of the lowered body method — which is what keeps the `@threads` closure below free of
+# `Core.Box` without a destructure-before-`@threads` rule.
 function _loop_eph_over_k_and_kq(
         model       :: Model{FT},
         kpts, qpts, kqpts,
         el_k_save, el_kq_save,
         ph_save, precompute_ph,
+        backend;
         epstates, ep_ekpRs, epmat, ep_ekpR_obj,
         dyn_threads,
-        epmat_R, epobj_ekpR_R, ep_ekpR_Rs;
+        epmat_R, epobj_ekpR_R, ep_ekpR_Rs,
         calculators = [],
         skip_eph = false,
         energy_conservation = (:None, 0.0),
@@ -323,7 +339,6 @@ function _loop_eph_over_k_and_kq(
 
     (; nw, nmodes) = model
     nk = kpts.n
-    backend = CPUBackend()
 
     for ik in 1:nk
         if mod(ik, progress_print_step) == 0 && mpi_isroot()
@@ -525,6 +540,9 @@ end
 #  batched over k-batches and q-batches with device staging — differs from the per-(k,q) loop,
 #  not because it holds any device-specific code.
 #
+#  Positional list identical to `_loop_eph_over_k_and_kq`'s (the argument convention is stated in full
+#  in the comment above that function); this shape's only path-specific kwarg is `epmat_dev`.
+#
 #  Backend: `GPUBackend` is the production configuration. Because nothing here is device-specific,
 #  the loop also runs on `CPUBackend` (`batched = true`), which is a VALIDATION configuration only:
 #  the k-batch loop is serial, `batched_gemm!` degrades to a `mul!` loop, and `plan_batch` returns
@@ -586,7 +604,8 @@ function _loop_eph_over_k_and_kq_batched(
         kpts, qpts, kqpts,
         el_k_save, el_kq_save,
         ph_save, precompute_ph,
-        epmat_dev, backend;
+        backend;
+        epmat_dev,
         calculators = [],
         energy_conservation = (:None, 0.0),
         screening_params = nothing,
@@ -686,10 +705,11 @@ function _loop_eph_over_k_and_kq_batched(
     end
 
     # ----- persistent workspace (allocated once, reused across all (k, q)) -----
-    # All device staging is sized to the full batch and used as plain CuArrays (not
-    # batch-sliced views), so the batched drivers' reshape/cuBLAS calls stay on dense arrays.
-    # Every buffer below comes from `alloc(backend, ...)`, so the backend is the single authority on
-    # where "device" is.
+    # All device staging is sized to the MAX batch width and consumed through contiguous
+    # trailing-prefix views of width `nk_batch` / `nq_batch`, so a partial final batch computes only
+    # its own columns and every argument the batched drivers see is still a dense array (such a view
+    # of a device array is a device array, not a `SubArray`). Every buffer below comes from
+    # `alloc(backend, ...)`, so the backend is the single authority on where "device" is.
 
     # RR->kR over a batch of `nk_batch_max` outer-k at once: one batched kernel per batch instead of one
     # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole batch; the inner
@@ -738,7 +758,7 @@ function _loop_eph_over_k_and_kq_batched(
     # Grid coordinates as (3 × n) real device matrices, uploaded once. Both phase builds below read
     # them directly, so nothing on the phase path is staged on the host or copied H2D inside the loop.
     # Negated once here rather than conjugating the phase tile every batch: the convention needs
-    # conj(exp(2πi R_p·x_k)) = exp(2πi R_p·(−x_k)), and the two are bitwise identical (FP negation is
+    # conj(exp(2πi R_p·x_k)) = exp(2πi R_p·(-x_k)), and the two are bitwise identical (FP negation is
     # exact, and `cispi` is exactly symmetric). This is the only consumer of the k coordinates.
     # Out-of-place on purpose: on `CPUBackend` `_kpoints_to_device_matrix` returns a view onto
     # `kpts.vectors`, so negating in place would corrupt the k-points.
@@ -746,7 +766,7 @@ function _loop_eph_over_k_and_kq_batched(
     xkq_dev = _kpoints_to_device_matrix(backend, kqpts)
 
     # The two Fourier phase matrices of the k+q convention (see `get_eph_RR_to_kR_batched!`):
-    #   P_mk[ip, k] = exp(2πi R_p · (−x_k))    — folded into g(k, R_ep) once per outer-k batch
+    #   P_mk[ip, k] = exp(2πi R_p · (-x_k))    — folded into g(k, R_ep) once per outer-k batch
     #   P_kq[ip, j] = exp(2πi R_p · x_{k+q_j}) — the kR->kq phase, INDEPENDENT of the outer k
     # so one built P_kq tile serves every k of the batch. That reuse factor is `nk_batch`, i.e.
     # `nk_outer_batch_max`: lowering that cap shrinks this saving proportionally.
@@ -756,11 +776,6 @@ function _loop_eph_over_k_and_kq_batched(
     irvecp_mat = _irvec_to_device_matrix(model.epmat.irvec_next, epmat_dev, FT)
     P_mk  = alloc(backend, Complex{FT}, nr_ep, nk_batch_max)
     P_kq = alloc(backend, Complex{FT}, nr_ep, nq_batch_max)
-    # Defensive: only columns 1:nk_batch are rewritten per batch, so a partial final batch leaves the
-    # tail columns holding whatever the previous batch wrote. Nothing reads them — the k loop runs
-    # `1:nk_batch` — and 1 is the identity of the convention multiply, so the padded (never-read)
-    # slice of ep_ekpR_all stays meaningful whether or not it has been written yet.
-    fill!(P_mk, 1)
 
     # `iq` index staging for one (k, q-tile).
     iqs_batch     = Vector{Int}(undef, nq_batch_max)
@@ -793,9 +808,11 @@ function _loop_eph_over_k_and_kq_batched(
         kend = min(kstart + nk_batch_max - 1, nk)
         iks_batch = kstart:kend
         nk_batch = length(iks_batch)
+        rng_k = 1:nk_batch   # this batch's columns within the nk_batch_max-sized staging buffers
 
-        # Stack U(k) and the k list for this outer-k batch (pad the partial tail with valid
-        # duplicated data so the batched RR->kR runs on dense `nk_batch_max`-sized arrays).
+        # Stack U(k) and the k list for this outer-k batch. A partial final batch fills only its own
+        # `nk_batch` columns: everything below runs at width `nk_batch` via prefix views into the
+        # max-width buffers, the same convention the q axis of this loop already uses.
         for (ik_ind, ik) in enumerate(iks_batch)
             # k-side window projection: the `nbandk_max` contiguous eigenvector columns around this
             # k's in-window range (all nw columns when full-band). The window selection itself
@@ -804,11 +821,9 @@ function _loop_eph_over_k_and_kq_batched(
             @views uks_host[:, :, ik_ind] .= el_k_save[ik].u_full[:, nb0+1:nb0+nbandk_max]
             ks_batch[ik_ind] = kpts.vectors[ik]
         end
-        for ik_ind in (nk_batch+1):nk_batch_max
-            @views uks_host[:, :, ik_ind] .= uks_host[:, :, nk_batch]
-            ks_batch[ik_ind] = ks_batch[nk_batch]
-        end
-        copyto!(uks_dev, uks_host)
+        # H2D of just this batch's columns (5-arg contiguous copy — copying a host<->device SubArray
+        # view instead would fall back to scalar indexing; same reason as the `iqs_batch` copy below).
+        copyto!(uks_dev, 1, uks_host, 1, nw * nbandk_max * nk_batch)
 
         if mpi_isroot() && div(kend, progress_print_step) > div(kstart - 1, progress_print_step)
             @info "$(now()) ik = $kstart:$kend / $nk"
@@ -816,15 +831,17 @@ function _loop_eph_over_k_and_kq_batched(
         end
 
         # One batched RR->kR over the whole batch: g(k, R_ep) for all k in the batch, stored in the
-        # k+q convention (multiplied by P_mk, the phase at −x_k) so the kR->kq phase below is
-        # k-independent.
-        @views fourier_phase!(P_mk[:, 1:nk_batch], irvecp_mat, mxk_dev[:, iks_batch])
-        get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat, ks_batch, uks_dev;
-            additional_phase = P_mk)
+        # k+q convention (multiplied by P_mk, the phase at -x_k) so the kR->kq phase below is
+        # k-independent. The driver derives the batch width from `size(uks, 3)` and asserts that the
+        # other three arguments agree, so handing it four width-`nk_batch` views is within its contract.
+        @views fourier_phase!(P_mk[:, rng_k], irvecp_mat, mxk_dev[:, iks_batch])
+        get_eph_RR_to_kR_batched!(view(ep_ekpR_all, :, :, rng_k), itp_epmat,
+            view(ks_batch, rng_k), view(uks_dev, :, :, rng_k);
+            additional_phase = view(P_mk, :, rng_k))
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
-        ctx_batch = LoopContext(backend, BatchedMode(), iks_batch, nk_batch_max)
+        ctx_batch = LoopContext(backend, BatchedMode(); batch = iks_batch, n_batch_max = nk_batch_max)
         foreach(c -> calculator_begin!(c, OuterIterationBatch(), ctx_batch), calculators)
 
         qstart = 1
@@ -870,7 +887,7 @@ function _loop_eph_over_k_and_kq_batched(
 
                 # Hand the tile's e-ph matrix (still on the device) to each calculator, which forms
                 # g2 / scatters it on the device; no D2H of the e-ph matrix here.
-                ctx_k = LoopContext(backend, BatchedMode(), ik, iks_batch, nk_batch_max)
+                ctx_k = with_outer_index(ctx_batch, ik)
                 payload = EPDataQBatched(
                     view(epkq_dev, :, :, :, rng_q), view(g2_dev, :, :, :, rng_q),
                     view(ωq_dev, :, rng_q), ik, ikqs_used, ibandk_offsets[ik])

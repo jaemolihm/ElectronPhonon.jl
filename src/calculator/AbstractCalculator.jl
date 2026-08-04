@@ -93,8 +93,21 @@ Fields:
 - `mode`        :: `SingleMode()` (per-(k, q) host loop) or `BatchedMode()` (device-batched loop).
 - `outer_index` :: current outer index (`ik` for outer-k loops, `iq` for the outer-q loop); `0` at
   batch scope.
-- `batch`       :: outer-iteration range of the current batch (`1:0` on the CPU paths).
-- `n_batch_max` :: loop batch cap, for device-buffer sizing.
+- `batch`       :: outer-iteration range of the current batch (`1:0` when the loop does not batch its
+  outer axis — the per-point loops, and the batched outer-q loop, which batches the INNER k axis).
+- `n_batch_max` :: loop batch cap, for device-buffer sizing. Which axis it caps follows the loop: the
+  OUTER-k width in the batched outer-k loop, the INNER-k width in the batched outer-q loop. A
+  consumer that reads it as an outer-axis width (as `TiledDeviceOutput` does, pairing it with
+  `ctx.batch`) is therefore outer-k-only.
+
+The two batched forms and the per-k derivation are constructed by name, never positionally:
+
+```julia
+LoopContext(backend, SingleMode(), ik)                                    # per-point
+LoopContext(backend, BatchedMode(); batch = iks, n_batch_max = nk_max)    # outer-k, batch scope
+LoopContext(backend, BatchedMode(); outer_index = iq, n_batch_max = nk_max)  # outer-q, one q
+with_outer_index(ctx_batch, ik)                                           # one k of a batch
+```
 """
 struct LoopContext{BT <: AbstractBackend, MT <: LoopMode}
     backend     :: BT
@@ -109,10 +122,24 @@ end
 LoopContext(backend::AbstractBackend, ::SingleMode, outer_index::Integer) =
     LoopContext(backend, SingleMode(), outer_index, 1:0, 0)
 
-# BatchedMode context at batch scope (device loops): there is no single outer index spanning the whole
-# batch, so `outer_index = 0` is the "no single outer index — use `batch`" sentinel.
-LoopContext(backend::AbstractBackend, ::BatchedMode, batch::UnitRange, n_batch_max::Integer) =
-    LoopContext(backend, BatchedMode(), 0, batch, n_batch_max)
+# BatchedMode context, keyword-only so the two scopes a batched loop needs are told apart by NAME
+# rather than by whether argument 3 is an `Integer` or a `UnitRange`:
+#   * batch scope (outer-k loop): pass `batch`; `outer_index = 0` is the "no single outer index — use
+#     `batch`" sentinel.
+#   * one outer iteration (outer-q loop): pass `outer_index`; `batch = 1:0` means "the outer axis is
+#     not batched here" (that loop batches its inner k axis).
+LoopContext(backend::AbstractBackend, ::BatchedMode; outer_index::Integer = 0,
+            batch::UnitRange = 1:0, n_batch_max::Integer) =
+    LoopContext(backend, BatchedMode(), outer_index, batch, n_batch_max)
+
+"""
+    with_outer_index(ctx::LoopContext, outer_index::Integer) -> LoopContext
+
+The same context at one outer index, all other fields kept. The batched outer-k loop uses it to
+derive its per-k context from the batch-scope one, which is exactly what the two contexts differ by.
+"""
+with_outer_index(ctx::LoopContext, outer_index::Integer) =
+    LoopContext(ctx.backend, ctx.mode, outer_index, ctx.batch, ctx.n_batch_max)
 
 
 # =============================================================================
@@ -246,7 +273,7 @@ if VERSION >= v"1.11.0-DEV.469"
         "postprocess_calculator!, calculator_begin!, calculator_end!, " *
         "OuterKLoop, OuterQLoop, OuterIteration, OuterIterationBatch, " *
         "AbstractElPhPayload, EPData, EPDataQBatched, EPDataKBatched, " *
-        "LoopContext, SingleMode, BatchedMode, LoopMode, " *
+        "LoopContext, with_outer_index, SingleMode, BatchedMode, LoopMode, " *
         "AbstractBackend, CPUBackend, GPUBackend, gpu_backend, alloc, free_bytes, synchronize, " *
         "batched_gemm!, eph_window_scatter!, bte_window_accumulate!, " *
         "eph_batched_bytes_per_point, allowed_eph_phonon_basis, " *

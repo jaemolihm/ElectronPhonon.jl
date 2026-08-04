@@ -308,8 +308,9 @@ The parent is the electron-Wannier / phonon-Bloch object (`op_r` `(nw^2*nmodes, 
 `ep_kq_all[m,n,ν,k] = Σ_{iw,jw} conj(ukqs[iw,m,k]) · g[iw,jw,ν,k] · uks[jw,n,k]` is applied as two
 `batched_gemm!`s (`ukq(k)'` on the left over batch `k`, `uk(k)` on the right over batch `(ν,k)`).
 
-Pass an [`RqToKQWorkspace`](@ref) (sized for this `nk`) as `ws` to reuse the `g`/`tmp`/`uk_rep`
-scratch across calls instead of allocating it each call — the per-q hot loop does this.
+Pass an [`RqToKQWorkspace`](@ref) as `ws` (sized for at least this `nk`) to reuse the `g`/`tmp`/`uk_rep`
+scratch across calls instead of allocating it each call — the per-q hot loop does this, sizing `ws`
+for the max batch width and passing `nk <=` that for a partial final batch.
 
 Full-band only: like [`get_eph_RR_to_kR_batched!`](@ref), all `nk` k-points must share the same
 `nbandk`/`nbandkq` (energy windows are handled by callers with masks).
@@ -330,10 +331,16 @@ function get_eph_Rq_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
         tmp    = similar(parent.op_r, Complex{T}, nbandkq, nw * nmodes, nk)
         uk_rep = similar(parent.op_r, Complex{T}, nw, nbandk, nmodes * nk)
     else
-        g, tmp, uk_rep = ws.g, ws.tmp, ws.uk_rep
-        @assert size(g) == (parent.ndata, nk)
-        @assert size(tmp) == (nbandkq, nw * nmodes, nk)
-        @assert size(uk_rep) == (nw, nbandk, nmodes * nk)
+        # `ws` is sized for the max batch width; use the first `nk` columns (a partial final batch
+        # passes nk < capacity), so the whole loop runs without padding the batch back up. Same
+        # convention as `get_eph_kR_to_kq_batched!` above.
+        @assert size(ws.g, 1) == parent.ndata && size(ws.g, 2) >= nk
+        @assert size(ws.tmp, 1) == nbandkq && size(ws.tmp, 2) == nw * nmodes && size(ws.tmp, 3) >= nk
+        @assert size(ws.uk_rep, 1) == nw && size(ws.uk_rep, 2) == nbandk &&
+                size(ws.uk_rep, 3) >= nmodes * nk
+        g      = view(ws.g, :, 1:nk)
+        tmp    = view(ws.tmp, :, :, 1:nk)
+        uk_rep = view(ws.uk_rep, :, :, 1:nmodes*nk)
     end
 
     # Fourier over R_el at every k -> g(k) in (nw, nw, nmodes, nk); index legend g[iw, jw, ν, k]
