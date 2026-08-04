@@ -83,7 +83,7 @@ function run_eph_over_k_and_q(
     _loop_eph_over_k_and_q(model,
         setup.kpts, setup.qpts, setup.kqpts,
         setup.el_k_save, setup.el_kq_save, setup.ph_save,
-        setup.precompute_el_kq,
+        setup.precompute_el_kq, setup.backend,
         setup.epstates, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
         setup.ham_threads, setup.vel_threads, setup.pos_threads;
         calculators, skip_eph, window_kq,
@@ -222,16 +222,20 @@ function _setup_eph_over_k_and_q(
         precompute_el_kq, nband_max,
         epstates, ep_ekpRs, epmat, ep_ekpR_obj,
         ham_threads, vel_threads, pos_threads,
+        backend,
         iband_min, iband_max,
     )
 end
 
 
+# `backend` is positional #9, the same slot it occupies in the two loop pairs that have a batched twin
+# (run_eph_over_k_and_kq.jl / run_eph_over_q_and_k.jl). This driver has no batched twin, so the rest of
+# its argument list is not unified with anything; only the hardcoded `CPUBackend()` is gone.
 function _loop_eph_over_k_and_q(
         model       :: Model{FT},
         kpts, qpts, kqpts,
         el_k_save, el_kq_save, ph_save,
-        precompute_el_kq,
+        precompute_el_kq, backend,
         epstates, ep_ekpRs, epmat, ep_ekpR_obj,
         ham_threads, vel_threads, pos_threads;
         calculators = [],
@@ -246,7 +250,6 @@ function _loop_eph_over_k_and_q(
 
     nk = kpts.n
     nq = qpts.n
-    backend = CPUBackend()
 
     for ik in 1:nk
         if mod(ik, progress_print_step) == 0 && mpi_isroot()

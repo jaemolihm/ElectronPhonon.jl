@@ -125,8 +125,8 @@ function run_eph_over_k_and_kq(
         _loop_eph_over_k_and_kq_batched(model,
             setup.kpts, setup.qpts, setup.kqpts,
             setup.el_k_save, setup.el_kq_save,
-            setup.ph_save, setup.precompute_ph,
-            setup.epmat_dev, setup.backend;
+            setup.ph_save, setup.precompute_ph, setup.backend;
+            setup.epmat_dev,
             calculators,
             energy_conservation, screening_params,
             progress_print_step, nq_batch_max, nk_outer_batch_max, symmetry, verbosity,
@@ -135,10 +135,10 @@ function run_eph_over_k_and_kq(
         _loop_eph_over_k_and_kq(model,
             setup.kpts, setup.qpts, setup.kqpts,
             setup.el_k_save, setup.el_kq_save,
-            setup.ph_save, setup.precompute_ph,
+            setup.ph_save, setup.precompute_ph, setup.backend;
             setup.epstates, setup.ep_ekpRs, setup.epmat, setup.ep_ekpR_obj,
             setup.dyn_threads,
-            setup.epmat_R, setup.epobj_ekpR_R, setup.ep_ekpR_Rs;
+            setup.epmat_R, setup.epobj_ekpR_R, setup.ep_ekpR_Rs,
             calculators, skip_eph,
             energy_conservation, screening_params,
             progress_print_step, nchunks_threads,
@@ -303,14 +303,20 @@ function _setup_eph_over_k_and_kq(
 end
 
 
+# Positional arguments are the ones BOTH loop shapes need, in the same order (see the comment above
+# `_loop_eph_over_k_and_kq_batched`); the host interpolator/channel objects only this shape uses are
+# required keyword arguments. They stay individual kwargs rather than one bundled NamedTuple so every
+# name is a typed argument of the lowered body method, which is what keeps the `@threads` closure
+# below free of `Core.Box` without a destructure-first rule.
 function _loop_eph_over_k_and_kq(
         model       :: Model{FT},
         kpts, qpts, kqpts,
         el_k_save, el_kq_save,
         ph_save, precompute_ph,
+        backend;
         epstates, ep_ekpRs, epmat, ep_ekpR_obj,
         dyn_threads,
-        epmat_R, epobj_ekpR_R, ep_ekpR_Rs;
+        epmat_R, epobj_ekpR_R, ep_ekpR_Rs,
         calculators = [],
         skip_eph = false,
         energy_conservation = (:None, 0.0),
@@ -323,7 +329,6 @@ function _loop_eph_over_k_and_kq(
 
     (; nw, nmodes) = model
     nk = kpts.n
-    backend = CPUBackend()
 
     for ik in 1:nk
         if mod(ik, progress_print_step) == 0 && mpi_isroot()
@@ -525,6 +530,12 @@ end
 #  batched over k-batches and q-batches with device staging — differs from the per-(k,q) loop,
 #  not because it holds any device-specific code.
 #
+#  The two shapes take the IDENTICAL positional list — `(model, kpts, qpts, kqpts, el_k_save,
+#  el_kq_save, ph_save, precompute_ph, backend)`, everything both need — and each takes only its own
+#  path-specific data as keyword arguments (here `epmat_dev`; the per-point shape's host interpolators
+#  and per-thread channels there). So the two call sites in `run_eph_over_k_and_kq` read as two shapes
+#  of one call rather than two unrelated functions.
+#
 #  Backend: `GPUBackend` is the production configuration. Because nothing here is device-specific,
 #  the loop also runs on `CPUBackend` (`batched = true`), which is a VALIDATION configuration only:
 #  the k-batch loop is serial, `batched_gemm!` degrades to a `mul!` loop, and `plan_batch` returns
@@ -586,7 +597,8 @@ function _loop_eph_over_k_and_kq_batched(
         kpts, qpts, kqpts,
         el_k_save, el_kq_save,
         ph_save, precompute_ph,
-        epmat_dev, backend;
+        backend;
+        epmat_dev,
         calculators = [],
         energy_conservation = (:None, 0.0),
         screening_params = nothing,

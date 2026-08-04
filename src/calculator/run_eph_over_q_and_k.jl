@@ -116,17 +116,19 @@ function run_eph_over_q_and_k(
             "the batched path does not support precompute_el_kq (k+q states are eigensolved in the loop)."))
         _loop_eph_over_q_and_k_batched(model,
             setup.kpts, setup.qpts,
-            setup.el_k_save, setup.ph_save, setup.eph_buffers,
-            setup.el_ham_dev, setup.backend;
+            setup.el_k_save, setup.ph_save,
+            setup.eph_buffers, setup.backend;
+            setup.el_ham_dev,
             calculators, skip_eph, window_kq,
             energy_conservation, screening_params,
             progress_print_step, eph_phonon_basis, verbosity, nk_batch_max,
         )
     else
         _loop_eph_over_q_and_k(model,
-            setup.kpts, setup.qpts, setup.kqpts,
-            setup.el_k_save, setup.el_kq_save, setup.ph_save,
-            setup.precompute_el_kq, setup.eph_buffers;
+            setup.kpts, setup.qpts,
+            setup.el_k_save, setup.ph_save,
+            setup.eph_buffers, setup.backend;
+            setup.kqpts, setup.el_kq_save, setup.precompute_el_kq,
             calculators, skip_eph, window_kq,
             energy_conservation, screening_params,
             progress_print_step, nchunks_threads,
@@ -277,12 +279,17 @@ function _setup_eph_over_q_and_k(
 end
 
 
+# Positional arguments are the ones BOTH loop shapes need, in the same order (see the comment above
+# `_loop_eph_over_q_and_k_batched`); the k+q data only this shape uses (the batched shape eigensolves
+# k+q in the loop instead) are required keyword arguments. Individual kwargs, not one bundled
+# NamedTuple, so every name stays a typed argument of the lowered body method and the `@threads`
+# closure below keeps concrete captures.
 function _loop_eph_over_q_and_k(
         model       :: Model{FT},
-        kpts, qpts, kqpts,
-        el_k_save, el_kq_save, ph_save,
-        precompute_el_kq,
-        eph_buffers :: EphOuterQLoopBuffers{FT};
+        kpts, qpts,
+        el_k_save, ph_save,
+        eph_buffers :: EphOuterQLoopBuffers{FT}, backend;
+        kqpts, el_kq_save, precompute_el_kq,
         calculators = [],
         skip_eph = false,
         window_kq = (-Inf, Inf),
@@ -297,7 +304,6 @@ function _loop_eph_over_q_and_k(
     (; epstates, ep_eRpq_obj, ep_eRpqs, epmat, ham_threads, vel_threads) = eph_buffers
     nk = kpts.n
     nq = qpts.n
-    backend = CPUBackend()
 
     for iq in 1:nq
         if verbosity > 0 && mod(iq, progress_print_step) == 0 && mpi_isroot()
@@ -420,6 +426,10 @@ end
 #  `mul!`-loop `batched_gemm!`, and `plan_batch` returns the `nk_batch_max` cap verbatim). The `_dev`
 #  suffix means "on `backend`", which is the host there.
 #
+#  The two shapes take the IDENTICAL positional list — `(model, kpts, qpts, el_k_save, ph_save,
+#  eph_buffers, backend)`, everything both need — and each takes only its own path-specific data as
+#  keyword arguments (here `el_ham_dev`; the per-point shape's precomputed k+q states there).
+#
 #  Scope (asserted below; the per-point path handles the rest): no screening,
 #  energy_conservation = (:None, 0.0), skip_eph = false, and every calculator supports the
 #  `EPDataKBatched` payload. Windows are supported via eigenvector-column masking (out-of-window
@@ -429,8 +439,8 @@ function _loop_eph_over_q_and_k_batched(
         model       :: Model{FT},
         kpts, qpts,
         el_k_save, ph_save,
-        eph_buffers :: EphOuterQLoopBuffers{FT},
-        el_ham_dev, backend;
+        eph_buffers :: EphOuterQLoopBuffers{FT}, backend;
+        el_ham_dev,
         calculators = [],
         skip_eph = false,
         window_kq = (-Inf, Inf),

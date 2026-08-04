@@ -22,14 +22,14 @@
 - [ ] JML should review `TiledDeviceOutput` (the Sᵢ tiling machinery: `tile_begin!` / `tile_download!` /
   `tile_offset` / `tile_length`, used by `BoltzmannCalculator`'s batched path).
 
-- [ ] Unify the CPU/GPU e-ph loop signatures (`_loop_eph_over_k_and_kq` vs
-  `_loop_eph_over_k_and_kq_batched`, `src/calculator/run_eph_over_k_and_kq.jl`). Decided direction (JML,
-  PR #9): keep **two functions with different names**, but give them the **identical positional
-  argument list** and push the path-specific data into **keyword arguments** — CPU kwargs
-  `(epstates, ep_ekpRs, epmat, ep_ekpR_obj, dyn_threads, epmat_R, epobj_ekpR_R, ep_ekpR_Rs)`, GPU
-  kwargs `(epmat_dev, backend)`. Constraint (`_setup`/`_loop` Core.Box rule): the CPU `_loop` must
-  destructure any NamedTuple into locals at the top before `@threads`, never index it inside the
-  threaded closure.
+- [x] Unify the per-point/batched e-ph loop signatures — done for both driver families. Each pair
+  takes the identical positional list of what BOTH need (outer-k: `(model, kpts, qpts, kqpts,
+  el_k_save, el_kq_save, ph_save, precompute_ph, backend)`; outer-q: `(model, kpts, qpts, el_k_save,
+  ph_save, eph_buffers, backend)`) and its own path-specific data as individual keyword arguments
+  (per-point: the host interpolators/channels, resp. the precomputed k+q states; batched:
+  `epmat_dev`, resp. `el_ham_dev`). `backend` is shared positional #9 rather than a batched-only
+  kwarg, so the per-point loops no longer hardcode `CPUBackend()` (`run_eph_over_k_and_q` too, which
+  has no batched twin).
 
 - [x] ~~Reconsider whether `backend` should be built inside `_loop_eph_over_k_and_kq_batched` rather
   than in `_setup_eph_over_k_and_kq`.~~ Subsumed: `backend` is now a user-facing driver keyword, so it
@@ -43,7 +43,7 @@
   which is exactly right now that batched-on-`CPUBackend` is a supported configuration. The real
   defect was the flag: `calc.on_gpu = backend isa GPUBackend` inferred the loop shape from the
   backend, which builds the wrong buffers under CPU+batched. It is now `calc.batched = mode isa
-  BatchedMode`, from the `mode::LoopMode` keyword the drivers pass to `setup_calculator!`.
+  BatchedMode`, from the positional `mode::LoopMode` the drivers pass to `setup_calculator!`.
 
 - [x] Clean up the `LoopContext` construction at the batch/per-k scope — done. The `BatchedMode`
   convenience constructor is keyword-only (`batch` / `outer_index` / required `n_batch_max`), so
