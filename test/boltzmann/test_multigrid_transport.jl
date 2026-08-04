@@ -41,10 +41,11 @@ end
         smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
 
     # Grid/tuple input runs Generator 1 internally (sugar); a FilteredStates passes through as-is.
-    run_sel(kk, kq; backend, batched = nothing, nq_batch_max = nothing) = (c = mkcalc();
+    run_sel(kk, kq; backend, batched = nothing, nq_batch_max = nothing,
+            nk_outer_batch_max = 256) = (c = mkcalc();
         EP.run_eph_over_k_and_kq(model, kk, kq; calculators = [c], symmetry = sym,
             el_kq_from_unfolding = false, window_k = w_wide, window_kq = w_wide,
-            fourier_mode = "gridopt", backend, batched, nq_batch_max,
+            fourier_mode = "gridopt", backend, batched, nq_batch_max, nk_outer_batch_max,
             progress_print_step = 10^9, verbosity = 0); c)
     solve(c) = EP.solve_electron_bte(c.el_i, c.el_f, c.Sᵢ, stack(c.Sₒ), occ(), sym; interpolate = false)
     reldiff(a, b) = norm(a - b) / norm(b)
@@ -99,12 +100,22 @@ end
     #
     # The CPU+batched arm needs no CUDA, so this block does real work on a CPU-only machine — which is
     # the point: it covers the multigrid's per-(k,band) weights through the batched payload and the
-    # tiled Sᵢ path. `nq_batch_max` is explicit because `plan_batch` returns the cap verbatim on a
-    # `CPUBackend`; it also forces ntiles > 1.
-    c_mg_pt = run_sel(sel_k, sel_kq; backend = EP.CPUBackend(), batched = false)
+    # tiled Sᵢ path. Both caps are explicit because `plan_batch` returns the requested cap verbatim on
+    # a `CPUBackend`, and they tile different axes: `nq_batch_max` the per-q staging within a k-batch,
+    # `nk_outer_batch_max` the outer-k axis that the Sᵢ `TiledDeviceOutput` is tiled over. Only the
+    # latter makes ntiles > 1, so 3 (against this selection's small nk) is what gives a nonzero
+    # `tile_offset` and exercises the per-tile Sᵢ writeback rather than a single whole-run tile.
+    #
+    # Under CUDA, `c_mg` is already the GPU+batched arm and this is a genuinely different run; without
+    # CUDA `c_mg` IS a CPU+per-point multigrid pass, so reuse it rather than paying for an identical
+    # second one on every CPU-only CI run.
+    c_mg_pt = _CUDA_OK ? run_sel(sel_k, sel_kq; backend = EP.CPUBackend(), batched = false) : c_mg
     @testset "multigrid: CPU+batched == CPU+per-point" begin
         c_mg_cb = run_sel(sel_k, sel_kq; backend = EP.CPUBackend(), batched = true,
-                          nq_batch_max = 64)
+                          nq_batch_max = 64, nk_outer_batch_max = 3)
+        # See the note above: assert the precondition for ntiles > 1, since `tile_offset` is reset at
+        # postprocess. Here the tiled axis is the multigrid selection's outer k.
+        @test c_mg_cb.el_i.kpts.n > 3
         @test stack(c_mg_cb.Sₒ) ≈ stack(c_mg_pt.Sₒ) rtol = 1e-9
         @test stack(c_mg_cb.Sᵢ) ≈ stack(c_mg_pt.Sᵢ) rtol = 1e-9
         r_cb = solve(c_mg_cb); r_pt = solve(c_mg_pt)

@@ -158,9 +158,13 @@ to a `mul!` loop, and `plan_batch` returns the requested cap verbatim (`free_byt
 `typemax(Int)`, so pass a small `nq_batch_max`) — but it is what lets the batched path, the tiling
 brackets and the calculators' batched hooks be tested with no CUDA present. It does **not** cover the
 CUDA kernels (`_bte_window_accumulate_kernel!`, `_window_scatter_kernel!`, the fused rotation kernel,
-`CUBLAS.gemm_strided_batched!`, the cuSOLVER batched eigensolve): those still need the GPU box. The CPU loop and per-(k,q) CPU e-ph functions are unchanged. The GPU
-outer-k loop processes a batch of outer k with one list-batched `get_eph_RR_to_kR_batched!` and
-batches the inner `ikq` loop (in tiles of `nq_batch_max`) through one `get_eph_kR_to_kq_batched!`.
+`CUBLAS.gemm_strided_batched!`, the cuSOLVER batched eigensolve): those still need the GPU box.
+
+The per-point loop and the per-(k,q) host e-ph functions are unchanged. The batched outer-k loop
+processes a batch of outer k with one list-batched `get_eph_RR_to_kR_batched!` and batches the inner
+`ikq` loop (in tiles of `nq_batch_max`) through one `get_eph_kR_to_kq_batched!`. Note the two caps
+tile different axes: `nq_batch_max` the inner per-q staging, `nk_outer_batch_max` the outer-k axis
+that a calculator's `TiledDeviceOutput` output tile follows.
 
 Its nesting is `k-batch -> q-tile -> k -> q(device)`: the q-tile loop sits **outside** the per-k
 loop. `get_eph_RR_to_kR_batched!` stores the kR intermediate in the **k+q convention**

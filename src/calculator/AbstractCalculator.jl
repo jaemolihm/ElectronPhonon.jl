@@ -7,7 +7,12 @@ phonon states and the e-ph matrix elements are formed, the driver hands them to 
 **payload** (a subtype of [`AbstractElPhPayload`]) together with a [`LoopContext`].
 
 Users subtype `AbstractCalculator` and implement:
-* `setup_calculator!(calc, kpts, qpts, el_states; kwargs...)` — run once, before the loop.
+* `setup_calculator!(calc, kpts, qpts, el_states; kwargs...)` — run once, before the loop. Among its
+  keywords, two describe the run itself: `backend::AbstractBackend` (where arrays live) and
+  `mode::LoopMode` (`SingleMode()` / `BatchedMode()`, which loop shape will run). **Gate device-buffer
+  construction on `mode`, never on `backend isa GPUBackend`** — the two are independent, and the
+  batched loop also runs on a `CPUBackend` (a validation configuration), where a backend test builds
+  the wrong buffers while still compiling and running. Splat everything else with `kwargs...`.
 * `run_calculator!(calc, payload::AbstractElPhPayload, ctx::LoopContext)` — one method per payload
   type the calculator consumes (host per-(k,q), or one of the device-batched payloads).
 * `postprocess_calculator!(calc; kwargs...)` — run once, after the loop.
@@ -18,29 +23,29 @@ Users subtype `AbstractCalculator` and implement:
   around one outer iteration (`OuterIteration()`) or one batch of outer iterations
   (`OuterIterationBatch()`). There is NO default: a calculator must define these for every
   (scope, loop-mode) combination its supported loops fire, even as an explicit no-op (`= nothing`);
-  a missing method is a loud error, not a silent skip. The GPU outer-k loop fires only
+  a missing method is a loud error, not a silent skip. The batched outer-k loop fires only
   `OuterIterationBatch` (see the bracket comment below).
 
 Optionally:
 * `eph_batched_bytes_per_point(calc, PayloadType; nw, nmodes)` — per-point device scratch (bytes)
-  the calculator holds, so the GPU loops' memory-adaptive batch sizing can account for it.
+  the calculator holds, so the batched loops' memory-adaptive batch sizing can account for it.
 * `allowed_eph_phonon_basis(calc)` — phonon bases the calculator accepts.
 * `required_el_k_quantities(calc)` — outer-k electron-state quantities the calculator needs (the
   outer-q driver computes the union; override to skip velocity/position).
 
-See `docs/writing_a_calculator.md` for a worked example. The public (unexported) calculator API,
-reachable as `ElectronPhonon.<name>`, is: `AbstractCalculator`, `supports`, `setup_calculator!`,
-`run_calculator!`, `postprocess_calculator!`, `calculator_begin!`, `calculator_end!`, the loop tags
-`OuterKLoop` / `OuterQLoop`, the scope tags `OuterIteration` / `OuterIterationBatch`, the payloads
-`AbstractElPhPayload` / `EPData` / `EPDataQBatched` / `EPDataKBatched`,
-`LoopContext` with the loop modes `SingleMode` / `BatchedMode`, the backends `CPUBackend` /
-`GPUBackend` with `alloc` / `free_bytes` /
-`synchronize`, `eph_window_scatter!`, `eph_batched_bytes_per_point`, `allowed_eph_phonon_basis`,
-`required_el_k_quantities`, `_indmap_to_device`, the tiled
-device-output helper `TiledDeviceOutput` (with `tile_begin!` / `tile_download!` / `tile_free!` /
-`device_array` / `host_array` / `tile_offset` / `tile_length` / `tile_stride` / `is_block` /
-`is_allocated`), the device-memory batch-sizing helpers `plan_batch` / `estimate_device_memory`, and
-`to_device`.
+See `docs/writing_a_calculator.md` for a worked example.
+
+The public (unexported) calculator API is the `public` declaration at the bottom of this file — that
+declaration is the single authoritative list, deliberately not restated here (two copies drifted apart
+once already). Query it at the REPL rather than trusting prose:
+
+```julia
+filter(n -> Base.ispublic(ElectronPhonon, n), names(ElectronPhonon; all = true))
+```
+
+Every name in it is reachable as `ElectronPhonon.<name>`. Broadly it covers the hooks and traits above,
+the loop/scope tags, the payload types, `LoopContext` with its `LoopMode`s, the backend primitives, the
+`TiledDeviceOutput` helper, and the device-memory batch-sizing helpers.
 """
 abstract type AbstractCalculator end
 
@@ -152,6 +157,10 @@ conservative full list.
 """
 required_el_k_quantities(::AbstractCalculator) = ["eigenvalue", "eigenvector", "velocity", "position"]
 
+# Mandatory hook, no default. The drivers always supply `backend::AbstractBackend` and
+# `mode::LoopMode` among the keywords (plus the state/grid payload documented above); a calculator
+# that needs neither just splats them. `mode`, not `backend`, is the per-point-vs-batched
+# discriminator — see the `AbstractCalculator` docstring.
 function setup_calculator!(::AbstractCalculator, kpts, qpts, el_states; kwargs...)
     error("setup_calculator! has to be implemented")
 end
@@ -163,15 +172,15 @@ end
 # Scope singletons name the iteration level being bracketed, so the call reads as a sentence:
 # `calculator_begin!(calc, OuterIteration(), ctx)` = "at the beginning of one outer iteration".
 struct OuterIteration end        # one iteration of the outer loop (one ik / one iq)
-struct OuterIterationBatch end   # one batch of consecutive outer iterations (GPU loops)
+struct OuterIterationBatch end   # one batch of consecutive outer iterations (batched loops)
 
 # Begin/end brackets. There is NO no-op default: a calculator MUST define the brackets for every
 # (scope, loop-mode) combination the drivers fire on it, even when it wants a no-op — a missing
 # method is a loud error, never a silent skip (a silently-skipped bracket is a hard-to-find bug). The
-# combinations follow what the calculator `supports`: OuterIteration/SingleMode (CPU loops),
-# OuterIteration/BatchedMode (GPU outer-q per-q accumulator), and OuterIterationBatch/BatchedMode
-# (GPU outer-k per-batch). OuterIterationBatch/SingleMode is never fired, and neither is
-# OuterIteration/BatchedMode in the GPU OUTER-K loop: there the q-tile loop runs outside the k loop,
+# combinations follow what the calculator `supports`: OuterIteration/SingleMode (per-point loops),
+# OuterIteration/BatchedMode (batched outer-q per-q accumulator), and OuterIterationBatch/BatchedMode
+# (batched outer-k per-batch). OuterIterationBatch/SingleMode is never fired, and neither is
+# OuterIteration/BatchedMode in the BATCHED OUTER-K loop: there the q-tile loop runs outside the k loop,
 # so a single k's work is spread over the whole batch and has no per-k begin/end point — a
 # calculator needing a per-k device reduction there must do it at OuterIterationBatch scope.
 # A calculator that does nothing at a scope defines an explicit no-op (`= nothing`).
@@ -203,7 +212,7 @@ function run_calculator! end
     eph_batched_bytes_per_point(calc, ::Type{<:AbstractElPhPayload}; nw, nmodes) -> Int
 
 Device bytes of per-point scratch the calculator's batched `run_calculator!` path holds (its
-workspace arrays sized `(…, batch)`, divided by the batch width). The GPU loops sum this over the
+workspace arrays sized `(…, batch)`, divided by the batch width). The batched loops sum this over the
 calculators and combine it with their own per-point staging cost to derive a memory-adaptive batch
 width from `free_bytes`. Default `0` (no per-point device scratch).
 """

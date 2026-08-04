@@ -6,7 +6,9 @@ using ElectronPhonon: Vec3, _grid_coords_reduced, _wrap_reduced, _fill_iqs!
 # The per-(k, q-tile) `iq` index build of the batched outer-k loop (`_loop_eph_over_k_and_kq_batched`). The
 # loop hashes integer grid coordinates instead of calling `xk_to_ik` per pair, so the whole
 # correctness story is "the fast hash agrees with `xk_to_ik`".
-# CPU-only: the build is host arithmetic and the loop it feeds is never reached on `CPUBackend`.
+# CPU-only because the build is pure host arithmetic — not because the loop it feeds is GPU-only: that
+# loop also runs on a `CPUBackend` (`batched = true`, the validation configuration), which is exercised
+# end-to-end elsewhere. This file tests the hash in isolation and needs no backend at all.
 
 # Everything the build needs, assembled the way the loop's prologue assembles it. The outer k mesh
 # is always unshifted — the loop's `xks_int` does not subtract a shift, so a shifted k would not

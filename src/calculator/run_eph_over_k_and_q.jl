@@ -33,10 +33,12 @@ function run_eph_over_k_and_q(
         progress_print_step = 20,
         symmetry = model.symmetry,
         nchunks_threads = nthreads(),  # Number of chunks for multithreading
-        # This driver has no batched path, so the only backend it accepts is the CPU one. The kwarg
-        # exists (and is validated rather than ignored) so all three e-ph drivers take the same
-        # vocabulary and a caller sweeping over drivers cannot silently get a host run.
+        # This driver has no batched path, so it accepts only the CPU backend and only the per-point
+        # loop shape. Both kwargs exist, and are VALIDATED rather than ignored, so all three e-ph
+        # drivers take the same vocabulary and a caller sweeping over drivers cannot silently get a
+        # host / per-point run where it asked for something else.
         backend :: AbstractBackend = CPUBackend(),
+        batched :: Union{Nothing, Bool} = nothing,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -46,6 +48,10 @@ function run_eph_over_k_and_q(
     backend isa CPUBackend || throw(ArgumentError(
         "run_eph_over_k_and_q has no batched path and supports backend = CPUBackend() only. " *
         "Use run_eph_over_k_and_kq (outer-k) or run_eph_over_q_and_k (outer-q) for a GPU run."))
+    batched === true && throw(ArgumentError(
+        "run_eph_over_k_and_q has no batched loop; it only hands calculators the per-(k,q) host " *
+        "`EPData`. Pass batched = nothing (or false), or use run_eph_over_k_and_kq / " *
+        "run_eph_over_q_and_k, which do have one."))
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")

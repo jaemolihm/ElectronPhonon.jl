@@ -154,10 +154,10 @@ end
         occ = ElectronOccupationParams(; Tlist = [300.0 * K], nlist = 4.0, μlist = μ,
             volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac),
         smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
-    runbte(grid, backend, batched; nq_batch_max = nothing) =
+    runbte(grid, backend, batched; nq_batch_max = nothing, nk_outer_batch_max = 256) =
         (c = mkcalc(); EP.run_eph_over_k_and_kq(model, grid, grid;
             calculators = [c], symmetry = nothing, window_k = window, window_kq = window,
-            fourier_mode = "gridopt", backend, batched, nq_batch_max,
+            fourier_mode = "gridopt", backend, batched, nq_batch_max, nk_outer_batch_max,
             progress_print_step = 10^9, verbosity = 0); c)
 
     cc = runbte((6, 6, 6), EP.CPUBackend(), false)
@@ -169,12 +169,24 @@ end
     # `mul!`-loop `batched_gemm!`), so the grid is kept at 6³ — measured 0.04 s there, versus 0.06 s
     # for the per-point arm, small enough not to need a separate smaller grid. (4³ is NOT usable: this
     # ±0.5 eV window keeps zero k-points on that grid, and an empty selection cannot build a q-grid.)
-    # `nq_batch_max` is passed explicitly for two reasons: on a `CPUBackend` `plan_batch` returns the
-    # cap verbatim (`free_bytes` is unbounded), so without it the q-tile would be the whole k+q grid
-    # and every per-q buffer would be sized to it; and a cap below nkq is what forces ntiles > 1,
-    # exercising the `tile_begin!`/`tile_download!` bracket path on the host.
+    #
+    # The two batch caps tile DIFFERENT axes, and both must be set explicitly here because on a
+    # `CPUBackend` `plan_batch` returns the requested cap verbatim (`free_bytes` is unbounded):
+    #   * `nq_batch_max` tiles the per-q device STAGING inside one k-batch. Without it every per-q
+    #     buffer would be sized to the whole k+q grid.
+    #   * `nk_outer_batch_max` tiles the outer-k axis, which is what the calculator's Sᵢ
+    #     `TiledDeviceOutput` is tiled over — so it, not `nq_batch_max`, is what makes ntiles > 1 and
+    #     drives `tile_begin!`/`tile_download!` more than once with a NONZERO `tile_offset`. The
+    #     default 256 exceeds nk = 66 here, which would leave the whole run in a single tile at
+    #     `i0 == 0` and never exercise the `Sᵢ[iT][i0+1:i0+ni, :] .= host[1:ni, :, iT]` bookkeeping.
+    #     20 gives 4 tiles (20+20+20+6).
     @testset "CPU+batched == CPU+per-point" begin
-        c_ba = runbte((6, 6, 6), EP.CPUBackend(), true; nq_batch_max = 7)
+        c_ba = runbte((6, 6, 6), EP.CPUBackend(), true; nq_batch_max = 7, nk_outer_batch_max = 20)
+        # Guard the tiling itself: `tile_free!` resets `tile_i0` at postprocess, so the offset cannot be
+        # read back after the run — assert its precondition instead. More outer k than the cap ⇒ several
+        # k-batches ⇒ several Sᵢ tiles at nonzero `tile_offset`. If a future change to the grid or the
+        # default cap collapses this to one tile, this fails instead of silently losing the coverage.
+        @test c_ba.el_i.kpts.n > 20        # 66 outer k at cap 20 ⇒ 4 tiles
         @test stack(c_ba.Sₒ) ≈ stack(cc.Sₒ) rtol = 1e-9
         @test stack(c_ba.Sᵢ) ≈ stack(cc.Sᵢ) rtol = 1e-9
         # Measured 2026-08-03 (Pb 6³): Sₒ 6.1e-16, Sᵢ 1.3e-15 — pure batched-GEMM reassociation.
