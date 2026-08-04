@@ -29,9 +29,9 @@
   el_k_save, el_kq_save, ph_save, precompute_ph, backend)`; outer-q: `(model, kpts, qpts, el_k_save,
   ph_save, eph_buffers, backend)`) and its own path-specific data as individual keyword arguments
   (per-point: the host interpolators/channels, resp. the precomputed k+q states; batched:
-  `epmat_dev`, resp. `el_ham_dev`). `backend` is shared positional #9 rather than a batched-only
-  kwarg, so the per-point loops no longer hardcode `CPUBackend()` (`run_eph_over_k_and_q` too, which
-  has no batched twin).
+  `epmat_dev`, resp. `el_ham_dev`). `backend` is the last shared positional rather than a batched-only
+  kwarg, so no `_loop_*` hardcodes `CPUBackend()` any more (`run_eph_over_k_and_q` too, which has no
+  batched twin). The convention is stated once, above `_loop_eph_over_k_and_kq`.
 
 - [x] ~~Reconsider whether `backend` should be built inside `_loop_eph_over_k_and_kq_batched` rather
   than in `_setup_eph_over_k_and_kq`.~~ Subsumed: `backend` is now a user-facing driver keyword, so it

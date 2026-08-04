@@ -228,9 +228,10 @@ function _setup_eph_over_k_and_q(
 end
 
 
-# `backend` is positional #9, the same slot it occupies in the two loop pairs that have a batched twin
-# (run_eph_over_k_and_kq.jl / run_eph_over_q_and_k.jl). This driver has no batched twin, so the rest of
-# its argument list is not unified with anything; only the hardcoded `CPUBackend()` is gone.
+# `backend` is a positional argument here too, as in the two loop pairs that have a batched twin
+# (run_eph_over_k_and_kq.jl / run_eph_over_q_and_k.jl), so no `_loop_*` hardcodes `CPUBackend()`. It
+# sits last among the shared arguments, before this shape's own data. This driver has no batched twin,
+# so the rest of its argument list is not unified with anything.
 function _loop_eph_over_k_and_q(
         model       :: Model{FT},
         kpts, qpts, kqpts,

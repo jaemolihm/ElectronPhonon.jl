@@ -303,11 +303,21 @@ function _setup_eph_over_k_and_kq(
 end
 
 
-# Positional arguments are the ones BOTH loop shapes need, in the same order (see the comment above
-# `_loop_eph_over_k_and_kq_batched`); the host interpolator/channel objects only this shape uses are
-# required keyword arguments. They stay individual kwargs rather than one bundled NamedTuple so every
-# name is a typed argument of the lowered body method, which is what keeps the `@threads` closure
-# below free of `Core.Box` without a destructure-first rule.
+# CANONICAL statement of the `_loop_*` argument convention; the other three `_loop_*` functions point
+# here instead of restating it.
+#
+# A driver family's per-point and batched loop shapes take the IDENTICAL positional list — exactly what
+# BOTH shapes need, in the same order — and each takes only its own path-specific data as keyword
+# arguments. So the two call sites read as two shapes of one call rather than two unrelated functions.
+# For this family that list is
+#   (model, kpts, qpts, kqpts, el_k_save, el_kq_save, ph_save, precompute_ph, backend)
+# and this shape's kwargs are the host interpolators / per-thread channels (the batched shape's is
+# `epmat_dev`). `backend` is shared rather than batched-only: both shapes use it for the same thing,
+# the `LoopContext`.
+#
+# Path-specific data stays INDIVIDUAL kwargs rather than one bundled NamedTuple, so every name is a
+# typed argument of the lowered body method — which is what keeps the `@threads` closure below free of
+# `Core.Box` without a destructure-before-`@threads` rule.
 function _loop_eph_over_k_and_kq(
         model       :: Model{FT},
         kpts, qpts, kqpts,
@@ -530,11 +540,8 @@ end
 #  batched over k-batches and q-batches with device staging — differs from the per-(k,q) loop,
 #  not because it holds any device-specific code.
 #
-#  The two shapes take the IDENTICAL positional list — `(model, kpts, qpts, kqpts, el_k_save,
-#  el_kq_save, ph_save, precompute_ph, backend)`, everything both need — and each takes only its own
-#  path-specific data as keyword arguments (here `epmat_dev`; the per-point shape's host interpolators
-#  and per-thread channels there). So the two call sites in `run_eph_over_k_and_kq` read as two shapes
-#  of one call rather than two unrelated functions.
+#  Positional list identical to `_loop_eph_over_k_and_kq`'s (the argument convention is stated in full
+#  in the comment above that function); this shape's only path-specific kwarg is `epmat_dev`.
 #
 #  Backend: `GPUBackend` is the production configuration. Because nothing here is device-specific,
 #  the loop also runs on `CPUBackend` (`batched = true`), which is a VALIDATION configuration only:
@@ -751,7 +758,7 @@ function _loop_eph_over_k_and_kq_batched(
     # Grid coordinates as (3 × n) real device matrices, uploaded once. Both phase builds below read
     # them directly, so nothing on the phase path is staged on the host or copied H2D inside the loop.
     # Negated once here rather than conjugating the phase tile every batch: the convention needs
-    # conj(exp(2πi R_p·x_k)) = exp(2πi R_p·(−x_k)), and the two are bitwise identical (FP negation is
+    # conj(exp(2πi R_p·x_k)) = exp(2πi R_p·(-x_k)), and the two are bitwise identical (FP negation is
     # exact, and `cispi` is exactly symmetric). This is the only consumer of the k coordinates.
     # Out-of-place on purpose: on `CPUBackend` `_kpoints_to_device_matrix` returns a view onto
     # `kpts.vectors`, so negating in place would corrupt the k-points.
@@ -759,7 +766,7 @@ function _loop_eph_over_k_and_kq_batched(
     xkq_dev = _kpoints_to_device_matrix(backend, kqpts)
 
     # The two Fourier phase matrices of the k+q convention (see `get_eph_RR_to_kR_batched!`):
-    #   P_mk[ip, k] = exp(2πi R_p · (−x_k))    — folded into g(k, R_ep) once per outer-k batch
+    #   P_mk[ip, k] = exp(2πi R_p · (-x_k))    — folded into g(k, R_ep) once per outer-k batch
     #   P_kq[ip, j] = exp(2πi R_p · x_{k+q_j}) — the kR->kq phase, INDEPENDENT of the outer k
     # so one built P_kq tile serves every k of the batch. That reuse factor is `nk_batch`, i.e.
     # `nk_outer_batch_max`: lowering that cap shrinks this saving proportionally.
@@ -824,7 +831,7 @@ function _loop_eph_over_k_and_kq_batched(
         end
 
         # One batched RR->kR over the whole batch: g(k, R_ep) for all k in the batch, stored in the
-        # k+q convention (multiplied by P_mk, the phase at −x_k) so the kR->kq phase below is
+        # k+q convention (multiplied by P_mk, the phase at -x_k) so the kR->kq phase below is
         # k-independent. The driver derives the batch width from `size(uks, 3)` and asserts that the
         # other three arguments agree, so handing it four width-`nk_batch` views is within its contract.
         @views fourier_phase!(P_mk[:, rng_k], irvecp_mat, mxk_dev[:, iks_batch])

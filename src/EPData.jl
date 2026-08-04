@@ -91,7 +91,8 @@ batch has `nk < n_batch_max`, and the loop hands width-`nk` views into its max-w
 any field (e.g. `size(eps, 4)`) and never sees a padded tail. There is no padded tail internally
 either — the loop computes only the batch's own columns — so the payload's width is the *only*
 guarantee: a consumer that sized itself from `ctx.n_batch_max` instead of `size(eps, 4)` would read
-uninitialised columns.
+stale data from the previous batch (uninitialised if the run has only one, partial batch), which is
+worse than uninitialised because it is finite and plausible.
 
 Fields (`m` = k+q band, `n` = k band, `k` = batch column):
 - `eps` :: `(nw, nw, nmodes, nk)` — eigenbasis e-ph matrices. Out-of-window bands are already zeroed

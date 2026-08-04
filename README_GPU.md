@@ -276,7 +276,7 @@ unchanged). No window handling is needed in the calculator beyond addressing its
 - **A QR-based batched eigensolve (future).** The batched eigensolve uses `CUSOLVER.heevjBatched!`
   (Jacobi). A QR-based `HEEV` (e.g. via cuSolverDx) may be faster for the small matrices here;
   worth evaluating, but not in this PR. Accuracy is not a motivation — Jacobi is already at
-  machine precision. Note that `cusolverDnXsyevBatched` is *not* the answer: it is 2–3× faster per
+  machine precision. Note that `cusolverDnXsyevBatched` is *not* the answer: it is 2-3× faster per
   matrix but needs ~1.05 MB of workspace per matrix (65× heevj), which caps one call at ~72k
   matrices on an 80 GB A100 and competes with the device-resident e-ph tiles.
 - **Parametrize `Model` over its `WannierObject` array type (future).** Widening `WannierObject`

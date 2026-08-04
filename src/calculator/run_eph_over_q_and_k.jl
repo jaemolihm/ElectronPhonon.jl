@@ -279,11 +279,11 @@ function _setup_eph_over_q_and_k(
 end
 
 
-# Positional arguments are the ones BOTH loop shapes need, in the same order (see the comment above
-# `_loop_eph_over_q_and_k_batched`); the k+q data only this shape uses (the batched shape eigensolves
-# k+q in the loop instead) are required keyword arguments. Individual kwargs, not one bundled
-# NamedTuple, so every name stays a typed argument of the lowered body method and the `@threads`
-# closure below keeps concrete captures.
+# Same argument convention as `_loop_eph_over_k_and_kq` (stated in full in the comment above it). This
+# family's shared positional list is
+#   (model, kpts, qpts, el_k_save, ph_save, eph_buffers, backend)
+# and this shape's kwargs are the precomputed k+q data (the batched shape eigensolves k+q in the loop
+# instead, and its kwarg is `el_ham_dev`).
 function _loop_eph_over_q_and_k(
         model       :: Model{FT},
         kpts, qpts,
@@ -426,9 +426,8 @@ end
 #  `mul!`-loop `batched_gemm!`, and `plan_batch` returns the `nk_batch_max` cap verbatim). The `_dev`
 #  suffix means "on `backend`", which is the host there.
 #
-#  The two shapes take the IDENTICAL positional list — `(model, kpts, qpts, el_k_save, ph_save,
-#  eph_buffers, backend)`, everything both need — and each takes only its own path-specific data as
-#  keyword arguments (here `el_ham_dev`; the per-point shape's precomputed k+q states there).
+#  Positional list identical to `_loop_eph_over_q_and_k`'s (see the comment above it); this shape's only
+#  path-specific kwarg is `el_ham_dev`.
 #
 #  Scope (asserted below; the per-point path handles the rest): no screening,
 #  energy_conservation = (:None, 0.0), skip_eph = false, and every calculator supports the
@@ -582,6 +581,14 @@ function _loop_eph_over_q_and_k_batched(
             copyto!(ek_batch, 1, ek_host, 1, nw * nk_batch)
             copyto!(wtk_batch, 1, wtk_host, 1, nk_batch)
 
+            # The width-`nk_batch` prefix views of the staging buffers, named once so the drivers below
+            # and the payload provably see the same arrays (a trailing-prefix view of a device array is
+            # itself a device array, so the extension kernels take these directly).
+            ep_v  = view(ep_batch, :, :, :, rng_k)
+            Uk_v  = view(Uk_batch, :, :, rng_k)
+            Ukq_v = view(Ukq_batch, :, :, rng_k)
+            ks_v  = view(ks_batch, rng_k)
+
             # k+q eigensolve on the device (batched). No gauge fixing needed: χ is gauge-invariant.
             # TODO: `eigen_batched` allocates (E, U) each batch; an in-place variant into ek/Ukq
             #       scratch would remove the per-batch allocation.
@@ -592,25 +599,19 @@ function _loop_eph_over_q_and_k_batched(
             # zeroes ep_kq[m,·] and every k+q-side matrix element for out-of-window m, so those
             # (m,n) pairs contribute exactly 0 — reproducing the CPU's `for m in el_kq.rng` loop.
             mask_kq = (Ekq .>= wmin) .& (Ekq .<= wmax)                    # (nw, nk_batch) Bool
-            @views Ukq_batch[:, :, rng_k] .= Ukq .* reshape(mask_kq, 1, nw, nk_batch)
+            Ukq_v .= Ukq .* reshape(mask_kq, 1, nw, nk_batch)
 
             # Batched Rq→kq e-ph interpolation: ep_batch[m,n,ν,k] = Ukq(k)' * g(k) * Uk(k).
-            get_eph_Rq_to_kq_batched!(view(ep_batch, :, :, :, rng_k), itp_ep_eRpq,
-                view(ks_batch, rng_k), view(Uk_batch, :, :, rng_k), view(Ukq_batch, :, :, rng_k);
-                ws = ep_ws)
+            get_eph_Rq_to_kq_batched!(ep_v, itp_ep_eRpq, ks_v, Uk_v, Ukq_v; ws = ep_ws)
 
-            use_polar_eph && add_eph_dipole_batched!(view(ep_batch, :, :, :, rng_k), coeffs_dev,
-                view(Ukq_batch, :, :, rng_k), view(Uk_batch, :, :, rng_k),
-                view(mmats_batch, :, :, rng_k))
+            use_polar_eph && add_eph_dipole_batched!(ep_v, coeffs_dev, Ukq_v, Uk_v,
+                                                    view(mmats_batch, :, :, rng_k))
 
-            # The payload is the same width-`nk_batch` prefix views the drivers above were handed, so a
-            # consumer reads its own size from any field (`size(eps, 4)`) and there is no padded tail
-            # anywhere. `Ekq`/`Ukq` are already exactly this batch's width; they are viewed anyway so
-            # `ek`/`ekq` (which share one type parameter) stay the same type.
-            payload = EPDataKBatched(
-                view(ep_batch, :, :, :, rng_k), view(ek_batch, :, rng_k), view(Ekq, :, rng_k),
-                view(Uk_batch, :, :, rng_k), view(Ukq_batch, :, :, rng_k), view(wtk_batch, rng_k),
-                view(ks_batch, rng_k), iq)
+            # A consumer reads its own size from any payload field (`size(eps, 4)`); there is no padded
+            # tail anywhere. `Ekq`/`Ukq` are already exactly this batch's width; they are viewed anyway
+            # so `ek`/`ekq` (which share one type parameter) stay the same type.
+            payload = EPDataKBatched(ep_v, view(ek_batch, :, rng_k), view(Ekq, :, rng_k),
+                Uk_v, Ukq_v, view(wtk_batch, rng_k), ks_v, iq)
             foreach(c -> run_calculator!(c, payload, ctx_q), calculators)
         end # k batch
 
