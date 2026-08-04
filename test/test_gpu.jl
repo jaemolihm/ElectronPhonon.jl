@@ -221,7 +221,9 @@ ElectronPhonon.calculator_begin!(c::_OptInQCalc, ::ElectronPhonon.OuterIteration
 ElectronPhonon.calculator_end!(c::_OptInQCalc, ::ElectronPhonon.OuterIteration, ctx) = (c.flush += 1; nothing)
 
 @testset "outer-q batched calculator hook plumbing" begin
-    ctx = ElectronPhonon.LoopContext(ElectronPhonon.CPUBackend(), ElectronPhonon.SingleMode(), 1, 1:0, 4)
+    # The context the batched outer-q loop builds per q: one outer index, no outer batch.
+    ctx = ElectronPhonon.LoopContext(ElectronPhonon.CPUBackend(), ElectronPhonon.BatchedMode();
+                                     outer_index = 1, n_batch_max = 4)
     # Default opts out; a calculator with no run_calculator! method for the payload is a MethodError.
     @test ElectronPhonon.supports(_PlainQCalc(), ElectronPhonon.EPDataKBatched) == false
     pl = ElectronPhonon.EPDataKBatched(nothing, nothing, nothing, nothing, nothing, nothing, nothing, 1)

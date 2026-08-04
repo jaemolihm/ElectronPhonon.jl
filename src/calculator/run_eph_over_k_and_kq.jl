@@ -824,7 +824,7 @@ function _loop_eph_over_k_and_kq_batched(
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before
         # this batch's scatters; no-op (default hooks) for calculators that hold their whole output.
-        ctx_batch = LoopContext(backend, BatchedMode(), iks_batch, nk_batch_max)
+        ctx_batch = LoopContext(backend, BatchedMode(); batch = iks_batch, n_batch_max = nk_batch_max)
         foreach(c -> calculator_begin!(c, OuterIterationBatch(), ctx_batch), calculators)
 
         qstart = 1
@@ -870,7 +870,7 @@ function _loop_eph_over_k_and_kq_batched(
 
                 # Hand the tile's e-ph matrix (still on the device) to each calculator, which forms
                 # g2 / scatters it on the device; no D2H of the e-ph matrix here.
-                ctx_k = LoopContext(backend, BatchedMode(), ik, iks_batch, nk_batch_max)
+                ctx_k = with_outer_index(ctx_batch, ik)
                 payload = EPDataQBatched(
                     view(epkq_dev, :, :, :, rng_q), view(g2_dev, :, :, :, rng_q),
                     view(ωq_dev, :, rng_q), ik, ikqs_used, ibandk_offsets[ik])

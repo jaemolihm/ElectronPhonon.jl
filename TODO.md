@@ -45,9 +45,6 @@
   backend, which builds the wrong buffers under CPU+batched. It is now `calc.batched = mode isa
   BatchedMode`, from the `mode::LoopMode` keyword the drivers pass to `setup_calculator!`.
 
-- [ ] Clean up the `LoopContext` construction at the batch/per-k scope (deferred out of the
-  `backend`/`batched` PR as an independent follow-up)
-  (`src/calculator/run_eph_over_k_and_kq.jl` ~L713/L728). The batch-scope `ctx_batch` and per-k
-  `ctx_k` are built from positional constructors that are disambiguated by whether the argument is an
-  `Integer` outer index (`ik`) or a `UnitRange` batch (`iks_batch`) — flagged as flaky in review.
-  Consider a clearer, explicitly-named construction API for the two scopes.
+- [x] Clean up the `LoopContext` construction at the batch/per-k scope — done. The `BatchedMode`
+  convenience constructor is keyword-only (`batch` / `outer_index` / required `n_batch_max`), so
+  argument 3 is never positional there, and the per-k context is `with_outer_index(ctx_batch, ik)`.

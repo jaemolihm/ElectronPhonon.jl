@@ -537,7 +537,7 @@ function _loop_eph_over_q_and_k_batched(
 
         # Per-q calculator begin: allocate (first q) + zero the device accumulator (OuterIteration
         # bracket, same as the CPU loop; ctx carries backend + n_batch_max for the device buffer).
-        ctx_q = LoopContext(backend, BatchedMode(), iq, 1:0, nk_batch_max)
+        ctx_q = LoopContext(backend, BatchedMode(); outer_index = iq, n_batch_max = nk_batch_max)
         foreach(c -> calculator_begin!(c, OuterIteration(), ctx_q), calculators)
 
         for kstart in 1:nk_batch_max:nk
