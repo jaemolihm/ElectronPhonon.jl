@@ -17,6 +17,10 @@ jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
     runs-on: ${{ matrix.os }}
+    env:
+      # Build PyCall against Conda.jl's miniconda, so PyPlot can pull in matplotlib.
+      # The runner's system Python has none, and PyPlot's __init__ fails without it.
+      PYTHON: ""
     strategy:
       fail-fast: false
       matrix:
