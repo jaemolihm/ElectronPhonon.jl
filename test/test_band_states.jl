@@ -75,6 +75,9 @@ using ElectronPhonon
         @test subb.vs == bs.vs[want]
         @test filter_states(bs, 1:bs.n).es == bs.es      # full subset is the identity
         @test filter_states(sel, Int[]).n == 0
+        # `vs` is empty when velocities were never computed; the subset must stay empty, not throw
+        bs_novel = BandStates(kpts, bs.iks, bs.ibands, bs.es; nw = bs.nw)
+        @test isempty(bs_novel.vs) && isempty(filter_states(bs_novel, keep).vs)
     end
 
     @testset "symmetry-star lookups" begin

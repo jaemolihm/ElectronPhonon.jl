@@ -485,15 +485,20 @@ function filter_states(s::AbstractBandStates, keep::AbstractVector{<:Integer})
 end
 
 # States `ks` of `s`, re-gridded onto `kpts_new` with the new per-state k-indices `iks_new`,
-# rebuilt as the same concrete type as `s`.
+# rebuilt as the same concrete type as `s`. Split off `filter_states` so the k-point re-gridding
+# is written once: only this last step differs per subtype (energies are positional on the
+# `BandStates` constructor and absent from `FilteredBandStates`, and `es`/`vs` need subsetting
+# too). Dispatch rather than an `if s isa BandStates` branch, which would put `s.es`/`s.vs`
+# accesses — fields a `FilteredBandStates` does not have — in the shared method body.
 _rebuild_states(s::FilteredBandStates, kpts_new, iks_new, ks) =
     FilteredBandStates(kpts_new, iks_new, s.ibands[ks];
-        nw = s.nw, weights = state_weights(s)[ks], nstates_base = s.nstates_base)
+        s.nw, weights = s.weights[ks], s.nstates_base)
 
+# `vs` is empty when velocities were never computed, and stays empty in the subset.
 _rebuild_states(s::BandStates, kpts_new, iks_new, ks) =
     BandStates(kpts_new, iks_new, s.ibands[ks], s.es[ks];
-        nw = s.nw, v = isempty(s.vs) ? eltype(s.vs)[] : s.vs[ks],
-        weights = state_weights(s)[ks], nstates_base = s.nstates_base)
+        s.nw, v = isempty(s.vs) ? s.vs : s.vs[ks],
+        weights = s.weights[ks], s.nstates_base)
 
 """
     ind_range_for_k_range(s::BandStates, kstart::Integer, kend::Integer) -> UnitRange
