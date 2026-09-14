@@ -80,6 +80,27 @@ using ElectronPhonon
         @test isempty(bs_novel.vs) && isempty(filter_states(bs_novel, keep).vs)
     end
 
+    @testset "mpi_allgather (COMM_SELF)" begin
+        using ElectronPhonon: mpi_allgather
+        import MPI
+        MPI.Initialized() || MPI.Init()
+        # One rank: the concatenation is the input, so this pins the bookkeeping (k-offset,
+        # field-by-field round-trip) without needing a multi-rank launcher.
+        for src in (bs, BandStates(kpts, bs.iks, bs.ibands, bs.es; nw = bs.nw))   # with and w/o vs
+            g = mpi_allgather(src, MPI.COMM_SELF)
+            @test g.n == src.n
+            @test g.iks == src.iks && g.ibands == src.ibands
+            @test g.es == src.es
+            @test state_weights(g) == state_weights(src)
+            @test state_xks(g) == state_xks(src)
+            @test g.kpts.n == src.kpts.n && g.kpts.ngrid == src.kpts.ngrid
+            @test g.kpts.weights == src.kpts.weights      # per-k weights survive the gather
+            @test (g.nw, g.nstates_base) == (src.nw, src.nstates_base)
+            @test g.vs == src.vs                          # carried iff present
+            @test all(state_index(g, src[i]) == i for i in 1:src.n)
+        end
+    end
+
     @testset "symmetry-star lookups" begin
         xk = Vec3(0.25, 0.0, 0.0)
         J = state_indices_full_star(sel, xk, 3, symmetry)

@@ -288,6 +288,37 @@ function _indmap_to_device(backend::AbstractBackend, s::AbstractBandStates, nban
 end
 
 """
+    mpi_allgather(s::BandStates, comm::MPI.Comm) -> BandStates
+
+Rank-concatenate a distributed `BandStates` so every rank holds the whole set: rank 0's states
+first, then rank 1's, and so on. The `BandStates` counterpart of `mpi_gather(::BTStates, …)`,
+which returns the gathered set on the root only.
+
+Each rank's `kpts` must be a DISJOINT slice of one grid, which is what the k-splitters produce
+(`filter_electron_states` redistributes with `mpi_gather_and_scatter`: rank-concatenate then
+even-split, no reorder). The global k-index of a local state is then its local one shifted by the
+k-point count of the preceding ranks — no k-vector lookup is needed, and the per-k weights survive.
+
+Velocities are carried only if EVERY rank has them; if any rank's `vs` is empty the result's is
+too, since a partly-filled `vs` would be indexed as though it were complete. `nw` and
+`nstates_base` are taken from the local slice: both are global properties already equal on every
+rank (`filter_electron_states` `mpi_sum`s the below-window count before constructing).
+"""
+function mpi_allgather(s::BandStates{FT}, comm::MPI.Comm) where {FT}
+    rank = mpi_myrank(comm)
+    kcounts = mpi_allgather([s.kpts.n], comm)
+    kpts = mpi_allgather(s.kpts, comm)
+    iks = mpi_allgather(s.iks .+ sum(@view kcounts[1:rank]), comm)
+    ibands = mpi_allgather(collect(s.ibands), comm)
+    es = mpi_allgather(collect(s.es), comm)
+    weights = mpi_allgather(collect(s.weights), comm)
+    # Collective, so the decision must be taken identically on every rank before any rank branches.
+    v = all(isone, mpi_allgather([Int(!isempty(s.vs))], comm)) ?
+        mpi_allgather(collect(s.vs), comm) : Vec3{FT}[]
+    BandStates(kpts, iks, ibands, es; s.nw, v, weights, s.nstates_base)
+end
+
+"""
     find_unfolding_indices(el_i::BandStates, el_f::BandStates, symmetry) -> Vector{NTuple{2,Int}}
 
 For each inner (full-BZ) state `f`, find the outer (IBZ) state `i` and symmetry index `isym`
