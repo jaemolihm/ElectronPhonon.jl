@@ -37,7 +37,8 @@ and the `bt_*` accessors) dispatches on `AbstractBandStates`, so both subtypes s
 
 Every subtype carries the fields the shared machinery reads: `n`, `nband`, `nband_ignore`, `nw`,
 `kpts`, `iks`, `ibands`, `weights` (per-state; empty ⇒ derived from `kpts.weights[iks]`),
-`nstates_base`, `indmap`, and `band_extent` (per-k `UnitRange`, length `kpts.n`).
+`nstates_base`, `indmap`, and `band_extent` (per-k `UnitRange`, length `kpts.n`; a contiguous
+superset of the bands there, not the band set — see `BandStates`).
 """
 abstract type AbstractBandStates{T, KT <: AbstractKpoints{T}} end
 
@@ -54,6 +55,14 @@ phonons `iband` is the mode index.
 
 Pure k-properties (k-vector, weight) are derived through `ik` rather than cached per-state;
 `state_xks`/`state_weights` materialize a dense length-n array when a hot/GPU loop needs one.
+
+`band_extent` is the minimal contiguous superset of the bands present at each k, NOT the band set —
+`iks`/`ibands` are the authority. It is a range because its consumer is
+`set_window!(::ElectronState, ::UnitRange)`. Window-based selections are contiguous per k;
+`filter_states` on an arbitrary set need not be, and then `electron_states_to_BandStates(el_states,
+kpts, …)`, which emits one state per band in the extent, returns more states than the
+`FilteredBandStates` method, which emits the selection's own list (`{2, 5}` at a k: 4 states vs 2).
+Match states across two sets with `state_index`, never by position.
 """
 struct BandStates{T, KT <: AbstractKpoints{T}} <: AbstractBandStates{T, KT}
     n::Int                  # number of states
@@ -72,7 +81,8 @@ struct BandStates{T, KT <: AbstractKpoints{T}} <: AbstractBandStates{T, KT}
     weights::Vector{T}      # per-state BZ weight; empty ⇒ derive from kpts.weights[iks]
     nstates_base::T         # occupied states per cell below the window (electron counting)
     indmap::Matrix{Int}     # (iband - nband_ignore, ik) → state index; 0 where absent
-    band_extent::Vector{UnitRange{Int}}  # per-k band extent (one range per kpts point; 1:0 if none)
+    band_extent::Vector{UnitRange{Int}}  # per-k contiguous superset of the bands present, NOT the
+                            # band set (one range per kpts point; 1:0 if none)
 end
 
 """
@@ -105,9 +115,9 @@ function _build_indmap(n, nk, nband, nband_ignore, ik, iband)
     indmap
 end
 
-# Per-k band extent: for each of the `nk` k-points, the `min:max` band range of the states at that
-# k (1:0 if none). Bands are contiguous per k in every generator (an in-window range), so this
-# span is exactly the set of selected bands there.
+# Per-k `min:max` band range of the states at that k (1:0 if none) — the minimal contiguous
+# superset of the bands there, which equals them only if those are contiguous: true for a
+# window-based selection, not for `filter_states` on an arbitrary set.
 function _build_band_extent(nk, ik, iband)
     lo = fill(typemax(Int), nk)
     hi = zeros(Int, nk)
@@ -125,7 +135,7 @@ Primary constructor: `kpts` is the (shared) k-grid, `ik[i]` the k-index of state
 `iband[i]` its band, `e[i]` its energy. `nw` is the model's full Wannier band count. `v`
 (per-state velocity) defaults to empty. `weights` (per-state BZ weight) is always stored
 length-`n`: when the caller passes an empty `weights`, it is materialized from `kpts.weights[ik]`.
-`band_extent` is the per-k span of `ik`/`iband`.
+`band_extent` is the contiguous superset of `iband` per k (see `BandStates`).
 """
 function BandStates(kpts::AbstractKpoints{T}, ik::AbstractVector{<:Integer},
         iband::AbstractVector{<:Integer}, e::AbstractVector;
@@ -152,7 +162,7 @@ end
 
 Build a `FilteredBandStates` over the shared grid `kpts` from the selected `(iks[i], ibands[i])` pairs.
 `weights` (per-state BZ weight) is always stored length-`n`: an empty `weights` is materialized from
-`kpts.weights[iks]`. `band_extent` (per-k band range) is the per-k span of `iks`/`ibands`.
+`kpts.weights[iks]`. `band_extent` is the contiguous superset of `ibands` per k (see `BandStates`).
 """
 function FilteredBandStates(kpts::AbstractKpoints{T}, iks::AbstractVector{<:Integer},
         ibands::AbstractVector{<:Integer};
