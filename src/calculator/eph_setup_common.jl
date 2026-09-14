@@ -5,7 +5,7 @@
 # lives next to `EPState` in src/EPState.jl. The setup_calculator! fan-out is `_setup_calculators!`,
 # shared by all three drivers.)
 
-# k-side setup shared by all three drivers: obtain the outer-k selection (a prebuilt `FilteredStates`
+# k-side setup shared by all three drivers: obtain the outer-k selection (a prebuilt `FilteredBandStates`
 # passed through verbatim, or filtered from a grid to the energy window) and compute the electron
 # states there. `backend` says where the eigensolves run (a non-CPU backend takes the batched device
 # path). `verbosity` selects timing (@time when > 0, via `maybe_time`); `el_k_quantities` lets
@@ -17,7 +17,7 @@ function _setup_electron_k(
         el_k_quantities = ["eigenvalue", "eigenvector", "velocity", "position"],
     )
     (; nw) = model
-    sel_k = kpts_input isa FilteredStates ? kpts_input :
+    sel_k = kpts_input isa FilteredBandStates ? kpts_input :
         maybe_time(verbosity) do
             filter_electron_states(kpts_input, nw, model.el_ham, window_k; symmetry, fourier_mode, backend, mpi_comm=mpi_comm_k)
         end
@@ -57,13 +57,13 @@ end
 
 # k+q-side setup for `run_eph_over_k_and_kq`: obtain the inner (k+q) selection and its electron
 # states, returning `(; kqpts, el_kq_save, sel_kq)`. Three sub-branches:
-#   (1) a prebuilt full-BZ `FilteredStates` (e.g. from `unfold_band_states`) — consumed as-is;
+#   (1) a prebuilt full-BZ `FilteredBandStates` (e.g. from `unfold_band_states`) — consumed as-is;
 #   (2) a grid — filtered to the window (IBZ-reduced then `unfold_kpoints` to the full BZ under
 #       symmetry, else filtered directly), yielding `kqpts` + `nelec_kq`;
 #   (3) the electron states — computed directly, or via the gauge-consistent IBZ→full unfolding
 #       inside `_compute_electron_states_kq` (the one path that must stay special, so `el_f` is the
 #       exact symmetry unfolding of `el_i` for the interpolate=false δf feedback).
-# The grid path wraps the computed states into a `FilteredStates` via `electron_states_to_FilteredStates`
+# The grid path wraps the computed states into a `FilteredBandStates` via `electron_states_to_FilteredBandStates`
 # so the calculator sees a selection on both paths. `el_kq_quantities` (the electron-state quantities
 # to compute at k+q) is supplied by the caller.
 function _setup_electron_kq(model, kqpts_input;
@@ -72,7 +72,7 @@ function _setup_electron_kq(model, kqpts_input;
     (; nw) = model
 
     # (1) prebuilt full-BZ selection: consume as-is
-    if kqpts_input isa FilteredStates
+    if kqpts_input isa FilteredBandStates
         sel_kq = kqpts_input
         el_kq_save = maybe_time(verbosity) do
             compute_electron_states(model, sel_kq, el_kq_quantities; fourier_mode, backend)
@@ -102,7 +102,7 @@ function _setup_electron_kq(model, kqpts_input;
     el_kq_save = _compute_electron_states_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
         symmetry, el_kq_from_unfolding, window_kq;
         quantities=el_kq_quantities, fourier_mode, backend, verbosity)
-    sel_kq = electron_states_to_FilteredStates(kqpts, el_kq_save, nelec_kq; nw)
+    sel_kq = electron_states_to_FilteredBandStates(kqpts, el_kq_save, nelec_kq; nw)
     return (; kqpts, el_kq_save, sel_kq)
 end
 

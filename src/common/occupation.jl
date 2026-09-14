@@ -143,7 +143,7 @@ function bte_compute_μ!(occ :: ElectronOccupationParams, el; do_print=true, gpu
     _to_device(x) = gpu_array === nothing ? x : copyto!(similar(gpu_array, eltype(x), size(x)), x)
 
     # Per-state energies / BZ weights / band indices, read through the accessors both state types
-    # share: `es`/`ibands` (BTStates via its getproperty bridge, BandStates/FilteredStates natively)
+    # share: `es`/`ibands` (BTStates via its getproperty bridge, BandStates/FilteredBandStates natively)
     # and `bt_weights` (BTStates -> k_weight, AbstractBandStates -> state_weights). This lets μ be
     # solved directly on a BandStates selection (its per-state weights) as well as a BTStates.
     es = el.es

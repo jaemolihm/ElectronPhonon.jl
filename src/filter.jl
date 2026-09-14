@@ -23,12 +23,12 @@ inside_window(e, window_min, window_max) = searchsortedfirst(e, window_min):sear
         -> (kpts, band_min, band_max, nelec_below_window)
 
 DEPRECATED backward-compat alias for `filter_electron_states`. New code should call
-`filter_electron_states(...) -> FilteredStates` and read `sel.kpts`, `band_range(sel)`,
+`filter_electron_states(...) -> FilteredBandStates` and read `sel.kpts`, `band_range(sel)`,
 `sel.nstates_base`. This wrapper unpacks those into the legacy tuple. `mpi_comm` (optional 5th
 positional) is forwarded as the `mpi_comm` keyword.
 """
 function filter_kpoints(kpts_input, nw, el_ham, window; kwargs...)
-    @warn "filter_kpoints is deprecated; use filter_electron_states(...) -> FilteredStates " *
+    @warn "filter_kpoints is deprecated; use filter_electron_states(...) -> FilteredBandStates " *
           "(sel.kpts, band_range(sel), sel.nstates_base)." maxlog=1
     sel = filter_electron_states(kpts_input, nw, el_ham, window; kwargs...)
     br = band_range(sel)
@@ -176,13 +176,13 @@ end
 
 """
     filter_electron_states(kpts_input, nw, el_ham, window; symmetry, fourier_mode, backend,
-                           mpi_comm, shift) -> FilteredStates
-    filter_electron_states(kpts_input, model::Model, window; kwargs...) -> FilteredStates
+                           mpi_comm, shift) -> FilteredBandStates
+    filter_electron_states(kpts_input, model::Model, window; kwargs...) -> FilteredBandStates
 
 The unified electron-state filtering primitive (Generator 1). Filters a k-grid spec (an
 `NTuple{3,Int}`, `Kpoints`, or `GridKpoints`) to the energy `window` — optionally IBZ-reducing with
 `symmetry` and offsetting an `NTuple` grid by `shift` — and returns the selected `(k, band)` states
-as a `FilteredStates`: `sel.kpts` is the filtered `GridKpoints`, `band_range(sel)` the global band
+as a `FilteredBandStates`: `sel.kpts` is the filtered `GridKpoints`, `band_range(sel)` the global band
 range, `sel.nstates_base` the below-window carrier count, `state_weights(sel)` the per-state (uniform
 per-k) BZ weights. Supersedes the legacy tuple-returning `filter_kpoints`.
 
@@ -221,7 +221,7 @@ function filter_electron_states(kpts_input, nw::Integer, el_ham, window;
             push!(iks, ik); push!(ibands, b)
         end
     end
-    FilteredStates(gkpts, iks, ibands; nw, nstates_base=nelec)
+    FilteredBandStates(gkpts, iks, ibands; nw, nstates_base=nelec)
 end
 
 # Convenience: pull nw/el_ham off a Model. Kept kpts-first to match the core signature; dispatches on
@@ -233,9 +233,9 @@ filter_electron_states(kpts_input, model::Model, window; kwargs...) =
 """
     filter_electron_states_multigrid(nks_f, nks_c, window_f, window_c, nw, el_ham;
                                      fourier_mode="gridopt", symmetry=nothing, backend=CPUBackend())
-        -> FilteredStates
+        -> FilteredBandStates
 
-Generator 2 (double-grid): build a `FilteredStates` sampling a FINE grid `nks_f` in the narrow
+Generator 2 (double-grid): build a `FilteredBandStates` sampling a FINE grid `nks_f` in the narrow
 window `window_f` merged with a COARSE grid `nks_c` in the wide window `window_c` (`nks_f` a multiple
 of `nks_c`, `window_f` contained in `window_c`). The per-`(k, band)` weight follows the clean
 double-grid partition:
@@ -302,5 +302,5 @@ function filter_electron_states_multigrid(nks_f, nks_c, window_f, window_c, nw, 
     # (3) order states so each k point's states form a contiguous, band-ascending block (the GPU
     # outer-k tiling maps a contiguous k-range to a contiguous state range; see ind_range_for_k_range).
     p = sortperm(collect(zip(iks, ibands)))
-    FilteredStates(merged, iks[p], ibands[p]; nw, weights=weights[p], nstates_base)
+    FilteredBandStates(merged, iks[p], ibands[p]; nw, weights=weights[p], nstates_base)
 end
