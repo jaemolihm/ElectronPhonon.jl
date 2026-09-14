@@ -17,6 +17,10 @@ jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
     runs-on: ${{ matrix.os }}
+    env:
+      # Build PyCall against Conda.jl's miniconda, so PyPlot can pull in matplotlib.
+      # The runner's system Python has none, and PyPlot's __init__ fails without it.
+      PYTHON: ""
     strategy:
       fail-fast: false
       matrix:
@@ -40,14 +44,6 @@ jobs:
           path: ~/.julia/conda
           key: ${{ runner.os }}-conda-${{ hashFiles('**/Project.toml') }}
           restore-keys: ${{ runner.os }}-conda-
-      - name: Install TetrahedronIntegration
-        env:
-          JULIA_PROJECT: ${{ github.workspace }}
-          PYTHON: ""
-        run: |
-          julia --project=. -e '
-          using Pkg
-          Pkg.add(url="https://github.com/jaemolihm/TetrahedronIntegration.jl")'
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1

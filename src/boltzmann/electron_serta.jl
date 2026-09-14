@@ -4,7 +4,6 @@ FIXME: Add test for compute_lifetime_serta_mode!
 """
 
 using Printf
-using TetrahedronIntegration
 
 export bte_compute_μ!
 export compute_lifetime_serta!
@@ -84,7 +83,6 @@ function _compute_lifetime_serta_single_scattering!(inv_τ::AbstractArray{FT}, e
     inv_τ .= 0
 
     η = params.smearing[2]
-    ngrid = el_f.ngrid
 
     ind_el_i = s.ind_el_i
     ind_el_f = s.ind_el_f
@@ -111,19 +109,15 @@ function _compute_lifetime_serta_single_scattering!(inv_τ::AbstractArray{FT}, e
     # FIXME: The above is not done because it changed mobility a lot (525 to 12000) for cubicBN test (test/boltzmann/test_mobility.jl)
     e_f_occupation = e_f
 
+    # The :Tetrahedron and :GaussianTetrahedron smearings were removed; see git history and
+    # https://github.com/jaemolihm/TetrahedronIntegration.jl
     if params.smearing[1] == :Gaussian
         inv_η = 1 / η
         delta = gaussian(delta_e * inv_η) * inv_η
     elseif params.smearing[1] == :Lorentzian
         delta = η / (delta_e^2 + η^2) / π
-    elseif params.smearing[1] == :Tetrahedron
-        v_cart = - el_f.vdiag[ind_el_f] - sign_ph * ph.vdiag[ind_ph]
-        v_delta_e = recip_lattice' * v_cart
-        delta = delta_parallelepiped(zero(FT), delta_e, v_delta_e, 1 ./ ngrid)
-    elseif params.smearing[1] == :GaussianTetrahedron
-        v_cart = - el_f.vdiag[ind_el_f] - sign_ph * ph.vdiag[ind_ph]
-        v_delta_e = recip_lattice' * v_cart
-        delta = gaussian_parallelepiped(η, delta_e, v_delta_e, 1 ./ ngrid) / η
+    else
+        throw(ArgumentError("Unknown smearing type: $(params.smearing[1]) (expected :Gaussian or :Lorentzian)"))
     end
     delta < eps(FT) && return
 
@@ -211,110 +205,6 @@ function occ_fermion_derivative_smear(e, vcart, μ, T, ngrid, recip_lattice, npo
     end
     dfocc_smear /= prod(npoints)
     dfocc_smear
-end
-
-
-
-
-
-function debug_compute_lifetime_serta!(inv_τ, btmodel, params, recip_lattice, ngrid, mode)
-    # TODO: Clean input params recip_lattice and ngrid
-    R = eltype(inv_τ)
-    η = params.smearing[2]
-    inv_η = 1 / η
-
-    el_i = btmodel.el_i
-    el_f = btmodel.el_f
-    ph = btmodel.ph
-    scat = btmodel.scattering
-
-    nsample_1d = 5
-    nsamples = 0
-    ksamples = zeros(R, 3, 2*(nsample_1d+1)^2)
-    ω_ph_sampling = zeros(R, 2*(nsample_1d+1)^2)
-    cnt = 0
-
-    for iscat in 1:scat.n
-        ind_el_i = scat.ind_el_i[iscat]
-        # # DEBUG
-        # if ind_el_i != 1
-        #     continue
-        # end
-        ind_el_f = scat.ind_el_f[iscat]
-        ind_ph = scat.ind_ph[iscat]
-        sign_ph = scat.sign_ph[iscat]
-        g2 = scat.mel[iscat]
-        if mode == "acoustic" && ph.iband[ind_ph] > 3
-            continue
-        end
-        if mode == "optical" && ph.iband[ind_ph] <= 3
-            continue
-        end
-
-        ω_ph = ph.e[ind_ph]
-        if ω_ph < omega_acoustic
-            continue
-        end
-        e_i = el_i.e[ind_el_i]
-        e_f = el_f.e[ind_el_f]
-
-        # sign_ph = +1: phonon emission.   e_k -> e_kq + phonon
-        # sign_ph = -1: phonon absorption. e_k + phonon -> e_kq
-        delta_e = e_i - e_f - sign_ph * ω_ph
-        # delta_e = e_i - e_f - sign_ph * 0.004 # DEBUG
-        # delta_e = e_i - e_f # DEBUG
-
-        # For electron final state occupation, use e_k - sign_ph * ω_ph instead of e_kq,
-        # using energy conservation. The former is better because the phonon velocity is
-        # much smaller than the electron velocity, so that it changes less w.r.t q.
-        e_f_occupation = e_i - sign_ph * ω_ph
-        # e_f_occupation = e_f
-
-        if params.smearing[1] == :Gaussian
-            delta = gaussian(delta_e * inv_η) * inv_η
-        elseif params.smearing[1] == :Lorentzian
-            delta = η / (delta_e^2 + η^2) / π
-        elseif params.smearing[1] == :Tetrahedron
-            v_cart = - el_f.vdiag[ind_el_f] - sign_ph * ph.vdiag[ind_ph]
-            v_delta_e = recip_lattice' * v_cart
-            delta = delta_parallelepiped(zero(R), delta_e, v_delta_e, 1 ./ ngrid)
-        end
-
-        # If phonon frequency is much smaller than the temperature, use tetrahedron sampling
-        occ_use_sampling = η < 0 && delta > 1E-8 && ω_ph < maximum(params.Tlist)
-        occ_use_sampling = false
-        if occ_use_sampling
-            cnt += 1
-            _, nsamples = delta_parallelepiped_sampling!(zero(R), delta_e, v_delta_e,
-                1 ./ ngrid, nsample_1d, ksamples)
-            v_ph = recip_lattice' * ph.vdiag[ind_ph]
-            @views @inbounds for i in 1:nsamples
-                ω_ph_sampling[i] = ω_ph + dot(v_ph, ksamples[:, i])
-            end
-        end
-
-        coeff1 = 2π * el_f.k_weight[ind_el_f] * g2 * delta
-
-        for iT in 1:length(params.Tlist)
-            T = params.Tlist[iT]
-            μ = params.μlist[iT]
-            if occ_use_sampling
-                @views n_ph = sum(occ_boson.(ω_ph_sampling[1:nsamples], T)) / nsamples
-                # @info occ_boson(ω_ph, T), n_ph, nsamples
-            else
-                n_ph = occ_boson(ω_ph, T)
-            end
-            f_kq = occ_fermion(e_f_occupation - μ, T)
-
-            fcoeff = sign_ph == 1 ? n_ph + 1 - f_kq : n_ph + f_kq
-
-            inv_τ[ind_el_i, iT] += coeff1 * fcoeff
-        end
-    end
-    if η < 0
-        @info "Sampling: $cnt times / Total: $(scat.n)"
-    end
-    inv_τ
 end
 
 
