@@ -19,8 +19,8 @@ The batched path has a narrower scope than the per-point one (no polar/long-rang
 """
 function run_eph_over_k_and_kq(
         model       :: Model{FT},
-        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
-        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
+        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredBandStates},
+        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredBandStates},
         ;
         calculators = [],
         mpi_comm_k = nothing,
@@ -103,11 +103,11 @@ function run_eph_over_k_and_kq(
         "the batched path supports symmetry only with el_kq_from_unfolding = false " *
         "(batched k+q unfolding not implemented)."))
 
-    # A prebuilt k+q FilteredStates is consumed as-is (the caller already built the full-BZ selection,
+    # A prebuilt k+q FilteredBandStates is consumed as-is (the caller already built the full-BZ selection,
     # e.g. via unfold_band_states), so the internal IBZ+unfold path does not run — el_kq_from_unfolding
     # is meaningless there.
-    (!(kqpts_input isa FilteredStates) || !el_kq_from_unfolding) || throw(ArgumentError(
-        "el_kq_from_unfolding = true is not supported when the k+q argument is a prebuilt FilteredStates; " *
+    (!(kqpts_input isa FilteredBandStates) || !el_kq_from_unfolding) || throw(ArgumentError(
+        "el_kq_from_unfolding = true is not supported when the k+q argument is a prebuilt FilteredBandStates; " *
         "build the full-BZ k+q selection explicitly (e.g. unfold_band_states) and pass el_kq_from_unfolding = false."))
 
     setup = _setup_eph_over_k_and_kq(model, kpts_input, kqpts_input;
@@ -155,8 +155,8 @@ end
 # _loop_eph_over_k_and_kq are typed function arguments, avoiding Core.Box wrapping.
 function _setup_eph_over_k_and_kq(
         model       :: Model{FT},
-        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
-        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredStates},
+        kpts_input  :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredBandStates},
+        kqpts_input :: Union{NTuple{3,Int}, Kpoints, GridKpoints, FilteredBandStates},
         ;
         mpi_comm_k = nothing,
         mpi_comm_q = nothing,
@@ -175,7 +175,7 @@ function _setup_eph_over_k_and_kq(
 
     (; nw, nmodes) = model
 
-    # Outer k and k+q setup via the shared role helpers. Each yields a `FilteredStates` selection
+    # Outer k and k+q setup via the shared role helpers. Each yields a `FilteredBandStates` selection
     # (a prebuilt one passed through verbatim, or filtered from a grid — the k+q grid path also
     # IBZ-reduces + unfolds under symmetry) plus its `kpts` and computed electron states. Same calls,
     # same order as the prior inline block.

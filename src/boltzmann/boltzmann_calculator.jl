@@ -120,8 +120,8 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
     calc.done &&
         throw(ArgumentError("this BoltzmannCalculator has already been run; reconstruct the " *
                             "calculator, reuse is not supported"))
-    (sel_k isa FilteredStates && sel_kq isa FilteredStates) ||
-        throw(ArgumentError("BoltzmannCalculator requires a FilteredStates for both k and k+q " *
+    (sel_k isa FilteredBandStates && sel_kq isa FilteredBandStates) ||
+        throw(ArgumentError("BoltzmannCalculator requires a FilteredBandStates for both k and k+q " *
                             "(run it through run_eph_over_k_and_kq)."))
     calc.scattering_method === :MRTA &&
         throw(ArgumentError("scattering_method :MRTA not implemented"))

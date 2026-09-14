@@ -1,12 +1,12 @@
 using Test
 using ElectronPhonon
 const EP = ElectronPhonon
-using ElectronPhonon: FilteredStates, state_xks
+using ElectronPhonon: FilteredBandStates, state_xks
 using LinearAlgebra
 
 # Multigrid BTE transport: end-to-end validation on the Pb artifact model (portable fixture; the
 # heavy production numbers are measured on Cu). The multigrid is a
-# prebuilt `FilteredStates` (Generator 2, `filter_electron_states_multigrid`) with the double-grid per-(k,band)
+# prebuilt `FilteredBandStates` (Generator 2, `filter_electron_states_multigrid`) with the double-grid per-(k,band)
 # weights; the k+q selection is its explicit symmetry unfold (`unfold_band_states`). Checks:
 #   1. multigrid vs uniform reference — the double-grid σ discrepancy (reported, not pre-toleranced);
 #   2. the fine refinement improves accuracy — multigrid beats the coarse grid alone;
@@ -40,7 +40,7 @@ end
     mkcalc() = BoltzmannCalculator{Float64}(; occ = occ(),
         smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
 
-    # Grid/tuple input runs Generator 1 internally (sugar); a FilteredStates passes through as-is.
+    # Grid/tuple input runs Generator 1 internally (sugar); a FilteredBandStates passes through as-is.
     run_sel(kk, kq; backend, batched = nothing, nq_batch_max = nothing,
             nk_outer_batch_max = 256) = (c = mkcalc();
         EP.run_eph_over_k_and_kq(model, kk, kq; calculators = [c], symmetry = sym,
@@ -60,7 +60,7 @@ end
     sel_k = EP.filter_electron_states_multigrid((12, 12, 12), (6, 6, 6), w_fine, w_wide,
                                         model.nw, model.el_ham; symmetry = sym, backend = bk)
     sel_kq = EP.unfold_band_states(sel_k, sym)     # explicit full-BZ k+q selection
-    @test sel_k isa FilteredStates && sel_kq isa FilteredStates
+    @test sel_k isa FilteredBandStates && sel_kq isa FilteredBandStates
     @test sel_k.kpts.ngrid == (12, 12, 12)
     c_mg = run_sel(sel_k, sel_kq; backend = bk)
 

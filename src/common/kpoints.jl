@@ -598,6 +598,14 @@ function mpi_gather(k::GridKpoints{FT}, comm::MPI.Comm) where {FT}
     end
 end
 
+"mpi_allgather(k::GridKpoints, comm::MPI.Comm) — every rank gets the rank-concatenated grid."
+function mpi_allgather(k::GridKpoints{FT}, comm::MPI.Comm) where {FT}
+    kvectors = mpi_allgather(k.vectors, comm)
+    weights = mpi_allgather(k.weights, comm)
+    new_ngrid = _gather_ngrid(k.ngrid, comm)
+    GridKpoints(Kpoints{FT}(length(kvectors), kvectors, weights, new_ngrid), new_ngrid)
+end
+
 # Gather every rank's k-points to the root and redistribute them evenly. Needed after
 # `filter_electron_states`, which drops out-of-window points and so leaves an unbalanced count per
 # rank — this restores an even split. Every point is a node of the original regular grid, so any

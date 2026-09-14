@@ -1,12 +1,12 @@
 using Test
 using ElectronPhonon
 const EP = ElectronPhonon
-using ElectronPhonon: state_weights, state_xks, FilteredStates
+using ElectronPhonon: state_weights, state_xks, FilteredBandStates
 
 # Pure-BZ (e-ph-independent) quadrature check for the multigrid double-grid weights. Grounds the
 # per-(k,band) weight correctness before trusting transport numbers: the per-state
 # weights must integrate a smooth periodic function over the BZ, PER BAND, converging to the coarse
-# spacing. `filter_electron_states_multigrid` now emits a `FilteredStates`: all fine-grid states inside the
+# spacing. `filter_electron_states_multigrid` now emits a `FilteredBandStates`: all fine-grid states inside the
 # narrow window1 at the fine weight, plus coarse-grid states inside the wide window2 (but not the
 # narrow window) at the coarse weight, deduping the k-points on the fine grid.
 
@@ -31,7 +31,7 @@ isdefined(@__MODULE__, :_load_model_from_artifacts) ||
         nf, nc = (24, 24, 24), (12, 12, 12)
         kf = EP.filter_electron_states(nf, model.nw, model.el_ham, w1; symmetry=sym).kpts
         sel = EP.filter_electron_states_multigrid(nf, nc, w1, w2, model.nw, model.el_ham; symmetry=sym)
-        @test sel isa FilteredStates
+        @test sel isa FilteredBandStates
         @test sel.kpts.ngrid == nf                  # fine ngrid stamped (q-lookup)
         # Every shared-grid point is a distinct fine-grid node (no duplicate keys).
         keys_seen = Set{NTuple{3,Int}}()
