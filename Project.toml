@@ -32,7 +32,6 @@ SpecialFunctions = "276daf66-3868-5448-9aa4-cd146d93841b"
 Spglib = "f761d5c5-86db-4880-b97f-9680a7cccfb5"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-TetrahedronIntegration = "0f92f267-01b4-444d-9255-64945246b180"
 TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 spglib_jll = "ac4a9f1e-bdb2-5204-990c-47c8b2f70d4e"
 

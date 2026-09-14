@@ -3,12 +3,11 @@ export SmearingType
 # A device-safe, isbits smeared delta function usable inside GPU kernels.
 #
 # Design note (why not reuse `delta_smeared` in common/utils.jl): `delta_smeared` branches on a
-# `Symbol` smearing type at runtime, has `throw` paths for unknown types, and covers tetrahedron
-# variants that need neighbor data - none of which compile inside a CUDA kernel. `SmearingType`
-# instead stores the method as an `Int` and pre-computes the normalization `fac` at construction, so
-# the callable has no `Symbol`/`throw` branches and is `isbitstype` (required to live in a `CuArray`
-# and be evaluated on the device). It intentionally supports only the analytic Gaussian/Lorentzian
-# deltas the transport scatter needs.
+# `Symbol` smearing type at runtime and has a `throw` path for unknown types, neither of which
+# compiles inside a CUDA kernel. `SmearingType` instead stores the method as an `Int` and
+# pre-computes the normalization `fac` at construction, so the callable has no `Symbol`/`throw`
+# branches and is `isbitstype` (required to live in a `CuArray` and be evaluated on the device).
+# It intentionally supports only the analytic Gaussian/Lorentzian deltas the transport scatter needs.
 
 """
     SmearingType(method_name::Symbol, η::Real)

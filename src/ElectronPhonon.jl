@@ -78,7 +78,7 @@ include("boltzmann/electron_master_equation.jl")
 include("boltzmann/electron_serta.jl")
 include("boltzmann/constant_rta.jl")
 include("boltzmann/interpolate_energy.jl")
-include("boltzmann/doublegrid.jl")
+# Tetrahedron-based SERTA and the doublegrid method were removed; see git history and https://github.com/jaemolihm/TetrahedronIntegration.jl
 include("boltzmann/gamma_adaptive.jl")
 include("boltzmann/electron_lbte.jl")
 include("run_transport.jl")

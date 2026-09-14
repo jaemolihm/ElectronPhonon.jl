@@ -3,7 +3,6 @@ using ElectronPhonon
 using LinearAlgebra
 
 # TODO: Add test without polar_eph
-# TODO: Add test with tetrahedron
 
 @testset "Transport electron semiconductor SERTA" begin
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))

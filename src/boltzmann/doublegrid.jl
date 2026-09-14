@@ -1,5 +1,10 @@
 """
 Routines for doublegrid calculation of sum over crystal momenta.
+
+NOT included in the module: the only integration kernel here is the tetrahedron delta from
+TetrahedronIntegration.jl (https://github.com/jaemolihm/TetrahedronIntegration.jl), which is no
+longer a dependency. Add that package back and re-add the `include` in src/ElectronPhonon.jl to use
+it, or reimplement the integration with an analytic smearing.
 """
 
 using Interpolations: gradient

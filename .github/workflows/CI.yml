@@ -40,14 +40,6 @@ jobs:
           path: ~/.julia/conda
           key: ${{ runner.os }}-conda-${{ hashFiles('**/Project.toml') }}
           restore-keys: ${{ runner.os }}-conda-
-      - name: Install TetrahedronIntegration
-        env:
-          JULIA_PROJECT: ${{ github.workspace }}
-          PYTHON: ""
-        run: |
-          julia --project=. -e '
-          using Pkg
-          Pkg.add(url="https://github.com/jaemolihm/TetrahedronIntegration.jl")'
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1

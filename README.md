@@ -7,11 +7,8 @@ Julia implementation of electron-phonon coupling using Wannier functions
 
 ## Installation
 
-To install ElectronPhonon.jl, first install the TetrahedronIntegration.jl dependency, then install ElectronPhonon.jl:
-
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/jaemolihm/TetrahedronIntegration.jl.git")
 Pkg.add(url="https://github.com/jaemolihm/ElectronPhonon.jl.git")
 ```
 

@@ -16,7 +16,7 @@ Parameters for electron transport calculation. Arguments:
 * `nband_valence::Int`: Number of valence bands, excluding spin degeneracy (used only for semiconductors)
 * `volume::T`: Volume of the unit cell
 * `smearing::Tuple{Symbol, T}`: `(:Mode, smearing)`. Smearing parameter for delta function.
-    Mode can be Gaussian, Lorentzian, Tetrahedron, and GaussianTetrahedron.
+    Mode can be Gaussian or Lorentzian.
 * `spin_degeneracy::Int`: Spin degeneracy.
 * `μlist::Vector{T}`: Chemical potential.
 * `type::Symbol`: Type of the carrier. `:Metal` or `:Semiconductor`. Defaults to `:Metal` if
