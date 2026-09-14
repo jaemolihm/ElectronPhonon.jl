@@ -10,6 +10,9 @@ concurrency:
   # Cancel intermediate builds: only if it is a pull request build.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+permissions:
+  actions: write
+  contents: read
 jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
@@ -24,21 +27,19 @@ jobs:
         arch:
           - x64
     steps:
-      - uses: actions/checkout@master
-      - uses: julia-actions/setup-julia@v1
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
+      - uses: julia-actions/cache@v3
+      # Conda.jl installs miniconda + matplotlib for PyPlot into ~/.julia/conda,
+      # outside the depot directories julia-actions/cache covers.
       - uses: actions/cache@v4
-        env:
-          cache-name: cache-artifacts
         with:
-          path: ~/.julia/artifacts
-          key: ${{ runner.os }}-test-${{ env.cache-name }}-${{ hashFiles('**/Project.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-test-${{ env.cache-name }}-
-            ${{ runner.os }}-test-
-            ${{ runner.os }}-
+          path: ~/.julia/conda
+          key: ${{ runner.os }}-conda-${{ hashFiles('**/Project.toml') }}
+          restore-keys: ${{ runner.os }}-conda-
       - name: Install TetrahedronIntegration
         env:
           JULIA_PROJECT: ${{ github.workspace }}
@@ -50,8 +51,7 @@ jobs:
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
       - uses: julia-actions/julia-processcoverage@v1
-      - uses: codecov/codecov-action@v4
-        env:
-          CODECOV_TOKEN: ${{secrets.CODECOV_TOKEN}}
+      - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
