@@ -185,15 +185,17 @@ end
 
 Flatten a per-k vector of `ElectronState` onto `kpts` into a `BandStates`, and return it together
 with `imap[iband, ik]` = state index — an `OffsetMatrix` over the physical band range, 0 outside
-the window. The model's full Wannier band count `nw` is read from the `ElectronState`s (they all
-carry it) and stored on the `BandStates`. The per-state
+the window, the form CPU calculator loops index directly. The
+`electron_states_to_BandStates(el_states, sel)` method returns the same pair, so the two are
+interchangeable at a call site. The model's full Wannier band count `nw` is read from the
+`ElectronState`s (they all carry it) and stored on the `BandStates`. The per-state
 k-index `ik` is stored directly (no deduplication: `kpts` already holds the distinct k-points).
 `kpts` must be a `GridKpoints` (its k-vector→index hash is needed for the e-ph loop and
 `state_index(xk, …)` queries); callers holding a plain `Kpoints` promote it first.
 
-The same `(iband, ik) → state` information also lives in the returned `BandStates` as `indmap`
-(query it with `state_index`, or build a device copy for the GPU scatter with `_indmap_to_device`);
-the returned `imap` is the physical-band `OffsetMatrix` form that CPU calculator loops index directly.
+`imap` is a view of the `BandStates`' own `indmap` with its rows offset by `nband_ignore`, not a
+second copy — query the same map with `state_index`, or build a device copy for the GPU scatter with
+`_indmap_to_device`.
 
 This is the `BandStates` replacement for `electron_states_to_BTStates`.
 """
@@ -202,9 +204,6 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
     nk = length(el_states)
     nw = first(el_states).nw     # full Wannier band count (same on every ElectronState)
     n = sum(el.nband for el in el_states)
-    iband_min = minimum(el.rng.start for el in el_states if el.nband > 0)
-    iband_max = maximum(el.rng.stop for el in el_states if el.nband > 0)
-    imap = OffsetArray(zeros(Int, iband_max - iband_min + 1, nk), iband_min:iband_max, :)
     ik = zeros(Int, n)
     iband = zeros(Int, n)
     e = zeros(T, n)
@@ -219,10 +218,10 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
             iband[istate] = ib
             e[istate] = el.e[ib]
             v[istate] = el.vdiag[ib]
-            imap[ib, jk] = istate
         end
     end
-    BandStates(kpts, ik, iband, e; nw, v, nstates_base), imap
+    bs = BandStates(kpts, ik, iband, e; nw, v, nstates_base)
+    bs, OffsetArray(bs.indmap, band_range(bs), 1:kpts.n)
 end
 
 """
@@ -245,14 +244,15 @@ function electron_states_to_FilteredBandStates(kpts, el_states, nstates_base; nw
 end
 
 """
-    electron_states_to_BandStates(el_states, sel::FilteredBandStates) -> BandStates
+    electron_states_to_BandStates(el_states, sel::FilteredBandStates) -> (BandStates, imap)
 
 Attach per-state energies/velocities to a prebuilt `FilteredBandStates`, gathering `es[i]`/`vs[i]` from
 `el_states[sel.iks[i]]` at band `sel.ibands[i]`, and carrying over the selection's `kpts`, `iks`,
 `ibands`, per-state `weights`, `nstates_base`, `indmap`, and `band_extent`. `el_states` must have been
 computed with `compute_electron_states(model, sel, …)` so each `el.rng` covers the selected bands.
 This is the selection-path variant used by the driver to build `calc.el_i`/`el_f` (it bypasses the
-uniform per-k flatten, preserving the multigrid's per-`(k, band)` weights).
+uniform per-k flatten, preserving the multigrid's per-`(k, band)` weights). It returns the same
+`(BandStates, imap)` pair as the `kpts` method, so the two are interchangeable at a call site.
 """
 function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
         sel::FilteredBandStates{T}) where {T}
@@ -268,9 +268,10 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
     # Carry over the selection's per-state weights (always materialized) so `es`/`vs`-side consumers
     # index `el.weights` directly, O(1) and non-allocating, in a hot loop (the BTE scatter's
     # per-final-state weight).
-    BandStates{T, typeof(sel.kpts)}(n, sel.nband, sel.nband_ignore, sel.nw, sel.kpts,
+    bs = BandStates{T, typeof(sel.kpts)}(n, sel.nband, sel.nband_ignore, sel.nw, sel.kpts,
         copy(sel.iks), copy(sel.ibands), es, vs, copy(sel.weights), sel.nstates_base,
         copy(sel.indmap), copy(sel.band_extent))
+    bs, OffsetArray(bs.indmap, band_range(bs), 1:sel.kpts.n)
 end
 
 # Build a device `(nband_physical, nk)` integer index map addressable by PHYSICAL band: row `iband` ∈

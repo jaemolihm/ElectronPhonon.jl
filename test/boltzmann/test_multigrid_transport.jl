@@ -186,7 +186,7 @@ end
 
     sel = EP.filter_electron_states((12, 12, 12), model, window; symmetry = model.symmetry, fourier_mode = "gridopt")
     els = EP.compute_electron_states(model, sel, ["eigenvalue", "eigenvector", "velocity"]; fourier_mode = "gridopt")
-    el  = EP.electron_states_to_BandStates(els, sel)
+    el, _ = EP.electron_states_to_BandStates(els, sel)
 
     # nstates_base = below-window fully-occupied carriers per cell (rides on the selection).
     @test el.nstates_base ≈ 1.898726851851852 rtol = 1e-10
