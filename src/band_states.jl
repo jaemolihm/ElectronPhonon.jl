@@ -15,7 +15,8 @@
 
 export AbstractBandStates, BandStates, FilteredBandStates
 export state_index, state_weights, state_xks, band_range, electron_states_to_BandStates,
-    electron_states_to_FilteredBandStates, unfold_band_states
+    electron_states_to_FilteredBandStates, unfold_band_states, filter_states,
+    state_index_in_star, state_indices_full_star
 
 """
     AbstractBandStates{T, KT<:AbstractKpoints{T}}
@@ -359,18 +360,25 @@ function unfold_band_states(sel::FilteredBandStates{T}, symmetry) where {T}
 end
 
 # --- iteration / indexing (non-allocating; only plain array indexing, no hash lookup) ---
-# length/first/lastindex only need `n`, so they are shared on the abstract type; the per-state
-# iterator (getindex/iterate/eltype) yields the state energy `es`, so it stays on `BandStates`
-# (a `FilteredBandStates` has no energies and is not meant to be iterated as states).
+# length/first/lastindex only need `n`, so they are shared on the abstract type. `getindex`
+# yields a per-state NamedTuple, one method per concrete type: the `BandStates` one carries the
+# state energy `es[i]`, which a `FilteredBandStates` does not have. Both carry the `(xk, iband)`
+# identity, which is what `state_index(other, s[i])` needs, so a state can be looked up in
+# another selection from either type.
 Base.length(s::AbstractBandStates) = s.n
 Base.firstindex(::AbstractBandStates) = 1
 Base.lastindex(s::AbstractBandStates) = s.n
 @inline Base.getindex(s::BandStates, i::Int) =
     (; ik = s.iks[i], iband = s.ibands[i], xk = s.kpts.vectors[s.iks[i]], e = s.es[i],
        weight = s.weights[i])
-Base.iterate(s::BandStates, i::Int = 1) = i > s.n ? nothing : (s[i], i + 1)
+@inline Base.getindex(s::FilteredBandStates, i::Int) =
+    (; ik = s.iks[i], iband = s.ibands[i], xk = s.kpts.vectors[s.iks[i]],
+       weight = s.weights[i])
+Base.iterate(s::AbstractBandStates, i::Int = 1) = i > s.n ? nothing : (s[i], i + 1)
 Base.eltype(::Type{<:BandStates{T}}) where {T} =
     NamedTuple{(:ik, :iband, :xk, :e, :weight), Tuple{Int, Int, Vec3{T}, T, T}}
+Base.eltype(::Type{<:FilteredBandStates{T}}) where {T} =
+    NamedTuple{(:ik, :iband, :xk, :weight), Tuple{Int, Int, Vec3{T}, T}}
 
 "Per-state BZ weights (the stored length-`n` `weights`, always materialized at construction)."
 state_weights(s::AbstractBandStates) = s.weights
@@ -391,9 +399,15 @@ band_range(s::AbstractBandStates) = (s.nband_ignore + 1):(s.nband_ignore + s.nba
 """
     state_index(s, ik::Int, iband::Int) -> Int
     state_index(s, xk, iband::Int) -> Int   # GridKpoints only (uses the k-grid hash)
+    state_index(s, st) -> Int               # `st` a per-state item, e.g. `other[i]`
 
 O(1) reverse lookup of the state index for `(ik, iband)`, or `0` if absent. The k-vector
 form resolves `ik = xk_to_ik(xk, s.kpts)` first and requires `kpts isa GridKpoints`.
+
+The item form takes anything carrying `xk` and `iband` — in particular `other[i]`, the NamedTuple
+`getindex` yields on either subtype — so a state of one selection is located in another with
+`state_index(s, other[i])`. It goes through `xk`, not `ik`: the two selections' k-grids are
+independent, so only the k-vector is a shared address.
 """
 @inline function state_index(s::AbstractBandStates, ik::Int, iband::Int)
     b = iband - s.nband_ignore
@@ -405,6 +419,81 @@ function state_index(s::AbstractBandStates{T, <:GridKpoints},
     ik = xk_to_ik(xk, s.kpts)
     ik === nothing ? 0 : state_index(s, ik, iband)
 end
+state_index(s::AbstractBandStates, st::NamedTuple) = state_index(s, st.xk, st.iband)
+
+"""
+    state_index_in_star(s, xk, iband, symmetry) -> Int
+
+State index of `(xk, iband)` in `s`, searching the symmetry star of `xk` when the exact k-vector
+is absent: the irreducible representative of a k-point on one grid need not be the representative
+chosen on another. The band index is preserved by the point group (ε_{n,Sk} = ε_{n,k}), the
+assumption `find_unfolding_indices` already makes. Returns 0 if no image of `xk` carries band
+`iband` in `s`.
+"""
+function state_index_in_star(s::AbstractBandStates, xk, iband::Integer, symmetry)
+    j = state_index(s, xk, Int(iband))
+    j != 0 && return j
+    for S in symmetry
+        j = state_index(s, apply_symop(S, xk, :momentum), Int(iband))
+        j != 0 && return j
+    end
+    0
+end
+
+"""
+    state_indices_full_star(s, xk, iband, symmetry) -> Vector{Int}
+
+Indices in `s` of every image `(S·xk, iband)` of `(xk, iband)` under `symmetry`, sorted and
+deduplicated. Images absent from `s` (out of window, or at a k-point `s.kpts` does not hold) are
+dropped, so the result can be shorter than the group order and empty. Unlike `unfold_band_states`,
+which unfolds a whole selection into a NEW `FilteredBandStates` carrying its own k-grid, this
+returns indices into an EXISTING selection, for one state at a time.
+"""
+function state_indices_full_star(s::AbstractBandStates, xk, iband::Integer, symmetry)
+    J = Int[]
+    for S in symmetry
+        j = state_index(s, apply_symop(S, xk, :momentum), Int(iband))
+        j != 0 && push!(J, j)
+    end
+    sort!(unique!(J))
+end
+
+"""
+    filter_states(s::AbstractBandStates, keep) -> AbstractBandStates
+
+Subset of `s` keeping the states `keep` (state indices into `s`), of the same concrete type.
+k-points carrying no kept state are DROPPED, because consumers iterate `kpts.n` (an outer-k e-ph
+loop visits every k-point of the grid, kept states or not); `get_filtered_kpoints` preserves
+`ngrid`, so the subset stays commensurate with the grid it was cut from and `precompute_ph` still
+fires. Per-state weights, `nw` and `nstates_base` are carried over unchanged, so the subset's
+weights no longer sum to the full BZ. States are emitted sorted by `(iks, ibands)`, the order
+`ind_range_for_k_range` requires.
+
+`filter_electron_states` is not an alternative: it rebuilds a selection from an energy window and
+ignores a prebuilt k-set's selection.
+"""
+function filter_states(s::AbstractBandStates, keep::AbstractVector{<:Integer})
+    ks = sort(unique(collect(Int, keep)); by = i -> (s.iks[i], s.ibands[i]))
+    ik_keep = falses(s.kpts.n)
+    ik_keep[s.iks[ks]] .= true
+    kpts_new = get_filtered_kpoints(s.kpts, ik_keep)
+    # `get_filtered_kpoints` keeps the kept k-points in their original order, so a kept k-point's
+    # new index is its rank among them.
+    ik_new = zeros(Int, s.kpts.n)
+    ik_new[ik_keep] .= 1:kpts_new.n
+    _rebuild_states(s, kpts_new, ik_new[s.iks[ks]], ks)
+end
+
+# States `ks` of `s`, re-gridded onto `kpts_new` with the new per-state k-indices `iks_new`,
+# rebuilt as the same concrete type as `s`.
+_rebuild_states(s::FilteredBandStates, kpts_new, iks_new, ks) =
+    FilteredBandStates(kpts_new, iks_new, s.ibands[ks];
+        nw = s.nw, weights = state_weights(s)[ks], nstates_base = s.nstates_base)
+
+_rebuild_states(s::BandStates, kpts_new, iks_new, ks) =
+    BandStates(kpts_new, iks_new, s.ibands[ks], s.es[ks];
+        nw = s.nw, v = isempty(s.vs) ? eltype(s.vs)[] : s.vs[ks],
+        weights = state_weights(s)[ks], nstates_base = s.nstates_base)
 
 """
     ind_range_for_k_range(s::BandStates, kstart::Integer, kend::Integer) -> UnitRange
