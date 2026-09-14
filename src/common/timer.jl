@@ -17,7 +17,7 @@ which writes to the ElectronPhonon timer.
 """
 macro timing(args...)
     if timer_enabled() in (:parallel, :all)
-        TimerOutputs.timer_expr(__module__, false, :($(timer)), args...)
+        TimerOutputs.timer_expr(__source__, __module__, false, :($(timer)), args...)
     else  # Disable taking timings
         :($(esc(last(args))))
     end
@@ -30,7 +30,7 @@ end
 # """
 # macro timing_seq(args...)
 #     if timer_enabled() == :all
-#         TimerOutputs.timer_expr(__module__, false, :($(timer)), args...)
+#         TimerOutputs.timer_expr(__source__, __module__, false, :($(timer)), args...)
 #     else  # Disable taking timings
 #         :($(esc(last(args))))
 #     end
