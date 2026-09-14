@@ -139,8 +139,8 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
     # Build the rich BandStates (es/vs attached) directly on the prebuilt selections, so el_i/el_f
     # carry the per-(k,band) weights and `nstates_base` of the selection (the multigrid double-grid
     # partition; on a uniform grid the weights are empty and derive to the per-k weight, unchanged).
-    calc.el_i = electron_states_to_BandStates(el_states, sel_k)
-    calc.el_f = electron_states_to_BandStates(el_states_kq, sel_kq)
+    calc.el_i, _ = electron_states_to_BandStates(el_states, sel_k)
+    calc.el_f, _ = electron_states_to_BandStates(el_states_kq, sel_kq)
 
     # Chemical potential: solved directly on el_i, whose per-state energies/weights and `nstates_base`
     # give the correct auto-μ carrier count on a windowed selection (the below-window count rides on
