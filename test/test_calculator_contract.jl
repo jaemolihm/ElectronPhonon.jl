@@ -3,7 +3,7 @@ using ElectronPhonon
 using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPData,
     EPDataQBatched, supports, LoopContext, SingleMode, BatchedMode, CPUBackend,
     GPUBackend, AbstractBackend, OuterIteration, OuterIterationBatch,
-    calculator_begin!, calculator_end!, to_device
+    calculator_begin!, calculator_end!, to_device, with_outer_index
 
 # Stage-2 calculator-contract checks (CPU-only): the `supports` trait, the fail-early payload checks
 # the drivers do at entry, the `calculators`-as-kwarg change, and the screening-disabled error.
@@ -79,9 +79,11 @@ ElectronPhonon.calculator_begin!(c::_ModeDispatchCalc, ::OuterIterationBatch, ::
     (push!(c.fired, (:batch, :batched)); c)
 
 @testset "loop-mode bracket dispatch (DECISION-6)" begin
-    # `LoopContext` carries the backend first, the mode second.
+    # `LoopContext` carries the backend first, the mode second. `ctx_pt` deliberately uses the
+    # field-wise constructor: it probes a SingleMode context with a nonzero `n_batch_max`, a
+    # combination production never builds (the SingleMode convenience forces `1:0, 0`).
     ctx_pt = LoopContext(CPUBackend(), SingleMode(), 1, 1:0, 4)
-    ctx_bt = LoopContext(CPUBackend(), BatchedMode(), 0, 1:4, 4)
+    ctx_bt = LoopContext(CPUBackend(), BatchedMode(); batch = 1:4, n_batch_max = 4)
     @test ctx_pt isa LoopContext{CPUBackend, SingleMode}
     @test ctx_bt isa LoopContext{CPUBackend, BatchedMode}
     # The backend-first order keeps the partial annotation `LoopContext{<:GPUBackend}` valid (any mode).
@@ -115,4 +117,30 @@ ElectronPhonon.calculator_begin!(c::_ModeDispatchCalc, ::OuterIterationBatch, ::
     # Backend-routed `to_device`: the CPU backend is an identity (no CUDA needed on the host path).
     v = [1.0, 2.0, 3.0]
     @test to_device(CPUBackend(), v) === v
+end
+
+@testset "LoopContext named construction" begin
+    # The three forms the drivers build, each by name: argument 3 is never positional in BatchedMode,
+    # so an `Integer` outer index and a `UnitRange` batch can no longer be confused.
+    ctx_pt = LoopContext(CPUBackend(), SingleMode(), 7)
+    @test (ctx_pt.outer_index, ctx_pt.batch, ctx_pt.n_batch_max) == (7, 1:0, 0)
+
+    # Batch scope (batched outer-k): no single outer index spans the batch, hence the `0` sentinel.
+    ctx_bt = LoopContext(CPUBackend(), BatchedMode(); batch = 3:5, n_batch_max = 4)
+    @test (ctx_bt.outer_index, ctx_bt.batch, ctx_bt.n_batch_max) == (0, 3:5, 4)
+
+    # One outer iteration of the batched outer-q loop: the outer axis is not batched there, so `batch`
+    # keeps its "no outer batch" default.
+    ctx_q = LoopContext(CPUBackend(), BatchedMode(); outer_index = 2, n_batch_max = 10)
+    @test (ctx_q.outer_index, ctx_q.batch, ctx_q.n_batch_max) == (2, 1:0, 10)
+
+    # `with_outer_index` changes only the outer index.
+    ctx_k = with_outer_index(ctx_bt, 4)
+    @test ctx_k isa typeof(ctx_bt)
+    @test (ctx_k.backend, ctx_k.mode, ctx_k.batch, ctx_k.n_batch_max) ==
+          (ctx_bt.backend, ctx_bt.mode, ctx_bt.batch, ctx_bt.n_batch_max)
+    @test ctx_k.outer_index == 4
+
+    # `n_batch_max` is required: a batched context with no batch cap is a construction error.
+    @test_throws UndefKeywordError LoopContext(CPUBackend(), BatchedMode(); batch = 1:4)
 end

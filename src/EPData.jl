@@ -86,10 +86,13 @@ batch of matrices takes the plural name `eps`; `ek`/`ekq`/`uk`/`ukq`/`wtk` are n
 they are (the batch is just their trailing axis).
 
 All fields are trimmed to the batch's actual width `nk` (the outer-k convention): the final partial
-batch has `nk < n_batch_max`, and the loop hands width-`nk` views into its internally padded staging
-buffers (a trailing-prefix device view, so it stays contiguous). A consumer therefore reads its own
-size from any field (e.g. `size(eps, 4)`) and never sees a padded tail. (The loop still zeros the
-internal `wtk` padding as defense-in-depth, but that padding is not exposed here.)
+batch has `nk < n_batch_max`, and the loop hands width-`nk` views into its max-width staging buffers
+(a trailing-prefix device view, so it stays contiguous). A consumer therefore reads its own size from
+any field (e.g. `size(eps, 4)`) and never sees a padded tail. There is no padded tail internally
+either — the loop computes only the batch's own columns — so the payload's width is the *only*
+guarantee: a consumer that sized itself from `ctx.n_batch_max` instead of `size(eps, 4)` would read
+stale data from the previous batch (uninitialised if the run has only one, partial batch), which is
+worse than uninitialised because it is finite and plausible.
 
 Fields (`m` = k+q band, `n` = k band, `k` = batch column):
 - `eps` :: `(nw, nw, nmodes, nk)` — eigenbasis e-ph matrices. Out-of-window bands are already zeroed
