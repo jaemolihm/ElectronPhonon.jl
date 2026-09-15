@@ -14,22 +14,23 @@ catch
     false
 end
 
-# Every field a run fills, compared with `==`: `v`/`rbar`/`occupation` are window views, so take
-# them through `no_offset_view` (their axes are covered by `rng`).
 # The `quantities == ["eigenvalue"]` branch is the one case that cannot be bitwise equal to its
 # no-cache counterpart: without a cache it runs the value-only LAPACK driver, while a cache holds
 # the eigenvalues of the full eigensolve, and the two agree only to round-off. What the cache branch
 # must do exactly is copy the cached column and leave `u_full` alone.
 function _eigenpairs_valueonly_consistent(new, ref, cache)
+    e_cache = Array(cache.e)  # the cache may be device-resident; compare on the host
     all(eachindex(new)) do ik
         el, el_ref = new[ik], ref[ik]
         el.xk == el_ref.xk && el.rng == el_ref.rng && el.nband == el_ref.nband &&
-            el.e_full == cache.e[:, _eigenpair_index(cache, el.xk)] &&
+            el.e_full == e_cache[:, _eigenpair_index(cache, el.xk)] &&
             all(iszero, el.u_full) &&
             maximum(abs, el.e_full - el_ref.e_full) < 1e-13
     end
 end
 
+# Every field a run fills, compared with `==`: `v`/`rbar`/`occupation` are window views, so take
+# them through `no_offset_view` (their axes are covered by `rng`).
 function _eigenpairs_state_equal(a::ElectronState, b::ElectronState)
     a.xk == b.xk && a.e_full == b.e_full && a.u_full == b.u_full && a.nband == b.nband &&
         a.rng == b.rng && a.vdiag == b.vdiag &&
@@ -153,6 +154,19 @@ end
         @test_throws "is not one of its" compute_electron_states(
             model_bn, kpts_bn, ["eigenvalue", "eigenvector"], window;
             eigenpairs = electron_eigenpairs(model_bn, sub))
+
+        # A cache is resident on the backend that built it, so consuming it from the other side is
+        # an error rather than a silent copy or a scalar-indexed crawl.
+        if EIGENPAIRS_GPU_AVAILABLE
+            host_cache = electron_eigenpairs(model_bn, kpts_bn)
+            device_cache = electron_eigenpairs(model_bn, kpts_bn; backend = gpu_backend())
+            @test_throws "resident on the host" compute_electron_states(
+                model_bn, kpts_bn, ["eigenvalue", "eigenvector"], window;
+                backend = gpu_backend(), eigenpairs = host_cache)
+            @test_throws "resident on the device" compute_electron_states(
+                model_bn, kpts_bn, ["eigenvalue", "eigenvector"], window;
+                eigenpairs = device_cache)
+        end
     end
 
     @testset "GPU" begin
@@ -174,9 +188,8 @@ end
             # Eigenvalues only: the batched device eigensolve does not apply the degenerate-
             # multiplet gauge fix of the per-k CPU solve, so eigenvectors may legitimately differ
             # by a unitary rotation inside a multiplet.
-            # This bound is also the only guard against a Float32 intermediate on the device: the
-            # `copyto!` into the host arrays upcasts, so the eltype assertions above cannot see one.
-            # Float32 floors at ~1e-7 relative, so do not loosen 1e-13 past ~1e-9.
+            # The bound also backs up the eltype assertions against a Float32 device path: Float32
+            # floors at ~1e-7 relative, so do not loosen 1e-13 past ~1e-9.
             @test norm(e_gpu - eig_cpu.e) / norm(eig_cpu.e) < 1e-13
             unitarity = maximum(1:kpts.n) do ik
                 u = @view u_gpu[:, :, ik]
