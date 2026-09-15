@@ -15,7 +15,8 @@ eigenvector gauge; everything else, `window` included, is computed exactly as wi
 `fourier_mode` then no longer affects the eigenpairs -- the cache's own Fourier mode already did --
 so a with-cache run reproduces a without-cache one bit for bit only when the cache was built with
 the same `fourier_mode`. The one exception is `quantities == ["eigenvalue"]`: a cache holds the
-eigenvalues of the full eigensolve, which agree with the value-only solve's only to round-off.
+eigenvalues of the full eigensolve, which agree with the value-only solve's only to round-off. A
+cache is resident on the backend that built it, so it must be built with the `backend` the run uses.
 """
 function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-Inf, Inf);
         fourier_mode="normal", backend=CPUBackend(), eigenpairs=nothing) where FT
@@ -25,7 +26,7 @@ function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-In
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
     end
     (; nw) = model
-    _check_eigenpairs(eigenpairs, nw)
+    _check_eigenpairs(eigenpairs, nw, backend)
 
     states = [ElectronState{FT}(nw) for _ in 1:kpts.n]
     if quantities == []
@@ -57,7 +58,7 @@ function compute_electron_states(model::Model{FT}, sel::FilteredBandStates, quan
     for quantity in quantities
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
     end
-    _check_eigenpairs(eigenpairs, model.nw)
+    _check_eigenpairs(eigenpairs, model.nw, backend)
     kpts = sel.kpts
     states = [ElectronState{FT}(model.nw) for _ in 1:kpts.n]
     isempty(quantities) && return states
@@ -90,9 +91,21 @@ function _electron_state_needs(model, quantities)
     (; need_vfull, need_vdiag, need_position, need_velocity)
 end
 
-_check_eigenpairs(::Nothing, nw) = nothing
-_check_eigenpairs(eig::ElectronEigenpairs, nw) = eig.nw == nw || throw(ArgumentError(
-    "eigenpairs holds nw = $(eig.nw) Wannier functions, but the model has nw = $nw"))
+_check_eigenpairs(::Nothing, nw, backend) = nothing
+
+function _check_eigenpairs(eig::ElectronEigenpairs, nw, backend)
+    eig.nw == nw || throw(ArgumentError(
+        "eigenpairs holds nw = $(eig.nw) Wannier functions, but the model has nw = $nw"))
+    # A cache is resident on the backend that built it, and this run's arrays live on `backend`.
+    # Consuming one from the other side would mean moving it per call, or indexing a device array
+    # from the host loop, so require a match.
+    on_host = eig.e_full isa Array
+    on_host == (backend isa CPUBackend) || throw(ArgumentError(
+        "eigenpairs are resident on the $(on_host ? "host" : "device") " *
+        "(e_full::$(typeof(eig.e_full))), but the run uses $(nameof(typeof(backend))); " *
+        "build the cache with the run's backend"))
+    nothing
+end
 
 # The eigenpair of one k point, either solved on the spot or copied out of a supplied cache. The
 # cache arrives as a typed argument all the way down to here, so each call site specializes on one
@@ -101,6 +114,7 @@ _set_eigen_from!(el::ElectronState, ::Nothing, ham, xk) = set_eigen!(el, ham, xk
 
 function _set_eigen_from!(el::ElectronState, eigenpairs::ElectronEigenpairs, ham, xk)
     ik = xk_to_ik(xk, eigenpairs.kpts)
+    ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
     el.xk = xk
     @views el.e_full .= eigenpairs.e_full[:, ik]
     @views el.u_full .= eigenpairs.u_full[:, :, ik]
@@ -115,6 +129,7 @@ _set_eigen_valueonly_from!(el::ElectronState, ::Nothing, ham, xk) =
 
 function _set_eigen_valueonly_from!(el::ElectronState, eigenpairs::ElectronEigenpairs, ham, xk)
     ik = xk_to_ik(xk, eigenpairs.kpts)
+    ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
     el.xk = xk
     @views el.e_full .= eigenpairs.e_full[:, ik]
 
@@ -191,18 +206,29 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
     (; nw, el_velocity_mode) = model
     (; need_vfull, need_vdiag, need_position) = _electron_state_needs(model, quantities)
 
-    # Supplied eigenpairs replace the batched eigensolve: the cache columns for this k list are
-    # gathered in its order and moved to the device, where the rbar/velocity interpolations below
-    # consume them exactly as they consume a solved `U_dev`. So `itp_elham` is not needed at all.
+    # Supplied eigenpairs replace the batched eigensolve: the cache is already on this backend
+    # (`_check_eigenpairs`), so its columns for this k list are gathered in the list's order and the
+    # rbar/velocity interpolations below consume them exactly as they consume a solved `U_dev`. So
+    # `itp_elham` is not needed at all.
     itp_elham = if eigenpairs === nothing
         get_interpolator(to_device(backend, model.el_ham); fourier_mode="batched", batch_size=kpts.n)
+    end
+
+    # The cache's columns for this k list, in the list's order. Resolved here, on the host, so that
+    # a k point the cache does not hold is reported as such: `xk_to_ik` answers `nothing`, and a
+    # `nothing` carried into the gather below would be consumed inside the indexing kernel and
+    # surface as a bare `KernelException` naming only the device.
+    iks = eigenpairs === nothing ? nothing : map(kpts.vectors) do xk
+        ik = xk_to_ik(xk, eigenpairs.kpts)
+        ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
+        ik
     end
 
     if quantities == ["eigenvalue"]
         E = if eigenpairs === nothing
             Array(get_el_eigen_valueonly_batched(itp_elham, kpts.vectors))
         else
-            eigenpairs.e_full[:, [xk_to_ik(xk, eigenpairs.kpts) for xk in kpts.vectors]]
+            Array(eigenpairs.e_full[:, iks])
         end
         return _scatter_electron_states!(states, kpts.vectors, window, E, nothing, nothing, nothing,
                                         need_vfull, need_vdiag)
@@ -211,10 +237,7 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
     E_dev, U_dev = if eigenpairs === nothing
         get_el_eigen_batched(itp_elham, kpts.vectors)
     else
-        # The cache's columns for this k list, in the list's order.
-        iks = [xk_to_ik(xk, eigenpairs.kpts) for xk in kpts.vectors]
-        (to_device(backend, eigenpairs.e_full[:, iks]),
-         to_device(backend, eigenpairs.u_full[:, :, iks]))
+        (eigenpairs.e_full[:, iks], eigenpairs.u_full[:, :, iks])
     end
     rbar_dev = if need_position
         itp_pos = get_interpolator(to_device(backend, model.el_pos); fourier_mode="batched", batch_size=kpts.n)

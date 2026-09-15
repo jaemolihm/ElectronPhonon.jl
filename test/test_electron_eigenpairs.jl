@@ -14,22 +14,23 @@ catch
     false
 end
 
-# Every field a run fills, compared with `==`: `v`/`rbar`/`occupation` are window views, so take
-# them through `no_offset_view` (their axes are covered by `rng`).
 # The `quantities == ["eigenvalue"]` branch is the one case that cannot be bitwise equal to its
 # no-cache counterpart: without a cache it runs the value-only LAPACK driver, while a cache holds
 # the eigenvalues of the full eigensolve, and the two agree only to round-off. What the cache branch
 # must do exactly is copy the cached column and leave `u_full` alone.
 function _eigenpairs_valueonly_consistent(new, ref, cache)
+    e_cache = Array(cache.e_full)  # the cache may be device-resident; compare on the host
     all(eachindex(new)) do ik
         el, el_ref = new[ik], ref[ik]
         el.xk == el_ref.xk && el.rng == el_ref.rng && el.nband == el_ref.nband &&
-            el.e_full == cache.e_full[:, xk_to_ik(el.xk, cache.kpts)] &&
+            el.e_full == e_cache[:, xk_to_ik(el.xk, cache.kpts)] &&
             all(iszero, el.u_full) &&
             maximum(abs, el.e_full - el_ref.e_full) < 1e-13
     end
 end
 
+# Every field a run fills, compared with `==`: `v`/`rbar`/`occupation` are window views, so take
+# them through `no_offset_view` (their axes are covered by `rng`).
 function _eigenpairs_state_equal(a::ElectronState, b::ElectronState)
     a.xk == b.xk && a.e_full == b.e_full && a.u_full == b.u_full && a.nband == b.nband &&
         a.rng == b.rng && a.vdiag == b.vdiag &&
@@ -144,9 +145,25 @@ end
             model_bn, kpts_bn, ["eigenvalue"], window; eigenpairs = pb_cache)
         sub = GridKpoints(Kpoints(kpts_bn.vectors[1:kpts_bn.n-1]; ngrid = kpts_bn.ngrid),
                           kpts_bn.ngrid)
-        @test_throws "is not one of its" compute_electron_states(
+        # The error is raised at the lookup, not by the gather, so it names the k point -- and it
+        # reaches here wrapped in a `TaskFailedException` by the threaded state loop, so match the
+        # message rather than the exception type.
+        @test_throws "does not cover" compute_electron_states(
             model_bn, kpts_bn, ["eigenvalue", "eigenvector"], window;
             eigenpairs = electron_eigenpairs(model_bn, sub))
+
+        # A cache is resident on the backend that built it, so consuming it from the other side is
+        # an error rather than a silent copy or a scalar-indexed crawl.
+        if EIGENPAIRS_GPU_AVAILABLE
+            host_cache = electron_eigenpairs(model_bn, kpts_bn)
+            device_cache = electron_eigenpairs(model_bn, kpts_bn; backend = gpu_backend())
+            @test_throws "resident on the host" compute_electron_states(
+                model_bn, kpts_bn, ["eigenvalue", "eigenvector"], window;
+                backend = gpu_backend(), eigenpairs = host_cache)
+            @test_throws "resident on the device" compute_electron_states(
+                model_bn, kpts_bn, ["eigenvalue", "eigenvector"], window;
+                eigenpairs = device_cache)
+        end
     end
 
     @testset "GPU" begin
