@@ -96,6 +96,7 @@ function _eigenpair_index(eig::ElectronEigenpairs, xk)
         "k point $xk is not in the ElectronEigenpairs cache (grid $(eig.kpts.ngrid) shifted by " *
         "$(eig.kpts.shift), $(eig.kpts.n) points). The lookup rounds xk onto that grid, so an " *
         "off-grid k point aliases to the nearest node rather than missing -- the cache was built " *
-        "with every point validated as a grid node, so this xk is a node the cache does not cover."))
+        "with every point validated as a grid node, so this xk is a node the cache does not " *
+        "cover."))
     ik
 end
