@@ -7,7 +7,7 @@ export ElectronEigenpairs
 export electron_eigenpairs
 
 """
-    ElectronEigenpairs{T, KT}
+    ElectronEigenpairs{T}
 
 Full-band electron eigenvalues `e` (`(nw, kpts.n)`) and eigenvectors `u` (`(nw, nw, kpts.n)`) on
 the k-point set `kpts`. Build one with [`electron_eigenpairs`](@ref).
@@ -24,24 +24,25 @@ eigensolve does not pin it at all.
 The value is immutable and read-only; there is no mutating API. Look a k-point up by its crystal
 coordinates with `_eigenpair_index`.
 """
-struct ElectronEigenpairs{T, KT <: AbstractKpoints{T}}
+struct ElectronEigenpairs{T}
     nw   :: Int
-    kpts :: KT                      # a GridKpoints: gives the O(1) xk -> ik lookup
+    # `GridKpoints` rather than `AbstractKpoints`: the xk -> ik lookup is defined only for a grid
+    # (`_hash_xk`), so requiring one here is what makes every cache lookupable.
+    kpts :: GridKpoints{T}
     e    :: Matrix{T}               # (nw, kpts.n)
     u    :: Array{Complex{T}, 3}    # (nw, nw, kpts.n)
 
-    function ElectronEigenpairs(nw::Int, kpts::KT, e::Matrix{T},
-                                u::Array{Complex{T}, 3}) where {T, KT <: AbstractKpoints{T}}
+    function ElectronEigenpairs(nw::Int, kpts::GridKpoints{T}, e::Matrix{T},
+                                u::Array{Complex{T}, 3}) where {T}
         size(e) == (nw, kpts.n) || throw(ArgumentError(
             "e must be of size ($nw, $(kpts.n)), got $(size(e))"))
         size(u) == (nw, nw, kpts.n) || throw(ArgumentError(
             "u must be of size ($nw, $nw, $(kpts.n)), got $(size(u))"))
-        new{T, KT}(nw, kpts, e, u)
+        new{T}(nw, kpts, e, u)
     end
 end
 
 nk(eig::ElectronEigenpairs) = eig.kpts.n
-Base.length(eig::ElectronEigenpairs) = eig.kpts.n
 
 function Base.show(io::IO, eig::ElectronEigenpairs{T}) where {T}
     print(io, "ElectronEigenpairs{$T}(nw = $(eig.nw), nk = $(eig.kpts.n))")
@@ -53,15 +54,19 @@ end
 Compute the full-band electron eigenpairs at every k point of `kpts` and return them as an
 [`ElectronEigenpairs`](@ref).
 
-`kpts` is converted to a `GridKpoints`, which both provides the xk -> ik lookup and validates that
-every point is a node of the grid. That validation is required, not a convenience: the lookup
-rounds `xk` onto the grid, so an off-grid point would alias to the nearest node instead of missing.
+`kpts` is converted to a `GridKpoints`, which provides the xk -> ik lookup. A `Kpoints` argument is
+validated against its own `ngrid` on the way in; a `GridKpoints` argument is taken as already being
+on the grid it carries. Either way the lookup then rounds a query onto that grid, so
+`_eigenpair_index` re-checks every query point (an off-grid one would otherwise alias to the
+nearest node instead of missing).
 
 On a GPU backend the whole set is solved in one batched eigensolve and the result is brought back
 to the host, so the cache is always host-resident; `fourier_mode` is then unused (the batched
-interpolator is the only one the device path has), as in `compute_electron_states`. Note also that
-the batched eigensolve does not apply the degenerate-multiplet gauge fix of the per-k solve, so a
-cache built on the device is self-consistent but not equal to a CPU-built one inside a multiplet.
+interpolator is the only one the device path has), as in `compute_electron_states`. Two caveats
+inherited from that path: the batched eigensolve does not apply the degenerate-multiplet gauge fix
+of the per-k solve, so a device-built cache is self-consistent but differs from a CPU-built one
+inside a multiplet; and the whole set is one batch, so the device H(k)/U stacks (nw^2 * nk) are
+unbounded and a very large k-grid can OOM.
 """
 function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
                              backend = CPUBackend()) where {FT}
@@ -88,15 +93,19 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
     ElectronEigenpairs(nw, gkpts, e, u)
 end
 
-# Index of `xk` in the cache, erroring on a miss. `_ik_from_hash` returns 0 for a k point the cache
-# does not hold, which a consumer must never silently treat as an index.
-function _eigenpair_index(eig::ElectronEigenpairs, xk)
-    ik = _ik_from_hash(eig.kpts, _hash_xk(xk, eig.kpts))
+# Index of `xk` in the cache, erroring on a query the cache cannot answer. Both failures are loud:
+# `_hash_xk` rounds `xk` onto the cache's grid, so an off-grid query would otherwise alias to the
+# nearest cached node, and `_ik_from_hash` returns 0 for a node the cache does not hold -- neither
+# may reach a consumer as an index.
+function _eigenpair_index(eig::ElectronEigenpairs{T}, xk) where {T}
+    (; kpts) = eig
+    nxk = (xk - kpts.shift) .* kpts.ngrid
+    isapprox(round.(Int, nxk), nxk; atol = sqrt(eps(T))) || throw(ArgumentError(
+        "k point $xk is not on the ElectronEigenpairs cache's grid of size $(kpts.ngrid) shifted " *
+        "by $(kpts.shift)"))
+    ik = _ik_from_hash(kpts, _hash_xk(xk, kpts))
     ik == 0 && throw(ArgumentError(
-        "k point $xk is not in the ElectronEigenpairs cache (grid $(eig.kpts.ngrid) shifted by " *
-        "$(eig.kpts.shift), $(eig.kpts.n) points). The lookup rounds xk onto that grid, so an " *
-        "off-grid k point aliases to the nearest node rather than missing -- the cache was built " *
-        "with every point validated as a grid node, so this xk is a node the cache does not " *
-        "cover."))
+        "k point $xk is a node of the ElectronEigenpairs cache's grid ($(kpts.ngrid) shifted by " *
+        "$(kpts.shift)) but is not one of its $(kpts.n) points"))
     ik
 end
