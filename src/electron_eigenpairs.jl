@@ -119,3 +119,7 @@ function _eigenpair_index(eig::ElectronEigenpairs{T}, xk) where {T}
         "$(kpts.shift)) but is not one of its $(kpts.n) points"))
     ik
 end
+
+# Cache indices of a whole k-point list, in the list's order: what a batched consumer slices
+# `cache.e` / `cache.u` with to get its own k ordering.
+_eigenpair_indices(eig::ElectronEigenpairs, xks) = [_eigenpair_index(eig, xk) for xk in xks]
