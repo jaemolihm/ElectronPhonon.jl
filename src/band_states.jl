@@ -484,12 +484,18 @@ end
 
 """
     state_indices_full_star(s, xk, iband, symmetry) -> Vector{Int}
+    state_indices_full_star(s, st, symmetry) -> Vector{Int}   # `st` a per-state item
 
 Indices in `s` of every image `(S·xk, iband)` of `(xk, iband)` under `symmetry`, sorted and
 deduplicated. Images absent from `s` (out of window, or at a k-point `s.kpts` does not hold) are
 dropped, so the result can be shorter than the group order and empty. Unlike `unfold_band_states`,
 which unfolds a whole selection into a NEW `FilteredBandStates` carrying its own k-grid, this
 returns indices into an EXISTING selection, for one state at a time.
+
+The item form takes anything carrying `xk` and `iband` — in particular `other[i]`, the NamedTuple
+`getindex` yields on either subtype — so the star of a state of one selection is located in another
+with `state_indices_full_star(s, other[i], symmetry)`, as `state_index(s, other[i])` is for the
+state itself.
 """
 function state_indices_full_star(s::AbstractBandStates, xk, iband::Integer, symmetry)
     J = Int[]
@@ -499,6 +505,9 @@ function state_indices_full_star(s::AbstractBandStates, xk, iband::Integer, symm
     end
     sort!(unique!(J))
 end
+
+state_indices_full_star(s::AbstractBandStates, st, symmetry) =
+    state_indices_full_star(s, st.xk, st.iband, symmetry)
 
 """
     filter_states(s::AbstractBandStates, keep) -> AbstractBandStates

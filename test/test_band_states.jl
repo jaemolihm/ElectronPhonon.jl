@@ -109,6 +109,9 @@ using ElectronPhonon
         @test !isempty(J) && issorted(J) && allunique(J)
         @test all(sel.ibands[j] == 3 for j in J)
         @test isempty(state_indices_full_star(sel, xk, 7, symmetry))   # band not selected
+        # Item form: a state of one selection, looked up in another.
+        i = state_index(sel, xk, 3)
+        @test state_indices_full_star(sel, sel[i], symmetry) == J
 
         @test state_index_in_star(sel, xk, 3, symmetry) == state_index(sel, xk, 3)  # exact hit
 
