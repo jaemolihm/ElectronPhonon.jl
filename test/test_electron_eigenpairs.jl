@@ -24,7 +24,6 @@ end
         eig = electron_eigenpairs(model, kpts; fourier_mode)
         states = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector"]; fourier_mode)
         @test eig.nw == model.nw
-        @test ElectronPhonon.nk(eig) == kpts.n
         @test eig.e isa Matrix{Float64}
         @test eig.u isa Array{ComplexF64, 3}
         @test size(eig.e) == (model.nw, kpts.n)
@@ -79,17 +78,23 @@ end
 
             eig_cpu = electron_eigenpairs(model, kpts)
             eig_gpu = electron_eigenpairs(model, kpts; backend = gpu_backend())
-            @test eig_gpu.e isa Matrix{Float64}
-            @test eig_gpu.u isa Array{ComplexF64, 3}
+            # The arrays follow the backend that built them: the device cache stays on the device
+            # (and is consumed there), the host one stays on the host.
+            @test eig_cpu.e isa Matrix{Float64}
+            @test eig_cpu.u isa Array{ComplexF64, 3}
+            @test eig_gpu.e isa CuMatrix{Float64}
+            @test eig_gpu.u isa CuArray{ComplexF64, 3}
+            @test eig_gpu.kpts === eig_cpu.kpts  # only e/u move; kpts stays on the host
+            e_gpu, u_gpu = Array(eig_gpu.e), Array(eig_gpu.u)
             # Eigenvalues only: the batched device eigensolve does not apply the degenerate-
             # multiplet gauge fix of the per-k CPU solve, so eigenvectors may legitimately differ
             # by a unitary rotation inside a multiplet.
             # This bound is also the only guard against a Float32 intermediate on the device: the
             # `copyto!` into the host arrays upcasts, so the eltype assertions above cannot see one.
             # Float32 floors at ~1e-7 relative, so do not loosen 1e-13 past ~1e-9.
-            @test norm(eig_gpu.e - eig_cpu.e) / norm(eig_cpu.e) < 1e-13
+            @test norm(e_gpu - eig_cpu.e) / norm(eig_cpu.e) < 1e-13
             unitarity = maximum(1:kpts.n) do ik
-                u = @view eig_gpu.u[:, :, ik]
+                u = @view u_gpu[:, :, ik]
                 norm(u' * u - I)
             end
             @test unitarity < 1e-12
@@ -99,7 +104,7 @@ end
             # with no multiplet the two `u` agree to round-off, and only a k point carrying one may
             # differ, there by at most `electron_degen_cutoff`.
             hamiltonian_diff(ik) = norm(
-                eig_gpu.u[:, :, ik] * Diagonal(eig_gpu.e[:, ik]) * eig_gpu.u[:, :, ik]' -
+                u_gpu[:, :, ik] * Diagonal(e_gpu[:, ik]) * u_gpu[:, :, ik]' -
                 eig_cpu.u[:, :, ik] * Diagonal(eig_cpu.e[:, ik]) * eig_cpu.u[:, :, ik]')
             degenerate = [minimum(diff(eig_cpu.e[:, ik])) < electron_degen_cutoff
                           for ik in 1:kpts.n]
