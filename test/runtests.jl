@@ -21,6 +21,7 @@ include("common_models_from_artifacts.jl")
     include("test_filter_electron_states.jl")  # unified filter primitive: MPI (COMM_SELF) + shift
     include("test_epmat.jl")
     include("test_ElectronState.jl")
+    include("test_electron_eigenpairs.jl")  # shared full-band eigenpair cache; GPU part skips w/o CUDA
     include("test_plot_bandstructure.jl")
     # include("test_check_model_symmetry.jl")
     include("test_screening.jl")
