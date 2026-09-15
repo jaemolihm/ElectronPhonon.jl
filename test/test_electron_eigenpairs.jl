@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: Vec3, electron_degen_cutoff, electron_eigenpairs, _eigenpair_index,
-    gpu_backend
+    gpu_backend, to_device
 using LinearAlgebra
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
@@ -25,6 +25,8 @@ end
         states = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector"]; fourier_mode)
         @test eig.nw == model.nw
         @test ElectronPhonon.nk(eig) == kpts.n
+        @test eig.e isa Matrix{Float64}
+        @test eig.u isa Array{ComplexF64, 3}
         @test size(eig.e) == (model.nw, kpts.n)
         @test size(eig.u) == (model.nw, model.nw, kpts.n)
         @test all(ik -> eig.e[:, ik] == states[ik].e_full, 1:kpts.n)
@@ -51,8 +53,17 @@ end
         # accessor's own check they would return the index of a neighbouring cached k point (on
         # this grid, `ik = 1` and `ik = 17` respectively).
         @test_throws "is not one of its" _eigenpair_index(eig, kpts.vectors[kpts.n])
-        @test_throws "cache's grid" _eigenpair_index(eig, Vec3(0.05, 0.0, 0.0))
-        @test_throws "cache's grid" _eigenpair_index(eig, Vec3(0.25 + 1e-6, 0.0, 0.0))
+        @test_throws "is not on the" _eigenpair_index(eig, Vec3(0.05, 0.0, 0.0))
+        @test_throws "is not on the" _eigenpair_index(eig, Vec3(0.25 + 1e-6, 0.0, 0.0))
+
+        # A shifted grid: the check is against the cache's own `shift`, so Gamma -- a perfectly
+        # legal k point -- is not a node of this cache and must be rejected rather than aliased.
+        shifted = GridKpoints(kpoints_grid((4, 4, 4); shift = (0.125, 0.125, 0.125)))
+        eig_shifted = electron_eigenpairs(model, shifted)
+        @test eig_shifted.kpts.shift ≈ Vec3(0.125, 0.125, 0.125)
+        @test all(ik -> _eigenpair_index(eig_shifted, shifted.vectors[ik]) == ik, 1:shifted.n)
+        @test _eigenpair_index(eig_shifted, shifted.vectors[3] .+ 1e-12) == 3
+        @test_throws "is not on the" _eigenpair_index(eig_shifted, Vec3(0.0, 0.0, 0.0))
 
         # A `Kpoints` input is validated against its own ngrid when the cache is built.
         off_grid = Kpoints{Float64}(2, [Vec3(0.0, 0.0, 0.0), Vec3(0.1, 0.0, 0.0)], [0.5, 0.5],
@@ -62,6 +73,10 @@ end
 
     @testset "GPU" begin
         if EIGENPAIRS_GPU_AVAILABLE
+            # The device transfer must preserve the eltype: `CuArray(arr)` does, `cu(arr)` would
+            # demote Float64 to Float32. Partial type, so the memory-type parameter stays free.
+            @test to_device(gpu_backend(), zeros(ComplexF64, 2, 2)) isa CuArray{ComplexF64}
+
             eig_cpu = electron_eigenpairs(model, kpts)
             eig_gpu = electron_eigenpairs(model, kpts; backend = gpu_backend())
             @test eig_gpu.e isa Matrix{Float64}
@@ -69,6 +84,9 @@ end
             # Eigenvalues only: the batched device eigensolve does not apply the degenerate-
             # multiplet gauge fix of the per-k CPU solve, so eigenvectors may legitimately differ
             # by a unitary rotation inside a multiplet.
+            # This bound is also the only guard against a Float32 intermediate on the device: the
+            # `copyto!` into the host arrays upcasts, so the eltype assertions above cannot see one.
+            # Float32 floors at ~1e-7 relative, so do not loosen 1e-13 past ~1e-9.
             @test norm(eig_gpu.e - eig_cpu.e) / norm(eig_cpu.e) < 1e-13
             unitarity = maximum(1:kpts.n) do ik
                 u = @view eig_gpu.u[:, :, ik]
