@@ -1,7 +1,9 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: Vec3, electron_degen_cutoff, electron_eigenpairs, gpu_backend, to_device
+using ElectronPhonon: Vec3, electron_degen_cutoff, electron_eigenpairs, gpu_backend, to_device,
+    AbstractBackend, CPUBackend
 using LinearAlgebra
+using OffsetArrays: no_offset_view
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
 # tests when it is unavailable or non-functional (e.g. CPU-only CI).
@@ -10,6 +12,29 @@ const EIGENPAIRS_GPU_AVAILABLE = try
     CUDA.functional()
 catch
     false
+end
+
+# Every field a run fills, compared with `==`: `v`/`rbar`/`occupation` are window views, so take
+# them through `no_offset_view` (their axes are covered by `rng`).
+# The `quantities == ["eigenvalue"]` branch is the one case that cannot be bitwise equal to its
+# no-cache counterpart: without a cache it runs the value-only LAPACK driver, while a cache holds
+# the eigenvalues of the full eigensolve, and the two agree only to round-off. What the cache branch
+# must do exactly is copy the cached column and leave `u_full` alone.
+function _eigenpairs_valueonly_consistent(new, ref, cache)
+    all(eachindex(new)) do ik
+        el, el_ref = new[ik], ref[ik]
+        el.xk == el_ref.xk && el.rng == el_ref.rng && el.nband == el_ref.nband &&
+            el.e_full == cache.e_full[:, xk_to_ik(el.xk, cache.kpts)] &&
+            all(iszero, el.u_full) &&
+            maximum(abs, el.e_full - el_ref.e_full) < 1e-13
+    end
+end
+
+function _eigenpairs_state_equal(a::ElectronState, b::ElectronState)
+    a.xk == b.xk && a.e_full == b.e_full && a.u_full == b.u_full && a.nband == b.nband &&
+        a.rng == b.rng && a.vdiag == b.vdiag &&
+        no_offset_view(a.v) == no_offset_view(b.v) &&
+        no_offset_view(a.rbar) == no_offset_view(b.rbar)
 end
 
 @testset "ElectronEigenpairs" begin
@@ -61,6 +86,67 @@ end
         off_grid = Kpoints{Float64}(2, [Vec3(0.0, 0.0, 0.0), Vec3(0.1, 0.0, 0.0)], [0.5, 0.5],
                                     kpts.ngrid)
         @test_throws "is not on the grid of size" electron_eigenpairs(model, off_grid)
+    end
+
+    @testset "consumed by compute_electron_states" begin
+        # A cache must be inert: with it, every state a run produces is bit for bit what the same
+        # run produces without it, because the eigenpairs are the same `get_el_eigen!` output on
+        # the same H(k). Covered for both `compute_electron_states` methods (uniform window and
+        # per-k band extent from a selection), every quantity list, and both `el_velocity_mode`s --
+        # `:BerryConnection` is the one where "velocity" pulls in "position".
+        model_bn = _load_model_from_artifacts("cubicBN"; load_epmat = false)
+        window = (10.0, 25.0) .* unit_to_aru(:eV)
+        kpts_bn = GridKpoints(kpoints_grid((4, 4, 4)))
+        sel = ElectronPhonon.filter_electron_states((4, 4, 4), model_bn, window)
+        @test sel.n > 0
+        # A per-k band extent that actually varies, so the `sel` method is not just the uniform one.
+        @test !allequal(sel.band_extent)
+
+        # `fourier_mode` has to be the same on both arms: H(k) is not bitwise equal between the
+        # Fourier modes, and inside a degenerate multiplet that difference is O(1) in `u`. The
+        # device path ignores it (it has only the batched interpolator).
+        arms = Tuple{AbstractBackend, String}[(CPUBackend(), "normal"),
+                                              (CPUBackend(), "gridopt")]
+        EIGENPAIRS_GPU_AVAILABLE && push!(arms, (gpu_backend(), "normal"))
+        quantity_lists = (["eigenvalue"],
+                          ["eigenvalue", "eigenvector"],
+                          ["eigenvalue", "eigenvector", "velocity_diagonal"],
+                          ["eigenvalue", "eigenvector", "velocity", "position"])
+        for (backend, fourier_mode) in arms
+            cache = electron_eigenpairs(model_bn, kpts_bn; backend, fourier_mode)
+            for mode in (:Direct, :BerryConnection)
+                model_bn.el_velocity_mode = mode
+                for quantities in quantity_lists
+                    ref = compute_electron_states(model_bn, kpts_bn, quantities, window; backend,
+                                                  fourier_mode)
+                    new = compute_electron_states(model_bn, kpts_bn, quantities, window; backend,
+                                                  fourier_mode, eigenpairs = cache)
+                    ref_sel = compute_electron_states(model_bn, sel, quantities; backend,
+                                                      fourier_mode)
+                    new_sel = compute_electron_states(model_bn, sel, quantities; backend,
+                                                      fourier_mode, eigenpairs = cache)
+                    if quantities == ["eigenvalue"]
+                        @test _eigenpairs_valueonly_consistent(new, ref, cache)
+                        @test _eigenpairs_valueonly_consistent(new_sel, ref_sel, cache)
+                    else
+                        @test all(_eigenpairs_state_equal.(new, ref))
+                        @test all(_eigenpairs_state_equal.(new_sel, ref_sel))
+                    end
+                end
+            end
+        end
+        model_bn.el_velocity_mode = :Direct
+
+        # Teeth: a cache built on a different model is not silently accepted, and one that does not
+        # cover a k point the run visits fails at that k point rather than recomputing it.
+        pb_cache = electron_eigenpairs(model, kpts)
+        @test_throws "Wannier functions" compute_electron_states(
+            model_bn, kpts_bn, ["eigenvalue"], window; eigenpairs = pb_cache)
+        sub = GridKpoints(Kpoints(kpts_bn.vectors[1:kpts_bn.n-1]; ngrid = kpts_bn.ngrid),
+                          kpts_bn.ngrid)
+        @test_throws "is not one of its" compute_electron_states(
+            model_bn, kpts_bn, ["eigenvalue", "eigenvector"], window;
+            eigenpairs = electron_eigenpairs(model_bn, sub))
     end
 
     @testset "GPU" begin
