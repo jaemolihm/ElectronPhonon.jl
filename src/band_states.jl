@@ -492,10 +492,7 @@ dropped, so the result can be shorter than the group order and empty. Unlike `un
 which unfolds a whole selection into a NEW `FilteredBandStates` carrying its own k-grid, this
 returns indices into an EXISTING selection, for one state at a time.
 
-The item form takes anything carrying `xk` and `iband` — in particular `other[i]`, the NamedTuple
-`getindex` yields on either subtype — so the star of a state of one selection is located in another
-with `state_indices_full_star(s, other[i], symmetry)`, as `state_index(s, other[i])` is for the
-state itself.
+The item form takes a state as `states[i]` yields it, like `state_index(s, st)`.
 """
 function state_indices_full_star(s::AbstractBandStates, xk, iband::Integer, symmetry)
     J = Int[]
