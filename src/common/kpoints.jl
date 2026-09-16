@@ -7,6 +7,7 @@ export Kpoints
 export kpoints_grid
 export GridKpoints
 export xk_to_ik
+export xk_to_ik_unsafe
 export shift_center!
 export split_kpoints
 
@@ -657,8 +658,41 @@ _hash_xk(xk, kpts::GridKpoints) = _hash_xk(xk, kpts.ngrid, kpts.shift)
     end
 end
 
-# Retern index of given xk vector
-function xk_to_ik(xk, kpts)
+"""
+    xk_to_ik(xk, kpts::GridKpoints) -> Int
+
+Index of the k point `xk` in `kpts`, erroring if `kpts` has none. Both ways of missing are loud:
+`xk` not being a node of `kpts`' grid at all, and a node that this particular `kpts` does not hold.
+
+This is the entry point to prefer wherever a miss would be a bug, because the unchecked lookup
+[`xk_to_ik_unsafe`](@ref) *rounds* its argument onto the grid and so answers an off-grid query
+with a neighbouring node's index. `superconductivity/dev/verify_fmp_doppler.jl` records the trap
+that produces: an `xk_to_ik_unsafe(k + Q/2, kpts)` test of "does this shift map the grid onto
+itself" always says yes.
+
+Use `xk_to_ik_unsafe` instead where `nothing` is a legitimate answer -- asking whether a point is in
+a filtered selection -- or inside a per-pair loop whose argument is a grid node by construction.
+"""
+function xk_to_ik(xk, kpts::GridKpoints{T}) where {T}
+    nxk = (xk - kpts.shift) .* kpts.ngrid
+    isapprox(round.(Int, nxk), nxk; atol = sqrt(eps(T))) || throw(ArgumentError(
+        "k point $xk is not on the grid of size $(kpts.ngrid) shifted by $(kpts.shift)"))
+    ik = xk_to_ik_unsafe(xk, kpts)
+    ik === nothing && throw(ArgumentError(
+        "k point $xk is a node of the grid of size $(kpts.ngrid) shifted by " *
+        "$(kpts.shift), but is not one of its $(kpts.n) points"))
+    ik
+end
+
+"""
+    xk_to_ik_unsafe(xk, kpts) -> Union{Int, Nothing}
+
+Index of the k point `xk` in `kpts`, `nothing` if `kpts` has none. Unchecked: `_hash_xk` rounds `xk`
+onto `kpts`' grid, so an off-grid argument returns the nearest node's index rather than `nothing`.
+Callers must therefore have established that `xk` is a node of that grid; [`xk_to_ik`](@ref) is the
+checked entry point that establishes it for them.
+"""
+function xk_to_ik_unsafe(xk, kpts)
     ik = _ik_from_hash(kpts, _hash_xk(xk, kpts))
     ik == 0 ? nothing : ik
 end

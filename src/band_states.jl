@@ -444,7 +444,7 @@ band_range(s::AbstractBandStates) = (s.nband_ignore + 1):(s.nband_ignore + s.nba
     state_index(s, st) -> Int               # `st` a per-state item, e.g. `other[i]`
 
 O(1) reverse lookup of the state index for `(ik, iband)`, or `0` if absent. The k-vector
-form resolves `ik = xk_to_ik(xk, s.kpts)` first and requires `kpts isa GridKpoints`.
+form resolves `ik = xk_to_ik_unsafe(xk, s.kpts)` first and requires `kpts isa GridKpoints`.
 
 The item form takes anything carrying `xk` and `iband` — in particular `other[i]`, the NamedTuple
 `getindex` yields on either subtype — so a state of one selection is located in another with
@@ -458,7 +458,7 @@ independent, so only the k-vector is a shared address.
 end
 function state_index(s::AbstractBandStates{T, <:GridKpoints},
         xk::Vec3, iband::Int) where {T}
-    ik = xk_to_ik(xk, s.kpts)
+    ik = xk_to_ik_unsafe(xk, s.kpts)
     ik === nothing ? 0 : state_index(s, ik, iband)
 end
 state_index(s::AbstractBandStates, st::NamedTuple) = state_index(s, st.xk, st.iband)

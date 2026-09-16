@@ -418,7 +418,7 @@ function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epstate, ik, ep_ekpR, 
 
         if precompute_ph
             # Use precomputed data for the phonon state at q
-            iq = xk_to_ik(xq, qpts)
+            iq = xk_to_ik_unsafe(xq, qpts)
             if iq === nothing
                 throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
             end

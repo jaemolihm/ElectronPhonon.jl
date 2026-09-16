@@ -337,7 +337,7 @@ function _el_to_el_f_symmetry_maps(qme_model::QMEIrreducibleKModel{FT}) where FT
             (; ib1, ib2, ik) = el[ind_i]
             xk = el.kpts.vectors[ik]
             sk = symop.is_tr ? -symop.S * xk : symop.S * xk
-            isk = xk_to_ik(sk, el_f.kpts)
+            isk = xk_to_ik_unsafe(sk, el_f.kpts)
             isk === nothing && continue
 
             # We know <u^(f)_Sk|S|u^(i)_k> only for irreducible k points. To compute the gauge

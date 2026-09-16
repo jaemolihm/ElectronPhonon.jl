@@ -273,7 +273,10 @@ function filter_electron_states_multigrid(nks_f, nks_c, window_f, window_c, nw, 
     xks = collect(kpts_f.vectors)
     k_weights = collect(kpts_f.weights)
     for ik_c in 1:kpts_c.n
-        if xk_to_ik(kpts_c.vectors[ik_c], kpts_f) === nothing
+        # `_unsafe` here and at the `ik_f` lookup below: `nks_f` is a multiple of `nks_c` (checked
+        # at entry), so a coarse node is a node of the fine grid and cannot alias; `nothing` means
+        # the fine grid was filtered down past it.
+        if xk_to_ik_unsafe(kpts_c.vectors[ik_c], kpts_f) === nothing
             # coarse k point ik_c not part of fine grid
             push!(xks, kpts_c.vectors[ik_c]); push!(k_weights, kpts_c.weights[ik_c])
         end
@@ -292,7 +295,8 @@ function filter_electron_states_multigrid(nks_f, nks_c, window_f, window_c, nw, 
     # node has identical eigenvalues, so this band-index test equals testing e_kb against window_f).
     for ik_c in 1:kpts_c.n
         ik = xk_to_ik(kpts_c.vectors[ik_c], merged)
-        ik_f = xk_to_ik(kpts_c.vectors[ik_c], kpts_f)      # coincident fine point (nothing if none)
+        # coincident fine point, `nothing` if the fine grid was filtered down past it
+        ik_f = xk_to_ik_unsafe(kpts_c.vectors[ik_c], kpts_f)
         rng_narrow_ik = ik_f === nothing ? (1:0) : (ibmin_f[ik_f]:ibmax_f[ik_f])
         for ib in ibmin_c[ik_c]:ibmax_c[ik_c]
             ib in rng_narrow_ik && continue                # inside narrow window -> already at fine weight

@@ -344,7 +344,7 @@ function _loop_eph_over_q_and_k(
 
                 if precompute_el_kq
                     # Use precomputed data for the electron state at k+q
-                    ikq = xk_to_ik(xkq, kqpts)
+                    ikq = xk_to_ik_unsafe(xkq, kqpts)
                     ikq === nothing && continue
                     epstate.el_kq = el_kq_save[ikq]
                 else

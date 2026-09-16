@@ -396,7 +396,7 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
         for ik in 1:el_i.kpts.n
             xk = el_i.kpts.vectors[ik]
             sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
-            isk = xk_to_ik(sxk, el_f.kpts)
+            isk = xk_to_ik_unsafe(sxk, el_f.kpts)
             isk === nothing && continue
 
             # Set unfolding matrix
@@ -460,7 +460,7 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
     for ind_el_i in 1:el_i.n
         ik = el_i.ik[ind_el_i]
         xk = el_i.kpts.vectors[ik]
-        ik_f = xk_to_ik(xk, el_f.kpts)
+        ik_f = xk_to_ik_unsafe(xk, el_f.kpts)
         ik_f === nothing && continue
 
         ib1 = el_i.ib1[ind_el_i]

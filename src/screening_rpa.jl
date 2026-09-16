@@ -65,7 +65,7 @@ function compute_χ0(ph, indmap_ph, el_k_save, el_kq_save, kpts, kqpts, symmetry
                 xq == Vec3(0, 0, 0) && continue # skip q = 0
 
                 xk = kpts.vectors[ik]
-                ikq = xk_to_ik(xk + xq, kqpts)
+                ikq = xk_to_ik_unsafe(xk + xq, kqpts)
                 ikq === nothing && continue
 
                 el_k = el_k_save[ik]

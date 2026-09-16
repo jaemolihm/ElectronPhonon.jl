@@ -199,7 +199,10 @@ function compute_covariant_derivative_matrix(el_irr::QMEStates{FT}, el_irr_state
 
         for (b, b_cart, wb) in zip(bvec_data...)
             xkb = xk + b
-            ikb = xk_to_ik(xkb, kpts)
+            # `_unsafe` is safe from aliasing here: `finite_difference_vectors` builds every `b`
+            # as `Vec3(i, j, k) ./ ngrid`, so `xk + b` is a node of this grid by construction.
+            # `nothing` then means the neighbour is outside the selection, which is acted on below.
+            ikb = xk_to_ik_unsafe(xkb, kpts)
             ikb === nothing && continue
 
             ikbirr, isym_kb = ik_to_ikirr_isym[ikb]

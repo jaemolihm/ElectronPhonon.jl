@@ -115,9 +115,9 @@ function gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, 
         for ind_ph in 1:ph.n
             xq = ph.xks[ind_ph]
             imode = ph.iband[ind_ph]
-            iq = xk_to_ik(xq, qpts)
+            iq = xk_to_ik_unsafe(xq, qpts)
             xkq = xk + xq
-            ikq = xk_to_ik(xkq, kqpts)
+            ikq = xk_to_ik_unsafe(xkq, kqpts)
 
             for iband_kq in 1:nband_kq
                 ind_el_f = imap_el_kq[iband_kq, ikq]

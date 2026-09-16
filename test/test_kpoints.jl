@@ -171,7 +171,7 @@ end
     let empty_kpts = GridKpoints(Kpoints{Float64}(0, Vec3{Float64}[], Float64[], (N, N, N)))
         @test empty_kpts.n == 0
         @test isempty(empty_kpts._dense_hash_to_ik) && isempty(empty_kpts._xk_hash_to_ik)
-        @test xk_to_ik(Vec3(0.0, 0.0, 0.0), empty_kpts) === nothing
+        @test xk_to_ik_unsafe(Vec3(0.0, 0.0, 0.0), empty_kpts) === nothing
     end
 
     # Gate: dense for a grid as dense as it gets, Dict for a huge grid holding few points.
@@ -183,7 +183,7 @@ end
     @test all(xk_to_ik.(sparse_kpts.vectors, Ref(sparse_kpts)) .== 1:sparse_kpts.n)
     # A grid node that holds no k point must miss on the Dict fallback (the branch every
     # multigrid/AMR grid takes).
-    @test xk_to_ik(Vec3(1/1000, 0.0, 0.0), sparse_kpts) === nothing
+    @test xk_to_ik_unsafe(Vec3(1/1000, 0.0, 0.0), sparse_kpts) === nothing
 
     # The Dict fallback must satisfy the same whole-domain equivalence, and so must the paths that
     # only it exercises: `unfold_kpoints`/`fold_kpoints` hand their own Dict to the constructor
@@ -268,6 +268,56 @@ end
     @test mixed.vectors ≈ full.vectors
 end
 
+@testset "kpoints: xk_to_ik checked vs unsafe" begin
+    using ElectronPhonon: kpoints_grid, Vec3
+
+    N = 4
+    full = GridKpoints(kpoints_grid((N, N, N)))
+    # A strict subset, so that the dropped node is a genuine miss rather than an off-grid point.
+    sub = GridKpoints(Kpoints(full.vectors[1:full.n-1]; ngrid = full.ngrid), full.ngrid)
+
+    # Own points: the two agree everywhere, and that is the only regime where they may.
+    @test all(ik -> xk_to_ik(full.vectors[ik], full) == ik, 1:full.n)
+    @test all(ik -> xk_to_ik_unsafe(full.vectors[ik], full) == ik, 1:full.n)
+    @test xk_to_ik(full.vectors[3], full) isa Int
+
+    # Grid arithmetic leaves round-off on a query, which both must still resolve: the checked
+    # lookup's tolerance is the `GridKpoints` constructor's own `sqrt(eps(T))`, in grid-index units.
+    @test xk_to_ik(full.vectors[5] .+ 1e-12, full) == 5
+    @test xk_to_ik_unsafe(full.vectors[5] .+ 1e-12, full) == 5
+
+    # An off-grid query is where they differ, and it is why the checked one has the plain name.
+    # Asserting the aliasing explicitly pins the difference: the unchecked lookup rounds
+    # `(0.05, 0, 0)` onto the nearest node, which is Gamma, and reports a hit.
+    off_grid = Vec3(0.05, 0.0, 0.0)
+    @test xk_to_ik_unsafe(off_grid, full) == 1
+    @test full.vectors[1] == Vec3(0.0, 0.0, 0.0)
+    @test_throws "is not on the grid of size" xk_to_ik(off_grid, full)
+    # Half a spacing off is the worst case and must also be rejected, not rounded either way.
+    @test_throws "is not on the grid of size" xk_to_ik(Vec3(1 / (2N), 0.0, 0.0), full)
+
+    # A node of the grid that this k-point set does not hold: `nothing` unchecked, a distinct error
+    # checked. The two messages must not overlap, or a test cannot tell which failure fired.
+    missing_node = full.vectors[full.n]
+    @test xk_to_ik_unsafe(missing_node, sub) === nothing
+    @test_throws "not one of its" xk_to_ik(missing_node, sub)
+    err = try xk_to_ik(missing_node, sub); nothing catch e; e end
+    @test !occursin("is not on the grid of size", err.msg)
+
+    # A shifted grid validates against its own `shift`, so Gamma -- a perfectly legal k point, and a
+    # node of the unshifted grid of the same size -- is off this grid and must be rejected.
+    shifted = GridKpoints(kpoints_grid((N, N, N); shift = (0.125, 0.125, 0.125)))
+    @test shifted.shift ≈ Vec3(0.125, 0.125, 0.125)
+    @test all(ik -> xk_to_ik(shifted.vectors[ik], shifted) == ik, 1:shifted.n)
+    @test xk_to_ik(shifted.vectors[3] .+ 1e-12, shifted) == 3
+    @test_throws "is not on the grid of size" xk_to_ik(Vec3(0.0, 0.0, 0.0), shifted)
+    @test xk_to_ik_unsafe(Vec3(0.0, 0.0, 0.0), shifted) == 1   # aliased, the trap the check closes
+
+    # Wrapping by a lattice vector is not an off-grid query: both resolve the same point.
+    @test xk_to_ik(full.vectors[7] .+ Vec3(1.0, -2.0, 3.0), full) ==
+          xk_to_ik(full.vectors[7], full)
+end
+
 @testset "kpoints: combine_kpoint_grids" begin
     using ElectronPhonon: kpoints_grid, combine_kpoint_grids, add_two_kpoint_grids
 
@@ -280,7 +330,7 @@ end
         # All op(k, q) can be found, and the combined grid contains no other points.
         found = Set{Int}()
         for xk in kpts.vectors, xq in qpts.vectors
-            ikq = xk_to_ik(op(xk, xq), kqpts)
+            ikq = xk_to_ik_unsafe(op(xk, xq), kqpts)
             @test ikq !== nothing
             push!(found, ikq)
         end

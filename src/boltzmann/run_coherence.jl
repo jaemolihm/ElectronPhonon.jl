@@ -210,7 +210,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             @views for ik in 1:nk
                 xk = kpts.vectors[ik]
                 sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
-                isk = xk_to_ik(sxk, kqpts)
+                isk = xk_to_ik_unsafe(sxk, kqpts)
                 isk === nothing && continue # skip if Sk is not in kqpts
 
                 el_k = el_k_save[ik]
@@ -294,7 +294,9 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
     else
         @views for ik = 1:nk
             xk = kpts.vectors[ik]
-            ik_kq = xk_to_ik(xk, kqpts)
+            # `kqpts` is built on a grid containing `kpts`, so `xk` is a node of it and cannot
+            # alias; `nothing` means this k carries no k+q state.
+            ik_kq = xk_to_ik_unsafe(xk, kqpts)
             ik_kq === nothing && continue # skip if xk is not in kqpts
 
             el_k = el_k_save[ik]
@@ -372,7 +374,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             xkq = kqpts.vectors[ikq]
 
             # Find xq in qpts. Since xq can be shifted by a lattice vector, take xq from qpts.vectors
-            iq = xk_to_ik(xkq - xk, qpts)
+            iq = xk_to_ik_unsafe(xkq - xk, qpts)
             xq = qpts.vectors[iq]
 
             # Copy saved electron and phonon states to epstate
