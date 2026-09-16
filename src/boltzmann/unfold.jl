@@ -100,6 +100,8 @@ function unfold_QMEStates(el::QMEStates, symmetry)
         for (isym, symop) in enumerate(symmetry)
             sk = symop.is_tr ? -symop.S * xk : symop.S * xk
             isk = xk_to_ik(sk, kpts_unfold)
+            isk === nothing && error("symmetry image $sk of k point $xk (isym = $isym) is not " *
+                                     "in the unfolded k-point set, which must hold the whole star")
 
             # To ensure gauge consistency, each isk point must be mapped from a single
             # (ik, isym) pair. If isk_to_ik_isym is not set or set to (ik, isym), use this
@@ -337,12 +339,7 @@ function _el_to_el_f_symmetry_maps(qme_model::QMEIrreducibleKModel{FT}) where FT
             (; ib1, ib2, ik) = el[ind_i]
             xk = el.kpts.vectors[ik]
             sk = symop.is_tr ? -symop.S * xk : symop.S * xk
-            # `sk` is a node of `el_f.kpts`' grid by construction, which takes two steps: the
-            # symmetry image stays on the initial-state grid (`kpoints_grid` rejects a shifted grid
-            # carrying a symmetry, `kpoints_grid_symmetry` an incommensurate ngrid, in exact
-            # `Rational` arithmetic), and `el_f.kpts` is built on a grid containing it. So it cannot
-            # alias; `nothing` means `sk` is outside `el_f.kpts`' selection.
-            isk = xk_to_ik_unsafe(sk, el_f.kpts)
+            isk = xk_to_ik(sk, el_f.kpts)
             isk === nothing && continue
 
             # We know <u^(f)_Sk|S|u^(i)_k> only for irreducible k points. To compute the gauge

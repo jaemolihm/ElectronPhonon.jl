@@ -112,6 +112,8 @@ function gamma_adaptive_compute_lifetime(kpts, qpts, model, el_i, g_gamma_save, 
         xk = el_i.xks[ind_el_i]
         iband_k = el_i.iband[ind_el_i]
         ik = xk_to_ik(xk, kpts)
+        ik === nothing && error("state $ind_el_i lies at k point $xk, which is not in the " *
+                                "k-point set the e-ph matrix elements were computed on")
         for ind_ph in 1:ph.n
             xq = ph.xks[ind_ph]
             imode = ph.iband[ind_ph]

@@ -280,6 +280,7 @@ end
     @test all(ik -> xk_to_ik(full.vectors[ik], full) == ik, 1:full.n)
     @test all(ik -> xk_to_ik_unsafe(full.vectors[ik], full) == ik, 1:full.n)
     @test xk_to_ik(full.vectors[3], full) isa Int
+    @test xk_to_ik(full.vectors[3], sub) isa Int
 
     # Grid arithmetic leaves round-off on a query, which both must still resolve: the checked
     # lookup's tolerance is the `GridKpoints` constructor's own `sqrt(eps(T))`, in grid-index units.
@@ -296,13 +297,11 @@ end
     # Half a spacing off is the worst case and must also be rejected, not rounded either way.
     @test_throws "is not on the grid of size" xk_to_ik(Vec3(1 / (2N), 0.0, 0.0), full)
 
-    # A node of the grid that this k-point set does not hold: `nothing` unchecked, a distinct error
-    # checked. The two messages must not overlap, or a test cannot tell which failure fired.
+    # A node of the grid that this k-point set does not hold is a legitimate answer, not an error:
+    # both names return `nothing` and the caller decides what that means.
     missing_node = full.vectors[full.n]
     @test xk_to_ik_unsafe(missing_node, sub) === nothing
-    @test_throws "not one of its" xk_to_ik(missing_node, sub)
-    err = try xk_to_ik(missing_node, sub); nothing catch e; e end
-    @test !occursin("is not on the grid of size", err.msg)
+    @test xk_to_ik(missing_node, sub) === nothing
 
     # A shifted grid validates against its own `shift`, so Gamma -- a perfectly legal k point, and a
     # node of the unshifted grid of the same size -- is off this grid and must be rejected.

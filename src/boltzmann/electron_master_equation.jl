@@ -396,12 +396,7 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
         for ik in 1:el_i.kpts.n
             xk = el_i.kpts.vectors[ik]
             sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
-            # `sxk` is a node of `el_f.kpts`' grid by construction, which takes two steps: the
-            # symmetry image stays on the initial-state grid (`kpoints_grid` rejects a shifted grid
-            # carrying a symmetry, `kpoints_grid_symmetry` an incommensurate ngrid, in exact
-            # `Rational` arithmetic), and `el_f.kpts` is built on a grid containing it. So it cannot
-            # alias; `nothing` means `sxk` is outside `el_f.kpts`' selection.
-            isk = xk_to_ik_unsafe(sxk, el_f.kpts)
+            isk = xk_to_ik(sxk, el_f.kpts)
             isk === nothing && continue
 
             # Set unfolding matrix
@@ -465,9 +460,7 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
     for ind_el_i in 1:el_i.n
         ik = el_i.ik[ind_el_i]
         xk = el_i.kpts.vectors[ik]
-        # On-grid by construction only as far as the assertions above reach: the `ngrid` one
-        # holds, the shift one is vacuous. See issue #27.
-        ik_f = xk_to_ik_unsafe(xk, el_f.kpts)
+        ik_f = xk_to_ik(xk, el_f.kpts)
         ik_f === nothing && continue
 
         ib1 = el_i.ib1[ind_el_i]
