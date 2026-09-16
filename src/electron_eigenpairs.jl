@@ -35,7 +35,8 @@ the filtering can be combined with the cache, storing only the subset of the eig
 runs actually need.
 
 The value is immutable and read-only; there is no mutating API. Look a k-point up by its crystal
-coordinates with `_eigenpair_index`.
+coordinates with the checked [`xk_to_ik`](@ref) on `kpts`, which errors rather than aliasing an
+off-grid query onto a neighbouring cached node.
 """
 struct ElectronEigenpairs{T, MT <: AbstractMatrix{T}, AT <: AbstractArray{Complex{T}, 3}}
     nw     :: Int
@@ -77,9 +78,9 @@ Compute the full-band electron eigenpairs at every k point of `kpts` and return 
 
 `kpts` is converted to a `GridKpoints`, which provides the xk -> ik lookup. A `Kpoints` argument is
 validated against its own `ngrid` on the way in; a `GridKpoints` argument is taken as already being
-on the grid it carries. Either way the lookup then rounds a query onto that grid, so
-`_eigenpair_index` re-checks every query point (an off-grid one would otherwise alias to the
-nearest node instead of missing).
+on the grid it carries. Look points up with the checked [`xk_to_ik`](@ref), which validates each
+query against that grid; the unchecked `xk_to_ik_unsafe` would alias an off-grid query onto the
+nearest cached node instead of missing.
 
 On a GPU backend the whole set is solved in one batched eigensolve and `e_full`/`u_full` are left
 on the device, so the cache is resident on `backend` and a consumer must run on that same backend.
@@ -113,21 +114,4 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
         E_dev, U_dev = get_el_eigen_batched(itp_elham, gkpts.vectors)
         ElectronEigenpairs(nw, gkpts, E_dev, U_dev)
     end
-end
-
-# `xk_to_ik` for a cache lookup, with both of its silent outcomes turned into errors: it rounds
-# `xk` onto the cache's grid, so an off-grid query would otherwise alias to the nearest cached node,
-# and it returns `nothing` for a node the cache does not hold -- neither may reach a consumer as an
-# index.
-function _eigenpair_index(eig::ElectronEigenpairs{T}, xk) where {T}
-    (; kpts) = eig
-    nxk = (xk - kpts.shift) .* kpts.ngrid
-    isapprox(round.(Int, nxk), nxk; atol = sqrt(eps(T))) || throw(ArgumentError(
-        "k point $xk is not on the ElectronEigenpairs cache's grid of size $(kpts.ngrid) shifted " *
-        "by $(kpts.shift)"))
-    ik = xk_to_ik(xk, kpts)
-    ik === nothing && throw(ArgumentError(
-        "k point $xk is a node of the ElectronEigenpairs cache's grid ($(kpts.ngrid) shifted by " *
-        "$(kpts.shift)) but is not one of its $(kpts.n) points"))
-    ik
 end

@@ -1,7 +1,6 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: Vec3, electron_degen_cutoff, electron_eigenpairs, _eigenpair_index,
-    gpu_backend, to_device
+using ElectronPhonon: Vec3, electron_degen_cutoff, electron_eigenpairs, gpu_backend, to_device
 using LinearAlgebra
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
@@ -42,29 +41,23 @@ end
     @testset "lookup" begin
         # A cache over a strict subset of the grid, so that the omitted node is a genuine miss.
         sub = GridKpoints(Kpoints(kpts.vectors[1:kpts.n-1]; ngrid = kpts.ngrid), kpts.ngrid)
-        eig = electron_eigenpairs(model, sub)
-        @test all(ik -> _eigenpair_index(eig, sub.vectors[ik]) == ik, 1:sub.n)
-        # A k point that reaches the lookup through grid arithmetic carries round-off, which must
-        # still resolve (the tolerance is the `GridKpoints` constructor's `sqrt(eps(T))`).
-        @test _eigenpair_index(eig, sub.vectors[5] .+ 1e-12) == 5
-        # A node the cache does not hold, and two points that are not nodes at all. The latter are
-        # the ones that must not silently alias: the lookup rounds onto the grid, so without the
-        # accessor's own check they would return the index of a neighbouring cached k point (on
-        # this grid, `ik = 1` and `ik = 17` respectively).
-        @test_throws "is not one of its" _eigenpair_index(eig, kpts.vectors[kpts.n])
-        @test_throws "is not on the" _eigenpair_index(eig, Vec3(0.05, 0.0, 0.0))
-        @test_throws "is not on the" _eigenpair_index(eig, Vec3(0.25 + 1e-6, 0.0, 0.0))
+        eig = electron_eigenpairs(model, sub; fourier_mode = "gridopt")
+        states = compute_electron_states(model, sub, ["eigenvalue", "eigenvector"];
+                                         fourier_mode = "gridopt")
+        # The cache's own contract: `xk_to_ik` on `eig.kpts` addresses the column of
+        # `e_full`/`u_full` that holds *that* k point's eigenpair. The lookup's own behaviour --
+        # the round-off tolerance, the two failure modes, shifted grids, the aliasing the check
+        # closes -- is covered by "kpoints: xk_to_ik checked vs unsafe" in test_kpoints.jl.
+        @test all(1:sub.n) do ik
+            j = xk_to_ik(sub.vectors[ik], eig.kpts)
+            eig.e_full[:, j] == states[ik].e_full && eig.u_full[:, :, j] == states[ik].u_full
+        end
+        # A node of the grid that this cache does not cover must not resolve to a neighbouring
+        # column; `nothing` is what the caller then acts on.
+        @test xk_to_ik(kpts.vectors[kpts.n], eig.kpts) === nothing
 
-        # A shifted grid: the check is against the cache's own `shift`, so Gamma -- a perfectly
-        # legal k point -- is not a node of this cache and must be rejected rather than aliased.
-        shifted = GridKpoints(kpoints_grid((4, 4, 4); shift = (0.125, 0.125, 0.125)))
-        eig_shifted = electron_eigenpairs(model, shifted)
-        @test eig_shifted.kpts.shift ≈ Vec3(0.125, 0.125, 0.125)
-        @test all(ik -> _eigenpair_index(eig_shifted, shifted.vectors[ik]) == ik, 1:shifted.n)
-        @test _eigenpair_index(eig_shifted, shifted.vectors[3] .+ 1e-12) == 3
-        @test_throws "is not on the" _eigenpair_index(eig_shifted, Vec3(0.0, 0.0, 0.0))
-
-        # A `Kpoints` input is validated against its own ngrid when the cache is built.
+        # A `Kpoints` input is validated against its own ngrid when the cache is built, so a cache
+        # whose grid does not contain its own points is unconstructible.
         off_grid = Kpoints{Float64}(2, [Vec3(0.0, 0.0, 0.0), Vec3(0.1, 0.0, 0.0)], [0.5, 0.5],
                                     kpts.ngrid)
         @test_throws "is not on the grid of size" electron_eigenpairs(model, off_grid)
