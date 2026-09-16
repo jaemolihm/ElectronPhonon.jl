@@ -3,7 +3,6 @@ using ElectronPhonon
 using ElectronPhonon: electron_eigenpairs, gpu_backend, CPUBackend, AbstractBackend, xk_to_ik,
     xk_to_ik_unsafe, AbstractCalculator, OuterKLoop, OuterQLoop, EPData, EPDataQBatched,
     OuterIteration, OuterIterationBatch
-using OffsetArrays: no_offset_view
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
 # tests when it is unavailable or non-functional (e.g. CPU-only CI).
@@ -23,25 +22,20 @@ ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{OuterKLoop}) = true
 ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{OuterQLoop}) = true
 ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{EPData}) = true
 ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{EPDataQBatched}) = true
-ElectronPhonon.calculator_begin!(c::_PrecomputedStatesProbe, ::OuterIteration, ctx) = c
-ElectronPhonon.calculator_end!(c::_PrecomputedStatesProbe, ::OuterIteration, ctx) = c
-ElectronPhonon.calculator_begin!(c::_PrecomputedStatesProbe, ::OuterIterationBatch, ctx) = c
-ElectronPhonon.calculator_end!(c::_PrecomputedStatesProbe, ::OuterIterationBatch, ctx) = c
+ElectronPhonon.calculator_begin!(::_PrecomputedStatesProbe, ::OuterIteration, ctx) = nothing
+ElectronPhonon.calculator_end!(::_PrecomputedStatesProbe, ::OuterIteration, ctx) = nothing
+ElectronPhonon.calculator_begin!(::_PrecomputedStatesProbe, ::OuterIterationBatch, ctx) = nothing
+ElectronPhonon.calculator_end!(::_PrecomputedStatesProbe, ::OuterIterationBatch, ctx) = nothing
 ElectronPhonon.setup_calculator!(c::_PrecomputedStatesProbe, backend, mode, kpts, qpts, el_states;
                                  kwargs...) = c
 ElectronPhonon.postprocess_calculator!(c::_PrecomputedStatesProbe; kwargs...) = c
 ElectronPhonon.run_calculator!(c::_PrecomputedStatesProbe, ::EPData, ctx) = c
 ElectronPhonon.run_calculator!(c::_PrecomputedStatesProbe, ::EPDataQBatched, ctx) = c
 
-# Every field a run fills, compared with `==`: `v`/`rbar` are window views, so take them through
-# `no_offset_view` (their axes are covered by `rng`). Same comparison as `_eigenpairs_state_equal`
-# in test_electron_eigenpairs.jl, repeated here so this file runs on its own.
-function _driver_state_equal(a::ElectronState, b::ElectronState)
-    a.xk == b.xk && a.e_full == b.e_full && a.u_full == b.u_full && a.nband == b.nband &&
-        a.rng == b.rng && a.vdiag == b.vdiag &&
-        no_offset_view(a.v) == no_offset_view(b.v) &&
-        no_offset_view(a.rbar) == no_offset_view(b.rbar)
-end
+# Largest deviation between two runs' states, position by position (the two runs must share a
+# k-point list). `_electron_state_equal` lives in common_models_from_artifacts.jl.
+_u_deviation(a, b) = maximum(ik -> maximum(abs, a[ik].u_full - b[ik].u_full), eachindex(a))
+_e_deviation(a, b) = maximum(ik -> maximum(abs, a[ik].e_full - b[ik].e_full), eachindex(a))
 
 # Whether two runs agree on `u_full` at every outer k point they both visit, and how many those
 # are (pinned by the caller so the comparison cannot be vacuous).
@@ -58,17 +52,6 @@ function _shared_outer_u_agree(run_a, run_b)
     (ok, nshared)
 end
 
-# Largest `u_full` deviation between two runs over the outer k points they share.
-function _shared_outer_u_deviation(run_a, run_b)
-    d = 0.0
-    for (ika, xk) in enumerate(run_a.kpts.vectors)
-        ikb = xk_to_ik_unsafe(xk, run_b.kpts)
-        ikb === nothing && continue
-        d = max(d, maximum(abs, run_a.el_k_save[ika].u_full - run_b.el_k_save[ikb].u_full))
-    end
-    d
-end
-
 @testset "e-ph drivers with precomputed electron states" begin
     grid = (4, 4, 4)
     kgrid = GridKpoints(kpoints_grid(grid))
@@ -78,26 +61,46 @@ end
 
     @testset "run_eph_over_k_and_kq" begin
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
-        _run(kpts_in; kwargs...) = ElectronPhonon.run_eph_over_k_and_kq(model, kpts_in, grid;
-            calculators = [_PrecomputedStatesProbe()], symmetry = nothing,
-            progress_print_step = 10^9, verbosity = 0, kwargs...)
+        _run(kpts_in, kqpts_in = grid; kwargs...) = ElectronPhonon.run_eph_over_k_and_kq(
+            model, kpts_in, kqpts_in; calculators = [_PrecomputedStatesProbe()],
+            symmetry = nothing, progress_print_step = 10^9, verbosity = 0, kwargs...)
 
         arms = Tuple{AbstractBackend, String}[(CPUBackend(), "gridopt")]
         PRECOMPUTED_STATES_GPU_AVAILABLE && push!(arms, (gpu_backend(), "gridopt"))
         for (backend, fourier_mode) in arms
             cache = electron_eigenpairs(model, kgrid; backend, fourier_mode)
+            # The same eigenpairs rotated by one k point: a cache that is well-formed, on the right
+            # backend and covers every k point, but holds the wrong eigenvector at each of them.
+            # This is what gives the assertions below teeth on *either* backend -- a run that
+            # ignored the cache and diagonalized H(k) itself would be unaffected by it. (A cache
+            # built at the other `fourier_mode` only works as a tooth on CPU: both
+            # `electron_eigenpairs`' device branch and the device eigensolve hardcode
+            # `fourier_mode = "batched"`.)
+            perm = [mod1(ik + 1, kgrid.n) for ik in 1:kgrid.n]
+            bad = Eigenpairs(model.nw, kgrid, cache.e_full[:, perm],
+                                     cache.u_full[:, :, perm])
+
             run_a = _run(sub_a; backend, fourier_mode)
             run_a_cached = _run(sub_a; backend, fourier_mode,
                                 el_k_eigenpairs = cache, el_kq_eigenpairs = cache)
             run_b_cached = _run(sub_b; backend, fourier_mode,
                                 el_k_eigenpairs = cache, el_kq_eigenpairs = cache)
+            run_a_bad = _run(sub_a; backend, fourier_mode,
+                             el_k_eigenpairs = bad, el_kq_eigenpairs = bad)
 
             # A cache is inert: it holds the same eigensolve output on the same H(k), so a
             # with-cache run reproduces the without-cache one bit for bit on both sides. Both arms
             # use the same `fourier_mode` -- H(k) is not bitwise equal between Fourier modes, and
             # inside a degenerate multiplet that difference is O(1) in `u`.
-            @test all(_driver_state_equal.(run_a_cached.el_k_save, run_a.el_k_save))
-            @test all(_driver_state_equal.(run_a_cached.el_kq_save, run_a.el_kq_save))
+            @test all(_electron_state_equal.(run_a_cached.el_k_save, run_a.el_k_save))
+            @test all(_electron_state_equal.(run_a_cached.el_kq_save, run_a.el_kq_save))
+
+            # Teeth for that claim, and for every claim below it: the wrong cache must change what
+            # the run produces, on the outer k side and on the inner k+q side.
+            @test _u_deviation(run_a.el_k_save, run_a_bad.el_k_save) > 1
+            @test _u_deviation(run_a.el_kq_save, run_a_bad.el_kq_save) > 1
+            @test _e_deviation(run_a.el_k_save, run_a_bad.el_k_save) > 0.1
+            @test _e_deviation(run_a.el_kq_save, run_a_bad.el_kq_save) > 0.1
 
             # Every state a cached run produces carries the cache's own eigenpair, on the outer k
             # side and the inner k+q side alike. That is what makes the shared gauge structural:
@@ -108,45 +111,58 @@ end
             @test all(from_cache, run_a_cached.el_k_save)
             @test all(from_cache, run_a_cached.el_kq_save)
             @test all(from_cache, run_b_cached.el_k_save)
-            # Negative control: the claim must fail against a one-k offset in the cache, so a run
-            # that mapped its k points wrongly could not leave it passing.
-            @test !any(run_a_cached.el_k_save) do el
-                ik = xk_to_ik(el.xk, cache.kpts)
-                el.u_full == u_cache[:, :, mod1(ik + 1, cache.kpts.n)]
-            end
+            @test !any(from_cache, run_a_bad.el_k_save)
 
             # The deliverable: the two runs agree on the eigenvector gauge at every shared k point.
+            # The pinned 24 is a vacuity guard on the overlap, not a physical claim. Note the
+            # agreement itself already holds on Pb *without* a cache -- H(k) here comes out bitwise
+            # independent of which other k points a run visits, on both backends -- so what the
+            # cache buys on this fixture is the guarantee, measured by the wrong-cache teeth above.
+            # On a system with pervasive degeneracy it is what makes the agreement structural.
             @test _shared_outer_u_agree(run_a_cached, run_b_cached) == (true, 24)
-
-            # Recorded, not asserted: on Pb the two runs already agree without a cache, on both
-            # backends -- H(k) here comes out bitwise independent of which other k points the run
-            # visits, so the cache is a guarantee rather than a fix on this fixture. It is what
-            # makes the agreement structural on a system with pervasive degeneracy.
-            @info "shared-k u_full deviation without a cache" backend nk_shared = 24 deviation =
-                _shared_outer_u_deviation(run_a, _run(sub_b; backend, fourier_mode))
+            @test _shared_outer_u_agree(run_a_bad, run_b_cached) == (false, 24)
 
             # A cache that does not cover every k point a run visits is an error, not a silent
-            # recompute -- asserted once per side, so each kwarg's forwarding is covered on its own.
+            # recompute -- asserted once per side, so each kwarg's forwarding is covered on its
+            # own. The `ArgumentError` reaches the caller wrapped by the threaded state loop, so
+            # match the message rather than the exception type. It must name the k point on both
+            # backends: unguarded, a device cache would instead fail inside the indexing kernel,
+            # as a bare `KernelException`.
             partial = electron_eigenpairs(model, subset(1:60); backend, fourier_mode)
-            @test_throws "is not one of its" _run(sub_b; backend, fourier_mode,
-                                                 el_k_eigenpairs = partial)
-            @test_throws "is not one of its" _run(sub_a; backend, fourier_mode,
-                                                 el_kq_eigenpairs = partial)
+            @test_throws "does not cover" _run(sub_b; backend, fourier_mode,
+                                               el_k_eigenpairs = partial)
+            @test_throws "does not cover" _run(sub_a; backend, fourier_mode,
+                                               el_kq_eigenpairs = partial)
+
+            # A prebuilt k+q `FilteredBandStates` takes its own early return in
+            # `_setup_electron_kq`, which the grid runs above never enter -- and it is the branch
+            # the cross driver uses, since it passes prebuilt selections for both positionals.
+            sel_kq = ElectronPhonon.filter_electron_states(grid, model.nw, model.el_ham,
+                                                           (-Inf, Inf); fourier_mode)
+            prebuilt = _run(sub_a, sel_kq; backend, fourier_mode)
+            prebuilt_cached = _run(sub_a, sel_kq; backend, fourier_mode,
+                                   el_kq_eigenpairs = cache)
+            prebuilt_bad = _run(sub_a, sel_kq; backend, fourier_mode, el_kq_eigenpairs = bad)
+            @test all(_electron_state_equal.(prebuilt_cached.el_kq_save, prebuilt.el_kq_save))
+            @test _u_deviation(prebuilt.el_kq_save, prebuilt_bad.el_kq_save) > 1
         end
 
-        # The eigenvectors really come from the cache: one built with the other Fourier mode
-        # differs from what the run would have computed by O(1) inside a degenerate multiplet, so a
-        # run that diagonalized H(k) itself could not reproduce it. CPU only -- the device path has
-        # only the batched interpolator, so `fourier_mode` does not reach its eigensolve.
+        # `el_kq_eigenpairs` also composes with `el_kq_from_unfolding = true` (the cache is looked
+        # up at the irreducible points and the unfolding rotation carries its gauge into the star),
+        # and the driver's docstring says so, but that combination is NOT exercised anywhere in
+        # this repo: `unfold_ElectronStates` reads `model.el_sym.operators`, and `el_sym` is
+        # `nothing` for every test artifact model, so the path throws with or without a cache.
+        # test/test_unfold.jl is commented out of runtests.jl for the same reason.
+        @test _load_model_from_artifacts("pb"; load_epmat = false).el_sym === nothing
+
+        # A cache built with the other Fourier mode is a second, independent tooth on CPU: it
+        # differs from what the run would have computed by O(1) inside a degenerate multiplet.
         cache_normal = electron_eigenpairs(model, kgrid; fourier_mode = "normal")
         run_gridopt = _run(sub_a; fourier_mode = "gridopt")
         run_normal_cache = _run(sub_a; fourier_mode = "gridopt",
                                 el_k_eigenpairs = cache_normal, el_kq_eigenpairs = cache_normal)
-        u_deviation(a, b) = maximum(eachindex(a)) do ik
-            maximum(abs, a[ik].u_full - b[ik].u_full)
-        end
-        @test u_deviation(run_gridopt.el_k_save, run_normal_cache.el_k_save) > 1
-        @test u_deviation(run_gridopt.el_kq_save, run_normal_cache.el_kq_save) > 1
+        @test _u_deviation(run_gridopt.el_k_save, run_normal_cache.el_k_save) > 1
+        @test _u_deviation(run_gridopt.el_kq_save, run_normal_cache.el_kq_save) > 1
     end
 
     # The k side is one edit in `_setup_electron_k`, shared by all three drivers, so the two
@@ -165,15 +181,14 @@ end
 
             run_plain = _run()
             cache = electron_eigenpairs(model, kgrid; fourier_mode = "gridopt")
-            @test all(_driver_state_equal.(_run(el_k_eigenpairs = cache).el_k_save,
-                                           run_plain.el_k_save))
-            # Same teeth as above: a cache built with the other Fourier mode must change `u`.
-            run_normal_cache = _run(el_k_eigenpairs =
-                electron_eigenpairs(model, kgrid; fourier_mode = "normal"))
-            @test maximum(eachindex(run_plain.el_k_save)) do ik
-                maximum(abs, run_plain.el_k_save[ik].u_full -
-                             run_normal_cache.el_k_save[ik].u_full)
-            end > 1
+            @test all(_electron_state_equal.(_run(el_k_eigenpairs = cache).el_k_save,
+                                             run_plain.el_k_save))
+            # Same wrong-cache tooth as above, so the inertness claim cannot pass vacuously.
+            perm = [mod1(ik + 1, kgrid.n) for ik in 1:kgrid.n]
+            bad = Eigenpairs(model.nw, kgrid, cache.e_full[:, perm],
+                                     cache.u_full[:, :, perm])
+            @test _u_deviation(run_plain.el_k_save,
+                               _run(el_k_eigenpairs = bad).el_k_save) > 1
         end
     end
 end

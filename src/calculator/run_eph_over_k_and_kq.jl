@@ -37,7 +37,12 @@ quantity lists. A cache is resident on the backend that built it and must match 
 
 `el_kq_eigenpairs` composes with `el_kq_from_unfolding = true`: the k+q states are then computed
 only at the irreducible points, which a full-BZ cache is looked up for per `xk` like any others, and
-the unfolding rotation carries the cached gauge into the star.
+the unfolding rotation carries the cached gauge into the star. Runs that share a k+q cache must then
+make the *same* `el_kq_from_unfolding` choice. At one full-BZ k+q point an unfolding run carries the
+cached *irreducible* eigenvector rotated by the symmetry operation, while a direct run carries the
+cached eigenvector at that point itself; the two are a gauge apart, so mixing the two settings
+reintroduces exactly the mismatch a shared cache exists to remove. Sharing a cache does not make
+that impossible, and nothing checks it.
 """
 function run_eph_over_k_and_kq(
         model       :: Model{FT},
@@ -66,8 +71,8 @@ function run_eph_over_k_and_kq(
         # outside the k loop) and only the `OuterIterationBatch` bracket is fired; this also sets how
         # many outer k reuse one kR->kq phase tile. No deprecated alias for the former `nk_batch_max`.
         nk_outer_batch_max = 256,
-        el_k_eigenpairs = nothing,   # Shared full-band eigenpair cache for the outer k side
-        el_kq_eigenpairs = nothing,  # ... and for the inner k+q side
+        el_k_eigenpairs  :: Union{Nothing, Eigenpairs} = nothing,
+        el_kq_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -195,8 +200,8 @@ function _setup_eph_over_k_and_kq(
         covariant_derivative_of_g = false,
         backend :: AbstractBackend = CPUBackend(),
         batched :: Bool = false,
-        el_k_eigenpairs = nothing,
-        el_kq_eigenpairs = nothing,
+        el_k_eigenpairs  :: Union{Nothing, Eigenpairs} = nothing,
+        el_kq_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
         verbosity::Int = 1,
     ) where {FT}
 

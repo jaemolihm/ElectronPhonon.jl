@@ -24,6 +24,12 @@ they do in [`run_eph_over_k_and_kq`](@ref):
     states at k+q in the irreducible BZ and unfolding them to the full BZ. This is useful to
     ensure gauge consistency between symmetry-equivalent k points.
     To enable this option, `kpts` and `qpts` must have same grid size.
+
+* `el_k_eigenpairs :: Union{Nothing, Eigenpairs} = nothing` — means exactly what it does in
+  [`run_eph_over_k_and_kq`](@ref), for the inner k side **only** (this driver's `kpts`). Its k+q
+  states are always diagonalized in place, in the precomputed branch and in the loop alike, so there
+  is no `el_kq_eigenpairs` here: a run that needs a shared gauge at k+q wants
+  [`run_eph_over_k_and_kq`](@ref).
 """
 function run_eph_over_q_and_k(
         model       :: Model{FT},
@@ -51,7 +57,7 @@ function run_eph_over_q_and_k(
         backend :: AbstractBackend = CPUBackend(),   # Where arrays live (gpu_backend() for a GPU run)
         batched :: Union{Nothing, Bool} = nothing,   # Payload/loop shape (nothing = derive from `backend`)
         nk_batch_max = 2^15,      # Batched: max number of outer k points processed per batch
-        el_k_eigenpairs = nothing,   # Shared full-band eigenpair cache for the outer k side
+        el_k_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
     ) where {FT}
 
     if model.epmat_outer_momentum != "ph"
@@ -163,7 +169,7 @@ function _setup_eph_over_q_and_k(
         eph_buffers::Union{Nothing, EphOuterQLoopBuffers} = nothing,
         backend :: AbstractBackend = CPUBackend(),
         batched :: Bool = false,
-        el_k_eigenpairs = nothing,
+        el_k_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
     ) where {FT}
 
     (; nw, nmodes) = model
