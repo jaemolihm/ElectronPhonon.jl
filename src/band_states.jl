@@ -458,6 +458,8 @@ independent, so only the k-vector is a shared address.
 end
 function state_index(s::AbstractBandStates{T, <:GridKpoints},
         xk::Vec3, iband::Int) where {T}
+    # `_unsafe` keeps today's behaviour, which is wrong for an `xk` off this selection's grid:
+    # it aliases onto a neighbouring node instead of reporting absence. See issue #26.
     ik = xk_to_ik_unsafe(xk, s.kpts)
     ik === nothing ? 0 : state_index(s, ik, iband)
 end
