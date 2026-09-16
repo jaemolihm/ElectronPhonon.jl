@@ -337,6 +337,11 @@ function _el_to_el_f_symmetry_maps(qme_model::QMEIrreducibleKModel{FT}) where FT
             (; ib1, ib2, ik) = el[ind_i]
             xk = el.kpts.vectors[ik]
             sk = symop.is_tr ? -symop.S * xk : symop.S * xk
+            # `sk` is a node of `el_f.kpts`' grid by construction, which takes two steps: the
+            # symmetry image stays on the initial-state grid (`kpoints_grid` rejects a shifted grid
+            # carrying a symmetry, `kpoints_grid_symmetry` an incommensurate ngrid, in exact
+            # `Rational` arithmetic), and `el_f.kpts` is built on a grid containing it. So it cannot
+            # alias; `nothing` means `sk` is outside `el_f.kpts`' selection.
             isk = xk_to_ik_unsafe(sk, el_f.kpts)
             isk === nothing && continue
 

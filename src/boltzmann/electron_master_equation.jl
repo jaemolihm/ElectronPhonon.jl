@@ -396,6 +396,11 @@ function _qme_linear_response_unfold_map(el_i::QMEStates{FT}, el_f::QMEStates{FT
         for ik in 1:el_i.kpts.n
             xk = el_i.kpts.vectors[ik]
             sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
+            # `sxk` is a node of `el_f.kpts`' grid by construction, which takes two steps: the
+            # symmetry image stays on the initial-state grid (`kpoints_grid` rejects a shifted grid
+            # carrying a symmetry, `kpoints_grid_symmetry` an incommensurate ngrid, in exact
+            # `Rational` arithmetic), and `el_f.kpts` is built on a grid containing it. So it cannot
+            # alias; `nothing` means `sxk` is outside `el_f.kpts`' selection.
             isk = xk_to_ik_unsafe(sxk, el_f.kpts)
             isk === nothing && continue
 

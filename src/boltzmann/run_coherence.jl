@@ -210,6 +210,11 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             @views for ik in 1:nk
                 xk = kpts.vectors[ik]
                 sxk = symop.is_tr ? -symop.S * xk : symop.S * xk
+                # `sxk` is a node of `kqpts`' grid by construction, which takes two steps: the
+                # symmetry image stays on the initial-state grid (`kpoints_grid` rejects a shifted
+                # grid carrying a symmetry, `kpoints_grid_symmetry` an incommensurate ngrid, in
+                # exact `Rational` arithmetic), and `kqpts` is built on a grid containing it. So it
+                # cannot alias; `nothing` means `sxk` is outside `kqpts`' selection.
                 isk = xk_to_ik_unsafe(sxk, kqpts)
                 isk === nothing && continue # skip if Sk is not in kqpts
 
