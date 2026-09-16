@@ -100,6 +100,8 @@ function unfold_QMEStates(el::QMEStates, symmetry)
         for (isym, symop) in enumerate(symmetry)
             sk = symop.is_tr ? -symop.S * xk : symop.S * xk
             isk = xk_to_ik(sk, kpts_unfold)
+            isk === nothing && error("symmetry image $sk of k point $xk (isym = $isym) is not " *
+                                     "in the unfolded k-point set, which must hold the whole star")
 
             # To ensure gauge consistency, each isk point must be mapped from a single
             # (ik, isym) pair. If isk_to_ik_isym is not set or set to (ik, isym), use this

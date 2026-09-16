@@ -292,7 +292,11 @@ function filter_electron_states_multigrid(nks_f, nks_c, window_f, window_c, nw, 
     # node has identical eigenvalues, so this band-index test equals testing e_kb against window_f).
     for ik_c in 1:kpts_c.n
         ik = xk_to_ik(kpts_c.vectors[ik_c], merged)
-        ik_f = xk_to_ik(kpts_c.vectors[ik_c], kpts_f)      # coincident fine point (nothing if none)
+        ik === nothing && error("coarse k point $(kpts_c.vectors[ik_c]) is not in the merged " *
+                                "grid, which holds every fine point and every coarse point not " *
+                                "already among them")
+        # coincident fine point, `nothing` if the fine grid was filtered down past it
+        ik_f = xk_to_ik(kpts_c.vectors[ik_c], kpts_f)
         rng_narrow_ik = ik_f === nothing ? (1:0) : (ibmin_f[ik_f]:ibmax_f[ik_f])
         for ib in ibmin_c[ik_c]:ibmax_c[ik_c]
             ib in rng_narrow_ik && continue                # inside narrow window -> already at fine weight

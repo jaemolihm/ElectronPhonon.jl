@@ -43,7 +43,7 @@ isdefined(@__MODULE__, :_load_model_from_artifacts) ||
         # Points beyond the fine window1 set are coarse-region nodes; each must hash to the fine grid.
         n_coarse_region = 0
         for xk in sel.kpts.vectors
-            if EP.xk_to_ik(xk, kf) === nothing
+            if EP.xk_to_ik_unsafe(xk, kf) === nothing
                 n_coarse_region += 1
                 @test all(isapprox.(xk .* nf, round.(xk .* nf); atol=1e-8))
             end

@@ -449,7 +449,8 @@ form resolves `ik = xk_to_ik(xk, s.kpts)` first and requires `kpts isa GridKpoin
 The item form takes anything carrying `xk` and `iband` — in particular `other[i]`, the NamedTuple
 `getindex` yields on either subtype — so a state of one selection is located in another with
 `state_index(s, other[i])`. It goes through `xk`, not `ik`: the two selections' k-grids are
-independent, so only the k-vector is a shared address.
+independent, so only the k-vector is a shared address. "Absent" therefore means a k point `s` does
+not carry; an `xk` off `s.kpts`' grid altogether is a malformed query and `xk_to_ik` throws on it.
 """
 @inline function state_index(s::AbstractBandStates, ik::Int, iband::Int)
     b = iband - s.nband_ignore

@@ -169,7 +169,7 @@ function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_pref
             xk = kpts.vectors[ik]
 
             # Reusing k+q states: map xkq to ikq, the index of k+q point in the global list
-            ikq = xk_to_ik(xk + xq, kqpts)
+            ikq = xk_to_ik_unsafe(xk + xq, kqpts)
 
             # Copy saved electron and phonon states to epstate
             epstate.el_k = el_k_save[ik]
@@ -305,7 +305,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
             xq = qpts.vectors[iq]
 
             # Reusing k+q states: map xkq to ikq, the index of k+q point in the global list
-            ikq = xk_to_ik(xk + xq, kqpts)
+            ikq = xk_to_ik_unsafe(xk + xq, kqpts)
 
             # Copy saved electron and phonon states to epstate
             epstate.ph = ph_save[iq]

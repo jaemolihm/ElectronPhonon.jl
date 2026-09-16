@@ -71,7 +71,7 @@ function check_electron_symmetry_of_model(model::Model{FT}, ngrid; fourier_mode=
         for ik in 1:kpts.n
             xk = kpts.vectors[ik]
             sk = symop.is_tr ? -symop.S * xk : symop.S * xk
-            isk = xk_to_ik(sk, kpts)
+            isk = xk_to_ik_unsafe(sk, kpts)
             if ! (kpts.vectors[isk] ≈ normalize_kpoint_coordinate(sk))
                 error("k point grid is not symmetric: sk=$sk (xk=$xk, isym=$isym) not in the grid.")
             end
