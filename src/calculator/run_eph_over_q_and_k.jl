@@ -51,6 +51,7 @@ function run_eph_over_q_and_k(
         backend :: AbstractBackend = CPUBackend(),   # Where arrays live (gpu_backend() for a GPU run)
         batched :: Union{Nothing, Bool} = nothing,   # Payload/loop shape (nothing = derive from `backend`)
         nk_batch_max = 2^15,      # Batched: max number of outer k points processed per batch
+        el_k_eigenpairs = nothing,   # Shared full-band eigenpair cache for the outer k side
     ) where {FT}
 
     if model.epmat_outer_momentum != "ph"
@@ -104,7 +105,7 @@ function run_eph_over_q_and_k(
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, precompute_el_kq, use_symmetry,
         keep_all_qpts, eph_phonon_basis, calculators, nchunks_threads,
-        verbosity, eph_buffers, backend, batched = batched_resolved,
+        verbosity, eph_buffers, backend, batched = batched_resolved, el_k_eigenpairs,
     )
 
     if batched_resolved
@@ -162,6 +163,7 @@ function _setup_eph_over_q_and_k(
         eph_buffers::Union{Nothing, EphOuterQLoopBuffers} = nothing,
         backend :: AbstractBackend = CPUBackend(),
         batched :: Bool = false,
+        el_k_eigenpairs = nothing,
     ) where {FT}
 
     (; nw, nmodes) = model
@@ -177,7 +179,8 @@ function _setup_eph_over_q_and_k(
     el_k_quantities = isempty(calculators) ? ["eigenvalue", "eigenvector", "velocity", "position"] :
         unique(reduce(vcat, required_el_k_quantities(c) for c in calculators))
     (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(
-        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity, el_k_quantities)
+        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity,
+        el_k_quantities, el_k_eigenpairs)
     nk = kpts.n
 
     # Generate q points

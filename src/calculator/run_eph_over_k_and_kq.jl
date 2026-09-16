@@ -16,6 +16,28 @@ coupling. Two keywords select where the arrays live and which payload the calcul
 The batched path has a narrower scope than the per-point one (no polar/long-range, no screening,
 `energy_conservation = (:None, 0.0)`, commensurate grids, no `covariant_derivative_of_g`, no
 `skip_eph`, no `el_kq_from_unfolding` under symmetry); it asserts each of these.
+
+Two further keywords let a run take its electron eigenpairs from a shared cache instead of
+diagonalizing H(k) itself:
+
+* `el_k_eigenpairs`, `el_kq_eigenpairs :: Union{Nothing, Eigenpairs}` — a cache built with
+  [`electron_eigenpairs`](@ref) for the outer k and the inner k+q side respectively. They exist so
+  that two runs over *overlapping* k-point sets share the eigenvector gauge at every shared
+  k-point: a band-resolved `g2 = |g|²` is basis-dependent inside a degenerate multiplet, where the
+  per-k CPU eigensolve pins the basis only through the EPW-mimicking fix in
+  [`solve_eigen_el!`](@ref) and the batched device eigensolve does not pin it at all.
+
+Each cache must cover every k-point *this rank* visits on its side. It is not MPI-distributed:
+`mpi_comm_k` splits the outer k inside `filter_electron_states`, so a rank-local outer cache must be
+that rank's slice or a superset (the natural usage — one full-grid cache replicated on every rank —
+just works, and k+q stays full per rank anyway). A k-point the cache does not hold is an error, not
+a silent recompute. The caches are read-only: a run copies `e`/`u` out per k-point and computes its
+own window, velocity and position from them, so one cache serves runs with different windows and
+quantity lists. A cache is resident on the backend that built it and must match the run's `backend`.
+
+`el_kq_eigenpairs` composes with `el_kq_from_unfolding = true`: the k+q states are then computed
+only at the irreducible points, which a full-BZ cache is looked up for per `xk` like any others, and
+the unfolding rotation carries the cached gauge into the star.
 """
 function run_eph_over_k_and_kq(
         model       :: Model{FT},
@@ -44,6 +66,8 @@ function run_eph_over_k_and_kq(
         # outside the k loop) and only the `OuterIterationBatch` bracket is fired; this also sets how
         # many outer k reuse one kR->kq phase tile. No deprecated alias for the former `nk_batch_max`.
         nk_outer_batch_max = 256,
+        el_k_eigenpairs = nothing,   # Shared full-band eigenpair cache for the outer k side
+        el_kq_eigenpairs = nothing,  # ... and for the inner k+q side
         verbosity::Int = 1,
     ) where {FT}
 
@@ -114,6 +138,7 @@ function run_eph_over_k_and_kq(
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, symmetry, calculators, nchunks_threads,
         covariant_derivative_of_g, backend, batched = batched_resolved, verbosity,
+        el_k_eigenpairs, el_kq_eigenpairs,
     )
 
     if batched_resolved
@@ -170,6 +195,8 @@ function _setup_eph_over_k_and_kq(
         covariant_derivative_of_g = false,
         backend :: AbstractBackend = CPUBackend(),
         batched :: Bool = false,
+        el_k_eigenpairs = nothing,
+        el_kq_eigenpairs = nothing,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -180,13 +207,13 @@ function _setup_eph_over_k_and_kq(
     # IBZ-reduces + unfolds under symmetry) plus its `kpts` and computed electron states. Same calls,
     # same order as the prior inline block.
     (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(model, kpts_input;
-        window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity)
+        window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity, el_k_eigenpairs)
     nk = kpts.n
 
     el_kq_quantities = ["eigenvalue", "eigenvector", "velocity", "position"]
     (; kqpts, el_kq_save, sel_kq) = _setup_electron_kq(model, kqpts_input;
         window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
-        fourier_mode, backend, verbosity)
+        fourier_mode, backend, verbosity, el_kq_eigenpairs)
 
 
     # Precompute qpts and phonon states if k and k+q meshes are commensurate
