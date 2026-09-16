@@ -25,14 +25,14 @@ end
         states = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector"]; fourier_mode)
         @test eig.nw == model.nw
         @test eig.e isa Matrix{Float64}
-        @test eig.u isa Array{ComplexF64, 3}
+        @test eig.u_full isa Array{ComplexF64, 3}
         @test size(eig.e) == (model.nw, kpts.n)
-        @test size(eig.u) == (model.nw, model.nw, kpts.n)
+        @test size(eig.u_full) == (model.nw, model.nw, kpts.n)
         @test all(ik -> eig.e[:, ik] == states[ik].e_full, 1:kpts.n)
-        @test all(ik -> eig.u[:, :, ik] == states[ik].u_full, 1:kpts.n)
+        @test all(ik -> eig.u_full[:, :, ik] == states[ik].u_full, 1:kpts.n)
         # Negative control for the two claims above: they must fail against a one-k offset, so a
         # cache that reorders its k points cannot leave them passing.
-        @test !any(ik -> eig.u[:, :, ik] == states[mod1(ik + 1, kpts.n)].u_full, 1:kpts.n)
+        @test !any(ik -> eig.u_full[:, :, ik] == states[mod1(ik + 1, kpts.n)].u_full, 1:kpts.n)
 
         # The bitwise claim is only interesting where the gauge is not unique, so pin the number of
         # k points of this grid that carry a degenerate multiplet.
@@ -81,11 +81,11 @@ end
             # The arrays follow the backend that built them: the device cache stays on the device
             # (and is consumed there), the host one stays on the host.
             @test eig_cpu.e isa Matrix{Float64}
-            @test eig_cpu.u isa Array{ComplexF64, 3}
+            @test eig_cpu.u_full isa Array{ComplexF64, 3}
             @test eig_gpu.e isa CuMatrix{Float64}
-            @test eig_gpu.u isa CuArray{ComplexF64, 3}
-            @test eig_gpu.kpts === eig_cpu.kpts  # only e/u move; kpts stays on the host
-            e_gpu, u_gpu = Array(eig_gpu.e), Array(eig_gpu.u)
+            @test eig_gpu.u_full isa CuArray{ComplexF64, 3}
+            @test eig_gpu.kpts === eig_cpu.kpts  # only e/u_full move; kpts stays on the host
+            e_gpu, u_gpu = Array(eig_gpu.e), Array(eig_gpu.u_full)
             # Eigenvalues only: the batched device eigensolve does not apply the degenerate-
             # multiplet gauge fix of the per-k CPU solve, so eigenvectors may legitimately differ
             # by a unitary rotation inside a multiplet.
@@ -105,7 +105,7 @@ end
             # differ, there by at most `electron_degen_cutoff`.
             hamiltonian_diff(ik) = norm(
                 u_gpu[:, :, ik] * Diagonal(e_gpu[:, ik]) * u_gpu[:, :, ik]' -
-                eig_cpu.u[:, :, ik] * Diagonal(eig_cpu.e[:, ik]) * eig_cpu.u[:, :, ik]')
+                eig_cpu.u_full[:, :, ik] * Diagonal(eig_cpu.e[:, ik]) * eig_cpu.u_full[:, :, ik]')
             degenerate = [minimum(diff(eig_cpu.e[:, ik])) < electron_degen_cutoff
                           for ik in 1:kpts.n]
             @test maximum(hamiltonian_diff, (1:kpts.n)[.!degenerate]; init = 0.0) < 1e-13

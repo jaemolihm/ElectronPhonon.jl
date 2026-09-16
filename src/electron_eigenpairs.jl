@@ -10,46 +10,48 @@ export electron_eigenpairs
 """
     ElectronEigenpairs{T, MT, AT}
 
-Full-band electron eigenvalues `e` (`(nw, kpts.n)`) and eigenvectors `u` (`(nw, nw, kpts.n)`) on
-the k-point set `kpts`. Build one with [`electron_eigenpairs`](@ref).
+Full-band electron eigenvalues `e` (`(nw, kpts.n)`) and eigenvectors `u_full` (`(nw, nw,
+kpts.n)`) on the k-point set `kpts`. Build one with [`electron_eigenpairs`](@ref).
 
 Its purpose is to make two or more runs over *overlapping* k-point sets use the same eigenvector
-gauge at every shared k-point. The gauge lives entirely in the full-band `u`, which is independent
-of any energy window, so one cache serves runs with different windows and different derived
-quantities: a consumer copies `e`/`u` out per k-point and computes its own velocity, position and
-occupation from them. That matters wherever a band-resolved quantity is basis-dependent -- inside a
-degenerate multiplet `g2 = |g|²` is not invariant per band pair, the per-k CPU eigensolve pins the
-multiplet basis with the EPW-mimicking fix of [`solve_eigen_el!`](@ref), and the batched device
-eigensolve does not pin it at all.
+gauge at every shared k-point. The gauge lives entirely in `u_full`, which is independent of any
+energy window, so one cache serves runs with different windows and different derived quantities: a
+consumer copies `e`/`u_full` out per k-point and computes its own velocity, position and occupation
+from them. That matters wherever a band-resolved quantity is basis-dependent -- inside a degenerate
+multiplet `g2 = |g|²` is not invariant per band pair, the per-k CPU eigensolve pins the multiplet
+basis with the EPW-mimicking fix of [`solve_eigen_el!`](@ref), and the batched device eigensolve
+does not pin it at all.
 
-`e` and `u` are `AbstractArray`s that live wherever the backend that built them put them, as the
-`op_r` of a `WannierObject` does: a cache built with `backend = gpu_backend()` stays on the device
-and is consumed there without a round trip. The runs that must agree on a gauge are runs on the
-*same* backend, so moving the arrays to the host would only mean uploading them again per run;
+`e` and `u_full` are `AbstractArray`s that live wherever the backend that built them put them, as
+the `op_r` of a `WannierObject` does: a cache built with `backend = gpu_backend()` stays on the
+device and is consumed there without a round trip. The runs that must agree on a gauge are runs on
+the *same* backend, so moving the arrays to the host would only mean uploading them again per run;
 a consumer on a different backend than the cache is an error, not a silent copy. `kpts`, and the
 `xk -> ik` lookup over it, always stay on the host.
 
-The size to keep in mind is `u`: `16 * nw^2 * nk` bytes, resident for the cache's whole lifetime.
-That is modest for a windowed selection and large for a dense full-BZ grid.
+The size to keep in mind is `u_full`: `16 * nw^2 * nk` bytes, resident for the cache's whole
+lifetime. That is modest for a windowed selection and large for a dense full-BZ grid. In the future
+the filtering can be combined with the cache, storing only the subset of the eigenvectors that the
+runs actually need.
 
 The value is immutable and read-only; there is no mutating API. Look a k-point up by its crystal
 coordinates with `_eigenpair_index`.
 """
 struct ElectronEigenpairs{T, MT <: AbstractMatrix{T}, AT <: AbstractArray{Complex{T}, 3}}
-    nw   :: Int
-    # `GridKpoints` rather than `AbstractKpoints`: the xk -> ik lookup is defined only for a grid
-    # (`_hash_xk`), so requiring one here is what makes every cache lookupable.
-    kpts :: GridKpoints{T}
-    e    :: MT                      # (nw, kpts.n)
-    u    :: AT                      # (nw, nw, kpts.n)
+    nw     :: Int
+    # `GridKpoints` rather than `AbstractKpoints`: the xk -> ik lookup (`xk_to_ik`) is defined only
+    # for a grid, so requiring one here is what makes every cache lookupable.
+    kpts   :: GridKpoints{T}
+    e      :: MT                    # (nw, kpts.n)
+    u_full :: AT                    # (nw, nw, kpts.n)
 
-    function ElectronEigenpairs(nw::Int, kpts::GridKpoints{T}, e::MT, u::AT) where
+    function ElectronEigenpairs(nw::Int, kpts::GridKpoints{T}, e::MT, u_full::AT) where
             {T, MT <: AbstractMatrix{T}, AT <: AbstractArray{Complex{T}, 3}}
         size(e) == (nw, kpts.n) || throw(ArgumentError(
             "e must be of size ($nw, $(kpts.n)), got $(size(e))"))
-        size(u) == (nw, nw, kpts.n) || throw(ArgumentError(
-            "u must be of size ($nw, $nw, $(kpts.n)), got $(size(u))"))
-        new{T, MT, AT}(nw, kpts, e, u)
+        size(u_full) == (nw, nw, kpts.n) || throw(ArgumentError(
+            "u_full must be of size ($nw, $nw, $(kpts.n)), got $(size(u_full))"))
+        new{T, MT, AT}(nw, kpts, e, u_full)
     end
 end
 
@@ -69,7 +71,7 @@ on the grid it carries. Either way the lookup then rounds a query onto that grid
 `_eigenpair_index` re-checks every query point (an off-grid one would otherwise alias to the
 nearest node instead of missing).
 
-On a GPU backend the whole set is solved in one batched eigensolve and `e`/`u` are left on the
+On a GPU backend the whole set is solved in one batched eigensolve and `e`/`u_full` are left on the
 device, so the cache is resident on `backend` and a consumer must run on that same backend.
 `fourier_mode` is then unused (the batched interpolator is the only one the device path has), as in
 `compute_electron_states`. Two caveats inherited from that path: the batched eigensolve does not
@@ -83,18 +85,18 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
     gkpts = GridKpoints(kpts)
     if backend isa CPUBackend
         e = zeros(FT, nw, gkpts.n)
-        u = zeros(Complex{FT}, nw, nw, gkpts.n)
+        u_full = zeros(Complex{FT}, nw, nw, gkpts.n)
         @threads for iks in chunks(gkpts.vectors; n=2nthreads())
             @views begin
                 # Setup thread-local WannierInterpolator
                 ham = get_interpolator(model.el_ham; fourier_mode)
                 register_kpoints!(ham, gkpts.vectors[iks])
                 for ik in iks
-                    get_el_eigen!(e[:, ik], u[:, :, ik], nw, ham, gkpts.vectors[ik])
+                    get_el_eigen!(e[:, ik], u_full[:, :, ik], nw, ham, gkpts.vectors[ik])
                 end
             end
         end
-        ElectronEigenpairs(nw, gkpts, e, u)
+        ElectronEigenpairs(nw, gkpts, e, u_full)
     else
         itp_elham = get_interpolator(to_device(backend, model.el_ham);
                                      fourier_mode="batched", batch_size=gkpts.n)
@@ -103,18 +105,18 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
     end
 end
 
-# Index of `xk` in the cache, erroring on a query the cache cannot answer. Both failures are loud:
-# `_hash_xk` rounds `xk` onto the cache's grid, so an off-grid query would otherwise alias to the
-# nearest cached node, and `_ik_from_hash` returns 0 for a node the cache does not hold -- neither
-# may reach a consumer as an index.
+# `xk_to_ik` for a cache lookup, with both of its silent outcomes turned into errors: it rounds
+# `xk` onto the cache's grid, so an off-grid query would otherwise alias to the nearest cached node,
+# and it returns `nothing` for a node the cache does not hold -- neither may reach a consumer as an
+# index.
 function _eigenpair_index(eig::ElectronEigenpairs{T}, xk) where {T}
     (; kpts) = eig
     nxk = (xk - kpts.shift) .* kpts.ngrid
     isapprox(round.(Int, nxk), nxk; atol = sqrt(eps(T))) || throw(ArgumentError(
         "k point $xk is not on the ElectronEigenpairs cache's grid of size $(kpts.ngrid) shifted " *
         "by $(kpts.shift)"))
-    ik = _ik_from_hash(kpts, _hash_xk(xk, kpts))
-    ik == 0 && throw(ArgumentError(
+    ik = xk_to_ik(xk, kpts)
+    ik === nothing && throw(ArgumentError(
         "k point $xk is a node of the ElectronEigenpairs cache's grid ($(kpts.ngrid) shifted by " *
         "$(kpts.shift)) but is not one of its $(kpts.n) points"))
     ik
