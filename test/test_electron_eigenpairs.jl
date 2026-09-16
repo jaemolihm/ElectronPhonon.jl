@@ -24,11 +24,11 @@ end
         eig = electron_eigenpairs(model, kpts; fourier_mode)
         states = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector"]; fourier_mode)
         @test eig.nw == model.nw
-        @test eig.e isa Matrix{Float64}
+        @test eig.e_full isa Matrix{Float64}
         @test eig.u_full isa Array{ComplexF64, 3}
-        @test size(eig.e) == (model.nw, kpts.n)
+        @test size(eig.e_full) == (model.nw, kpts.n)
         @test size(eig.u_full) == (model.nw, model.nw, kpts.n)
-        @test all(ik -> eig.e[:, ik] == states[ik].e_full, 1:kpts.n)
+        @test all(ik -> eig.e_full[:, ik] == states[ik].e_full, 1:kpts.n)
         @test all(ik -> eig.u_full[:, :, ik] == states[ik].u_full, 1:kpts.n)
         # Negative control for the two claims above: they must fail against a one-k offset, so a
         # cache that reorders its k points cannot leave them passing.
@@ -36,7 +36,7 @@ end
 
         # The bitwise claim is only interesting where the gauge is not unique, so pin the number of
         # k points of this grid that carry a degenerate multiplet.
-        @test count(ik -> minimum(diff(eig.e[:, ik])) < electron_degen_cutoff, 1:kpts.n) == 22
+        @test count(ik -> minimum(diff(eig.e_full[:, ik])) < electron_degen_cutoff, 1:kpts.n) == 22
     end
 
     @testset "lookup" begin
@@ -80,19 +80,19 @@ end
             eig_gpu = electron_eigenpairs(model, kpts; backend = gpu_backend())
             # The arrays follow the backend that built them: the device cache stays on the device
             # (and is consumed there), the host one stays on the host.
-            @test eig_cpu.e isa Matrix{Float64}
+            @test eig_cpu.e_full isa Matrix{Float64}
             @test eig_cpu.u_full isa Array{ComplexF64, 3}
-            @test eig_gpu.e isa CuMatrix{Float64}
+            @test eig_gpu.e_full isa CuMatrix{Float64}
             @test eig_gpu.u_full isa CuArray{ComplexF64, 3}
-            @test eig_gpu.kpts === eig_cpu.kpts  # only e/u_full move; kpts stays on the host
-            e_gpu, u_gpu = Array(eig_gpu.e), Array(eig_gpu.u_full)
+            @test eig_gpu.kpts === eig_cpu.kpts  # only e_full/u_full move; kpts stays on the host
+            e_gpu, u_gpu = Array(eig_gpu.e_full), Array(eig_gpu.u_full)
             # Eigenvalues only: the batched device eigensolve does not apply the degenerate-
             # multiplet gauge fix of the per-k CPU solve, so eigenvectors may legitimately differ
             # by a unitary rotation inside a multiplet.
             # This bound is also the only guard against a Float32 intermediate on the device: the
             # `copyto!` into the host arrays upcasts, so the eltype assertions above cannot see one.
             # Float32 floors at ~1e-7 relative, so do not loosen 1e-13 past ~1e-9.
-            @test norm(e_gpu - eig_cpu.e) / norm(eig_cpu.e) < 1e-13
+            @test norm(e_gpu - eig_cpu.e_full) / norm(eig_cpu.e_full) < 1e-13
             unitarity = maximum(1:kpts.n) do ik
                 u = @view u_gpu[:, :, ik]
                 norm(u' * u - I)
@@ -105,8 +105,9 @@ end
             # differ, there by at most `electron_degen_cutoff`.
             hamiltonian_diff(ik) = norm(
                 u_gpu[:, :, ik] * Diagonal(e_gpu[:, ik]) * u_gpu[:, :, ik]' -
-                eig_cpu.u_full[:, :, ik] * Diagonal(eig_cpu.e[:, ik]) * eig_cpu.u_full[:, :, ik]')
-            degenerate = [minimum(diff(eig_cpu.e[:, ik])) < electron_degen_cutoff
+                eig_cpu.u_full[:, :, ik] * Diagonal(eig_cpu.e_full[:, ik]) *
+                eig_cpu.u_full[:, :, ik]')
+            degenerate = [minimum(diff(eig_cpu.e_full[:, ik])) < electron_degen_cutoff
                           for ik in 1:kpts.n]
             @test maximum(hamiltonian_diff, (1:kpts.n)[.!degenerate]; init = 0.0) < 1e-13
             @test maximum(hamiltonian_diff, (1:kpts.n)[degenerate]; init = 0.0) <
