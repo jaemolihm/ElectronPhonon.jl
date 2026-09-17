@@ -5,14 +5,16 @@
 # lives next to `EPState` in src/EPState.jl. The setup_calculator! fan-out is `_setup_calculators!`,
 # shared by all three drivers.)
 
-# k-side setup shared by all three drivers: obtain the outer-k selection (a prebuilt `FilteredBandStates`
-# passed through verbatim, or filtered from a grid to the energy window) and compute the electron
-# states there. `backend` says where the eigensolves run (a non-CPU backend takes the batched device
-# path). `verbosity` selects timing (@time when > 0, via `maybe_time`); `el_k_quantities` lets
-# the outer-q batched path skip velocity/position. `el_k_eigenpairs` is an optional
-# `Eigenpairs` cache covering the outer k points, so runs sharing one use the same
-# eigenvector gauge. The prebuilt pass-through is dead for the two grid-only sibling callers (they
-# always pass a grid), so their behavior is unchanged.
+# k-side setup shared by all three drivers: get the outer-k selection, compute the electron states.
+#
+# - selection: a prebuilt `FilteredBandStates` passes through verbatim; a grid is filtered to
+#   `window_k`. The pass-through is dead for the two grid-only sibling callers (they always pass a
+#   grid), so their behavior is unchanged.
+# - `backend`: where the eigensolves run; a non-CPU backend takes the batched device path.
+# - `verbosity`: selects timing (`@time` when > 0, via `maybe_time`).
+# - `el_k_quantities`: lets the outer-q batched path skip velocity/position.
+# - `el_k_eigenpairs`: optional `Eigenpairs` cache over the outer k points, so runs sharing one
+#   use the same eigenvector gauge.
 function _setup_electron_k(
         model :: Model, kpts_input;
         window_k, mpi_comm_k, symmetry, fourier_mode, backend = CPUBackend(), verbosity = 1,
@@ -36,12 +38,14 @@ function _setup_electron_k(
 end
 
 
-# Electron states at k+q, shared by all three drivers. With `el_kq_from_unfolding`, the states are
-# computed only in the irreducible BZ (`kqpts_irr`) and unfolded to `kqpts` (carrying the eigenvector
-# gauge) to keep gauge consistency between symmetry-equivalent k points; otherwise they are computed
-# directly on `kqpts`. `kqpts_irr` / `ik_to_ikirr_isym_kq` are only read on the unfolding path. An
-# `eigenpairs` cache serves either path: on the unfolding path it is looked up at the irreducible
-# points and the unfolding rotation then carries the cached gauge into the star.
+# Electron states at k+q, shared by all three drivers.
+#
+# - `el_kq_from_unfolding = true`: states are computed only in the irreducible BZ (`kqpts_irr`) and
+#   unfolded to `kqpts`, carrying the eigenvector gauge, to keep gauge consistency between
+#   symmetry-equivalent k points. `false`: computed directly on `kqpts`.
+# - `kqpts_irr` / `ik_to_ikirr_isym_kq`: read only on the unfolding path.
+# - `eigenpairs`: serves either path. On the unfolding path it is looked up at the irreducible
+#   points, and the unfolding rotation carries the cached gauge into the star.
 function _compute_electron_states_kq(
         model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq, symmetry, el_kq_from_unfolding, window_kq;
         quantities, fourier_mode, backend = CPUBackend(), verbosity = 1,
