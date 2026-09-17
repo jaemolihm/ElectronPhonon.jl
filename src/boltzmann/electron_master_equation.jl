@@ -449,7 +449,7 @@ function _qme_linear_response_unfold_map_nosym(el_i::QMEStates{FT}, el_f::QMESta
     is_degenerate = load_BTData(open_group(fid, "gauge/is_degenerate"), OffsetArray{Bool, 3, Array{Bool, 3}})
 
     # We assume that all el_i and el_f use the same grid and same shift.
-    δk = el_i.kpts.shift ≈ el_f.kpts.shift
+    δk = el_i.kpts.shift - el_f.kpts.shift
     @assert all(δk - round.(δk) .≈ 0)
     @assert el_i.kpts.ngrid == el_f.kpts.ngrid
 
