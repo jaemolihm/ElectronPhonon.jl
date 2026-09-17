@@ -44,14 +44,14 @@ square the package stores as `g2 = |ep|² / (2ω)`.
 Pass **exactly one** of `g` and `λ`; the other is derived from
 
 ```math
-g = \\sqrt{2 · dimension · λ · ω₀ · t},   λ = \\frac{g²}{2 · dimension · ω₀ · t} = \\frac{g²}{ω₀ · W/2}
+g = \\sqrt{2 · dimension · λ · ω₀ · |t|},   λ = \\frac{g²}{2 · dimension · ω₀ · |t|} = \\frac{g²}{ω₀ · W/2}
 ```
 
-with `W = 4 · dimension · t` the bandwidth, so `λ` is the usual dimensionless Holstein
-coupling measured against the half-bandwidth. Deriving `g` from `λ` needs `t > 0`.
+with `W = 4 · dimension · |t|` the bandwidth, so `λ` is the usual dimensionless Holstein
+coupling measured against the half-bandwidth. Deriving `g` from `λ` needs `t ≠ 0`.
 
 # Keyword arguments
-- `t` : nearest-neighbor hopping. The bandwidth is `4·dimension·t`, centered on `ε₀`.
+- `t` : nearest-neighbor hopping. The bandwidth is `4·dimension·|t|`, centered on `ε₀`.
 - `ω₀` : Einstein phonon frequency. Must be positive.
 - `g` / `λ` : e-ph coupling, identical for all `k` and `q`. Give one, not both.
 - `mass = 1.0` : mass of the Einstein oscillator. It cancels exactly from `ω_q` and from
@@ -109,14 +109,15 @@ function holstein_model(;
     FT = Float64
     t, ω₀, mass, alat, ε₀ = FT(t), FT(ω₀), FT(mass), FT(alat), FT(ε₀)
 
-    # λ is measured against the half-bandwidth 2·dimension·t.
+    # λ is measured against the half-bandwidth 2·dimension·|t|.
+    half_bandwidth = 2 * dimension * abs(t)
     if g === nothing
-        t > 0 || throw(ArgumentError("deriving g from λ needs t > 0, got t = $t"))
+        half_bandwidth > 0 || throw(ArgumentError("deriving g from λ needs t ≠ 0, got t = $t"))
         λ = FT(λ)
-        g = sqrt(2 * dimension * λ * ω₀ * t)
+        g = sqrt(λ * ω₀ * half_bandwidth)
     else
         g = FT(g)
-        λ = g^2 / (2 * dimension * ω₀ * t)
+        λ = g^2 / (ω₀ * half_bandwidth)
     end
 
     if verbose

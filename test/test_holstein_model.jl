@@ -2,29 +2,7 @@ using Test
 using LinearAlgebra
 using Random
 using ElectronPhonon
-using ElectronPhonon: holstein_model, AbstractCalculator, OuterKLoop, EPData, OuterIteration
-
-# A minimal calculator recording the range of g2 and ω seen by the driver. The driver calls
-# `run_calculator!` from several threads, so the accumulation is guarded by a lock.
-mutable struct _HolsteinG2Calc <: AbstractCalculator
-    lock :: ReentrantLock
-    g2 :: Vector{Float64}
-    ω :: Vector{Float64}
-    _HolsteinG2Calc() = new(ReentrantLock(), Float64[], Float64[])
-end
-ElectronPhonon.supports(::_HolsteinG2Calc, ::Type{OuterKLoop}) = true
-ElectronPhonon.supports(::_HolsteinG2Calc, ::Type{EPData}) = true
-ElectronPhonon.setup_calculator!(c::_HolsteinG2Calc, backend, mode, kpts, qpts, el_states; kwargs...) = c
-ElectronPhonon.postprocess_calculator!(c::_HolsteinG2Calc; kwargs...) = c
-ElectronPhonon.calculator_begin!(::_HolsteinG2Calc, ::OuterIteration, ctx) = nothing
-ElectronPhonon.calculator_end!(::_HolsteinG2Calc, ::OuterIteration, ctx) = nothing
-function ElectronPhonon.run_calculator!(c::_HolsteinG2Calc, data::EPData, ctx)
-    @lock c.lock begin
-        append!(c.g2, vec(parent(data.epstate.g2)))
-        append!(c.ω, data.epstate.ph.e)
-    end
-    c
-end
+using ElectronPhonon: holstein_model
 
 @testset "Holstein model" begin
     t, ω₀, g, alat, ε₀ = 0.1, 0.01, 0.02, 5.0, 0.05
@@ -111,15 +89,54 @@ end
         @test all(v_direct[i].v[1, 1] == v_berry[i].v[1, 1] for i in 1:kpts.n)
     end
 
-    @testset "through the e-ph driver with symmetry" begin
-        model = holstein_model(; t, ω₀, g, alat, dimension = 2, verbose = false)
-        calc = _HolsteinG2Calc()
-        ElectronPhonon.run_eph_over_k_and_kq(model, (6, 6, 1), (6, 6, 1); calculators = [calc],
-            model.symmetry, progress_print_step = 10^9,
-            window_k = (-Inf, Inf), window_kq = (-Inf, Inf))
-        @test !isempty(calc.g2)
-        @test all(≈(g^2), calc.g2)
-        @test all(≈(ω₀), calc.ω)
+    @testset "through the e-ph driver, via BoltzmannCalculator" begin
+        # Run the production calculator on the model and check two properties of the
+        # scattering-out rate that are exact for Holstein and free of any prefactor
+        # convention. Both follow from |g|² and ω being constant:
+        #   Γ_k = 2π|g|² ∑_± (occupation) · D(ε_k ± ω₀)
+        # so Γ depends on k only through ε_k, and scales as |g|².
+        K = ElectronPhonon.unit_to_aru(:K)
+        μ = 0.0  # fixed, so the occupation factors do not move when g changes
+
+        function run_bte(g_value)
+            model = holstein_model(; t, ω₀, g = g_value, alat, dimension = 2, verbose = false)
+            occ = ElectronOccupationParams(; Tlist = [300.0 * K], nlist = 1.0, μlist = μ,
+                model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac)
+            calc = BoltzmannCalculator{Float64}(; occ,
+                smearing_list = [SmearingType(:Gaussian, 2 * ω₀)], occupation_method = 5)
+            res = ElectronPhonon.run_eph_over_k_and_kq(model, (6, 6, 1), (6, 6, 1);
+                calculators = [calc], model.symmetry, window_k = (-Inf, Inf),
+                window_kq = (-Inf, Inf), progress_print_step = 10^9, verbosity = 0)
+            (calc, res)
+        end
+
+        calc, res = run_bte(g)
+
+        # The phonon states come straight back from the driver — no calculator needed.
+        @test all(p.e[1] ≈ ω₀ for p in res.ph_save)
+
+        Sₒ = calc.Sₒ[1]
+        e_i = calc.el_i.es
+        @test length(Sₒ) == length(e_i) == calc.el_i.n
+        @test all(>(0), Sₒ)
+
+        # Γ is a function of ε alone. On the 6×6 grid the outer (IBZ) states include an
+        # accidental degeneracy between the symmetry-inequivalent points (1/2, 0) and
+        # (1/3, 1/6), both at ε = ε₀, so this is not implied by symmetry.
+        ndegenerate = 0
+        for i in eachindex(e_i), j in (i + 1):length(e_i)
+            if isapprox(e_i[i], e_i[j]; atol = 1e-12)
+                ndegenerate += 1
+                @test Sₒ[i] ≈ Sₒ[j] rtol=1e-10
+            end
+        end
+        @test ndegenerate >= 1       # a degenerate pair exists, so the check above ran
+        @test !all(≈(Sₒ[1]), Sₒ)     # and Sₒ is not trivially constant across all states
+
+        # Γ ∝ |g|², exactly: g2 = |g|² is the only g-dependent factor in the scatter.
+        calc2, _ = run_bte(2 * g)
+        @test calc2.el_i.es ≈ e_i
+        @test calc2.Sₒ[1] ≈ 4 .* Sₒ rtol=1e-12
     end
 
     @testset "g and λ are alternative spellings of the same coupling" begin
@@ -132,6 +149,10 @@ end
             @test from_λ.epmat.op_r ≈ from_g.epmat.op_r
             @test from_λ.epmat.op_r[1, findfirst(iszero, from_λ.epmat.irvec)] ≈
                 g_expected * sqrt(2 * ω₀ * 1.0)
+
+            # The half-bandwidth is 2·dimension·|t|, so the sign of t does not move λ.
+            from_neg_t = holstein_model(; t = -t, ω₀, λ, alat, dimension = dim, verbose = false)
+            @test from_neg_t.epmat.op_r ≈ from_λ.epmat.op_r
         end
     end
 
