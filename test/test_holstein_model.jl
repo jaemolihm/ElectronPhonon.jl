@@ -30,11 +30,11 @@ end
     t, ω₀, g, alat, ε₀ = 0.1, 0.01, 0.02, 5.0, 0.05
 
     @testset "dim = $dim, epmat_outer_momentum = $outer" for dim in 1:3, outer in ("el", "ph")
-        model = holstein_model(; t, ω₀, g, alat, ε₀, dim, epmat_outer_momentum = outer)
+        model = holstein_model(; t, ω₀, g, alat, ε₀, dimension = dim, epmat_outer_momentum = outer, verbose = false)
 
         @test model.nw == 1
         @test model.nmodes == 1
-        @test model.dim == dim
+        @test model.dimension == dim
         @test length(model.mass) == model.nmodes
         @test model.volume ≈ 100^(3 - dim) * alat^3
         @test !model.use_polar_dipole
@@ -84,7 +84,7 @@ end
         # A cubic cell would make spglib report operations mixing x and z, which the 1d and 2d
         # bands do not obey. Check every reported operation against the interpolated energies.
         for dim in 1:3
-            model = holstein_model(; t, ω₀, g, alat, ε₀, dim)
+            model = holstein_model(; t, ω₀, g, alat, ε₀, dimension = dim, verbose = false)
             @test model.symmetry.nsym == (dim == 3 ? 96 : 32)
             Random.seed!(7)
             for _ in 1:5
@@ -100,17 +100,19 @@ end
     end
 
     @testset "velocity modes agree" begin
-        # Position matrix elements vanish, so :Direct and :BerryConnection must coincide.
-        model = holstein_model(; t, ω₀, g, alat, ε₀, dim = 3)
+        # Position matrix elements vanish, so :Direct (the default) and :BerryConnection
+        # must coincide.
+        model = holstein_model(; t, ω₀, g, alat, ε₀, dimension = 3, verbose = false)
+        @test model.el_velocity_mode === :Direct
         kpts = Kpoints([Vec3(0.1, 0.2, 0.3), Vec3(0.4, -0.15, 0.05)])
-        v_berry = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"])
-        model.el_velocity_mode = :Direct
         v_direct = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"])
+        model.el_velocity_mode = :BerryConnection
+        v_berry = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector", "velocity"])
         @test all(v_direct[i].v[1, 1] == v_berry[i].v[1, 1] for i in 1:kpts.n)
     end
 
     @testset "through the e-ph driver with symmetry" begin
-        model = holstein_model(; t, ω₀, g, alat, dim = 2)
+        model = holstein_model(; t, ω₀, g, alat, dimension = 2, verbose = false)
         calc = _HolsteinG2Calc()
         ElectronPhonon.run_eph_over_k_and_kq(model, (6, 6, 1), (6, 6, 1); calculators = [calc],
             model.symmetry, progress_print_step = 10^9,
@@ -120,11 +122,54 @@ end
         @test all(≈(ω₀), calc.ω)
     end
 
+    @testset "g and λ are alternative spellings of the same coupling" begin
+        # λ = g² / (ω₀ · W/2) with half-bandwidth W/2 = 2·dimension·t.
+        for dim in 1:3
+            λ = 0.35
+            from_λ = holstein_model(; t, ω₀, λ, alat, dimension = dim, verbose = false)
+            g_expected = sqrt(2 * dim * λ * ω₀ * t)
+            from_g = holstein_model(; t, ω₀, g = g_expected, alat, dimension = dim, verbose = false)
+            @test from_λ.epmat.op_r ≈ from_g.epmat.op_r
+            @test from_λ.epmat.op_r[1, findfirst(iszero, from_λ.epmat.irvec)] ≈
+                g_expected * sqrt(2 * ω₀ * 1.0)
+        end
+    end
+
+    @testset "mass cancels out" begin
+        # The model is fixed by ω₀ and g alone; `mass` must not change any observable.
+        ms = [holstein_model(; t, ω₀, g, alat, ε₀, dimension = 3, mass = m, verbose = false)
+              for m in (1.0, 911.444)]
+        xk, xq = Vec3(0.1, 0.2, 0.3), Vec3(0.3, -0.1, 0.25)
+        for m in ms
+            @test compute_phonon_states(m, Kpoints(xq), ["eigenvalue"])[1].e[1] ≈ ω₀
+        end
+        g2s = map(ms) do model
+            el_k = compute_electron_states(model, Kpoints(xk), ["eigenvector"])[1]
+            el_kq = compute_electron_states(model, Kpoints(xk + xq), ["eigenvector"])[1]
+            ph = compute_phonon_states(model, Kpoints(xq), ["eigenvalue", "eigenvector"])[1]
+            epstate = EPState(model.nw, model.nmodes)
+            epstate.el_k, epstate.el_kq, epstate.ph = el_k, el_kq, ph
+            obj = ElectronPhonon.get_next_wannier_object(model.epmat)
+            ElectronPhonon.get_eph_RR_to_kR!(obj, ElectronPhonon.get_interpolator(model.epmat),
+                xk, ElectronPhonon.no_offset_view(el_k.u))
+            ElectronPhonon.get_eph_kR_to_kq!(epstate, ElectronPhonon.get_interpolator(obj), xq)
+            ElectronPhonon.epstate_set_g2!(epstate)
+            epstate.g2[1, 1, 1]
+        end
+        @test all(≈(g^2), g2s)
+    end
+
     @testset "argument validation" begin
-        @test_throws ArgumentError holstein_model(; t, ω₀, g, dim = 0)
-        @test_throws ArgumentError holstein_model(; t, ω₀, g, dim = 4)
-        @test_throws ArgumentError holstein_model(; t, ω₀ = -1.0, g)
-        @test_throws ArgumentError holstein_model(; t, ω₀, g, alat = 0.0)
-        @test_throws ArgumentError holstein_model(; t, ω₀, g, epmat_outer_momentum = "kq")
+        @test_throws ArgumentError holstein_model(; t, ω₀, g, dimension = 0, verbose = false)
+        @test_throws ArgumentError holstein_model(; t, ω₀, g, dimension = 4, verbose = false)
+        @test_throws ArgumentError holstein_model(; t, ω₀ = -1.0, g, verbose = false)
+        @test_throws ArgumentError holstein_model(; t, ω₀, g, alat = 0.0, verbose = false)
+        @test_throws ArgumentError holstein_model(; t, ω₀, g, mass = 0.0, verbose = false)
+        @test_throws ArgumentError holstein_model(; t, ω₀, g, epmat_outer_momentum = "kq", verbose = false)
+        # Exactly one of g and λ.
+        @test_throws ArgumentError holstein_model(; t, ω₀, verbose = false)
+        @test_throws ArgumentError holstein_model(; t, ω₀, g, λ = 0.5, verbose = false)
+        # Deriving g from λ needs a nonzero bandwidth.
+        @test_throws ArgumentError holstein_model(; t = 0.0, ω₀, λ = 0.5, verbose = false)
     end
 end

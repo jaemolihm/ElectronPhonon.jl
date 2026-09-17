@@ -32,11 +32,11 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
     recip_lattice::Mat3{FT}
     volume::FT
 
-    # Spatial dimension of the system (1, 2 or 3). The lattice is always 3d; `dim < 3` means
-    # the remaining directions are decoupled vacuum, so quantities normalized per `volume`
-    # (carrier density, conductivity) refer to the full 3d cell and must be rescaled to a
-    # length or area by the caller.
-    dim::Int = 3
+    # Spatial dimension of the system (1, 2 or 3). The lattice is always 3d; `dimension < 3`
+    # means the remaining directions are decoupled vacuum, so quantities normalized per
+    # `volume` (carrier density, conductivity) refer to the full 3d cell and must be rescaled
+    # to a length or area by the caller.
+    dimension::Int = 3
 
     # Symmetries
     symmetry::Symmetry{FT}
