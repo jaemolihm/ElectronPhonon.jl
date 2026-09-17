@@ -19,7 +19,8 @@ eigenvalues of the full eigensolve, which agree with the value-only solve's only
 cache is resident on the backend that built it, so it must be built with the `backend` the run uses.
 """
 function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-Inf, Inf);
-        fourier_mode="normal", backend=CPUBackend(), eigenpairs=nothing) where FT
+        fourier_mode="normal", backend=CPUBackend(),
+        eigenpairs::Union{Nothing, ElectronEigenpairs}=nothing) where FT
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
     for quantity in quantities
@@ -53,7 +54,8 @@ per-k band extent is narrow at fine-only nodes and wide at coincident nodes) get
 k. Returns a vector of `ElectronState` over `sel.kpts`. `eigenpairs` is as in the window method.
 """
 function compute_electron_states(model::Model{FT}, sel::FilteredBandStates, quantities;
-        fourier_mode="normal", backend=CPUBackend(), eigenpairs=nothing) where FT
+        fourier_mode="normal", backend=CPUBackend(),
+        eigenpairs::Union{Nothing, ElectronEigenpairs}=nothing) where FT
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
     for quantity in quantities
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
@@ -89,22 +91,6 @@ function _electron_state_needs(model, quantities)
         (need_vfull && model.el_velocity_mode === :BerryConnection)
     need_velocity = need_vfull || need_vdiag || "position" ∈ quantities
     (; need_vfull, need_vdiag, need_position, need_velocity)
-end
-
-_check_eigenpairs(::Nothing, nw, backend) = nothing
-
-function _check_eigenpairs(eig::ElectronEigenpairs, nw, backend)
-    eig.nw == nw || throw(ArgumentError(
-        "eigenpairs holds nw = $(eig.nw) Wannier functions, but the model has nw = $nw"))
-    # A cache is resident on the backend that built it, and this run's arrays live on `backend`.
-    # Consuming one from the other side would mean moving it per call, or indexing a device array
-    # from the host loop, so require a match.
-    on_host = eig.e_full isa Array
-    on_host == (backend isa CPUBackend) || throw(ArgumentError(
-        "eigenpairs are resident on the $(on_host ? "host" : "device") " *
-        "(e_full::$(typeof(eig.e_full))), but the run uses $(nameof(typeof(backend))); " *
-        "build the cache with the run's backend"))
-    nothing
 end
 
 # The eigenpair of one k point, either solved on the spot or copied out of a supplied cache. The

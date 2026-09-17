@@ -115,3 +115,19 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
         ElectronEigenpairs(nw, gkpts, E_dev, U_dev)
     end
 end
+
+# Guards on a caller-supplied cache, checked once per consuming call rather than per k point. Both
+# mismatches would eventually fail on their own, but not legibly: a wrong `nw` as a
+# `DimensionMismatch` inside the per-k copy, and a wrong backend as a mixed host/device operation --
+# or, on the eigenvalue-only device path, as no error at all.
+_check_eigenpairs(::Nothing, nw, backend) = nothing
+
+function _check_eigenpairs(eig::ElectronEigenpairs, nw, backend)
+    eig.nw == nw || throw(ArgumentError(
+        "eigenpairs holds nw = $(eig.nw) Wannier functions, but the model has nw = $nw"))
+    # A cache is resident on the backend that built it, and this run's arrays live on `backend`.
+    # Consuming one from the other side would mean moving it per call, or indexing a device array
+    # from the host loop, so require a match.
+    check_on_backend(backend, eig.e_full, "eigenpairs")
+    nothing
+end
