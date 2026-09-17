@@ -12,6 +12,7 @@ include("common_models_from_artifacts.jl")
     include("test_iq_build.jl")  # GPU outer-k loop's `iq` index build (host arithmetic, CPU-only)
     include("test_symmetry.jl")
     include("test_wannier.jl")
+    include("test_holstein_model.jl")  # analytic Holstein Model builder (no artifacts needed)
     include("test_gpu.jl")  # skips gracefully when CUDA is unavailable
     include("test_diagonalize.jl")
     include("test_iterativesolvers.jl")
