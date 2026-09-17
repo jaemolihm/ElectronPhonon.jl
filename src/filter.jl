@@ -37,7 +37,34 @@ end
 filter_kpoints(kpts_input, nw, el_ham, window, mpi_comm; kwargs...) =
     filter_kpoints(kpts_input, nw, el_ham, window; mpi_comm, kwargs...)
 
-function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", backend=CPUBackend())
+# The full-band eigenvalues of one k point, written into `eigenvalues`: solved on the spot, or
+# copied out of a supplied cache. The cache arrives as a typed argument, so each call site
+# specializes on one of the two methods and the no-cache path is the plain value-only solve it was.
+_set_eigenvalues_from!(eigenvalues, nw, ::Nothing, ham, xk) =
+    get_el_eigen_valueonly!(eigenvalues, nw, ham, xk)
+
+function _set_eigenvalues_from!(eigenvalues, nw, eigenpairs::Eigenpairs, ham, xk)
+    ik = xk_to_ik(xk, eigenpairs.kpts)
+    ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
+    @views eigenvalues .= eigenpairs.e_full[:, ik]
+end
+
+# The same, batched over a chunk of k points and returned on the host for the window test: solved on
+# the device, or gathered out of a cache that is resident on that same device.
+_eigenvalues_on_host(::Nothing, itp_elham, xks) =
+    Array(get_el_eigen_valueonly_batched(itp_elham, xks))
+
+function _eigenvalues_on_host(eigenpairs::Eigenpairs, itp_elham, xks)
+    iks = map(xks) do xk
+        ik = xk_to_ik(xk, eigenpairs.kpts)
+        ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
+        ik
+    end
+    Array(eigenpairs.e_full[:, iks])
+end
+
+function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", backend=CPUBackend(),
+                         eigenpairs=nothing)
     ik_keep = zeros(Bool, kpoints.n)
     nelec_below_window_ = zeros(eltype(window), kpoints.n)
     band_min_ = zeros(Int, kpoints.n)
@@ -49,12 +76,17 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", bac
         # `get_el_eigen_valueonly_batched` come from the base + CUDA extension. Chunk over k so the
         # per-chunk device H(k) stack (nw*nw*kchunk complex) stays bounded — a single all-nk solve
         # can exhaust GPU memory on large grids. kchunk caps that stack at ~1 GiB (nk if smaller).
+        # With supplied eigenpairs there is no H(k) to interpolate and the chunking is incidental:
+        # the cached eigenvalues (nw per k point) are gathered chunk by chunk instead.
         kchunk = clamp(fld(2^30, nw * nw * 16), 1, kpoints.n)
-        itp_elham = get_interpolator(to_device(backend, el_ham); fourier_mode="batched", batch_size=kchunk)
+        itp_elham = if eigenpairs === nothing
+            get_interpolator(to_device(backend, el_ham); fourier_mode="batched", batch_size=kchunk)
+        end
         kstart = 1
         while kstart <= kpoints.n
             kstop = min(kstart + kchunk - 1, kpoints.n)
-            E = Array(get_el_eigen_valueonly_batched(itp_elham, view(kpoints.vectors, kstart:kstop)))  # (nw, kchunk)
+            xks = view(kpoints.vectors, kstart:kstop)
+            E = _eigenvalues_on_host(eigenpairs, itp_elham, xks)  # (nw, kchunk)
             @views for (jl, ik) in enumerate(kstart:kstop)
                 bands_in_window = inside_window(E[:, jl], window...)
                 nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
@@ -72,13 +104,17 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", bac
     end
 
     @threads for iks in chunks(kpoints.vectors; n=2*nthreads())
-        ham = get_interpolator(el_ham; fourier_mode)
-        register_kpoints!(ham, view(kpoints.vectors, iks))
+        # With supplied eigenpairs there is no H(k) to interpolate, and nothing else uses `ham`.
+        ham = if eigenpairs === nothing
+            itp_ham = get_interpolator(el_ham; fourier_mode)
+            register_kpoints!(itp_ham, view(kpoints.vectors, iks))
+            itp_ham
+        end
         eigenvalues = zeros(real(eltype(el_ham)), nw)
 
         for ik in iks
             xk = kpoints.vectors[ik]
-            get_el_eigen_valueonly!(eigenvalues, nw, ham, xk)
+            _set_eigenvalues_from!(eigenvalues, nw, eigenpairs, ham, xk)
             bands_in_window = inside_window(eigenvalues, window...)
 
             nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
@@ -157,7 +193,8 @@ end
 # min/max. Non-MPI (the selection generators are single-node); a trivial window keeps the whole grid
 # with all bands `1:nw`.
 function _filter_with_band_ranges(kpts_input, nw, el_ham, window;
-                                  symmetry=nothing, fourier_mode="gridopt", backend=CPUBackend(), shift=(0, 0, 0))
+                                  symmetry=nothing, fourier_mode="gridopt", backend=CPUBackend(),
+                                  shift=(0, 0, 0), eigenpairs=nothing)
     if kpts_input isa NTuple{3,Integer}
         (symmetry === nothing || all(shift .== 0)) ||
             error("nonzero shift and symmetry incompatible (not implemented)")
@@ -169,14 +206,14 @@ function _filter_with_band_ranges(kpts_input, nw, el_ham, window;
         gkpts = kpoints isa GridKpoints ? kpoints : GridKpoints(kpoints)
         return gkpts, fill(1, gkpts.n), fill(nw, gkpts.n), zero(eltype(window))
     end
-    r = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, backend)
+    r = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, backend, eigenpairs)
     gkpts = GridKpoints(get_filtered_kpoints(kpoints, r.ik_keep))
     gkpts, r.band_min_per_k[r.ik_keep], r.band_max_per_k[r.ik_keep], r.nelec_below_window
 end
 
 """
     filter_electron_states(kpts_input, nw, el_ham, window; symmetry, fourier_mode, backend,
-                           mpi_comm, shift) -> FilteredBandStates
+                           mpi_comm, shift, eigenpairs) -> FilteredBandStates
     filter_electron_states(kpts_input, model::Model, window; kwargs...) -> FilteredBandStates
 
 The unified electron-state filtering primitive (Generator 1). Filters a k-grid spec (an
@@ -191,12 +228,24 @@ is mutually exclusive with `symmetry`. Under `mpi_comm` the k-points are split a
 is built distributed, each rank filters its slice once (single eigensolve pass), then the kept
 k-points and per-k band ranges are redistributed together through the same gather/scatter so they
 stay aligned, and the local below-window counts are summed.
+
+`eigenpairs :: Union{Nothing, Eigenpairs}` — a cache from [`electron_eigenpairs`](@ref) whose
+eigenvalues are read instead of diagonalizing H(k). It must cover the *input* grid, not the filtered
+result (the window test is what needs the energies), and be resident on `backend`; a k-point it does
+not hold is an error, not a silent recompute. Under `mpi_comm` each rank filters its own slice and
+the cache is not MPI-distributed, so build it over the whole grid on every rank. The gain is
+consistency rather than speed: the same eigenvalues then decide the window and end up in the states
+of a `compute_electron_states(...; eigenpairs)` run over the same cache. They are the full
+eigensolve's, which differ from the value-only solve this runs without a cache by round-off, so a
+band sitting that close to a window edge can fall on the other side of it.
 """
 function filter_electron_states(kpts_input, nw::Integer, el_ham, window;
-        symmetry=nothing, fourier_mode="gridopt", backend=CPUBackend(), mpi_comm=nothing, shift=(0, 0, 0))
+        symmetry=nothing, fourier_mode="gridopt", backend=CPUBackend(), mpi_comm=nothing,
+        shift=(0, 0, 0), eigenpairs::Union{Nothing, Eigenpairs}=nothing)
+    _check_eigenpairs(eigenpairs, nw, backend)
     if mpi_comm === nothing
         gkpts, ibmin, ibmax, nelec = _filter_with_band_ranges(kpts_input, nw, el_ham, window;
-            symmetry, fourier_mode, backend, shift)
+            symmetry, fourier_mode, backend, shift, eigenpairs)
     else
         kpts_input isa NTuple{3,Integer} ||
             throw(ArgumentError("filter_electron_states with mpi_comm requires an NTuple grid spec"))
@@ -205,7 +254,7 @@ function filter_electron_states(kpts_input, nw::Integer, el_ham, window;
         # Build the grid distributed and filter each rank's slice once (single eigensolve pass).
         kpoints = kpoints_grid(kpts_input, mpi_comm; shift, symmetry)
         gkpts_l, ibmin_l, ibmax_l, nelec_l = _filter_with_band_ranges(kpoints, nw, el_ham, window;
-            fourier_mode, backend)
+            fourier_mode, backend, eigenpairs)
         # Redistribute the kept k-points via the shared GridKpoints wrapper (rank-concatenate +
         # even-split, no reorder; preserves the global ngrid). The per-k band ranges follow with the
         # SAME gather/scatter, so they stay aligned to `gkpts`. Sum the local below-window counts.

@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: Vec3, electron_degen_cutoff, electron_eigenpairs, gpu_backend, to_device,
-    AbstractBackend, CPUBackend
+    AbstractBackend, CPUBackend, inside_window, state_xks
 using LinearAlgebra
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
@@ -154,6 +154,82 @@ end
                 model_bn, kpts_bn, ["eigenvalue", "eigenvector"], window;
                 eigenpairs = device_cache)
         end
+    end
+
+    @testset "consumed by filter_electron_states" begin
+        # The filter solves H(k) eigenvalue-only, so a cache -- which holds the full eigensolve's
+        # eigenvalues -- cannot reproduce its energies bit for bit; on this fixture the two solves
+        # differ by 8.9e-16 aru. What must be identical is the window DECISION, which is discrete.
+        # The cache has to cover the INPUT grid: the filter needs the energies at every candidate
+        # k point, not at the surviving ones.
+        eV = unit_to_aru(:eV)
+        ef = 11.594123 * eV
+        window_pb = (ef - 0.2eV, ef + 0.2eV)
+        grid = (12, 12, 12)
+        kpts_f = GridKpoints(kpoints_grid(grid))
+
+        selection_equal(a, b) = a.kpts.vectors == b.kpts.vectors && a.iks == b.iks &&
+            a.ibands == b.ibands && a.band_extent == b.band_extent &&
+            a.nstates_base == b.nstates_base
+
+        ref = filter_electron_states(grid, model, window_pb; fourier_mode = "gridopt")
+        @test 0 < ref.kpts.n < kpts_f.n        # a genuinely windowed selection,
+        @test !allequal(ref.band_extent)       # whose in-window band range varies with k
+
+        cache_host = electron_eigenpairs(model, kpts_f; fourier_mode = "gridopt")
+        arms = Tuple{AbstractBackend, Eigenpairs}[(CPUBackend(), cache_host)]
+        EIGENPAIRS_GPU_AVAILABLE && push!(arms,
+            (gpu_backend(), electron_eigenpairs(model, kpts_f; backend = gpu_backend())))
+        for (backend, cache) in arms
+            new = filter_electron_states(grid, model, window_pb; backend,
+                                         fourier_mode = "gridopt", eigenpairs = cache)
+            @test selection_equal(new, ref)
+
+            # What the cache buys: the window decision is taken on exactly the energies the states
+            # of a run over the same cache carry, so the two cannot disagree.
+            states = compute_electron_states(model, new, ["eigenvalue", "eigenvector"];
+                                             backend, fourier_mode = "gridopt", eigenpairs = cache)
+            e_cache = Array(cache.e_full)  # the cache may be device-resident; compare on the host
+            @test all(1:new.kpts.n) do ik
+                j = xk_to_ik(new.kpts.vectors[ik], cache.kpts)
+                states[ik].e_full == e_cache[:, j] &&
+                    new.band_extent[ik] == inside_window(e_cache[:, j], window_pb...)
+            end
+
+            # Teeth: the decision is read out of the cache at the looked-up k point. A cache whose
+            # k columns are rotated by one is well-formed and covers the grid, so only a run that
+            # reads it can notice.
+            rot = circshift(1:kpts_f.n, 1)
+            rotated = Eigenpairs(model.nw, kpts_f, cache.e_full[:, rot], cache.u_full[:, :, rot])
+            @test !selection_equal(filter_electron_states(grid, model, window_pb; backend,
+                fourier_mode = "gridopt", eigenpairs = rotated), ref)
+
+            # A k point the cache does not hold is an error, not a silent recompute -- so a cache
+            # over the *filtered* set, the natural mistake, is rejected. On the CPU path the throw
+            # reaches here wrapped by the threaded loop, so match the message.
+            @test_throws "does not cover" filter_electron_states(grid, model, window_pb; backend,
+                fourier_mode = "gridopt", eigenpairs = electron_eigenpairs(model, ref.kpts; backend))
+        end
+
+        # The entry guards apply here too, on a path whose device eigensolve would otherwise take a
+        # host cache without complaint.
+        @test_throws "eigenpairs holds nbasis" filter_electron_states(grid, model, window_pb;
+            eigenpairs = Eigenpairs(2, kpts_f, zeros(2, kpts_f.n),
+                                    zeros(ComplexF64, 2, 2, kpts_f.n)))
+        if EIGENPAIRS_GPU_AVAILABLE
+            @test_throws "resident on the device" filter_electron_states(grid, model, window_pb;
+                eigenpairs = electron_eigenpairs(model, kpts_f; backend = gpu_backend()))
+        end
+
+        # Under `mpi_comm` each rank filters its own slice of the grid, against the same
+        # rank-replicated cache. COMM_SELF is one rank, so it checks the forward and the
+        # gather/scatter; a genuine multi-rank slice check needs `mpiexec -n N`.
+        MPI = ElectronPhonon.MPI
+        MPI.Initialized() || MPI.Init()
+        mpi = filter_electron_states(grid, model, window_pb; fourier_mode = "gridopt",
+                                     mpi_comm = MPI.COMM_SELF, eigenpairs = cache_host)
+        @test Set(zip(state_xks(mpi), mpi.ibands)) == Set(zip(state_xks(ref), ref.ibands))
+        @test mpi.nstates_base == ref.nstates_base
     end
 
     @testset "GPU" begin
