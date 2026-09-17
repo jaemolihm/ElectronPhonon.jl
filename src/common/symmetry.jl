@@ -13,7 +13,6 @@ using LinearAlgebra
 
 export Symmetry
 export symmetry_operations
-public restrict_symmetry_to_dimension
 export symmetry_is_subset
 export symmetry_small_group_of_q
 export symmetrize
