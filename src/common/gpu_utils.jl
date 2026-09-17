@@ -38,6 +38,31 @@ form. Not exported; use `ElectronPhonon.to_device`.
 """
 to_device(::CPUBackend, x) = x
 
+"""
+    on_backend(backend, x::AbstractArray) -> Bool
+
+Whether `x` is already resident on `backend`: an `Array` for `CPUBackend`, an array of
+`backend.proto`'s type for a `GPUBackend`. The residency test that `to_device` is the conversion
+for. Not exported; use `ElectronPhonon.on_backend`.
+"""
+on_backend(::CPUBackend, x::AbstractArray) = x isa Array
+on_backend(b::GPUBackend, x::AbstractArray) = x isa Base.typename(typeof(b.proto)).wrapper
+
+"""
+    check_on_backend(backend, x::AbstractArray, name = "array")
+
+Throw an `ArgumentError` unless `x` is resident on `backend`, calling it `name` in the message. For
+a caller-supplied array that has to live on the same side as the run's own buffers: a mismatch is
+then reported here instead of surfacing deeper in as a mixed host/device operation, a per-element
+transfer, or -- on a path that happens to take `Array(x)` anyway -- no error at all.
+"""
+function check_on_backend(backend::AbstractBackend, x::AbstractArray, name = "array")
+    on_backend(backend, x) || throw(ArgumentError(
+        "$name is resident on the $(x isa Array ? "host" : "device") (::$(typeof(x))), but the " *
+        "run uses $(nameof(typeof(backend))); build it with the run's backend"))
+    nothing
+end
+
 alloc(::CPUBackend, ::Type{T}, dims...) where {T} = Array{T}(undef, dims...)
 alloc(b::GPUBackend, ::Type{T}, dims...) where {T} = similar(b.proto, T, dims...)
 
