@@ -93,38 +93,6 @@ function _electron_state_needs(model, quantities)
     (; need_vfull, need_vdiag, need_position, need_velocity)
 end
 
-# The eigenpair of one k point, either solved on the spot or copied out of a supplied cache. The
-# cache arrives as a typed argument all the way down to here, so each call site specializes on one
-# of the two methods and the no-cache path is the plain `set_eigen!` it was.
-_set_eigen_from!(el::ElectronState, ::Nothing, ham, xk) = set_eigen!(el, ham, xk)
-
-function _set_eigen_from!(el::ElectronState, eigenpairs::Eigenpairs, ham, xk)
-    ik = xk_to_ik(xk, eigenpairs.kpts)
-    ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
-    el.xk = xk
-    @views el.e_full .= eigenpairs.e_full[:, ik]
-    @views el.u_full .= eigenpairs.u_full[:, :, ik]
-
-    # Reset window to a dummy value
-    el.nband = 0
-    el.rng = 1:0
-end
-
-_set_eigen_valueonly_from!(el::ElectronState, ::Nothing, ham, xk) =
-    set_eigen_valueonly!(el, ham, xk)
-
-function _set_eigen_valueonly_from!(el::ElectronState, eigenpairs::Eigenpairs, ham, xk)
-    ik = xk_to_ik(xk, eigenpairs.kpts)
-    ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
-    el.xk = xk
-    @views el.e_full .= eigenpairs.e_full[:, ik]
-
-    # Reset window to a dummy value
-    el.nband = 0
-    el.rng = 1:0
-    el
-end
-
 function _compute_electron_states_cpu!(states, model::Model{FT}, kpts, quantities, window,
                                        eigenpairs; fourier_mode) where FT
     (; el_velocity_mode) = model
@@ -200,15 +168,11 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
         get_interpolator(to_device(backend, model.el_ham); fourier_mode="batched", batch_size=kpts.n)
     end
 
-    # The cache's columns for this k list, in the list's order. Resolved here, on the host, so that
-    # a k point the cache does not hold is reported as such: `xk_to_ik` answers `nothing`, and a
+    # The cache's columns for this k list, in the list's order. Resolved here, on the host: a
     # `nothing` carried into the gather below would be consumed inside the indexing kernel and
     # surface as a bare `KernelException` naming only the device.
-    iks = eigenpairs === nothing ? nothing : map(kpts.vectors) do xk
-        ik = xk_to_ik(xk, eigenpairs.kpts)
-        ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
-        ik
-    end
+    iks = eigenpairs === nothing ? nothing :
+        map(xk -> _eigenpairs_ik(eigenpairs, xk), kpts.vectors)
 
     if quantities == ["eigenvalue"]
         E = if eigenpairs === nothing

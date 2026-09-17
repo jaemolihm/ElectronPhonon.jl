@@ -37,32 +37,6 @@ end
 filter_kpoints(kpts_input, nw, el_ham, window, mpi_comm; kwargs...) =
     filter_kpoints(kpts_input, nw, el_ham, window; mpi_comm, kwargs...)
 
-# The full-band eigenvalues of one k point, written into `eigenvalues`: solved on the spot, or
-# copied out of a supplied cache. The cache arrives as a typed argument, so each call site
-# specializes on one of the two methods and the no-cache path is the plain value-only solve it was.
-_set_eigenvalues_from!(eigenvalues, nw, ::Nothing, ham, xk) =
-    get_el_eigen_valueonly!(eigenvalues, nw, ham, xk)
-
-function _set_eigenvalues_from!(eigenvalues, nw, eigenpairs::Eigenpairs, ham, xk)
-    ik = xk_to_ik(xk, eigenpairs.kpts)
-    ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
-    @views eigenvalues .= eigenpairs.e_full[:, ik]
-end
-
-# The same, batched over a chunk of k points and returned on the host for the window test: solved on
-# the device, or gathered out of a cache that is resident on that same device.
-_eigenvalues_on_host(::Nothing, itp_elham, xks) =
-    Array(get_el_eigen_valueonly_batched(itp_elham, xks))
-
-function _eigenvalues_on_host(eigenpairs::Eigenpairs, itp_elham, xks)
-    iks = map(xks) do xk
-        ik = xk_to_ik(xk, eigenpairs.kpts)
-        ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
-        ik
-    end
-    Array(eigenpairs.e_full[:, iks])
-end
-
 function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", backend=CPUBackend(),
                          eigenpairs=nothing)
     ik_keep = zeros(Bool, kpoints.n)

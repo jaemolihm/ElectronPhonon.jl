@@ -41,9 +41,11 @@ include("longrange.jl")
 include("wannier_to_bloch.jl")
 include("wannier_to_bloch_batched.jl")
 include("model.jl")
+include("electron_state.jl")
+# Before filter.jl, which annotates an `Eigenpairs` kwarg, and after electron_state.jl, whose
+# `ElectronState` the cache's consumer methods dispatch on.
 include("eigenpairs.jl")
 include("filter.jl")
-include("electron_state.jl")
 include("band_states.jl")
 include("phonon_state.jl")
 include("EPState.jl")
