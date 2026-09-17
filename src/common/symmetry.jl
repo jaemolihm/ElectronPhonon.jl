@@ -13,6 +13,7 @@ using LinearAlgebra
 
 export Symmetry
 export symmetry_operations
+export restrict_symmetry_to_dimension
 export symmetry_is_subset
 export symmetry_small_group_of_q
 export symmetrize
@@ -392,7 +393,7 @@ Compute the spatial symmetry operations of the system by calling spglib.
 String is an indicator for atom types. The Vector part is the list of atom positions in
 the crystal coordinates.
 """
-function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1e-5)
+function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1e-5, dimension=3)
     # FIXME: is noncollinear symmetry implemented?
     Ss = Vector{Mat3{Int}}()
     τs = Vector{Vec3{Float64}}()
@@ -409,7 +410,41 @@ function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1
         push!(τs, τ)
     end
     time_reversal = magnetic_moments == [] ? true : false
-    Symmetry(Ss, τs, time_reversal, lattice)
+    symmetry = Symmetry(Ss, τs, time_reversal, lattice)
+    dimension == 3 ? symmetry : restrict_symmetry_to_dimension(symmetry, dimension, lattice)
+end
+
+"""
+    restrict_symmetry_to_dimension(symmetry, dimension, lattice) => Symmetry
+
+Keep only the operations of `symmetry` that do not mix the first `dimension` lattice
+directions with the remaining ones, i.e. whose rotation is block diagonal between
+`1:dimension` and `dimension+1:3`.
+
+Use this for a system that is periodic in 3d but whose Hamiltonian lives in `dimension`
+dimensions, such as a tight-binding chain or sheet in a cell padded with vacuum: an operation
+mixing the two blocks is a symmetry of the *cell* but not of that Hamiltonian. Giving the
+padded cell an incommensurate length along the inactive directions usually makes spglib
+report the restricted group already, in which case this removes nothing; applying it anyway
+means the returned symmetry can never exceed the Hamiltonian's, whatever spglib makes of an
+elongated cell.
+
+`S` is in reciprocal crystal coordinates, so the block-diagonal condition only means the
+Cartesian directions do not mix if `lattice` itself does not mix them. That is checked here:
+`lattice[i, j]` must vanish whenever exactly one of `i, j` is `≤ dimension`.
+"""
+function restrict_symmetry_to_dimension(symmetry::Symmetry, dimension::Integer, lattice)
+    dimension ∈ (1, 2, 3) || throw(ArgumentError("dimension must be 1, 2 or 3, got $dimension"))
+    crosses_blocks(i, j) = (i <= dimension) != (j <= dimension)
+    for i in 1:3, j in 1:3
+        (crosses_blocks(i, j) && !iszero(lattice[i, j])) && throw(ArgumentError(
+            "lattice must not mix the first $dimension directions with the rest, but " *
+            "lattice[$i, $j] = $(lattice[i, j]) is nonzero"))
+    end
+    inds = [isym for (isym, symop) in enumerate(symmetry)
+            if !any(crosses_blocks(i, j) && symop.S[i, j] != 0 for i in 1:3, j in 1:3)]
+    Symmetry(length(inds), symmetry.S[inds], symmetry.τ[inds], symmetry.Scart[inds],
+        symmetry.τcart[inds], symmetry.is_inv[inds], symmetry.is_tr[inds])
 end
 
 # """

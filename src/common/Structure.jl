@@ -13,7 +13,8 @@ struct Structure
     # Symmetries
     symmetry :: Symmetry{Float64}
 
-    function Structure(alat, lattice, mass, atom_pos, atom_labels; compute_symmetry = true)
+    function Structure(alat, lattice, mass, atom_pos, atom_labels; compute_symmetry = true,
+                       dimension = 3)
         if length(mass) != length(atom_pos)
             error("Length of mass and atom_pos must be the same.")
         end
@@ -28,7 +29,7 @@ struct Structure
             # Compute symmetry operations using Spglib
             atom_pos_crystal = Ref(lattice) .\ (atom_pos * alat)
             atoms_spglib = [label => [x for (l, x) in zip(atom_labels, atom_pos_crystal) if l == label] for label in atom_labels]
-            symmetry = symmetry_operations(lattice, atoms_spglib)
+            symmetry = symmetry_operations(lattice, atoms_spglib; dimension)
 
         else
             # Trivial symmetry only.

@@ -6,28 +6,6 @@ using Printf
 public holstein_model
 
 """
-    _restrict_symmetry_to_dimension(symmetry, dimension)
-
-Keep only the operations that do not mix the `dimension` hopping directions with the
-inactive ones, i.e. whose rotation is block diagonal between `1:dimension` and the rest.
-
-The Hamiltonian built here has no hopping along the inactive directions, so any operation
-mixing the two blocks would not be a symmetry of it. The elongated cell already makes spglib
-report exactly this subgroup, so in practice nothing is removed; doing it explicitly means
-`model.symmetry` can never exceed the symmetry of the `dimension`-dimensional Hamiltonian,
-whatever spglib makes of a 100:1 cell. The lattice is diagonal, so the crystal and Cartesian
-axes coincide and the condition can be read off `S` directly.
-"""
-function _restrict_symmetry_to_dimension(symmetry::Symmetry, dimension::Integer)
-    mixes_blocks(S) = any((i <= dimension) != (j <= dimension) && S[i, j] != 0
-                          for i in 1:3, j in 1:3)
-    inds = [isym for (isym, symop) in enumerate(symmetry) if !mixes_blocks(symop.S)]
-    Symmetry(length(inds), symmetry.S[inds], symmetry.τ[inds], symmetry.Scart[inds],
-        symmetry.τcart[inds], symmetry.is_inv[inds], symmetry.is_tr[inds])
-end
-
-
-"""
     holstein_model(; t, ω₀, g = nothing, λ = nothing, mass = 1.0, alat = 1.0, ε₀ = 0.0,
                    dimension = 3, epmat_outer_momentum = "el", verbose = true) :: Model
 
@@ -88,9 +66,9 @@ coupling measured against the half-bandwidth. Deriving `g` from `λ` needs `t �
   symmetry group to one that the `dimension`-dimensional Hamiltonian actually obeys. (A cubic
   cell would make spglib report operations mixing `x` and `z`, which is *not* a symmetry of
   e.g. the square-lattice band, and symmetry-reduced calculations would then be wrong.)
-  `model.symmetry` is additionally restricted by `_restrict_symmetry_to_dimension`, so it can
-  never exceed that group regardless of what spglib returns; `model.structure.symmetry` is
-  spglib's own result and may in principle be larger.
+  The symmetry is additionally passed through [`restrict_symmetry_to_dimension`](@ref) (via
+  `Structure`'s `dimension` keyword), so it can never exceed that group regardless of what
+  spglib returns.
   `model.dimension` records the choice; `model.volume` is `100^(3-dimension) * alat^3`, so
   per-volume quantities (`ElectronOccupationParams`, transport `volume`) must be normalized
   by the user to a length/area if a `dimension < 3` density is wanted.
@@ -166,8 +144,7 @@ function holstein_model(;
     )))
 
     atom_pos = [zero(Vec3{FT})]  # alat units, Cartesian
-    structure = Structure(alat, lattice, [mass], atom_pos, ["A"])
-    symmetry = _restrict_symmetry_to_dimension(structure.symmetry, dimension)
+    structure = Structure(alat, lattice, [mass], atom_pos, ["A"]; dimension)
 
     # --- Real-space R vectors ----------------------------------------------------------
     # Electrons: on-site plus the 2*dimension nearest neighbors, sorted by reverse(R) as
@@ -232,7 +209,7 @@ function holstein_model(;
         dimension, nw, nmodes,
         wann_centers = [zero(Vec3{FT})],
         mass = [mass],
-        structure.atom_pos, structure.atom_labels, structure, symmetry,
+        structure.atom_pos, structure.atom_labels, structure, structure.symmetry,
         use_polar_dipole = false, polar_phonon = Polar(nothing), polar_eph = Polar(nothing),
         el_ham, el_ham_R, el_pos, el_vel, el_velocity_mode,
         ph_dyn, ph_dyn_R,

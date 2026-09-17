@@ -71,19 +71,29 @@ using ElectronPhonon: holstein_model, Structure
                     end
                 end
             end
-            @test ElectronPhonon.symmetry_is_subset(model.symmetry, model.structure.symmetry)
+            @test model.symmetry === model.structure.symmetry  # Structure applies it itself
             Ss = Set(model.symmetry.S)
             @test all(any(Sa * Sb == Sc for Sc in Ss) for Sa in Ss, Sb in Ss)  # closed
         end
 
         # On the elongated cell the restriction is a no-op — spglib already returns exactly
-        # this group. Exercise the helper where it does bite, a cubic cell, so the check
-        # above cannot pass just because the filter does nothing.
-        cubic = Structure(1.0, Mat3{Float64}(I(3)), [1.0], [zero(Vec3{Float64})], ["A"])
+        # this group. Exercise it where it does bite, a cubic cell, so the check above cannot
+        # pass just because the filter does nothing.
+        cube = Mat3{Float64}(I(3))
+        cubic = Structure(1.0, cube, [1.0], [zero(Vec3{Float64})], ["A"])
         @test cubic.symmetry.nsym == 96
         for (dim, nsym) in ((1, 32), (2, 32), (3, 96))
-            @test ElectronPhonon._restrict_symmetry_to_dimension(cubic.symmetry, dim).nsym == nsym
+            @test restrict_symmetry_to_dimension(cubic.symmetry, dim, cube).nsym == nsym
+            # Same thing through the Structure keyword.
+            @test Structure(1.0, cube, [1.0], [zero(Vec3{Float64})], ["A"];
+                            dimension = dim).symmetry.nsym == nsym
         end
+
+        # The block-diagonal test is read off S in crystal coordinates, so it is only
+        # meaningful if the lattice does not mix the blocks itself.
+        skewed = Mat3{Float64}([1 0 0.3; 0 1 0; 0 0 10])
+        @test_throws ArgumentError restrict_symmetry_to_dimension(cubic.symmetry, 2, skewed)
+        @test_throws ArgumentError restrict_symmetry_to_dimension(cubic.symmetry, 0, cube)
     end
 
     @testset "symmetry is consistent with the dim-dimensional band" begin
