@@ -1,3 +1,15 @@
+"""
+    Structure(alat, lattice, mass, atom_pos, atom_labels; compute_symmetry = true, dimension = 3)
+
+Lattice, atoms and symmetry of a crystal. `mass` and `atom_pos` are per atom; the stored
+`mass` is expanded to three entries per atom (one per Cartesian displacement).
+
+- `compute_symmetry = false` skips spglib and stores the identity operation only.
+- `dimension < 3` keeps only the symmetry operations that do not mix the first `dimension`
+  lattice directions with the rest (see [`restrict_symmetry_to_dimension`](@ref)), for a cell
+  that is periodic in 3d but whose Hamiltonian is lower-dimensional. It does not change the
+  lattice, and errors if the lattice mixes the two blocks.
+"""
 struct Structure
     # Lattice information
     alat          :: Float64        # Lattice parameter

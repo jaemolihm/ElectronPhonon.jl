@@ -1,9 +1,21 @@
 # Holstein model: a single-orbital tight-binding band coupled to a dispersionless
 # (Einstein) phonon with a momentum-independent coupling constant.
+#
+# EPSpectral.jl/src/holstein.jl has a `HolsteinLatticeModel` with the same physics, which is not
+# reused here: it lives in a different package (EPSpectral depends on nothing from here), works in
+# Hartree units, is 1d-only, and carries its own `μ` and `T`. Most of all it is not an
+# ElectronPhonon `Model` — it feeds EPSpectral's own spectral-function solver directly, whereas the
+# point of this builder is to produce a `Model` that the Wannier interpolation and e-ph drivers
+# consume like any EPW-loaded one.
 
 using Printf
 
-public holstein_model
+# `public` (Julia >= 1.11) marks the name as supported without exporting it. Gated exactly as in
+# src/calculator/AbstractCalculator.jl so the package still parses on older Julia (`Project.toml`
+# compat is `julia = "1"`, and MigdalEliashberg.jl declares `julia = "1.10"`).
+if VERSION >= v"1.11.0-DEV.469"
+    Core.eval(@__MODULE__, Meta.parse("public holstein_model"))
+end
 
 """
     holstein_model(; t, ω₀, g = nothing, λ = nothing, mass = 1.0, alat = 1.0, ε₀ = 0.0,
@@ -116,10 +128,13 @@ function holstein_model(;
     half_bandwidth = 2 * dimension * abs(t)
     if g === nothing
         half_bandwidth > 0 || throw(ArgumentError("deriving g from λ needs t ≠ 0, got t = $t"))
+        λ >= 0 || throw(ArgumentError("λ must be non-negative, got $λ"))
         λ = FT(λ)
         g = sqrt(λ * ω₀ * half_bandwidth)
     else
         g = FT(g)
+        # A flat band (t = 0) has no bandwidth to measure the coupling against, so λ is infinite.
+        # That is reported rather than rejected: g alone fixes the model.
         λ = g^2 / (ω₀ * half_bandwidth)
     end
 
@@ -157,10 +172,9 @@ function holstein_model(;
         [Vec3(0, 0, -1), Vec3(0, -1, 0), Vec3(-1, 0, 0), Vec3(0, 0, 0),
          Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, 1)]
     end
-    ir0_el = findfirst(iszero, irvec_el) :: Int
-
     irvec_ph = [zero(Vec3{Int})]
-    irvec_ep = [zero(Vec3{Int})]
+    irvec_ep_e = [zero(Vec3{Int})]  # electron R of the e-ph matrix
+    irvec_ep_p = [zero(Vec3{Int})]  # phonon R of the e-ph matrix
 
     # --- Electron Hamiltonian ----------------------------------------------------------
     # H(R=0) = ε₀, H(R = ±a_i) = -t  ⟹  ε_k = ε₀ - 2t ∑_i cos(k · a_i)
@@ -191,18 +205,16 @@ function holstein_model(;
     # ep = epmat * u = epmat / √M, and g2 = |ep|² / (2ω₀). Storing g √(2ω₀ M) therefore
     # gives g2 = |g|² independent of k, q and M.
     # Only (Rₑ, Rₚ) = (0, 0) is nonzero, which makes g(k, q) a constant.
-    epmat = zeros(Complex{FT}, nw, nw, nmodes, length(irvec_el), length(irvec_ep))
-    epmat[1, 1, 1, ir0_el, 1] = g * sqrt(2 * ω₀ * mass)
-
-    if epmat_outer_momentum == "el"
+    # The coupling is on-site in both R indices, so a single R vector each; the e-ph R grids are
+    # deliberately NOT the electron hopping grid `irvec_el`, which would carry 2·dimension columns
+    # of exact zeros and suggest the coupling has range.
+    epmat = fill(Complex{FT}(g * sqrt(2 * ω₀ * mass)), nw^2 * nmodes, 1)
+    ep = if epmat_outer_momentum == "el"
         # op_r indexed as (iw, jw, imode, Rₚ, Rₑ)
-        data = reshape(permutedims(epmat, (1, 2, 3, 5, 4)),
-                       nw^2 * nmodes * length(irvec_ep), length(irvec_el))
-        ep = WannierObject(irvec_el, data; irvec_next = irvec_ep)
+        WannierObject(irvec_ep_e, epmat; irvec_next = irvec_ep_p)
     else
         # op_r indexed as (iw, jw, imode, Rₑ, Rₚ)
-        data = reshape(epmat, nw^2 * nmodes * length(irvec_el), length(irvec_ep))
-        ep = WannierObject(irvec_ep, data; irvec_next = irvec_el)
+        WannierObject(irvec_ep_p, epmat; irvec_next = irvec_ep_e)
     end
 
     Model(; structure.alat, structure.lattice, structure.recip_lattice, structure.volume,

@@ -387,11 +387,15 @@ function symmetry_small_group_of_q(symmetry::Symmetry, xq::Vec3; keep_trs=false,
 end
 
 """
-    symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1e-5)
+    symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1e-5, dimension=3)
 Compute the spatial symmetry operations of the system by calling spglib.
 `atoms` should follow the format `Vector{Pair{String, Vector{Vector{Float64}}}}`.
 String is an indicator for atom types. The Vector part is the list of atom positions in
 the crystal coordinates.
+
+`dimension < 3` additionally passes the result through
+[`restrict_symmetry_to_dimension`](@ref), for a cell that is periodic in 3d but whose
+Hamiltonian lives in fewer dimensions. It errors if `lattice` mixes the two blocks.
 """
 function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1e-5, dimension=3)
     # FIXME: is noncollinear symmetry implemented?

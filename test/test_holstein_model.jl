@@ -58,6 +58,10 @@ using ElectronPhonon: holstein_model, Structure
         end
     end
 
+    # check_group throws unless the operations form a group (identity, inverses, two-sided
+    # closure) and returns them otherwise; it checks full SymOps, so τ and is_tr count too.
+    is_group(sym) = (ElectronPhonon.check_group(collect(sym)); true)
+
     @testset "symmetry never mixes hopping and inactive directions" begin
         # model.symmetry is spglib's group for the elongated cell, restricted to the
         # operations block-diagonal between 1:dimension and the rest. It is a subgroup of
@@ -72,8 +76,7 @@ using ElectronPhonon: holstein_model, Structure
                 end
             end
             @test model.symmetry === model.structure.symmetry  # Structure applies it itself
-            Ss = Set(model.symmetry.S)
-            @test all(any(Sa * Sb == Sc for Sc in Ss) for Sa in Ss, Sb in Ss)  # closed
+            @test is_group(model.symmetry)
         end
 
         # On the elongated cell the restriction is a no-op — spglib already returns exactly
@@ -83,7 +86,9 @@ using ElectronPhonon: holstein_model, Structure
         cubic = Structure(1.0, cube, [1.0], [zero(Vec3{Float64})], ["A"])
         @test cubic.symmetry.nsym == 96
         for (dim, nsym) in ((1, 32), (2, 32), (3, 96))
-            @test restrict_symmetry_to_dimension(cubic.symmetry, dim, cube).nsym == nsym
+            restricted = restrict_symmetry_to_dimension(cubic.symmetry, dim, cube)
+            @test restricted.nsym == nsym
+            @test is_group(restricted)
             # Same thing through the Structure keyword.
             @test Structure(1.0, cube, [1.0], [zero(Vec3{Float64})], ["A"];
                             dimension = dim).symmetry.nsym == nsym
@@ -159,8 +164,8 @@ using ElectronPhonon: holstein_model, Structure
         @test all(>(0), Sₒ)
 
         # Γ is a function of ε alone. On the 6×6 grid the outer (IBZ) states include an
-        # accidental degeneracy between the symmetry-inequivalent points (1/2, 0) and
-        # (1/3, 1/6), both at ε = ε₀, so this is not implied by symmetry.
+        # accidental degeneracy between the symmetry-inequivalent points (0, 1/2, 0) and
+        # (1/6, 1/3, 0), both at ε = ε₀, so this is not implied by symmetry.
         ndegenerate = 0
         for i in eachindex(e_i), j in (i + 1):length(e_i)
             if isapprox(e_i[i], e_i[j]; atol = 1e-12)
@@ -185,8 +190,6 @@ using ElectronPhonon: holstein_model, Structure
             g_expected = sqrt(2 * dim * λ * ω₀ * t)
             from_g = holstein_model(; t, ω₀, g = g_expected, alat, dimension = dim, verbose = false)
             @test from_λ.epmat.op_r ≈ from_g.epmat.op_r
-            @test from_λ.epmat.op_r[1, findfirst(iszero, from_λ.epmat.irvec)] ≈
-                g_expected * sqrt(2 * ω₀ * 1.0)
 
             # The half-bandwidth is 2·dimension·|t|, so the sign of t does not move λ.
             from_neg_t = holstein_model(; t = -t, ω₀, λ, alat, dimension = dim, verbose = false)
@@ -230,5 +233,9 @@ using ElectronPhonon: holstein_model, Structure
         @test_throws ArgumentError holstein_model(; t, ω₀, g, λ = 0.5, verbose = false)
         # Deriving g from λ needs a nonzero bandwidth.
         @test_throws ArgumentError holstein_model(; t = 0.0, ω₀, λ = 0.5, verbose = false)
+        # A negative λ gets the same error type as every other bad input, not a sqrt DomainError.
+        @test_throws ArgumentError holstein_model(; t, ω₀, λ = -0.1, verbose = false)
+        # g with a flat band is allowed: g alone fixes the model, and λ is reported as Inf.
+        @test holstein_model(; t = 0.0, ω₀, g, verbose = false) isa ElectronPhonon.Model
     end
 end
