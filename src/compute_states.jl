@@ -9,7 +9,7 @@ export compute_phonon_states
                             backend=CPUBackend(), eigenpairs=nothing)
 Compute the quantities listed in `quantities` and return a vector of ElectronState.
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "velocity"
-`eigenpairs`: an [`ElectronEigenpairs`](@ref) covering every k point of `kpts`. Its `e_full` and
+`eigenpairs`: an [`Eigenpairs`](@ref) covering every k point of `kpts`. Its `e_full` and
 `u_full` are copied in per k instead of diagonalizing H(k), so runs sharing one cache share the
 eigenvector gauge; everything else, `window` included, is computed exactly as without it.
 `fourier_mode` then no longer affects the eigenpairs -- the cache's own Fourier mode already did --
@@ -20,7 +20,7 @@ cache is resident on the backend that built it, so it must be built with the `ba
 """
 function compute_electron_states(model::Model{FT}, kpts, quantities, window=(-Inf, Inf);
         fourier_mode="normal", backend=CPUBackend(),
-        eigenpairs::Union{Nothing, ElectronEigenpairs}=nothing) where FT
+        eigenpairs::Union{Nothing, Eigenpairs}=nothing) where FT
     # TODO: MPI, threading
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
     for quantity in quantities
@@ -55,7 +55,7 @@ k. Returns a vector of `ElectronState` over `sel.kpts`. `eigenpairs` is as in th
 """
 function compute_electron_states(model::Model{FT}, sel::FilteredBandStates, quantities;
         fourier_mode="normal", backend=CPUBackend(),
-        eigenpairs::Union{Nothing, ElectronEigenpairs}=nothing) where FT
+        eigenpairs::Union{Nothing, Eigenpairs}=nothing) where FT
     allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "velocity", "position"]
     for quantity in quantities
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
@@ -98,7 +98,7 @@ end
 # of the two methods and the no-cache path is the plain `set_eigen!` it was.
 _set_eigen_from!(el::ElectronState, ::Nothing, ham, xk) = set_eigen!(el, ham, xk)
 
-function _set_eigen_from!(el::ElectronState, eigenpairs::ElectronEigenpairs, ham, xk)
+function _set_eigen_from!(el::ElectronState, eigenpairs::Eigenpairs, ham, xk)
     ik = xk_to_ik(xk, eigenpairs.kpts)
     ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
     el.xk = xk
@@ -113,7 +113,7 @@ end
 _set_eigen_valueonly_from!(el::ElectronState, ::Nothing, ham, xk) =
     set_eigen_valueonly!(el, ham, xk)
 
-function _set_eigen_valueonly_from!(el::ElectronState, eigenpairs::ElectronEigenpairs, ham, xk)
+function _set_eigen_valueonly_from!(el::ElectronState, eigenpairs::Eigenpairs, ham, xk)
     ik = xk_to_ik(xk, eigenpairs.kpts)
     ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
     el.xk = xk

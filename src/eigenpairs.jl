@@ -1,17 +1,23 @@
-# Full-band electron eigenpairs over a k-point set, computed once and shared by several e-ph
-# runs to ensure eigenvector gauge consistency.
+# Full-band eigenpairs over a k-point set, computed once and shared by several e-ph runs to ensure
+# eigenvector gauge consistency. The container is species-agnostic (`nbasis` is `nw` for electrons
+# and would be `nmodes` for phonons); the builders below are the electron ones.
 
 using ChunkSplitters
 using Base.Threads: nthreads, @threads
 
-export ElectronEigenpairs
+export Eigenpairs
 export electron_eigenpairs
 
 """
-    ElectronEigenpairs{T, MT, AT}
+    Eigenpairs{T, MT, AT}
 
-Full-band electron eigenvalues `e_full` (`(nw, kpts.n)`) and eigenvectors `u_full`
-(`(nw, nw, kpts.n)`) on the k-point set `kpts`. Build one with [`electron_eigenpairs`](@ref).
+Full-band eigenvalues `e_full` (`(nbasis, kpts.n)`) and eigenvectors `u_full`
+(`(nbasis, nbasis, kpts.n)`) on the k-point set `kpts`. Build one with
+[`electron_eigenpairs`](@ref).
+
+`nbasis` is the dimension of the eigenproblem, so nothing here is electron-specific: it is `nw` for
+electrons and would be `nmodes` for a phonon cache, whose `(e, u)` per q point have exactly this
+shape. Only the builders are per species.
 
 Its purpose is to make two or more runs over *overlapping* k-point sets use the same eigenvector
 gauge at every shared k-point. The gauge lives entirely in `u_full`, which is independent of any
@@ -29,7 +35,7 @@ runs on the *same* backend, so moving the arrays to the host would only mean upl
 per run; a consumer on a different backend than the cache is an error, not a silent copy. `kpts`,
 and the `xk -> ik` lookup over it, always stay on the host.
 
-The size to keep in mind is `u_full`: `16 * nw^2 * nk` bytes, resident for the cache's whole
+The size to keep in mind is `u_full`: `16 * nbasis^2 * nk` bytes, resident for the cache's whole
 lifetime. That is modest for a windowed selection and large for a dense full-BZ grid. In the future
 the filtering can be combined with the cache, storing only the subset of the eigenvectors that the
 runs actually need.
@@ -38,26 +44,26 @@ The value is immutable and read-only; there is no mutating API. Look a k-point u
 coordinates with the checked [`xk_to_ik`](@ref) on `kpts`, which errors rather than aliasing an
 off-grid query onto a neighbouring cached node.
 """
-struct ElectronEigenpairs{T, MT <: AbstractMatrix{T}, AT <: AbstractArray{Complex{T}, 3}}
-    nw     :: Int
+struct Eigenpairs{T, MT <: AbstractMatrix{T}, AT <: AbstractArray{Complex{T}, 3}}
+    nbasis :: Int                   # nw for electrons, nmodes for phonons
     # `GridKpoints` rather than `AbstractKpoints`: the xk -> ik lookup (`xk_to_ik`) is defined only
     # for a grid, so requiring one here is what makes every cache lookupable.
     kpts   :: GridKpoints{T}
-    e_full :: MT                    # (nw, kpts.n)
-    u_full :: AT                    # (nw, nw, kpts.n)
+    e_full :: MT                    # (nbasis, kpts.n)
+    u_full :: AT                    # (nbasis, nbasis, kpts.n)
 
-    function ElectronEigenpairs(nw::Int, kpts::GridKpoints{T}, e_full::MT, u_full::AT) where
+    function Eigenpairs(nbasis::Int, kpts::GridKpoints{T}, e_full::MT, u_full::AT) where
             {T, MT <: AbstractMatrix{T}, AT <: AbstractArray{Complex{T}, 3}}
-        size(e_full) == (nw, kpts.n) || throw(ArgumentError(
-            "e_full must be of size ($nw, $(kpts.n)), got $(size(e_full))"))
-        size(u_full) == (nw, nw, kpts.n) || throw(ArgumentError(
-            "u_full must be of size ($nw, $nw, $(kpts.n)), got $(size(u_full))"))
-        new{T, MT, AT}(nw, kpts, e_full, u_full)
+        size(e_full) == (nbasis, kpts.n) || throw(ArgumentError(
+            "e_full must be of size ($nbasis, $(kpts.n)), got $(size(e_full))"))
+        size(u_full) == (nbasis, nbasis, kpts.n) || throw(ArgumentError(
+            "u_full must be of size ($nbasis, $nbasis, $(kpts.n)), got $(size(u_full))"))
+        new{T, MT, AT}(nbasis, kpts, e_full, u_full)
     end
 end
 
-function Base.show(io::IO, eig::ElectronEigenpairs{T}) where {T}
-    print(io, "ElectronEigenpairs{$T}(nw = $(eig.nw), nk = $(eig.kpts.n), " *
+function Base.show(io::IO, eig::Eigenpairs{T}) where {T}
+    print(io, "Eigenpairs{$T}(nbasis = $(eig.nbasis), nk = $(eig.kpts.n), " *
               "e_full::$(typeof(eig.e_full)))")
 end
 
@@ -74,7 +80,7 @@ end
     electron_eigenpairs(model, kpts; fourier_mode = "gridopt", backend = CPUBackend())
 
 Compute the full-band electron eigenpairs at every k point of `kpts` and return them as an
-[`ElectronEigenpairs`](@ref).
+[`Eigenpairs`](@ref).
 
 `kpts` is converted to a `GridKpoints`, which provides the xk -> ik lookup. A `Kpoints` argument is
 validated against its own `ngrid` on the way in; a `GridKpoints` argument is taken as already being
@@ -107,24 +113,25 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
                 end
             end
         end
-        ElectronEigenpairs(nw, gkpts, e_full, u_full)
+        Eigenpairs(nw, gkpts, e_full, u_full)
     else
         itp_elham = get_interpolator(to_device(backend, model.el_ham);
                                      fourier_mode="batched", batch_size=gkpts.n)
         E_dev, U_dev = get_el_eigen_batched(itp_elham, gkpts.vectors)
-        ElectronEigenpairs(nw, gkpts, E_dev, U_dev)
+        Eigenpairs(nw, gkpts, E_dev, U_dev)
     end
 end
 
 # Guards on a caller-supplied cache, checked once per consuming call rather than per k point. Both
-# mismatches would eventually fail on their own, but not legibly: a wrong `nw` as a
-# `DimensionMismatch` inside the per-k copy, and a wrong backend as a mixed host/device operation --
-# or, on the eigenvalue-only device path, as no error at all.
+# mismatches would otherwise surface badly. A wrong `nbasis` is a `DimensionMismatch` inside the
+# per-k copy for every value but one: `nbasis == 1` against a multi-band model *broadcasts* the
+# single value into every band and returns wrong numbers silently. A wrong backend is a mixed
+# host/device operation -- or, on the eigenvalue-only device path, no error at all.
 _check_eigenpairs(::Nothing, nw, backend) = nothing
 
-function _check_eigenpairs(eig::ElectronEigenpairs, nw, backend)
-    eig.nw == nw || throw(ArgumentError(
-        "eigenpairs holds nw = $(eig.nw) Wannier functions, but the model has nw = $nw"))
+function _check_eigenpairs(eig::Eigenpairs, nw, backend)
+    eig.nbasis == nw || throw(ArgumentError(
+        "eigenpairs holds nbasis = $(eig.nbasis), but the model has nw = $nw"))
     # A cache is resident on the backend that built it, and this run's arrays live on `backend`.
     # Consuming one from the other side would mean moving it per call, or indexing a device array
     # from the host loop, so require a match.

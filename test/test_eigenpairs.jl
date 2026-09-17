@@ -38,7 +38,7 @@ function _eigenpairs_state_equal(a::ElectronState, b::ElectronState)
         no_offset_view(a.rbar) == no_offset_view(b.rbar)
 end
 
-@testset "ElectronEigenpairs" begin
+@testset "Eigenpairs" begin
     model = _load_model_from_artifacts("pb"; load_epmat = false)
     kpts = GridKpoints(kpoints_grid((4, 4, 4)))
 
@@ -48,7 +48,7 @@ end
     for fourier_mode in ("normal", "gridopt")
         eig = electron_eigenpairs(model, kpts; fourier_mode)
         states = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector"]; fourier_mode)
-        @test eig.nw == model.nw
+        @test eig.nbasis == model.nw
         @test eig.e_full isa Matrix{Float64}
         @test eig.u_full isa Array{ComplexF64, 3}
         @test size(eig.e_full) == (model.nw, kpts.n)
@@ -141,7 +141,7 @@ end
         # Teeth: a cache built on a different model is not silently accepted, and one that does not
         # cover a k point the run visits fails at that k point rather than recomputing it.
         pb_cache = electron_eigenpairs(model, kpts)
-        @test_throws "Wannier functions" compute_electron_states(
+        @test_throws "eigenpairs holds nbasis" compute_electron_states(
             model_bn, kpts_bn, ["eigenvalue"], window; eigenpairs = pb_cache)
         sub = GridKpoints(Kpoints(kpts_bn.vectors[1:kpts_bn.n-1]; ngrid = kpts_bn.ngrid),
                           kpts_bn.ngrid)
@@ -209,7 +209,7 @@ end
             @test maximum(hamiltonian_diff, (1:kpts.n)[degenerate]; init = 0.0) <
                   electron_degen_cutoff
         else
-            @info "CUDA not functional - skipping the GPU ElectronEigenpairs test"
+            @info "CUDA not functional - skipping the GPU Eigenpairs test"
         end
     end
 end

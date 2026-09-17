@@ -49,14 +49,14 @@ on_backend(::CPUBackend, x::AbstractArray) = x isa Array
 on_backend(b::GPUBackend, x::AbstractArray) = x isa Base.typename(typeof(b.proto)).wrapper
 
 """
-    check_on_backend(backend, x::AbstractArray, name)
+    check_on_backend(backend, x::AbstractArray, name = "array")
 
-Throw an `ArgumentError` naming `name` unless `x` is resident on `backend`. For a caller-supplied
-array that has to live on the same side as the run's own buffers: a mismatch is then reported here
-instead of surfacing deeper in as a mixed host/device operation, a per-element transfer, or -- on a
-path that happens to take `Array(x)` anyway -- no error at all.
+Throw an `ArgumentError` unless `x` is resident on `backend`, calling it `name` in the message. For
+a caller-supplied array that has to live on the same side as the run's own buffers: a mismatch is
+then reported here instead of surfacing deeper in as a mixed host/device operation, a per-element
+transfer, or -- on a path that happens to take `Array(x)` anyway -- no error at all.
 """
-function check_on_backend(backend::AbstractBackend, x::AbstractArray, name)
+function check_on_backend(backend::AbstractBackend, x::AbstractArray, name = "array")
     on_backend(backend, x) || throw(ArgumentError(
         "$name is resident on the $(x isa Array ? "host" : "device") (::$(typeof(x))), but the " *
         "run uses $(nameof(typeof(backend))); build it with the run's backend"))
