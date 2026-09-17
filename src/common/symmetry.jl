@@ -13,7 +13,7 @@ using LinearAlgebra
 
 export Symmetry
 export symmetry_operations
-export restrict_symmetry_to_dimension
+public restrict_symmetry_to_dimension
 export symmetry_is_subset
 export symmetry_small_group_of_q
 export symmetrize
@@ -331,6 +331,13 @@ function symmetry_is_subset(sym1, sym2)
     return true
 end
 
+"""
+    check_group(symops) => true
+
+Check that `symops` forms a group: it contains the identity, the inverse of every operation,
+and is closed under composition on both sides. Returns `true`, and throws otherwise, so it
+reads as `@test check_group(symmetry)`.
+"""
 function check_group(symops)
     is_approx_in_symops(s1) = any(s -> isapprox(s, s1), symops)
     is_approx_in_symops(one(symops[1])) || error("check_group: no identity element")
@@ -344,7 +351,7 @@ function check_group(symops)
             end
         end
     end
-    symops
+    true
 end
 
 """

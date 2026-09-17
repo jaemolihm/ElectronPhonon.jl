@@ -2,7 +2,7 @@ using Test
 using LinearAlgebra
 using Random
 using ElectronPhonon
-using ElectronPhonon: holstein_model, Structure
+using ElectronPhonon: holstein_model, Structure, restrict_symmetry_to_dimension
 
 @testset "Holstein model" begin
     t, ω₀, g, alat, ε₀ = 0.1, 0.01, 0.02, 5.0, 0.05
@@ -58,10 +58,6 @@ using ElectronPhonon: holstein_model, Structure
         end
     end
 
-    # check_group throws unless the operations form a group (identity, inverses, two-sided
-    # closure) and returns them otherwise; it checks full SymOps, so τ and is_tr count too.
-    is_group(sym) = (ElectronPhonon.check_group(collect(sym)); true)
-
     @testset "symmetry never mixes hopping and inactive directions" begin
         # model.symmetry is spglib's group for the elongated cell, restricted to the
         # operations block-diagonal between 1:dimension and the rest. It is a subgroup of
@@ -76,7 +72,7 @@ using ElectronPhonon: holstein_model, Structure
                 end
             end
             @test model.symmetry === model.structure.symmetry  # Structure applies it itself
-            @test is_group(model.symmetry)
+            @test ElectronPhonon.check_group(model.symmetry)
         end
 
         # On the elongated cell the restriction is a no-op — spglib already returns exactly
@@ -88,7 +84,7 @@ using ElectronPhonon: holstein_model, Structure
         for (dim, nsym) in ((1, 32), (2, 32), (3, 96))
             restricted = restrict_symmetry_to_dimension(cubic.symmetry, dim, cube)
             @test restricted.nsym == nsym
-            @test is_group(restricted)
+            @test ElectronPhonon.check_group(restricted)
             # Same thing through the Structure keyword.
             @test Structure(1.0, cube, [1.0], [zero(Vec3{Float64})], ["A"];
                             dimension = dim).symmetry.nsym == nsym

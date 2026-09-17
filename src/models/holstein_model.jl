@@ -10,12 +10,7 @@
 
 using Printf
 
-# `public` (Julia >= 1.11) marks the name as supported without exporting it. Gated exactly as in
-# src/calculator/AbstractCalculator.jl so the package still parses on older Julia (`Project.toml`
-# compat is `julia = "1"`, and MigdalEliashberg.jl declares `julia = "1.10"`).
-if VERSION >= v"1.11.0-DEV.469"
-    Core.eval(@__MODULE__, Meta.parse("public holstein_model"))
-end
+public holstein_model
 
 """
     holstein_model(; t, ω₀, g = nothing, λ = nothing, mass = 1.0, alat = 1.0, ε₀ = 0.0,
@@ -72,18 +67,13 @@ coupling measured against the half-bandwidth. Deriving `g` from `λ` needs `t �
 - `alat = 1.0` : lattice constant in Bohr.
 - `ε₀ = 0.0` : on-site energy, i.e. the center of the band. There is no chemical potential;
   set the occupation or `μ` in the downstream calculation as for any other `Model`.
-- `dimension = 3` : spatial dimension of the *hopping*, 1, 2 or 3. The `Model` always lives
-  on a 3d lattice; for `dimension < 3` the unconnected directions are given a lattice constant
-  `100 * alat`, which both makes the cell an isolated wire/sheet and lowers the spglib
-  symmetry group to one that the `dimension`-dimensional Hamiltonian actually obeys. (A cubic
-  cell would make spglib report operations mixing `x` and `z`, which is *not* a symmetry of
-  e.g. the square-lattice band, and symmetry-reduced calculations would then be wrong.)
-  The symmetry is additionally passed through [`restrict_symmetry_to_dimension`](@ref) (via
-  `Structure`'s `dimension` keyword), so it can never exceed that group regardless of what
-  spglib returns.
-  `model.dimension` records the choice; `model.volume` is `100^(3-dimension) * alat^3`, so
-  per-volume quantities (`ElectronOccupationParams`, transport `volume`) must be normalized
-  by the user to a length/area if a `dimension < 3` density is wanted.
+- `dimension = 3` : spatial dimension of the *hopping*, 1, 2 or 3, recorded as
+  `model.dimension`. The `Model` always lives on a 3d lattice: for `dimension < 3` the
+  directions without hopping get a lattice constant of `100 * alat`, and `model.symmetry`
+  holds only the operations that do not mix them with the hopping directions. `model.volume`
+  is therefore `100^(3-dimension) * alat^3`, so per-volume quantities
+  (`ElectronOccupationParams`, transport `volume`) must be normalized by the user to a
+  length/area if a `dimension < 3` density is wanted.
 - `epmat_outer_momentum = "el"` : `"el"` or `"ph"`, as in `load_model_from_epw_new`.
 - `verbose = true` : print the parameters, including both `g` and `λ`.
 
