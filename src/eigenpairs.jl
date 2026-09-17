@@ -138,3 +138,66 @@ function _check_eigenpairs(eig::Eigenpairs, nw, backend)
     check_on_backend(backend, eig.e_full, "eigenpairs")
     nothing
 end
+
+# Index of `xk` in the cache. Distinct from `xk_to_ik` only in how it phrases a miss: a k point the
+# cache does not hold means the cache was built over the wrong k-point set, which is a setup error
+# rather than a lookup that legitimately answers `nothing`.
+function _eigenpairs_ik(eigenpairs::Eigenpairs, xk)
+    ik = xk_to_ik(xk, eigenpairs.kpts)
+    ik === nothing && throw(ArgumentError("eigenpairs does not cover k point $xk"))
+    ik
+end
+
+# The consumers, one method pair per quantity a caller can take from the cache instead of solving
+# H(k) itself: `::Nothing` solves (exactly what the call site did before a cache existed) and
+# `::Eigenpairs` copies out. The cache therefore arrives as a typed argument, each call site
+# specializes on one of the two, and no loop gains a branch. They live here, next to the type,
+# rather than beside their callers in compute_states.jl and filter.jl, so that the lookup, the miss
+# error and the copy are written once.
+
+# The full eigenpair of one k point, into an `ElectronState`.
+_set_eigen_from!(el::ElectronState, ::Nothing, ham, xk) = set_eigen!(el, ham, xk)
+
+function _set_eigen_from!(el::ElectronState, eigenpairs::Eigenpairs, ham, xk)
+    ik = _eigenpairs_ik(eigenpairs, xk)
+    el.xk = xk
+    @views el.e_full .= eigenpairs.e_full[:, ik]
+    @views el.u_full .= eigenpairs.u_full[:, :, ik]
+
+    # Reset window to a dummy value
+    el.nband = 0
+    el.rng = 1:0
+end
+
+_set_eigen_valueonly_from!(el::ElectronState, ::Nothing, ham, xk) =
+    set_eigen_valueonly!(el, ham, xk)
+
+function _set_eigen_valueonly_from!(el::ElectronState, eigenpairs::Eigenpairs, ham, xk)
+    ik = _eigenpairs_ik(eigenpairs, xk)
+    el.xk = xk
+    @views el.e_full .= eigenpairs.e_full[:, ik]
+
+    # Reset window to a dummy value
+    el.nband = 0
+    el.rng = 1:0
+    el
+end
+
+# The full-band eigenvalues of one k point, into `eigenvalues`.
+_set_eigenvalues_from!(eigenvalues, nw, ::Nothing, ham, xk) =
+    get_el_eigen_valueonly!(eigenvalues, nw, ham, xk)
+
+function _set_eigenvalues_from!(eigenvalues, nw, eigenpairs::Eigenpairs, ham, xk)
+    ik = _eigenpairs_ik(eigenpairs, xk)
+    @views eigenvalues .= eigenpairs.e_full[:, ik]
+end
+
+# The same, batched over a chunk of k points and returned on the host for the window test. The
+# device arm gathers off a cache that is resident on that same device.
+_eigenvalues_on_host(::Nothing, itp_elham, xks) =
+    Array(get_el_eigen_valueonly_batched(itp_elham, xks))
+
+function _eigenvalues_on_host(eigenpairs::Eigenpairs, itp_elham, xks)
+    iks = map(xk -> _eigenpairs_ik(eigenpairs, xk), xks)
+    Array(eigenpairs.e_full[:, iks])
+end
