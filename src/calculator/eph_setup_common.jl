@@ -5,16 +5,21 @@
 # lives next to `EPState` in src/EPState.jl. The setup_calculator! fan-out is `_setup_calculators!`,
 # shared by all three drivers.)
 
-# k-side setup shared by all three drivers: obtain the outer-k selection (a prebuilt `FilteredBandStates`
-# passed through verbatim, or filtered from a grid to the energy window) and compute the electron
-# states there. `backend` says where the eigensolves run (a non-CPU backend takes the batched device
-# path). `verbosity` selects timing (@time when > 0, via `maybe_time`); `el_k_quantities` lets
-# the outer-q batched path skip velocity/position. The prebuilt pass-through is dead for the two
-# grid-only sibling callers (they always pass a grid), so their behavior is unchanged.
+# k-side setup shared by all three drivers: get the outer-k selection, compute the electron states.
+#
+# - selection: a prebuilt `FilteredBandStates` passes through verbatim; a grid is filtered to
+#   `window_k`. The pass-through is dead for the two grid-only sibling callers (they always pass a
+#   grid), so their behavior is unchanged.
+# - `backend`: where the eigensolves run; a non-CPU backend takes the batched device path.
+# - `verbosity`: selects timing (`@time` when > 0, via `maybe_time`).
+# - `el_k_quantities`: lets the outer-q batched path skip velocity/position.
+# - `el_k_eigenpairs`: optional `Eigenpairs` cache over the outer k points, so runs sharing one
+#   use the same eigenvector gauge.
 function _setup_electron_k(
         model :: Model, kpts_input;
         window_k, mpi_comm_k, symmetry, fourier_mode, backend = CPUBackend(), verbosity = 1,
         el_k_quantities = ["eigenvalue", "eigenvector", "velocity", "position"],
+        el_k_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
     )
     (; nw) = model
     sel_k = kpts_input isa FilteredBandStates ? kpts_input :
@@ -26,29 +31,37 @@ function _setup_electron_k(
     iband_min, iband_max = first(br), last(br)
 
     el_k_save = maybe_time(verbosity) do
-        compute_electron_states(model, sel_k, el_k_quantities; fourier_mode, backend)
+        compute_electron_states(model, sel_k, el_k_quantities; fourier_mode, backend,
+                                eigenpairs = el_k_eigenpairs)
     end
     (; kpts, iband_min, iband_max, el_k_save, sel_k)
 end
 
 
-# Electron states at k+q, shared by all three drivers. With `el_kq_from_unfolding`, the states are
-# computed only in the irreducible BZ (`kqpts_irr`) and unfolded to `kqpts` (carrying the eigenvector
-# gauge) to keep gauge consistency between symmetry-equivalent k points; otherwise they are computed
-# directly on `kqpts`. `kqpts_irr` / `ik_to_ikirr_isym_kq` are only read on the unfolding path.
+# Electron states at k+q, shared by all three drivers.
+#
+# - `el_kq_from_unfolding = true`: states are computed only in the irreducible BZ (`kqpts_irr`) and
+#   unfolded to `kqpts`, carrying the eigenvector gauge, to keep gauge consistency between
+#   symmetry-equivalent k points. `false`: computed directly on `kqpts`.
+# - `kqpts_irr` / `ik_to_ikirr_isym_kq`: read only on the unfolding path.
+# - `eigenpairs`: serves either path. On the unfolding path it is looked up at the irreducible
+#   points, and the unfolding rotation carries the cached gauge into the star.
 function _compute_electron_states_kq(
         model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq, symmetry, el_kq_from_unfolding, window_kq;
         quantities, fourier_mode, backend = CPUBackend(), verbosity = 1,
+        eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
     )
     maybe_time(verbosity) do
         if el_kq_from_unfolding
             symmetry !== nothing || throw(ArgumentError("el_kq_from_unfolding = true requires symmetry"))
-            el_kq_save_irr = compute_electron_states(model, kqpts_irr, quantities, window_kq; fourier_mode, backend)
+            el_kq_save_irr = compute_electron_states(model, kqpts_irr, quantities, window_kq;
+                fourier_mode, backend, eigenpairs)
             el_kq_save = unfold_ElectronStates(model, el_kq_save_irr, kqpts_irr, kqpts, ik_to_ikirr_isym_kq, symmetry; fourier_mode)
             # el_kq_save_irr is not used anymore.
             el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)
         else
-            el_kq_save = compute_electron_states(model, kqpts, quantities, window_kq; fourier_mode, backend)
+            el_kq_save = compute_electron_states(model, kqpts, quantities, window_kq;
+                fourier_mode, backend, eigenpairs)
         end
         el_kq_save
     end
@@ -65,17 +78,20 @@ end
 #       exact symmetry unfolding of `el_i` for the interpolate=false δf feedback).
 # The grid path wraps the computed states into a `FilteredBandStates` via `electron_states_to_FilteredBandStates`
 # so the calculator sees a selection on both paths. `el_kq_quantities` (the electron-state quantities
-# to compute at k+q) is supplied by the caller.
+# to compute at k+q) is supplied by the caller, and `el_kq_eigenpairs` is the optional
+# `Eigenpairs` cache for the k+q eigensolve.
 function _setup_electron_kq(model, kqpts_input;
         window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
-        fourier_mode, backend = CPUBackend(), verbosity = 1)
+        fourier_mode, backend = CPUBackend(), verbosity = 1,
+        el_kq_eigenpairs :: Union{Nothing, Eigenpairs} = nothing)
     (; nw) = model
 
     # (1) prebuilt full-BZ selection: consume as-is
     if kqpts_input isa FilteredBandStates
         sel_kq = kqpts_input
         el_kq_save = maybe_time(verbosity) do
-            compute_electron_states(model, sel_kq, el_kq_quantities; fourier_mode, backend)
+            compute_electron_states(model, sel_kq, el_kq_quantities; fourier_mode, backend,
+                                    eigenpairs = el_kq_eigenpairs)
         end
         return (; kqpts = sel_kq.kpts, el_kq_save, sel_kq)
     end
@@ -101,7 +117,8 @@ function _setup_electron_kq(model, kqpts_input;
     # (3) states: direct, or gauge-consistent IBZ→full unfolding (the one genuinely special path)
     el_kq_save = _compute_electron_states_kq(model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq,
         symmetry, el_kq_from_unfolding, window_kq;
-        quantities=el_kq_quantities, fourier_mode, backend, verbosity)
+        quantities=el_kq_quantities, fourier_mode, backend, verbosity,
+        eigenpairs=el_kq_eigenpairs)
     sel_kq = electron_states_to_FilteredBandStates(kqpts, el_kq_save, nelec_kq; nw)
     return (; kqpts, el_kq_save, sel_kq)
 end

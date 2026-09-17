@@ -3,7 +3,6 @@ using ElectronPhonon
 using ElectronPhonon: Vec3, electron_degen_cutoff, electron_eigenpairs, gpu_backend, to_device,
     AbstractBackend, CPUBackend
 using LinearAlgebra
-using OffsetArrays: no_offset_view
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
 # tests when it is unavailable or non-functional (e.g. CPU-only CI).
@@ -27,15 +26,6 @@ function _eigenpairs_valueonly_consistent(new, ref, cache)
             all(iszero, el.u_full) &&
             maximum(abs, el.e_full - el_ref.e_full) < 1e-13
     end
-end
-
-# Every field a run fills, compared with `==`: `v`/`rbar`/`occupation` are window views, so take
-# them through `no_offset_view` (their axes are covered by `rng`).
-function _eigenpairs_state_equal(a::ElectronState, b::ElectronState)
-    a.xk == b.xk && a.e_full == b.e_full && a.u_full == b.u_full && a.nband == b.nband &&
-        a.rng == b.rng && a.vdiag == b.vdiag &&
-        no_offset_view(a.v) == no_offset_view(b.v) &&
-        no_offset_view(a.rbar) == no_offset_view(b.rbar)
 end
 
 @testset "Eigenpairs" begin
@@ -130,8 +120,8 @@ end
                         @test _eigenpairs_valueonly_consistent(new, ref, cache)
                         @test _eigenpairs_valueonly_consistent(new_sel, ref_sel, cache)
                     else
-                        @test all(_eigenpairs_state_equal.(new, ref))
-                        @test all(_eigenpairs_state_equal.(new_sel, ref_sel))
+                        @test all(_electron_state_equal.(new, ref))
+                        @test all(_electron_state_equal.(new_sel, ref_sel))
                     end
                 end
             end

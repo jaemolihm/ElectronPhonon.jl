@@ -13,6 +13,11 @@ using OffsetArrays: no_offset_view
     states at k+q in the irreducible BZ and unfolding them to the full BZ. This is useful to
     ensure gauge consistency between symmetry-equivalent k points.
     To enable this option, `kpts` and `qpts` must have same grid size.
+
+* `el_k_eigenpairs :: Union{Nothing, Eigenpairs} = nothing` — means exactly what it does in
+  [`run_eph_over_k_and_kq`](@ref), for the outer k side **only**. This driver's k+q states are
+  always diagonalized in place, on the precomputed grid and on the fly alike, so there is no
+  `el_kq_eigenpairs` here: a run that needs a shared gauge at k+q wants `run_eph_over_k_and_kq`.
 """
 function run_eph_over_k_and_q(
         model       :: Model{FT},
@@ -39,6 +44,7 @@ function run_eph_over_k_and_q(
         # host / per-point run where it asked for something else.
         backend :: AbstractBackend = CPUBackend(),
         batched :: Union{Nothing, Bool} = nothing,
+        el_k_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -77,7 +83,7 @@ function run_eph_over_k_and_q(
     setup = _setup_eph_over_k_and_q(model, kpts_input, qpts_input;
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, precompute_el_kq, symmetry,
-        calculators, nchunks_threads, verbosity,
+        calculators, nchunks_threads, verbosity, el_k_eigenpairs,
     )
 
     _loop_eph_over_k_and_q(model,
@@ -113,6 +119,7 @@ function _setup_eph_over_k_and_q(
         symmetry = nothing,
         calculators = [],
         nchunks_threads = nthreads(),
+        el_k_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -120,7 +127,8 @@ function _setup_eph_over_k_and_q(
 
     # Generate k points and electron states at k (shared setup core)
     (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(
-        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, verbosity)
+        model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, verbosity,
+        el_k_eigenpairs)
     nk = kpts.n
 
     # Generate q points

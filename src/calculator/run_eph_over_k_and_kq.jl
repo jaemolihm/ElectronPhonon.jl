@@ -16,6 +16,20 @@ coupling. Two keywords select where the arrays live and which payload the calcul
 The batched path has a narrower scope than the per-point one (no polar/long-range, no screening,
 `energy_conservation = (:None, 0.0)`, commensurate grids, no `covariant_derivative_of_g`, no
 `skip_eph`, no `el_kq_from_unfolding` under symmetry); it asserts each of these.
+
+Two further keywords let a run take its electron eigenpairs from a shared cache instead of
+diagonalizing H(k) itself:
+
+* `el_k_eigenpairs`, `el_kq_eigenpairs :: Union{Nothing, Eigenpairs}` — a cache from
+  [`electron_eigenpairs`](@ref) for the outer k and the inner k+q side. They give runs over
+  *overlapping* k-point sets a shared eigenvector gauge, which a band-resolved `g2 = |g|²` needs
+  inside a degenerate multiplet. Each cache must cover every k-point *this rank* visits on its side
+  (a missing point is an error, not a silent recompute) and be resident on the run's `backend`; both
+  are read-only, so one cache serves runs with different windows and quantity lists.
+
+Runs sharing a k+q cache must make the same `el_kq_from_unfolding` choice: unfolding carries the
+cached *irreducible* eigenvector rotated by the symmetry operation, a direct run the cached
+eigenvector at the point itself, and the two are a gauge apart. Nothing checks this.
 """
 function run_eph_over_k_and_kq(
         model       :: Model{FT},
@@ -44,6 +58,8 @@ function run_eph_over_k_and_kq(
         # outside the k loop) and only the `OuterIterationBatch` bracket is fired; this also sets how
         # many outer k reuse one kR->kq phase tile. No deprecated alias for the former `nk_batch_max`.
         nk_outer_batch_max = 256,
+        el_k_eigenpairs  :: Union{Nothing, Eigenpairs} = nothing,
+        el_kq_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -114,6 +130,7 @@ function run_eph_over_k_and_kq(
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, symmetry, calculators, nchunks_threads,
         covariant_derivative_of_g, backend, batched = batched_resolved, verbosity,
+        el_k_eigenpairs, el_kq_eigenpairs,
     )
 
     if batched_resolved
@@ -170,6 +187,8 @@ function _setup_eph_over_k_and_kq(
         covariant_derivative_of_g = false,
         backend :: AbstractBackend = CPUBackend(),
         batched :: Bool = false,
+        el_k_eigenpairs  :: Union{Nothing, Eigenpairs} = nothing,
+        el_kq_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -180,13 +199,13 @@ function _setup_eph_over_k_and_kq(
     # IBZ-reduces + unfolds under symmetry) plus its `kpts` and computed electron states. Same calls,
     # same order as the prior inline block.
     (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(model, kpts_input;
-        window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity)
+        window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity, el_k_eigenpairs)
     nk = kpts.n
 
     el_kq_quantities = ["eigenvalue", "eigenvector", "velocity", "position"]
     (; kqpts, el_kq_save, sel_kq) = _setup_electron_kq(model, kqpts_input;
         window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
-        fourier_mode, backend, verbosity)
+        fourier_mode, backend, verbosity, el_kq_eigenpairs)
 
 
     # Precompute qpts and phonon states if k and k+q meshes are commensurate
