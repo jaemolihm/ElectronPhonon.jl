@@ -20,29 +20,16 @@ The batched path has a narrower scope than the per-point one (no polar/long-rang
 Two further keywords let a run take its electron eigenpairs from a shared cache instead of
 diagonalizing H(k) itself:
 
-* `el_k_eigenpairs`, `el_kq_eigenpairs :: Union{Nothing, Eigenpairs}` — a cache built with
-  [`electron_eigenpairs`](@ref) for the outer k and the inner k+q side respectively. They exist so
-  that two runs over *overlapping* k-point sets share the eigenvector gauge at every shared
-  k-point: a band-resolved `g2 = |g|²` is basis-dependent inside a degenerate multiplet, where the
-  per-k CPU eigensolve pins the basis only through the EPW-mimicking fix in
-  [`solve_eigen_el!`](@ref) and the batched device eigensolve does not pin it at all.
+* `el_k_eigenpairs`, `el_kq_eigenpairs :: Union{Nothing, Eigenpairs}` — a cache from
+  [`electron_eigenpairs`](@ref) for the outer k and the inner k+q side. They give runs over
+  *overlapping* k-point sets a shared eigenvector gauge, which a band-resolved `g2 = |g|²` needs
+  inside a degenerate multiplet. Each cache must cover every k-point *this rank* visits on its side
+  (a missing point is an error, not a silent recompute) and be resident on the run's `backend`; both
+  are read-only, so one cache serves runs with different windows and quantity lists.
 
-Each cache must cover every k-point *this rank* visits on its side. It is not MPI-distributed:
-`mpi_comm_k` splits the outer k inside `filter_electron_states`, so a rank-local outer cache must be
-that rank's slice or a superset (the natural usage — one full-grid cache replicated on every rank —
-just works, and k+q stays full per rank anyway). A k-point the cache does not hold is an error, not
-a silent recompute. The caches are read-only: a run copies `e`/`u` out per k-point and computes its
-own window, velocity and position from them, so one cache serves runs with different windows and
-quantity lists. A cache is resident on the backend that built it and must match the run's `backend`.
-
-`el_kq_eigenpairs` composes with `el_kq_from_unfolding = true`: the k+q states are then computed
-only at the irreducible points, which a full-BZ cache is looked up for per `xk` like any others, and
-the unfolding rotation carries the cached gauge into the star. Runs that share a k+q cache must then
-make the *same* `el_kq_from_unfolding` choice. At one full-BZ k+q point an unfolding run carries the
-cached *irreducible* eigenvector rotated by the symmetry operation, while a direct run carries the
-cached eigenvector at that point itself; the two are a gauge apart, so mixing the two settings
-reintroduces exactly the mismatch a shared cache exists to remove. Sharing a cache does not make
-that impossible, and nothing checks it.
+Runs sharing a k+q cache must make the same `el_kq_from_unfolding` choice: unfolding carries the
+cached *irreducible* eigenvector rotated by the symmetry operation, a direct run the cached
+eigenvector at the point itself, and the two are a gauge apart. Nothing checks this.
 """
 function run_eph_over_k_and_kq(
         model       :: Model{FT},

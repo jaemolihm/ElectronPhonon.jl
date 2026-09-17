@@ -17,7 +17,7 @@ function _setup_electron_k(
         model :: Model, kpts_input;
         window_k, mpi_comm_k, symmetry, fourier_mode, backend = CPUBackend(), verbosity = 1,
         el_k_quantities = ["eigenvalue", "eigenvector", "velocity", "position"],
-        el_k_eigenpairs = nothing,
+        el_k_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
     )
     (; nw) = model
     sel_k = kpts_input isa FilteredBandStates ? kpts_input :
@@ -44,7 +44,8 @@ end
 # points and the unfolding rotation then carries the cached gauge into the star.
 function _compute_electron_states_kq(
         model, kqpts, kqpts_irr, ik_to_ikirr_isym_kq, symmetry, el_kq_from_unfolding, window_kq;
-        quantities, fourier_mode, backend = CPUBackend(), verbosity = 1, eigenpairs = nothing,
+        quantities, fourier_mode, backend = CPUBackend(), verbosity = 1,
+        eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
     )
     maybe_time(verbosity) do
         if el_kq_from_unfolding
@@ -77,7 +78,8 @@ end
 # `Eigenpairs` cache for the k+q eigensolve.
 function _setup_electron_kq(model, kqpts_input;
         window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
-        fourier_mode, backend = CPUBackend(), verbosity = 1, el_kq_eigenpairs = nothing)
+        fourier_mode, backend = CPUBackend(), verbosity = 1,
+        el_kq_eigenpairs :: Union{Nothing, Eigenpairs} = nothing)
     (; nw) = model
 
     # (1) prebuilt full-BZ selection: consume as-is
