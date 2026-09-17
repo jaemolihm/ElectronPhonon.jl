@@ -2,7 +2,7 @@ using Test
 using LinearAlgebra
 using Random
 using ElectronPhonon
-using ElectronPhonon: holstein_model
+using ElectronPhonon: holstein_model, Structure
 
 @testset "Holstein model" begin
     t, ω₀, g, alat, ε₀ = 0.1, 0.01, 0.02, 5.0, 0.05
@@ -55,6 +55,34 @@ using ElectronPhonon: holstein_model
             end
             ElectronPhonon.epstate_set_g2!(epstate)
             @test epstate.g2[1, 1, 1] ≈ g^2
+        end
+    end
+
+    @testset "symmetry never mixes hopping and inactive directions" begin
+        # model.symmetry is spglib's group for the elongated cell, restricted to the
+        # operations block-diagonal between 1:dimension and the rest. It is a subgroup of
+        # what spglib returned, still a group, and free of block-mixing operations.
+        for dim in 1:3
+            model = holstein_model(; t, ω₀, g, alat, ε₀, dimension = dim, verbose = false)
+            for symop in model.symmetry
+                for i in 1:3, j in 1:3
+                    if (i <= dim) != (j <= dim)
+                        @test symop.S[i, j] == 0
+                    end
+                end
+            end
+            @test ElectronPhonon.symmetry_is_subset(model.symmetry, model.structure.symmetry)
+            Ss = Set(model.symmetry.S)
+            @test all(any(Sa * Sb == Sc for Sc in Ss) for Sa in Ss, Sb in Ss)  # closed
+        end
+
+        # On the elongated cell the restriction is a no-op — spglib already returns exactly
+        # this group. Exercise the helper where it does bite, a cubic cell, so the check
+        # above cannot pass just because the filter does nothing.
+        cubic = Structure(1.0, Mat3{Float64}(I(3)), [1.0], [zero(Vec3{Float64})], ["A"])
+        @test cubic.symmetry.nsym == 96
+        for (dim, nsym) in ((1, 32), (2, 32), (3, 96))
+            @test ElectronPhonon._restrict_symmetry_to_dimension(cubic.symmetry, dim).nsym == nsym
         end
     end
 
