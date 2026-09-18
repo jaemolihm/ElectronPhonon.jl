@@ -114,7 +114,7 @@ function tile_begin!(t::TiledDeviceOutput{FT}, ctx) where {FT}
             t.dev  = Any[alloc(backend, FT, tdims...) for _ in 1:t.narr]
             t.host = Any[Array{FT}(undef, tdims...) for _ in 1:t.narr]
         else
-            t.dev  = Any[fill!(alloc(backend, FT, t.dims...), zero(FT)) for _ in 1:t.narr]
+            t.dev  = Any[alloc_zeros(backend, FT, t.dims...) for _ in 1:t.narr]
         end
     end
     if t.block

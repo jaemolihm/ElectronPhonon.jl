@@ -67,6 +67,26 @@ alloc(::CPUBackend, ::Type{T}, dims...) where {T} = Array{T}(undef, dims...)
 alloc(b::GPUBackend, ::Type{T}, dims...) where {T} = similar(b.proto, T, dims...)
 
 """
+    alloc_zeros(backend, ::Type{T}, dims...) -> AbstractArray{T}
+
+Zero-filled array of `T` on `backend`. `alloc` hands back `undef` memory, so a buffer that is
+accumulated INTO rather than fully overwritten — a reduction target — has to be zeroed
+first, and this is that allocation in one call. Not exported; use
+`ElectronPhonon.alloc_zeros`.
+"""
+alloc_zeros(backend, ::Type{T}, dims...) where {T} = fill!(alloc(backend, T, dims...), zero(T))
+
+"""
+    to_device_copy(backend, A::AbstractArray) -> AbstractArray
+
+Copy of `A` on `backend`, always a DISTINCT array; element type and size follow `A`. `to_device` is
+the identity on `CPUBackend`, so it returns `A` itself there and a buffer taken from it would be
+written through to the caller's array. This is the form to use when the result will be mutated.
+Not exported; use `ElectronPhonon.to_device_copy`.
+"""
+to_device_copy(backend, A::AbstractArray) = copyto!(alloc(backend, eltype(A), size(A)), A)
+
+"""
     free_bytes(backend) -> Int
 
 Free device memory (bytes) on `backend`, used to decide whether a large buffer fits. `CPUBackend`
