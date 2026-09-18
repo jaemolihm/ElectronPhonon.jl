@@ -42,6 +42,8 @@ Number of processors used in MPI. Can be called without ensuring initialization.
 mpi_nprocs(comm=MPI.COMM_WORLD) = (mpi_ensure_initialized(); MPI.Comm_size(comm))
 mpi_isroot(comm=MPI.COMM_WORLD) = (mpi_ensure_initialized(); MPI.Comm_rank(comm) == 0)
 mpi_myrank(comm=MPI.COMM_WORLD) = (mpi_ensure_initialized(); MPI.Comm_rank(comm))
+mpi_nprocs(comm::Nothing) = 1
+mpi_isroot(comm::Nothing) = true
 mpi_myrank(comm::Nothing) = 0
 const MPI_ROOT = 0
 
@@ -61,13 +63,22 @@ mpi_bcast( obj, root::Integer, comm::MPI.Comm) = MPI.bcast( obj, root, comm)
 mpi_bcast!(buf, comm::MPI.Comm) = MPI.Bcast!(buf, 0, comm)
 mpi_bcast( obj, comm::MPI.Comm) = MPI.bcast( obj, 0, comm)
 
-# Do nothing if comm is nothing
-mpi_min( arr, comm::Nothing) = arr
-mpi_max( arr, comm::Nothing) = arr
-mpi_sum( arr, comm::Nothing) = arr
-mpi_min!(arr, comm::Nothing) = nothing
-mpi_max!(arr, comm::Nothing) = nothing
-mpi_sum!(arr, comm::Nothing) = nothing
+# Do nothing if comm is nothing.
+mpi_min(  arr, comm::Nothing) = arr
+mpi_max(  arr, comm::Nothing) = arr
+mpi_sum(  arr, comm::Nothing) = arr
+mpi_mean( arr, comm::Nothing) = arr
+mpi_min!( arr, comm::Nothing) = arr
+mpi_max!( arr, comm::Nothing) = arr
+mpi_sum!( arr, comm::Nothing) = arr
+mpi_mean!(arr, comm::Nothing) = arr
+
+mpi_reduce(arr, op, comm::Nothing) = arr
+
+mpi_bcast!(buf, root::Integer, comm::Nothing) = buf
+mpi_bcast( obj, root::Integer, comm::Nothing) = obj
+mpi_bcast!(buf, comm::Nothing) = buf
+mpi_bcast( obj, comm::Nothing) = obj
 
 function _check_size(arr::AbstractArray, root::Integer, comm::MPI.Comm)
     # Check whether size is equal except for the last dimension
@@ -97,6 +108,7 @@ function mpi_gather(arr::AbstractArray, root::Integer, comm::MPI.Comm)
     end
 end
 mpi_gather(arr, comm::MPI.Comm) = mpi_gather(arr, MPI_ROOT, comm)
+mpi_gather(x, root::Integer, comm::Nothing) = x
 mpi_gather(x, comm::Nothing) = x
 
 """
@@ -124,6 +136,7 @@ function mpi_split_iterator(itr, comm)
     @assert nprocs <= length(itr)
     split_iterator(itr, nprocs)[1 + MPI.Comm_rank(comm)]  # MPI ranks are 0-based
 end
+mpi_split_iterator(itr, comm::Nothing) = itr
 
 """
     mpi_scatter(arr, comm::MPI.Comm)
@@ -154,5 +167,7 @@ mpi_scatter(x, comm::Nothing) = x
 
 
 using OffsetArrays
-mpi_sum!(x::Vector{T}, comm::MPI.Comm) where {T <: AbstractArray} = mpi_sum!.(x, Ref(comm))
-mpi_sum!(x::OffsetArray, comm::MPI.Comm) = mpi_sum!(x.parent, comm)
+# Both hand back the argument, not the reduced inner object: every `mpi_*!` method returns the
+# buffer it was given, so a caller cannot see the container change with the communicator.
+mpi_sum!(x::Vector{T}, comm::MPI.Comm) where {T <: AbstractArray} = (mpi_sum!.(x, Ref(comm)); x)
+mpi_sum!(x::OffsetArray, comm::MPI.Comm) = (mpi_sum!(x.parent, comm); x)

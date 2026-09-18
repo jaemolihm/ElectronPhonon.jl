@@ -330,38 +330,26 @@ function mpi_allgather(s::BandStates{FT}, comm::MPI.Comm) where {FT}
 end
 
 """
-    find_unfolding_indices(el_i::BandStates, el_f::BandStates, symmetry) -> Vector{NTuple{2,Int}}
+    find_unfolding_indices(el_i, el_f, symmetry) -> Vector{Int}   # both AbstractBandStates
 
-For each inner (full-BZ) state `f`, find the outer (IBZ) state `i` and symmetry index `isym`
-such that `S_isym · k_i ≡ k_f` (mod reciprocal lattice) with the same band. Runs once at
-kernel assembly (not a hot loop). Errors if any inner state has no representative.
-`BandStates` replacement for the `BTStates` method (same semantics).
+For each inner (full-BZ) state `f`, the outer (IBZ) state with the same band whose k-point maps to
+`k_f` under `symmetry` (mod a reciprocal lattice vector); `symmetry === nothing` means
+`k_i ≡ k_f` must hold. Errors if any `el_f` state has no counterpart in `el_i`. `el_i` must carry
+`GridKpoints`: the lookup is its integer-grid hash.
 """
 function find_unfolding_indices(el_i::AbstractBandStates, el_f::AbstractBandStates, symmetry)
-    xks_i = state_xks(el_i)   # dense gather once (setup, not a hot loop)
-    xks_f = state_xks(el_f)
-    ind_and_isym = fill((0, 0), el_f.n)
+    xks_f = state_xks(el_f)   # dense gather once (setup, not a hot loop)
+    ind = Vector{Int}(undef, el_f.n)
     for f in 1:el_f.n
         xk_f = xks_f[f]
         ib = el_f.ibands[f]
-        found = false
-        for (isym, S) in enumerate(symmetry)
-            for j in 1:el_i.n
-                el_i.ibands[j] == ib || continue
-                Sk = apply_symop(S, xks_i[j], :momentum)
-                dk = Sk - xk_f
-                if all(abs.(dk .- round.(dk)) .< 1e-10)
-                    ind_and_isym[f] = (j, isym)
-                    found = true
-                    break
-                end
-            end
-            found && break
-        end
-        found || error("find_unfolding_indices: no IBZ representative for inner state $f " *
-                       "(k = $xk_f, band = $ib)")
+        j = state_index_in_star(el_i, xk_f, ib, symmetry)
+        j != 0 || error("find_unfolding_indices: no representative for inner state $f " *
+                        "(k = $xk_f, band = $ib). Pass `symmetry` to enable IBZ reduction, or " *
+                        "use the same k-grid and window for k and k+q.")
+        ind[f] = j
     end
-    ind_and_isym
+    ind
 end
 
 """
@@ -471,7 +459,7 @@ State index of `(xk, iband)` in `s`, searching the symmetry star of `xk` when th
 is absent: the irreducible representative of a k-point on one grid need not be the representative
 chosen on another. The band index is preserved by the point group (ε_{n,Sk} = ε_{n,k}), the
 assumption `find_unfolding_indices` already makes. Returns 0 if no image of `xk` carries band
-`iband` in `s`.
+`iband` in `s`. `symmetry === nothing` is the star `{xk}`, i.e. the exact lookup alone.
 """
 function state_index_in_star(s::AbstractBandStates, xk, iband::Integer, symmetry)
     j = state_index(s, xk, Int(iband))
@@ -483,6 +471,9 @@ function state_index_in_star(s::AbstractBandStates, xk, iband::Integer, symmetry
     0
 end
 
+state_index_in_star(s::AbstractBandStates, xk, iband::Integer, ::Nothing) =
+    state_index(s, xk, Int(iband))
+
 """
     state_indices_full_star(s, xk, iband, symmetry) -> Vector{Int}
     state_indices_full_star(s, st, symmetry) -> Vector{Int}   # `st` a per-state item
@@ -493,6 +484,8 @@ dropped, so the result can be shorter than the group order and empty. Unlike `un
 which unfolds a whole selection into a NEW `FilteredBandStates` carrying its own k-grid, this
 returns indices into an EXISTING selection, for one state at a time.
 
+`symmetry === nothing` is the star `{xk}`, so the result is that one index or empty.
+
 The item form takes a state as `states[i]` yields it, like `state_index(s, st)`.
 """
 function state_indices_full_star(s::AbstractBandStates, xk, iband::Integer, symmetry)
@@ -502,6 +495,11 @@ function state_indices_full_star(s::AbstractBandStates, xk, iband::Integer, symm
         j != 0 && push!(J, j)
     end
     sort!(unique!(J))
+end
+
+function state_indices_full_star(s::AbstractBandStates, xk, iband::Integer, ::Nothing)
+    j = state_index(s, xk, Int(iband))
+    j == 0 ? Int[] : [j]
 end
 
 state_indices_full_star(s::AbstractBandStates, st, symmetry) =
