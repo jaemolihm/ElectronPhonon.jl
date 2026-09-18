@@ -6,7 +6,8 @@ using ElectronPhonon
 @testset "BandStates: selection utilities" begin
     using ElectronPhonon: Vec3, GridKpoints, Kpoints, FilteredBandStates, BandStates,
         filter_states, state_index, state_index_in_star, state_indices_full_star,
-        state_weights, ind_range_for_k_range, band_range, symmetry_operations, apply_symop
+        state_weights, ind_range_for_k_range, band_range, symmetry_operations, apply_symop,
+        find_unfolding_indices
 
     # fcc lattice (cubic point group, 96 operations with time reversal) on a 4×4×4 grid.
     lattice = [0.0 2.0 2.0; 2.0 0.0 2.0; 2.0 2.0 0.0]
@@ -127,5 +128,85 @@ using ElectronPhonon
         modone(v) = mod.(v .+ 1e-9, 1.0)     # k-vectors identified mod a reciprocal lattice vector
         @test any(modone(apply_symop(S, xk_gone, :momentum)) ≈ modone(sub[j].xk) for S in symmetry)
         @test state_index_in_star(sub, xk_gone, 9, symmetry) == 0   # no image carries band 9
+    end
+
+    # The two unfolding maps against an independent reference: the O(nsym·n_f·n_i) scan of `el_i`
+    # inside the symmetry loop that the grid-hash lookups replace. The group argument in the
+    # docstring is what makes the two agree, so the reference is the claim's only real check.
+    @testset "find_unfolding_indices" begin
+        function scan_reference(el_i, el_f, symmetry)
+            xks_i, xks_f = state_xks(el_i), state_xks(el_f)
+            map(1:el_f.n) do f
+                for S in (symmetry === nothing ? (nothing,) : symmetry), j in 1:el_i.n
+                    el_i.ibands[j] == el_f.ibands[f] || continue
+                    Ski = symmetry === nothing ? xks_i[j] : apply_symop(S, xks_i[j], :momentum)
+                    dk = Ski - xks_f[f]
+                    all(abs.(dk .- round.(dk)) .< 1e-10) && return j
+                end
+                error("no representative for inner state $f")
+            end
+        end
+
+        @testset "no symmetry" begin
+            @test find_unfolding_indices(bs, bs, nothing) == collect(1:bs.n)
+            @test find_unfolding_indices(bs, bs, nothing) == scan_reference(bs, bs, nothing)
+
+            # A permuted inner set is resolved, not assumed away: the map is derived from
+            # `(k, band)`, so it comes out as the permutation.
+            rev = BandStates(kpts, reverse(bs.iks), reverse(bs.ibands), reverse(es);
+                nw = 8, nstates_base = 2.0)
+            @test find_unfolding_indices(bs, rev, nothing) == [bs.n + 1 - f for f in 1:bs.n]
+            @test find_unfolding_indices(bs, rev, nothing) == scan_reference(bs, rev, nothing)
+
+            # Energies play no part, so the match survives a shift in them.
+            shifted = BandStates(kpts, bs.iks, bs.ibands, es .+ 1; nw = 8, nstates_base = 2.0)
+            @test find_unfolding_indices(shifted, bs, nothing) == collect(1:bs.n)
+
+            # An inner state with no outer partner errors, whether its k or its band is missing.
+            @test_throws ErrorException find_unfolding_indices(
+                filter_states(bs, 1:bs.n-1), bs, nothing)
+            otherband = BandStates(kpts, bs.iks, fill(9, bs.n), es; nw = 9, nstates_base = 2.0)
+            @test_throws ErrorException find_unfolding_indices(bs, otherband, nothing)
+        end
+
+        @testset "with symmetry" begin
+            # An IBZ outer set: one state per (star, band), which is the case the answer is
+            # unique in and the one an IBZ reduction hands the function.
+            seen = Set{Tuple{Int,Int}}()
+            keep = Int[]
+            for i in 1:bs.n
+                star = state_indices_full_star(bs, bs[i].xk, bs.ibands[i], symmetry)
+                key = (minimum(star), bs.ibands[i])
+                key in seen || (push!(seen, key); push!(keep, i))
+            end
+            ibz = filter_states(bs, keep)
+            @test 0 < ibz.n < bs.n                      # the reduction is not a no-op
+
+            fti = find_unfolding_indices(ibz, bs, symmetry)
+            @test fti == scan_reference(ibz, bs, symmetry)
+            @test length(fti) == bs.n && all(j -> 1 <= j <= ibz.n, fti)
+            # Every inner state gets an outer partner of its own band, in its own star.
+            @test all(ibz.ibands[fti[f]] == bs.ibands[f] for f in 1:bs.n)
+            @test all(fti[f] in state_indices_full_star(ibz, bs[f].xk, bs.ibands[f], symmetry)
+                      for f in 1:bs.n)
+
+            # An inner state whose star is absent from the outer set errors.
+            @test_throws ErrorException find_unfolding_indices(
+                filter_states(ibz, 2:ibz.n), bs, symmetry)
+        end
+
+        # The `(k, band)` lookup is `GridKpoints`' integer-grid hash, so plain `Kpoints` has no
+        # `state_index` method to reach.
+        plain = BandStates(Kpoints(nk, kv, fill(1/nk, nk), ng), bs.iks, bs.ibands, es;
+            nw = 8, nstates_base = 2.0)
+        @test_throws MethodError find_unfolding_indices(plain, bs, nothing)
+        @test_throws MethodError find_unfolding_indices(plain, bs, symmetry)
+
+        # The `::Nothing` members of the star-lookup family are the star `{xk}`.
+        @test state_index_in_star(bs, bs[3].xk, bs.ibands[3], nothing) == 3
+        @test state_index_in_star(bs, bs[3].xk, 9, nothing) == 0
+        @test state_indices_full_star(bs, bs[3].xk, bs.ibands[3], nothing) == [3]
+        @test state_indices_full_star(bs, bs[3].xk, 9, nothing) == Int[]
+        @test state_indices_full_star(bs, bs[3], nothing) == [3]
     end
 end
