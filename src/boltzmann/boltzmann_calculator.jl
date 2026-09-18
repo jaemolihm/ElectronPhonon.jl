@@ -171,7 +171,7 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
     calc.batched = mode isa BatchedMode
     if calc.batched
         calc.dev = BoltzmannDeviceBuffers(
-            fill!(alloc(backend, FT, n_i, nT), zero(FT)),                       # Sₒ
+            alloc_zeros(backend, FT, n_i, nT),                                  # Sₒ
             _indmap_to_device(backend, calc.el_i, calc.nw),                     # imap_i
             _indmap_to_device(backend, calc.el_f, calc.nw),                     # imap_f
             to_device(backend, calc.el_i.es),                                   # e_i  (per outer state)

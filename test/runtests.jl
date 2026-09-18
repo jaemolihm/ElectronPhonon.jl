@@ -13,6 +13,7 @@ include("common_models_from_artifacts.jl")
     include("test_symmetry.jl")
     include("test_wannier.jl")
     include("test_gpu.jl")  # skips gracefully when CUDA is unavailable
+    include("test_backend_alloc.jl")  # alloc_zeros / to_device_copy; GPU arm skips w/o CUDA
     include("test_diagonalize.jl")
     include("test_iterativesolvers.jl")
     # include("test_symmetry_operator.jl")
