@@ -130,10 +130,13 @@ Create a map such that map[CartesianIndex(xk_int)][iband] = i.
 
 If `symmetry` is given, each state is additionally keyed by every point of the star of its
 k-point, so a lookup at any `S * xk` finds the state stored at the representative `xk`.
-`xk_shift` offsets the k-point before it is rounded to the grid (it is not applied to the
-star keys, which live on the unshifted grid).
+`xk_shift` offsets the k-point before it is rounded to the grid. It is incompatible with
+`symmetry`, since a shifted grid is invariant only under the symmetries that leave the shift on
+the grid; `kpoints_grid` and `_filter_with_band_ranges` impose the same restriction.
 """
 function states_index_map(states, symmetry=nothing; xk_shift=Vec3(0, 0, 0))
+    (symmetry === nothing || all(xk_shift .== 0)) ||
+        error("nonzero xk_shift and symmetry incompatible")
     index_map = Dictionary{CI{3}, Vector{Int}}()
     nband = states.nband
     for i in 1:states.n
