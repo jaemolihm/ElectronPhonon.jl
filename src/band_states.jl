@@ -330,6 +330,26 @@ function mpi_allgather(s::BandStates{FT}, comm::MPI.Comm) where {FT}
 end
 
 """
+    gather_band_states(states::BandStates, comm) -> (gstates, offset, counts)
+
+The global state set that a rank-distributed `states` is a slice of, this rank's offset into it,
+and the per-rank local counts. `gstates` is the rank-concatenation of [`mpi_allgather`](@ref):
+rank 0's states first, then rank 1's, and so on, which is the order the e-ph k-split produces.
+This rank's `states.n` local states are therefore the contiguous global block
+`offset+1 : offset+states.n`. Anything that indexes a gathered set by a global index depends on
+that ordering; it is EP's convention, made by the k-splitters, so it is read here rather than
+assumed by the caller.
+
+Serially (`comm === nothing`) the returned `gstates` IS `states`, the same object and not a copy,
+so a caller that mutates it mutates its input.
+"""
+function gather_band_states(states::BandStates, comm)
+    counts = mpi_allgather([states.n], comm)          # per-rank n_local, in rank order
+    offset = sum(@view counts[1:mpi_myrank(comm)])    # MPI ranks are 0-based
+    mpi_allgather(states, comm), offset, Vector{Int}(counts)
+end
+
+"""
     find_unfolding_indices(el_i, el_f, symmetry) -> Vector{Int}   # both AbstractBandStates
 
 For each inner (full-BZ) state `f`, the outer (IBZ) state with the same band whose k-point maps to
