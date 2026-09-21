@@ -178,12 +178,16 @@ end
 
 # =============================================================================
 #  Phonons
+#
+# The momentum comes last, as in the electron functions above. It is annotated so that a call
+# left in an older argument order is a `MethodError` rather than a mis-binding -- the remaining
+# arguments would otherwise accept anything.
 
 """
-    get_ph_eigen!(values, vectors, xq, dyn, mass, polar)
+    get_ph_eigen!(values, vectors, dyn, mass, polar, xq)
 Compute phonon eigenenergy and eigenvector.
 """
-@timing "w2b_ph_eig" function get_ph_eigen!(values, vectors, xq, dyn, mass, polar)
+@timing "w2b_ph_eig" function get_ph_eigen!(values, vectors, dyn, mass, polar, xq::Vec3)
     nmodes = length(values)
     @assert size(vectors) == (nmodes, nmodes)
     @assert size(mass) == (nmodes,)
@@ -205,9 +209,9 @@ Compute phonon eigenenergy and eigenvector.
 end
 
 """
-    get_ph_eigen_valueonly!(values, xq, dyn, mass, polar)
+    get_ph_eigen_valueonly!(values, dyn, mass, polar, xq)
 """
-@timing "w2b_ph_eigval" function get_ph_eigen_valueonly!(values, xq, dyn, mass, polar)
+@timing "w2b_ph_eigval" function get_ph_eigen_valueonly!(values, dyn, mass, polar, xq::Vec3)
     nmodes = length(values)
     @assert size(mass) == (nmodes,)
     @assert dyn.parent.ndata == nmodes^2
