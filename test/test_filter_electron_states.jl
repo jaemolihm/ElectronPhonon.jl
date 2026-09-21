@@ -53,4 +53,16 @@ isdefined(@__MODULE__, :_load_model_from_artifacts) ||
         @test_throws ErrorException filter_electron_states((8, 8, 8), model.nw, model.el_ham, window;
             symmetry = sym, shift = (1, 1, 1) ./ 16)
     end
+
+    @testset "symmetry requires an NTuple grid" begin
+        # A prebuilt k-set cannot be IBZ-reduced here (the reduction happens in `kpoints_grid`),
+        # so `symmetry` must be an error rather than a silent full-BZ selection.
+        kpts = EP.GridKpoints(EP.kpoints_grid((8, 8, 8)))
+        for kin in (kpts, EP.Kpoints(kpts.n, kpts.vectors, kpts.weights, kpts.ngrid))
+            @test_throws "requires an ngrid tuple" filter_electron_states(kin, model.nw,
+                model.el_ham, window; symmetry = sym)
+            # Without symmetry the same input is accepted.
+            @test filter_electron_states(kin, model.nw, model.el_ham, window).n > 0
+        end
+    end
 end

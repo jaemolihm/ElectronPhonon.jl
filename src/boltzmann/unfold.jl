@@ -5,6 +5,12 @@ Unfold `ElectronState` definde on the irreducible BZ `kpts_irr` to the full BZ `
 By default, only unfold the energy eigenvalues and eigenvectors. Then, unfold quantities
 listed in `quantities`.
 - `quantities`: Quantities to unfold. Can contain "velocity_diagonal", "velocity", "position".
+
+For a trivial symmetry (`symmetry === nothing` or `symmetry.nsym == 1`) the return value is
+`states_irr` itself, not a copy: the states are large per-k arrays and copying them would double
+the memory for no gain. A caller that frees its input after unfolding must therefore guard on
+identity, as `_compute_electron_states_kq` does
+(`el_kq_save_irr !== el_kq_save && empty!(el_kq_save_irr)`, `src/calculator/eph_setup_common.jl`).
 """
 function unfold_ElectronStates(model, states_irr::AbstractVector{ElectronState{FT}}, kpts_irr, kpts, ik_to_ikirr_isym, symmetry; quantities=[], fourier_mode="gridopt") where FT
     # FIXME: Add test

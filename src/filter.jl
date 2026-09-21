@@ -174,6 +174,10 @@ function _filter_with_band_ranges(kpts_input, nw, el_ham, window;
             error("nonzero shift and symmetry incompatible (not implemented)")
         kpoints = kpoints_grid(kpts_input; symmetry, shift)
     else
+        symmetry === nothing || throw(ArgumentError(
+            "symmetry reduction requires an ngrid tuple: the irreducible k-set is built by " *
+            "`kpoints_grid`, so a prebuilt `Kpoints`/`GridKpoints` cannot be reduced here. " *
+            "Pass the grid as an `NTuple{3,Integer}`, or drop `symmetry` to keep the given set."))
         kpoints = kpts_input
     end
     if window == (-Inf, Inf)
@@ -198,10 +202,12 @@ range, `sel.nstates_base` the below-window carrier count, `state_weights(sel)` t
 per-k) BZ weights. Supersedes the legacy tuple-returning `filter_kpoints`.
 
 `shift` applies only to the `NTuple` grid path (ignored for a prebuilt `Kpoints`/`GridKpoints`) and
-is mutually exclusive with `symmetry`. Under `mpi_comm` the k-points are split across ranks: the grid
-is built distributed, each rank filters its slice once (single eigensolve pass), then the kept
-k-points and per-k band ranges are redistributed together through the same gather/scatter so they
-stay aligned, and the local below-window counts are summed.
+is mutually exclusive with `symmetry`. `symmetry` likewise requires the `NTuple` path, since the
+irreducible k-set is built by `kpoints_grid`: a prebuilt `Kpoints`/`GridKpoints` passed together
+with a `symmetry` is an `ArgumentError`, not a silent full-BZ selection. Under `mpi_comm` the
+k-points are split across ranks: the grid is built distributed, each rank filters its slice once
+(single eigensolve pass), then the kept k-points and per-k band ranges are redistributed together
+through the same gather/scatter so they stay aligned, and the local below-window counts are summed.
 
 `eigenpairs :: Union{Nothing, Eigenpairs}` — a cache from [`electron_eigenpairs`](@ref) whose
 eigenvalues are read instead of diagonalizing H(k). It must cover the *input* grid, not the filtered

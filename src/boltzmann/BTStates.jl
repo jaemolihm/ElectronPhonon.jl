@@ -125,8 +125,13 @@ end
 # TODO: Make ElectronState and PhononState similar so only one function is needed.
 
 """
-    states_index_map(states, symmetry=nothing)
+    states_index_map(states, symmetry=nothing; xk_shift=Vec3(0, 0, 0))
 Create a map such that map[CartesianIndex(xk_int)][iband] = i.
+
+If `symmetry` is given, each state is additionally keyed by every point of the star of its
+k-point, so a lookup at any `S * xk` finds the state stored at the representative `xk`.
+`xk_shift` offsets the k-point before it is rounded to the grid (it is not applied to the
+star keys, which live on the unshifted grid).
 """
 function states_index_map(states, symmetry=nothing; xk_shift=Vec3(0, 0, 0))
     index_map = Dictionary{CI{3}, Vector{Int}}()
@@ -140,8 +145,8 @@ function states_index_map(states, symmetry=nothing; xk_shift=Vec3(0, 0, 0))
         end
         index_map[key][iband] = i
         if symmetry !== nothing
-            for (S, is_tr) in zip(symmetry.S, symmetry.is_tr)
-                Sk = is_tr * S * states.xks[i]
+            for symop in symmetry
+                Sk = apply_symop(symop, states.xks[i], :momentum)
                 Sk_int = mod.(round.(Int, Sk .* states.ngrid), states.ngrid)
                 key = CI(Sk_int...)
                 if ! haskey(index_map, key)
