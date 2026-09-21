@@ -30,6 +30,13 @@ diagonalizing H(k) itself:
 Runs sharing a k+q cache must make the same `el_kq_from_unfolding` choice: unfolding carries the
 cached *irreducible* eigenvector rotated by the symmetry operation, a direct run the cached
 eigenvector at the point itself, and the two are a gauge apart. Nothing checks this.
+
+* `ph_eigenpairs :: Union{Nothing, Eigenpairs}` — the same for the phonons: a cache with
+  `nbasis = nmodes` over the run's own q points, replacing the dynamical-matrix diagonalization in
+  [`compute_phonon_states`](@ref). Unlike the electron caches there is no builder for it; a caller
+  assembles it from an earlier run's returned `(qpts, ph_save)`, which is what pins the phonon
+  eigenmode basis of two runs to each other inside a degenerate multiplet. The q points a run
+  visits are `combine_kpoint_grids(kpts, kqpts)`, not an argument, so a cache must cover that set.
 """
 function run_eph_over_k_and_kq(
         model       :: Model{FT},
@@ -60,6 +67,7 @@ function run_eph_over_k_and_kq(
         nk_outer_batch_max = 256,
         el_k_eigenpairs  :: Union{Nothing, Eigenpairs} = nothing,
         el_kq_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
+        ph_eigenpairs    :: Union{Nothing, Eigenpairs} = nothing,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -130,7 +138,7 @@ function run_eph_over_k_and_kq(
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, symmetry, calculators, nchunks_threads,
         covariant_derivative_of_g, backend, batched = batched_resolved, verbosity,
-        el_k_eigenpairs, el_kq_eigenpairs,
+        el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs,
     )
 
     if batched_resolved
@@ -189,6 +197,7 @@ function _setup_eph_over_k_and_kq(
         batched :: Bool = false,
         el_k_eigenpairs  :: Union{Nothing, Eigenpairs} = nothing,
         el_kq_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
+        ph_eigenpairs    :: Union{Nothing, Eigenpairs} = nothing,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -225,6 +234,10 @@ function _setup_eph_over_k_and_kq(
 
     else
         precompute_ph = false
+        ph_eigenpairs === nothing || throw(ArgumentError(
+            "ph_eigenpairs requires commensurate k / k+q grids: on incommensurate grids the " *
+            "phonon states are solved per (k, q) inside the loop, so there is no q-point set for " *
+            "a cache to cover."))
     end
 
 
@@ -274,7 +287,9 @@ function _setup_eph_over_k_and_kq(
     if precompute_ph
         ph_save = maybe_time(verbosity) do
             # FIXME: Compute velocity_diagonal only if needed by calculator.
-            compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, backend)
+            compute_phonon_states(model, qpts,
+                ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"];
+                fourier_mode, backend, eigenpairs = ph_eigenpairs)
         end
         dyn_threads = nothing
     else
@@ -446,9 +461,9 @@ function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epstate, ik, ep_ekpR, 
         else
             # Compute phonon state at q.
             iq = nothing
-            set_eigen!(epstate.ph, xq, dyn, model.mass, model.polar_phonon)
+            set_eigen!(epstate.ph, dyn, model.mass, model.polar_phonon, xq)
             if ! skip_eph
-                set_eph_dipole_coeff!(epstate.ph, xq, model.polar_eph)
+                set_eph_dipole_coeff!(epstate.ph, model.polar_eph, xq)
             end
         end
 

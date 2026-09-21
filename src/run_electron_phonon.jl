@@ -125,9 +125,9 @@ function run_eph_outer_loop_q(
         xq = qpoints.vectors[iq]
 
         # Phonon eigenvalues
-        set_eigen!(ph, xq, dyn, model.mass, model.polar_phonon)
+        set_eigen!(ph, dyn, model.mass, model.polar_phonon, xq)
         if model.use_polar_dipole
-            set_eph_dipole_coeff!(ph, xq, model.polar_eph)
+            set_eph_dipole_coeff!(ph, model.polar_eph, xq)
         end
         omega_save[:, iq] .= ph.e
 

@@ -330,6 +330,26 @@ function mpi_allgather(s::BandStates{FT}, comm::MPI.Comm) where {FT}
 end
 
 """
+    gather_band_states(states::BandStates, comm) -> (gstates, offset, counts)
+
+The global state set that a rank-distributed `states` is a slice of, this rank's offset into it,
+and the per-rank local counts. `gstates` is the rank-concatenation of [`mpi_allgather`](@ref):
+rank 0's states first, then rank 1's, and so on, which is the order the e-ph k-split produces.
+This rank's `states.n` local states are therefore the contiguous global block
+`offset+1 : offset+states.n`. Anything that indexes a gathered set by a global index depends on
+that ordering; it is EP's convention, made by the k-splitters, so it is read here rather than
+assumed by the caller.
+
+Serially (`comm === nothing`) the returned `gstates` IS `states`, the same object and not a copy,
+so a caller that mutates it mutates its input.
+"""
+function gather_band_states(states::BandStates, comm)
+    counts = mpi_allgather([states.n], comm)          # per-rank n_local, in rank order
+    offset = sum(@view counts[1:mpi_myrank(comm)])    # MPI ranks are 0-based
+    mpi_allgather(states, comm), offset, Vector{Int}(counts)
+end
+
+"""
     find_unfolding_indices(el_i, el_f, symmetry) -> Vector{Int}   # both AbstractBandStates
 
 For each inner (full-BZ) state `f`, the outer (IBZ) state with the same band whose k-point maps to
@@ -454,12 +474,15 @@ state_index(s::AbstractBandStates, st::NamedTuple) = state_index(s, st.xk, st.ib
 
 """
     state_index_in_star(s, xk, iband, symmetry) -> Int
+    state_index_in_star(s, st, symmetry) -> Int   # `st` a per-state item
 
 State index of `(xk, iband)` in `s`, searching the symmetry star of `xk` when the exact k-vector
 is absent: the irreducible representative of a k-point on one grid need not be the representative
 chosen on another. The band index is preserved by the point group (ε_{n,Sk} = ε_{n,k}), the
 assumption `find_unfolding_indices` already makes. Returns 0 if no image of `xk` carries band
 `iband` in `s`. `symmetry === nothing` is the star `{xk}`, i.e. the exact lookup alone.
+
+The item form takes a state as `states[i]` yields it, like `state_index(s, st)`.
 """
 function state_index_in_star(s::AbstractBandStates, xk, iband::Integer, symmetry)
     j = state_index(s, xk, Int(iband))
@@ -473,6 +496,9 @@ end
 
 state_index_in_star(s::AbstractBandStates, xk, iband::Integer, ::Nothing) =
     state_index(s, xk, Int(iband))
+
+state_index_in_star(s::AbstractBandStates, st, symmetry) =
+    state_index_in_star(s, st.xk, st.iband, symmetry)
 
 """
     state_indices_full_star(s, xk, iband, symmetry) -> Vector{Int}

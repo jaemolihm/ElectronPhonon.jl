@@ -12,8 +12,9 @@ include("common_models_from_artifacts.jl")
     include("test_iq_build.jl")  # GPU outer-k loop's `iq` index build (host arithmetic, CPU-only)
     include("test_symmetry.jl")
     include("test_wannier.jl")
+    include("test_holstein_model.jl")  # analytic Holstein Model builder (no artifacts needed)
     include("test_gpu.jl")  # skips gracefully when CUDA is unavailable
-    include("test_backend_alloc.jl")  # alloc_zeros / to_device_copy; GPU arm skips w/o CUDA
+    include("test_backend_alloc.jl")  # alloc_zeros / to_device_copy / is_host; GPU arm skips w/o CUDA
     include("test_mpi_wrappers.jl")  # the mpi_* wrappers on the `comm === nothing` serial path
     include("test_diagonalize.jl")
     include("test_iterativesolvers.jl")
@@ -25,6 +26,8 @@ include("common_models_from_artifacts.jl")
     include("test_ElectronState.jl")
     include("test_eigenpairs.jl")  # shared full-band eigenpair cache; GPU part skips w/o CUDA
     include("test_eph_precomputed_states.jl")  # the eigenpair cache through the e-ph drivers
+    include("test_eph_incommensurate_grids.jl")  # run_eph_over_k_and_kq's per-(k,q) phonon solve
+    include("test_eph_window_scatter.jl")  # calculator-facing scatter; GPU part skips w/o CUDA
     include("test_plot_bandstructure.jl")
     # include("test_check_model_symmetry.jl")
     include("test_screening.jl")
@@ -39,6 +42,7 @@ include("common_models_from_artifacts.jl")
 
     # Boltzmann routines
     include("boltzmann/test_hdf5.jl")
+    include("boltzmann/test_BTStates.jl")  # states_index_map, incl. the symmetry-star keys
     include("boltzmann/test_QMEVector.jl")
     include("boltzmann/test_gpu_boltzmann_calculator.jl")  # GPU BTE scatter; GPU part skips w/o CUDA
     include("boltzmann/test_multigrid_weights.jl")  # multigrid k-sampling: pure-BZ quadrature check

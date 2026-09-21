@@ -127,21 +127,28 @@ end
 """
     states_index_map(states, symmetry=nothing)
 Create a map such that map[CartesianIndex(xk_int)][iband] = i.
+
+If `symmetry` is given, each state is additionally keyed by every point of the star of its
+k-point (`apply_symop(symop, xk, :momentum)`, which is `-S*xk` for a time-reversal operation),
+so a lookup at any star point finds the state stored at the representative `xk`. `states` must
+then be reduced to the irreducible BZ under the same `symmetry`: stars of distinct
+representatives must not overlap, or one state's star point silently overwrites another state's
+own key.
 """
-function states_index_map(states, symmetry=nothing; xk_shift=Vec3(0, 0, 0))
+function states_index_map(states, symmetry=nothing)
     index_map = Dictionary{CI{3}, Vector{Int}}()
     nband = states.nband
     for i in 1:states.n
         iband = states.iband[i]
-        xk_int = mod.(round.(Int, (states.xks[i] - xk_shift) .* states.ngrid), states.ngrid)
+        xk_int = mod.(round.(Int, states.xks[i] .* states.ngrid), states.ngrid)
         key = CI(xk_int...)
         if ! haskey(index_map, key)
             insert!(index_map, key, zeros(Int, nband))
         end
         index_map[key][iband] = i
         if symmetry !== nothing
-            for (S, is_tr) in zip(symmetry.S, symmetry.is_tr)
-                Sk = is_tr * S * states.xks[i]
+            for symop in symmetry
+                Sk = apply_symop(symop, states.xks[i], :momentum)
                 Sk_int = mod.(round.(Int, Sk .* states.ngrid), states.ngrid)
                 key = CI(Sk_int...)
                 if ! haskey(index_map, key)

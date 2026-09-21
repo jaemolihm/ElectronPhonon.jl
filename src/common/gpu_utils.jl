@@ -29,12 +29,51 @@ Construct a GPU backend carrying a device-array prototype. Provided by a package
 function gpu_backend end
 
 """
+    is_host(backend) -> Bool
+
+Whether `backend` places its arrays in host memory: `true` for `CPUBackend`, `false` for every
+other backend. The question a consumer asks when the host route is not array-generic -- e.g. a
+precompute that only exists in RAM -- and the device route is the generic one.
+
+Named after the host side because that side is the closed one: `CPUBackend` is a set EP always
+knows by name, while device backends are open-ended, so the predicate is `true` on a known list and
+`false` by fallback. A future host-side backend (threaded / MPI / pinned-host) then opts in by
+adding a method, instead of having to remember to override an inherited `true`. Spelled `is_` and
+not `on_` because `on_backend` below already asks about *array* residency. Not exported; use
+`ElectronPhonon.is_host`.
+"""
+is_host(::CPUBackend) = true
+is_host(::AbstractBackend) = false
+
+"""
+    backend_from(use_gpu::Bool) -> AbstractBackend
+
+`gpu_backend()` if `use_gpu`, `CPUBackend()` otherwise — the one place a `Bool` becomes a backend.
+A driver script's `use_gpu` switch stops here: below it the backend object is the single authority
+on residency, so a selection, an `Eigenpairs` cache and a calculator cannot disagree about it.
+Throws an `ArgumentError` naming the extension when `use_gpu` is asked for and none is loaded,
+which `gpu_backend()`'s bare `MethodError` does not say. Not exported; use
+`ElectronPhonon.backend_from`.
+"""
+function backend_from(use_gpu::Bool)
+    use_gpu || return CPUBackend()
+    hasmethod(gpu_backend, Tuple{}) || throw(ArgumentError(
+        "backend_from(true) needs a GPU extension loaded (`using CUDA`); gpu_backend() has no method"))
+    gpu_backend()
+end
+
+"""
     to_device(backend, x)
 
 Move `x` (a host array or `WannierObject`) onto `backend`'s device. `CPUBackend` is the identity;
 the CUDA extension converts to a `CuArray`-backed object for a `GPUBackend`. The backend always
 says where "device" is (mirrors DFTK's `to_device(architecture, x)`); there is deliberately no 1-arg
 form. Not exported; use `ElectronPhonon.to_device`.
+
+Placement, not a copy: because `CPUBackend` is the identity, the result may *be* `x`, so never
+write to a buffer obtained this way unless you own `x` -- the write would go through to the
+caller's array, and a read-only alias is invisible to a bitwise comparison. For a buffer that will
+be written use [`to_device_copy`](@ref), or `alloc` / `alloc_zeros` plus a copy.
 """
 to_device(::CPUBackend, x) = x
 
@@ -72,6 +111,14 @@ function check_on_backend(backend::AbstractBackend, x::AbstractArray, name = "ar
     nothing
 end
 
+"""
+    alloc(backend, ::Type{T}, dims...) -> AbstractArray{T}
+
+Uninitialised array of `T` on `backend`: `Array{T}(undef, dims...)` for `CPUBackend`,
+`similar(backend.proto, T, dims...)` for a `GPUBackend`. The contents are `undef`, so this is the
+allocation for a buffer that is fully overwritten before it is read; a reduction target -- a buffer
+accumulated INTO -- needs [`alloc_zeros`](@ref) instead. Not exported; use `ElectronPhonon.alloc`.
+"""
 alloc(::CPUBackend, ::Type{T}, dims...) where {T} = Array{T}(undef, dims...)
 alloc(b::GPUBackend, ::Type{T}, dims...) where {T} = similar(b.proto, T, dims...)
 
@@ -101,8 +148,27 @@ to_device_copy(backend, A::AbstractArray) = copyto!(alloc(backend, eltype(A), si
 Free device memory (bytes) on `backend`, used to decide whether a large buffer fits. `CPUBackend`
 returns `typemax(Int)` (host allocation is governed by RAM, not this check); the CUDA extension
 returns `CUDA.free_memory()` for a `GPUBackend`.
+
+On `CPUBackend` that value is a sentinel rather than a measurement: use it in a comparison
+(`nbytes <= free_bytes(backend)`, `x <= 0.7 * free_bytes(backend)`), never as an arithmetic
+operand -- `free_bytes(backend) - nbytes` is a nonsense number one overflow away from a wrong
+branch.
 """
 free_bytes(::CPUBackend) = typemax(Int)
+
+"""
+    reclaim_device_memory(backend)
+
+Return `backend`'s cached-but-unused device memory to the driver, so that the next `free_bytes`
+reports what a large allocation can actually get. No-op on `CPUBackend`; the CUDA extension calls
+`CUDA.reclaim()`.
+
+CUDA.jl parks freed device memory in a stream-ordered pool instead of returning it, so `free_bytes`
+reads far below the truth once an earlier calculation has run, and a buffer that would fit is
+rejected. `GC.gc(true)` does not help — a dead device array goes back to the pool, not to the
+driver. Trimming the pool is what moves `free_bytes`.
+"""
+reclaim_device_memory(::CPUBackend) = nothing
 
 """
     synchronize(backend)

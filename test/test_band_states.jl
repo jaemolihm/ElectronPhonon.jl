@@ -102,6 +102,24 @@ using ElectronPhonon
         end
     end
 
+    @testset "gather_band_states" begin
+        using ElectronPhonon: gather_band_states
+        import MPI
+        MPI.Initialized() || MPI.Init()
+        # One rank: the global set is this rank's set, so the whole block starts at offset 0.
+        g, offset, counts = gather_band_states(bs, MPI.COMM_SELF)
+        @test (offset, counts) == (0, [bs.n])
+        @test g.n == bs.n && g.es == bs.es
+        # The documented convention: the local states sit at `offset+1 : offset+n`.
+        @test g.es[offset+1 : offset+bs.n] == bs.es
+        @test all(state_index(g, bs[i]) == i + offset for i in 1:bs.n)
+
+        # Serial path: the input object itself, not a copy.
+        gs, offset_s, counts_s = gather_band_states(bs, nothing)
+        @test gs === bs
+        @test (offset_s, counts_s) == (0, [bs.n])
+    end
+
     @testset "symmetry-star lookups" begin
         xk = Vec3(0.25, 0.0, 0.0)
         J = state_indices_full_star(sel, xk, 3, symmetry)
@@ -121,13 +139,16 @@ using ElectronPhonon
         ikdrop = 7
         sub = filter_states(sel, [i for i in 1:sel.n if sel.iks[i] != ikdrop])
         xk_gone = kpts.vectors[ikdrop]
-        b = sel.ibands[findfirst(==(ikdrop), sel.iks)]
+        idrop = findfirst(==(ikdrop), sel.iks)
+        b = sel.ibands[idrop]
         @test state_index(sub, xk_gone, b) == 0
         j = state_index_in_star(sub, xk_gone, b, symmetry)
         @test j != 0 && sub.ibands[j] == b
         modone(v) = mod.(v .+ 1e-9, 1.0)     # k-vectors identified mod a reciprocal lattice vector
         @test any(modone(apply_symop(S, xk_gone, :momentum)) ≈ modone(sub[j].xk) for S in symmetry)
         @test state_index_in_star(sub, xk_gone, 9, symmetry) == 0   # no image carries band 9
+        # Item form, where the star search actually fires: `sel[idrop]` is the dropped state.
+        @test state_index_in_star(sub, sel[idrop], symmetry) == j
     end
 
     # The two unfolding maps against an independent reference: the O(nsym·n_f·n_i) scan of `el_i`
@@ -207,6 +228,7 @@ using ElectronPhonon
         @test state_index_in_star(bs, bs[3].xk, 9, nothing) == 0
         @test state_indices_full_star(bs, bs[3].xk, bs.ibands[3], nothing) == [3]
         @test state_indices_full_star(bs, bs[3].xk, 9, nothing) == Int[]
+        @test state_index_in_star(bs, bs[3], nothing) == 3
         @test state_indices_full_star(bs, bs[3], nothing) == [3]
     end
 end

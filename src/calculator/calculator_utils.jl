@@ -49,6 +49,39 @@ function eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, 
     nothing
 end
 
+"""
+    eph_window_scatter_reim!(re_out, im_out, ωq_out, epvals, imap_i_col, imap_f, ikqs, ωq,
+                             nbandkq, nbandk, nm, nq_batch, ni_stride, i0)
+
+Complex sibling of [`eph_window_scatter!`](@ref): same window lookup and same linear slot, but it
+writes `real(ep)` and `imag(ep)` of the raw matrix element `epvals` `(nbandkq, nbandk, nm,
+nq_batch)` into two real arrays instead of `|g|²/(2ω)` into one. A calculator needs this when the
+*phase* of `g` enters, not only its magnitude -- a four-channel Nambu vertex, where the `1/(2ω)` is
+applied downstream, once, as the channels are combined.
+
+`ωq_out === nothing` skips the frequency write and leaves `ωq` unread, which is what a caller that
+sweeps twice over the same q points wants for the second sweep.
+
+Generic (CPU/fallback) method; the CUDA extension provides a one-kernel `CuArray` method. See
+[`eph_window_scatter!`](@ref) for `ni_stride`/`i0` and for why the target slots never collide.
+"""
+function eph_window_scatter_reim!(re_out, im_out, ωq_out, epvals, imap_i_col, imap_f, ikqs, ωq,
+                                  nbandkq::Int, nbandk::Int, nm::Int, nq_batch::Int,
+                                  ni_stride::Int, i0::Int)
+    for iq_batch in 1:nq_batch, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
+        i = imap_i_col[n]
+        f = imap_f[m, ikqs[iq_batch]]
+        if i > 0 && f > 0
+            lin = ν + nm * (i - i0 - 1) + nm * ni_stride * (f - 1)
+            ep = epvals[m, n, ν, iq_batch]
+            re_out[lin] = real(ep)
+            im_out[lin] = imag(ep)
+            ωq_out === nothing || (ωq_out[lin] = ωq[ν, iq_batch])
+        end
+    end
+    nothing
+end
+
 # `eph_window_scatter!` above is used by device-resident calculators that copy g2/ωq (e.g. the
 # MigdalEliashberg EliashbergCalculator), not by the BTE calculator. The BTE analogue
 # `bte_window_accumulate!` lives next to its sole caller `BoltzmannCalculator`

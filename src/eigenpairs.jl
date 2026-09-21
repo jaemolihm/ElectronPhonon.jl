@@ -1,6 +1,7 @@
 # Full-band eigenpairs over a k-point set, computed once and shared by several e-ph runs to ensure
 # eigenvector gauge consistency. The container is species-agnostic (`nbasis` is `nw` for electrons
-# and would be `nmodes` for phonons); the builders below are the electron ones.
+# and `nmodes` for phonons); the builder below is the electron one, since a phonon cache is
+# assembled by its caller from the states of an earlier run rather than solved for.
 
 using ChunkSplitters
 using Base.Threads: nthreads, @threads
@@ -15,9 +16,9 @@ Full-band eigenvalues `e_full` (`(nbasis, kpts.n)`) and eigenvectors `u_full`
 (`(nbasis, nbasis, kpts.n)`) on the k-point set `kpts`. Build one with
 [`electron_eigenpairs`](@ref).
 
-`nbasis` is the dimension of the eigenproblem, so nothing here is electron-specific: it is `nw` for
-electrons and would be `nmodes` for a phonon cache, whose `(e, u)` per q point have exactly this
-shape. Only the builders are per species.
+`nbasis` is the dimension of the eigenproblem, so nothing here is electron-specific: it is `nw`
+for electrons and `nmodes` for a phonon cache, whose `(e, u)` per q point have exactly this shape.
+Only the builders are per species.
 
 Its purpose is to make two or more runs over *overlapping* k-point sets use the same eigenvector
 gauge at every shared k-point. The gauge lives entirely in `u_full`, which is independent of any
@@ -127,11 +128,12 @@ end
 # per-k copy for every value but one: `nbasis == 1` against a multi-band model *broadcasts* the
 # single value into every band and returns wrong numbers silently. A wrong backend is a mixed
 # host/device operation -- or, on the eigenvalue-only device path, no error at all.
-_check_eigenpairs(::Nothing, nw, backend) = nothing
+_check_eigenpairs(::Nothing, nbasis, backend) = nothing
 
-function _check_eigenpairs(eig::Eigenpairs, nw, backend)
-    eig.nbasis == nw || throw(ArgumentError(
-        "eigenpairs holds nbasis = $(eig.nbasis), but the model has nw = $nw"))
+function _check_eigenpairs(eig::Eigenpairs, nbasis, backend)
+    eig.nbasis == nbasis || throw(ArgumentError(
+        "eigenpairs holds nbasis = $(eig.nbasis), but this run needs nbasis = $nbasis " *
+        "(nw for an electron cache, nmodes for a phonon one)"))
     # A cache is resident on the backend that built it, and this run's arrays live on `backend`.
     # Consuming one from the other side would mean moving it per call, or indexing a device array
     # from the host loop, so require a match.
@@ -200,4 +202,37 @@ _eigenvalues_on_host(::Nothing, itp_elham, xks) =
 function _eigenvalues_on_host(eigenpairs::Eigenpairs, itp_elham, xks)
     iks = map(xk -> _eigenpairs_ik(eigenpairs, xk), xks)
     Array(eigenpairs.e_full[:, iks])
+end
+
+# The full eigenpair of one q point, into a `PhononState`. `e` is the frequency ω and `u` the
+# mass-scaled eigenmode, i.e. what `get_ph_eigen!` leaves in a `PhononState` -- a phonon cache is
+# built from a previous run's states, so neither the sign(ω²)√|ω²| nor the 1/√mass step is redone
+# here. Argument order follows the electron pair above, `(state, cache, what it takes to solve,
+# momentum)`; the solver arguments differ because `D(q)` needs the masses and the dipole term
+# where `H(k)` needs only its interpolator.
+_set_eigen_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
+    set_eigen!(ph, dyn, mass, polar, xq)
+
+function _set_eigen_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
+    iq = _eigenpairs_ik(eigenpairs, xq)
+    ph.xq = xq
+    @views ph.e .= eigenpairs.e_full[:, iq]
+    @views ph.u .= eigenpairs.u_full[:, :, iq]
+    ph
+end
+
+# Unlike every other consumer here this one is not inert: `e` comes from the cache's FULL
+# eigensolve where the cacheless path runs the value-only driver. The two agree on ω² to
+# `eps * ‖D(q)‖`, but ω = sign(ω²)√|ω²| turns that into a `1/(2ω)`-amplified deviation, so a mode
+# whose ω² is far below the largest ω² of its own q point -- an acoustic mode at Γ of a cell that
+# also carries optical modes -- can differ in the leading digits. Modes away from ω = 0 agree to
+# round-off.
+_set_eigen_valueonly_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
+    set_eigen_valueonly!(ph, dyn, mass, polar, xq)
+
+function _set_eigen_valueonly_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
+    iq = _eigenpairs_ik(eigenpairs, xq)
+    ph.xq = xq
+    @views ph.e .= eigenpairs.e_full[:, iq]
+    ph
 end

@@ -33,7 +33,7 @@ using OffsetArrays: no_offset_view
     set_window!(el_k, window)
     set_eigen!(el_kq, ham, xkq)
     set_window!(el_kq, window)
-    set_eigen!(ph, xq, dyn, model_ph.mass, model_ph.polar_phonon)
+    set_eigen!(ph, dyn, model_ph.mass, model_ph.polar_phonon, xq)
 
     rngk = el_k.rng
     rngkq = el_kq.rng

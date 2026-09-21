@@ -16,6 +16,8 @@ using ElectronPhonon: WannierObject
 using CUDA
 using CUDA.cuSOLVER: heevjBatched!
 using CUDA.cuBLAS: gemm_strided_batched!
+using CUDA.cuSPARSE: CuSparseMatrixCSR
+using SparseArrays: SparseMatrixCSC
 
 # Notes on `heevjBatched!` (cuSOLVER batched Jacobi eigensolver, `cusolverDn<t>heevjBatched`):
 #   - The often-quoted "n ≤ 32" is a performance figure, not a correctness bound; it solves
@@ -35,6 +37,19 @@ ElectronPhonon.gpu_backend() = ElectronPhonon.GPUBackend(CuArray{ComplexF64}(und
 
 ElectronPhonon.free_bytes(::ElectronPhonon.GPUBackend) = CUDA.free_memory()
 ElectronPhonon.synchronize(::ElectronPhonon.GPUBackend) = CUDA.synchronize()
+
+# `CUDA.reclaim()` drops task-local library state, runs a full GC, synchronizes, purges the cuBLAS
+# and cuSOLVER handle caches and trims the memory pool. That is its behavior in CUDA.jl 6, which
+# `[compat] CUDA = "6"` is what pins; 5.x's `reclaim` is a different, GC-less routine.
+ElectronPhonon.reclaim_device_memory(::ElectronPhonon.GPUBackend) = (CUDA.reclaim(); nothing)
+
+# `to_device(::GPUBackend, ::AbstractArray)` always densifies the given array. Add a specialization
+# for sparse matrices that preserves sparsity on the device; CSR is what cuSPARSE's SpMM takes.
+#
+# `mul!` on the result runs cuSPARSE SpMM under `CUSPARSE_SPMM_ALG_DEFAULT`, whose summation order
+# varies between runs (1-2 ulp). `cuSPARSE.mm!(…, CUSPARSE_SPMM_CSR_ALG3)` is reproducible if some
+# caller ever needs bit-identical repeats.
+ElectronPhonon.to_device(::ElectronPhonon.GPUBackend, A::SparseMatrixCSC) = CuSparseMatrixCSR(A)
 
 """
     to_device(::GPUBackend, obj::WannierObject{T, <:Array}) -> WannierObject
@@ -295,11 +310,13 @@ function _window_scatter_kernel!(g2_out, ωq_out, g2vals, imap_i_col, imap_f,
     return
 end
 
-# Dispatch on the device-resident output arrays only: `g2vals` / `ωq` / `ikqs` / `imap_*` are
-# strided device VIEWS (e.g. `view(g2_dev, :,:,:,1:nq_batch)`, `view(imap_i_dev,:,ik)`), i.e.
-# SubArrays of CuArrays, not plain `CuArray`s — typing them `::CuArray` would miss this method (so a
-# host arg cannot be caught by an argument annotation; `CUDA.allowscalar(false)` instead makes any
-# accidental host array a hard error inside the kernel). cudaconvert handles the strided views.
+# Dispatch on the device-resident output arrays only. The inputs arrive as device VIEWS (e.g.
+# `view(g2_dev, :,:,:,1:nq_batch)`, `view(imap_i_dev,:,ik)`) whose type depends on the index
+# pattern: a CONTIGUOUS view of a `CuArray` is a `CuArray`, a strided one is a `SubArray` of one,
+# and both work here (cudaconvert handles either) only because they are left unannotated. So a host
+# argument cannot be caught by an annotation; `CUDA.allowscalar(false)` instead makes an accidental
+# host array a hard error inside the kernel. The outputs are annotated, so a strided output
+# `SubArray` would miss this method and fall through to the generic one.
 function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, ωq_out::CuArray, g2vals,
         imap_i_col, imap_f, ikqs, ωq,
         nbandkq::Int, nbandk::Int, nm::Int, nq_batch::Int, ni_stride::Int, i0::Int)
@@ -308,6 +325,40 @@ function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, ωq_out::CuArray, g
     blocks = cld(N, threads)
     @cuda threads=threads blocks=blocks _window_scatter_kernel!(
         g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
+        nbandkq, nbandk, nm, nq_batch, ni_stride, i0)
+    nothing
+end
+
+# Complex sibling of the above: writes Re/Im of the raw matrix element and, when `ωq_out` is not
+# `nothing`, the frequency. `Nothing` is a singleton type, so that branch is resolved at compile
+# time and the no-ωq launch carries no extra work. See `eph_window_scatter_reim!` in
+# calculator/calculator_utils.jl.
+function _window_scatter_reim_kernel!(re_out, im_out, ωq_out, epvals, imap_i_col, imap_f,
+                                      ikqs, ωq, nbandkq, nbandk, nm, nq_batch, ni_stride, i0)
+    ind_mnνq = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    N = nbandkq * nbandk * nm * nq_batch
+    ind_mnνq <= N || return
+    m, n, ν, iq_batch = _unroll_index(ind_mnνq, (nbandkq, nbandk, nm, nq_batch))
+    i = imap_i_col[n]
+    f = imap_f[m, ikqs[iq_batch]]
+    if i > 0 && f > 0
+        lin = ν + nm * (i - i0 - 1) + nm * ni_stride * (f - 1)
+        ep = epvals[m, n, ν, iq_batch]
+        re_out[lin] = real(ep)
+        im_out[lin] = imag(ep)
+        ωq_out === nothing || (ωq_out[lin] = ωq[ν, iq_batch])
+    end
+    return
+end
+
+function ElectronPhonon.eph_window_scatter_reim!(re_out::CuArray, im_out::CuArray, ωq_out, epvals,
+        imap_i_col, imap_f, ikqs, ωq,
+        nbandkq::Int, nbandk::Int, nm::Int, nq_batch::Int, ni_stride::Int, i0::Int)
+    N = nbandkq * nbandk * nm * nq_batch
+    threads = 256
+    blocks = cld(N, threads)
+    @cuda threads=threads blocks=blocks _window_scatter_reim_kernel!(
+        re_out, im_out, ωq_out, epvals, imap_i_col, imap_f, ikqs, ωq,
         nbandkq, nbandk, nm, nq_batch, ni_stride, i0)
     nothing
 end

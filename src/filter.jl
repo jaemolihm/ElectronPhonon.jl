@@ -176,6 +176,9 @@ function _filter_with_band_ranges(kpts_input, nw, el_ham, window;
             error("nonzero shift and symmetry incompatible (not implemented)")
         kpoints = kpoints_grid(kpts_input; symmetry, shift)
     else
+        # Deliberate: a prebuilt k-set is taken as given, so `symmetry` performs no reduction here
+        # (it is not dropped: the caller may still use it downstream, as `_setup_electron_kq`
+        # does to unfold). Only the grid path reduces, inside `kpoints_grid`.
         kpoints = kpts_input
     end
     if window == (-Inf, Inf)
@@ -200,10 +203,16 @@ range, `sel.nstates_base` the below-window carrier count, `state_weights(sel)` t
 per-k) BZ weights. Supersedes the legacy tuple-returning `filter_kpoints`.
 
 `shift` applies only to the `NTuple` grid path (ignored for a prebuilt `Kpoints`/`GridKpoints`) and
-is mutually exclusive with `symmetry`. Under `mpi_comm` the k-points are split across ranks: the grid
-is built distributed, each rank filters its slice once (single eigensolve pass), then the kept
+is mutually exclusive with `symmetry`. Under `mpi_comm` the k-points are split across ranks: the
+grid is built distributed, each rank filters its slice once (single eigensolve pass), then the kept
 k-points and per-k band ranges are redistributed together through the same gather/scatter so they
 stay aligned, and the local below-window counts are summed.
+
+`symmetry` reduces to the irreducible BZ **only on the `NTuple` grid path**, where `kpoints_grid`
+builds the irreducible set. With a prebuilt `Kpoints`/`GridKpoints` the k-set is taken as given and
+no reduction is performed. That is deliberate, not a silent drop: a caller that has already reduced
+hands in its own irreducible set and needs it through untouched, and `symmetry` remains meaningful
+to the caller downstream: `_setup_electron_kq` passes the result straight to `unfold_kpoints`.
 
 `eigenpairs :: Union{Nothing, Eigenpairs}` — a cache from [`electron_eigenpairs`](@ref) whose
 eigenvalues are read instead of diagonalizing H(k). It must cover the *input* grid, not the filtered
