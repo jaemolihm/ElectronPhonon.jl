@@ -43,9 +43,8 @@ ElectronPhonon.synchronize(::ElectronPhonon.GPUBackend) = CUDA.synchronize()
 # `[compat] CUDA = "6"` is what pins; 5.x's `reclaim` is a different, GC-less routine.
 ElectronPhonon.reclaim_device_memory(::ElectronPhonon.GPUBackend) = (CUDA.reclaim(); nothing)
 
-# A sparse matrix matches the generic `to_device(::GPUBackend, ::AbstractArray)` below, which would
-# DENSIFY it — 9.8 TB for the inner→outer star matrix at nk=144. CSR is the layout cuSPARSE's SpMM
-# takes.
+# `to_device(::GPUBackend, ::AbstractArray)` always densifies the given array. Add a specialization
+# for sparse matrices that preserves sparsity on the device; CSR is what cuSPARSE's SpMM takes.
 ElectronPhonon.to_device(::ElectronPhonon.GPUBackend, A::SparseMatrixCSC) = CuSparseMatrixCSR(A)
 
 # `CUSPARSE_SPMM_CSR_ALG3` is the reproducible algorithm (see the generic `spmm!`): measured bitwise
