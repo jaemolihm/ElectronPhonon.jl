@@ -16,7 +16,7 @@ using ElectronPhonon: WannierObject
 using CUDA
 using CUDA.cuSOLVER: heevjBatched!
 using CUDA.cuBLAS: gemm_strided_batched!
-using CUDA.cuSPARSE: CuSparseMatrixCSR, mm!, CUSPARSE_SPMM_CSR_ALG3
+using CUDA.cuSPARSE: CuSparseMatrixCSR
 using SparseArrays: SparseMatrixCSC
 
 # Notes on `heevjBatched!` (cuSOLVER batched Jacobi eigensolver, `cusolverDn<t>heevjBatched`):
@@ -45,14 +45,11 @@ ElectronPhonon.reclaim_device_memory(::ElectronPhonon.GPUBackend) = (CUDA.reclai
 
 # `to_device(::GPUBackend, ::AbstractArray)` always densifies the given array. Add a specialization
 # for sparse matrices that preserves sparsity on the device; CSR is what cuSPARSE's SpMM takes.
+#
+# `mul!` on the result runs cuSPARSE SpMM under `CUSPARSE_SPMM_ALG_DEFAULT`, whose summation order
+# varies between runs (1-2 ulp). `cuSPARSE.mm!(…, CUSPARSE_SPMM_CSR_ALG3)` is reproducible if some
+# caller ever needs bit-identical repeats.
 ElectronPhonon.to_device(::ElectronPhonon.GPUBackend, A::SparseMatrixCSC) = CuSparseMatrixCSR(A)
-
-# `CUSPARSE_SPMM_CSR_ALG3` is the reproducible algorithm (see the generic `spmm!`): measured bitwise
-# stable over 30 repeats including re-uploaded operands, at 0.275 ms against the default's 0.159 ms.
-function ElectronPhonon.spmm!(C::CuMatrix{T}, A::CuSparseMatrixCSR{T}, B::CuMatrix{T}) where {T}
-    mm!('N', 'N', one(T), A, B, zero(T), C, 'O', CUSPARSE_SPMM_CSR_ALG3)
-    C
-end
 
 """
     to_device(::GPUBackend, obj::WannierObject{T, <:Array}) -> WannierObject

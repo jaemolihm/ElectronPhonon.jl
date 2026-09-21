@@ -1,8 +1,9 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: AbstractBackend, CPUBackend, alloc, alloc_zeros, is_host, to_device,
-    to_device_copy, gpu_backend, free_bytes, reclaim_device_memory, spmm!, backend_from
+    to_device_copy, gpu_backend, free_bytes, reclaim_device_memory, backend_from
 using SparseArrays: sparse, SparseMatrixCSC, nnz
+using LinearAlgebra: mul!
 
 # CUDA is a weak dependency, so load it defensively and run the device arm only when it works.
 const BACKEND_ALLOC_GPU = try
@@ -115,18 +116,22 @@ _alloc_and_drop_device(nbytes) = (fill!(CUDA.CuArray{Float64}(undef, nbytes ÷ s
     end
 end
 
-# A sparse matrix must NOT go through the generic `to_device` (which densifies), and `spmm!` must
-# give the same answer on every run — the reason it exists rather than a plain `mul!`.
-@testset "sparse to_device / spmm!" begin
+# A sparse matrix must NOT go through the generic `to_device`, which densifies it. What makes the
+# specialization worth having is that `mul!` on the result then runs cuSPARSE SpMM instead of a
+# scalar-indexing fallback — including when the dense operand is a `transpose` view, which
+# LinearAlgebra unwraps into cuSPARSE's `transb` flag rather than materializing a copy.
+@testset "sparse to_device / mul!" begin
     n_f, n_i, r = 4000, 200, 12
     S = sparse(1:n_f, rand(1:n_i, n_f), rand(n_f), n_f, n_i)
-    St = SparseMatrixCSC(transpose(S))                 # (n_i × n_f), the fold's orientation
+    St = SparseMatrixCSC(transpose(S))                 # (n_i × n_f)
     B = rand(n_f, r)
+    Bt = permutedims(B)                                # transpose(Bt) == B numerically
+    ref = Array(St) * B
 
     @test to_device(CPUBackend(), St) === St
     Ch = zeros(n_i, r)
-    @test spmm!(Ch, St, B) === Ch
-    @test Ch ≈ Array(St) * B
+    @test mul!(Ch, St, B) ≈ ref
+    @test mul!(zeros(n_i, r), St, transpose(Bt)) ≈ ref
 
     if BACKEND_ALLOC_GPU
         backend = gpu_backend()
@@ -134,18 +139,28 @@ end
         @test !(Sd isa CuArray)                        # densified would be an ordinary CuArray
         @test nnz(Sd) == nnz(St)
         Bd = to_device_copy(backend, B)
-        Cd = alloc_zeros(backend, Float64, n_i, r)
-        spmm!(Cd, Sd, Bd)
-        ref = Array(Cd)
-        # bitwise stable run to run, including a freshly uploaded operand
-        for i in 1:10
-            A = i % 3 == 0 ? to_device(backend, St) : Sd
-            C2 = alloc_zeros(backend, Float64, n_i, r)
-            spmm!(C2, A, Bd)
-            @test Array(C2) == ref
+        Btd = to_device_copy(backend, Bt)
+
+        # `allowscalar(false)` IS the test: a fallback that iterates the arrays throws under it,
+        # and nothing else distinguishes the two — `Base.which` reports LinearAlgebra's entry
+        # point (`matmul.jl`) whichever path runs, because cuSPARSE hooks in below it. The setting
+        # is process-wide, so restore whatever the caller had.
+        probe = CUDA.zeros(Int, 1)
+        was_allowed = redirect_stderr(devnull) do
+            try (probe[1]; true) catch; false end
         end
-        # the two backends agree to rounding, not bitwise (the device reassociates within a row)
-        @test maximum(abs, ref .- Ch) <= 8 * eps(Float64) * maximum(abs, Ch)
+        CUDA.allowscalar(false)
+        try
+            Cd = alloc_zeros(backend, Float64, n_i, r)
+            @test Array(mul!(Cd, Sd, Bd)) ≈ ref
+            Cdt = alloc_zeros(backend, Float64, n_i, r)
+            @test Array(mul!(Cdt, Sd, transpose(Btd))) ≈ ref
+        finally
+            # restoring the permissive default is itself deprecated and warns; that is noise here
+            redirect_stderr(devnull) do
+                CUDA.allowscalar(was_allowed)
+            end
+        end
     end
 end
 
