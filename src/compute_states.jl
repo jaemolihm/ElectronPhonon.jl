@@ -360,12 +360,7 @@ function _compute_phonon_states_device!(states, model::Model{FT}, kpts, quantiti
         # The lookup runs on the host: a miss inside the view would surface as a bare
         # `KernelException` naming only the device.
         iqs = map(xq -> _eigenpairs_ik(eigenpairs, xq), kpts.vectors)
-        # Views, not copies. Both consumers read `U_dev` and nothing writes it (`Array` copies it
-        # out; `get_el_velocity_direct_batched` only broadcasts it into its own `urep`), so
-        # aliasing the cache is safe, and a materialized gather would duplicate `u_full`'s
-        # `16*nmodes^2*nq` device bytes. Measured at nmodes = 6, nq = 5e5: the gather costs 8.2 ms
-        # and 288 MB against 1.0 ms and 4 MB for the view, while consuming the view instead of a
-        # copy costs 1.1 ms on the host download and 0.03 ms on the velocity broadcast.
+        # Views, not copies. Both consumers read `U_dev` and nothing writes it.
         (view(eigenpairs.e_full, :, iqs), view(eigenpairs.u_full, :, :, iqs))
     end
     E = Array(E_dev)
