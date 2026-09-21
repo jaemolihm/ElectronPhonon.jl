@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: CPUBackend, alloc, alloc_zeros, to_device, to_device_copy, gpu_backend,
-    free_bytes, reclaim_device_memory, spmm!
+using ElectronPhonon: AbstractBackend, CPUBackend, alloc, alloc_zeros, is_host, to_device,
+    to_device_copy, gpu_backend, free_bytes, reclaim_device_memory, spmm!
 using SparseArrays: sparse, SparseMatrixCSC, nnz
 
 # CUDA is a weak dependency, so load it defensively and run the device arm only when it works.
@@ -146,5 +146,18 @@ end
         end
         # the two backends agree to rounding, not bitwise (the device reassociates within a row)
         @test maximum(abs, ref .- Ch) <= 8 * eps(Float64) * maximum(abs, Ch)
+    end
+end
+
+# A backend EP has never seen, standing in for a future one: `is_host` is `true` on a known list
+# and `false` by fallback, so such a backend takes the generic (device) route, not the host-only
+# one.
+struct UnknownBackend <: AbstractBackend end
+
+@testset "is_host" begin
+    @test is_host(CPUBackend())
+    @test !is_host(UnknownBackend())
+    if BACKEND_ALLOC_GPU
+        @test !is_host(gpu_backend())
     end
 end
