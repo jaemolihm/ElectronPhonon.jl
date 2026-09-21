@@ -129,7 +129,11 @@ end
 Create a map such that map[CartesianIndex(xk_int)][iband] = i.
 
 If `symmetry` is given, each state is additionally keyed by every point of the star of its
-k-point, so a lookup at any `S * xk` finds the state stored at the representative `xk`.
+k-point (`apply_symop(symop, xk, :momentum)`, which is `-S*xk` for a time-reversal operation),
+so a lookup at any star point finds the state stored at the representative `xk`. `states` must
+then be reduced to the irreducible BZ under the same `symmetry`: stars of distinct
+representatives must not overlap, or one state's star point silently overwrites another state's
+own key.
 """
 function states_index_map(states, symmetry=nothing)
     index_map = Dictionary{CI{3}, Vector{Int}}()
