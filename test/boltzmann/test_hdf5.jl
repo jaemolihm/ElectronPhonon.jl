@@ -7,19 +7,18 @@ using ElectronPhonon
 using ElectronPhonon: _data_julia_to_hdf5, _data_hdf5_to_julia
 
 function test_hdf_io(data::T) where T
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
-    mkpath(tmp_dir)
-
-    h5open(joinpath(tmp_dir, "tmp_data.h5"), "w") do f
-        f["data"] = _data_julia_to_hdf5(data)
+    mktempdir() do tmp_dir
+        file = joinpath(tmp_dir, "tmp_data.h5")
+        h5open(file, "w") do f
+            f["data"] = _data_julia_to_hdf5(data)
+        end
+        data_read = h5open(file, "r") do f
+            _data_hdf5_to_julia(read(f, "data"), T)
+        end
+        @test data_read ≈ data
+        @test data_read isa T
+        data_read
     end
-    data_read = h5open(joinpath(tmp_dir, "tmp_data.h5"), "r") do f
-        _data_hdf5_to_julia(read(f, "data"), T)
-    end
-    @test data_read ≈ data
-    @test data_read isa T
-    data_read
 end
 
 @testset "hdf5 IO basic" begin
@@ -62,15 +61,12 @@ end
 end
 
 # TODO: Merge test_hdf_io and test_hdf_io_btdata
-function test_hdf_io_btdata(data::T) where T
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
-    mkpath(tmp_dir)
-
-    h5open(joinpath(tmp_dir, "tmp_data.h5"), "w") do f
+function test_hdf_io_btdata(tmp_dir, data::T) where T
+    file = joinpath(tmp_dir, "tmp_data.h5")
+    h5open(file, "w") do f
         dump_BTData(f, data)
     end
-    data_read = h5open(joinpath(tmp_dir, "tmp_data.h5"), "r") do f
+    data_read = h5open(file, "r") do f
         load_BTData(f, T)
     end
     @test data_read isa T
@@ -80,42 +76,42 @@ end
 @testset "hdf5 IO BTData" begin
     # Test HDF5 IO of composite types
     Random.seed!(123)
-    BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
-    tmp_dir = joinpath(BASE_FOLDER, "test", "tmp")
-    mkpath(tmp_dir)
+    mktempdir() do tmp_dir
+        file = joinpath(tmp_dir, "tmp_data.h5")
 
-    lattice = 2.0 * [[0 1 1.];
-                     [1 0 1.];
-                     [1 1 0.]]
-    atoms = ["B" => [ones(3)/8], "N" => [-ones(3)/8]]
+        lattice = 2.0 * [[0 1 1.];
+                         [1 0 1.];
+                         [1 1 0.]]
+        atoms = ["B" => [ones(3)/8], "N" => [-ones(3)/8]]
 
-    # Symmetry
-    symmetry = symmetry_operations(lattice, atoms)
-    symmetry_read = @inferred test_hdf_io_btdata(symmetry)
-    for name in fieldnames(typeof(symmetry_read))
-        @test getfield(symmetry_read, name) ≈ getfield(symmetry, name)
+        # Symmetry
+        symmetry = symmetry_operations(lattice, atoms)
+        symmetry_read = @inferred test_hdf_io_btdata(tmp_dir, symmetry)
+        for name in fieldnames(typeof(symmetry_read))
+            @test getfield(symmetry_read, name) ≈ getfield(symmetry, name)
+        end
+
+        # OffsetArray
+        arr = OffsetArray(rand(2, 3, 4), 5:6, -1:1, 1:4)
+        arr_read = @inferred test_hdf_io_btdata(tmp_dir, arr)
+        @test arr ≈ arr_read
+
+        # GridKpoints: the xk->ik indices are derived caches, so they are not written and are rebuilt
+        # by the constructor on load.
+        kpts = GridKpoints(ElectronPhonon.kpoints_grid((2, 2, 3)))
+        kpts_read = test_hdf_io_btdata(tmp_dir, kpts)
+        # Compare the written fields; the index maps are derived caches, rebuilt on load.
+        @test kpts_read.n == kpts.n
+        @test kpts_read.vectors == kpts.vectors
+        @test kpts_read.weights == kpts.weights
+        @test kpts_read.ngrid == kpts.ngrid
+        @test kpts_read.shift == kpts.shift
+        @test all(xk_to_ik.(kpts_read.vectors, Ref(kpts_read)) .== 1:kpts_read.n)
+        @test !isempty(kpts_read._dense_hash_to_ik)
+        h5open(file, "r") do f
+            @test Set(keys(f)) == Set(["n", "vectors", "weights", "ngrid", "shift"])
+        end
+
+        # TODO: Kpoints, ...
     end
-
-    # OffsetArray
-    arr = OffsetArray(rand(2, 3, 4), 5:6, -1:1, 1:4)
-    arr_read = @inferred test_hdf_io_btdata(arr)
-    @test arr ≈ arr_read
-
-    # GridKpoints: the xk->ik indices are derived caches, so they are not written and are rebuilt
-    # by the constructor on load.
-    kpts = GridKpoints(ElectronPhonon.kpoints_grid((2, 2, 3)))
-    kpts_read = test_hdf_io_btdata(kpts)
-    # Compare the written fields; the index maps are derived caches, rebuilt on load.
-    @test kpts_read.n == kpts.n
-    @test kpts_read.vectors == kpts.vectors
-    @test kpts_read.weights == kpts.weights
-    @test kpts_read.ngrid == kpts.ngrid
-    @test kpts_read.shift == kpts.shift
-    @test all(xk_to_ik.(kpts_read.vectors, Ref(kpts_read)) .== 1:kpts_read.n)
-    @test !isempty(kpts_read._dense_hash_to_ik)
-    h5open(joinpath(tmp_dir, "tmp_data.h5"), "r") do f
-        @test Set(keys(f)) == Set(["n", "vectors", "weights", "ngrid", "shift"])
-    end
-
-    # TODO: Kpoints, ...
 end
