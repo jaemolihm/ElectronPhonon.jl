@@ -236,22 +236,15 @@ eph_batched_bytes_per_point(::AbstractCalculator, ::Type{<:AbstractElPhPayload};
 # =============================================================================
 #  Public (but unexported) calculator API. `public` (Julia ≥ 1.11) marks these names as the
 #  supported interface without exporting them (users still reach them as `ElectronPhonon.<name>`).
-#  Gated so the package still parses on older Julia (`Project.toml` compat is `julia = "1"`); the
-#  `public` keyword lives inside a string so it is never parsed on a Julia that lacks it.
 #  `eph_window_scatter!` (calculator_utils.jl) and the backend primitives (gpu_utils.jl) are marked
 #  here too — `public`, like `export`, permits forward references to names defined later in the module.
-if VERSION >= v"1.11.0-DEV.469"
-    Core.eval(@__MODULE__, Meta.parse(
-        "public AbstractCalculator, supports, setup_calculator!, run_calculator!, " *
-        "postprocess_calculator!, calculator_begin!, calculator_end!, " *
-        "OuterKLoop, OuterQLoop, OuterIteration, OuterIterationBatch, " *
-        "AbstractElPhPayload, EPData, EPDataQBatched, EPDataKBatched, " *
-        "LoopContext, SingleMode, BatchedMode, LoopMode, " *
-        "AbstractBackend, CPUBackend, GPUBackend, gpu_backend, alloc, free_bytes, synchronize, " *
-        "batched_gemm!, eph_window_scatter!, bte_window_accumulate!, " *
-        "eph_batched_bytes_per_point, allowed_eph_phonon_basis, " *
-        "required_el_k_quantities, _indmap_to_device, " *
-        "TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array, " *
-        "tile_offset, tile_length, tile_stride, is_block, is_allocated, residency_use_block, " *
-        "to_device, plan_batch, estimate_device_memory"))
-end
+public AbstractCalculator, supports, setup_calculator!, run_calculator!, postprocess_calculator!,
+    calculator_begin!, calculator_end!, OuterKLoop, OuterQLoop, OuterIteration,
+    OuterIterationBatch, AbstractElPhPayload, EPData, EPDataQBatched, EPDataKBatched,
+    LoopContext, SingleMode, BatchedMode, LoopMode, AbstractBackend, CPUBackend, GPUBackend,
+    gpu_backend, alloc, free_bytes, synchronize, batched_gemm!, eph_window_scatter!,
+    bte_window_accumulate!, eph_batched_bytes_per_point, allowed_eph_phonon_basis,
+    required_el_k_quantities, _indmap_to_device, TiledDeviceOutput, tile_begin!, tile_download!,
+    tile_free!, device_array, host_array, tile_offset, tile_length, tile_stride, is_block,
+    is_allocated, residency_use_block, to_device, plan_batch, estimate_device_memory
+

@@ -32,6 +32,14 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
     recip_lattice::Mat3{FT}
     volume::FT
 
+    # Spatial dimension of the system (1, 2 or 3), as declared by whoever built the model. The
+    # lattice is always 3d; `dimension < 3` means the remaining directions are decoupled vacuum.
+    # Only `holstein_model` sets this today — the EPW loaders leave it at the default, so a
+    # model read from EPW reports 3 even for a genuinely 2d material. Treat it as the builder's
+    # declaration, not a derived property, and do not branch on it without checking that the
+    # model's own constructor set it.
+    dimension::Int = 3
+
     # Symmetries
     symmetry::Symmetry{FT}
 

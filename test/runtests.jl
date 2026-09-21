@@ -12,6 +12,7 @@ include("common_models_from_artifacts.jl")
     include("test_iq_build.jl")  # GPU outer-k loop's `iq` index build (host arithmetic, CPU-only)
     include("test_symmetry.jl")
     include("test_wannier.jl")
+    include("test_holstein_model.jl")  # analytic Holstein Model builder (no artifacts needed)
     include("test_gpu.jl")  # skips gracefully when CUDA is unavailable
     include("test_backend_alloc.jl")  # alloc_zeros / to_device_copy / is_host; GPU arm skips w/o CUDA
     include("test_mpi_wrappers.jl")  # the mpi_* wrappers on the `comm === nothing` serial path
