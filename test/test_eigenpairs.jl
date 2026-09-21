@@ -232,6 +232,138 @@ end
         @test mpi.nstates_base == ref.nstates_base
     end
 
+    @testset "consumed by compute_phonon_states" begin
+        # A phonon cache is inert in exactly the same sense as an electron one: it holds the same
+        # eigensolve output on the same dynamical matrix, so a with-cache run reproduces a
+        # without-cache one bit for bit -- including `velocity_diagonal` and, on a polar model,
+        # `eph_dipole_coeff`, both of which are derived from `ph.u` rather than stored in the cache.
+        model_bn = _load_model_from_artifacts("cubicBN"; load_epmat = false)
+        @test model_bn.polar_phonon.use   # so the dipole arm below is not vacuous
+        full = ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]
+        quantity_lists = (["eigenvalue"], ["eigenvalue", "eigenvector"], full)
+
+        # The device phonon path refuses polar models, so cubicBN is CPU-only there as it is in
+        # production. One `fourier_mode` only: with a cache `dyn` is never built, so every claim
+        # here is mode-independent, and the mode-crossed inertness of the cacheless path is the
+        # subject of the A/B against the pre-cache code rather than of this testset.
+        fourier_mode = "normal"
+        arms = Tuple{Any, AbstractBackend}[(model, CPUBackend()), (model_bn, CPUBackend())]
+        EIGENPAIRS_GPU_AVAILABLE && push!(arms, (model, gpu_backend()))
+        for (m, backend) in arms
+            solved = compute_phonon_states(m, kpts, full; fourier_mode, backend)
+            cache = _phonon_eigenpairs(solved, kpts, backend)
+            @test cache.nbasis == m.nmodes
+            # The same cache with its q columns rotated by one: well-formed, on the right backend
+            # and covering every q point, but holding the wrong eigenpair at each. This is what
+            # gives every claim below teeth -- a run that ignored the cache would be unaffected.
+            rot = circshift(1:kpts.n, 1)
+            rotated = Eigenpairs(m.nmodes, kpts, cache.e_full[:, rot], cache.u_full[:, :, rot])
+
+            for quantities in quantity_lists
+                ref = compute_phonon_states(m, kpts, quantities; fourier_mode, backend)
+                new = compute_phonon_states(m, kpts, quantities; fourier_mode, backend,
+                                            eigenpairs = cache)
+                bad = compute_phonon_states(m, kpts, quantities; fourier_mode, backend,
+                                            eigenpairs = rotated)
+                e_cache = Array(cache.e_full)   # the cache may be device-resident
+                if quantities == ["eigenvalue"]
+                    # The one list that cannot be bitwise: without a cache it runs the value-only
+                    # solve, while the cache holds the full eigensolve's frequencies. What the
+                    # cache branch must do exactly is copy the cached column and leave `u` alone.
+                    # The two solves differ by 9.1e-17 relative on Pb and 1.8e-9 on the polar
+                    # cubicBN, whose long-range term the value-only path treats differently.
+                    @test all(iq -> new[iq].e == e_cache[:, iq], 1:kpts.n)
+                    @test all(iq -> all(iszero, new[iq].u), 1:kpts.n)
+                    @test all(iq -> new[iq].xq == ref[iq].xq, 1:kpts.n)
+                    e_ref = reduce(hcat, [p.e for p in ref])
+                    @test norm(reduce(hcat, [p.e for p in new]) - e_ref) / norm(e_ref) < 1e-8
+                else
+                    @test all(_phonon_state_equal.(new, ref))
+                end
+                @test !any(_phonon_state_equal.(bad, ref))
+            end
+
+            # A run whose q list is not the cache's own list in its own order: the device path
+            # short-circuits the `u_full` gather when it is (the shape a two-run caller has, where
+            # gathering would duplicate the whole cache on the device), so this reversed list is
+            # what exercises the gather. Both arms run over the same list, so the ordering of
+            # `GridKpoints` is irrelevant to the claim.
+            rev = GridKpoints(Kpoints(reverse(kpts.vectors); ngrid = kpts.ngrid), kpts.ngrid)
+            @test map(xq -> xk_to_ik(xq, kpts), rev.vectors) != 1:kpts.n
+            @test all(_phonon_state_equal.(
+                compute_phonon_states(m, rev, full; fourier_mode, backend, eigenpairs = cache),
+                compute_phonon_states(m, rev, full; fourier_mode, backend)))
+
+            # The tooth the plan that motivates this feature asks for, because "run without the
+            # cache and check it differs" is vacuous if the eigensolver happens to reproduce the
+            # cache. The perturbation must not be a gauge transformation: a phase on one column
+            # leaves `vdiag = u' (dD/dk) u` and the dipole coefficients exactly invariant, so it
+            # would prove nothing about them. A rotation mixing modes 1 and 2 is a real change of
+            # basis -- and it has to be applied where those two modes are SPLIT, since inside a
+            # degenerate pair the rotation is again only a gauge choice. Measured moves at the
+            # most-split q point: `u` 0.64 (Pb) / 0.44 (cubicBN) of max|u|, `vdiag` 0.32 / 0.19 of
+            # max|vdiag|, `eph_dipole_coeff` 3.0e-2 relative (cubicBN).
+            iq_split = argmax([solved[iq].e[2] - solved[iq].e[1] for iq in 1:kpts.n])
+            u_pert = Array(cache.u_full)
+            u1, u2 = u_pert[:, 1, iq_split], u_pert[:, 2, iq_split]
+            u_pert[:, 1, iq_split] .= cos(0.7) .* u1 .- sin(0.7) .* u2
+            u_pert[:, 2, iq_split] .= sin(0.7) .* u1 .+ cos(0.7) .* u2
+            perturbed = Eigenpairs(m.nmodes, kpts, cache.e_full, to_device(backend, u_pert))
+            pert = compute_phonon_states(m, kpts, full; fourier_mode, backend,
+                                         eigenpairs = perturbed)
+            solved_u = maximum(iq -> maximum(abs, solved[iq].u), 1:kpts.n)
+            solved_v = maximum(iq -> maximum(maximum.(abs, solved[iq].vdiag)), 1:kpts.n)
+            @test maximum(iq -> maximum(abs, pert[iq].u - solved[iq].u), 1:kpts.n) > 0.1solved_u
+            @test maximum(iq -> maximum(maximum.(abs, pert[iq].vdiag - solved[iq].vdiag)),
+                          1:kpts.n) > 0.1solved_v
+            @test all(iq -> pert[iq].e == solved[iq].e, 1:kpts.n)   # only `u` was perturbed
+            if m.polar_phonon.use
+                solved_d = maximum(iq -> maximum(abs, solved[iq].eph_dipole_coeff), 1:kpts.n)
+                @test maximum(iq -> maximum(abs, pert[iq].eph_dipole_coeff -
+                                  solved[iq].eph_dipole_coeff), 1:kpts.n) > 1e-3solved_d
+            end
+
+            # A cache that does not cover every q point a run visits is an error, not a silent
+            # recompute, and it names the q point. On the CPU path the throw reaches here wrapped
+            # by the threaded state loop, so match the message rather than the exception type.
+            sub_q = GridKpoints(Kpoints(kpts.vectors[1:kpts.n-1]; ngrid = kpts.ngrid), kpts.ngrid)
+            partial = _phonon_eigenpairs(compute_phonon_states(m, sub_q, full; fourier_mode,
+                                                               backend), sub_q, backend)
+            @test_throws "does not cover" compute_phonon_states(m, kpts, full; fourier_mode,
+                                                                backend, eigenpairs = partial)
+        end
+
+        # An electron cache has `nbasis = nw`, a phonon one `nbasis = nmodes`, so passing the wrong
+        # species is caught at the entry rather than broadcasting or mismatching deep inside.
+        @test model.nw != model.nmodes
+        @test_throws "eigenpairs holds nbasis" compute_phonon_states(
+            model, kpts, ["eigenvalue"]; eigenpairs = electron_eigenpairs(model, kpts))
+
+        # The same backend-residency rule the electron caches follow.
+        if EIGENPAIRS_GPU_AVAILABLE
+            host_cache = _phonon_eigenpairs(compute_phonon_states(model, kpts, full), kpts)
+            device_cache = _phonon_eigenpairs(
+                compute_phonon_states(model, kpts, full; backend = gpu_backend()), kpts,
+                gpu_backend())
+            @test_throws "resident on the host" compute_phonon_states(
+                model, kpts, full; backend = gpu_backend(), eigenpairs = host_cache)
+            @test_throws "resident on the device" compute_phonon_states(
+                model, kpts, full; eigenpairs = device_cache)
+
+            # CPU and device arms fed the SAME basis agree: the eigenvectors and frequencies are
+            # bit-identical because both copy them out of the cache, and the only quantity either
+            # backend still computes, `vdiag`, agrees to the rotation's round-off. Without a cache
+            # the two bases are a multiplet rotation apart, which is what makes this worth stating.
+            host_states = compute_phonon_states(model, kpts, full)
+            dev_states = compute_phonon_states(model, kpts, full; backend = gpu_backend(),
+                eigenpairs = _phonon_eigenpairs(host_states, kpts, gpu_backend()))
+            @test all(iq -> dev_states[iq].e == host_states[iq].e &&
+                            dev_states[iq].u == host_states[iq].u, 1:kpts.n)
+            @test maximum(iq -> maximum(maximum.(abs, dev_states[iq].vdiag -
+                                                      host_states[iq].vdiag)), 1:kpts.n) < 1e-17
+        end
+    end
+
     @testset "GPU" begin
         if EIGENPAIRS_GPU_AVAILABLE
             # The device transfer must preserve the eltype: `CuArray(arr)` does, `cu(arr)` would

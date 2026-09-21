@@ -25,6 +25,7 @@ include("common_models_from_artifacts.jl")
     include("test_ElectronState.jl")
     include("test_eigenpairs.jl")  # shared full-band eigenpair cache; GPU part skips w/o CUDA
     include("test_eph_precomputed_states.jl")  # the eigenpair cache through the e-ph drivers
+    include("test_eph_window_scatter.jl")  # calculator-facing scatter; GPU part skips w/o CUDA
     include("test_plot_bandstructure.jl")
     # include("test_check_model_symmetry.jl")
     include("test_screening.jl")

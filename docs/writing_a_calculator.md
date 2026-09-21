@@ -226,8 +226,9 @@ both use it instead of hand-rolling it:
   device→host download.
 - In your `calculator_begin!(…, OuterIterationBatch(), ctx)` call `tile_begin!(t, ctx)`; scatter into
   `device_array(t, k)` using `tile_offset(t)` / `tile_stride(t)` (the scatter stays yours —
-  `eph_window_scatter!` or your own); in `calculator_end!(…, OuterIterationBatch(), ctx)` flush a
-  block tile with `tile_download!(t)` + a small view-copy into your host output; in
+  `eph_window_scatter!`, its complex sibling `eph_window_scatter_reim!`, or your own); in
+  `calculator_end!(…, OuterIterationBatch(), ctx)` flush a block tile with `tile_download!(t)` +
+  a small view-copy into your host output; in
   `postprocess_calculator!` copy a full-resident buffer back and `tile_free!(t)`.
 
 The lazily-allocated device buffers are held behind a `Union{Nothing, …}` / `Vector{Any}` handle;
