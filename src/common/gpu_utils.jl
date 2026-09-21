@@ -29,12 +29,34 @@ Construct a GPU backend carrying a device-array prototype. Provided by a package
 function gpu_backend end
 
 """
+    is_host(backend) -> Bool
+
+Whether `backend` places its arrays in host memory: `true` for `CPUBackend`, `false` for every
+other backend. The question a consumer asks when the host route is not array-generic -- e.g. a
+precompute that only exists in RAM -- and the device route is the generic one.
+
+Named after the host side because that side is the closed one: `CPUBackend` is a set EP always
+knows by name, while device backends are open-ended, so the predicate is `true` on a known list and
+`false` by fallback. A future host-side backend (threaded / MPI / pinned-host) then opts in by
+adding a method, instead of having to remember to override an inherited `true`. Spelled `is_` and
+not `on_` because `on_backend` below already asks about *array* residency. Not exported; use
+`ElectronPhonon.is_host`.
+"""
+is_host(::CPUBackend) = true
+is_host(::AbstractBackend) = false
+
+"""
     to_device(backend, x)
 
 Move `x` (a host array or `WannierObject`) onto `backend`'s device. `CPUBackend` is the identity;
 the CUDA extension converts to a `CuArray`-backed object for a `GPUBackend`. The backend always
 says where "device" is (mirrors DFTK's `to_device(architecture, x)`); there is deliberately no 1-arg
 form. Not exported; use `ElectronPhonon.to_device`.
+
+Placement, not a copy: because `CPUBackend` is the identity, the result may *be* `x`, so never
+write to a buffer obtained this way unless you own `x` -- the write would go through to the
+caller's array, and a read-only alias is invisible to a bitwise comparison. For a buffer that will
+be written use [`to_device_copy`](@ref), or `alloc` / `alloc_zeros` plus a copy.
 """
 to_device(::CPUBackend, x) = x
 
@@ -63,6 +85,14 @@ function check_on_backend(backend::AbstractBackend, x::AbstractArray, name = "ar
     nothing
 end
 
+"""
+    alloc(backend, ::Type{T}, dims...) -> AbstractArray{T}
+
+Uninitialised array of `T` on `backend`: `Array{T}(undef, dims...)` for `CPUBackend`,
+`similar(backend.proto, T, dims...)` for a `GPUBackend`. The contents are `undef`, so this is the
+allocation for a buffer that is fully overwritten before it is read; a reduction target -- a buffer
+accumulated INTO -- needs [`alloc_zeros`](@ref) instead. Not exported; use `ElectronPhonon.alloc`.
+"""
 alloc(::CPUBackend, ::Type{T}, dims...) where {T} = Array{T}(undef, dims...)
 alloc(b::GPUBackend, ::Type{T}, dims...) where {T} = similar(b.proto, T, dims...)
 
@@ -92,6 +122,11 @@ to_device_copy(backend, A::AbstractArray) = copyto!(alloc(backend, eltype(A), si
 Free device memory (bytes) on `backend`, used to decide whether a large buffer fits. `CPUBackend`
 returns `typemax(Int)` (host allocation is governed by RAM, not this check); the CUDA extension
 returns `CUDA.free_memory()` for a `GPUBackend`.
+
+On `CPUBackend` that value is a sentinel rather than a measurement: use it in a comparison
+(`nbytes <= free_bytes(backend)`, `x <= 0.7 * free_bytes(backend)`), never as an arithmetic
+operand -- `free_bytes(backend) - nbytes` is a nonsense number one overflow away from a wrong
+branch.
 """
 free_bytes(::CPUBackend) = typemax(Int)
 
