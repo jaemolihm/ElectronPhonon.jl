@@ -16,6 +16,8 @@ using ElectronPhonon: WannierObject
 using CUDA
 using CUDA.cuSOLVER: heevjBatched!
 using CUDA.cuBLAS: gemm_strided_batched!
+using CUDA.cuSPARSE: CuSparseMatrixCSR, mm!, CUSPARSE_SPMM_CSR_ALG3
+using SparseArrays: SparseMatrixCSC
 
 # Notes on `heevjBatched!` (cuSOLVER batched Jacobi eigensolver, `cusolverDn<t>heevjBatched`):
 #   - The often-quoted "n ≤ 32" is a performance figure, not a correctness bound; it solves
@@ -40,6 +42,18 @@ ElectronPhonon.synchronize(::ElectronPhonon.GPUBackend) = CUDA.synchronize()
 # and cuSOLVER handle caches and trims the memory pool. That is its behavior in CUDA.jl 6, which
 # `[compat] CUDA = "6"` is what pins; 5.x's `reclaim` is a different, GC-less routine.
 ElectronPhonon.reclaim_device_memory(::ElectronPhonon.GPUBackend) = (CUDA.reclaim(); nothing)
+
+# A sparse matrix matches the generic `to_device(::GPUBackend, ::AbstractArray)` below, which would
+# DENSIFY it — 9.8 TB for the inner→outer star matrix at nk=144. CSR is the layout cuSPARSE's SpMM
+# takes.
+ElectronPhonon.to_device(::ElectronPhonon.GPUBackend, A::SparseMatrixCSC) = CuSparseMatrixCSR(A)
+
+# `CUSPARSE_SPMM_CSR_ALG3` is the reproducible algorithm (see the generic `spmm!`): measured bitwise
+# stable over 30 repeats including re-uploaded operands, at 0.275 ms against the default's 0.159 ms.
+function ElectronPhonon.spmm!(C::CuMatrix{T}, A::CuSparseMatrixCSR{T}, B::CuMatrix{T}) where {T}
+    mm!('N', 'N', one(T), A, B, zero(T), C, 'O', CUSPARSE_SPMM_CSR_ALG3)
+    C
+end
 
 """
     to_device(::GPUBackend, obj::WannierObject{T, <:Array}) -> WannierObject

@@ -1,7 +1,8 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: CPUBackend, alloc, alloc_zeros, to_device, to_device_copy, gpu_backend,
-    free_bytes, reclaim_device_memory
+    free_bytes, reclaim_device_memory, spmm!
+using SparseArrays: sparse, SparseMatrixCSC, nnz
 
 # CUDA is a weak dependency, so load it defensively and run the device arm only when it works.
 const BACKEND_ALLOC_GPU = try
@@ -111,5 +112,39 @@ _alloc_and_drop_device(nbytes) = (fill!(CUDA.CuArray{Float64}(undef, nbytes ÷ s
         @test CUDA.used_memory() <= used0
         @test CUDA.cached_memory() <= cached0
         @test free_bytes(backend) - free_held >= 9 * nbytes ÷ 10
+    end
+end
+
+# A sparse matrix must NOT go through the generic `to_device` (which densifies), and `spmm!` must
+# give the same answer on every run — the reason it exists rather than a plain `mul!`.
+@testset "sparse to_device / spmm!" begin
+    n_f, n_i, r = 4000, 200, 12
+    S = sparse(1:n_f, rand(1:n_i, n_f), rand(n_f), n_f, n_i)
+    St = SparseMatrixCSC(transpose(S))                 # (n_i × n_f), the fold's orientation
+    B = rand(n_f, r)
+
+    @test to_device(CPUBackend(), St) === St
+    Ch = zeros(n_i, r)
+    @test spmm!(Ch, St, B) === Ch
+    @test Ch ≈ Array(St) * B
+
+    if BACKEND_ALLOC_GPU
+        backend = gpu_backend()
+        Sd = to_device(backend, St)
+        @test !(Sd isa CuArray)                        # densified would be an ordinary CuArray
+        @test nnz(Sd) == nnz(St)
+        Bd = to_device_copy(backend, B)
+        Cd = alloc_zeros(backend, Float64, n_i, r)
+        spmm!(Cd, Sd, Bd)
+        ref = Array(Cd)
+        # bitwise stable run to run, including a freshly uploaded operand
+        for i in 1:10
+            A = i % 3 == 0 ? to_device(backend, St) : Sd
+            C2 = alloc_zeros(backend, Float64, n_i, r)
+            spmm!(C2, A, Bd)
+            @test Array(C2) == ref
+        end
+        # the two backends agree to rounding, not bitwise (the device reassociates within a row)
+        @test maximum(abs, ref .- Ch) <= 8 * eps(Float64) * maximum(abs, Ch)
     end
 end
