@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: AbstractBackend, CPUBackend, alloc, alloc_zeros, is_host, to_device,
-    to_device_copy, gpu_backend, free_bytes, reclaim_device_memory, spmm!
+    to_device_copy, gpu_backend, free_bytes, reclaim_device_memory, spmm!, backend_from
 using SparseArrays: sparse, SparseMatrixCSC, nnz
 
 # CUDA is a weak dependency, so load it defensively and run the device arm only when it works.
@@ -159,5 +159,16 @@ struct UnknownBackend <: AbstractBackend end
     @test !is_host(UnknownBackend())
     if BACKEND_ALLOC_GPU
         @test !is_host(gpu_backend())
+    end
+end
+
+# The only `Bool` -> backend mapping in the stack; a driver script's `use_gpu` is consumed here.
+@testset "backend_from" begin
+    @test backend_from(false) === CPUBackend()
+    if BACKEND_ALLOC_GPU
+        @test typeof(backend_from(true)) === typeof(gpu_backend())
+    elseif !hasmethod(gpu_backend, Tuple{})
+        # No extension loaded: the Bool that asks for a GPU must say so, not `MethodError`.
+        @test_throws ArgumentError backend_from(true)
     end
 end

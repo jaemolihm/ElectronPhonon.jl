@@ -46,6 +46,23 @@ is_host(::CPUBackend) = true
 is_host(::AbstractBackend) = false
 
 """
+    backend_from(use_gpu::Bool) -> AbstractBackend
+
+`gpu_backend()` if `use_gpu`, `CPUBackend()` otherwise — the one place a `Bool` becomes a backend.
+A driver script's `use_gpu` switch stops here: below it the backend object is the single authority
+on residency, so a selection, an `Eigenpairs` cache and a calculator cannot disagree about it.
+Throws an `ArgumentError` naming the extension when `use_gpu` is asked for and none is loaded,
+which `gpu_backend()`'s bare `MethodError` does not say. Not exported; use
+`ElectronPhonon.backend_from`.
+"""
+function backend_from(use_gpu::Bool)
+    use_gpu || return CPUBackend()
+    hasmethod(gpu_backend, Tuple{}) || throw(ArgumentError(
+        "backend_from(true) needs a GPU extension loaded (`using CUDA`); gpu_backend() has no method"))
+    gpu_backend()
+end
+
+"""
     to_device(backend, x)
 
 Move `x` (a host array or `WannierObject`) onto `backend`'s device. `CPUBackend` is the identity;

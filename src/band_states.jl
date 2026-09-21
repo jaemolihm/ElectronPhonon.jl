@@ -474,12 +474,15 @@ state_index(s::AbstractBandStates, st::NamedTuple) = state_index(s, st.xk, st.ib
 
 """
     state_index_in_star(s, xk, iband, symmetry) -> Int
+    state_index_in_star(s, st, symmetry) -> Int   # `st` a per-state item
 
 State index of `(xk, iband)` in `s`, searching the symmetry star of `xk` when the exact k-vector
 is absent: the irreducible representative of a k-point on one grid need not be the representative
 chosen on another. The band index is preserved by the point group (ε_{n,Sk} = ε_{n,k}), the
 assumption `find_unfolding_indices` already makes. Returns 0 if no image of `xk` carries band
 `iband` in `s`. `symmetry === nothing` is the star `{xk}`, i.e. the exact lookup alone.
+
+The item form takes a state as `states[i]` yields it, like `state_index(s, st)`.
 """
 function state_index_in_star(s::AbstractBandStates, xk, iband::Integer, symmetry)
     j = state_index(s, xk, Int(iband))
@@ -493,6 +496,9 @@ end
 
 state_index_in_star(s::AbstractBandStates, xk, iband::Integer, ::Nothing) =
     state_index(s, xk, Int(iband))
+
+state_index_in_star(s::AbstractBandStates, st, symmetry) =
+    state_index_in_star(s, st.xk, st.iband, symmetry)
 
 """
     state_indices_full_star(s, xk, iband, symmetry) -> Vector{Int}
