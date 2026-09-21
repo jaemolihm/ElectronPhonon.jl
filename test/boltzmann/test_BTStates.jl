@@ -38,16 +38,5 @@ using ElectronPhonon
         @test all(index_map[grid_key(apply_symop(symop, xks[i], :momentum))][iband[i]] == i
                   for i in 1:n, symop in symmetry)
         @test length(index_map) == prod(ngrid)
-
-        # A shifted grid is invariant only under the symmetries that leave the shift on the grid,
-        # so the combination is rejected, as in `kpoints_grid` and `_filter_with_band_ranges`.
-        xk_shift = Vec3(1, 1, 1) ./ (4 .* ngrid)
-        @test_throws "xk_shift and symmetry incompatible" states_index_map(states, symmetry;
-            xk_shift)
-        # `xk_shift` alone is fine: it undoes the offset of a shifted grid, giving the same keys.
-        shifted = BTStates{Float64}(; states.n, states.nk, states.nband, states.ngrid,
-            xks = states.xks .+ Ref(xk_shift), states.iband, states.e, states.vdiag,
-            states.k_weight)
-        @test states_index_map(shifted; xk_shift) == map_nosym
     end
 end

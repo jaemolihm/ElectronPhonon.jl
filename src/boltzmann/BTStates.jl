@@ -125,23 +125,18 @@ end
 # TODO: Make ElectronState and PhononState similar so only one function is needed.
 
 """
-    states_index_map(states, symmetry=nothing; xk_shift=Vec3(0, 0, 0))
+    states_index_map(states, symmetry=nothing)
 Create a map such that map[CartesianIndex(xk_int)][iband] = i.
 
 If `symmetry` is given, each state is additionally keyed by every point of the star of its
 k-point, so a lookup at any `S * xk` finds the state stored at the representative `xk`.
-`xk_shift` offsets the k-point before it is rounded to the grid. It is incompatible with
-`symmetry`, since a shifted grid is invariant only under the symmetries that leave the shift on
-the grid; `kpoints_grid` and `_filter_with_band_ranges` impose the same restriction.
 """
-function states_index_map(states, symmetry=nothing; xk_shift=Vec3(0, 0, 0))
-    (symmetry === nothing || all(xk_shift .== 0)) ||
-        error("nonzero xk_shift and symmetry incompatible")
+function states_index_map(states, symmetry=nothing)
     index_map = Dictionary{CI{3}, Vector{Int}}()
     nband = states.nband
     for i in 1:states.n
         iband = states.iband[i]
-        xk_int = mod.(round.(Int, (states.xks[i] - xk_shift) .* states.ngrid), states.ngrid)
+        xk_int = mod.(round.(Int, states.xks[i] .* states.ngrid), states.ngrid)
         key = CI(xk_int...)
         if ! haskey(index_map, key)
             insert!(index_map, key, zeros(Int, nband))
