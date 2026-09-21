@@ -57,31 +57,35 @@ function set_occupation!(ph::PhononState, T)
 end
 get_occupation(ph::PhononState, T) = occ_boson.(ph.e, T)
 
-# Define wrappers of wannier_to_bloch functions
+# Define wrappers of wannier_to_bloch functions.
+#
+# Argument order is the one the `ElectronState` setters use: `(state, what it takes to compute,
+# momentum)`, with the momentum annotated so that a call left in an older order is a `MethodError`
+# rather than a mis-binding -- every argument here would otherwise accept anything.
 
 """
-    set_eigen!(ph::PhononState, xk, dyn, mass, polar)
+    set_eigen!(ph::PhononState, dyn, mass, polar, xk)
 Compute phonon eigenenergy and eigenvector and save them in `ph`.
 """
-function set_eigen!(ph::PhononState, xk, dyn, mass, polar)
+function set_eigen!(ph::PhononState, dyn, mass, polar, xk::Vec3)
     ph.xq = xk
     get_ph_eigen!(ph.e, ph.u, xk, dyn, mass, polar)
 end
 
 """
-    set_eigen_valueonly!(ph::PhononState, xk, dyn, mass, polar)
+    set_eigen_valueonly!(ph::PhononState, dyn, mass, polar, xk)
 Compute phonon eigenenergy and save them in `ph`.
 """
-function set_eigen_valueonly!(ph::PhononState, xk, dyn, mass, polar)
+function set_eigen_valueonly!(ph::PhononState, dyn, mass, polar, xk::Vec3)
     ph.xq = xk
     get_ph_eigen_valueonly!(ph.e, xk, dyn, mass, polar)
 end
 
 """
-    set_velocity_diag!(ph::PhononState, xk, dyn_R)
+    set_velocity_diag!(ph::PhononState, dyn_R, xk)
 Compute phonon band velocity, only the band-diagonal part.
 """
-function set_velocity_diag!(ph::PhononState{T}, xk, dyn_R) where {T}
+function set_velocity_diag!(ph::PhononState{T}, dyn_R, xk::Vec3) where {T}
     @views vdiag = reshape(reinterpret(T, ph.vdiag), 3, ph.nmodes)
     get_ph_velocity_diag!(vdiag, dyn_R, xk, ph.u)
     # get_ph_velocity_diag! calculates the derivative of the dynamical matrix, but the
@@ -93,10 +97,10 @@ function set_velocity_diag!(ph::PhononState{T}, xk, dyn_R) where {T}
 end
 
 """
-    set_eph_dipole_coeff!(ph::PhononState{T}, xk, polar)
+    set_eph_dipole_coeff!(ph::PhononState{T}, polar, xk)
 Compute the coefficients for the dipole electron-phonon coupling. The phonon eigenstates must
 be already set.
 """
-function set_eph_dipole_coeff!(ph::PhononState{T}, xk, polar) where {T}
+function set_eph_dipole_coeff!(ph::PhononState{T}, polar, xk::Vec3) where {T}
     get_eph_dipole_coeffs!(ph.eph_dipole_coeff, ph.eph_r_coeff, xk, polar, ph.u)
 end

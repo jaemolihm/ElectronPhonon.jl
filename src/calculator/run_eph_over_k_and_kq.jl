@@ -460,9 +460,9 @@ function _run_eph_over_k_and_kq_inner(model :: Model{FT}, epstate, ik, ep_ekpR, 
         else
             # Compute phonon state at q.
             iq = nothing
-            set_eigen!(epstate.ph, xq, dyn, model.mass, model.polar_phonon)
+            set_eigen!(epstate.ph, dyn, model.mass, model.polar_phonon, xq)
             if ! skip_eph
-                set_eph_dipole_coeff!(epstate.ph, xq, model.polar_eph)
+                set_eph_dipole_coeff!(epstate.ph, model.polar_eph, xq)
             end
         end
 

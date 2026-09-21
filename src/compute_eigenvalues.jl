@@ -26,7 +26,7 @@ function compute_eigenvalues_ph(model::Model{FT}, kpts; fourier_mode="gridopt") 
     ph = PhononState(model.nmodes, FT)
     e = zeros(model.nmodes, kpts.n)
     for ik in 1:kpts.n
-        set_eigen_valueonly!(ph, kpts.vectors[ik], dyn, model.mass, model.polar_phonon)
+        set_eigen_valueonly!(ph, dyn, model.mass, model.polar_phonon, kpts.vectors[ik])
         e[:, ik] .= ph.e
     end # ik
     e

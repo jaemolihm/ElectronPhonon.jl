@@ -318,7 +318,7 @@ function _compute_phonon_states_cpu!(states, model::Model{FT}, kpts, quantities,
                     # not implemented
                     error("full velocity for phonons not implemented")
                 elseif "velocity_diagonal" ∈ quantities
-                    set_velocity_diag!(ph, xk, dyn_R)
+                    set_velocity_diag!(ph, dyn_R, xk)
                 end
                 if "eph_dipole_coeff" ∈ quantities
                     # Use ph.u for eigenmode basis, nothing for Cartesian basis

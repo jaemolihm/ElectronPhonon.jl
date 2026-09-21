@@ -211,7 +211,7 @@ end
 # momentum)`; the solver arguments differ because `D(q)` needs the masses and the dipole term
 # where `H(k)` needs only its interpolator.
 _set_eigen_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
-    set_eigen!(ph, xq, dyn, mass, polar)
+    set_eigen!(ph, dyn, mass, polar, xq)
 
 function _set_eigen_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
     iq = _eigenpairs_ik(eigenpairs, xq)
@@ -228,7 +228,7 @@ end
 # also carries optical modes -- can differ in the leading digits. Modes away from ω = 0 agree to
 # round-off.
 _set_eigen_valueonly_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
-    set_eigen_valueonly!(ph, xq, dyn, mass, polar)
+    set_eigen_valueonly!(ph, dyn, mass, polar, xq)
 
 function _set_eigen_valueonly_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
     iq = _eigenpairs_ik(eigenpairs, xq)
