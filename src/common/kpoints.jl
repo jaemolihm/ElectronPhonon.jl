@@ -858,16 +858,42 @@ end
 
 
 """
-    _kpoints_to_device_matrix(backend, kpts::AbstractKpoints) -> (3 × kpts.n) real matrix
+    _kpoints_to_device_matrix(backend, xks::AbstractVector{Vec3}) -> (3 × nk) real matrix
+    _kpoints_to_device_matrix(backend, kpts::AbstractKpoints)     -> (3 × kpts.n) real matrix
 
-Crystal coordinates of `kpts` as a `(3 × kpts.n)` real matrix on `backend`'s device — the layout the
-batched Fourier phase builds ([`fourier_phase!`](@ref)) read. `Vec3{T}` is three contiguous `T`, so
-the host side is a `reinterpret` view of `kpts.vectors` rather than a copy; [`to_device`](@ref) then
-materializes it on the device. On `CPUBackend` the result therefore **aliases `kpts.vectors`** — it
-is read-only in every caller, but do not write through it.
+Crystal coordinates as a `(3 × nk)` real matrix on `backend`'s device — the layout the batched
+Fourier phase builds ([`build_fourier_phase!`](@ref)) read. `Vec3{T}` is three contiguous `T`, so no
+element-by-element repack is ever needed.
+
+On `CPUBackend` the result is a `reinterpret` view and therefore **aliases `xks`** — it is read-only
+in every caller, but do not write through it. Off `CPUBackend` it is a fresh device array.
 """
-_kpoints_to_device_matrix(backend, kpts::AbstractKpoints{T}) where {T} =
-    to_device(backend, reshape(reinterpret(T, kpts.vectors), 3, kpts.n))
+function _kpoints_to_device_matrix(backend, xks::AbstractVector{Vec3{T}}) where {T}
+    nk = length(xks)
+    backend isa CPUBackend && return reshape(reinterpret(T, xks), 3, nk)
+    # `copyto!` straight from the reinterpret view drops off CUDA's bulk `cuMemcpy` path and runs
+    # 6x slower (8.5 ms vs 1.3 ms for 10^6 points), and materializing a host `Matrix` first costs
+    # the page faults of a fresh 24 MB allocation. Wrapping the k-list's own buffer avoids both.
+    xkmat = alloc(backend, T, 3, nk)
+    GC.@preserve xks copyto!(xkmat, _host_xkmat(xks))
+    xkmat
+end
+
+_kpoints_to_device_matrix(backend, kpts::AbstractKpoints) =
+    _kpoints_to_device_matrix(backend, kpts.vectors)
+
+# Dense host `(3 × nk)` matrix over a k-list's own storage, for the H2D above. A contiguous strided
+# vector — a `Vector`, or the `view(kpoints.vectors, rng)` the chunked callers build — is wrapped in
+# place, so the result is valid only inside a `GC.@preserve` of the k-list and must not escape one.
+# Anything else (a strided view with a gap, a lazy vector) has no such storage and is materialized.
+function _host_xkmat(xks::StridedVector{Vec3{T}}) where {T}
+    strides(xks) == (1,) || return _materialize_xkmat(xks)
+    unsafe_wrap(Array{T}, Ptr{T}(pointer(xks)), (3, length(xks)))
+end
+_host_xkmat(xks::AbstractVector{Vec3{T}}) where {T} = _materialize_xkmat(xks)
+
+_materialize_xkmat(xks::AbstractVector{Vec3{T}}) where {T} =
+    Matrix(reshape(reinterpret(T, xks), 3, length(xks)))
 
 
 """

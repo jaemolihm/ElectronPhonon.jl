@@ -51,20 +51,20 @@ end
 #
 # Returns `(per_point, committed)` in bytes. `ndata = nw·nbandk_max·nmodes` is the k-side projected
 # e-ph data size (`= nw²·nmodes` full-band); `nr_ep` = number of R-vectors of g(k, R_ep); `nkq` /
-# `nq_grid` = k+q / q grid sizes; `nk_batch_max` = the fixed outer-k batch width; `ndata_epmat` /
-# `nr_epmat` = the parent e-ph object's (`epmat_dev`) data size / R-vector count, for the RR→kR
-# interpolator's scratch. The per-q term sums to `56·nw·nbandk_max·nmodes + 16·nr_ep + 16·nmodes² +
+# `nq_grid` = k+q / q grid sizes; `nk_batch_max` = the fixed outer-k batch width.
+# `nr_epmat` = the parent e-ph object's (`epmat_dev`) R-vector count, for the RR→kR interpolator's
+# phase scratch. The per-q term sums to `56·nw·nbandk_max·nmodes + 16·nr_ep + 16·nmodes² +
 # 8·nmodes + 8 + Σcalc`; the committed to the old hand-counted
 # `16·nw²·nkq + (16·nmodes²+8·nmodes)·nq_grid +
 # 16·nw·nbandk_max·(nmodes·nr_ep+1)·nk_batch_max` PLUS the `itp_epmat` Fourier scratch
-# `(16·ndata_epmat + 16·nr_epmat + 24)·nk_batch_max` (added 2026-07-18; the parent RR→kR interpolator,
-# built at `batch_size = nk_batch_max`, was omitted from the original hand-count — validated against a
-# direct pool-stat measurement of `BatchedWannierInterpolator(epmat_dev)`) PLUS the k+q-convention
-# terms `24·(nk + nkq) + 16·nr_ep·nk_batch_max`. All transition-pinned by test/test_gpu.jl.
+# `16·nr_epmat·nk_batch_max` (added 2026-07-18; the parent RR→kR interpolator, built at
+# `batch_size = nk_batch_max`, was omitted from the original hand-count — validated against a direct
+# pool-stat measurement of `BatchedWannierInterpolator(epmat_dev)`) PLUS the k+q-convention terms
+# `24·(2nk + nkq + nk_batch_max) + 16·nr_ep·nk_batch_max`. All transition-pinned by test/test_gpu.jl.
 # Not counted: the loop's `irvecp_mat` (`24·nr_ep`, 20 kB at Cu shapes), matching how the
 # `BatchedFourierCore.irvec_mat` of the same shape has never been counted.
 function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_grid, nk_batch_max,
-        calculators, ndata_epmat, nr_epmat, FT = Float64)
+        calculators, nr_epmat, FT = Float64)
     cx = sizeof(Complex{FT})    # 16
     rl = sizeof(FT)             # 8
     iz = sizeof(Int)            # 8
@@ -85,16 +85,18 @@ function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_gri
     end
     # Whole-run + per-k-batch commitments (allocated after the sizing point; subtracted from free).
     # The `itp_epmat` term uses `nk_batch_max` (the outer-k batch width, a SEPARATE fixed cap from the
-    # sized q-tile), so it belongs here in `committed`, not in the per-q term: cached_results
-    # (16·ndata_epmat) + phase (16·nr_epmat) + xkmat (24), all × nk_batch_max.
+    # sized q-tile), so it belongs here in `committed`, not in the per-q term. It is the `phase`
+    # buffer alone (16·nr_epmat × nk_batch_max): `cached_results` is allocated on the first
+    # `register_kpoints!` and `itp_epmat` is driven only through `get_fourier_batched!`, which never
+    # registers a k-point; the k-matrix staging left the interpolator for the caller.
     committed =
         cx * nw * nw * nkq +                                  # ukqs_all_dev
         cx * nmodes * nmodes * nq_grid +                      # uph_all_dev
         rl * nmodes * nq_grid +                               # ωq_all_dev
         cx * ndata * nr_ep * nk_batch_max +                   # ep_ekpR_all
         cx * nw * nbandk_max * nk_batch_max +                 # uks_dev
-        (cx * ndata_epmat + cx * nr_epmat + rl * 3) * nk_batch_max + # itp_epmat Fourier scratch
-        rl * 3 * (nk + nkq) +                                 # mxk_dev + xkq_dev
+        cx * nr_epmat * nk_batch_max +                        # itp_epmat Fourier phase scratch
+        rl * 3 * (2nk + nkq + nk_batch_max) +                 # xk_dev + mxk_dev + xkq_dev + ks_batch_dev
         cx * nr_ep * nk_batch_max                             # P_mk (k+q-convention phase)
     (per_point, committed)
 end
@@ -103,15 +105,17 @@ end
 # --- outer-q GPU loop device bytes (`run_eph_over_q_and_k`) ----------------------------------------
 #
 # Returns `(per_point, committed)` in bytes. The k side is streamed (no whole-grid device stack), so
-# `committed == 0`; every device buffer scales with the k-batch. The per-k term reproduces the old
-# formula verbatim (ground truth, not re-derived from the individual buffers), grouped by shape.
+# `committed == 0`; every device buffer scales with the k-batch. The per-k term follows the old
+# formula (ground truth, not re-derived from the individual buffers), grouped by shape, less the two
+# `cached_results` terms: both interpolators are driven only through `get_fourier_batched!`, so they
+# never register a k-point and never allocate that buffer.
 function _outer_q_staging_bytes(; nw, nmodes, nr_el_ham, nr_ep_eRpq, use_polar_eph, calculators,
         FT = Float64)
     cx = sizeof(Complex{FT})    # 16
     rl = sizeof(FT)             # 8
     per_point =
-        cx * nw^2 * nmodes * 5 +              # ep_batch + RqToKQ ws.g/.tmp/.uk_rep + itp_ep_eRpq.cached_results
-        cx * nw^2 * 8 +                       # Hkq_flat + Uk_batch + Ukq_batch + itp_el_ham.cached_results
+        cx * nw^2 * nmodes * 4 +              # ep_batch + RqToKQ ws.g/.tmp/.uk_rep
+        cx * nw^2 * 7 +                       # Hkq_flat + Uk_batch + Ukq_batch
                                              #   + eigen_batched (E,U) & rotation transients (historical margin)
         (use_polar_eph ? cx * nw^2 : 0) +    # mmats_batch (polar only)
         cx * (nr_el_ham + nr_ep_eRpq)        # interpolator core phase, both interpolators

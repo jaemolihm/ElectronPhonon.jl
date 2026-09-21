@@ -71,13 +71,18 @@ end
 # interpolator (build it with `get_interpolator(ham; fourier_mode="batched", batch_size=…)`), not a
 # raw `WannierObject`; `batch_size` is baked into the interpolator at construction.
 
+# k-point count of a batched-Fourier k argument: a host `Vector{Vec3}`, or the `(3 × nk)` matrix a
+# caller stages once and shares between several interpolators (see `get_fourier_batched!`).
+_nk_in(xks::AbstractVector) = length(xks)
+_nk_in(xkmat::AbstractMatrix) = size(xkmat, 2)
+
 # Interpolate H(k) for all k into an (ndata, nk) array on the interpolator's backend.
 function _fourier_hk_batched(itp::BatchedWannierInterpolator{T}, xk_list) where {T}
     ham = itp.parent
     nw = isqrt(ham.ndata)
     nw^2 == ham.ndata || throw(ArgumentError(
         "ndata=$(ham.ndata) is not a perfect square; expected nw^2 for a Hamiltonian"))
-    nk = length(xk_list)
+    nk = _nk_in(xk_list)
     Hk = similar(ham.op_r, Complex{T}, ham.ndata, nk)
     get_fourier_batched!(Hk, itp, xk_list)
     reshape(Hk, nw, nw, nk)
@@ -123,7 +128,7 @@ function get_el_velocity_direct_batched(itp::BatchedWannierInterpolator{T}, xk_l
     vel = itp.parent
     nw = size(uks, 1)
     @assert size(uks, 2) == nw
-    nk = length(xk_list)
+    nk = _nk_in(xk_list)
     @assert size(uks, 3) == nk
     @assert vel.ndata == nw^2 * 3 "expected ndata = nw^2*3 for a 3-direction operator, got $(vel.ndata)"
 
@@ -184,7 +189,7 @@ function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T},3},
     nmodes = div(epmat.ndata, nw^2 * nr_ep)
     M = nmodes * nr_ep
     @assert nmodes * nw^2 * nr_ep == epmat.ndata
-    @assert length(ks) == nk
+    @assert _nk_in(ks) == nk
     @assert size(ep_ekpR_all) == (nw * nband * nmodes, nr_ep, nk)
 
     g = similar(epmat.op_r, Complex{T}, epmat.ndata, nk)
@@ -321,7 +326,7 @@ function get_eph_Rq_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
     nw = size(uks, 1)
     @assert size(uks) == (nw, nbandk, nk)
     @assert size(ukqs) == (nw, nbandkq, nk)
-    @assert length(ks) == nk
+    @assert _nk_in(ks) == nk
     parent = itp_epobj_eRpq.parent
     @assert parent.ndata == nw^2 * nmodes
 

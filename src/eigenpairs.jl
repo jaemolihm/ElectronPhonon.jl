@@ -116,8 +116,8 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
         Eigenpairs(nw, gkpts, e_full, u_full)
     else
         itp_elham = get_interpolator(to_device(backend, model.el_ham);
-                                     fourier_mode="batched", batch_size=gkpts.n)
-        E_dev, U_dev = get_el_eigen_batched(itp_elham, gkpts.vectors)
+                                     fourier_mode="batched", backend, nk_hint=gkpts.n)
+        E_dev, U_dev = get_el_eigen_batched(itp_elham, _kpoints_to_device_matrix(backend, gkpts))
         Eigenpairs(nw, gkpts, E_dev, U_dev)
     end
 end

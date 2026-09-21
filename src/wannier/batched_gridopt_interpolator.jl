@@ -44,11 +44,12 @@ mutable struct BatchedGridoptWannierInterpolator{T, WT <: AbstractWannierObject}
     # Output buffer
     const out::Vector{Complex{T}}
 
-    # Buffer for intermediate calculations
+    # Buffer for intermediate calculations. Read via `_reshape_buffer` by the per-k
+    # `wannier_to_bloch.jl` drivers, which this interpolator's `get_fourier!` API feeds.
     const buffer::Vector{Complex{T}}
-    const buffer2::Vector{Complex{T}}
 
-    # Buffer for diagonalization
+    # Buffer for diagonalization, used by the per-k eigensolve drivers when
+    # `fourier_mode = "batched-gridopt"`.
     const ws::HermitianEigenWsSYEV{Complex{T},T}
 
     # Check if `gridopt` is up-to-date with `parent`
@@ -69,7 +70,6 @@ mutable struct BatchedGridoptWannierInterpolator{T, WT <: AbstractWannierObject}
             zeros(Complex{T}, nr_3, batch_size),  # phase_3_batch
             zeros(Complex{T}, parent.ndata),  # out
             Complex{T}[],            # buffer
-            Complex{T}[],            # buffer2
             ws,
             parent._id,
         )

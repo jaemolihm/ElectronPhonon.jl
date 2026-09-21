@@ -50,11 +50,13 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", bac
         # `get_el_eigen_valueonly_batched` come from the base + CUDA extension. Chunk over k so the
         # per-chunk device H(k) stack (nw*nw*kchunk complex) stays bounded — a single all-nk solve
         # can exhaust GPU memory on large grids. kchunk caps that stack at ~1 GiB (nk if smaller).
+        # It is a separate cap from the interpolator's Fourier-scratch budget, which bounds a
+        # different buffer; `kchunk` only enters here as the `nk_hint` for that budget.
         # With supplied eigenpairs there is no H(k) to interpolate and the chunking is incidental:
         # the cached eigenvalues (nw per k point) are gathered chunk by chunk instead.
         kchunk = clamp(fld(2^30, nw * nw * 16), 1, kpoints.n)
         itp_elham = if eigenpairs === nothing
-            get_interpolator(to_device(backend, el_ham); fourier_mode="batched", batch_size=kchunk)
+            get_interpolator(to_device(backend, el_ham); fourier_mode="batched", backend, nk_hint=kchunk)
         end
         kstart = 1
         while kstart <= kpoints.n

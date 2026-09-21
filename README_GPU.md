@@ -74,28 +74,52 @@ on the host).
 
 ### Generalized `BatchedWannierInterpolator` (one mechanism, both backends)
 
-The existing `BatchedWannierInterpolator` (`src/wannier/batched_interpolator.jl`) is the single
-batching mechanism for CPU and GPU:
+`get_interpolator(obj; fourier_mode="batched", backend, batch_size, nk_hint)`
+(`src/wannier/batched_interpolator.jl`) is the single batching mechanism for CPU and GPU. It is the
+only public constructor: the `BatchedFourierCore` engine it composes is internal.
 
-- Buffer fields (`cached_results`, `phase_batch`, `out`, …) follow the backend of
-  `parent.op_r` (allocated via `similar`; host fallback for `DiskWannierObject`).
+- **`backend` says where the buffers live**, and it must be the backend `obj.op_r` is already on —
+  the constructor checks that and names the array if it is not, rather than running a silent mixed
+  host/device broadcast. It defaults to `CPUBackend()`, so a GPU caller passes it explicitly:
+
+  ```julia
+  ham = ElectronPhonon.to_device(backend, model.el_ham)
+  itp = get_interpolator(ham; fourier_mode="batched", backend, nk_hint = kpts.n)
+  ```
+
+- **The batched modes need an in-memory `op_r`**, so a `DiskWannierObject` is served by the per-k
+  `"normal"` / `"gridopt"` modes only; `"batched"` / `"batched-gridopt"` with one raise an
+  `ArgumentError` naming those two. `"batched-gridopt"` is host-only and rejects a `GPUBackend`.
+
+- **`batch_size` is the block width**, and its default is keyed on the backend: a fixed 32 on
+  `CPUBackend` (the balance for the sequential per-k query API), and on a `GPUBackend` a byte
+  budget, `clamp(fld(GPU_FOURIER_BATCH_BYTES, 16*(nr + ndata)), 1, nk_hint)` with a 1 GiB constant.
+  **Pass `nk_hint = <your k-count>`** whenever you know it: it caps the scratch at the grid size, so
+  a 50-point run allocates 50 columns rather than a budget-sized buffer. Unlike a bare
+  `batch_size = kpts.n` it is a `min` against the budget, so it stays bounded however large the grid
+  — that is what keeps a 7.6 M-point q list from asking for a 75 GB phase buffer.
+
 - The phase computation is a single fused broadcast (no scalar indexing, no `nr × batch` real
   scratch), so it runs on any backend and is faster on the CPU too:
 
   ```julia
   # irvec_mat :: (nr × 3) real, on backend (built once in the constructor)
-  # xkmat     :: (3 × batch) real, on backend
-  fourier_phase!(phase_batch, irvec_mat, xkmat)   # (nr × batch) complex, one broadcast
-  mul!(cached_results, op_r, phase_batch)         # (ndata × batch) GEMM → op_k for all k
+  # xkmat     :: (3 × nk)  real, on backend (staged once per call by get_fourier_batched!)
+  build_fourier_phase!(phase, irvec_mat, xkmat)   # (nr × nk) complex, one broadcast
+  mul!(out, op_r, phase)                          # (ndata × nk) GEMM → op_k for all k
   ```
 
-  `fourier_phase!` is stateless, so a caller whose k-list is loop-invariant can build one phase
-  matrix and reuse it — which is what the GPU outer-k e-ph loop does (next section).
+  `build_fourier_phase!` is stateless and writes into a caller-owned destination, so a caller whose
+  k-list is loop-invariant can build one phase matrix and reuse it — which is what the GPU outer-k
+  e-ph loop does (next section).
 
 - The per-k query API (`register_kpoints!` + sequential `get_fourier!`) used by the calculators
-  is unchanged. A new whole-batch entry point `get_fourier_batched!(out, itp, xk_list)` returns
-  the entire `(ndata, nk)` result on the backend — the GPU path uses this, avoiding any per-k
-  device→host copy.
+  is unchanged; its `cached_results` buffer is allocated on the first `register_kpoints!`, so a
+  whole-batch caller never pays for it. The whole-batch entry point
+  `get_fourier_batched!(out, itp, xk_list)` returns the entire `(ndata, nk)` result on the backend —
+  the GPU path uses this, avoiding any per-k device→host copy. It also accepts an already-staged
+  `(3 × nk)` device matrix, which is how `compute_electron_states` feeds three interpolators from
+  one host→device transfer.
 
 ### Batched Hermitian eigensolve + band-eigenvalue drivers
 

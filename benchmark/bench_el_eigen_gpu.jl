@@ -38,25 +38,28 @@ ham_gpu = to_device(ElectronPhonon.gpu_backend(), model.el_ham)
 
 # ---------------------------------------------------------------------------
 # Benchmark one driver on both backends.
-#   driver : ham -> result    (run on ham_cpu and ham_gpu)
+#   driver : (ham, backend) -> result    (run on ham_cpu and ham_gpu with their own backend)
 #   eigvals_of : result -> (nw, nk) eigenvalue array (identity, or `first` for (E, U))
 # ---------------------------------------------------------------------------
 function bench(name, driver, eigvals_of)
     nrep = 5
-    Ec = eigvals_of(driver(ham_cpu))                                       # warmup + reference
-    t_cpu = minimum(@elapsed(driver(ham_cpu)) for _ in 1:nrep)
+    cpu, gpu = ElectronPhonon.CPUBackend(), ElectronPhonon.gpu_backend()
+    Ec = eigvals_of(driver(ham_cpu, cpu))                                  # warmup + reference
+    t_cpu = minimum(@elapsed(driver(ham_cpu, cpu)) for _ in 1:nrep)
 
-    driver(ham_gpu)                                                        # warmup
-    Eg = eigvals_of(driver(ham_gpu))
-    t_gpu = minimum(CUDA.@elapsed(CUDA.@sync driver(ham_gpu)) for _ in 1:nrep)
+    driver(ham_gpu, gpu)                                                   # warmup
+    Eg = eigvals_of(driver(ham_gpu, gpu))
+    t_gpu = minimum(CUDA.@elapsed(CUDA.@sync driver(ham_gpu, gpu)) for _ in 1:nrep)
 
     d = maximum(abs.(sort(Array(Eg), dims=1) .- sort(Ec, dims=1)))
     @printf "  %-10s  max|Δ|=%.2e   CPU %7.3f ms   GPU %7.3f ms   speedup x%.2f\n" name d t_cpu*1e3 t_gpu*1e3 t_cpu/t_gpu
 end
 
 println("Band eigenvalues over $(length(kpts)) k-points:")
-bench("valueonly", ham -> get_el_eigen_valueonly_batched(get_interpolator(ham; fourier_mode="batched"), kpts), E -> E);
-bench("eigen",     ham -> get_el_eigen_batched(get_interpolator(ham; fourier_mode="batched"), kpts),           EU -> first(EU));
+bench("valueonly", (ham, backend) -> get_el_eigen_valueonly_batched(
+    get_interpolator(ham; fourier_mode="batched", backend, nk_hint = length(kpts)), kpts), E -> E);
+bench("eigen",     (ham, backend) -> get_el_eigen_batched(
+    get_interpolator(ham; fourier_mode="batched", backend, nk_hint = length(kpts)), kpts), EU -> first(EU));
 
 # NOTE: For Pb (nw=4) the operators are tiny; the GPU advantage grows with band count and
 # k-count, and is largest when eigenvectors are needed and for the e-ph matrix (Phase 2).

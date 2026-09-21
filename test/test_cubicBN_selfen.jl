@@ -57,7 +57,7 @@ using NPZ
         @testset "WannierObject - $fourier_mode" begin
             @time output = ElectronPhonon.run_eph_outer_loop_q(
                 model, nklist, nqlist;
-                fourier_mode = "gridopt",
+                fourier_mode,
                 window,
                 elself_params,
                 phself_params,
