@@ -1,6 +1,7 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: CPUBackend, alloc, alloc_zeros, to_device, to_device_copy, gpu_backend
+using ElectronPhonon: CPUBackend, alloc, alloc_zeros, to_device, to_device_copy, gpu_backend,
+    free_bytes, reclaim_device_memory
 
 # CUDA is a weak dependency, so load it defensively and run the device arm only when it works.
 const BACKEND_ALLOC_GPU = try
@@ -53,5 +54,26 @@ end
             @test eltype(Ci) === Int && Array(Ci) == [1, 2, 3]
             @test eltype(to_device_copy(backend, Complex{Int}[1 + 2im])) === Complex{Int}
         end
+    end
+end
+
+# The contract of `reclaim_device_memory`: after it, `free_bytes` counts memory that a freed device
+# array is parked in, which the pool would otherwise hide from a residency decision.
+@testset "reclaim_device_memory" begin
+    @test reclaim_device_memory(CPUBackend()) === nothing
+    @test free_bytes(CPUBackend()) == typemax(Int)
+
+    if BACKEND_ALLOC_GPU
+        backend = gpu_backend()
+        nbytes = 1 << 30
+        A = alloc(backend, UInt8, nbytes)
+        fill!(A, 0x01)
+        A = nothing
+        GC.gc(true)                              # dead, but back in the pool, not with the driver
+        before = free_bytes(backend)
+        @test reclaim_device_memory(backend) === nothing
+        @test free_bytes(backend) >= before
+    else
+        @info "CUDA not functional — skipping the GPUBackend reclaim arm"
     end
 end
