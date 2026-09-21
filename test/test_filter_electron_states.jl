@@ -54,15 +54,22 @@ isdefined(@__MODULE__, :_load_model_from_artifacts) ||
             symmetry = sym, shift = (1, 1, 1) ./ 16)
     end
 
-    @testset "symmetry requires an NTuple grid" begin
-        # A prebuilt k-set cannot be IBZ-reduced here (the reduction happens in `kpoints_grid`),
-        # so `symmetry` must be an error rather than a silent full-BZ selection.
+    @testset "prebuilt k-set: symmetry performs no reduction (contract)" begin
+        # The reduction lives in `kpoints_grid`, i.e. on the NTuple path only. A prebuilt k-set is
+        # taken as given, so passing `symmetry` alongside one must change nothing: a caller that
+        # has already reduced relies on getting its own set back, and uses `symmetry` downstream.
         kpts = EP.GridKpoints(EP.kpoints_grid((8, 8, 8)))
         for kin in (kpts, EP.Kpoints(kpts.n, kpts.vectors, kpts.weights, kpts.ngrid))
-            @test_throws "requires an ngrid tuple" filter_electron_states(kin, model.nw,
-                model.el_ham, window; symmetry = sym)
-            # Without symmetry the same input is accepted.
-            @test filter_electron_states(kin, model.nw, model.el_ham, window).n > 0
+            ref = filter_electron_states(kin, model.nw, model.el_ham, window)
+            sel = filter_electron_states(kin, model.nw, model.el_ham, window; symmetry = sym)
+            @test sel.kpts.n == ref.kpts.n
+            @test stateset(sel) == stateset(ref)
+            @test sel.nstates_base ≈ ref.nstates_base
+            @test band_range(sel) == band_range(ref)
         end
+        # The grid path with the same symmetry does reduce, so the above is not vacuous.
+        n_irr = filter_electron_states((8, 8, 8), model.nw, model.el_ham, window;
+            symmetry = sym).kpts.n
+        @test n_irr < filter_electron_states((8, 8, 8), model.nw, model.el_ham, window).kpts.n
     end
 end
