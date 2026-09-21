@@ -69,7 +69,7 @@ Compute phonon eigenenergy and eigenvector and save them in `ph`.
 """
 function set_eigen!(ph::PhononState, dyn, mass, polar, xk::Vec3)
     ph.xq = xk
-    get_ph_eigen!(ph.e, ph.u, xk, dyn, mass, polar)
+    get_ph_eigen!(ph.e, ph.u, dyn, mass, polar, xk)
 end
 
 """
@@ -78,7 +78,7 @@ Compute phonon eigenenergy and save them in `ph`.
 """
 function set_eigen_valueonly!(ph::PhononState, dyn, mass, polar, xk::Vec3)
     ph.xq = xk
-    get_ph_eigen_valueonly!(ph.e, xk, dyn, mass, polar)
+    get_ph_eigen_valueonly!(ph.e, dyn, mass, polar, xk)
 end
 
 """
