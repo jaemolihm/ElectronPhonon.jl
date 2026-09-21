@@ -165,7 +165,7 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
     # rbar/velocity interpolations below consume them exactly as they consume a solved `U_dev`. So
     # `itp_elham` is not needed at all.
     itp_elham = if eigenpairs === nothing
-        get_interpolator(to_device(backend, model.el_ham); fourier_mode="batched", batch_size=kpts.n)
+        get_interpolator(to_device(backend, model.el_ham); fourier_mode="batched", backend, nk_hint=kpts.n)
     end
 
     # The cache's columns for this k list, in the list's order. Resolved here, on the host: a
@@ -190,7 +190,7 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
         (eigenpairs.e_full[:, iks], eigenpairs.u_full[:, :, iks])
     end
     rbar_dev = if need_position
-        itp_pos = get_interpolator(to_device(backend, model.el_pos); fourier_mode="batched", batch_size=kpts.n)
+        itp_pos = get_interpolator(to_device(backend, model.el_pos); fourier_mode="batched", backend, nk_hint=kpts.n)
         get_el_velocity_direct_batched(itp_pos, kpts.vectors, U_dev)
     else
         nothing
@@ -203,7 +203,7 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
         else
             throw(ArgumentError("unknown el_velocity_mode $el_velocity_mode"))
         end
-        itp_vel = get_interpolator(to_device(backend, Mop); fourier_mode="batched", batch_size=kpts.n)
+        itp_vel = get_interpolator(to_device(backend, Mop); fourier_mode="batched", backend, nk_hint=kpts.n)
         v_dev = get_el_velocity_direct_batched(itp_vel, kpts.vectors, U_dev)
         if el_velocity_mode === :BerryConnection && need_vfull
             nk = kpts.n
@@ -348,7 +348,7 @@ function _compute_phonon_states_device!(states, model::Model{FT}, kpts, quantiti
     # already holds both in that form (it is built from an earlier run's `PhononState`s).
     E_dev, U_dev = if eigenpairs === nothing
         itp_dyn = get_interpolator(to_device(backend, model.ph_dyn);
-                                   fourier_mode="batched", batch_size=kpts.n)
+                                   fourier_mode="batched", backend, nk_hint=kpts.n)
         D = _fourier_hk_batched(itp_dyn, kpts.vectors)  # (nmodes,nmodes,nq)
         msqrt_d = similar(D, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
         D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
@@ -366,7 +366,9 @@ function _compute_phonon_states_device!(states, model::Model{FT}, kpts, quantiti
     E = Array(E_dev)
     U = quantities == ["eigenvalue"] ? nothing : Array(U_dev)
     vel = if need_velocity
-        itp_phvel = get_interpolator(to_device(backend, model.ph_dyn_R); fourier_mode="batched", batch_size=kpts.n)
+        # Phonon velocity requires division by 2ω (dω²/dk = 2ω dω/dk).
+        # This is done in _scatter_phonon_states!.
+        itp_phvel = get_interpolator(to_device(backend, model.ph_dyn_R); fourier_mode="batched", backend, nk_hint=kpts.n)
         Array(get_el_velocity_direct_batched(itp_phvel, kpts.vectors, U_dev))
     else
         nothing

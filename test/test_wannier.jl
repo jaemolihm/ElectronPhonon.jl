@@ -146,3 +146,45 @@ end
         end
     end
 end
+
+@testset "batched modes reject a DiskWannierObject" begin
+    # A disk-backed object is supported by the per-k modes only; the batched modes need an
+    # in-memory op_r. The rejection is at `get_interpolator`, and its message names the two modes
+    # that do work. No file is read here — construction only records the path.
+    using ElectronPhonon: DiskWannierObject
+    irvec = [Vec3{Int}([0, 0, 0]), Vec3{Int}([1, 0, 0])]
+    obj = DiskWannierObject(Float64, "tag", length(irvec), irvec, 4, mktempdir(), "nonexistent.bin")
+
+    for mode in ("batched", "batched-gridopt")
+        err = try get_interpolator(obj; fourier_mode = mode); nothing catch e; e end
+        @test err isa ArgumentError
+        @test occursin("in-memory op_r", err.msg)
+        @test occursin("\"normal\" or \"gridopt\"", err.msg)
+    end
+
+    # The per-k modes still accept it.
+    @test get_interpolator(obj; fourier_mode = "normal") isa ElectronPhonon.NormalWannierInterpolator
+    @test get_interpolator(obj; fourier_mode = "gridopt") isa ElectronPhonon.GridoptWannierInterpolator
+end
+
+@testset "backend-dependent batch_size default" begin
+    using ElectronPhonon: _default_batch_size, CPUBackend
+    irvec = [Vec3{Int}([0, 0, 0]), Vec3{Int}([1, 0, 0])]
+    obj = WannierObject(irvec, randn(ComplexF64, 6, length(irvec)))
+
+    # The CPU side does not move: the per-k query sites still get exactly 32, whatever the object
+    # or the grid size.
+    @test _default_batch_size(CPUBackend(), 617, 9) == 32
+    @test _default_batch_size(CPUBackend(), 617, 9; nk_hint = 4) == 32
+    @test get_interpolator(obj; fourier_mode = "batched").batch_size == 32
+    @test get_interpolator(obj; fourier_mode = "batched-gridopt").batch_size == 32
+
+    # An explicit `batch_size` still wins, and `get_interpolator_channel` forwards it (it used to
+    # drop it silently, so every channel-built batched interpolator got the hardcoded default).
+    @test get_interpolator(obj; fourier_mode = "batched", batch_size = 7).batch_size == 7
+    ch = get_interpolator_channel(obj; fourier_mode = "batched", batch_size = 7, nbuffers = 2)
+    @test take!(ch).batch_size == 7
+
+    # `nk_hint` never widens past the budget, and on the CPU it cannot narrow below the fixed 32.
+    @test get_interpolator(obj; fourier_mode = "batched", nk_hint = 10^9).batch_size == 32
+end

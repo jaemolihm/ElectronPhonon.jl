@@ -80,11 +80,17 @@ to_device(::CPUBackend, x) = x
 """
     on_backend(backend, x::AbstractArray) -> Bool
 
-Whether `x` is already resident on `backend`: an `Array` for `CPUBackend`, an array of
+Whether `x` is already resident on `backend`: host memory for `CPUBackend`, an array of
 `backend.proto`'s type for a `GPUBackend`. The residency test that `to_device` is the conversion
 for. Not exported; use `ElectronPhonon.on_backend`.
+
+Host residency is read off `Base.BroadcastStyle` rather than `x isa Array`, so a `reinterpret` or
+`view` wrapper over host memory counts as resident — it is, and `to_device(::CPUBackend, ·)` is the
+identity on it. Every device array type carries its own array style (`CuArrayStyle` for CUDA.jl),
+which is what separates the two cases without naming a device type here.
 """
-on_backend(::CPUBackend, x::AbstractArray) = x isa Array
+on_backend(::CPUBackend, x::AbstractArray) =
+    Base.BroadcastStyle(typeof(x)) isa Base.Broadcast.DefaultArrayStyle
 on_backend(b::GPUBackend, x::AbstractArray) = x isa Base.typename(typeof(b.proto)).wrapper
 
 """
@@ -96,9 +102,12 @@ then reported here instead of surfacing deeper in as a mixed host/device operati
 transfer, or -- on a path that happens to take `Array(x)` anyway -- no error at all.
 """
 function check_on_backend(backend::AbstractBackend, x::AbstractArray, name = "array")
+    # Name the side `x` is actually on with the same test, so a host wrapper (a `view`, a
+    # `reinterpret`) is not reported as a device array.
     on_backend(backend, x) || throw(ArgumentError(
-        "$name is resident on the $(x isa Array ? "host" : "device") (::$(typeof(x))), but the " *
-        "run uses $(nameof(typeof(backend))); build it with the run's backend"))
+        "$name is resident on the $(on_backend(CPUBackend(), x) ? "host" : "device") " *
+        "(::$(typeof(x))), but the run uses $(nameof(typeof(backend))); build it with the run's " *
+        "backend"))
     nothing
 end
 

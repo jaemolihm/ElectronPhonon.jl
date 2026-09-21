@@ -286,6 +286,7 @@ function _setup_eph_over_k_and_kq(
     # Precompute phonon states if precompute_ph == true
     if precompute_ph
         ph_save = maybe_time(verbosity) do
+            # FIXME: Compute velocity_diagonal only if needed by calculator.
             compute_phonon_states(model, qpts,
                 ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"];
                 fourier_mode, backend, eigenpairs = ph_eigenpairs)
@@ -695,7 +696,7 @@ function _loop_eph_over_k_and_kq_batched(
     # ----- device interpolators (allocated once) -----
     # `epmat_dev` (device e-ph object) was uploaded ONCE in the shared setup and threaded here through
     # `backend`; the loop reuses it rather than re-uploading. `backend` is carried in LoopContext below.
-    itp_epmat = BatchedWannierInterpolator(epmat_dev; batch_size = nk_batch_max)
+    itp_epmat = BatchedWannierInterpolator(epmat_dev; backend, batch_size = nk_batch_max)
     # g(k, R_ep) is born partial-width: under the k-side eigenvector-window projection only the
     # first nw·nbandk_max·nmodes rows carry data. It is consumed directly out of `ep_ekpR_all`
     # (below), so there is no child WannierObject and no second interpolator here.
@@ -711,7 +712,7 @@ function _loop_eph_over_k_and_kq_batched(
     # (Int, or nkq when nothing) stays a hard cap.
     per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
         nq_grid = qpts.n, nk_batch_max, calculators,
-        ndata_epmat = epmat_dev.ndata, nr_epmat = epmat_dev.nr, FT)
+        nr_epmat = epmat_dev.nr, FT)
     nq_batch_cap = nq_batch_user === nothing ? nkq : min(nq_batch_user, nkq)
     nq_batch_max = plan_batch(backend, per_point, committed, nq_batch_cap; what = "outer-k")
     if verbosity > 0 && mpi_isroot()
@@ -787,7 +788,12 @@ function _loop_eph_over_k_and_kq_batched(
     # Not a `TiledDeviceOutput`: that tiles the OUTPUT side over the outer-state axis and owns a
     # host mirror plus a per-batch D2H, whereas P_kq is an input-side, q-indexed,
     # write-once-read-many device buffer with no host side and no D2H at all.
-    irvecp_mat = _irvec_to_device_matrix(model.epmat.irvec_next, epmat_dev, FT)
+    # FIXME: this driver still hand-assembles the Fourier layer's internals -- the R-vector
+    # matrix here, the P_mk/P_kq buffers below, and the bare `build_fourier_phase!` calls.
+    # Accepted deliberately ([D5] in plans/wannier_interp_reorg.md: the shortest form was a
+    # renamed function, not a phase object that would own these), so read that item before
+    # reopening it. The hoist itself is correct and must stay.
+    irvecp_mat = _irvec_to_device_matrix(backend, model.epmat.irvec_next, FT)
     P_mk  = alloc(backend, Complex{FT}, nr_ep, nk_batch_max)
     P_kq = alloc(backend, Complex{FT}, nr_ep, nq_batch_max)
     # Defensive: only columns 1:nk_batch are rewritten per batch, so a partial final batch leaves the
@@ -852,7 +858,7 @@ function _loop_eph_over_k_and_kq_batched(
         # One batched RR->kR over the whole batch: g(k, R_ep) for all k in the batch, stored in the
         # k+q convention (multiplied by P_mk, the phase at −x_k) so the kR->kq phase below is
         # k-independent.
-        @views fourier_phase!(P_mk[:, 1:nk_batch], irvecp_mat, mxk_dev[:, iks_batch])
+        @views build_fourier_phase!(P_mk[:, 1:nk_batch], irvecp_mat, mxk_dev[:, iks_batch])
         get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat, ks_batch, uks_dev;
             additional_phase = P_mk)
 
@@ -870,7 +876,7 @@ function _loop_eph_over_k_and_kq_batched(
             # kR->kq phase for this q-tile, built ONCE and reused by every k of the outer-k batch —
             # the reason the q-tile loop sits outside the k loop. In the k+q convention it reads
             # x_{k+q} directly, so it is a contiguous slice of the fixed k+q list.
-            @views fourier_phase!(P_kq[:, rng_q], irvecp_mat, xkq_dev[:, qstart:qend])
+            @views build_fourier_phase!(P_kq[:, rng_q], irvecp_mat, xkq_dev[:, qstart:qend])
             # k+q rotations: a contiguous slice of the prebuilt device stack (no copy). The payload's
             # k+q index list is the plain range of this tile — `isbits`, so it rides in the kernel
             # launch parameters instead of costing a device buffer and a global load per thread.

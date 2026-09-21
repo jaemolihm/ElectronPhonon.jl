@@ -1,7 +1,6 @@
 using LinearAlgebra
 
 export register_kpoints!
-export clear_registered_kpoints!
 export get_fourier_batched!
 
 """
@@ -21,9 +20,9 @@ Uses BLAS3 matrix-matrix multiplication instead of BLAS2 matrix-vector multiplic
 providing ~3-5x speedup for sequential k-point queries.
 
 # Backends
-The buffer arrays follow the backend of `parent.op_r`, so a GPU parent (a `WannierObject`
-whose `op_r` is a `CuMatrix`) keeps the whole cached batch on the device. For the GPU /
-whole-batch use case, prefer [`get_fourier_batched!`](@ref) over per-k `get_fourier!`,
+Every buffer is allocated on `backend`, which must be the backend `parent.op_r` already lives on
+(checked at construction), so a GPU parent keeps the whole cached batch on the device. For the
+GPU / whole-batch use case, prefer [`get_fourier_batched!`](@ref) over per-k `get_fourier!`,
 which avoids a device→host copy per k-point.
 
 # Data freshness
@@ -36,54 +35,56 @@ caller may mutate `parent.op_r` in place between calls without any cache invalid
 - K-points must be queried in the exact order they were registered
 - Out-of-order or unregistered queries will throw an error
 """
-mutable struct BatchedWannierInterpolator{T, WT <: AbstractWannierObject, MC, MR, VC} <: AbstractWannierInterpolator{T}
-    # Stateless whole-batch Fourier engine (owns the parent + GEMM scratch)
-    const core::BatchedFourierCore{T, WT, MC, MR}
+mutable struct BatchedWannierInterpolator{T, WT <: WannierObject, BT, MC, MR, VC} <: AbstractWannierInterpolator{T}
+    # Parent WannierObject to be interpolated. The same object the core holds: duplicated here as a
+    # `const` reference so the generic `AbstractWannierInterpolator` `getproperty` covers all four
+    # interpolator types uniformly. Both fields are `const`, so they cannot desync.
+    const parent::WT
+
+    # Block width of the composed engine. Duplicated here for the same reason as `parent`: both
+    # are `const` and set from one argument, so they cannot desync, and `itp.batch_size` then means
+    # the same thing on every interpolator type that has a batch.
+    const batch_size::Int
+
+    # Stateless whole-batch Fourier engine (owns the GEMM scratch)
+    const core::BatchedFourierCore{T, WT, BT, MC, MR}
 
     # Order-enforced per-k query bookkeeping
     const cache::SequentialQueryCache{T}
 
-    # Cached results from the current batch (ndata × batch_size), on parent's backend
-    cached_results::MC
+    # Cached results from the current batch (ndata × batch_size), on `core.backend`. Written only
+    # by `_compute_batch!` and read only by `get_fourier!`, both unreachable until a k-point is
+    # registered — so it is allocated on the first `register_kpoints!` and stays `nothing` for the
+    # whole-batch callers, which are the majority and never query per k.
+    cached_results::Union{Nothing, MC}
 
     # Output buffer (per-k query API)
     const out::VC
 
-    # Buffers for intermediate calculations
+    # Buffer for intermediate calculations. Read via `_reshape_buffer` by the per-k
+    # `wannier_to_bloch.jl` drivers, which this interpolator's `get_fourier!` API feeds.
     const buffer::VC
-    const buffer2::VC
 
-    # Buffer for diagonalization (eigensolve scratch, used by the wannier_to_bloch eigen drivers
-    # when this interpolator drives the per-k Hamiltonian/dynamical-matrix eigensolve)
+    # Buffer for diagonalization, used by the per-k eigensolve drivers (`get_el_eigen!`,
+    # `get_ph_eigen!`) when `compute_eigenvalues_el` / `compute_electron_states` is run with
+    # `fourier_mode = "batched"`.
     const ws::HermitianEigenWsSYEV{Complex{T},T}
 end
 
-function BatchedWannierInterpolator(parent::WT; batch_size::Int=32, xk_tol=sqrt(eps(T))/100) where {WT <: AbstractWannierObject{T}} where {T}
-    core = BatchedFourierCore(parent; batch_cap=batch_size)
+function BatchedWannierInterpolator(parent::WT; backend::AbstractBackend = CPUBackend(),
+        batch_size::Int = 32, xk_tol = sqrt(eps(T))/100) where {WT <: WannierObject{T}} where {T}
+    bs = batch_size
+    core = BatchedFourierCore(parent; backend, batch_size)
     cache = SequentialQueryCache{T}(; xk_tol)
+
     ws = HermitianEigenWsSYEV{Complex{T},T}()
 
-    cached_results = _alloc_array(parent, Complex{T}, parent.ndata, batch_size)
-    out    = _alloc_array(parent, Complex{T}, parent.ndata)
-    buffer = _alloc_array(parent, Complex{T}, 0)
-    buffer2 = _alloc_array(parent, Complex{T}, 0)
+    out    = alloc(backend, Complex{T}, parent.ndata)
+    buffer = alloc(backend, Complex{T}, 0)
 
-    BatchedWannierInterpolator{T, WT, typeof(cached_results), typeof(core.irvec_mat), typeof(out)}(
-        core, cache, cached_results, out, buffer, buffer2, ws)
-end
-
-# `parent`, `nr`, and `batch_size` live in the composed core; forward them so callers and the
-# generic AbstractWannierInterpolator helpers keep working unchanged.
-@inline function Base.getproperty(obj::BatchedWannierInterpolator, name::Symbol)
-    if name === :parent
-        getfield(obj, :core).parent
-    elseif name === :nr
-        getfield(getfield(obj, :core).parent, :nr)
-    elseif name === :batch_size
-        getfield(obj, :core).batch_cap
-    else
-        getfield(obj, name)
-    end
+    BatchedWannierInterpolator{T, WT, typeof(backend), typeof(core.phase),
+                               typeof(core.irvec_mat), typeof(out)}(
+        parent, bs, core, cache, nothing, out, buffer, ws)
 end
 
 
@@ -109,8 +110,16 @@ The k-points must be queried in the exact order they are registered.
 - Clears any previously registered k-points and cached results
 - K-points MUST be queried in the same order via `get_fourier!`
 - Querying out-of-order or unregistered k-points will throw an error
+- Allocates the per-k cached-result buffer on the first call
 """
-register_kpoints!(obj::BatchedWannierInterpolator, xk_list) = register_kpoints!(obj.cache, xk_list)
+function register_kpoints!(obj::BatchedWannierInterpolator{T}, xk_list) where {T}
+    (; parent, core) = obj
+    register_kpoints!(obj.cache, xk_list)
+    if obj.cached_results === nothing
+        obj.cached_results = alloc(core.backend, Complex{T}, parent.ndata, core.batch_size)
+    end
+    nothing
+end
 
 
 """
@@ -134,9 +143,10 @@ Compute Fourier transform at k-point xk.
 - If xk doesn't match the next expected k-point
 - If all registered k-points have been exhausted
 """
-@timing "get_fourier" function get_fourier!(op_k, obj::BatchedWannierInterpolator{T, WT}, xk) where {T, WT}
-    (; cache) = obj
-    ndata = obj.core.parent.ndata
+@timing "get_fourier" function get_fourier!(op_k, obj::BatchedWannierInterpolator{T, WT, BT, MC},
+        xk) where {T, WT, BT, MC}
+    (; cache, parent) = obj
+    ndata = parent.ndata
     @assert eltype(op_k) == Complex{T}
     @assert length(op_k) == ndata
     op_k_1d = _reshape(op_k, (length(op_k),))
@@ -150,7 +160,8 @@ Compute Fourier transform at k-point xk.
 
     # Return cached result
     cache_offset = current_index - cache.cached_batch_start + 1
-    @views op_k_1d .= obj.cached_results[1:ndata, cache_offset]
+    # Non-`nothing` here: `_next_query_index` above throws unless `register_kpoints!` has run.
+    @views op_k_1d .= (obj.cached_results::MC)[1:ndata, cache_offset]
 
     # Advance to next k-point
     cache.current_index += 1
@@ -165,17 +176,23 @@ end
 Internal function: Compute a batch of k-points starting from the given index, storing the
 result in `obj.cached_results` and recording the batch range in `obj.cache`.
 """
-function _compute_batch!(obj::BatchedWannierInterpolator{T, WT}, start_idx::Int) where {T, WT}
-    (; core, cache, cached_results) = obj
-    ndata = core.parent.ndata
+function _compute_batch!(obj::BatchedWannierInterpolator{T, WT, BT, MC},
+        start_idx::Int) where {T, WT, BT, MC}
+    (; core, cache, parent) = obj
+    cached_results = obj.cached_results::MC
+    ndata = parent.ndata
 
     # Determine batch range
     batch_start = start_idx
-    batch_end = min(start_idx + core.batch_cap - 1, length(cache.registered_kpoints))
+    batch_end = min(start_idx + core.batch_size - 1, length(cache.registered_kpoints))
     batch_len = batch_end - batch_start + 1
 
+    # Stage this block's k-points only. On `CPUBackend` that is a zero-copy `reinterpret` view of
+    # the queue and allocates nothing; staging the whole queue once instead would be an O(n_registered)
+    # copy per `register_kpoints!`, which the per-q threaded loops call once per q.
     xks = @view cache.registered_kpoints[batch_start:batch_end]
-    @views fourier_batched!(cached_results[1:ndata, 1:batch_len], core, xks)
+    @views _fourier_batched!(cached_results[1:ndata, 1:batch_len], core,
+                             _kpoints_to_device_matrix(core.backend, xks))
 
     # Update cache metadata
     cache.cached_batch_start = batch_start
@@ -186,28 +203,39 @@ end
 
 
 """
-    get_fourier_batched!(out, obj::BatchedWannierInterpolator, xk_list)
+    get_fourier_batched!(out, obj::BatchedWannierInterpolator, xk_list::AbstractVector)
+    get_fourier_batched!(out, obj::BatchedWannierInterpolator, xkmat::AbstractMatrix)
 
-Fourier-transform `obj` at all k-points in `xk_list` at once, writing into `out`
-(`(ndata, nk)` on the backend of `obj.parent.op_r`). `length(xk_list)` may be larger than
-`obj.batch_size`: the k-points are processed internally in chunks of `batch_size` on the
-stateless [`BatchedFourierCore`](@ref), and the whole result is kept on the backend (no per-k
-device→host copy). This is the entry point for GPU / whole-batch use.
+Fourier-transform `obj` at all the given k-points at once, writing into `out` (`(ndata, nk)` on the
+interpolator's backend). Total: any `nk ≥ 0` is accepted, and an `nk` larger than the interpolator's
+`batch_size` is processed in blocks of that width on the partial [`_fourier_batched!`](@ref). The
+whole result is kept on the backend (no per-k device→host copy). This is the entry point for GPU /
+whole-batch use.
+
+A host k-list is staged onto the backend once here, not once per block. This is the only layer that
+stages: the drivers above it (`wannier_to_bloch_batched.jl`) take a `Vector{Vec3}` and nothing else.
+A caller that already holds the staged `(3 × nk)` matrix passes it to the second method directly.
 
 Does not touch the [`SequentialQueryCache`](@ref) queue state, so it is independent of any
 in-progress per-k `get_fourier!` sequence.
 """
-function get_fourier_batched!(out, obj::BatchedWannierInterpolator{T}, xk_list) where {T}
+get_fourier_batched!(out, obj::BatchedWannierInterpolator, xk_list::AbstractVector) =
+    get_fourier_batched!(out, obj, _kpoints_to_device_matrix(obj.core.backend, xk_list))
+
+function get_fourier_batched!(out, obj::BatchedWannierInterpolator, xkmat::AbstractMatrix)
     core = obj.core
-    ndata = core.parent.ndata
-    nk = length(xk_list)
+    ndata = obj.parent.ndata
+    nk = size(xkmat, 2)
+    @assert size(xkmat, 1) == 3
     @assert size(out) == (ndata, nk)
-    cap = core.batch_cap
+    # Once per call, off the block loop: an array on the wrong side is named here instead of
+    # surfacing as a mixed host/device broadcast (or a scalar-indexing error) inside the phase build.
+    check_on_backend(core.backend, xkmat, "xkmat")
+    cap = core.batch_size
     start = 1
     while start <= nk
         stop = min(start + cap - 1, nk)
-        xks = @view xk_list[start:stop]
-        @views fourier_batched!(out[:, start:stop], core, xks)
+        @views _fourier_batched!(out[:, start:stop], core, xkmat[:, start:stop])
         start = stop + 1
     end
     out

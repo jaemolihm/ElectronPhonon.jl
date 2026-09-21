@@ -858,16 +858,30 @@ end
 
 
 """
-    _kpoints_to_device_matrix(backend, kpts::AbstractKpoints) -> (3 × kpts.n) real matrix
+    _kpoints_to_device_matrix(backend, xks::AbstractVector{Vec3}) -> (3 × nk) real matrix
+    _kpoints_to_device_matrix(backend, kpts::AbstractKpoints)     -> (3 × kpts.n) real matrix
 
-Crystal coordinates of `kpts` as a `(3 × kpts.n)` real matrix on `backend`'s device — the layout the
-batched Fourier phase builds ([`fourier_phase!`](@ref)) read. `Vec3{T}` is three contiguous `T`, so
-the host side is a `reinterpret` view of `kpts.vectors` rather than a copy; [`to_device`](@ref) then
-materializes it on the device. On `CPUBackend` the result therefore **aliases `kpts.vectors`** — it
-is read-only in every caller, but do not write through it.
+Crystal coordinates as a `(3 × nk)` real matrix on `backend`'s device — the layout the batched
+Fourier phase builds ([`build_fourier_phase!`](@ref)) read. `Vec3{T}` is three contiguous `T`, so no
+element-by-element repack is ever needed.
+
+On `CPUBackend` the result is a `reinterpret` view and therefore **aliases `xks`** — it is read-only
+in every caller, but do not write through it. Off `CPUBackend` it is a fresh device array.
+
+The H2D goes through a dense host `Matrix`, and must: handing the reinterpret view to
+[`to_device_copy`](@ref) has no bulk path and falls back to **scalar indexing**, 6.4 s per 10^6
+points. `unsafe_wrap` over the k list's own buffer would save ~4 ms per 512k points (2.74 vs
+6.41 ms, A6000) — under 1% of a run even at the outer-q loop's two stagings per (q, k-batch), so it
+does not earn its lifetime hazard.
 """
-_kpoints_to_device_matrix(backend, kpts::AbstractKpoints{T}) where {T} =
-    to_device(backend, reshape(reinterpret(T, kpts.vectors), 3, kpts.n))
+function _kpoints_to_device_matrix(backend, xks::AbstractVector{Vec3{T}}) where {T}
+    xkmat_host = reshape(reinterpret(T, xks), 3, length(xks))
+    backend isa CPUBackend && return xkmat_host
+    to_device_copy(backend, Matrix(xkmat_host))
+end
+
+_kpoints_to_device_matrix(backend, kpts::AbstractKpoints) =
+    _kpoints_to_device_matrix(backend, kpts.vectors)
 
 
 """

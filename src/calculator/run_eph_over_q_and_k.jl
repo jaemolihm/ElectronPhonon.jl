@@ -502,8 +502,8 @@ function _loop_eph_over_q_and_k_batched(
               "$(round(per_point / 1e3, digits = 1)) kB/k; k-batch size = $nk_batch_max"
     end
 
-    itp_el_ham = BatchedWannierInterpolator(el_ham_dev; batch_size = nk_batch_max)
-    itp_ep_eRpq = BatchedWannierInterpolator(ep_eRpq_dev; batch_size = nk_batch_max)
+    itp_el_ham = BatchedWannierInterpolator(el_ham_dev; backend, batch_size = nk_batch_max)
+    itp_ep_eRpq = BatchedWannierInterpolator(ep_eRpq_dev; backend, batch_size = nk_batch_max)
 
     # ----- persistent per-batch device workspace (sized to nk_batch_max) -----
     ep_ws     = RqToKQWorkspace(ep_eRpq_dev.op_r, ndata_eRpq, nw, nw, nmodes, nk_batch_max)
@@ -656,7 +656,7 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
         nk_batch = min(Int(nk_outer_batch_max), Int(nk))
         per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max = nw, nmodes, nr_ep, nk, nkq,
             nq_grid = nkq, nk_batch_max = nk_batch, calculators,
-            ndata_epmat = model.epmat.ndata, nr_epmat = model.epmat.nr, FT)
+            nr_epmat = model.epmat.nr, FT)
         cap = nq_batch_max === nothing ? Int(nkq) : min(Int(nq_batch_max), Int(nkq))
         loop = :outer_k
     elseif model.epmat_outer_momentum == "ph"

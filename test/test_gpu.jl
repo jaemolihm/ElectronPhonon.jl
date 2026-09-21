@@ -18,12 +18,18 @@ end
 
 # `get_eph_kR_to_kq_batched!` takes the Fourier phase, not a q-list, because the driver builds one
 # phase and reuses it over many k. The tests mostly have a q-list instead, so this wrapper does the
-# phase build for them. It lives here rather than in `src` because no `src` caller needs it.
+# phase build for them the way the production driver does — an explicit `irvec_mat` and a
+# caller-owned destination, not the interpolator's internal scratch. It lives here rather than in
+# `src` because no `src` caller needs it.
 # Requires an in-memory parent (it reads `parent.op_r`), so no `DiskWannierObject`.
-function kR_to_kq_from_qs!(ep_kq_all, itp_ep_ekpR, qs, u_phs, ukqs; ws = nothing,
+function kR_to_kq_from_qs!(ep_kq_all, backend, itp_ep_ekpR, qs, u_phs, ukqs; ws = nothing,
                            g2_out = nothing, ωq = nothing)
     parent = itp_ep_ekpR.parent
-    phase = ElectronPhonon._build_phase!(itp_ep_ekpR.core, qs)
+    irvec_mat = ElectronPhonon._irvec_to_device_matrix(backend, parent.irvec, Float64)
+    xkmat = ElectronPhonon.to_device(backend, [q[d] for d in 1:3, q in qs])
+    phase = ElectronPhonon.build_fourier_phase!(
+        ElectronPhonon.alloc(backend, ComplexF64, length(parent.irvec), length(qs)),
+        irvec_mat, xkmat)
     @views get_eph_kR_to_kq_batched!(ep_kq_all, parent.op_r[1:parent.ndata, :], phase, u_phs, ukqs;
                                      ws, g2_out, ωq)
 end
@@ -37,11 +43,12 @@ isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_fr
 
 """
 Validate the batched e-ph drivers against the per-k/q reference (`get_eph_RR_to_kR!` /
-`get_eph_kR_to_kq!`) on a chosen backend. `to_dev` moves a `WannierObject` to the backend
-(`identity` for CPU, `to_device` for GPU) and `arr_dev` moves a plain array (`identity` /
-`CuArray`). Every batch element is checked. Full-band only (no energy window).
+`get_eph_kR_to_kq!`) on `backend`. Every batch element is checked. Full-band only (no energy
+window).
 """
-function check_eph_batched(to_dev, arr_dev; rtol)
+function check_eph_batched(backend; rtol)
+    to_dev(x) = ElectronPhonon.to_device(backend, x)
+    arr_dev = to_dev
     nwe, nmodes, nr_el, nr_ep = 3, 4, 20, 15
     nband = nwe
     irvec_el = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_el], by = x -> reverse(x))
@@ -73,7 +80,7 @@ function check_eph_batched(to_dev, arr_dev; rtol)
 
     # list-batched RR→kR over all k — check every column
     ep_all = arr_dev(zeros(ComplexF64, nwe*nband*nmodes, nr_ep, nk2))
-    get_eph_RR_to_kR_batched!(ep_all, get_interpolator(epmat_d; fourier_mode="batched", batch_size=nk2), ks, arr_dev(uks))
+    get_eph_RR_to_kR_batched!(ep_all, get_interpolator(epmat_d; fourier_mode="batched", backend, batch_size=nk2), ks, arr_dev(uks))
     ep_all_h = Array(ep_all)
     for ik in 1:nk2
         @test isapprox(ep_all_h[:, :, ik], refs_RR[ik]; rtol)
@@ -82,7 +89,7 @@ function check_eph_batched(to_dev, arr_dev; rtol)
     # list-batched kR→kq over all q (fixed k = ks[1]) — check every slice
     obj_k1 = to_dev(WannierObject(irvec_ep, copy(refs_RR[1])))
     ep_kq_all = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq2))
-    kR_to_kq_from_qs!(ep_kq_all, get_interpolator(obj_k1; fourier_mode="batched", batch_size=nq2), qs, arr_dev(uphs), arr_dev(ukqs))
+    kR_to_kq_from_qs!(ep_kq_all, backend, get_interpolator(obj_k1; fourier_mode="batched", backend, batch_size=nq2), qs, arr_dev(uphs), arr_dev(ukqs))
     ep_kq_h = Array(ep_kq_all)
     for iq in 1:nq2
         @test isapprox(ep_kq_h[:, :, :, iq], ep_ref[:, :, :, iq]; rtol)
@@ -98,7 +105,7 @@ function check_eph_batched(to_dev, arr_dev; rtol)
     end
     eRpq_d = to_dev(eRpq_obj)
     ep_rqkq = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nk2))
-    get_eph_Rq_to_kq_batched!(ep_rqkq, get_interpolator(eRpq_d; fourier_mode="batched", batch_size=nk2),
+    get_eph_Rq_to_kq_batched!(ep_rqkq, get_interpolator(eRpq_d; fourier_mode="batched", backend, batch_size=nk2),
                               ks, arr_dev(uks), arr_dev(ukqs_k))
     ep_rqkq_h = Array(ep_rqkq)
     for ik in 1:nk2
@@ -111,20 +118,21 @@ function check_eph_batched(to_dev, arr_dev; rtol)
     ωq_g2  = rand(nmodes, nq2) .+ 0.5
     g2_out = arr_dev(zeros(nband, nband, nmodes, nq2))
     ep_g2  = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq2))
-    kR_to_kq_from_qs!(ep_g2, get_interpolator(obj_k1; fourier_mode="batched", batch_size=nq2),
+    kR_to_kq_from_qs!(ep_g2, backend, get_interpolator(obj_k1; fourier_mode="batched", backend, batch_size=nq2),
         qs, arr_dev(uphs), arr_dev(ukqs); g2_out, ωq=arr_dev(ωq_g2))
     g2_ref = abs2.(ep_ref) ./ (2 .* reshape(ωq_g2, 1, 1, nmodes, nq2))
     @test isapprox(Array(g2_out), g2_ref; rtol)
 end
 
 @testset "batched e-ph drivers (CPU)" begin
-    check_eph_batched(identity, identity; rtol=1e-10)
+    check_eph_batched(ElectronPhonon.CPUBackend(); rtol=1e-10)
 end
 
 """
-`fourier_phase!` against a scalar `cispi(2 R·x)` reference, on the backend selected by `arr_dev`.
+`build_fourier_phase!` against a scalar `cispi(2 R·x)` reference, on `backend`.
 """
-function check_fourier_phase(arr_dev)
+function check_fourier_phase(backend)
+    arr_dev(x) = ElectronPhonon.to_device(backend, x)
     nr, nk = 37, 11
     irvec = [Vec3(rand(-3:3, 3)...) for _ in 1:nr]
     xks   = [Vec3(rand(3)...) for _ in 1:nk]
@@ -134,33 +142,35 @@ function check_fourier_phase(arr_dev)
     irvec_mat = [Float64(irvec[ir][d]) for ir in 1:nr, d in 1:3]
     xkmat = [xks[ik][d] for d in 1:3, ik in 1:nk]
     phase = arr_dev(zeros(ComplexF64, nr, nk))
-    ElectronPhonon.fourier_phase!(phase, arr_dev(irvec_mat), arr_dev(xkmat))
+    ElectronPhonon.build_fourier_phase!(phase, arr_dev(irvec_mat), arr_dev(xkmat))
     # |phase| == 1, so an absolute bound is a relative bound.
     @test maximum(abs, Array(phase) .- ref) <= 4 * eps(Float64)
 end
 
-@testset "fourier_phase! (CPU)" begin
-    check_fourier_phase(identity)
+@testset "build_fourier_phase! (CPU)" begin
+    check_fourier_phase(ElectronPhonon.CPUBackend())
 end
 
 """
 The two `get_eph_kR_to_kq_batched!` methods and the k+q convention of `get_eph_RR_to_kR_batched!`,
-on the backend given by `to_dev` / `arr_dev` (as in [`check_eph_batched`](@ref)).
+on `backend` (as in [`check_eph_batched`](@ref)).
 
-1. The phase-taking method fed `fourier_phase!(qs)` reproduces the interpolator+`qs` method exactly.
+1. The phase-taking method fed `build_fourier_phase!(qs)` reproduces the interpolator+`qs` method exactly.
 2. Storing the kR intermediate in the k+q convention (`conj(exp(2πi R_p·x_k))`) and transforming at
    `x_{k+q}` reproduces the q-convention result, for a (k, k+q) pair whose `q = x_{k+q} - x_k` needs
    a mod-G reduction. This is the in-repo pin of the identity `exp(2πi R_p·q) =
    exp(2πi R_p·x_{k+q}) · conj(exp(2πi R_p·x_k))` for integer `R_p`.
 """
-function check_eph_kq_convention(to_dev, arr_dev; rtol)
+function check_eph_kq_convention(backend; rtol)
+    to_dev(x) = ElectronPhonon.to_device(backend, x)
+    arr_dev = to_dev
     nwe, nmodes, nr_el, nr_ep = 3, 4, 12, 15
     nband, nq = nwe, 9
     irvec_el = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_el], by = x -> reverse(x))
     irvec_ep = sort([Vec3(rand(-2:2, 3)...) for _ in 1:nr_ep], by = x -> reverse(x))
     epmat_obj = to_dev(WannierObject(irvec_el, rand(ComplexF64, nwe^2*nmodes*nr_ep, nr_el);
                                      irvec_next = irvec_ep))
-    itp_epmat = get_interpolator(epmat_obj; fourier_mode="batched", batch_size=1)
+    itp_epmat = get_interpolator(epmat_obj; fourier_mode="batched", backend, batch_size=1)
 
     # x_k and x_{k+q} on a 20³ grid; q = (x_{k+q} - x_k) mod G is what the loop feeds today.
     xk   = Vec3(0.75, -0.40, 0.35)
@@ -172,7 +182,7 @@ function check_eph_kq_convention(to_dev, arr_dev; rtol)
     uphs = arr_dev(cat([rand(ComplexF64, nmodes, nmodes) for _ in 1:nq]...; dims=3))
     ukqs = arr_dev(cat([rand(ComplexF64, nwe, nband) for _ in 1:nq]...; dims=3))
 
-    irvecp_mat = ElectronPhonon._irvec_to_device_matrix(irvec_ep, epmat_obj, Float64)
+    irvecp_mat = ElectronPhonon._irvec_to_device_matrix(backend, irvec_ep, Float64)
     ndata = nwe * nband * nmodes
 
     # (a) reference: q convention, interpolator + qs method
@@ -180,12 +190,12 @@ function check_eph_kq_convention(to_dev, arr_dev; rtol)
     get_eph_RR_to_kR_batched!(ep_kR_q, itp_epmat, [xk], uk)
     obj_q = to_dev(WannierObject(irvec_ep, Array(ep_kR_q)[:, :, 1]))
     ref = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq))
-    kR_to_kq_from_qs!(ref, get_interpolator(obj_q; fourier_mode="batched", batch_size=nq),
+    kR_to_kq_from_qs!(ref, backend, get_interpolator(obj_q; fourier_mode="batched", backend, batch_size=nq),
                               qs, uphs, ukqs)
 
     # (b) same phase, phase-taking method: must agree bit for bit
     phase_q = arr_dev(zeros(ComplexF64, nr_ep, nq))
-    ElectronPhonon.fourier_phase!(phase_q, irvecp_mat,
+    ElectronPhonon.build_fourier_phase!(phase_q, irvecp_mat,
                                   arr_dev([q[d] for d in 1:3, q in qs]))
     out_b = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq))
     get_eph_kR_to_kq_batched!(out_b, view(ep_kR_q, :, :, 1), phase_q, uphs, ukqs)
@@ -194,12 +204,12 @@ function check_eph_kq_convention(to_dev, arr_dev; rtol)
     # (c) k+q convention: fold conj(exp(2πi R_p·x_k)) into the child, transform at x_{k+q}.
     # `get_eph_RR_to_kR_batched!` multiplies by whatever it is handed, so conjugate here.
     P_mk = arr_dev(zeros(ComplexF64, nr_ep, 1))
-    ElectronPhonon.fourier_phase!(P_mk, irvecp_mat, arr_dev(reshape([xk[d] for d in 1:3], 3, 1)))
+    ElectronPhonon.build_fourier_phase!(P_mk, irvecp_mat, arr_dev(reshape([xk[d] for d in 1:3], 3, 1)))
     P_mk .= conj.(P_mk)
     ep_kR_kq = arr_dev(zeros(ComplexF64, ndata, nr_ep, 1))
     get_eph_RR_to_kR_batched!(ep_kR_kq, itp_epmat, [xk], uk; additional_phase = P_mk)
     P_kq = arr_dev(zeros(ComplexF64, nr_ep, nq))
-    ElectronPhonon.fourier_phase!(P_kq, irvecp_mat,
+    ElectronPhonon.build_fourier_phase!(P_kq, irvecp_mat,
                                   arr_dev([xkq[d] for d in 1:3, xkq in xkqs]))
     out_c = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq))
     get_eph_kR_to_kq_batched!(out_c, view(ep_kR_kq, :, :, 1), P_kq, uphs, ukqs)
@@ -207,7 +217,7 @@ function check_eph_kq_convention(to_dev, arr_dev; rtol)
 end
 
 @testset "k+q convention identity (CPU)" begin
-    check_eph_kq_convention(identity, identity; rtol=1e-13)
+    check_eph_kq_convention(ElectronPhonon.CPUBackend(); rtol=1e-13)
 end
 
 # Plumbing of the outer-q batched calculator payload (supports(_, EPDataKBatched) /
@@ -272,6 +282,30 @@ end
     end
 end
 
+@testset "GPU batch_size budget" begin
+    if GPU_AVAILABLE
+        using ElectronPhonon: _default_batch_size, GPU_FOURIER_BATCH_BYTES
+        gpu = ElectronPhonon.gpu_backend()
+        # `16·(nr + ndata)` bytes per column, capped by `nk_hint`.
+        for (nr, ndata) in ((617, 9), (617, 27), (2000, 49))
+            @test _default_batch_size(gpu, nr, ndata) == fld(GPU_FOURIER_BATCH_BYTES, 16 * (nr + ndata))
+            @test _default_batch_size(gpu, nr, ndata; nk_hint = 100) == 100
+        end
+        # A device backend has no per-thread channel: `get_interpolator_channel` would put
+        # `nbuffers` budget-sized scratch buffers on the card, so it refuses one.
+        err = try get_interpolator_channel(WannierObject([Vec3{Int}([0, 0, 0])],
+                      randn(ComplexF64, 4, 1)); fourier_mode = "batched", backend = gpu)
+        catch e; e end
+        @test err isa ArgumentError
+        @test occursin("host-only", err.msg)
+        # A grid far below the budget gets a block no wider than the grid, not a budget-sized one.
+        obj = ElectronPhonon.to_device(gpu, WannierObject(
+            [Vec3{Int}([0, 0, 0]), Vec3{Int}([1, 0, 0])], randn(ComplexF64, 6, 2)))
+        @test get_interpolator(obj; fourier_mode = "batched", backend = gpu,
+                               nk_hint = 12).batch_size == 12
+    end
+end
+
 @testset "GPU batched Wannier interpolation" begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU tests"
@@ -302,20 +336,34 @@ end
         @test Array(obj_gpu.op_r) ≈ obj.op_r
 
         # --- get_fourier_batched! device vs host ---
+        # `nk_hint` everywhere: without it the GPU default spends the whole byte budget, which is
+        # ~800 MB of scratch for these 50 k-points.
+        gpu = ElectronPhonon.gpu_backend()
+        itp_gpu() = get_interpolator(obj_gpu; fourier_mode="batched", backend = gpu,
+                                     nk_hint = length(kpts))
         Hk_cpu = zeros(ComplexF64, obj.ndata, length(kpts))
         get_fourier_batched!(Hk_cpu, get_interpolator(obj; fourier_mode="batched"), kpts)
         Hk_gpu = similar(obj_gpu.op_r, ComplexF64, obj.ndata, length(kpts))
-        get_fourier_batched!(Hk_gpu, get_interpolator(obj_gpu; fourier_mode="batched"), kpts)
+        get_fourier_batched!(Hk_gpu, itp_gpu(), kpts)
         @test Array(Hk_gpu) ≈ Hk_cpu
+
+        # The block loop, on the device. Every grid in this file fits one block at the budgeted
+        # default, so without an explicitly narrow `batch_size` nothing here would exercise the
+        # `while start <= nk` path on the GPU at all.
+        Hk_blk = similar(Hk_gpu)
+        get_fourier_batched!(Hk_blk, get_interpolator(obj_gpu; fourier_mode="batched",
+                                                      backend = gpu, batch_size = 7), kpts)
+        @test length(kpts) > 7                      # the loop really runs more than once
+        @test Array(Hk_blk) ≈ Array(Hk_gpu)
 
         # --- eigenvalues only: GPU vs CPU reference ---
         E_ref = get_el_eigen_valueonly_batched(get_interpolator(obj; fourier_mode="batched"), kpts)
-        E_gpu = get_el_eigen_valueonly_batched(get_interpolator(obj_gpu; fourier_mode="batched"), kpts)
+        E_gpu = get_el_eigen_valueonly_batched(itp_gpu(), kpts)
         @test E_gpu isa CuArray
         @test sort(Array(E_gpu), dims=1) ≈ sort(E_ref, dims=1)
 
         # --- eigenvalues + eigenvectors (CPU counterpart in "batched eigensolve (CPU)") ---
-        Ev_gpu, U_gpu = get_el_eigen_batched(get_interpolator(obj_gpu; fourier_mode="batched"), kpts)
+        Ev_gpu, U_gpu = get_el_eigen_batched(itp_gpu(), kpts)
         @test sort(Array(Ev_gpu), dims=1) ≈ sort(E_ref, dims=1)
         # Eigenvectors are gauge-dependent, so check the gauge-invariant reconstruction
         # H(k) ≈ U diag(E) U† for a few k-points.
@@ -339,11 +387,11 @@ end
         end
 
         # electron-phonon batched drivers on the GPU vs the per-k/q CPU reference
-        check_eph_batched(obj -> to_device(ElectronPhonon.gpu_backend(), obj), CuArray; rtol=1e-9)
+        check_eph_batched(ElectronPhonon.gpu_backend(); rtol=1e-9)
 
         # phase kernel and the k+q convention on the device
-        check_fourier_phase(CuArray)
-        check_eph_kq_convention(obj -> to_device(ElectronPhonon.gpu_backend(), obj), CuArray; rtol=1e-13)
+        check_fourier_phase(ElectronPhonon.gpu_backend())
+        check_eph_kq_convention(ElectronPhonon.gpu_backend(); rtol=1e-13)
     end
 end
 
@@ -363,12 +411,13 @@ function check_eph_partial_view(nw, nmodes; rtol)
     ws   = ElectronPhonon.KRtoKQWorkspace(obj.op_r, nw*nband*nmodes, nband, nband, nmodes, nq)
 
     full = CuArray(zeros(ComplexF64, nband, nband, nmodes, nq))
-    kR_to_kq_from_qs!(full, get_interpolator(obj; fourier_mode="batched", batch_size=nq),
-                              qs, uphs, ukqs; ws)
+    kR_to_kq_from_qs!(full, ElectronPhonon.gpu_backend(),
+        get_interpolator(obj; fourier_mode="batched", backend = ElectronPhonon.gpu_backend(), batch_size=nq),
+        qs, uphs, ukqs; ws)
     # Same call restricted to the first m q-points via views into the max-width buffers, reusing ws.
     part = CuArray(zeros(ComplexF64, nband, nband, nmodes, nq))
-    kR_to_kq_from_qs!(view(part, :, :, :, 1:m),
-        get_interpolator(obj; fourier_mode="batched", batch_size=nq),
+    kR_to_kq_from_qs!(view(part, :, :, :, 1:m), ElectronPhonon.gpu_backend(),
+        get_interpolator(obj; fourier_mode="batched", backend = ElectronPhonon.gpu_backend(), batch_size=nq),
         view(qs, 1:m), view(uphs, :, :, 1:m), view(ukqs, :, :, 1:m); ws)
     @test isapprox(Array(view(part, :, :, :, 1:m)), Array(view(full, :, :, :, 1:m)); rtol)
 end
@@ -816,9 +865,11 @@ end
         # difference, so this must match to machine precision (validates rotation + Berry math).
         ufc = zeros(ComplexF64, nw, nw, nk); ec = zeros(Float64, nw, nk)
         for ik in 1:nk; ufc[:, :, ik] .= els_c[ik].u_full; ec[:, ik] .= els_c[ik].e_full; end
-        itp_v = get_interpolator(ElectronPhonon.to_device(ElectronPhonon.gpu_backend(), model.el_ham_R); fourier_mode="batched")
+        itp_v = get_interpolator(ElectronPhonon.to_device(ElectronPhonon.gpu_backend(), model.el_ham_R);
+            fourier_mode="batched", backend = ElectronPhonon.gpu_backend(), nk_hint = nk)
         v_dev = ElectronPhonon.get_el_velocity_direct_batched(itp_v, kpts.vectors, CuArray(ufc))
-        itp_rbar = get_interpolator(ElectronPhonon.to_device(ElectronPhonon.gpu_backend(), model.el_pos); fourier_mode="batched")
+        itp_rbar = get_interpolator(ElectronPhonon.to_device(ElectronPhonon.gpu_backend(), model.el_pos);
+            fourier_mode="batched", backend = ElectronPhonon.gpu_backend(), nk_hint = nk)
         rbar_dev = ElectronPhonon.get_el_velocity_direct_batched(itp_rbar, kpts.vectors, CuArray(ufc))
         let E = CuArray(ec)
             v_dev .+= im .* (reshape(E, nw, 1, 1, nk) .- reshape(E, 1, nw, 1, nk)) .* rbar_dev
@@ -1002,9 +1053,9 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
 
     @testset "outer-k parity" begin
         nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_grid, nk_batch_max = 7, 5, 6, 137, 90, 200, 64, 32
-        ndata_epmat, nr_epmat = 2064, 43
+        nr_epmat = 43
         per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
-            nq_grid, nk_batch_max, calculators = calcs, ndata_epmat, nr_epmat, FT)
+            nq_grid, nk_batch_max, calculators = calcs, nr_epmat, FT)
         # Formulas reproduced inline (ground truth). The per-q term dropped the child interpolator
         # (cached_results / rdotk / xkmat) and `ikqs_dev` when the k+q-convention phase hoist made
         # them unnecessary; `24·nr_ep` (phase + rdotk) became `16·nr_ep` (the caller-owned P_kq tile).
@@ -1012,9 +1063,11 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
             sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataQBatched; nw, nmodes) for c in calcs)
         old_committed = 16 * nw^2 * nkq + (16 * nmodes^2 + 8 * nmodes) * nq_grid +
             16 * nw * nbandk_max * (nmodes * nr_ep + 1) * nk_batch_max
-        # itp_epmat RR→kR interpolator Fourier scratch (2026-07-18), now rdotk-free.
-        itp_epmat_term = (16 * ndata_epmat + 16 * nr_epmat + 24) * nk_batch_max
-        # k+q-convention commitments: xk_dev + xkq_dev and P_mk. The 1:nkq index vector is gone —
+        # itp_epmat RR→kR interpolator scratch (2026-07-18): the phase buffer plus the transient
+        # per-batch k staging. `cached_results` left it — that buffer is allocated on the first
+        # `register_kpoints!`, which a `get_fourier_batched!`-only caller never reaches.
+        itp_epmat_term = (16 * nr_epmat + 24) * nk_batch_max
+        # k+q-convention commitments: mxk_dev + xkq_dev and P_mk. The 1:nkq index vector is gone —
         # the payload's `ikqs` is the tile's `UnitRange`, passed in the kernel launch parameters.
         convention_term = 24 * (nk + nkq) + 16 * nr_ep * nk_batch_max
         @test per_point == exp_per_q
@@ -1037,8 +1090,9 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
             per_point, committed = _outer_q_staging_bytes(; nw, nmodes, nr_el_ham, nr_ep_eRpq,
                 use_polar_eph, calculators = calcs, FT)
             # `16·nr` (interpolator core phase); the `8·nr` rdotk scratch is gone with the fused
-            # `fourier_phase!` broadcast.
-            old_per_k = 16 * nw^2 * (5 * nmodes + 8 + (use_polar_eph ? 1 : 0)) +
+            # `build_fourier_phase!` broadcast, and the two `cached_results` terms (one per interpolator,
+            # `5·nmodes`→`4·nmodes` and `8`→`7`) with the lazy allocation.
+            old_per_k = 16 * nw^2 * (4 * nmodes + 7 + (use_polar_eph ? 1 : 0)) +
                 16 * (nr_el_ham + nr_ep_eRpq) +
                 sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataKBatched; nw, nmodes) for c in calcs)
             @test per_point == old_per_k

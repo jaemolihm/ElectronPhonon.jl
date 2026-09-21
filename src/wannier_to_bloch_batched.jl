@@ -71,6 +71,9 @@ end
 # interpolator (build it with `get_interpolator(ham; fourier_mode="batched", batch_size=…)`), not a
 # raw `WannierObject`; `batch_size` is baked into the interpolator at construction.
 
+# The k argument of every driver below is a host `Vector{Vec3}`. Staging it onto the interpolator's
+# backend belongs one layer down, in `get_fourier_batched!`; nothing here handles a staged matrix.
+
 # Interpolate H(k) for all k into an (ndata, nk) array on the interpolator's backend.
 function _fourier_hk_batched(itp::BatchedWannierInterpolator{T}, xk_list) where {T}
     ham = itp.parent

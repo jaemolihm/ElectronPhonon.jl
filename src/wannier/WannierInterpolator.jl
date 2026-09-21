@@ -20,7 +20,6 @@ struct NormalWannierInterpolator{T, WT <: AbstractWannierObject} <: AbstractWann
 
     # Buffer for intermediate calculations
     buffer::Vector{Complex{T}}
-    buffer2::Vector{Complex{T}}
 
     # Buffer for diagonalization
     ws::HermitianEigenWsSYEV{Complex{T},T}
@@ -28,7 +27,7 @@ struct NormalWannierInterpolator{T, WT <: AbstractWannierObject} <: AbstractWann
     function NormalWannierInterpolator(parent::WT) where {WT <: AbstractWannierObject{T}} where {T}
         nr = length(parent.irvec)
         ws = HermitianEigenWsSYEV{Complex{T},T}()
-        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr), zeros(Complex{T}, parent.ndata), Complex{T}[], Complex{T}[], ws)
+        new{T, WT}(parent, zeros(T, nr), zeros(Complex{T}, nr), zeros(Complex{T}, parent.ndata), Complex{T}[], ws)
     end
 end
 
@@ -45,7 +44,6 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
 
     # Buffer for intermediate calculations
     buffer::Vector{Complex{T}}
-    buffer2::Vector{Complex{T}}
 
     # Buffer for diagonalization
     ws::HermitianEigenWsSYEV{Complex{T},T}
@@ -57,7 +55,7 @@ mutable struct GridoptWannierInterpolator{T, WT <: AbstractWannierObject} <: Abs
     function GridoptWannierInterpolator(parent::WT, threads = false) where {WT <: AbstractWannierObject{T}} where {T}
         gridopt = GridOpt(T, parent.irvec, parent.ndata, threads)
         ws = HermitianEigenWsSYEV{Complex{T},T}()
-        new{T, WT}(parent, gridopt, zeros(Complex{T}, parent.ndata), Complex{T}[], Complex{T}[], ws, parent._id)
+        new{T, WT}(parent, gridopt, zeros(Complex{T}, parent.ndata), Complex{T}[], ws, parent._id)
     end
 end
 
@@ -72,38 +70,75 @@ end
 
 
 """
-    get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", batch_size=32, threads=false)
+    get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", batch_size=nothing,
+                     nk_hint=typemax(Int), threads=false, backend=CPUBackend())
 Return a interpolator for the given object.
 For a multithreaded use, one must use `get_interpolator_channel` instead.
 
 # Keyword Arguments
-- `fourier_mode`: Interpolation mode - "normal", "batched", "gridopt", or "batched-gridopt"
-- `batch_size`: Batch size for "batched" and "batched-gridopt" modes (default: 32)
+- `fourier_mode`: Interpolation mode - "normal", "batched", "gridopt", or "batched-gridopt".
+  A `DiskWannierObject` supports the per-k modes "normal" and "gridopt" only.
+- `batch_size`: Block width for the "batched" and "batched-gridopt" modes. `nothing` takes
+  [`ElectronPhonon._default_batch_size`](@ref) for `backend`.
+- `nk_hint`: Largest k-list the caller will hand this interpolator, if known. Only narrows a
+  budgeted default — `batch_size = min(default, nk_hint)` — so unlike a plain `batch_size = kpts.n`
+  it stays bounded however large the grid, and it never widens the block past the byte budget.
 - `threads`: Enable threading for "gridopt" and "batched-gridopt" modes (default: false)
+- `backend`: Where the "batched" mode's buffers live; must match `obj.op_r` (default: `CPUBackend()`)
 """
-function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", batch_size=32, threads=false)
+function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", batch_size=nothing,
+                          nk_hint=typemax(Int), threads=false, backend=CPUBackend())
     if fourier_mode === "normal"
         NormalWannierInterpolator(obj)
     elseif fourier_mode === "batched"
-        BatchedWannierInterpolator(obj; batch_size)
+        parent = _batched_parent(obj, fourier_mode)
+        bs = something(batch_size,
+            _default_batch_size(backend, length(parent.irvec), parent.ndata; nk_hint))
+        BatchedWannierInterpolator(parent; batch_size = bs, backend)
     elseif fourier_mode === "gridopt"
         GridoptWannierInterpolator(obj, threads)
     elseif fourier_mode === "batched-gridopt"
-        BatchedGridoptWannierInterpolator(obj; batch_size, threads)
+        # Host-only mode: its buffers are plain `Matrix`, so it takes the CPU default and cannot
+        # honour another backend. Say so rather than silently running on the host.
+        backend isa CPUBackend || throw(ArgumentError(
+            "fourier_mode=\"batched-gridopt\" is host-only and cannot run on a " *
+            "$(nameof(typeof(backend))); use \"batched\""))
+        parent = _batched_parent(obj, fourier_mode)
+        bs = something(batch_size, _default_batch_size(backend, length(parent.irvec), parent.ndata))
+        BatchedGridoptWannierInterpolator(parent; batch_size = bs, threads)
     else
         throw(ArgumentError("Wrong fourier_mode $fourier_mode"))
     end
 end
 
+# A disk-backed object is supported by the per-k modes only. "batched" is one BLAS3 GEMM against the
+# whole operator and cannot be served from disk at all; "batched-gridopt" is rejected with it so that
+# "batched" means one thing, and because the per-R disk reads it would do are what "gridopt" already
+# gives. This asymmetry is the intended contract, not a gap to be filled in later.
+_batched_parent(obj::WannierObject, fourier_mode) = obj
+_batched_parent(obj::AbstractWannierObject, fourier_mode) = throw(ArgumentError(
+    "fourier_mode=\"$fourier_mode\" needs an in-memory op_r, which a $(nameof(typeof(obj))) does " *
+    "not have; use \"normal\" or \"gridopt\""))
+
 
 """
-    get_interpolator_channel(obj::AbstractWannierObject{T}, fourier_mode; nbuffers = nthreads())
-Return a `Channel` of interpolators for multithreading.
+    get_interpolator_channel(obj::AbstractWannierObject{T}; fourier_mode, batch_size = nothing,
+                             nbuffers = nthreads(), backend = CPUBackend())
+Return a `Channel` of `nbuffers` interpolators for multithreading.
+
+Host-only: the channel exists to give one interpolator per CPU thread, and every call site is a
+CPU-threaded e-ph loop. A non-`CPUBackend` would put `nbuffers` copies of a device-budgeted scratch
+buffer on the card at once, so it is rejected rather than silently multiplied.
 """
-function get_interpolator_channel(obj::AbstractWannierObject{T}; fourier_mode, nbuffers = nthreads()) where {T}
+function get_interpolator_channel(obj::AbstractWannierObject{T}; fourier_mode, batch_size = nothing,
+        nbuffers = nthreads(), backend = CPUBackend()) where {T}
+    backend isa CPUBackend || throw(ArgumentError(
+        "get_interpolator_channel is host-only and cannot run on a $(nameof(typeof(backend))); " *
+        "build the interpolator directly with get_interpolator"))
+    bs = something(batch_size, _default_batch_size(backend, length(obj.irvec), obj.ndata))
     itp_channel = Channel{AbstractWannierInterpolator{T}}(nbuffers)
     Folds.foreach(1:nbuffers) do _
-        put!(itp_channel, get_interpolator(obj; fourier_mode))
+        put!(itp_channel, get_interpolator(obj; fourier_mode, batch_size = bs, backend))
     end
     itp_channel
 end
