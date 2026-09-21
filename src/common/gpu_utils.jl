@@ -96,6 +96,20 @@ returns `CUDA.free_memory()` for a `GPUBackend`.
 free_bytes(::CPUBackend) = typemax(Int)
 
 """
+    reclaim_device_memory(backend)
+
+Return `backend`'s cached-but-unused device memory to the driver, so that the next `free_bytes`
+reports what a large allocation can actually get. No-op on `CPUBackend`; the CUDA extension calls
+`CUDA.reclaim()`.
+
+CUDA.jl parks freed device memory in a stream-ordered pool instead of returning it, so `free_bytes`
+reads far below the truth once an earlier calculation has run, and a buffer that would fit is
+rejected. `GC.gc(true)` does not help — a dead device array goes back to the pool, not to the
+driver. Trimming the pool is what moves `free_bytes`.
+"""
+reclaim_device_memory(::CPUBackend) = nothing
+
+"""
     synchronize(backend)
 
 Block until queued device work on `backend` completes. No-op on `CPUBackend` (host work is
