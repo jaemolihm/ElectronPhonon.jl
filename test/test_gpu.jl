@@ -286,13 +286,18 @@ end
     if GPU_AVAILABLE
         using ElectronPhonon: _default_batch_size, GPU_FOURIER_BATCH_BYTES
         gpu = ElectronPhonon.gpu_backend()
-        # `16·(nr + ndata)` bytes per column, capped by `nk_hint`, split by `nbuffers`.
+        # `16·(nr + ndata)` bytes per column, capped by `nk_hint`.
         for (nr, ndata) in ((617, 9), (617, 27), (2000, 49))
             @test _default_batch_size(gpu, nr, ndata) == fld(GPU_FOURIER_BATCH_BYTES, 16 * (nr + ndata))
             @test _default_batch_size(gpu, nr, ndata; nk_hint = 100) == 100
-            @test _default_batch_size(gpu, nr, ndata; nbuffers = 8) ==
-                  fld(GPU_FOURIER_BATCH_BYTES ÷ 8, 16 * (nr + ndata))
         end
+        # A device backend has no per-thread channel: `get_interpolator_channel` would put
+        # `nbuffers` budget-sized scratch buffers on the card, so it refuses one.
+        err = try get_interpolator_channel(WannierObject([Vec3{Int}([0, 0, 0])],
+                      randn(ComplexF64, 4, 1)); fourier_mode = "batched", backend = gpu)
+        catch e; e end
+        @test err isa ArgumentError
+        @test occursin("host-only", err.msg)
         # A grid far below the budget gets a block no wider than the grid, not a budget-sized one.
         obj = ElectronPhonon.to_device(gpu, WannierObject(
             [Vec3{Int}([0, 0, 0]), Vec3{Int}([1, 0, 0])], randn(ComplexF64, 6, 2)))
@@ -1058,14 +1063,13 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
             sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataQBatched; nw, nmodes) for c in calcs)
         old_committed = 16 * nw^2 * nkq + (16 * nmodes^2 + 8 * nmodes) * nq_grid +
             16 * nw * nbandk_max * (nmodes * nr_ep + 1) * nk_batch_max
-        # itp_epmat RR→kR interpolator phase scratch (2026-07-18). `cached_results` and the
-        # k-matrix staging left it: the buffer is allocated on the first `register_kpoints!`, which
-        # a `get_fourier_batched!`-only caller never reaches, and the staging is caller-owned.
-        itp_epmat_term = 16 * nr_epmat * nk_batch_max
-        # k+q-convention commitments: xk_dev + mxk_dev + xkq_dev, the per-batch ks_batch_dev, and
-        # P_mk. The 1:nkq index vector is gone — the payload's `ikqs` is the tile's `UnitRange`,
-        # passed in the kernel launch parameters.
-        convention_term = 24 * (2nk + nkq + nk_batch_max) + 16 * nr_ep * nk_batch_max
+        # itp_epmat RR→kR interpolator scratch (2026-07-18): the phase buffer plus the transient
+        # per-batch k staging. `cached_results` left it — that buffer is allocated on the first
+        # `register_kpoints!`, which a `get_fourier_batched!`-only caller never reaches.
+        itp_epmat_term = (16 * nr_epmat + 24) * nk_batch_max
+        # k+q-convention commitments: mxk_dev + xkq_dev and P_mk. The 1:nkq index vector is gone —
+        # the payload's `ikqs` is the tile's `UnitRange`, passed in the kernel launch parameters.
+        convention_term = 24 * (nk + nkq) + 16 * nr_ep * nk_batch_max
         @test per_point == exp_per_q
         @test committed == old_committed + itp_epmat_term + convention_term
     end

@@ -160,11 +160,6 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
     (; nw, el_velocity_mode) = model
     (; need_vfull, need_vdiag, need_position) = _electron_state_needs(model, quantities)
 
-    # The k list staged onto the backend once and shared by every engine below (el_ham, el_pos,
-    # el_vel), following the `Eigenpairs` precedent: an explicit argument, not a lazy field on
-    # `kpts`. Three interpolators over one k list would otherwise pay three identical transfers.
-    xkmat = _kpoints_to_device_matrix(backend, kpts)
-
     # Supplied eigenpairs replace the batched eigensolve: the cache is already on this backend
     # (`_check_eigenpairs`), so its columns for this k list are gathered in the list's order and the
     # rbar/velocity interpolations below consume them exactly as they consume a solved `U_dev`. So
@@ -181,7 +176,7 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
 
     if quantities == ["eigenvalue"]
         E = if eigenpairs === nothing
-            Array(get_el_eigen_valueonly_batched(itp_elham, xkmat))
+            Array(get_el_eigen_valueonly_batched(itp_elham, kpts.vectors))
         else
             Array(eigenpairs.e_full[:, iks])
         end
@@ -190,13 +185,13 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
     end
 
     E_dev, U_dev = if eigenpairs === nothing
-        get_el_eigen_batched(itp_elham, xkmat)
+        get_el_eigen_batched(itp_elham, kpts.vectors)
     else
         (eigenpairs.e_full[:, iks], eigenpairs.u_full[:, :, iks])
     end
     rbar_dev = if need_position
         itp_pos = get_interpolator(to_device(backend, model.el_pos); fourier_mode="batched", backend, nk_hint=kpts.n)
-        get_el_velocity_direct_batched(itp_pos, xkmat, U_dev)
+        get_el_velocity_direct_batched(itp_pos, kpts.vectors, U_dev)
     else
         nothing
     end
@@ -209,7 +204,7 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
             throw(ArgumentError("unknown el_velocity_mode $el_velocity_mode"))
         end
         itp_vel = get_interpolator(to_device(backend, Mop); fourier_mode="batched", backend, nk_hint=kpts.n)
-        v_dev = get_el_velocity_direct_batched(itp_vel, xkmat, U_dev)
+        v_dev = get_el_velocity_direct_batched(itp_vel, kpts.vectors, U_dev)
         if el_velocity_mode === :BerryConnection && need_vfull
             nk = kpts.n
             v_dev .+= im .* (reshape(E_dev, nw, 1, 1, nk) .- reshape(E_dev, 1, nw, 1, nk)) .* rbar_dev
@@ -338,10 +333,8 @@ function _compute_phonon_states_device!(states, model::Model{FT}, kpts, quantiti
     polar.use && error("compute_phonon_states on a non-CPU backend does not support polar phonons")
     "velocity" ∈ quantities && error("full velocity for phonons not implemented")
 
-    # One staging of the q list for both engines below (ph_dyn, ph_dyn_R); see the electron twin.
-    xkmat = _kpoints_to_device_matrix(backend, kpts)
     itp_dyn = get_interpolator(to_device(backend, model.ph_dyn); fourier_mode="batched", backend, nk_hint=kpts.n)
-    D = _fourier_hk_batched(itp_dyn, xkmat)  # (nmodes,nmodes,nq)
+    D = _fourier_hk_batched(itp_dyn, kpts.vectors)  # (nmodes,nmodes,nq)
     msqrt_d = similar(D, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
     D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
     D ./= reshape(msqrt_d, 1, nmodes, 1)
@@ -353,7 +346,7 @@ function _compute_phonon_states_device!(states, model::Model{FT}, kpts, quantiti
         # Phonon velocity requires division by 2ω (dω²/dk = 2ω dω/dk).
         # This is done in _scatter_phonon_states!.
         itp_phvel = get_interpolator(to_device(backend, model.ph_dyn_R); fourier_mode="batched", backend, nk_hint=kpts.n)
-        Array(get_el_velocity_direct_batched(itp_phvel, xkmat, U_dev))
+        Array(get_el_velocity_direct_batched(itp_phvel, kpts.vectors, U_dev))
     else
         nothing
     end

@@ -717,9 +717,7 @@ function _loop_eph_over_k_and_kq_batched(
     uks_dev     = alloc(backend, Complex{FT}, nw, nbandk_max, nk_batch_max)
     uks_host    = Array{Complex{FT}}(undef, nw, nbandk_max, nk_batch_max)
     ep_ekpR_all = alloc(backend, Complex{FT}, ndata_ekpR, nr_ep, nk_batch_max)
-    # This batch's k coordinates as a (3 × nk_batch_max) device matrix. Filled from `xk_dev` below
-    # with a device-side copy, so the k-list never round-trips through the host inside the loop.
-    ks_batch_dev = alloc(backend, FT, 3, nk_batch_max)
+    ks_batch     = Vector{Vec3{FT}}(undef, nk_batch_max)
 
     uphs_dev = alloc(backend, Complex{FT}, nmodes, nmodes, nq_batch_max)
     epkq_dev = alloc(backend, Complex{FT}, nw, nbandk_max, nmodes, nq_batch_max)
@@ -763,10 +761,8 @@ function _loop_eph_over_k_and_kq_batched(
     # conj(exp(2πi R_p·x_k)) = exp(2πi R_p·(−x_k)), and the two are bitwise identical (FP negation is
     # exact, and `cispi` is exactly symmetric). This is the only consumer of the k coordinates.
     # Out-of-place on purpose: on `CPUBackend` `_kpoints_to_device_matrix` returns a view onto
-    # `kpts.vectors`, so negating in place would corrupt the k-points. `xk_dev` itself is read-only
-    # here — it is the source of each batch's `ks_batch_dev` slice.
-    xk_dev  = _kpoints_to_device_matrix(backend, kpts)
-    mxk_dev = xk_dev .* -1
+    # `kpts.vectors`, so negating in place would corrupt the k-points.
+    mxk_dev = _kpoints_to_device_matrix(backend, kpts) .* -1
     xkq_dev = _kpoints_to_device_matrix(backend, kqpts)
 
     # The two Fourier phase matrices of the k+q convention (see `get_eph_RR_to_kR_batched!`):
@@ -831,15 +827,13 @@ function _loop_eph_over_k_and_kq_batched(
             # still happens in the calculator scatter (imap == 0 outside), offset by ibandk_offsets[ik].
             nb0 = ibandk_offsets[ik]
             @views uks_host[:, :, ik_ind] .= el_k_save[ik].u_full[:, nb0+1:nb0+nbandk_max]
+            ks_batch[ik_ind] = kpts.vectors[ik]
         end
         for ik_ind in (nk_batch+1):nk_batch_max
             @views uks_host[:, :, ik_ind] .= uks_host[:, :, nk_batch]
+            ks_batch[ik_ind] = ks_batch[nk_batch]
         end
         copyto!(uks_dev, uks_host)
-        @views copyto!(ks_batch_dev[:, 1:nk_batch], xk_dev[:, iks_batch])
-        # Pad the partial tail with the batch's last k, matching `uks_host` above, so the batched
-        # RR->kR runs on dense `nk_batch_max`-sized arrays.
-        @views ks_batch_dev[:, nk_batch+1:nk_batch_max] .= xk_dev[:, kend:kend]
 
         if mpi_isroot() && div(kend, progress_print_step) > div(kstart - 1, progress_print_step)
             @info "$(now()) ik = $kstart:$kend / $nk"
@@ -850,7 +844,7 @@ function _loop_eph_over_k_and_kq_batched(
         # k+q convention (multiplied by P_mk, the phase at −x_k) so the kR->kq phase below is
         # k-independent.
         @views build_fourier_phase!(P_mk[:, 1:nk_batch], irvecp_mat, mxk_dev[:, iks_batch])
-        get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat, ks_batch_dev, uks_dev;
+        get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat, ks_batch, uks_dev;
             additional_phase = P_mk)
 
         # Outer-batch-resident calculators (re)point/zero their per-batch device buffer here, before

@@ -867,33 +867,20 @@ element-by-element repack is ever needed.
 
 On `CPUBackend` the result is a `reinterpret` view and therefore **aliases `xks`** — it is read-only
 in every caller, but do not write through it. Off `CPUBackend` it is a fresh device array.
+
+The H2D goes through a dense host `Matrix`, and must: `copyto!` straight from the reinterpret view
+has no bulk path and falls back to **scalar indexing**, 6.4 s per 10^6 points. `unsafe_wrap` over the
+k list's own buffer would save ~4 ms per 512k points (2.74 vs 6.41 ms, A6000) — under 1% of a run
+even at the outer-q loop's two stagings per (q, k-batch), so it does not earn its lifetime hazard.
 """
 function _kpoints_to_device_matrix(backend, xks::AbstractVector{Vec3{T}}) where {T}
-    nk = length(xks)
-    backend isa CPUBackend && return reshape(reinterpret(T, xks), 3, nk)
-    # `copyto!` straight from the reinterpret view drops off CUDA's bulk `cuMemcpy` path and runs
-    # 6x slower (8.5 ms vs 1.3 ms for 10^6 points), and materializing a host `Matrix` first costs
-    # the page faults of a fresh 24 MB allocation. Wrapping the k-list's own buffer avoids both.
-    xkmat = alloc(backend, T, 3, nk)
-    GC.@preserve xks copyto!(xkmat, _host_xkmat(xks))
-    xkmat
+    xkmat_host = reshape(reinterpret(T, xks), 3, length(xks))
+    backend isa CPUBackend && return xkmat_host
+    copyto!(alloc(backend, T, 3, length(xks)), Matrix(xkmat_host))
 end
 
 _kpoints_to_device_matrix(backend, kpts::AbstractKpoints) =
     _kpoints_to_device_matrix(backend, kpts.vectors)
-
-# Dense host `(3 × nk)` matrix over a k-list's own storage, for the H2D above. A contiguous strided
-# vector — a `Vector`, or the `view(kpoints.vectors, rng)` the chunked callers build — is wrapped in
-# place, so the result is valid only inside a `GC.@preserve` of the k-list and must not escape one.
-# Anything else (a strided view with a gap, a lazy vector) has no such storage and is materialized.
-function _host_xkmat(xks::StridedVector{Vec3{T}}) where {T}
-    strides(xks) == (1,) || return _materialize_xkmat(xks)
-    unsafe_wrap(Array{T}, Ptr{T}(pointer(xks)), (3, length(xks)))
-end
-_host_xkmat(xks::AbstractVector{Vec3{T}}) where {T} = _materialize_xkmat(xks)
-
-_materialize_xkmat(xks::AbstractVector{Vec3{T}}) where {T} =
-    Matrix(reshape(reinterpret(T, xks), 3, length(xks)))
 
 
 """

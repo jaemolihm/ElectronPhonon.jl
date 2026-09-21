@@ -126,14 +126,16 @@ _batched_parent(obj::AbstractWannierObject, fourier_mode) = throw(ArgumentError(
                              nbuffers = nthreads(), backend = CPUBackend())
 Return a `Channel` of `nbuffers` interpolators for multithreading.
 
-`nbuffers` copies are live at once, so a budgeted default is split between them rather than granted
-to each. That split is inert today: every call site is a CPU-threaded e-ph loop, and the CPU default
-is a fixed 32 with no budget to divide.
+Host-only: the channel exists to give one interpolator per CPU thread, and every call site is a
+CPU-threaded e-ph loop. A non-`CPUBackend` would put `nbuffers` copies of a device-budgeted scratch
+buffer on the card at once, so it is rejected rather than silently multiplied.
 """
 function get_interpolator_channel(obj::AbstractWannierObject{T}; fourier_mode, batch_size = nothing,
         nbuffers = nthreads(), backend = CPUBackend()) where {T}
-    bs = something(batch_size,
-        _default_batch_size(backend, length(obj.irvec), obj.ndata; nbuffers))
+    backend isa CPUBackend || throw(ArgumentError(
+        "get_interpolator_channel is host-only and cannot run on a $(nameof(typeof(backend))); " *
+        "build the interpolator directly with get_interpolator"))
+    bs = something(batch_size, _default_batch_size(backend, length(obj.irvec), obj.ndata))
     itp_channel = Channel{AbstractWannierInterpolator{T}}(nbuffers)
     Folds.foreach(1:nbuffers) do _
         put!(itp_channel, get_interpolator(obj; fourier_mode, batch_size = bs, backend))

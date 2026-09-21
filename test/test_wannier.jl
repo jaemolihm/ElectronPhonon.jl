@@ -172,10 +172,10 @@ end
     irvec = [Vec3{Int}([0, 0, 0]), Vec3{Int}([1, 0, 0])]
     obj = WannierObject(irvec, randn(ComplexF64, 6, length(irvec)))
 
-    # The CPU side does not move: the per-k query sites still get exactly 32, whatever the object,
-    # the grid size or the number of channel buffers.
+    # The CPU side does not move: the per-k query sites still get exactly 32, whatever the object
+    # or the grid size.
     @test _default_batch_size(CPUBackend(), 617, 9) == 32
-    @test _default_batch_size(CPUBackend(), 617, 9; nk_hint = 4, nbuffers = 8) == 32
+    @test _default_batch_size(CPUBackend(), 617, 9; nk_hint = 4) == 32
     @test get_interpolator(obj; fourier_mode = "batched").batch_size == 32
     @test get_interpolator(obj; fourier_mode = "batched-gridopt").batch_size == 32
 

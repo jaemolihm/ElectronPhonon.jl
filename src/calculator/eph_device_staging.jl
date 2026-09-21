@@ -60,7 +60,7 @@ end
 # `16·nr_epmat·nk_batch_max` (added 2026-07-18; the parent RR→kR interpolator, built at
 # `batch_size = nk_batch_max`, was omitted from the original hand-count — validated against a direct
 # pool-stat measurement of `BatchedWannierInterpolator(epmat_dev)`) PLUS the k+q-convention terms
-# `24·(2nk + nkq + nk_batch_max) + 16·nr_ep·nk_batch_max`. All transition-pinned by test/test_gpu.jl.
+# `24·(nk + nkq) + 16·nr_ep·nk_batch_max`. All transition-pinned by test/test_gpu.jl.
 # Not counted: the loop's `irvecp_mat` (`24·nr_ep`, 20 kB at Cu shapes), matching how the
 # `BatchedFourierCore.irvec_mat` of the same shape has never been counted.
 function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_grid, nk_batch_max,
@@ -85,18 +85,19 @@ function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_gri
     end
     # Whole-run + per-k-batch commitments (allocated after the sizing point; subtracted from free).
     # The `itp_epmat` term uses `nk_batch_max` (the outer-k batch width, a SEPARATE fixed cap from the
-    # sized q-tile), so it belongs here in `committed`, not in the per-q term. It is the `phase`
-    # buffer alone (16·nr_epmat × nk_batch_max): `cached_results` is allocated on the first
-    # `register_kpoints!` and `itp_epmat` is driven only through `get_fourier_batched!`, which never
-    # registers a k-point; the k-matrix staging left the interpolator for the caller.
+    # sized q-tile), so it belongs here in `committed`, not in the per-q term: the `phase` buffer
+    # (16·nr_epmat) plus the transient (3 × nk_batch) host→device k staging `get_fourier_batched!`
+    # makes per batch (24), both × nk_batch_max. `cached_results` is NOT counted: it is allocated on
+    # the first `register_kpoints!`, and `itp_epmat` is driven only through `get_fourier_batched!`,
+    # which never registers a k-point.
     committed =
         cx * nw * nw * nkq +                                  # ukqs_all_dev
         cx * nmodes * nmodes * nq_grid +                      # uph_all_dev
         rl * nmodes * nq_grid +                               # ωq_all_dev
         cx * ndata * nr_ep * nk_batch_max +                   # ep_ekpR_all
         cx * nw * nbandk_max * nk_batch_max +                 # uks_dev
-        cx * nr_epmat * nk_batch_max +                        # itp_epmat Fourier phase scratch
-        rl * 3 * (2nk + nkq + nk_batch_max) +                 # xk_dev + mxk_dev + xkq_dev + ks_batch_dev
+        (cx * nr_epmat + rl * 3) * nk_batch_max +             # itp_epmat phase + per-batch k staging
+        rl * 3 * (nk + nkq) +                                 # mxk_dev + xkq_dev
         cx * nr_ep * nk_batch_max                             # P_mk (k+q-convention phase)
     (per_point, committed)
 end

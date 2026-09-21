@@ -212,9 +212,9 @@ interpolator's backend). Total: any `nk ≥ 0` is accepted, and an `nk` larger t
 whole result is kept on the backend (no per-k device→host copy). This is the entry point for GPU /
 whole-batch use.
 
-A host k-list is staged onto the backend once here, not once per block. A caller that already holds
-the staged `(3 × nk)` matrix — several interpolators over one k-list, as in
-`_compute_electron_states_device!` — passes that instead and pays the transfer once for all of them.
+A host k-list is staged onto the backend once here, not once per block. This is the only layer that
+stages: the drivers above it (`wannier_to_bloch_batched.jl`) take a `Vector{Vec3}` and nothing else.
+A caller that already holds the staged `(3 × nk)` matrix passes it to the second method directly.
 
 Does not touch the [`SequentialQueryCache`](@ref) queue state, so it is independent of any
 in-progress per-k `get_fourier!` sequence.

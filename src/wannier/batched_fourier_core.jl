@@ -1,30 +1,30 @@
 using LinearAlgebra
 
 """
-    build_fourier_phase!(dest, irvec_mat, xkmat) -> dest
+    build_fourier_phase!(phase, irvec_mat, xkmat) -> phase
 
-Wannier → Bloch phase matrix `dest[ip, j] = exp(2πi R_p · x_j)` for the R-vectors in `irvec_mat`
+Wannier → Bloch phase matrix `phase[ip, j] = exp(2πi R_p · x_j)` for the R-vectors in `irvec_mat`
 (`(nr × 3)` real, row `ip` = `R_p`) and the crystal-coordinate points in `xkmat` (`(3 × nk)` real).
 
 Contract:
 - all three arrays live on one backend, and the whole thing is a single broadcast (no scalar
   indexing, no scratch), so it runs unchanged on CPU and GPU;
-- `dest` is `(nr, nk)` and may be a view;
-- `dest` is caller-owned. That is what lets the GPU outer-k e-ph loop keep two phase tiles of
+- `phase` is `(nr, nk)` and may be a view;
+- `phase` is caller-owned. That is what lets the GPU outer-k e-ph loop keep two phase tiles of
   different widths (`P_mk` at the k-batch width, `P_kq` at the q-tile width);
 - stateless: the phase depends only on `(R_p, x)`, so a caller whose `x` list is loop-invariant
   builds it once and applies it many times. That hoist is the reason this is reachable at all
   (as `ElectronPhonon.build_fourier_phase!`) rather than being private to the Fourier engine.
 """
-function build_fourier_phase!(dest, irvec_mat, xkmat)
-    # `dest` is `(nr, nk)`: entry `[ir, ik]` is `exp(2πi R[ir] · x[ik])`, an outer product over the
+function build_fourier_phase!(phase, irvec_mat, xkmat)
+    # `phase` is `(nr, nk)`: entry `[ir, ik]` is `exp(2πi R[ir] · x[ik])`, an outer product over the
     # `(nr × 3)` R-vectors and the `(3 × nk)` crystal coordinates. Verified allocation-free (`@allocated`
     # returns 0 on CPU), so it needs no `rdotk` temporary.
     # `xkmat[d:d, :]` is the `1 × nk` row of coordinate `d`, broadcast against the `nr` R-vectors.
-    @views dest .= cispi.(2 .* (irvec_mat[:, 1] .* xkmat[1:1, :] .+
-                                irvec_mat[:, 2] .* xkmat[2:2, :] .+
-                                irvec_mat[:, 3] .* xkmat[3:3, :]))
-    dest
+    @views phase .= cispi.(2 .* (irvec_mat[:, 1] .* xkmat[1:1, :] .+
+                                 irvec_mat[:, 2] .* xkmat[2:2, :] .+
+                                 irvec_mat[:, 3] .* xkmat[3:3, :]))
+    phase
 end
 
 
@@ -116,7 +116,7 @@ end
 const GPU_FOURIER_BATCH_BYTES = 2^30
 
 """
-    _default_batch_size(backend, nr, ndata; nk_hint = typemax(Int), nbuffers = 1) -> Int
+    _default_batch_size(backend, nr, ndata; nk_hint = typemax(Int)) -> Int
 
 Default number of k-points one `_fourier_batched!` block handles, keyed on the backend because the
 two sides want different things: the CPU wants a width that keeps the sequential per-k query API
@@ -124,15 +124,16 @@ responsive, the GPU one that amortizes kernel launches without an unbounded scra
 
 The `CPUBackend` value is a fixed 32, unchanged and untuned — the user's stated balance for the
 per-k path, carried on their authority, with no measurement for it recorded anywhere in this repo.
-It ignores `nk_hint` (32 cannot over-allocate) and `nbuffers` (there is no budget to divide).
+It ignores `nk_hint`: 32 cannot over-allocate.
 
 The `GPUBackend` value spends [`GPU_FOURIER_BATCH_BYTES`](@ref) at `16·(nr + ndata)` bytes per
 column — the `phase` buffer plus the `cached_results` the adapter would grow at this width if a
-caller ever registered k-points. `nbuffers` splits the budget between simultaneously live copies
-(see `get_interpolator_channel`), and `nk_hint` caps the scratch at the caller's grid size.
+caller ever registered k-points — and `nk_hint` caps the scratch at the caller's grid size.
+Whole-budget per interpolator: only `get_interpolator_channel` holds several at once, and it is
+host-only, so nothing divides this budget.
 """
-_default_batch_size(::CPUBackend, nr, ndata; nk_hint = typemax(Int), nbuffers = 1) = 32
+_default_batch_size(::CPUBackend, nr, ndata; nk_hint = typemax(Int)) = 32
 
-function _default_batch_size(::GPUBackend, nr, ndata; nk_hint = typemax(Int), nbuffers = 1)
-    clamp(fld(GPU_FOURIER_BATCH_BYTES ÷ nbuffers, 16 * (nr + ndata)), 1, nk_hint)
+function _default_batch_size(::GPUBackend, nr, ndata; nk_hint = typemax(Int))
+    clamp(fld(GPU_FOURIER_BATCH_BYTES, 16 * (nr + ndata)), 1, nk_hint)
 end

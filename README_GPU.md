@@ -117,9 +117,9 @@ only public constructor: the `BatchedFourierCore` engine it composes is internal
   is unchanged; its `cached_results` buffer is allocated on the first `register_kpoints!`, so a
   whole-batch caller never pays for it. The whole-batch entry point
   `get_fourier_batched!(out, itp, xk_list)` returns the entire `(ndata, nk)` result on the backend —
-  the GPU path uses this, avoiding any per-k device→host copy. It also accepts an already-staged
-  `(3 × nk)` device matrix, which is how `compute_electron_states` feeds three interpolators from
-  one host→device transfer.
+  the GPU path uses this, avoiding any per-k device→host copy. This is the only layer that stages a
+  host k list; it also accepts an already-staged `(3 × nk)` device matrix, while the drivers above
+  it (`wannier_to_bloch_batched.jl`) take a `Vector{Vec3}` and nothing else.
 
 ### Batched Hermitian eigensolve + band-eigenvalue drivers
 
