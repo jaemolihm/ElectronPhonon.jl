@@ -52,7 +52,7 @@ function _shared_outer_u_agree(run_a, run_b)
     (ok, nshared)
 end
 
-@testset "e-ph drivers with precomputed electron states" begin
+@testset "e-ph drivers with precomputed electron and phonon states" begin
     grid = (4, 4, 4)
     kgrid = GridKpoints(kpoints_grid(grid))
     # Two outer k selections that differ but overlap: 24 of the 64 k points are in both.
@@ -163,6 +163,55 @@ end
                                 el_k_eigenpairs = cache_normal, el_kq_eigenpairs = cache_normal)
         @test _u_deviation(run_gridopt.el_k_save, run_normal_cache.el_k_save) > 1
         @test _u_deviation(run_gridopt.el_kq_save, run_normal_cache.el_kq_save) > 1
+    end
+
+    # The phonon cache is `run_eph_over_k_and_kq`'s alone: it is the driver whose q-point set is
+    # derived (`combine_kpoint_grids`) rather than given, so a caller can only reach those phonons
+    # through this kwarg. What it buys is a second run over the same q points inheriting the first
+    # run's eigenmode basis, which `g` depends on inside a degenerate multiplet.
+    @testset "run_eph_over_k_and_kq, phonon side" begin
+        model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
+        _run(kpts_in, kqpts_in = grid; kwargs...) = ElectronPhonon.run_eph_over_k_and_kq(
+            model, kpts_in, kqpts_in; calculators = [_PrecomputedStatesProbe()],
+            symmetry = nothing, progress_print_step = 10^9, verbosity = 0,
+            fourier_mode = "gridopt", kwargs...)
+
+        backends = AbstractBackend[CPUBackend()]
+        PRECOMPUTED_STATES_GPU_AVAILABLE && push!(backends, gpu_backend())
+        for backend in backends
+            plain = _run(sub_a; backend)
+            qpts = plain.qpts
+            cache = _phonon_eigenpairs(plain.ph_save, qpts, backend)
+            rot = circshift(1:qpts.n, 1)
+            rotated = Eigenpairs(model.nmodes, qpts, cache.e_full[:, rot], cache.u_full[:, :, rot])
+
+            cached = _run(sub_a; backend, ph_eigenpairs = cache)
+            bad = _run(sub_a; backend, ph_eigenpairs = rotated)
+            @test qpts.n > 1                      # so the rotation is a real permutation
+            @test all(_phonon_state_equal.(cached.ph_save, plain.ph_save))
+            @test !any(_phonon_state_equal.(bad.ph_save, plain.ph_save))
+
+            # A cache over the wrong q-point set is an error, not a silent recompute. The driver
+            # derives its q points from the two k grids, so a caller cannot check the coverage
+            # itself -- this is the only thing standing between it and a wrong basis.
+            sub_q = GridKpoints(Kpoints(qpts.vectors[1:qpts.n-1]; ngrid = qpts.ngrid), qpts.ngrid)
+            partial = Eigenpairs(model.nmodes, sub_q, cache.e_full[:, 1:qpts.n-1],
+                                 cache.u_full[:, :, 1:qpts.n-1])
+            @test_throws "does not cover" _run(sub_a; backend, ph_eigenpairs = partial)
+
+            # An electron cache carries `nbasis = nw`, so the wrong species is caught at the entry.
+            @test_throws "eigenpairs holds nbasis" _run(sub_a; backend,
+                ph_eigenpairs = electron_eigenpairs(model, kgrid; backend,
+                                                    fourier_mode = "gridopt"))
+        end
+
+        # On incommensurate k / k+q grids there is no q-point set at all -- the phonons are solved
+        # per (k, q) inside the loop -- so a cache cannot be honoured and is refused rather than
+        # ignored.
+        @test_throws "requires commensurate" _run((2, 2, 2), (3, 3, 3);
+            ph_eigenpairs = Eigenpairs(model.nmodes, GridKpoints(kpoints_grid((2, 2, 2))),
+                                       zeros(model.nmodes, 8),
+                                       zeros(ComplexF64, model.nmodes, model.nmodes, 8)))
     end
 
     # The k side is one edit in `_setup_electron_k`, shared by all three drivers, so the two
