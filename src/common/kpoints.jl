@@ -868,15 +868,16 @@ element-by-element repack is ever needed.
 On `CPUBackend` the result is a `reinterpret` view and therefore **aliases `xks`** — it is read-only
 in every caller, but do not write through it. Off `CPUBackend` it is a fresh device array.
 
-The H2D goes through a dense host `Matrix`, and must: `copyto!` straight from the reinterpret view
-has no bulk path and falls back to **scalar indexing**, 6.4 s per 10^6 points. `unsafe_wrap` over the
-k list's own buffer would save ~4 ms per 512k points (2.74 vs 6.41 ms, A6000) — under 1% of a run
-even at the outer-q loop's two stagings per (q, k-batch), so it does not earn its lifetime hazard.
+The H2D goes through a dense host `Matrix`, and must: handing the reinterpret view to
+[`to_device_copy`](@ref) has no bulk path and falls back to **scalar indexing**, 6.4 s per 10^6
+points. `unsafe_wrap` over the k list's own buffer would save ~4 ms per 512k points (2.74 vs
+6.41 ms, A6000) — under 1% of a run even at the outer-q loop's two stagings per (q, k-batch), so it
+does not earn its lifetime hazard.
 """
 function _kpoints_to_device_matrix(backend, xks::AbstractVector{Vec3{T}}) where {T}
     xkmat_host = reshape(reinterpret(T, xks), 3, length(xks))
     backend isa CPUBackend && return xkmat_host
-    copyto!(alloc(backend, T, 3, length(xks)), Matrix(xkmat_host))
+    to_device_copy(backend, Matrix(xkmat_host))
 end
 
 _kpoints_to_device_matrix(backend, kpts::AbstractKpoints) =
