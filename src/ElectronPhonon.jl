@@ -89,13 +89,12 @@ include("boltzmann/electron_transport_linear.jl")
 include("boltzmann/electron_transport_hall.jl")
 include("boltzmann/electron_transport_finite_efield.jl")
 
+include("postprocess/plotting_api.jl")
 include("postprocess/high_symmetry_kpath.jl")
 include("postprocess/band_structures.jl")
 include("postprocess/check_model_symmetry.jl")
 include("postprocess/dos.jl")
-include("postprocess/plot_bandstructure.jl")
-include("postprocess/plot_electron_phonon.jl")
-include("postprocess/plot_decay.jl")
+include("postprocess/deformation_potential.jl")
 
 
 
