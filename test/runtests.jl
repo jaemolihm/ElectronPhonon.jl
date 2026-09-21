@@ -39,6 +39,7 @@ include("common_models_from_artifacts.jl")
 
     # Boltzmann routines
     include("boltzmann/test_hdf5.jl")
+    include("boltzmann/test_BTStates.jl")  # states_index_map, incl. the symmetry-star keys
     include("boltzmann/test_QMEVector.jl")
     include("boltzmann/test_gpu_boltzmann_calculator.jl")  # GPU BTE scatter; GPU part skips w/o CUDA
     include("boltzmann/test_multigrid_weights.jl")  # multigrid k-sampling: pure-BZ quadrature check
