@@ -139,13 +139,16 @@ using ElectronPhonon
         ikdrop = 7
         sub = filter_states(sel, [i for i in 1:sel.n if sel.iks[i] != ikdrop])
         xk_gone = kpts.vectors[ikdrop]
-        b = sel.ibands[findfirst(==(ikdrop), sel.iks)]
+        idrop = findfirst(==(ikdrop), sel.iks)
+        b = sel.ibands[idrop]
         @test state_index(sub, xk_gone, b) == 0
         j = state_index_in_star(sub, xk_gone, b, symmetry)
         @test j != 0 && sub.ibands[j] == b
         modone(v) = mod.(v .+ 1e-9, 1.0)     # k-vectors identified mod a reciprocal lattice vector
         @test any(modone(apply_symop(S, xk_gone, :momentum)) ≈ modone(sub[j].xk) for S in symmetry)
         @test state_index_in_star(sub, xk_gone, 9, symmetry) == 0   # no image carries band 9
+        # Item form, where the star search actually fires: `sel[idrop]` is the dropped state.
+        @test state_index_in_star(sub, sel[idrop], symmetry) == j
     end
 
     # The two unfolding maps against an independent reference: the O(nsym·n_f·n_i) scan of `el_i`
@@ -225,6 +228,7 @@ using ElectronPhonon
         @test state_index_in_star(bs, bs[3].xk, 9, nothing) == 0
         @test state_indices_full_star(bs, bs[3].xk, bs.ibands[3], nothing) == [3]
         @test state_indices_full_star(bs, bs[3].xk, 9, nothing) == Int[]
+        @test state_index_in_star(bs, bs[3], nothing) == 3
         @test state_indices_full_star(bs, bs[3], nothing) == [3]
     end
 end
