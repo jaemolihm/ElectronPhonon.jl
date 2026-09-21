@@ -330,7 +330,7 @@ function mpi_allgather(s::BandStates{FT}, comm::MPI.Comm) where {FT}
 end
 
 """
-    gather_global_states(states::BandStates, comm) -> (gstates, offset, counts)
+    gather_band_states(states::BandStates, comm) -> (gstates, offset, counts)
 
 The global state set that a rank-distributed `states` is a slice of, this rank's offset into it,
 and the per-rank local counts. `gstates` is the rank-concatenation of [`mpi_allgather`](@ref):
@@ -343,7 +343,7 @@ assumed by the caller.
 Serially (`comm === nothing`) the returned `gstates` IS `states`, the same object and not a copy,
 so a caller that mutates it mutates its input.
 """
-function gather_global_states(states::BandStates, comm)
+function gather_band_states(states::BandStates, comm)
     counts = mpi_allgather([states.n], comm)          # per-rank n_local, in rank order
     offset = sum(@view counts[1:mpi_myrank(comm)])    # MPI ranks are 0-based
     mpi_allgather(states, comm), offset, Vector{Int}(counts)

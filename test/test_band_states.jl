@@ -102,12 +102,12 @@ using ElectronPhonon
         end
     end
 
-    @testset "gather_global_states" begin
-        using ElectronPhonon: gather_global_states
+    @testset "gather_band_states" begin
+        using ElectronPhonon: gather_band_states
         import MPI
         MPI.Initialized() || MPI.Init()
         # One rank: the global set is this rank's set, so the whole block starts at offset 0.
-        g, offset, counts = gather_global_states(bs, MPI.COMM_SELF)
+        g, offset, counts = gather_band_states(bs, MPI.COMM_SELF)
         @test (offset, counts) == (0, [bs.n])
         @test g.n == bs.n && g.es == bs.es
         # The documented convention: the local states sit at `offset+1 : offset+n`.
@@ -115,7 +115,7 @@ using ElectronPhonon
         @test all(state_index(g, bs[i]) == i + offset for i in 1:bs.n)
 
         # Serial path: the input object itself, not a copy.
-        gs, offset_s, counts_s = gather_global_states(bs, nothing)
+        gs, offset_s, counts_s = gather_band_states(bs, nothing)
         @test gs === bs
         @test (offset_s, counts_s) == (0, [bs.n])
     end
