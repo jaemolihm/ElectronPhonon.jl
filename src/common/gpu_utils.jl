@@ -118,6 +118,19 @@ the GPU e-ph loop so per-tile scratch does not pile up in the memory pool.
 """
 synchronize(::CPUBackend) = nothing
 
+"""
+    spmm!(C, A, B) -> C
+
+`C = A * B` for a SPARSE `A` and dense `B`, with a summation order that is the same on every run.
+The CPU method is `mul!`; the CUDA extension pins cuSPARSE's `CUSPARSE_SPMM_CSR_ALG3`, because
+the default algorithm splits a row across thread blocks and combines the partial sums with
+atomics — measured on an A100 at (5182 × 237136) · (237136 × 30), 6.1% of the entries move between
+runs (1.4e-16 relative). Use this rather than `mul!` wherever a result feeds an iteration count
+or another run-to-run comparison. The two backends are NOT bitwise equal to each other (~1 ulp);
+each is reproducible against itself.
+"""
+spmm!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix) = mul!(C, A, B)
+
 @inline _batched_op(t::Char, X) = t == 'N' ? X : (t == 'T' ? transpose(X) : adjoint(X))
 
 """
