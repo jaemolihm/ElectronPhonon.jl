@@ -283,11 +283,11 @@ end
                 @test !any(_phonon_state_equal.(bad, ref))
             end
 
-            # A run whose q list is not the cache's own list in its own order: the device path
-            # short-circuits the `u_full` gather when it is (the shape a two-run caller has, where
-            # gathering would duplicate the whole cache on the device), so this reversed list is
-            # what exercises the gather. Both arms run over the same list, so the ordering of
-            # `GridKpoints` is irrelevant to the claim.
+            # A run whose q list is not the cache's own list in its own order. Every other arm
+            # here looks the cache up at `1:nq`, where the device path's `view(u_full, :, :, iqs)`
+            # is a trivial permutation; this one makes `iqs` a genuine reordering, so the indexed
+            # view is materialized through its device index vector. Both arms run over the same
+            # list, so the ordering `GridKpoints` itself chooses is irrelevant to the claim.
             rev = GridKpoints(Kpoints(reverse(kpts.vectors); ngrid = kpts.ngrid), kpts.ngrid)
             @test map(xq -> xk_to_ik(xq, kpts), rev.vectors) != 1:kpts.n
             @test all(_phonon_state_equal.(

@@ -261,15 +261,9 @@ end
     compute_phonon_states(model, kpts, quantities; fourier_mode="normal", eigenpairs=nothing)
 Compute the quantities listed in `quantities` and return a vector of PhononState.
 `quantities` can containing the following: "eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"
-`eigenpairs`: an [`Eigenpairs`](@ref) with `nbasis = nmodes` covering every q point of `kpts`. Its
-`e_full`/`u_full` are copied in per q instead of diagonalizing the dynamical matrix, so runs sharing
-one cache share the phonon eigenmode basis -- which `velocity_diagonal` and `eph_dipole_coeff`, both
-derived from `ph.u`, then inherit. The cache holds ω and the mass-scaled eigenmodes, i.e. what an
-earlier run's `PhononState`s carry; there is no phonon builder, the caller assembles it. It must be
-resident on `backend`. The one list a cache does not reproduce is `["eigenvalue"]`: it returns the
-cache's frequencies, which come from a full eigensolve, where the cacheless path runs the
-value-only solve -- the two differ by round-off on a non-polar model and by ~1e-9 relative on a
-polar one, whose long-range term the value-only solve treats differently.
+`eigenpairs`: an [`Eigenpairs`](@ref) with `nbasis = nmodes` covering every q point of `kpts`. Holds
+ω and the mass-scaled eigenmodes in `e_full`/`u_full`, so the diagonalization is skipped. Used to
+fix the gauge of the phonon eigenvectors.
 TODO: Implement quantities "velocity"
 """
 function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode="normal",
@@ -317,9 +311,9 @@ function _compute_phonon_states_cpu!(states, model::Model{FT}, kpts, quantities,
             ph = states[ik]
 
             if quantities == ["eigenvalue"]
-                _set_eigen_valueonly_from!(ph, eigenpairs, xk, dyn, mass, polar)
+                _set_eigen_valueonly_from!(ph, eigenpairs, dyn, mass, polar, xk)
             else
-                _set_eigen_from!(ph, eigenpairs, xk, dyn, mass, polar)
+                _set_eigen_from!(ph, eigenpairs, dyn, mass, polar, xk)
                 if "velocity" ∈ quantities
                     # not implemented
                     error("full velocity for phonons not implemented")
@@ -350,10 +344,6 @@ function _compute_phonon_states_device!(states, model::Model{FT}, kpts, quantiti
     polar.use && error("compute_phonon_states on a non-CPU backend does not support polar phonons")
     "velocity" ∈ quantities && error("full velocity for phonons not implemented")
 
-    # `U_dev` is read by the velocity rotation and by the scatter; the eigenvalue-only list uses
-    # neither, and `need_velocity` implies the list is not eigenvalue-only.
-    need_u = quantities != ["eigenvalue"]
-
     # ω and the mass-scaled eigenmodes, either solved for here or taken from the cache, which
     # already holds both in that form (it is built from an earlier run's `PhononState`s).
     E_dev, U_dev = if eigenpairs === nothing
@@ -367,24 +357,19 @@ function _compute_phonon_states_device!(states, model::Model{FT}, kpts, quantiti
         U_solved ./= reshape(msqrt_d, nmodes, 1, 1)  # mass factor: u[i,:] /= sqrt(mass[i])
         (sign.(Esq_dev) .* sqrt.(abs.(Esq_dev)), U_solved)  # ω = sign(ω²)·√|ω²|
     else
-        # The lookup runs on the host: a miss inside the gather would surface as a bare
+        # The lookup runs on the host: a miss inside the view would surface as a bare
         # `KernelException` naming only the device.
         iqs = map(xq -> _eigenpairs_ik(eigenpairs, xq), kpts.vectors)
-        # A run over the cache's own q points in its own order -- what a two-run caller does --
-        # needs no gather, and `u_full` is `16·nmodes²·nq` device bytes the gather would duplicate.
-        # Aliasing the cache is safe: both consumers of `U_dev` are read-only (`Array` copies it,
-        # and `get_el_velocity_direct_batched` only broadcasts it into its own `urep`).
-        u_dev = if !need_u
-            nothing
-        elseif iqs == 1:kpts.n
-            eigenpairs.u_full
-        else
-            eigenpairs.u_full[:, :, iqs]
-        end
-        (eigenpairs.e_full[:, iqs], u_dev)
+        # Views, not copies. Both consumers read `U_dev` and nothing writes it (`Array` copies it
+        # out; `get_el_velocity_direct_batched` only broadcasts it into its own `urep`), so
+        # aliasing the cache is safe, and a materialized gather would duplicate `u_full`'s
+        # `16*nmodes^2*nq` device bytes. Measured at nmodes = 6, nq = 5e5: the gather costs 8.2 ms
+        # and 288 MB against 1.0 ms and 4 MB for the view, while consuming the view instead of a
+        # copy costs 1.1 ms on the host download and 0.03 ms on the velocity broadcast.
+        (view(eigenpairs.e_full, :, iqs), view(eigenpairs.u_full, :, :, iqs))
     end
     E = Array(E_dev)
-    U = need_u ? Array(U_dev) : nothing
+    U = quantities == ["eigenvalue"] ? nothing : Array(U_dev)
     vel = if need_velocity
         itp_phvel = get_interpolator(to_device(backend, model.ph_dyn_R); fourier_mode="batched", batch_size=kpts.n)
         Array(get_el_velocity_direct_batched(itp_phvel, kpts.vectors, U_dev))

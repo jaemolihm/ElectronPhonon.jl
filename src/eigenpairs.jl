@@ -207,11 +207,13 @@ end
 # The full eigenpair of one q point, into a `PhononState`. `e` is the frequency ω and `u` the
 # mass-scaled eigenmode, i.e. what `get_ph_eigen!` leaves in a `PhononState` -- a phonon cache is
 # built from a previous run's states, so neither the sign(ω²)√|ω²| nor the 1/√mass step is redone
-# here.
-_set_eigen_from!(ph::PhononState, ::Nothing, xq, dyn, mass, polar) =
+# here. Argument order follows the electron pair above, `(state, cache, what it takes to solve,
+# momentum)`; the solver arguments differ because `D(q)` needs the masses and the dipole term
+# where `H(k)` needs only its interpolator.
+_set_eigen_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
     set_eigen!(ph, xq, dyn, mass, polar)
 
-function _set_eigen_from!(ph::PhononState, eigenpairs::Eigenpairs, xq, dyn, mass, polar)
+function _set_eigen_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
     iq = _eigenpairs_ik(eigenpairs, xq)
     ph.xq = xq
     @views ph.e .= eigenpairs.e_full[:, iq]
@@ -219,10 +221,16 @@ function _set_eigen_from!(ph::PhononState, eigenpairs::Eigenpairs, xq, dyn, mass
     ph
 end
 
-_set_eigen_valueonly_from!(ph::PhononState, ::Nothing, xq, dyn, mass, polar) =
+# Unlike every other consumer here this one is not inert: `e` comes from the cache's FULL
+# eigensolve where the cacheless path runs the value-only driver. The two agree on ω² to
+# `eps * ‖D(q)‖`, but ω = sign(ω²)√|ω²| turns that into a `1/(2ω)`-amplified deviation, so a mode
+# whose ω² is far below the largest ω² of its own q point -- an acoustic mode at Γ of a cell that
+# also carries optical modes -- can differ in the leading digits. Modes away from ω = 0 agree to
+# round-off.
+_set_eigen_valueonly_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
     set_eigen_valueonly!(ph, xq, dyn, mass, polar)
 
-function _set_eigen_valueonly_from!(ph::PhononState, eigenpairs::Eigenpairs, xq, dyn, mass, polar)
+function _set_eigen_valueonly_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
     iq = _eigenpairs_ik(eigenpairs, xq)
     ph.xq = xq
     @views ph.e .= eigenpairs.e_full[:, iq]
