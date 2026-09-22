@@ -38,6 +38,10 @@ ElectronPhonon.gpu_backend() = ElectronPhonon.GPUBackend(CuArray{ComplexF64}(und
 ElectronPhonon.free_bytes(::ElectronPhonon.GPUBackend) = CUDA.free_memory()
 ElectronPhonon.synchronize(::ElectronPhonon.GPUBackend) = CUDA.synchronize()
 
+# GPU-aware MPI hands the device pointer straight to the MPI library, so the kernels that filled the
+# buffer must have finished first. `ElectronPhonon._sync_device` is a no-op on every other argument.
+ElectronPhonon._sync_device(::CuArray) = CUDA.synchronize()
+
 # `CUDA.reclaim()` drops task-local library state, runs a full GC, synchronizes, purges the cuBLAS
 # and cuSOLVER handle caches and trims the memory pool. That is its behavior in CUDA.jl 6, which
 # `[compat] CUDA = "6"` is what pins; 5.x's `reclaim` is a different, GC-less routine.
