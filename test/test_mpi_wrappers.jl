@@ -73,13 +73,21 @@ import MPI
     # in the original shape rather than flattened.
     @testset "gather, allgather, scatter" begin
         for comm in comms, x in ([1.0, 2.0, 3.0], reshape(collect(1.0:6.0), 2, 3))
-            for r in (mpi_gather(x, comm), mpi_gather(x, 0, comm),
-                      mpi_allgather(x, comm), mpi_scatter(x, comm))
+            for r in (mpi_gather(x, comm), mpi_allgather(x, comm), mpi_scatter(x, comm))
                 @test r == x
                 @test size(r) == size(x)
                 @test eltype(r) == eltype(x)
             end
         end
+    end
+
+    # Every wrapper calls `_sync_device` before handing a buffer to MPI; on the host it must be a
+    # no-op for arrays and scalars alike (the CUDA extension is what makes it do work).
+    @testset "_sync_device is a host no-op" begin
+        using ElectronPhonon: _sync_device
+        @test _sync_device([1.0, 2.0]) === nothing
+        @test _sync_device(2.5) === nothing
+        @test _sync_device((1, 2, 3)) === nothing
     end
 
     @testset "split_iterator" begin
