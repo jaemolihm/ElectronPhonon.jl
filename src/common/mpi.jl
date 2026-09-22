@@ -97,10 +97,11 @@ function mpi_gather(arr::AbstractArray, root::Integer, comm::MPI.Comm)
     @assert _check_size(arr, root, comm)
 
     # Size of array in each processors
-    counts = MPI.Allgather([Cint(length(arr))], 1, comm)
+    counts = MPI.Allgather(Cint(length(arr)), comm)
 
     # Gather array
-    arr_gathered = MPI.Gatherv(arr, counts, root, comm)
+    recvbuf = MPI.Comm_rank(comm) == root ? MPI.VBuffer(similar(arr, sum(counts)), counts) : nothing
+    arr_gathered = MPI.Gatherv!(arr, recvbuf, root, comm)
     if mpi_isroot(comm)
         return reshape(arr_gathered, (size(arr)[1:end-1]..., :))
     else
@@ -119,10 +120,10 @@ function mpi_allgather(arr::AbstractArray, comm::MPI.Comm)
     @assert _check_size(arr, MPI_ROOT, comm)
 
     # Size of array in each processors
-    counts = MPI.Allgather([Cint(length(arr))], 1, comm)
+    counts = MPI.Allgather(Cint(length(arr)), comm)
 
     # Gather array
-    arr_gathered = MPI.Allgatherv(arr, counts, comm)
+    arr_gathered = MPI.Allgatherv!(arr, MPI.VBuffer(similar(arr, sum(counts)), counts), comm)
     reshape(arr_gathered, (size(arr)[1:end-1]..., :))
 end
 mpi_allgather(x, comm::Nothing) = x
@@ -160,7 +161,9 @@ function mpi_scatter(arr::Union{AbstractArray,Nothing}, comm::MPI.Comm)
         arr = zeros(T, dims[1:end-1]..., 0)
     end
 
-    arr_scattered = MPI.Scatterv(arr, counts_cint, MPI_ROOT, comm)
+    sendbuf = mpi_isroot(comm) ? MPI.VBuffer(arr, counts_cint) : nothing
+    recvbuf = similar(arr, counts_cint[MPI.Comm_rank(comm) + 1])
+    arr_scattered = MPI.Scatterv!(sendbuf, recvbuf, MPI_ROOT, comm)
     reshape(arr_scattered, (dims[1:end-1]..., :))
 end
 mpi_scatter(x, comm::Nothing) = x
