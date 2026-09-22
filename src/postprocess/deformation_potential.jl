@@ -1,17 +1,9 @@
-import PyPlot
-
-export plot_deformation_potential
-
-function plot_electron_phonon_deformation_potential(model, xk=Vec3(0., 0., 0.);
-    kline_density=40, band_rng=1:model.nw, include_polar=true, close_fig=true)
-    Base.depwarn("Renamed. Use plot_deformation_potential", :plot_electron_phonon_deformation_potential)
-    plot_deformation_potential(model, xk; kline_density, band_rng, include_polar, close_fig)
-end
+export compute_deformation_potential
 
 """
-    plot_deformation_potential(model, xk=Vec3(0., 0., 0.); kline_density=40,
-        band_rng=1:model.nw, include_polar=true, close_fig=true)
-Calculate and plot the total electrin-phonon deformation potential ``D(q, ν)`` along a high-symmetry q-point path.
+    compute_deformation_potential(model, xk=Vec3(0., 0., 0.); kline_density=40,
+        band_rng=1:model.nw, include_polar=true)
+Calculate the total electrin-phonon deformation potential ``D(q, ν)`` along a high-symmetry q-point path.
 Reference: J. Sjakste et al., Phys. Rev. B 92, 054307 (2015), Eqs. (3-4)
 
 ``D(q, ν) = \\sqrt{2 M_{\\rm uc} ω_{q,ν} / ħ^2 * ∑_{m, n ∈ band_rng} |g_{m,n,ν}(k,q)|^2}``
@@ -22,8 +14,8 @@ Here, ``k`` is a single point (`xk`) is used while ``q`` are multiple points on 
 - `band_rng`: range of bands to include in the deformation potential. Default: `1:model.nw`
 - `include_polar`: if true, include the polar e-ph interaction if present. Default: `true`
 """
-function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
-        kline_density=40, band_rng=1:model.nw, include_polar=true, close_fig=true, is_2d = false)
+function compute_deformation_potential(model, xk=Vec3(0., 0., 0.);
+        kline_density=40, band_rng=1:model.nw, include_polar=true, is_2d = false)
     nw = model.nw
     nmodes = model.nmodes
     fourier_mode = "normal" # Since we use a band path, gridopt is not useful.
@@ -124,31 +116,5 @@ function plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
     unit_cell_mass = sum(model.mass[1:3:end])
     deformation_potential .*= sqrt(unit_cell_mass)
 
-    # Plot deformation potential and phonon band structure
-    fig, plotaxes = PyPlot.subplots(1, 2, figsize=(8, 3))
-    deformation_title = "Deformation potential, bands $(band_rng)"
-    if model.use_polar_dipole
-        if include_polar
-            deformation_title *= "\n(Long-range part included)"
-        else
-            deformation_title *= "\n(Long-range part excluded)"
-        end
-    else
-        deformation_title *= "\n(No long-range part in model)"
-    end
-
-    # Compute mode averaged deformation potential
-    deformation_potential_avg = sqrt.(sum(deformation_potential.^2, dims=1)[1, :] ./ nmodes)
-
-    plot_band_data(plotaxes[1], deformation_potential ./ (unit_to_aru(:eV) / unit_to_aru(:Å)),
-                    plot_xdata, ylabel="D(q) (eV/Å)", title=deformation_title)
-    plot_band_data(plotaxes[1], deformation_potential_avg ./ (unit_to_aru(:eV) / unit_to_aru(:Å)), plot_xdata, fmt = "k--")
-    plot_band_data(plotaxes[2], e_ph ./ unit_to_aru(:meV), plot_xdata,
-                    ylabel="energy (meV)", title="Phonon dispersion")
-    plotaxes[1].axhline(0, c="k", lw=1)
-    plotaxes[2].axhline(0, c="k", lw=1)
-    display(fig)
-    close_fig && close(fig)
-
-    (; fig, e_ph, deformation_potential, qpts, plot_xdata)
+    (; e_ph, deformation_potential, qpts, plot_xdata)
 end

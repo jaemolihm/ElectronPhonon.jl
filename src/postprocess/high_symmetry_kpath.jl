@@ -1,5 +1,4 @@
 import Brillouin
-import PyPlot
 import Bravais
 
 export high_symmetry_kpath
@@ -81,38 +80,4 @@ function get_band_plot_xdata(kinter)
     end
     x = vcat(xs...)
     (; x, xticks, xlabels, kpts_by_label)
-end
-
-
-function plot_band_data(axis, data, plot_xdata; add_style = true,
-                        ylabel=nothing, title=nothing, fmt=nothing, kwargs...)
-    if ndims(data) == 1
-        if fmt === nothing
-            axis.plot(plot_xdata.x, data; kwargs...)
-        else
-            axis.plot(plot_xdata.x, data, fmt; kwargs...)
-        end
-    elseif ndims(data) == 2
-        get_fmt(i) = fmt === nothing ? "C$(mod(i-1, 10))" : fmt
-        for iband in 1:size(data, 1)
-            axis.plot(plot_xdata.x, data[iband, :], get_fmt(iband); kwargs...)
-        end
-    else
-        @warn "data should be a vector or matrix to be plotted"
-    end
-
-    if add_style
-        plot_band_data_style(axis, plot_xdata; ylabel, title)
-    end
-    nothing
-end
-
-function plot_band_data_style(axis, plot_xdata; ylabel=nothing, title=nothing)
-    axis.axvline.(plot_xdata.xticks; c="gray", lw=1, ls="--")
-    axis.set_xticks(plot_xdata.xticks)
-    axis.set_xticklabels(plot_xdata.xlabels)
-    axis.set_xlim(extrema(plot_xdata.x))
-    ylabel !== nothing && axis.set_ylabel(ylabel)
-    title !== nothing && axis.set_title(title)
-    nothing
 end

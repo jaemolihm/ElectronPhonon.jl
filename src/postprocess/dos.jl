@@ -1,5 +1,4 @@
 export compute_dos
-export plot_dos
 
 # TODO: Tetrahedron
 
@@ -36,23 +35,4 @@ function compute_dos(model, nks; η = 100.0 * unit_to_aru(:meV), elist = nothing
     end
 
     (; elist, dos, pdos)
-end
-
-function plot_dos(model, nks; pdos_inds = 1:model.nw, η = 100.0 * unit_to_aru(:meV), elist = nothing, close_fig=true)
-    elist, dos, pdos = compute_dos(model, nks; η, elist)
-
-    # Plot band structure
-    fig, ax = PyPlot.subplots(1, 1)
-    ax.plot(elist./ unit_to_aru(:eV), dos .* unit_to_aru(:eV); c = "k", label = "DOS")
-
-    for i in pdos_inds
-        ax.plot(elist ./ unit_to_aru(:eV), pdos[:, i] .* unit_to_aru(:eV); label = "PDOS $i")
-    end
-    
-    ax.legend()
-    ax.set_xlabel("Energy (eV)")
-    ax.set_ylabel("DOS (1 / eV)")
-    display(fig)
-    close_fig && close(fig)
-    (; fig, ax, elist, dos, pdos)
 end

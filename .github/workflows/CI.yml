@@ -13,14 +13,18 @@ concurrency:
 permissions:
   actions: write
   contents: read
+env:
+  # Build PyCall against Conda.jl's miniconda, so PyPlot can pull in matplotlib.
+  # The runner's system Python has none, and PyPlot's __init__ fails without it.
+  # Set for both jobs: PyCall's build result is per-depot, so a depot cache saved by the
+  # core job must carry the same build as the plotting job needs.
+  PYTHON: ""
 jobs:
-  test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
+  core:
+    name: core - Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     env:
-      # Build PyCall against Conda.jl's miniconda, so PyPlot can pull in matplotlib.
-      # The runner's system Python has none, and PyPlot's __init__ fails without it.
-      PYTHON: ""
+      JULIA_NUM_THREADS: "4,0"
     strategy:
       fail-fast: false
       matrix:
@@ -46,8 +50,52 @@ jobs:
           restore-keys: ${{ runner.os }}-conda-
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+        with:
+          test_args: core
       - uses: julia-actions/julia-processcoverage@v1
       - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
+          flags: core
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  plotting:
+    name: plotting - Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    env:
+      # Single-threaded: PyCall's finalizers are not safe to run on a Julia worker thread.
+      JULIA_NUM_THREADS: "1,0"
+      MPLBACKEND: Agg
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1'
+        os:
+          - ubuntu-latest
+        arch:
+          - x64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+          arch: ${{ matrix.arch }}
+      - uses: julia-actions/cache@v3
+      # Conda.jl installs miniconda + matplotlib for PyPlot into ~/.julia/conda,
+      # outside the depot directories julia-actions/cache covers.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.julia/conda
+          key: ${{ runner.os }}-conda-${{ hashFiles('**/Project.toml') }}
+          restore-keys: ${{ runner.os }}-conda-
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          test_args: plotting
+      - uses: julia-actions/julia-processcoverage@v1
+      - uses: codecov/codecov-action@v7
+        with:
+          files: lcov.info
+          flags: plotting
           token: ${{ secrets.CODECOV_TOKEN }}
