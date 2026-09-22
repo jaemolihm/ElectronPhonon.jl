@@ -13,6 +13,8 @@ concurrency:
 permissions:
   actions: write
   contents: read
+  # Codecov authenticates via OIDC instead of an upload token.
+  id-token: write
 env:
   # Build PyCall against Conda.jl's miniconda, so PyPlot can pull in matplotlib.
   # The runner's system Python has none, and PyPlot's __init__ fails without it.
@@ -43,7 +45,7 @@ jobs:
       - uses: julia-actions/cache@v3
       # Conda.jl installs miniconda + matplotlib for PyPlot into ~/.julia/conda,
       # outside the depot directories julia-actions/cache covers.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.julia/conda
           key: ${{ runner.os }}-conda-${{ hashFiles('**/Project.toml') }}
@@ -57,7 +59,7 @@ jobs:
         with:
           files: lcov.info
           flags: core
-          token: ${{ secrets.CODECOV_TOKEN }}
+          use_oidc: true
 
   plotting:
     name: plotting - Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
@@ -84,7 +86,7 @@ jobs:
       - uses: julia-actions/cache@v3
       # Conda.jl installs miniconda + matplotlib for PyPlot into ~/.julia/conda,
       # outside the depot directories julia-actions/cache covers.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.julia/conda
           key: ${{ runner.os }}-conda-${{ hashFiles('**/Project.toml') }}
@@ -98,4 +100,4 @@ jobs:
         with:
           files: lcov.info
           flags: plotting
-          token: ${{ secrets.CODECOV_TOKEN }}
+          use_oidc: true
