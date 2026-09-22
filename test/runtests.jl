@@ -1,12 +1,13 @@
 using ElectronPhonon
 using Test
 
-# Test group, selected by `Pkg.test(; test_args=["core"])`. "plotting" is the only group that loads
-# PyPlot; "core" is everything else and is safe to run multithreaded. "all" runs both in one
-# process, which is not safe with more than one thread: a PyCall finalizer running on a Julia
-# worker thread crashes the process (#49).
-const group = isempty(ARGS) ? "all" : only(ARGS)
+# Test group, selected by `Pkg.test(; test_args=["plotting"])`. "plotting" is the only group that
+# loads PyPlot; "core" is everything else and is the default because it is safe to run
+# multithreaded. "all" runs both in one process, which is not safe with more than one thread: a
+# PyCall finalizer running on a Julia worker thread crashes the process (#49).
+const group = isempty(ARGS) ? "core" : only(ARGS)
 group in ("all", "core", "plotting") || error("Unknown test group $group; expected one of \"all\", \"core\", \"plotting\"")
+@info "Test group: $group"
 
 include("common_models_from_artifacts.jl")
 
