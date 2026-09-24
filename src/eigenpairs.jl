@@ -142,7 +142,10 @@ this cache as `ph_eigenpairs` reproduces the run without it.
 
 On a GPU backend the whole set is one batched eigensolve, the one `compute_phonon_states` runs
 there, and the cache stays on the device; `fourier_mode` is then unused and polar phonons are not
-supported, as in that path.
+supported, as in that path. The electron builder's two device caveats hold here too: the batched
+eigensolve picks its own basis inside a degenerate mode multiplet, so a device-built cache differs
+from a CPU-built one there, and the whole set is one batch, so the device dynamical-matrix stack
+(`nmodes^2 * nq`) is unbounded.
 """
 function phonon_eigenpairs(model::Model{FT}, qpts; fourier_mode = "gridopt",
                            backend = CPUBackend()) where {FT}
