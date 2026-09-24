@@ -401,6 +401,12 @@ end
             @test eig_gpu.e_full isa CuMatrix{Float64}
             @test eig_gpu.u_full isa CuArray{ComplexF64, 3}
             @test eig_gpu.kpts === eig_cpu.kpts  # only e_full/u_full move; kpts stays on the host
+            # Placing a host cache on the device moves the arrays as they are.
+            placed = to_device(gpu_backend(), eig_cpu)
+            @test placed.e_full isa CuMatrix{Float64} && placed.u_full isa CuArray{ComplexF64, 3}
+            @test Array(placed.e_full) == eig_cpu.e_full && Array(placed.u_full) == eig_cpu.u_full
+            @test placed.kpts === eig_cpu.kpts && placed.nbasis == eig_cpu.nbasis
+            @test to_device(CPUBackend(), eig_cpu) === eig_cpu
             e_gpu, u_gpu = Array(eig_gpu.e_full), Array(eig_gpu.u_full)
             # Eigenvalues only: the batched device eigensolve does not apply the degenerate-
             # multiplet gauge fix of the per-k CPU solve, so eigenvectors may legitimately differ

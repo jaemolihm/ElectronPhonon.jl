@@ -63,6 +63,15 @@ struct Eigenpairs{T, MT <: AbstractMatrix{T}, AT <: AbstractArray{Complex{T}, 3}
     end
 end
 
+# The CPU case is the generic `to_device(::CPUBackend, x) = x`.
+"""
+    to_device(backend::GPUBackend, eig::Eigenpairs) -> Eigenpairs
+
+`eig` with `e_full`/`u_full` placed on `backend`; `kpts` stays on the host.
+"""
+to_device(backend::GPUBackend, eig::Eigenpairs) =
+    Eigenpairs(eig.nbasis, eig.kpts, to_device(backend, eig.e_full), to_device(backend, eig.u_full))
+
 function Base.show(io::IO, eig::Eigenpairs{T}) where {T}
     print(io, "Eigenpairs{$T}(nbasis = $(eig.nbasis), nk = $(eig.kpts.n), " *
               "e_full::$(typeof(eig.e_full)))")
