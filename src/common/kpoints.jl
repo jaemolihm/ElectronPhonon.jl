@@ -554,7 +554,8 @@ function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; atol = sqrt(eps(T)),
     end
 
     shift = mod.(first(kpts.vectors) .* ngrid, 1)
-    shift = ifelse.(isapprox.(shift, one(T); atol), zero(T), shift) ./ ngrid
+    shift_is_canonical_zero = isapprox.(shift, zero(T); atol) .| isapprox.(shift, one(T); atol)
+    shift = ifelse.(shift_is_canonical_zero, zero(T), shift) ./ ngrid
 
     # Check if all k points are on the shifted grid
     for xk in kpts.vectors

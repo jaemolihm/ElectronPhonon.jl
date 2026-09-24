@@ -103,6 +103,9 @@ end
     roundoff_kpts = Kpoints([Vec3(29 / 400, 0.0, 0.0)]; ngrid = (400, 1, 1))
     roundoff_grid = GridKpoints(roundoff_kpts)
     @test roundoff_grid.shift == zero(roundoff_grid.shift)
+    roundoff_kpts_hi = Kpoints([Vec3(nextfloat(29 / 400), 0.0, 0.0)]; ngrid = (400, 1, 1))
+    roundoff_grid_hi = GridKpoints(roundoff_kpts_hi)
+    @test roundoff_grid_hi.shift == zero(roundoff_grid_hi.shift)
 
     # test mixed order
     inds = randperm(kpts.n)
