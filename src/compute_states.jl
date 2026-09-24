@@ -345,17 +345,9 @@ function _compute_phonon_states_device!(states, model::Model{FT}, kpts, quantiti
     "velocity" ∈ quantities && error("full velocity for phonons not implemented")
 
     # ω and the mass-scaled eigenmodes, either solved for here or taken from the cache, which
-    # already holds both in that form (it is built from an earlier run's `PhononState`s).
+    # already holds both in that form.
     E_dev, U_dev = if eigenpairs === nothing
-        itp_dyn = get_interpolator(to_device(backend, model.ph_dyn);
-                                   fourier_mode="batched", backend, nk_hint=kpts.n)
-        D = _fourier_hk_batched(itp_dyn, kpts.vectors)  # (nmodes,nmodes,nq)
-        msqrt_d = similar(D, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
-        D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
-        D ./= reshape(msqrt_d, 1, nmodes, 1)
-        Esq_dev, U_solved = eigen_batched(D)         # ω² (nmodes,nq), U (nmodes,nmodes,nq)
-        U_solved ./= reshape(msqrt_d, nmodes, 1, 1)  # mass factor: u[i,:] /= sqrt(mass[i])
-        (sign.(Esq_dev) .* sqrt.(abs.(Esq_dev)), U_solved)  # ω = sign(ω²)·√|ω²|
+        _ph_eigen_batched(model, kpts.vectors, backend)
     else
         # The lookup runs on the host: a miss inside the view would surface as a bare
         # `KernelException` naming only the device.
@@ -376,6 +368,21 @@ function _compute_phonon_states_device!(states, model::Model{FT}, kpts, quantiti
 
     _scatter_phonon_states!(states, kpts.vectors, E, U, vel,
                             "eph_dipole_coeff" ∈ quantities, eph_phonon_basis, polar)
+end
+
+# ω = sign(ω²)·√|ω²| (nmodes, nq) and the mass-scaled eigenmodes (nmodes, nmodes, nq) at `xqs`, in
+# one batched eigensolve on `backend`.
+function _ph_eigen_batched(model::Model{FT}, xqs, backend) where FT
+    (; nmodes, mass) = model
+    itp_dyn = get_interpolator(to_device(backend, model.ph_dyn);
+                               fourier_mode="batched", backend, nk_hint=length(xqs))
+    D = _fourier_hk_batched(itp_dyn, xqs)  # (nmodes,nmodes,nq)
+    msqrt_d = similar(D, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
+    D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
+    D ./= reshape(msqrt_d, 1, nmodes, 1)
+    Esq_dev, U_solved = eigen_batched(D)         # ω² (nmodes,nq), U (nmodes,nmodes,nq)
+    U_solved ./= reshape(msqrt_d, nmodes, 1, 1)  # mass factor: u[i,:] /= sqrt(mass[i])
+    (sign.(Esq_dev) .* sqrt.(abs.(Esq_dev)), U_solved)
 end
 
 # Function barrier: `U`/`vel` are `nothing` or an `Array` depending on `quantities`, so they must
