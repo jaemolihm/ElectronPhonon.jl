@@ -1,20 +1,20 @@
 # Full-band eigenpairs over a k-point set, computed once and shared by several e-ph runs to ensure
 # eigenvector gauge consistency. The container is species-agnostic (`nbasis` is `nw` for electrons
-# and `nmodes` for phonons); the builder below is the electron one, since a phonon cache is
-# assembled by its caller from the states of an earlier run rather than solved for.
+# and `nmodes` for phonons), with one builder per species.
 
 using ChunkSplitters
 using Base.Threads: nthreads, @threads
 
 export Eigenpairs
 export electron_eigenpairs
+export phonon_eigenpairs
 
 """
     Eigenpairs{T, MT, AT}
 
 Full-band eigenvalues `e_full` (`(nbasis, kpts.n)`) and eigenvectors `u_full`
 (`(nbasis, nbasis, kpts.n)`) on the k-point set `kpts`. Build one with
-[`electron_eigenpairs`](@ref).
+[`electron_eigenpairs`](@ref) or [`phonon_eigenpairs`](@ref).
 
 `nbasis` is the dimension of the eigenproblem, so nothing here is electron-specific: it is `nw`
 for electrons and `nmodes` for a phonon cache, whose `(e, u)` per q point have exactly this shape.
@@ -62,6 +62,15 @@ struct Eigenpairs{T, MT <: AbstractMatrix{T}, AT <: AbstractArray{Complex{T}, 3}
         new{T, MT, AT}(nbasis, kpts, e_full, u_full)
     end
 end
+
+# The CPU case is the generic `to_device(::CPUBackend, x) = x`.
+"""
+    to_device(backend::GPUBackend, eig::Eigenpairs) -> Eigenpairs
+
+`eig` with `e_full`/`u_full` placed on `backend`; `kpts` stays on the host.
+"""
+to_device(backend::GPUBackend, eig::Eigenpairs) =
+    Eigenpairs(eig.nbasis, eig.kpts, to_device(backend, eig.e_full), to_device(backend, eig.u_full))
 
 function Base.show(io::IO, eig::Eigenpairs{T}) where {T}
     print(io, "Eigenpairs{$T}(nbasis = $(eig.nbasis), nk = $(eig.kpts.n), " *
@@ -120,6 +129,43 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
                                      fourier_mode="batched", backend, nk_hint=gkpts.n)
         E_dev, U_dev = get_el_eigen_batched(itp_elham, gkpts.vectors)
         Eigenpairs(nw, gkpts, E_dev, U_dev)
+    end
+end
+
+"""
+    phonon_eigenpairs(model, qpts; fourier_mode = "gridopt", backend = CPUBackend())
+
+The phonon twin of [`electron_eigenpairs`](@ref): the frequencies ω (`e_full`) and mass-scaled
+eigenmodes (`u_full`) at every q point of `qpts`, `nbasis = nmodes`. They are what
+[`compute_phonon_states`](@ref) solves for at the same q, with the same solver, so a run handed
+this cache as `ph_eigenpairs` reproduces the run without it.
+
+On a GPU backend the whole set is one batched eigensolve, the one `compute_phonon_states` runs
+there, and the cache stays on the device; `fourier_mode` is then unused and polar phonons are not
+supported, as in that path. The electron builder's two device caveats hold here too: the batched
+eigensolve picks its own basis inside a degenerate mode multiplet, so a device-built cache differs
+from a CPU-built one there, and the whole set is one batch, so the device dynamical-matrix stack
+(`nmodes^2 * nq`) is unbounded.
+"""
+function phonon_eigenpairs(model::Model{FT}, qpts; fourier_mode = "gridopt",
+                           backend = CPUBackend()) where {FT}
+    (; nmodes, mass) = model
+    gqpts = GridKpoints(qpts)
+    if backend isa CPUBackend
+        e_full = zeros(FT, nmodes, gqpts.n)
+        u_full = zeros(Complex{FT}, nmodes, nmodes, gqpts.n)
+        @threads for iqs in chunks(gqpts.vectors; n = nthreads())
+            dyn = get_interpolator(model.ph_dyn; fourier_mode)
+            for iq in iqs
+                @views get_ph_eigen!(e_full[:, iq], u_full[:, :, iq], dyn, mass,
+                                     model.polar_phonon, gqpts.vectors[iq])
+            end
+        end
+        Eigenpairs(nmodes, gqpts, e_full, u_full)
+    else
+        model.polar_phonon.use && error("phonon_eigenpairs on a non-CPU backend does not " *
+                                        "support polar phonons")
+        Eigenpairs(nmodes, gqpts, _ph_eigen_batched(model, gqpts.vectors, backend)...)
     end
 end
 
@@ -205,9 +251,9 @@ function _eigenvalues_on_host(eigenpairs::Eigenpairs, itp_elham, xks)
 end
 
 # The full eigenpair of one q point, into a `PhononState`. `e` is the frequency ω and `u` the
-# mass-scaled eigenmode, i.e. what `get_ph_eigen!` leaves in a `PhononState` -- a phonon cache is
-# built from a previous run's states, so neither the sign(ω²)√|ω²| nor the 1/√mass step is redone
-# here. Argument order follows the electron pair above, `(state, cache, what it takes to solve,
+# mass-scaled eigenmode, i.e. what `get_ph_eigen!` leaves in a `PhononState` and what
+# `phonon_eigenpairs` stores, so neither the sign(ω²)√|ω²| nor the 1/√mass step is redone here.
+# Argument order follows the electron pair above, `(state, cache, what it takes to solve,
 # momentum)`; the solver arguments differ because `D(q)` needs the masses and the dipole term
 # where `H(k)` needs only its interpolator.
 _set_eigen_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =

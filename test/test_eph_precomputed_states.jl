@@ -1,6 +1,6 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: electron_eigenpairs, gpu_backend, CPUBackend, AbstractBackend, xk_to_ik,
+using ElectronPhonon: electron_eigenpairs, phonon_eigenpairs, gpu_backend, CPUBackend, AbstractBackend, xk_to_ik,
     xk_to_ik_unsafe, AbstractCalculator, OuterKLoop, OuterQLoop, EPData, EPDataQBatched,
     OuterIteration, OuterIterationBatch
 
@@ -190,6 +190,9 @@ end
             @test qpts.n > 1                      # so the rotation is a real permutation
             @test all(_phonon_state_equal.(cached.ph_save, plain.ph_save))
             @test !any(_phonon_state_equal.(bad.ph_save, plain.ph_save))
+            # The builder over the whole grid, a superset of the run's q points in another order.
+            built = _run(sub_a; backend, ph_eigenpairs = phonon_eigenpairs(model, kgrid; backend))
+            @test all(_phonon_state_equal.(built.ph_save, plain.ph_save))
 
             # A cache over the wrong q-point set is an error, not a silent recompute. The driver
             # derives its q points from the two k grids, so a caller cannot check the coverage

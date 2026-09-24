@@ -33,10 +33,10 @@ eigenvector at the point itself, and the two are a gauge apart. Nothing checks t
 
 * `ph_eigenpairs :: Union{Nothing, Eigenpairs}` — the same for the phonons: a cache with
   `nbasis = nmodes` over the run's own q points, replacing the dynamical-matrix diagonalization in
-  [`compute_phonon_states`](@ref). Unlike the electron caches there is no builder for it; a caller
-  assembles it from an earlier run's returned `(qpts, ph_save)`, which is what pins the phonon
-  eigenmode basis of two runs to each other inside a degenerate multiplet. The q points a run
-  visits are `combine_kpoint_grids(kpts, kqpts)`, not an argument, so a cache must cover that set.
+  [`compute_phonon_states`](@ref). Build it with [`phonon_eigenpairs`](@ref), or assemble it from
+  an earlier run's returned `(qpts, ph_save)`; either pins the phonon eigenmode basis of two runs
+  to each other inside a degenerate multiplet. The q points a run visits are
+  `combine_kpoint_grids(kpts, kqpts)`, not an argument, so a cache must cover that set.
 """
 function run_eph_over_k_and_kq(
         model       :: Model{FT},

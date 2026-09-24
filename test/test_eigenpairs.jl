@@ -1,6 +1,7 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: Vec3, electron_degen_cutoff, electron_eigenpairs, gpu_backend, to_device,
+using ElectronPhonon: Vec3, electron_degen_cutoff, electron_eigenpairs, phonon_eigenpairs,
+    gpu_backend, to_device, on_backend,
     AbstractBackend, CPUBackend, inside_window, state_xks
 using LinearAlgebra
 
@@ -364,6 +365,27 @@ end
         end
     end
 
+    @testset "built by phonon_eigenpairs" begin
+        # The builder runs the solve `compute_phonon_states` runs at the same q (per-q LAPACK on the
+        # host, the batched eigensolve on the device), so the two agree bit for bit, and a cache
+        # built here is inert in a run. cubicBN covers the polar (dipole) term on the host.
+        model_bn = _load_model_from_artifacts("cubicBN"; load_epmat = false)
+        arms = Tuple{Any, AbstractBackend, String}[(model, CPUBackend(), "normal"),
+            (model, CPUBackend(), "gridopt"), (model_bn, CPUBackend(), "gridopt")]
+        EIGENPAIRS_GPU_AVAILABLE && push!(arms, (model, gpu_backend(), "gridopt"))
+        for (m, backend, fourier_mode) in arms
+            cache = phonon_eigenpairs(m, kpts; fourier_mode, backend)
+            ref = compute_phonon_states(m, kpts, ["eigenvalue", "eigenvector"]; fourier_mode,
+                                        backend)
+            @test cache.nbasis == m.nmodes
+            @test on_backend(backend, cache.e_full) && on_backend(backend, cache.u_full)
+            e, u = Array(cache.e_full), Array(cache.u_full)
+            @test all(iq -> e[:, iq] == ref[iq].e && u[:, :, iq] == ref[iq].u, 1:kpts.n)
+            # negative control: a one-q offset must fail the same comparison
+            @test !any(iq -> u[:, :, iq] == ref[mod1(iq + 1, kpts.n)].u, 1:kpts.n)
+        end
+    end
+
     @testset "GPU" begin
         if EIGENPAIRS_GPU_AVAILABLE
             # The device transfer must preserve the eltype: `CuArray(arr)` does, `cu(arr)` would
@@ -379,6 +401,12 @@ end
             @test eig_gpu.e_full isa CuMatrix{Float64}
             @test eig_gpu.u_full isa CuArray{ComplexF64, 3}
             @test eig_gpu.kpts === eig_cpu.kpts  # only e_full/u_full move; kpts stays on the host
+            # Placing a host cache on the device moves the arrays as they are.
+            placed = to_device(gpu_backend(), eig_cpu)
+            @test placed.e_full isa CuMatrix{Float64} && placed.u_full isa CuArray{ComplexF64, 3}
+            @test Array(placed.e_full) == eig_cpu.e_full && Array(placed.u_full) == eig_cpu.u_full
+            @test placed.kpts === eig_cpu.kpts && placed.nbasis == eig_cpu.nbasis
+            @test to_device(CPUBackend(), eig_cpu) === eig_cpu
             e_gpu, u_gpu = Array(eig_gpu.e_full), Array(eig_gpu.u_full)
             # Eigenvalues only: the batched device eigensolve does not apply the degenerate-
             # multiplet gauge fix of the per-k CPU solve, so eigenvectors may legitimately differ
