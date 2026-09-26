@@ -3,8 +3,6 @@
 
 # TODO: If xq = 0, return.
 
-using Optim
-
 export Polar
 export dynmat_dipole!
 
@@ -143,6 +141,32 @@ end
 
 
 """
+    box_quadratic_minimum(A, lower, upper)
+Exact minimum of `xᵀ A x` over the box `lower .≤ x .≤ upper`, for symmetric positive definite `A`.
+
+Enumerates the 3^N active sets (each coordinate free, at its lower bound, or at its upper bound).
+For each, the bound coordinates are fixed and the free ones solve `A_FF x_F = -A_FB x_B`; the
+candidate is kept if it lies in the box. The unique minimizer is the stationary point on its own
+face (KKT), so it is one of the kept candidates, and every kept candidate is feasible.
+"""
+function box_quadratic_minimum(A::SMatrix{N, N, T}, lower::SVector{N, T}, upper::SVector{N, T}) where {N, T}
+    Id = SMatrix{N, N, T}(I)
+    minval = typemax(T)
+    # active[i] = 0: free, 1: at lower bound, 2: at upper bound
+    for active in CartesianIndices(ntuple(_ -> 0:2, N))
+        s = SVector(active.I)
+        free = s .== 0
+        # Rows of free coordinates are those of A x = 0, rows of bound coordinates fix x_i.
+        M = ifelse.(free, A, Id)
+        b = ifelse.(free, zero(T), ifelse.(s .== 1, lower, upper))
+        x = M \ b
+        all(@. !free || (lower <= x <= upper)) || continue
+        minval = min(minval, x' * A * x)
+    end
+    minval
+end
+
+"""
 Compute list of G vectors such that (q+G)ϵ(q+G) / (2π / alat)^2 / (4 * η) < cutoff for some q in [-0.5, 0.5]^3
 Do this by computing minval = min_{q ∈ [-0.5, 0.5]^3} (q+G) * ϵ * (q+G)
 Select the G vector if minval / (2π / alat)^2 / (4 * η) < cutoff.
@@ -150,32 +174,20 @@ Select the G vector if minval / (2π / alat)^2 / (4 * η) < cutoff.
 function get_Glist(method :: Polar3D, cell :: Structure, nxs, ϵ)
     (; alat, recip_lattice) = cell
     (; cutoff, η) = method
-    ϵ_crystal = recip_lattice' * ϵ * recip_lattice
+    ϵ_crystal = Mat3{Float64}(recip_lattice' * ϵ * recip_lattice)
 
     metric = (2π / alat)^2  # Conversion factor for G^2, unit bohr⁻²
     # metric = 6.0796001256436796 * (2π / alat)^2
 
-    f(qG) = qG' * ϵ_crystal * qG
-    function g!(G, qG)
-        G .= 2 .* (ϵ_crystal * qG)
-    end
-
     xq_upper = Vec3(1/2, 1/2, 1/2)
     xq_lower = -xq_upper
-    xq_initial = Vec3(0., 0, 0)
 
     Glist = Vector{Vec3{Int}}()
 
     for ci in CartesianIndices((-nxs[1]:nxs[1], -nxs[2]:nxs[2], -nxs[3]:nxs[3]))
         G_crystal = Vec3{Int}(ci.I)
 
-        lower = Vector(xq_lower + G_crystal)
-        upper = Vector(xq_upper + G_crystal)
-        initial_x = Vector(xq_initial + G_crystal)
-        inner_optimizer = Optim.LBFGS()
-        results = optimize(f, g!, lower, upper, initial_x, Fminbox(inner_optimizer))
-
-        minval = Optim.minimum(results)
+        minval = box_quadratic_minimum(ϵ_crystal, xq_lower + G_crystal, xq_upper + G_crystal)
         GϵG = minval / (4 * metric * η)
 
         if GϵG < cutoff
@@ -192,27 +204,19 @@ function get_Glist(method :: Polar2D, cell :: Structure, nxs, ϵ)
     end
     (; recip_lattice) = cell
 
-    f(qG) = norm(recip_lattice[1:2, 1:2] * qG)^2
-    function g!(G, qG)
-        G .= 2 .* recip_lattice[1:2, 1:2]' * (recip_lattice[1:2, 1:2] * qG)
-    end
+    B = SMatrix{2, 2, Float64}(recip_lattice[1:2, 1:2])
+    A = B' * B
 
-    xq_upper = Vec3(1/2, 1/2, 0)
+    xq_upper = SVector(1/2, 1/2)
     xq_lower = -xq_upper
-    xq_initial = Vec3(0., 0, 0)
 
     Glist = Vector{Vec3{Int}}()
 
     for ci in CartesianIndices((-nxs[1]:nxs[1], -nxs[2]:nxs[2], -nxs[3]:nxs[3]))
         G_crystal = Vec3{Int}(ci.I)
+        G_2d = SVector(G_crystal[1], G_crystal[2])
 
-        lower = Vector((xq_lower + G_crystal)[1:2])
-        upper = Vector((xq_upper + G_crystal)[1:2])
-        initial_x = Vector((xq_initial + G_crystal)[1:2])
-        inner_optimizer = Optim.LBFGS()
-        results = optimize(f, g!, lower, upper, initial_x, Fminbox(inner_optimizer))
-
-        minval = Optim.minimum(results)
+        minval = box_quadratic_minimum(A, xq_lower + G_2d, xq_upper + G_2d)
 
         if minval < (2 * method.cutoff / method.L)^2
             push!(Glist, G_crystal)
