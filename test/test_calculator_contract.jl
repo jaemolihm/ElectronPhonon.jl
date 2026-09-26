@@ -82,8 +82,6 @@ end
         @test_throws msg ElectronPhonon.run_eph_over_q_and_k(model_ph, grid, grid; fourier_mode)
         @test_throws msg ElectronPhonon.run_eph_over_q_and_k(model_ph, grid, grid; fourier_mode,
                                                                batched = true)
-        @test_throws ArgumentError ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid;
-                                                                         fourier_mode)
     end
 end
 

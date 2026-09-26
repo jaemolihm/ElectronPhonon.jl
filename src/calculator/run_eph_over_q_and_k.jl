@@ -250,12 +250,10 @@ function _setup_eph_over_q_and_k(
                                        maximum(el.nband for el in el_kq_save)) : nw
 
 
-    # The batched loop queries only `eph_buffers.epmat`, one q at a time, so it keeps the default
-    # Fourier mode rather than the caller's (which on a GPU backend may be a batched one).
+    # The batched loop queries `epmat` one q at a time, so it cannot take a batched Fourier mode.
     if eph_buffers === nothing
-        eph_buffers = batched ?
-            EphOuterQLoopBuffers(model; nchunks_threads, precompute_el_kq, nband_max) :
-            EphOuterQLoopBuffers(model; nchunks_threads, precompute_el_kq, fourier_mode, nband_max)
+        eph_buffers = EphOuterQLoopBuffers(model; nchunks_threads, precompute_el_kq,
+            fourier_mode = batched ? "gridopt" : fourier_mode, nband_max)
     end
 
     if verbosity > 0 && mpi_isroot()
