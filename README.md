@@ -20,3 +20,17 @@ Pkg.add(url="https://github.com/jaemolihm/ElectronPhonon.jl.git")
 - [GPU acceleration](README_GPU.md) — the CUDA package-extension path and the device-native
   calculator interface.
 
+
+## Development
+
+The package precompiles the EPW loader `load_model_from_epw_new`, which makes its first call fast
+but lengthens every precompilation of the package. While editing the source, switch that workload
+off in your development environment by adding to its `LocalPreferences.toml` (next to its
+`Project.toml`):
+```toml
+[ElectronPhonon]
+precompile_workload = false
+```
+or, with `Preferences` in that environment,
+`using Preferences, ElectronPhonon; set_preferences!(ElectronPhonon, "precompile_workload" => false; force = true)`.
+Users and CI keep the workload on.
