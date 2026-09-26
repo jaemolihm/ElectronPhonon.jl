@@ -5,6 +5,15 @@
 # lives next to `EPState` in src/EPState.jl. The setup_calculator! fan-out is `_setup_calculators!`,
 # shared by all three drivers.)
 
+# The per-point loops query their interpolators one k at a time, which the batched Fourier modes
+# (a k-list registered in advance) do not serve. A non-CPU backend ignores `fourier_mode` in the loop.
+function _check_eph_fourier_mode(fourier_mode, backend)
+    (backend isa CPUBackend && fourier_mode ∉ ("normal", "gridopt")) && throw(ArgumentError(
+        "fourier_mode = \"$fourier_mode\" is not supported by the e-ph drivers on a CPU backend: " *
+        "their loops query interpolators one k at a time. Use \"gridopt\" (the default) or \"normal\"."))
+    nothing
+end
+
 # k-side setup shared by all three drivers: get the outer-k selection, compute the electron states.
 #
 # - selection: a prebuilt `FilteredBandStates` passes through verbatim; a grid is filtered to

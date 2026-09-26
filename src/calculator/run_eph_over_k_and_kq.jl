@@ -12,6 +12,8 @@ coupling. Two keywords select where the arrays live and which payload the calcul
   a production CPU run passes neither. An explicit `batched = false` on a GPU backend is an
   `ArgumentError`; `batched = true` on a `CPUBackend` is a validation configuration (the batched loop
   on host arrays — serial and unoptimized, see the notice it prints at `verbosity > 0`).
+* `fourier_mode = "gridopt"` — `"gridopt"` or `"normal"` on a `CPUBackend` (a batched mode is an
+  `ArgumentError`); the batched loop ignores it.
 
 The batched path has a narrower scope than the per-point one (no polar/long-range, no screening,
 `energy_conservation = (:None, 0.0)`, commensurate grids, no `covariant_derivative_of_g`, no
@@ -74,6 +76,7 @@ function run_eph_over_k_and_kq(
     if model.epmat_outer_momentum != "el"
         throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_over_k_and_kq"))
     end
+    _check_eph_fourier_mode(fourier_mode, backend)
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")

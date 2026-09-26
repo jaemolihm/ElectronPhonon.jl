@@ -19,6 +19,8 @@ they do in [`run_eph_over_k_and_kq`](@ref):
   [`EPData`](@ref) (`false`) or the batched [`EPDataKBatched`](@ref) (`true`). `nothing` derives it
   from `backend`. An explicit `batched = false` on a GPU backend is an `ArgumentError`;
   `batched = true` on a `CPUBackend` is a validation configuration.
+* `fourier_mode = "gridopt"` — `"gridopt"` or `"normal"` on a `CPUBackend` (a batched mode is an
+  `ArgumentError`); the batched loop ignores it.
 
 * `el_kq_from_unfolding`: If true, compute the electron states at k+q by computing the
     states at k+q in the irreducible BZ and unfolding them to the full BZ. This is useful to
@@ -63,6 +65,7 @@ function run_eph_over_q_and_k(
     if model.epmat_outer_momentum != "ph"
         throw(ArgumentError("model.epmat_outer_momentum must be ph to use run_eph_over_q_and_k"))
     end
+    _check_eph_fourier_mode(fourier_mode, backend)
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")
@@ -247,9 +250,12 @@ function _setup_eph_over_q_and_k(
                                        maximum(el.nband for el in el_kq_save)) : nw
 
 
+    # The batched loop queries only `eph_buffers.epmat`, one q at a time, so it keeps the default
+    # Fourier mode rather than the caller's (which on a GPU backend may be a batched one).
     if eph_buffers === nothing
-        eph_buffers = EphOuterQLoopBuffers(model;
-            nchunks_threads, precompute_el_kq, fourier_mode, nband_max)
+        eph_buffers = batched ?
+            EphOuterQLoopBuffers(model; nchunks_threads, precompute_el_kq, nband_max) :
+            EphOuterQLoopBuffers(model; nchunks_threads, precompute_el_kq, fourier_mode, nband_max)
     end
 
     if verbosity > 0 && mpi_isroot()

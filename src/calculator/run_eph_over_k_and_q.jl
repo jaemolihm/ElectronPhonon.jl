@@ -9,6 +9,8 @@ using OffsetArrays: no_offset_view
 
 
 """
+* `fourier_mode = "gridopt"`: `"gridopt"` or `"normal"` (a batched mode is an `ArgumentError`).
+
 * `el_kq_from_unfolding`: If true, compute the electron states at k+q by computing the
     states at k+q in the irreducible BZ and unfolding them to the full BZ. This is useful to
     ensure gauge consistency between symmetry-equivalent k points.
@@ -54,6 +56,7 @@ function run_eph_over_k_and_q(
     backend isa CPUBackend || throw(ArgumentError(
         "run_eph_over_k_and_q has no batched path and supports backend = CPUBackend() only. " *
         "Use run_eph_over_k_and_kq (outer-k) or run_eph_over_q_and_k (outer-q) for a GPU run."))
+    _check_eph_fourier_mode(fourier_mode, backend)
     batched === true && throw(ArgumentError(
         "run_eph_over_k_and_q has no batched loop; it only hands calculators the per-(k,q) host " *
         "`EPData`. Pass batched = nothing (or false), or use run_eph_over_k_and_kq / " *
