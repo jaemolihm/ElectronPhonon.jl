@@ -143,9 +143,11 @@ function check_fourier_phase(backend)
     xkmat = [xks[ik][d] for d in 1:3, ik in 1:nk]
     phase = arr_dev(zeros(ComplexF64, nr, nk))
     ElectronPhonon.build_fourier_phase!(phase, arr_dev(irvec_mat), arr_dev(xkmat))
-    # |phase| == 1, so an absolute bound is a relative bound. The GPU compiler may contract the
-    # argument's multiply-adds into FMAs, which rounds 2R·x (|2R·x| ≤ 18) differently from the host
-    # by up to one ulp, i.e. π·eps(18) ≈ 1.1e-14 in the phase.
+    # |phase| == 1, so an absolute bound is a relative bound. The device compiler may contract
+    # `R1*x1 + R2*x2 + R3*x3` into FMAs, which rounds differently from the host. For |R_d| ≤ 3 and
+    # x_d ∈ [0, 1) the two sums differ by at most 3.11e-15 (the host rounds two products and two
+    # partial sums, the FMA chain two partial sums; `R1*x1` is common), so the phases differ by at
+    # most 2π·3.11e-15 = 1.95e-14. 2e-14 is that worst case, not a margin over a typical error.
     @test maximum(abs, Array(phase) .- ref) <= 2e-14
 end
 
@@ -154,11 +156,12 @@ end
 end
 
 """
-The two `get_eph_kR_to_kq_batched!` methods and the k+q convention of `get_eph_RR_to_kR_batched!`,
-on `backend` (as in [`check_eph_batched`](@ref)).
+`get_eph_kR_to_kq_batched!` and the k+q convention of `get_eph_RR_to_kR_batched!`, on `backend`
+(as in [`check_eph_batched`](@ref)).
 
-1. The phase-taking method fed `build_fourier_phase!(qs)` reproduces the interpolator+`qs` method to
-   `rtol` (not bitwise: GPU kernels may contract multiply-adds into FMAs).
+1. With the same `build_fourier_phase!(qs)` phase, the interpolator path (`kR_to_kq_from_qs!`, whose
+   operand is the row-range view `op_r[1:ndata, :]`) and a contiguous operand agree bit for bit. On
+   the device this pins that `ElectronPhonon.strided_mul!` keeps the view on cuBLAS.
 2. Storing the kR intermediate in the k+q convention (`conj(exp(2πi R_p·x_k))`) and transforming at
    `x_{k+q}` reproduces the q-convention result, for a (k, k+q) pair whose `q = x_{k+q} - x_k` needs
    a mod-G reduction. This is the in-repo pin of the identity `exp(2πi R_p·q) =
@@ -196,13 +199,13 @@ function check_eph_kq_convention(backend; rtol)
     kR_to_kq_from_qs!(ref, backend, get_interpolator(obj_q; fourier_mode="batched", backend, batch_size=nq),
                               qs, uphs, ukqs)
 
-    # (b) same phase, phase-taking method
+    # (b) same phase, contiguous operand: must agree bit for bit
     phase_q = arr_dev(zeros(ComplexF64, nr_ep, nq))
     ElectronPhonon.build_fourier_phase!(phase_q, irvecp_mat,
                                   arr_dev([q[d] for d in 1:3, q in qs]))
     out_b = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq))
     get_eph_kR_to_kq_batched!(out_b, view(ep_kR_q, :, :, 1), phase_q, uphs, ukqs)
-    @test isapprox(Array(out_b), Array(ref); rtol)
+    @test Array(out_b) == Array(ref)
 
     # (c) k+q convention: fold conj(exp(2πi R_p·x_k)) into the child, transform at x_{k+q}.
     # `get_eph_RR_to_kR_batched!` multiplies by whatever it is handed, so conjugate here.

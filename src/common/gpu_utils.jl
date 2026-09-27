@@ -196,3 +196,14 @@ function batched_gemm!(transA::Char, transB::Char,
     end
     C
 end
+
+"""
+    strided_mul!(C, A, B) -> C
+
+`C = A * B` for operands that may be strided views, such as the row range `op_r[1:ndata, :]`.
+The CPU method is `mul!`; the CUDA extension calls `cuBLAS.gemm!`, which reads the view's leading
+dimension. `mul!` is not enough on the device: GPUArrays 11.5.14 (not 11.5.8) sends every product
+with a strided GPU `SubArray` operand to its generic `gpu_coalesced_matmul_kernel` before cuBLAS's
+methods are reached, so a view and a contiguous copy of the same data give different bits.
+"""
+strided_mul!(C, A, B) = mul!(C, A, B)

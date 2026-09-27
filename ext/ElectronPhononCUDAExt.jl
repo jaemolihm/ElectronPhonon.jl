@@ -15,7 +15,7 @@ using ElectronPhonon
 using ElectronPhonon: WannierObject
 using CUDA
 using CUDA.cuSOLVER: heevjBatched!
-using CUDA.cuBLAS: gemm_strided_batched!
+using CUDA.cuBLAS: gemm!, gemm_strided_batched!
 using CUDA.cuSPARSE: CuSparseMatrixCSR
 using SparseArrays: SparseMatrixCSC
 
@@ -143,6 +143,9 @@ function ElectronPhonon.batched_gemm!(transA::Char, transB::Char,
     gemm_strided_batched!(transA, transB, one(T), A, B, zero(T), C)
     C
 end
+
+ElectronPhonon.strided_mul!(C::StridedCuMatrix{T}, A::StridedCuMatrix{T}, B::StridedCuMatrix{T}) where {T} =
+    gemm!('N', 'N', one(T), A, B, zero(T), C)
 
 # ---- fused e-ph gauge rotation (replaces the two tiny cuBLAS strided-batched GEMMs) -----------
 #
