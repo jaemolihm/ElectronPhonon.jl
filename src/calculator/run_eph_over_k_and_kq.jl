@@ -34,18 +34,16 @@ cached *irreducible* eigenvector rotated by the symmetry operation, a direct run
 eigenvector at the point itself, and the two are a gauge apart. Nothing checks this.
 
 * `ph_eigenpairs :: Union{Nothing, Eigenpairs}` — the same for the phonons: a cache with
-  `nbasis = nmodes`, replacing the dynamical-matrix diagonalization. Build it with
-  [`phonon_eigenpairs`](@ref), or pass the `ph_eigenpairs` an earlier batched run returned; either
-  pins the phonon eigenmode basis of two runs to each other inside a degenerate multiplet. On the
-  batched path the cache's k points *are* the run's q set, so it must be on the run's q grid and
-  cover every `x_{k+q} - x_k` (a full grid, `phonon_eigenpairs(model, kpoints_grid(ngrid))`, always
-  does, and one such cache serves several runs on that grid). On the per-point path the run's q
-  points are `combine_kpoint_grids(kpts, kqpts)` and are looked up in the cache, so it must cover
-  that set.
+  `nbasis = nmodes`, built with [`phonon_eigenpairs`](@ref), whose ω and eigenmodes replace the
+  dynamical-matrix diagonalization; it pins the phonon eigenmode basis of two runs to each other
+  inside a degenerate multiplet. It is a lookup table on both paths: the run's q points are
+  `combine_kpoint_grids(kpts, kqpts)` and must all be in it (a full grid,
+  `phonon_eigenpairs(model, kpoints_grid(ngrid))`, always covers them, so one such cache serves
+  several runs on that grid).
 
-The return value is `(; kpts, qpts, el_k_save, el_kq_save, ph_save, ph_eigenpairs)`. The per-point
-path returns its phonons as `ph_save` (one `PhononState` per q point) and `ph_eigenpairs = nothing`;
-the batched path returns `ph_save = nothing` and the `Eigenpairs` over `qpts` it used.
+The return value is `(; kpts, qpts, el_k_save, el_kq_save, ph_save)`. `ph_save` holds the phonons
+over `qpts`: one `PhononState` per q point on the per-point path, a [`BatchedPhononState`](@ref) on
+the backend on the batched path.
 """
 function run_eph_over_k_and_kq(
         model       :: Model{FT},
@@ -164,7 +162,7 @@ function run_eph_over_k_and_kq(
         _loop_eph_over_k_and_kq_batched(model,
             setup.kpts, setup.qpts, setup.kqpts,
             setup.el_k_save, setup.el_kq_save,
-            setup.ph_eig, setup.precompute_ph,
+            setup.ph_save, setup.precompute_ph,
             setup.epmat_dev, setup.backend;
             calculators,
             energy_conservation, screening_params,
@@ -185,23 +183,9 @@ function run_eph_over_k_and_kq(
         )
     end
 
-    (; setup.kpts, setup.qpts, setup.el_k_save, setup.el_kq_save, setup.ph_save,
-       ph_eigenpairs = setup.ph_eig)
+    (; setup.kpts, setup.qpts, setup.el_k_save, setup.el_kq_save, setup.ph_save)
 end
 
-
-# The q set of a batched run handed `ph_eigenpairs`: the cache's own k points. They must be on the
-# run's q grid `ngrid`, with a shift that puts x_{k+q} - x_k on a node. The per-pair lookup
-# (`_fill_iqs!`) rounds coordinates onto the q grid, so a cache on the wrong grid or shift would be
-# read silently; the grid comparison and one checked `xk_to_ik` catch both. Whether the cache holds
-# every pair's q is checked per pair by `_fill_iqs!`.
-function _ph_cache_qpts(ph_eigenpairs::Eigenpairs, kpts, kqpts, ngrid)
-    qpts = ph_eigenpairs.kpts
-    qpts.ngrid == Tuple(ngrid) || throw(ArgumentError(
-        "ph_eigenpairs is on a $(qpts.ngrid) grid, but this run's q points are on a $ngrid grid"))
-    (kpts.n > 0 && kqpts.n > 0) && xk_to_ik(kqpts.vectors[1] - kpts.vectors[1], qpts)
-    qpts
-end
 
 # _setup_eph_over_k_and_kq and _loop_eph_over_k_and_kq are split from
 # run_eph_over_k_and_kq so that all variables captured by the @threads closure in
@@ -245,28 +229,19 @@ function _setup_eph_over_k_and_kq(
         fourier_mode, backend, verbosity, el_kq_eigenpairs)
 
 
-    # Precompute qpts and phonon states if k and k+q meshes are commensurate. On the batched path a
-    # passed `ph_eigenpairs` is the q set itself (see `_ph_cache_qpts`), so no combine runs.
+    # Precompute qpts and phonon states if k and k+q meshes are commensurate
     if all(kpts.ngrid .> 0) && all(mod.(kqpts.ngrid, kpts.ngrid) .== 0)
         # kqpts is denser than kpts
         precompute_ph = true
-        qpts = if batched && ph_eigenpairs !== nothing
-            _ph_cache_qpts(ph_eigenpairs, kpts, kqpts, kqpts.ngrid)
-        else
-            maybe_time(verbosity) do
-                combine_kpoint_grids(kqpts, kpts, -, kqpts.ngrid)
-            end
+        qpts = maybe_time(verbosity) do
+            combine_kpoint_grids(kqpts, kpts, -, kqpts.ngrid)
         end
 
     elseif all(kpts.ngrid .> 0) && all(mod.(kpts.ngrid, kqpts.ngrid) .== 0)
         # kpts is denser than kqpts
         precompute_ph = true
-        qpts = if batched && ph_eigenpairs !== nothing
-            _ph_cache_qpts(ph_eigenpairs, kpts, kqpts, kpts.ngrid)
-        else
-            maybe_time(verbosity) do
-                combine_kpoint_grids(kqpts, kpts, -, kpts.ngrid)
-            end
+        qpts = maybe_time(verbosity) do
+            combine_kpoint_grids(kqpts, kpts, -, kpts.ngrid)
         end
 
     else
@@ -321,18 +296,12 @@ function _setup_eph_over_k_and_kq(
 
 
     # Precompute phonon states if precompute_ph == true. The batched loop reads only ω and the
-    # eigenmodes, as dense stacks over `qpts`, which is exactly an `Eigenpairs` over `qpts`: the
-    # passed cache (whose k points are `qpts`, above) or one built here. The per-point loop takes
-    # one `PhononState` per q point.
+    # eigenmodes, as dense stacks over `qpts` on the backend; the per-point loop takes one
+    # `PhononState` per q point. Either reads a passed `ph_eigenpairs` as a lookup table.
     if precompute_ph && batched
-        ph_save = nothing
-        ph_eig = if ph_eigenpairs === nothing
-            maybe_time(verbosity) do
-                phonon_eigenpairs(model, qpts; fourier_mode, backend)
-            end
-        else
-            _check_eigenpairs(ph_eigenpairs, nmodes, backend)
-            ph_eigenpairs
+        ph_save = maybe_time(verbosity) do
+            compute_phonon_states_batched(model, qpts, ["eigenvalue", "eigenvector"];
+                fourier_mode, backend, eigenpairs = ph_eigenpairs)
         end
         dyn_threads = nothing
     elseif precompute_ph
@@ -342,12 +311,10 @@ function _setup_eph_over_k_and_kq(
                 ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"];
                 fourier_mode, backend, eigenpairs = ph_eigenpairs)
         end
-        ph_eig = nothing
         dyn_threads = nothing
     else
         qpts = nothing
         ph_save = nothing
-        ph_eig = nothing
         dyn_threads = get_interpolator_channel(model.ph_dyn; fourier_mode)
     end
 
@@ -379,7 +346,7 @@ function _setup_eph_over_k_and_kq(
     return (;
         kpts, qpts, kqpts,
         el_k_save, el_kq_save,
-        ph_save, ph_eig, precompute_ph,
+        ph_save, precompute_ph,
         nband_max,
         epstates, ep_ekpRs, epmat, ep_ekpR_obj,
         dyn_threads,
@@ -663,8 +630,7 @@ function _fill_iqs!(iqs, qpts, xkqs_int, xks_int, ik, qstart, nq)
         hash = (h1 * ng2 + h2) * ng3 + h3
         iq = _ik_from_hash(qpts, hash)
         # 0 = miss on either index.
-        (iq < 1 || iq > qpts.n) && throw(ArgumentError(
-            "kq - k = q point not found in precomputed qpts (a passed ph_eigenpairs does not cover it)"))
+        (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
         iqs[j] = iq
     end
     iqs
@@ -674,7 +640,7 @@ function _loop_eph_over_k_and_kq_batched(
         model       :: Model{FT},
         kpts, qpts, kqpts,
         el_k_save, el_kq_save,
-        ph_eig, precompute_ph,
+        ph_save, precompute_ph,
         epmat_dev, backend;
         calculators = [],
         energy_conservation = (:None, 0.0),
@@ -764,8 +730,8 @@ function _loop_eph_over_k_and_kq_batched(
     # already live, so `free_bytes` reflects them. All buffer byte accounting lives in
     # `_outer_k_staging_bytes` (shared with `estimate_device_memory`); `nq_batch_user`
     # (Int, or nkq when nothing) stays a hard cap.
-    # `nq_grid = 0`: the phonon stacks over `qpts` are `ph_eig`'s, already resident (built in the
-    # setup or by the caller), so `free_bytes` reflects them.
+    # `nq_grid = 0`: the phonon stacks over `qpts` are `ph_save`'s, already resident (built in the
+    # setup), so `free_bytes` reflects them.
     per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
         nq_grid = 0, nk_batch_max, calculators,
         nr_epmat = epmat_dev.nr, FT)
@@ -808,10 +774,9 @@ function _loop_eph_over_k_and_kq_batched(
         copyto!(ukqs_all_dev, ukqs_all_host)
     end
     # Phonon eigenvectors `u` and frequencies `e` depend only on iq: the dense stacks over `qpts`
-    # are `ph_eig`'s, already on the backend, and each (k, tile) gathers from them by index (below).
-    # Read-only for the whole run, so a caller's cache is never written.
-    uph_all_dev = ph_eig.u_full
-    ωq_all_dev  = ph_eig.e_full
+    # are `ph_save`'s, already on the backend, and each (k, tile) gathers from them by index (below).
+    uph_all_dev = ph_save.u
+    ωq_all_dev  = ph_save.e
 
     # Grid coordinates as (3 × n) real device matrices, uploaded once. Both phase builds below read
     # them directly, so nothing on the phase path is staged on the host or copied H2D inside the loop.

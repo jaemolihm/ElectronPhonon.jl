@@ -1,6 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: electron_eigenpairs, phonon_eigenpairs, gpu_backend, CPUBackend, AbstractBackend, xk_to_ik,
+    on_backend,
     xk_to_ik_unsafe, AbstractCalculator, OuterKLoop, OuterQLoop, EPData, EPDataQBatched,
     OuterIteration, OuterIterationBatch
 
@@ -200,7 +201,7 @@ end
         # the cache, and the phonons come back as one `PhononState` per q point.
         let backend = CPUBackend()
             plain = _run(sub_a; backend)
-            @test plain.ph_eigenpairs === nothing
+            @test plain.ph_save isa Vector{<:PhononState}
             qpts = plain.qpts
             cache = _phonon_eigenpairs(plain.ph_save, qpts, backend)
             rot = circshift(1:qpts.n, 1)
@@ -229,9 +230,10 @@ end
                                                     fourier_mode = "gridopt"))
         end
 
-        # The batched path: the loop reads the phonons as the dense stacks of an `Eigenpairs`, and a
-        # passed cache's k points are the run's q set. What reaches the calculators is compared per
-        # (k, k+q) through the payload. `CPUBackend(); batched = true` runs it without CUDA.
+        # The batched path: the loop reads the phonons as the dense stacks of a `BatchedPhononState`
+        # over the run's own q set, and a passed cache is a lookup table into which that set is
+        # resolved. What reaches the calculators is compared per (k, k+q) through the payload.
+        # `CPUBackend(); batched = true` runs it without CUDA.
         arms = Tuple{AbstractBackend, Bool}[(CPUBackend(), true)]
         PRECOMPUTED_STATES_GPU_AVAILABLE && push!(arms, (gpu_backend(), true))
         for (backend, batched) in arms
@@ -240,14 +242,16 @@ end
                                              kwargs...);
                                   (out, probe))
             plain, p_plain = _runp()
-            @test plain.ph_save === nothing
-            cache = plain.ph_eigenpairs
             qpts = plain.qpts
-            @test cache.kpts === qpts
+            # (vii) The phonons come back as the batch the loop read, on the run's backend.
+            @test plain.ph_save isa BatchedPhononState
+            @test plain.ph_save.qpts === qpts
+            @test on_backend(backend, plain.ph_save.u) && on_backend(backend, plain.ph_save.e)
             @test qpts.n > 1                      # so the rotation below is a real permutation
             @test length(p_plain.ωqs) == sub_a.n  # one q tile per outer k
 
-            # (i) The run's own cache handed back reproduces the run bit for bit.
+            # (i) A cache over the run's own q points reproduces the run bit for bit.
+            cache = phonon_eigenpairs(model, qpts; backend)
             _, p_cached = _runp(ph_eigenpairs = cache)
             @test p_cached.ωqs == p_plain.ωqs
             @test p_cached.g2s == p_plain.g2s
@@ -258,12 +262,11 @@ end
             _, p_bad = _runp(ph_eigenpairs = rotated)
             @test all(key -> p_bad.ωqs[key] != p_plain.ωqs[key], keys(p_plain.ωqs))
 
-            # (iii) A whole-grid cache is a q set in another order and of another size. Against the
-            # same cache's eigenpairs on the run's own q points (looked up in it), every (k, k+q)
-            # gets the same payload. The comparison is not against `plain`: `combine_kpoint_grids`
-            # folds q into [-0.5, 0.5) and `kpoints_grid` gives [0, 1), and the dynamical matrix
-            # at q and q + G is not bitwise equal, which moves `u` (4.6e-3 at 6³ on this model).
-            # The batch a q is solved in does not: a subset solve is bitwise the full one.
+            # (iii) A whole-grid cache is a superset of the q points in another order. Against the
+            # same cache's eigenpairs on the run's own q points, every (k, k+q) gets the same
+            # payload. The comparison is not against `plain`: `combine_kpoint_grids` folds q into
+            # [-0.5, 0.5) and `kpoints_grid` gives [0, 1), and the dynamical matrix at q and q + G is
+            # not bitwise equal, which moves `u` (4.6e-3 at 6³ on this model).
             full = phonon_eigenpairs(model, kgrid; backend)
             iqs = [xk_to_ik(xq, full.kpts) for xq in qpts.vectors]
             full_on_qpts = Eigenpairs(model.nmodes, qpts, full.e_full[:, iqs],
@@ -272,9 +275,9 @@ end
             _, p_full_on_qpts = _runp(ph_eigenpairs = full_on_qpts)
             @test p_full.ωqs == p_full_on_qpts.ωqs
             @test p_full.g2s == p_full_on_qpts.g2s
-            # The same with several q tiles per outer k, so the gather into the full-grid cache
-            # runs at tile offsets past the first. `ωqs` is a pure gather, so its tiles laid end
-            # to end are the single-tile run's bit for bit.
+            # The same with several q tiles per outer k, so the gather from the batch runs at tile
+            # offsets past the first. `ωqs` is a pure gather, so its tiles laid end to end are the
+            # single-tile run's bit for bit.
             _, p_full7 = _runp(ph_eigenpairs = full, nq_batch_max = 7)
             _, p_full_on_qpts7 = _runp(ph_eigenpairs = full_on_qpts, nq_batch_max = 7)
             @test length(p_full7.ωqs) == sub_a.n * cld(kgrid.n, 7)
@@ -283,17 +286,16 @@ end
             @test all(ik -> reduce(hcat, [p_full7.ωqs[(ik, j)] for j in 1:7:kgrid.n]) ==
                             p_full.ωqs[(ik, 1)], 1:sub_a.n)
 
-            # (iv) A cache missing a q point one pair needs is an error naming the cache.
+            # (iv) A cache missing a q point the run needs is an error naming the cache.
             sub_q = GridKpoints(Kpoints(qpts.vectors[1:qpts.n-1]; ngrid = qpts.ngrid), qpts.ngrid)
             partial = Eigenpairs(model.nmodes, sub_q, cache.e_full[:, 1:qpts.n-1],
                                  cache.u_full[:, :, 1:qpts.n-1])
-            @test_throws "does not cover" _runp(ph_eigenpairs = partial)
+            @test_throws "eigenpairs does not cover k point" _runp(ph_eigenpairs = partial)
 
             # (v) A cache on another grid, or on the right grid with a shift that puts no q point on
-            # a node, is refused: the per-pair lookup would round onto the cache's grid and read the
-            # wrong q silently.
+            # a node, is refused by the checked lookup rather than rounded onto a neighbour.
             coarse = phonon_eigenpairs(model, kpoints_grid((2, 2, 2)); backend)
-            @test_throws "ph_eigenpairs is on a (2, 2, 2) grid" _runp(ph_eigenpairs = coarse)
+            @test_throws "is not on the grid" _runp(ph_eigenpairs = coarse)
             shifted_k = GridKpoints(Kpoints{Float64}(kgrid.n,
                 map(x -> x + ElectronPhonon.Vec3(1 / 8, 0, 0), kgrid.vectors), kgrid.weights,
                 kgrid.ngrid))
