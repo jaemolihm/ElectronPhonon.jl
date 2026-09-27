@@ -113,4 +113,6 @@ include("boltzmann/boltzmann_calculator.jl")
 
 export ElectronOccupationParams
 
+include("precompile_workload.jl")
+
 end

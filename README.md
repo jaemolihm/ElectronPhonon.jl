@@ -20,3 +20,13 @@ Pkg.add(url="https://github.com/jaemolihm/ElectronPhonon.jl.git")
 - [GPU acceleration](README_GPU.md) — the CUDA package-extension path and the device-native
   calculator interface.
 
+
+## Development
+
+The package runs a precompile workload, which makes first calls fast but lengthens every
+precompilation of the package. If you are developing the package itself, turn the workload off by
+adding to the `LocalPreferences.toml` of the environment you run in (next to its `Project.toml`):
+```toml
+[ElectronPhonon]
+precompile_workload = false
+```
