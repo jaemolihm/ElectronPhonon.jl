@@ -356,6 +356,12 @@ quantity is not requested is zero-length.
 `eigenpairs` is a gauge-fixing lookup table, as in `compute_phonon_states`: ω and `u` of every q are
 copied from it instead of diagonalizing, so it must cover every q point of `qpts` and be resident on
 `backend`.
+
+On a GPU backend only `["eigenvalue"]` and `["eigenvalue", "eigenvector"]` are supported, polar
+phonons are not, and `fourier_mode` is unused. The q set is solved in chunks of the batched
+dynamical-matrix interpolator's block width, so the device `D(q)` transient is bounded whatever
+`qpts.n`. As in [`electron_eigenpairs`](@ref), the batched eigensolve picks its own basis inside a
+degenerate mode multiplet, so device and host `u` differ there.
 """
 function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fourier_mode = "gridopt",
         eph_phonon_basis::Symbol = :eigenmode, backend = CPUBackend(),
@@ -364,21 +370,64 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
     for quantity in quantities
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
     end
-    (; nmodes) = model
+    (; nmodes, mass) = model
     _check_eigenpairs(eigenpairs, nmodes, backend)
     (; valueonly, need_vdiag, need_dipole) = _phonon_state_needs(quantities)
     nq = qpts.n
+    backend isa CPUBackend || valueonly || issetequal(quantities, ["eigenvalue", "eigenvector"]) ||
+        throw(ArgumentError("compute_phonon_states_batched on $(nameof(typeof(backend))) " *
+            "computes only [\"eigenvalue\"] or [\"eigenvalue\", \"eigenvector\"], got $quantities"))
 
     # Zero-filled as a `PhononState` is: `u` stays zero on the value-only path, and a 3D dipole
     # leaves `eph_r_coeff` unwritten.
-    e = alloc_zeros(backend, FT, nmodes, nq)
-    u = alloc_zeros(backend, Complex{FT}, nmodes, nmodes, nq)
     vdiag = alloc_zeros(backend, FT, 3, nmodes, need_vdiag ? nq : 0)
     eph_dipole_coeff = alloc_zeros(backend, Complex{FT}, nmodes, need_dipole ? nq : 0)
     eph_r_coeff = alloc_zeros(backend, Complex{FT}, nmodes, 3, need_dipole ? nq : 0)
-    isempty(quantities) ||
-        _compute_phonon_states_batched_cpu!(e, u, vdiag, eph_dipole_coeff, eph_r_coeff, model,
-            qpts, eigenpairs, valueonly, need_vdiag, need_dipole, eph_phonon_basis; fourier_mode)
+    if backend isa CPUBackend
+        e = alloc_zeros(backend, FT, nmodes, nq)
+        u = alloc_zeros(backend, Complex{FT}, nmodes, nmodes, nq)
+        isempty(quantities) ||
+            _compute_phonon_states_batched_cpu!(e, u, vdiag, eph_dipole_coeff, eph_r_coeff, model,
+                qpts, eigenpairs, valueonly, need_vdiag, need_dipole, eph_phonon_basis; fourier_mode)
+    elseif eigenpairs === nothing
+        model.polar_phonon.use && throw(ArgumentError(
+            "compute_phonon_states_batched on a non-CPU backend does not support polar phonons"))
+        itp_dyn = get_interpolator(to_device(backend, model.ph_dyn); fourier_mode = "batched",
+                                   backend, nk_hint = nq)
+        msqrt_d = alloc(backend, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
+        e = alloc(backend, FT, nmodes, nq)
+        u = valueonly ? alloc_zeros(backend, Complex{FT}, nmodes, nmodes, nq) :
+                        alloc(backend, Complex{FT}, nmodes, nmodes, nq)
+        # One chunk per Fourier block of `itp_dyn`, so the Fourier partition is that of one call
+        # over the whole set; the eigensolve is per matrix, so the chunking does not change ω or u.
+        # (`nk_hint = 0` gives a zero block width.)
+        for c in Iterators.partition(1:nq, max(itp_dyn.batch_size, 1))
+            D = _fourier_hk_batched(itp_dyn, view(qpts.vectors, c))  # (nmodes, nmodes, length(c))
+            D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
+            D ./= reshape(msqrt_d, 1, nmodes, 1)
+            Esq = if valueonly
+                eigvals_batched(D)
+            else
+                Esq_c, U = eigen_batched(D)
+                U ./= reshape(msqrt_d, nmodes, 1, 1)     # mass factor: u[i,:] /= sqrt(mass[i])
+                u[:, :, c] .= U
+                Esq_c
+            end
+            e[:, c] .= sign.(Esq) .* sqrt.(abs.(Esq))  # ω = sign(ω²)·√|ω²|
+        end
+    else
+        # The cache's columns for this q list, resolved on the host: a miss inside the device
+        # gather would surface as a bare `KernelException` naming only the device.
+        iqs = Vector{Int}(undef, nq)
+        @threads for iqs_chunk in chunks(1:nq; n = nthreads())
+            for iq in iqs_chunk
+                iqs[iq] = _eigenpairs_ik(eigenpairs, qpts.vectors[iq])
+            end
+        end
+        e = eigenpairs.e_full[:, iqs]
+        u = valueonly ? alloc_zeros(backend, Complex{FT}, nmodes, nmodes, nq) :
+                        eigenpairs.u_full[:, :, iqs]
+    end
     BatchedPhononState(nmodes, qpts, e, u, vdiag, eph_dipole_coeff, eph_r_coeff)
 end
 

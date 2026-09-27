@@ -1,6 +1,16 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: phonon_eigenpairs, has_vdiag, has_dipole, HostBatchedPhononState
+using ElectronPhonon: phonon_eigenpairs, has_vdiag, has_dipole, HostBatchedPhononState,
+    gpu_backend, on_backend, to_device, Vec3
+
+# CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
+# tests when it is unavailable or non-functional (e.g. CPU-only CI).
+const BATCHED_PHONON_GPU_AVAILABLE = try
+    @eval using CUDA
+    CUDA.functional()
+catch
+    false
+end
 
 @testset "BatchedPhononState" begin
     kpts = GridKpoints(kpoints_grid((4, 4, 4)))
@@ -75,5 +85,60 @@ using ElectronPhonon: phonon_eigenpairs, has_vdiag, has_dipole, HostBatchedPhono
             zeros(3, 3, 2), eph_dipole_coeff, eph_r_coeff)
         @test_throws "both present or both empty" BatchedPhononState(3, kpts, e, u, vdiag,
             zeros(ComplexF64, 3, 64), eph_r_coeff)
+    end
+
+    @testset "GPU" begin
+        if BATCHED_PHONON_GPU_AVAILABLE
+            CUDA.allowscalar(false)
+            backend = gpu_backend()
+            full = ["eigenvalue", "eigenvector"]
+
+            # The device solve is chunked over q at the Fourier block width. Against one
+            # eigensolve over the whole set with the same Fourier blocks (the unchunked build), it
+            # is bitwise: the batched eigensolve is per matrix. The grid is sized for two chunks,
+            # both above the eigensolver's own 65 536-matrix split.
+            qgrid = GridKpoints(kpoints_grid((112, 112, 112)))
+            b = compute_phonon_states_batched(model_pb, qgrid, full; backend)
+            itp = ElectronPhonon.get_interpolator(to_device(backend, model_pb.ph_dyn);
+                fourier_mode = "batched", backend, nk_hint = qgrid.n)
+            @test 65_536 < itp.batch_size < qgrid.n
+            D = ElectronPhonon._fourier_hk_batched(itp, qgrid.vectors)
+            msqrt = to_device(backend, sqrt.(model_pb.mass))
+            D ./= reshape(msqrt, :, 1, 1)
+            D ./= reshape(msqrt, 1, :, 1)
+            Esq, U = ElectronPhonon.eigen_batched(D)
+            @test on_backend(backend, b.e) && on_backend(backend, b.u)
+            @test isequal(Array(b.e), Array(sign.(Esq) .* sqrt.(abs.(Esq))))
+            @test isequal(Array(b.u), Array(U ./ reshape(msqrt, :, 1, 1)))
+            b = D = U = nothing
+
+            # The cache arm is a gather: every q of a list in another order is the cache's
+            # column at that q, bit for bit.
+            cache = phonon_eigenpairs(model_pb, kpts; backend)
+            rev = GridKpoints(Kpoints(reverse(kpts.vectors); ngrid = kpts.ngrid), kpts.ngrid)
+            b = compute_phonon_states_batched(model_pb, rev, full; backend, eigenpairs = cache)
+            @test isequal(Array(b.e), Array(cache.e_full)[:, end:-1:1])
+            @test isequal(Array(b.u), Array(cache.u_full)[:, :, end:-1:1])
+            b_val = compute_phonon_states_batched(model_pb, rev, ["eigenvalue"]; backend,
+                                                  eigenpairs = cache)
+            @test isequal(Array(b_val.e), Array(b.e)) && all(iszero, Array(b_val.u))
+            sub_q = GridKpoints(Kpoints(kpts.vectors[1:kpts.n-1]; ngrid = kpts.ngrid), kpts.ngrid)
+            @test_throws "does not cover" compute_phonon_states_batched(model_pb, kpts, full;
+                backend, eigenpairs = phonon_eigenpairs(model_pb, sub_q; backend))
+
+            # The value-only solve agrees with the full one to round-off and leaves `u` zero.
+            b_val = compute_phonon_states_batched(model_pb, kpts, ["eigenvalue"]; backend)
+            @test maximum(abs, Array(b_val.e) - Array(cache.e_full)) < 1e-12
+            @test all(iszero, Array(b_val.u))
+
+            q0 = GridKpoints(Kpoints(Vec3{Float64}[]; ngrid = kpts.ngrid), kpts.ngrid)
+            @test size(compute_phonon_states_batched(model_pb, q0, full; backend).u) == (3, 3, 0)
+
+            # What the device does not compute is refused, not silently left zero.
+            @test_throws "computes only" compute_phonon_states_batched(model_pb, kpts,
+                ["eigenvalue", "eigenvector", "velocity_diagonal"]; backend)
+            @test_throws "does not support polar" compute_phonon_states_batched(model_bn, kpts,
+                full; backend)
+        end
     end
 end
