@@ -136,13 +136,13 @@ end
     phonon_eigenpairs(model, qpts; fourier_mode = "gridopt", backend = CPUBackend())
 
 The phonon twin of [`electron_eigenpairs`](@ref): the frequencies ω (`e_full`) and mass-scaled
-eigenmodes (`u_full`) at every q point of `qpts`, `nbasis = nmodes`. They are what
+eigenmodes (`u_full`) at every q point of `qpts`, `nbasis = nmodes`. On the CPU they are what
 [`compute_phonon_states`](@ref) solves for at the same q, with the same solver, so a run handed
 this cache as `ph_eigenpairs` reproduces the run without it.
 
-On a GPU backend the whole set is one batched eigensolve, the one `compute_phonon_states` runs
-there, and the cache stays on the device; `fourier_mode` is then unused and polar phonons are not
-supported, as in that path. The electron builder's two device caveats hold here too: the batched
+On a GPU backend the whole set is one batched eigensolve, the phonons the batched e-ph loop reads,
+and the cache stays on the device; `fourier_mode` is then unused and polar phonons are not
+supported. The electron builder's two device caveats hold here too: the batched
 eigensolve picks its own basis inside a degenerate mode multiplet, so a device-built cache differs
 from a CPU-built one there, and the whole set is one batch, so the device dynamical-matrix stack
 (`nmodes^2 * nq`) is unbounded.
@@ -166,7 +166,16 @@ function phonon_eigenpairs(model::Model{FT}, qpts; fourier_mode = "gridopt",
     else
         model.polar_phonon.use && error("phonon_eigenpairs on a non-CPU backend does not " *
                                         "support polar phonons")
-        Eigenpairs(nmodes, gqpts, _ph_eigen_batched(model, gqpts.vectors, backend)...)
+        # ω = sign(ω²)·√|ω²| and the mass-scaled eigenmodes, in one batched eigensolve.
+        itp_dyn = get_interpolator(to_device(backend, model.ph_dyn);
+                                   fourier_mode = "batched", backend, nk_hint = gqpts.n)
+        D = _fourier_hk_batched(itp_dyn, gqpts.vectors)  # (nmodes, nmodes, nq)
+        msqrt_d = similar(D, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
+        D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
+        D ./= reshape(msqrt_d, 1, nmodes, 1)
+        Esq_dev, U_dev = eigen_batched(D)            # ω² (nmodes, nq), U (nmodes, nmodes, nq)
+        U_dev ./= reshape(msqrt_d, nmodes, 1, 1)     # mass factor: u[i,:] /= sqrt(mass[i])
+        Eigenpairs(nmodes, gqpts, sign.(Esq_dev) .* sqrt.(abs.(Esq_dev)), U_dev)
     end
 end
 

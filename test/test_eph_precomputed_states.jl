@@ -259,9 +259,11 @@ end
             @test all(key -> p_bad.ωqs[key] != p_plain.ωqs[key], keys(p_plain.ωqs))
 
             # (iii) A whole-grid cache is a q set in another order and of another size. Against the
-            # same builder's eigenpairs on the run's own q points (looked up in it), every (k, k+q)
-            # gets the same payload. The comparison is not against `plain`: on a GPU the batched
-            # eigensolve's basis inside a mode multiplet depends on the batch it is solved in.
+            # same cache's eigenpairs on the run's own q points (looked up in it), every (k, k+q)
+            # gets the same payload. The comparison is not against `plain`: `combine_kpoint_grids`
+            # folds q into [-0.5, 0.5) and `kpoints_grid` gives [0, 1), and the dynamical matrix
+            # at q and q + G is not bitwise equal, which moves `u` (4.6e-3 at 6³ on this model).
+            # The batch a q is solved in does not: a subset solve is bitwise the full one.
             full = phonon_eigenpairs(model, kgrid; backend)
             iqs = [xk_to_ik(xq, full.kpts) for xq in qpts.vectors]
             full_on_qpts = Eigenpairs(model.nmodes, qpts, full.e_full[:, iqs],
@@ -270,6 +272,16 @@ end
             _, p_full_on_qpts = _runp(ph_eigenpairs = full_on_qpts)
             @test p_full.ωqs == p_full_on_qpts.ωqs
             @test p_full.g2s == p_full_on_qpts.g2s
+            # The same with several q tiles per outer k, so the gather into the full-grid cache
+            # runs at tile offsets past the first. `ωqs` is a pure gather, so its tiles laid end
+            # to end are the single-tile run's bit for bit.
+            _, p_full7 = _runp(ph_eigenpairs = full, nq_batch_max = 7)
+            _, p_full_on_qpts7 = _runp(ph_eigenpairs = full_on_qpts, nq_batch_max = 7)
+            @test length(p_full7.ωqs) == sub_a.n * cld(kgrid.n, 7)
+            @test p_full7.ωqs == p_full_on_qpts7.ωqs
+            @test p_full7.g2s == p_full_on_qpts7.g2s
+            @test all(ik -> reduce(hcat, [p_full7.ωqs[(ik, j)] for j in 1:7:kgrid.n]) ==
+                            p_full.ωqs[(ik, 1)], 1:sub_a.n)
 
             # (iv) A cache missing a q point one pair needs is an error naming the cache.
             sub_q = GridKpoints(Kpoints(qpts.vectors[1:qpts.n-1]; ngrid = qpts.ngrid), qpts.ngrid)

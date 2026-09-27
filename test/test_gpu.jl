@@ -925,42 +925,6 @@ end
     end
 end
 
-@testset "compute_phonon_states velocity_diagonal (GPU backend)" begin
-    if !GPU_AVAILABLE
-        @info "CUDA not available/functional — skipping GPU compute_phonon_states velocity test"
-    else
-        model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
-        kpts = ElectronPhonon.kpoints_grid((8, 8, 8))
-        nk, nm = kpts.n, model.nmodes
-
-        qp = ["eigenvalue", "eigenvector", "velocity_diagonal"]
-        pc = ElectronPhonon.compute_phonon_states(model, kpts, qp; fourier_mode="gridopt")
-        pg = ElectronPhonon.compute_phonon_states(model, kpts, qp;
-            backend=ElectronPhonon.gpu_backend())
-
-        # Phonon frequencies are gauge-independent → must match the CPU path.
-        wm = maximum(maximum(abs, pc[ik].e .- pg[ik].e) for ik in 1:nk)
-        @test wm < 1e-7 * maximum(maximum(abs, pc[ik].e) for ik in 1:nk)
-
-        # vdiag = real(diag(u'·dD/dk·u))/(2ω). Gauge-invariant for non-degenerate modes; compare CPU
-        # vs GPU on non-degenerate, non-Γ-acoustic modes (skip ω<1e-5 where /2ω blows up).
-        vm = vs = 0.0; n_ok = 0
-        for ik in 1:nk
-            e = pc[ik].e
-            for i in 1:nm
-                e[i] < 1e-5 && continue
-                any(j -> j != i && abs(e[j] - e[i]) < 1e-7, 1:nm) && continue
-                n_ok += 1
-                vm = max(vm, maximum(abs, pc[ik].vdiag[i] .- pg[ik].vdiag[i]))
-                vs = max(vs, maximum(abs, pc[ik].vdiag[i]))
-            end
-        end
-        @test n_ok > 0
-        @test vm < 1e-8 * vs
-    end
-end
-
-
 # Scatter round-trip: the device-resident scatter `eph_window_scatter!` (used by
 # EliashbergCalculator's device path) must (1) write COLLISION-FREE — its non-collision invariant
 # (distinct k → distinct outer state i, distinct k+q → distinct inner state f, so every target linear
