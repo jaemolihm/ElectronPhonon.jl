@@ -15,7 +15,7 @@ Index legend: `ν` mode, `a` displacement (atom × Cartesian), `d` Cartesian dir
 | field | shape | |
 |---|---|---|
 | `e` | `(ν, q)` | frequency ω |
-| `u` | `(a, ν, q)` | mass-scaled eigenmodes |
+| `u` | `(a, ν, q)` | mass-scaled eigenmodes; zero-filled (full size) for `["eigenvalue"]` |
 | `vdiag` | `(d, ν, q)` | diagonal velocity; zero-length unless requested, see `has_vdiag` |
 | `eph_dipole_coeff` | `(ν, q)` | dipole e-ph coefficients; zero-length unless requested, see `has_dipole` |
 | `eph_r_coeff` | `(ν, d, q)` | as `eph_dipole_coeff` |

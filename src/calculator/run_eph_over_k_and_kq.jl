@@ -36,14 +36,17 @@ eigenvector at the point itself, and the two are a gauge apart. Nothing checks t
 * `ph_eigenpairs :: Union{Nothing, Eigenpairs}` — the same for the phonons: a cache with
   `nbasis = nmodes`, built with [`phonon_eigenpairs`](@ref), whose ω and eigenmodes replace the
   dynamical-matrix diagonalization; it pins the phonon eigenmode basis of two runs to each other
-  inside a degenerate multiplet. It is a lookup table on both paths: the run's q points are
-  `combine_kpoint_grids(kpts, kqpts)` and must all be in it (a full grid,
-  `phonon_eigenpairs(model, kpoints_grid(ngrid))`, always covers them, so one such cache serves
+  inside a degenerate multiplet. It is a lookup table on both paths: the run's q points are every
+  difference `x_{k+q} - x_k`, folded into [-0.5, 0.5), and a cache must cover that set (a full
+  grid, `phonon_eigenpairs(model, kpoints_grid(ngrid))`, always does, so one such cache serves
   several runs on that grid).
 
 The return value is `(; kpts, qpts, el_k_save, el_kq_save, ph_save)`. `ph_save` holds the phonons
-over `qpts`: one `PhononState` per q point on the per-point path, a [`BatchedPhononState`](@ref) on
-the backend on the batched path.
+over `qpts`: one `PhononState` per q point on the per-point path, and a
+[`BatchedPhononState`](@ref) with its stacks on `backend` on the batched path. On a device that
+batch holds `8 nmodes + 16 nmodes²` bytes per q point (ω and eigenmodes) until the caller frees
+it (e.g. `CUDA.unsafe_free!` on `ph_save.u` and `ph_save.e`) or it is collected. On incommensurate
+grids the phonons are solved per (k, q) inside the loop and `qpts` and `ph_save` are `nothing`.
 """
 function run_eph_over_k_and_kq(
         model       :: Model{FT},

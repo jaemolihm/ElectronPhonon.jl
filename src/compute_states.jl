@@ -268,7 +268,6 @@ fix the gauge of the phonon eigenvectors.
 `backend` must be `CPUBackend()`: one mutable `PhononState` per q point is what the per-point CPU
 drivers consume, and costs ~13 allocations and ~1.5 kB per q point. For dense stacks, on the host or
 on a device, use [`compute_phonon_states_batched`](@ref) instead.
-TODO: Implement quantities "velocity"
 """
 function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode="normal",
         eph_phonon_basis::Symbol = :eigenmode, backend=CPUBackend(),
@@ -351,7 +350,8 @@ end
 The phonons of `qpts` as a [`BatchedPhononState`](@ref) on `backend`: what
 [`compute_phonon_states`](@ref) computes for the same arguments, stored as dense stacks instead of
 one `PhononState` per q point. `quantities` and `eph_phonon_basis` are as there; a stack whose
-quantity is not requested is zero-length.
+quantity is not requested is zero-length, except `u`: with `["eigenvalue"]` it is the full stack,
+zero-filled, as `PhononState.u` is.
 
 `eigenpairs` is a gauge-fixing lookup table, as in `compute_phonon_states`: ω and `u` of every q are
 copied from it instead of diagonalizing, so it must cover every q point of `qpts` and be resident on
@@ -383,6 +383,8 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
     vdiag = alloc_zeros(backend, FT, 3, nmodes, need_vdiag ? nq : 0)
     eph_dipole_coeff = alloc_zeros(backend, Complex{FT}, nmodes, need_dipole ? nq : 0)
     eph_r_coeff = alloc_zeros(backend, Complex{FT}, nmodes, 3, need_dipole ? nq : 0)
+    nq == 0 && return BatchedPhononState(nmodes, qpts, alloc(backend, FT, nmodes, 0),
+        alloc(backend, Complex{FT}, nmodes, nmodes, 0), vdiag, eph_dipole_coeff, eph_r_coeff)
     if backend isa CPUBackend
         e = alloc_zeros(backend, FT, nmodes, nq)
         u = alloc_zeros(backend, Complex{FT}, nmodes, nmodes, nq)
@@ -400,8 +402,7 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
                         alloc(backend, Complex{FT}, nmodes, nmodes, nq)
         # One chunk per Fourier block of `itp_dyn`, so the Fourier partition is that of one call
         # over the whole set; the eigensolve is per matrix, so the chunking does not change ω or u.
-        # (`nk_hint = 0` gives a zero block width.)
-        for c in Iterators.partition(1:nq, max(itp_dyn.batch_size, 1))
+        for c in Iterators.partition(1:nq, itp_dyn.batch_size)
             D = _fourier_hk_batched(itp_dyn, view(qpts.vectors, c))  # (nmodes, nmodes, length(c))
             D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
             D ./= reshape(msqrt_d, 1, nmodes, 1)
