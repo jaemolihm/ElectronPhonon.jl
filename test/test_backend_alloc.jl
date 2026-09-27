@@ -187,3 +187,52 @@ end
         @test_throws ArgumentError backend_from(true)
     end
 end
+
+# `first_occurrence_groups` must reproduce a host `Dict`-based dedup EXACTLY (ids and value order),
+# which is what lets a caller swap one for the other bitwise. The device arm runs under
+# `allowscalar(false)`, so a scalar-indexing fallback anywhere in the generic code is an error.
+@testset "first_occurrence_groups" begin
+    function dict_groups(v)
+        d = Dict{eltype(v), Int32}()
+        u = eltype(v)[]
+        ids = Int32[get!(() -> (push!(u, x); Int32(length(u))), d, x) for x in v]
+        ids, u
+    end
+    cases = Any[
+        [3.0, 1.0, 3.0, 2.0, 1.0, 1.0],           # repeats, first occurrence != sorted order
+        [5.0, 4.0, 3.0, 2.0, 1.0],                # all distinct
+        fill(2.5, 7),                             # all equal
+        [4.0],                                    # length 1
+        Float64[],                                # length 0
+        [mod(0.37 * i, 1.3) for i in 1:1001],     # non-power-of-2 length, few repeats
+        [mod(i^2, 17) * 0.25 for i in 1:1000],    # non-power-of-2 length, many repeats
+        [0.0, -0.0, 0.0, NaN, -0.0, NaN, 1.0],    # isequal semantics: -0.0 != 0.0, NaN == NaN
+    ]
+    function check_cases(backend)
+        for v in cases
+            ids_ref, u_ref = dict_groups(v)
+            ids, u = ElectronPhonon.first_occurrence_groups(to_device(backend, v))
+            @test eltype(ids) === Int32
+            @test typeof(ids) === typeof(alloc(backend, Int32, 0))    # on `v`'s backend
+            @test u isa Vector{Float64}
+            @test Array(ids) == ids_ref
+            @test isequal(u, u_ref)
+        end
+    end
+    check_cases(CPUBackend())
+    if BACKEND_ALLOC_GPU
+        # Process-wide setting, restored as in the testset above.
+        probe = CUDA.zeros(Int, 1)
+        was_allowed = redirect_stderr(devnull) do
+            try (probe[1]; true) catch; false end
+        end
+        CUDA.allowscalar(false)
+        try
+            check_cases(gpu_backend())
+        finally
+            redirect_stderr(devnull) do
+                CUDA.allowscalar(was_allowed)
+            end
+        end
+    end
+end

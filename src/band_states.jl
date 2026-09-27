@@ -357,18 +357,22 @@ For each inner (full-BZ) state `f`, the outer (IBZ) state with the same band who
 `k_i ≡ k_f` must hold. Errors if any `el_f` state has no counterpart in `el_i`. `el_i` must carry
 `GridKpoints`: the lookup is its integer-grid hash.
 """
-function find_unfolding_indices(el_i::AbstractBandStates, el_f::AbstractBandStates, symmetry)
+function find_unfolding_indices(el_i::AbstractBandStates{<:Any, <:GridKpoints},
+                                el_f::AbstractBandStates, symmetry)
     xks_f = state_xks(el_f)   # dense gather once (setup, not a hot loop)
     ind = Vector{Int}(undef, el_f.n)
-    for f in 1:el_f.n
-        xk_f = xks_f[f]
-        ib = el_f.ibands[f]
-        j = state_index_in_star(el_i, xk_f, ib, symmetry)
-        j != 0 || error("find_unfolding_indices: no representative for inner state $f " *
-                        "(k = $xk_f, band = $ib). Pass `symmetry` to enable IBZ reduction, or " *
-                        "use the same k-grid and window for k and k+q.")
-        ind[f] = j
+    # A pure lookup per state with a disjoint output, so threading it leaves `ind` unchanged. A miss
+    # is 0, reported after the loop so the error is the first missing state's, as a plain
+    # `ErrorException` rather than wrapped by the task.
+    @threads for fs in chunks(1:el_f.n; n = nthreads())
+        for f in fs
+            ind[f] = state_index_in_star(el_i, xks_f[f], el_f.ibands[f], symmetry)
+        end
     end
+    f = findfirst(iszero, ind)
+    f === nothing || error("find_unfolding_indices: no representative for inner state $f " *
+                           "(k = $(xks_f[f]), band = $(el_f.ibands[f])). Pass `symmetry` to " *
+                           "enable IBZ reduction, or use the same k-grid and window for k and k+q.")
     ind
 end
 
