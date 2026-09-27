@@ -161,7 +161,7 @@ end
 
 1. With the same `build_fourier_phase!(qs)` phase, the interpolator path (`kR_to_kq_from_qs!`, whose
    operand is the row-range view `op_r[1:ndata, :]`) and a contiguous operand agree bit for bit. On
-   the device this pins that `ElectronPhonon.strided_mul!` keeps the view on cuBLAS.
+   the device this pins that the CUDA extension keeps the view on cuBLAS.
 2. Storing the kR intermediate in the k+q convention (`conj(exp(2πi R_p·x_k))`) and transforming at
    `x_{k+q}` reproduces the q-convention result, for a (k, k+q) pair whose `q = x_{k+q} - x_k` needs
    a mod-G reduction. This is the in-repo pin of the identity `exp(2πi R_p·q) =

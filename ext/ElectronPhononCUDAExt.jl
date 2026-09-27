@@ -16,6 +16,7 @@ using ElectronPhonon: WannierObject
 using CUDA
 using CUDA.cuSOLVER: heevjBatched!
 using CUDA.cuBLAS: gemm!, gemm_strided_batched!
+using LinearAlgebra: LinearAlgebra
 using CUDA.cuSPARSE: CuSparseMatrixCSR
 using SparseArrays: SparseMatrixCSC
 
@@ -144,8 +145,19 @@ function ElectronPhonon.batched_gemm!(transA::Char, transB::Char,
     C
 end
 
-ElectronPhonon.strided_mul!(C::StridedCuMatrix{T}, A::StridedCuMatrix{T}, B::StridedCuMatrix{T}) where {T} =
-    gemm!('N', 'N', one(T), A, B, zero(T), C)
+# Type piracy: GPUArrays ≥ 11.5.11 sends every product with a strided `CuArray` view operand, such
+# as the row range `op_r[1:ndata, :]`, to its generic `gpu_coalesced_matmul_kernel` instead of
+# cuBLAS (JuliaGPU/GPUArrays.jl#799), so a view and a contiguous copy give different bits. Remove
+# once fixed upstream.
+function LinearAlgebra._mul!(C::StridedCuMatrix{T}, A::StridedCuMatrix{T}, B::StridedCuMatrix{T},
+                             α::Number, β::Number) where {T<:cuBLAS.CublasFloat}
+    if C isa CuMatrix && A isa CuMatrix && B isa CuMatrix
+        return invoke(LinearAlgebra._mul!,
+                      Tuple{AbstractMatrix, AbstractVecOrMat, AbstractVecOrMat, Number, Number},
+                      C, A, B, α, β)
+    end
+    gemm!('N', 'N', T(α), A, B, T(β), C)
+end
 
 # ---- fused e-ph gauge rotation (replaces the two tiny cuBLAS strided-batched GEMMs) -----------
 #

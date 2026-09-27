@@ -101,7 +101,7 @@ function _fourier_batched!(out, core::BatchedFourierCore, xkmat::AbstractMatrix)
 
     @views build_fourier_phase!(phase[:, 1:nk], core.irvec_mat, xkmat)
     # BLAS3 gemm: much faster than multiple BLAS2 gemv calls
-    @views strided_mul!(out, parent.op_r[1:ndata, :], phase[:, 1:nk])
+    @views mul!(out, parent.op_r[1:ndata, :], phase[:, 1:nk])
     out
 end
 

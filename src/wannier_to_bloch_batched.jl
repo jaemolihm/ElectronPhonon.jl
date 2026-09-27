@@ -269,7 +269,7 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
         tmp = view(ws.tmp, :, :, 1:nq)
     end
 
-    strided_mul!(g, ep_kR, phase)                                      # (nw*nbandk*nmodes, nq)
+    mul!(g, ep_kR, phase)                                              # (nw*nbandk*nmodes, nq)
     eph_apply_rotations!(ep_kq_all, reshape(g, nw, nbandk, nmodes, nq), ukqs, u_phs, tmp;
                          g2_out, ωq)
     ep_kq_all
