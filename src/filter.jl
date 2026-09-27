@@ -181,12 +181,15 @@ function _filter_with_band_ranges(kpts_input, nw, el_ham, window;
         # does to unfold). Only the grid path reduces, inside `kpoints_grid`.
         kpoints = kpts_input
     end
+    # Pass the known shift rather than re-deriving it from the kept points.
+    grid_shift = kpts_input isa NTuple{3,Integer} ? shift : nothing
+    to_grid(k) = k isa GridKpoints ? k : GridKpoints(k; shift = grid_shift)
     if window == (-Inf, Inf)
-        gkpts = kpoints isa GridKpoints ? kpoints : GridKpoints(kpoints)
+        gkpts = to_grid(kpoints)
         return gkpts, fill(1, gkpts.n), fill(nw, gkpts.n), zero(eltype(window))
     end
     r = _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode, backend, eigenpairs)
-    gkpts = GridKpoints(get_filtered_kpoints(kpoints, r.ik_keep))
+    gkpts = to_grid(get_filtered_kpoints(kpoints, r.ik_keep))
     gkpts, r.band_min_per_k[r.ik_keep], r.band_max_per_k[r.ik_keep], r.nelec_below_window
 end
 

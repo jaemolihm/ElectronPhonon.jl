@@ -73,3 +73,15 @@ isdefined(@__MODULE__, :_load_model_from_artifacts) ||
         @test n_irr < filter_electron_states((8, 8, 8), model.nw, model.el_ham, window).kpts.n
     end
 end
+
+@testset "filter_electron_states: shift of a window that excludes Γ" begin
+    # 1d band ε₀ - 2t cos(2πk). The window's lower edge lies between the energies at k = 28/400
+    # and 29/400, so the first kept point is 29/400, where `29/400 * 400` rounds to just below 29.
+    t, ε₀, n = 0.1, 0.05, 400
+    model = EP.holstein_model(; t, ω₀ = 0.01, g = 0.02, alat = 5.0, ε₀, dimension = 1, verbose = false)
+    ε(x) = ε₀ - 2t * cospi(2x)
+    window = ((ε(28 / n) + ε(29 / n)) / 2, ε(0.25))
+    sel = filter_electron_states((n, 1, 1), model.nw, model.el_ham, window)
+    @test first(sel.kpts.vectors) ≈ EP.Vec3(29 / n, 0, 0)
+    @test iszero(sel.kpts.shift)
+end
