@@ -148,6 +148,8 @@ Enumerates the 3^N active sets (each coordinate free, at its lower bound, or at 
 For each, the bound coordinates are fixed and the free ones solve `A_FF x_F = -A_FB x_B`; the
 candidate is kept if it lies in the box. The unique minimizer is the stationary point on its own
 face (KKT), so it is one of the kept candidates, and every kept candidate is feasible.
+When the minimizer lies within rounding of a bound, the neighbouring face supplies a candidate
+within O(eps) of the minimum.
 """
 function box_quadratic_minimum(A::SMatrix{N, N, T}, lower::SVector{N, T}, upper::SVector{N, T}) where {N, T}
     Id = SMatrix{N, N, T}(I)
