@@ -389,6 +389,33 @@ end
     kqpts = test_combine(kpts, qpts, +, (3, 3, 3))
     @test kqpts.shift ≈ Vec3(shift)           # shift of combined grid is shift_k + shift_q
 
+    # The dense path emits the points in their sorted order instead of sorting. Against the same
+    # table swept in plain grid order and then built, folded and `sort!`ed, it must give the same
+    # GridKpoints bit for bit, the shift (read off the first point in table order) and the index
+    # included. Odd and even grids, and shifts that move the fold boundary.
+    let
+        using ElectronPhonon: shift_center!, _grid_coords_reduced, _kq_seen_table,
+            _combine_kq_dedup_dense
+        for (ng, shift_q) in (((4, 4, 4), (0, 0, 0)), ((5, 5, 5), (0, 0, 0)),
+                              ((4, 5, 6), (1//2, 0, 1//2)), ((7, 3, 8), (1//3, 1//2, 0)))
+            k = GridKpoints(kpoints_grid(ng))
+            q = GridKpoints(kpoints_grid(ng; shift = shift_q))
+            Random.seed!(7)
+            sub = sort(randperm(k.n)[1:(k.n ÷ 4)])
+            ksub = GridKpoints(Kpoints(length(sub), k.vectors[sub], k.weights[sub], k.ngrid), k.ngrid)
+            for op in (+, -)
+                kq = combine_kpoint_grids(ksub, q, op, ng)
+                sk, sq = ksub.vectors[1], q.vectors[1]
+                seen = _kq_seen_table([_grid_coords_reduced(x, ng, sk) for x in ksub.vectors],
+                    [_grid_coords_reduced(x, ng, sq) for x in q.vectors], op === (+) ? 1 : -1, ng)
+                xkqs = _combine_kq_dedup_dense(seen, ng, op(sk, sq))
+                ref = GridKpoints(Kpoints{Float64}(length(xkqs), xkqs, ones(length(xkqs)) ./ prod(ng), ng))
+                ref = sort!(shift_center!(ref, (0, 0, 0)))
+                @test all(f -> isequal(getfield(kq, f), getfield(ref, f)), fieldnames(GridKpoints))
+            end
+        end
+    end
+
     # Deprecated alias warns and still returns the same result.
     kpts = GridKpoints(kpoints_grid((2, 2, 2)))
     qpts = GridKpoints(kpoints_grid((2, 2, 2)))
@@ -411,9 +438,9 @@ end
     # The dense and the Dict de-duplication (selected by the size of the dense table) must return
     # the same SET of points: the dense path sweeps its table, so it emits them in grid order, while
     # the Dict path has no table to sweep and emits them in order of first appearance.
-    # `combine_kpoint_grids` sorts the result either way. Only the dense one is reachable at these
+    # `combine_kpoint_grids` orders the result either way. Only the dense one is reachable at these
     # grid sizes, so call both directly on the same integer grid coordinates.
-    using ElectronPhonon: _combine_kq_dedup_dense, _combine_kq_dedup_dict
+    using ElectronPhonon: _kq_seen_table, _combine_kq_dedup_dense, _combine_kq_dedup_dict
     Random.seed!(333)
     ngrid_kq = (4, 6, 5)
     for sgn in (1, -1)
@@ -422,7 +449,8 @@ end
         BkS = [Vec3(mod.(rand(-6:6, 3), ngrid_kq)) for _ in 1:20]
         BqS = [Vec3(mod.(rand(-6:6, 3), ngrid_kq)) for _ in 1:20]
         shift_kq = Vec3(0.0, 1/12, 0.0)
-        xkqs_dense = _combine_kq_dedup_dense(BkS, BqS, sgn, ngrid_kq, shift_kq)
+        xkqs_dense = _combine_kq_dedup_dense(_kq_seen_table(BkS, BqS, sgn, ngrid_kq), ngrid_kq,
+                                             shift_kq)
         xkqs_dict = _combine_kq_dedup_dict(BkS, BqS, sgn, ngrid_kq, shift_kq)
         @test 0 < length(xkqs_dense) < length(BkS) * length(BqS)  # de-duplication happened
         @test sort(xkqs_dense) == sort(xkqs_dict)
@@ -435,8 +463,8 @@ end
     let ngrid_kq = (4, 6, 5), shift_kq = Vec3(0.0, 0.0, 0.0)
         raw = [Vec3(7, -3, 11)]
         ok = [Vec3(1, 2, 3)]
-        @test_throws ArgumentError _combine_kq_dedup_dense(raw, ok, -1, ngrid_kq, shift_kq)
-        @test_throws ArgumentError _combine_kq_dedup_dense(ok, raw, -1, ngrid_kq, shift_kq)
+        @test_throws ArgumentError _kq_seen_table(raw, ok, -1, ngrid_kq)
+        @test_throws ArgumentError _kq_seen_table(ok, raw, -1, ngrid_kq)
         @test_throws ArgumentError _combine_kq_dedup_dict(raw, ok, 1, ngrid_kq, shift_kq)
     end
 
