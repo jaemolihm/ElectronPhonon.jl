@@ -76,7 +76,11 @@ function run_eph_over_k_and_kq(
     if model.epmat_outer_momentum != "el"
         throw(ArgumentError("model.epmat_outer_momentum must be el to use run_eph_over_k_and_kq"))
     end
-    _check_eph_fourier_mode(fourier_mode, backend)
+    # The per-point loop queries interpolators one k at a time, which the batched Fourier modes
+    # (a k-list registered in advance) do not serve. A non-CPU backend ignores `fourier_mode` in the loop.
+    (backend isa CPUBackend && fourier_mode ∉ ("normal", "gridopt")) && throw(ArgumentError(
+        "fourier_mode = \"$fourier_mode\" is not supported by run_eph_over_k_and_kq on a CPU backend: " *
+        "its loop queries interpolators one k at a time. Use \"gridopt\" (the default) or \"normal\"."))
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")
