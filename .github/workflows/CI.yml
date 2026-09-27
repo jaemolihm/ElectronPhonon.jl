@@ -50,6 +50,16 @@ jobs:
           path: ~/.julia/conda
           key: ${{ runner.os }}-conda-${{ hashFiles('**/Project.toml') }}
           restore-keys: ${{ runner.os }}-conda-
+      # GitHub runners have no GPU: drop CUDA from the test target so Pkg.test neither installs
+      # nor precompiles it. The GPU testsets load CUDA in a try/catch and skip without it.
+      - name: Drop CUDA from the test target
+        shell: julia --color=yes {0}
+        run: |
+          using TOML
+          project = TOML.parsefile("Project.toml")
+          delete!(project["extras"], "CUDA")
+          filter!(!=("CUDA"), project["targets"]["test"])
+          open(io -> TOML.print(io, project), "Project.toml", "w")
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         with:
@@ -91,6 +101,16 @@ jobs:
           path: ~/.julia/conda
           key: ${{ runner.os }}-conda-${{ hashFiles('**/Project.toml') }}
           restore-keys: ${{ runner.os }}-conda-
+      # GitHub runners have no GPU: drop CUDA from the test target so Pkg.test neither installs
+      # nor precompiles it. The GPU testsets load CUDA in a try/catch and skip without it.
+      - name: Drop CUDA from the test target
+        shell: julia --color=yes {0}
+        run: |
+          using TOML
+          project = TOML.parsefile("Project.toml")
+          delete!(project["extras"], "CUDA")
+          filter!(!=("CUDA"), project["targets"]["test"])
+          open(io -> TOML.print(io, project), "Project.toml", "w")
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         with:
