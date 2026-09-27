@@ -40,7 +40,7 @@ end
                 @test all(eachindex(ref)) do iq
                     ph = ref[iq]
                     ph.xq == b.qpts.vectors[iq] && isequal(b.e[:, iq], ph.e) &&
-                        isequal(b.u[:, :, iq], ph.u) &&
+                        (quantities == ["eigenvalue"] || isequal(b.u[:, :, iq], ph.u)) &&
                         (!has_vdiag(b) ||
                          isequal(b.vdiag[:, :, iq], reinterpret(reshape, Float64, ph.vdiag))) &&
                         (!has_dipole(b) || (isequal(b.eph_dipole_coeff[:, iq], ph.eph_dipole_coeff) &&
@@ -50,7 +50,7 @@ end
                 if quantities != ["eigenvalue"]
                     @test !any(iq -> b.u[:, :, iq] == ref[mod1(iq + 1, kpts.n)].u, 1:kpts.n)
                 else
-                    @test all(iszero, b.u)
+                    @test size(b.u) == (m.nmodes, m.nmodes, 0)  # value-only: no eigenvectors
                 end
             end
         end
@@ -121,7 +121,7 @@ end
             @test isequal(Array(b.u), Array(cache.u_full)[:, :, end:-1:1])
             b_val = compute_phonon_states_batched(model_pb, rev, ["eigenvalue"]; backend,
                                                   eigenpairs = cache)
-            @test isequal(Array(b_val.e), Array(b.e)) && all(iszero, Array(b_val.u))
+            @test isequal(Array(b_val.e), Array(b.e)) && size(b_val.u) == (3, 3, 0)
             sub_q = GridKpoints(Kpoints(kpts.vectors[1:kpts.n-1]; ngrid = kpts.ngrid), kpts.ngrid)
             @test_throws "does not cover" compute_phonon_states_batched(model_pb, kpts, full;
                 backend, eigenpairs = phonon_eigenpairs(model_pb, sub_q; backend))
@@ -129,14 +129,16 @@ end
             # The value-only solve agrees with the full one to round-off and leaves `u` zero.
             b_val = compute_phonon_states_batched(model_pb, kpts, ["eigenvalue"]; backend)
             @test maximum(abs, Array(b_val.e) - Array(cache.e_full)) < 1e-12
-            @test all(iszero, Array(b_val.u))
+            @test size(b_val.u) == (3, 3, 0) && on_backend(backend, b_val.u)
 
             q0 = GridKpoints(Kpoints(Vec3{Float64}[]; ngrid = kpts.ngrid), kpts.ngrid)
             @test size(compute_phonon_states_batched(model_pb, q0, full; backend).u) == (3, 3, 0)
 
             # What the device does not compute is refused, not silently left zero.
-            @test_throws "computes only" compute_phonon_states_batched(model_pb, kpts,
-                ["eigenvalue", "eigenvector", "velocity_diagonal"]; backend)
+            @test_throws "\"velocity_diagonal\" is not supported" compute_phonon_states_batched(
+                model_pb, kpts, ["eigenvalue", "eigenvector", "velocity_diagonal"]; backend)
+            @test_throws "\"eph_dipole_coeff\" is not supported" compute_phonon_states_batched(
+                model_pb, kpts, ["eigenvector", "eph_dipole_coeff"]; backend)
             @test_throws "does not support polar" compute_phonon_states_batched(model_bn, kpts,
                 full; backend)
         end

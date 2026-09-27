@@ -196,38 +196,3 @@ function batched_gemm!(transA::Char, transB::Char,
     end
     C
 end
-
-"""
-    first_occurrence_groups(v::AbstractVector) -> (ids, uniques)
-
-Group the entries of `v` by value, numbering the groups in order of first occurrence: `uniques` (a
-host `Vector`) holds each distinct value once, in the order Base's `unique(v)` returns them, and `ids`
-(`Int32`, on `v`'s backend) is the group of each entry, so `uniques[ids] == v` (values compared with
-`isequal`: `-0.0` and `0.0` are distinct, every `NaN` is one group). It is `numpy.unique` with
-`return_inverse`, but in first-occurrence rather than sorted order, which is what a host
-`Dict`-based dedup produces, so the two agree exactly.
-
-Generic array code, so it runs on the device as is: a stable `sortperm!` groups equal values with
-their first occurrence at the head of each group, and a second `sortperm` over the group heads' positions
-renumbers the groups in first-occurrence order. Needs `length(v) < typemax(Int32)`.
-Not exported; use `ElectronPhonon.first_occurrence_groups`.
-"""
-function first_occurrence_groups(v::AbstractVector)
-    n = length(v)
-    n < typemax(Int32) || throw(ArgumentError(
-        "first_occurrence_groups: length(v) = $n does not fit the Int32 group ids"))
-    n == 0 && return (similar(v, Int32, 0), Vector{eltype(v)}())
-    p = sortperm!(similar(v, Int32), v)           # stable: ties keep their order in `v`
-    vs = v[p]
-    head = similar(v, Bool)                       # first entry of each group in sorted order
-    fill!(view(head, 1:1), true)
-    @views head[2:n] .= .!isequal.(vs[2:n], vs[1:n-1])
-    g = cumsum!(similar(v, Int32), head)          # group of each sorted entry, in sorted order
-    firstpos = p[head]                            # position in `v` of each group's first entry
-    r = sortperm(firstpos)                        # groups in first-occurrence order
-    rank = similar(v, Int32, length(firstpos))
-    rank[r] = Int32(1):Int32(length(firstpos))
-    ids = similar(v, Int32)
-    ids[p] = rank[g]
-    ids, Array(vs[head][r])
-end

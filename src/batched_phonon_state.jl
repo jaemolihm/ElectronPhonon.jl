@@ -15,7 +15,7 @@ Index legend: `ν` mode, `a` displacement (atom × Cartesian), `d` Cartesian dir
 | field | shape | |
 |---|---|---|
 | `e` | `(ν, q)` | frequency ω |
-| `u` | `(a, ν, q)` | mass-scaled eigenmodes; zero-filled (full size) for `["eigenvalue"]` |
+| `u` | `(a, ν, q)` | mass-scaled eigenmodes; zero-length for `["eigenvalue"]` |
 | `vdiag` | `(d, ν, q)` | diagonal velocity; zero-length unless requested, see `has_vdiag` |
 | `eph_dipole_coeff` | `(ν, q)` | dipole e-ph coefficients; zero-length unless requested, see `has_dipole` |
 | `eph_r_coeff` | `(ν, d, q)` | as `eph_dipole_coeff` |
@@ -26,7 +26,7 @@ struct BatchedPhononState{T, KT <: AbstractKpoints{T}, ET <: AbstractMatrix{T},
     nmodes :: Int
     qpts :: KT               # host
     e :: ET                  # (ν, q)
-    u :: UT                  # (a, ν, q)
+    u :: UT                  # (a, ν, q), or zero-length
     vdiag :: VT              # (d, ν, q), or zero-length
     eph_dipole_coeff :: DT   # (ν, q), or zero-length
     eph_r_coeff :: RT        # (ν, d, q), or zero-length
@@ -37,7 +37,7 @@ struct BatchedPhononState{T, KT <: AbstractKpoints{T}, ET <: AbstractMatrix{T},
             DT <: AbstractMatrix{Complex{T}}, RT <: AbstractArray{Complex{T}, 3}}
         nq = qpts.n
         for (name, x, dims, optional) in (("e", e, (nmodes, nq), false),
-                ("u", u, (nmodes, nmodes, nq), false), ("vdiag", vdiag, (3, nmodes, nq), true),
+                ("u", u, (nmodes, nmodes, nq), true), ("vdiag", vdiag, (3, nmodes, nq), true),
                 ("eph_dipole_coeff", eph_dipole_coeff, (nmodes, nq), true),
                 ("eph_r_coeff", eph_r_coeff, (nmodes, 3, nq), true))
             (size(x) == dims || (optional && isempty(x))) || throw(ArgumentError(
