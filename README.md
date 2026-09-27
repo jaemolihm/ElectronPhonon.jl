@@ -23,19 +23,10 @@ Pkg.add(url="https://github.com/jaemolihm/ElectronPhonon.jl.git")
 
 ## Development
 
-The package precompiles the EPW loader `load_model_from_epw_new`, which makes its first call fast
-but lengthens every precompilation of the package. While editing the source, switch that workload
-off in your development environment by adding to its `LocalPreferences.toml` (next to its
-`Project.toml`):
+The package runs a precompile workload, which makes first calls fast but lengthens every
+precompilation of the package. If you are developing the package itself, turn the workload off by
+adding to the `LocalPreferences.toml` of the environment you run in (next to its `Project.toml`):
 ```toml
 [ElectronPhonon]
 precompile_workload = false
 ```
-With `Preferences` in the active environment, the same entry can be written without loading the
-package:
-`using Preferences; set_preferences!(Base.UUID("06c0995b-90c7-4aad-a219-585912522888"), "precompile_workload" => false; force = true)`.
-Users and CI keep the workload on.
-
-Bitwise tests such as the `phonon_eigenpairs` comparison in `test/test_eigenpairs.jl` need the
-host CPU to match a `JULIA_CPU_TARGET` clone: otherwise package-image code runs the `generic` clone
-while JIT-compiled code is native, and the two round differently.
