@@ -281,13 +281,13 @@ that a sweep over consecutive `c3` walks the table sequentially. With those dims
 of a slot is exactly `hash + 1` for the `(c1*ng2 + c2)*ng3 + c3` packing, so this table and
 `GridKpoints._dense_hash_to_ik` share one layout.
 
-Two passes rather than one. Pass 1 (`_kq_seen_table`) only MARKS which slots occur, in an `Array{Bool}` instead of the
-`Array{Int}` of indices the single-pass version needed: the pair loop's access into the table is a
-random probe, so at 8 B per node it missed cache on nearly every pair, and `Bool` is 1 B per node,
-putting 8× more of the grid in cache (8 MB vs 64 MB at 200³). Marking is also idempotent — every
-writer stores the same `true` — which is what lets the pass be threaded with no synchronization.
-(A `BitArray` would be smaller still but its writes race at word granularity; `Array{Bool}` stores
-one byte per element, so its writes do not.)
+Two passes rather than one. Pass 1 (`_kq_seen_table`) only MARKS which slots occur, in an
+`Array{Bool}` instead of the `Array{Int}` of indices the single-pass version needed: the pair loop's
+access into the table is a random probe, so at 8 B per node it missed cache on nearly every pair,
+and `Bool` is 1 B per node, putting 8× more of the grid in cache (8 MB vs 64 MB at 200³). Marking
+is also idempotent — every writer stores the same `true` — which is what lets the pass be threaded
+with no synchronization. (A `BitArray` would be smaller still but its writes race at word
+granularity; `Array{Bool}` stores one byte per element, so its writes do not.)
 Pass 2 sweeps the table and emits the points. That discards first-appearance order, which is safe
 because the order is the table's: `combine_kpoint_grids` picks `start` so that the sweep is the
 order of the points once folded into [-0.5, 0.5).
@@ -452,20 +452,17 @@ function combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
     seen = _kq_seen_table(BkS, BqS, sgn, ngrid_kq)
     ngrid = convert(NTuple{3, Int}, ngrid_kq)
     ifirst = findfirst(seen)  # [c3 + 1, c2 + 1, c1 + 1] of the first point in table order
-    xfirst = Vec3((ifirst[3] - 1) / ngrid[1], (ifirst[2] - 1) / ngrid[2], (ifirst[1] - 1) / ngrid[3]) +
-             shift_kq
+    xfirst = Vec3((ifirst[3] - 1) / ngrid[1], (ifirst[2] - 1) / ngrid[2],
+                  (ifirst[1] - 1) / ngrid[3]) + shift_kq
     shift = mod.(xfirst .* ngrid, 1) ./ ngrid
-    # Every coordinate of each axis, folded as `shift_center!` folds, keyed as `sortperm` keys.
-    axis = Kpoints([Vec3(min(c, ngrid[1] - 1) / ngrid[1], min(c, ngrid[2] - 1) / ngrid[2],
-                         min(c, ngrid[3] - 1) / ngrid[3]) + shift_kq for c in 0:(maximum(ngrid) - 1)])
-    shift_center!(axis, (0, 0, 0))
-    keys = map(xk -> round.(Int, (xk - shift).data .* ngrid), axis.vectors)
+    # Per axis, every coordinate folded as `shift_center!` folds and keyed as `sortperm` keys; the
+    # sweep starts at the smallest key.
     start = ntuple(3) do d
-        key_d = [keys[c + 1][d] for c in 0:(ngrid[d] - 1)]
-        c0 = argmin(key_d) - 1
-        all(r -> key_d[_wrap_reduced(c0 + r, ngrid[d]) + 1] == key_d[c0 + 1] + r, 0:(ngrid[d] - 1)) ||
-            error("combine_kpoint_grids: folded axis $d is not a rotation of the grid: $key_d")
-        c0
+        axis = Kpoints([Vec3(ntuple(e -> e == d ? c / ngrid[d] : zero(T), 3)) + shift_kq
+                        for c in 0:(ngrid[d] - 1)])
+        shift_center!(axis, (0, 0, 0))
+        key(c) = round(Int, (axis.vectors[c] - shift)[d] * ngrid[d])
+        argmin(key, eachindex(axis.vectors)) - 1
     end
     xkqs = _combine_kq_dedup_dense(seen, ngrid_kq, shift_kq; start)
     nkq = length(xkqs)
