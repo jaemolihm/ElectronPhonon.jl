@@ -393,20 +393,12 @@ end
 # Function barrier: `U`/`vel` are `nothing` or an `Array` depending on `quantities`, so they must
 # arrive as typed arguments for the reads below to be static.
 #
-# TODO: replace the `Vector{PhononState}` with a struct-of-arrays `BatchedPhononState{T, AT}` holding
-# the whole q-grid in dense stacks — `e` (nmodes, nq), `u` (nmodes, nmodes, nq), `vdiag`,
-# `eph_dipole_coeff` — with `AT` selecting host or device storage, so the same type serves both
-# backends and the GPU path never leaves the device. A `Vector` of per-q mutable structs costs ~13
-# allocations and ~1.5 kB per q point, which at the q-grids the outer-k driver builds (nq = 6.9 M for
-# Cu at nk = 200) is ~90 M allocations and ~10 GiB of churn, most of the setup's GC time.
-# `_loop_eph_over_k_and_kq_batched` shows how little of it is wanted: it reads only `.u` and `.e`, and
-# gathers them straight back into dense stacks to re-upload — data `E_dev`/`U_dev` above already hold
-# on the device — while `velocity_diagonal` and `eph_dipole_coeff`, which that driver requests, are
-# never read. Measured on Cu at nq = 436 k: 1.62 s / 5.67 M allocations / 669 MiB for the per-q
-# states, versus 0.60 s / ~3 k allocations for the device stacks alone.
-# Blast radius: `PhononState` is also consumed per-q by the CPU drivers (`epstate.ph = ph_save[iq]`),
-# `run_eph_over_q_and_k`, `wfpt.jl`, `run_coherence.jl` and `gamma_adaptive.jl`, so a per-q view into
-# the batch has to keep the `set_*!`/`copyto!` interface those rely on.
+# The per-q `PhononState`s built here serve the CPU drivers, which consume them one q point at a
+# time (`epstate.ph = ph_save[iq]` in `run_eph_over_k_and_kq`'s per-point loop,
+# `run_eph_over_q_and_k`, `wfpt.jl`, `run_coherence.jl`, `gamma_adaptive.jl`). A `Vector` of per-q
+# mutable structs costs ~13 allocations and ~1.5 kB per q point, most of a large grid's setup time
+# and GC. The batched outer-k driver does not use them: it reads only ω and the eigenmodes, and
+# takes them as the dense stacks of an `Eigenpairs` (`phonon_eigenpairs`).
 function _scatter_phonon_states!(states, xqs, E, U, vel, need_dipole, eph_phonon_basis, polar)
     @threads for iqs in chunks(xqs; n = nthreads())
         for iq in iqs
