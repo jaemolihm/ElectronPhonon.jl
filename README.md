@@ -31,6 +31,11 @@ off in your development environment by adding to its `LocalPreferences.toml` (ne
 [ElectronPhonon]
 precompile_workload = false
 ```
-or, with `Preferences` in that environment,
-`using Preferences, ElectronPhonon; set_preferences!(ElectronPhonon, "precompile_workload" => false; force = true)`.
+With `Preferences` in the active environment, the same entry can be written without loading the
+package:
+`using Preferences; set_preferences!(Base.UUID("06c0995b-90c7-4aad-a219-585912522888"), "precompile_workload" => false; force = true)`.
 Users and CI keep the workload on.
+
+Bitwise tests such as the `phonon_eigenpairs` comparison in `test/test_eigenpairs.jl` need the
+host CPU to match a `JULIA_CPU_TARGET` clone: otherwise package-image code runs the `generic` clone
+while JIT-compiled code is native, and the two round differently.

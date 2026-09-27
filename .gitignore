@@ -23,4 +23,7 @@ docs/site/
 # environment.
 Manifest.toml
 
+# Per-environment package preferences (e.g. `precompile_workload = false` during development)
+LocalPreferences.toml
+
 CLAUDE.md
