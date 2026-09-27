@@ -538,22 +538,30 @@ function GridKpoints{T}(n, vectors::Vector{Vec3{T}}, weights, ngrid, shift;
 end
 
 """
-    GridKpoints(kpts::Kpoints, ngrid = kpts.ngrid; atol, index = :auto)
+    GridKpoints(kpts::Kpoints, ngrid = kpts.ngrid; shift = nothing, atol, index = :auto)
+`shift` is the offset of the grid from Γ. `nothing` infers it from the first k point; pass it
+whenever it is known, e.g. for a subset of a known grid. Either way it is stored in its canonical
+form in `[0, 1 ./ ngrid)`, and every k point must be a node of the grid it defines.
 `index` selects the xk->ik index map: `:auto` leaves it to `_use_dense_index`, `:dense` and `:dict`
 force one of the two.
 """
-function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; atol = sqrt(eps(T)),
+function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; shift = nothing, atol = sqrt(eps(T)),
                      index = :auto) where {T}
     all(ngrid .> 0) || throw(ArgumentError("ngrid must be set or provided to make GridKpoints"))
     # `_hash_xk` packs the grid index into a single Int and can reach prod(ngrid) - 1, so
     # prod(ngrid) must fit in Int. Widen the product so prod(ngrid) itself cannot overflow.
     prod(Int128.(ngrid)) < typemax(Int) || throw(ArgumentError(
         "prod(ngrid) = $(prod(Int128.(ngrid))) must be < typemax(Int) to avoid overflow in the k-point hash"))
-    if kpts.n == 0
+    if kpts.n == 0 && shift === nothing
         return GridKpoints(0, Vector{Vec3{T}}(), Vector{T}(), ngrid, zero(Vec3{T}))
     end
 
-    shift = mod.(first(kpts.vectors) .* ngrid, 1) ./ ngrid
+    # Canonical shift in `[0, 1 ./ ngrid)`. A coordinate within `atol` of a grid node snaps to it:
+    # otherwise roundoff in `xk .* ngrid`, e.g. `29/400 * 400 = 28.999999999999996`, gives a shift of
+    # one full grid step or of ~1e-18 instead of 0.
+    sk = (shift === nothing ? first(kpts.vectors) : Vec3{T}(shift)) .* ngrid
+    sk_frac = @. sk - round(sk)
+    shift = @. mod(ifelse(abs(sk_frac) < atol, zero(sk_frac), sk_frac), 1) / ngrid
 
     # Check if all k points are on the shifted grid
     for xk in kpts.vectors
@@ -583,9 +591,10 @@ the result stays a `GridKpoints` — matching the serial symmetry return type.
 """
 function mpi_scatter(k::GridKpoints{FT}, comm::MPI.Comm) where {FT}
     ngrid = mpi_bcast(k.ngrid, comm)
+    shift = mpi_bcast(k.shift, comm)
     vectors = mpi_scatter(k.vectors, comm)
     weights = mpi_scatter(k.weights, comm)
-    GridKpoints(Kpoints{FT}(length(vectors), vectors, weights, ngrid), ngrid)
+    GridKpoints(Kpoints{FT}(length(vectors), vectors, weights, ngrid), ngrid; shift)
 end
 
 function mpi_gather(k::GridKpoints{FT}, comm::MPI.Comm) where {FT}
@@ -717,7 +726,8 @@ function Base.sort!(k::GridKpoints)
     k
 end
 
-get_filtered_kpoints(k::GridKpoints, ik_keep) = GridKpoints(get_filtered_kpoints(Kpoints(k), ik_keep))
+get_filtered_kpoints(k::GridKpoints, ik_keep) =
+    GridKpoints(get_filtered_kpoints(Kpoints(k), ik_keep); k.shift)
 kpoints_create_subgrid(k::GridKpoints, nsubgrid) = GridKpoints(kpoints_create_subgrid(Kpoints(k), nsubgrid))
 
 """
