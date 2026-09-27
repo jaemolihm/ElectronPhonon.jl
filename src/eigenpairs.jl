@@ -156,6 +156,7 @@ function phonon_eigenpairs(model::Model{FT}, qpts; fourier_mode = "gridopt",
         u_full = zeros(Complex{FT}, nmodes, nmodes, gqpts.n)
         @threads for iqs in chunks(gqpts.vectors; n = nthreads())
             dyn = get_interpolator(model.ph_dyn; fourier_mode)
+            register_kpoints!(dyn, view(gqpts.vectors, iqs))
             for iq in iqs
                 @views get_ph_eigen!(e_full[:, iq], u_full[:, :, iq], dyn, mass,
                                      model.polar_phonon, gqpts.vectors[iq])

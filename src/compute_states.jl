@@ -301,9 +301,14 @@ function _compute_phonon_states_cpu!(states, model::Model{FT}, kpts, quantities,
     @threads for iks in chunks(kpts.vectors; n = nthreads())
         # Setup thread-local WannierInterpolators. With supplied eigenpairs there is no dynamical
         # matrix to interpolate, and nothing else uses `dyn`.
-        dyn = eigenpairs === nothing ? get_interpolator(model.ph_dyn; fourier_mode) : nothing
+        dyn = if eigenpairs === nothing
+            itp_dyn = get_interpolator(model.ph_dyn; fourier_mode)
+            register_kpoints!(itp_dyn, view(kpts.vectors, iks))
+            itp_dyn
+        end
         if need_velocity
             dyn_R = get_interpolator(model.ph_dyn_R; fourier_mode)
+            register_kpoints!(dyn_R, view(kpts.vectors, iks))
         end
 
         for ik in iks

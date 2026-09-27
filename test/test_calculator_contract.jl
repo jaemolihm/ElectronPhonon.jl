@@ -66,6 +66,25 @@ end
     @test c.n > 0
 end
 
+@testset "driver rejects a batched fourier_mode on a CPU backend" begin
+    # The message is the guard's own, so a match also shows it fired before any setup work.
+    model_el = ElectronPhonon.holstein_model(; t = 0.1, ω₀ = 0.01, g = 0.02, alat = 5.0, ε₀ = 0.05,
+        dimension = 3, epmat_outer_momentum = "el", verbose = false)
+    model_ph = ElectronPhonon.holstein_model(; t = 0.1, ω₀ = 0.01, g = 0.02, alat = 5.0, ε₀ = 0.05,
+        dimension = 3, epmat_outer_momentum = "ph", verbose = false)
+    grid = (2, 2, 2)
+    for fourier_mode in ("batched", "batched-gridopt")
+        msg = "fourier_mode = \"$fourier_mode\" is not supported"
+        @test_throws msg ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid; fourier_mode)
+        @test_throws msg ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid; fourier_mode,
+                                                                batched = true)
+        @test_throws msg ElectronPhonon.run_eph_over_k_and_q(model_el, grid, grid; fourier_mode)
+        @test_throws msg ElectronPhonon.run_eph_over_q_and_k(model_ph, grid, grid; fourier_mode)
+        @test_throws msg ElectronPhonon.run_eph_over_q_and_k(model_ph, grid, grid; fourier_mode,
+                                                               batched = true)
+    end
+end
+
 # Stage-3 (DECISION-6): brackets that differ by loop shape dispatch on the loop MODE, not the
 # backend. A calculator with per-point-mode and batched-mode `OuterIteration` / `OuterIterationBatch`
 # brackets; each records the (scope, mode) it fired under so we can assert selection is by mode.
