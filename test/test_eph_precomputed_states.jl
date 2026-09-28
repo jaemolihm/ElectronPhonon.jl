@@ -1,6 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: electron_eigenpairs, phonon_eigenpairs, gpu_backend, CPUBackend, AbstractBackend, xk_to_ik,
+    on_backend,
     xk_to_ik_unsafe, AbstractCalculator, OuterKLoop, OuterQLoop, EPData, EPDataQBatched,
     OuterIteration, OuterIterationBatch
 
@@ -31,6 +32,26 @@ ElectronPhonon.setup_calculator!(c::_PrecomputedStatesProbe, backend, mode, kpts
 ElectronPhonon.postprocess_calculator!(c::_PrecomputedStatesProbe; kwargs...) = c
 ElectronPhonon.run_calculator!(c::_PrecomputedStatesProbe, ::EPData, ctx) = c
 ElectronPhonon.run_calculator!(c::_PrecomputedStatesProbe, ::EPDataQBatched, ctx) = c
+
+# Records the phonon side of each batched payload, keyed by (outer k, first k+q of the tile), so two
+# batched runs can be compared per (k, k+q) whatever their q sets are.
+struct _PhononPayloadProbe <: AbstractCalculator
+    ωqs :: Dict{Tuple{Int, Int}, Matrix{Float64}}
+    g2s :: Dict{Tuple{Int, Int}, Array{Float64, 4}}
+end
+_PhononPayloadProbe() = _PhononPayloadProbe(Dict(), Dict())
+ElectronPhonon.supports(::_PhononPayloadProbe, ::Type{OuterKLoop}) = true
+ElectronPhonon.supports(::_PhononPayloadProbe, ::Type{EPDataQBatched}) = true
+ElectronPhonon.calculator_begin!(::_PhononPayloadProbe, ::OuterIterationBatch, ctx) = nothing
+ElectronPhonon.calculator_end!(::_PhononPayloadProbe, ::OuterIterationBatch, ctx) = nothing
+ElectronPhonon.setup_calculator!(c::_PhononPayloadProbe, backend, mode, kpts, qpts, el_states;
+                                 kwargs...) = c
+ElectronPhonon.postprocess_calculator!(c::_PhononPayloadProbe; kwargs...) = c
+function ElectronPhonon.run_calculator!(c::_PhononPayloadProbe, p::EPDataQBatched, ctx)
+    c.ωqs[(p.ik, first(p.ikqs))] = Array(p.ωqs)
+    c.g2s[(p.ik, first(p.ikqs))] = Array(p.g2s)
+    c
+end
 
 # Largest deviation between two runs' states, position by position (the two runs must share a
 # k-point list). `_electron_state_equal` lives in common_models_from_artifacts.jl.
@@ -176,10 +197,11 @@ end
             symmetry = nothing, progress_print_step = 10^9, verbosity = 0,
             fourier_mode = "gridopt", kwargs...)
 
-        backends = AbstractBackend[CPUBackend()]
-        PRECOMPUTED_STATES_GPU_AVAILABLE && push!(backends, gpu_backend())
-        for backend in backends
+        # The per-point path: the run's q points are `combine_kpoint_grids`'s and are looked up in
+        # the cache, and the phonons come back as one `PhononState` per q point.
+        let backend = CPUBackend()
             plain = _run(sub_a; backend)
+            @test plain.ph_save isa Vector{<:PhononState}
             qpts = plain.qpts
             cache = _phonon_eigenpairs(plain.ph_save, qpts, backend)
             rot = circshift(1:qpts.n, 1)
@@ -206,6 +228,83 @@ end
             @test_throws "eigenpairs holds nbasis" _run(sub_a; backend,
                 ph_eigenpairs = electron_eigenpairs(model, kgrid; backend,
                                                     fourier_mode = "gridopt"))
+        end
+
+        # The batched path: the loop reads the phonons as the dense stacks of a `BatchedPhononState`
+        # over the run's own q set, and a passed cache is a lookup table into which that set is
+        # resolved. What reaches the calculators is compared per (k, k+q) through the payload.
+        # `CPUBackend(); batched = true` runs it without CUDA.
+        arms = Tuple{AbstractBackend, Bool}[(CPUBackend(), true)]
+        PRECOMPUTED_STATES_GPU_AVAILABLE && push!(arms, (gpu_backend(), true))
+        for (backend, batched) in arms
+            _runp(; kwargs...) = (probe = _PhononPayloadProbe();
+                                  out = _run(sub_a; backend, batched, calculators = [probe],
+                                             kwargs...);
+                                  (out, probe))
+            plain, p_plain = _runp()
+            qpts = plain.qpts
+            # (vii) The phonons come back as the batch the loop read, on the run's backend.
+            @test plain.ph_save isa BatchedPhononState
+            @test plain.ph_save.qpts === qpts
+            @test on_backend(backend, plain.ph_save.u) && on_backend(backend, plain.ph_save.e)
+            @test qpts.n > 1                      # so the rotation below is a real permutation
+            @test length(p_plain.ωqs) == sub_a.n  # one q tile per outer k
+
+            # (i) A cache over the run's own q points reproduces the run bit for bit.
+            cache = phonon_eigenpairs(model, qpts; backend)
+            _, p_cached = _runp(ph_eigenpairs = cache)
+            @test p_cached.ωqs == p_plain.ωqs
+            @test p_cached.g2s == p_plain.g2s
+
+            # (ii) Teeth: the same cache rotated by one q point changes every tile.
+            rot = circshift(1:qpts.n, 1)
+            rotated = Eigenpairs(model.nmodes, qpts, cache.e_full[:, rot], cache.u_full[:, :, rot])
+            _, p_bad = _runp(ph_eigenpairs = rotated)
+            @test all(key -> p_bad.ωqs[key] != p_plain.ωqs[key], keys(p_plain.ωqs))
+
+            # (iii) A whole-grid cache is a superset of the q points in another order. Against the
+            # same cache's eigenpairs on the run's own q points, every (k, k+q) gets the same
+            # payload. The comparison is not against `plain`: `combine_kpoint_grids` folds q into
+            # [-0.5, 0.5) and `kpoints_grid` gives [0, 1), and the dynamical matrix at q and q + G is
+            # not bitwise equal, which moves `u` (4.6e-3 at 6³ on this model).
+            full = phonon_eigenpairs(model, kgrid; backend)
+            iqs = [xk_to_ik(xq, full.kpts) for xq in qpts.vectors]
+            full_on_qpts = Eigenpairs(model.nmodes, qpts, full.e_full[:, iqs],
+                                      full.u_full[:, :, iqs])
+            _, p_full = _runp(ph_eigenpairs = full)
+            _, p_full_on_qpts = _runp(ph_eigenpairs = full_on_qpts)
+            @test p_full.ωqs == p_full_on_qpts.ωqs
+            @test p_full.g2s == p_full_on_qpts.g2s
+            # The same with several q tiles per outer k, so the gather from the batch runs at tile
+            # offsets past the first. `ωqs` is a pure gather, so its tiles laid end to end are the
+            # single-tile run's bit for bit.
+            _, p_full7 = _runp(ph_eigenpairs = full, nq_batch_max = 7)
+            _, p_full_on_qpts7 = _runp(ph_eigenpairs = full_on_qpts, nq_batch_max = 7)
+            @test length(p_full7.ωqs) == sub_a.n * cld(kgrid.n, 7)
+            @test p_full7.ωqs == p_full_on_qpts7.ωqs
+            @test p_full7.g2s == p_full_on_qpts7.g2s
+            @test all(ik -> reduce(hcat, [p_full7.ωqs[(ik, j)] for j in 1:7:kgrid.n]) ==
+                            p_full.ωqs[(ik, 1)], 1:sub_a.n)
+
+            # (iv) A cache missing a q point the run needs is an error naming the cache.
+            sub_q = GridKpoints(Kpoints(qpts.vectors[1:qpts.n-1]; ngrid = qpts.ngrid), qpts.ngrid)
+            partial = Eigenpairs(model.nmodes, sub_q, cache.e_full[:, 1:qpts.n-1],
+                                 cache.u_full[:, :, 1:qpts.n-1])
+            @test_throws "eigenpairs does not cover k point" _runp(ph_eigenpairs = partial)
+
+            # (v) A cache on another grid, or on the right grid with a shift that puts no q point on
+            # a node, is refused by the checked lookup rather than rounded onto a neighbour.
+            coarse = phonon_eigenpairs(model, kpoints_grid((2, 2, 2)); backend)
+            @test_throws "is not on the grid" _runp(ph_eigenpairs = coarse)
+            shifted_k = GridKpoints(Kpoints{Float64}(kgrid.n,
+                map(x -> x + ElectronPhonon.Vec3(1 / 8, 0, 0), kgrid.vectors), kgrid.weights,
+                kgrid.ngrid))
+            shifted = Eigenpairs(model.nmodes, shifted_k, full.e_full, full.u_full)
+            @test_throws "is not on the grid" _runp(ph_eigenpairs = shifted)
+
+            # (vi) The wrong species is still caught at the entry.
+            @test_throws "eigenpairs holds nbasis" _runp(
+                ph_eigenpairs = electron_eigenpairs(model, kgrid; backend, fourier_mode = "gridopt"))
         end
 
         # On incommensurate k / k+q grids there is no q-point set at all -- the phonons are solved

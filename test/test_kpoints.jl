@@ -138,6 +138,30 @@ end
     @test iszero(get_filtered_kpoints(gamma, [ik > 29 for ik in 1:n]).shift)
 end
 
+@testset "kpoints: GridKpoints sortperm" begin
+    using ElectronPhonon: shift_center!
+    # The counting sort must be the stable sort on the integer-coordinate tuples, ties included:
+    # folded and unfolded points, repeats, odd/even/non-cubic grids, shifts, and a spread that
+    # takes the tuple fallback.
+    tuple_sortperm(k) = sortperm(map(xk -> round.(Int, (xk - k.shift).data .* k.ngrid), k.vectors))
+    mk(xs, ng, s) = GridKpoints(length(xs), xs, fill(1 / length(xs), length(xs)), ng, s)
+    Random.seed!(11)
+    for ng in ((4, 4, 4), (5, 5, 5), (3, 4, 7)), shift in ((0, 0, 0), (1//2, 0, 1//3))
+        s = Vec3{Float64}(shift ./ ng)
+        c = [Vec3(rand(-ng[1]:2ng[1]), rand(-ng[2]:2ng[2]), rand(-ng[3]:2ng[3])) for _ in 1:2prod(ng)]
+        k = mk([s + x ./ ng for x in c], ng, s)
+        @test sortperm(k) == tuple_sortperm(k)                      # unfolded, repeats
+        shift_center!(k, (0, 0, 0))
+        @test sortperm(k) == tuple_sortperm(k)                      # folded, repeats
+        u = mk(shuffle(unique(k.vectors)), ng, s)
+        @test sortperm(u) == tuple_sortperm(u)                      # folded, distinct
+    end
+    spread = mk([Vec3(rand(-10^6:10^6), rand(-10^6:10^6), 0) ./ 100 for _ in 1:100], (100, 100, 1),
+                Vec3(0.0, 0.0, 0.0))
+    @test sortperm(spread) == tuple_sortperm(spread)
+    @test isempty(sortperm(GridKpoints{Float64}()))
+end
+
 @testset "kpoints: dense inverse index" begin
     using ElectronPhonon: get_filtered_kpoints, kpoints_grid, combine_kpoint_grids, unfold_kpoints,
         fold_kpoints, _hash_xk, _ik_from_hash, _use_dense_index

@@ -217,11 +217,12 @@ using ElectronPhonon
         end
 
         # The `(k, band)` lookup is `GridKpoints`' integer-grid hash, so plain `Kpoints` has no
-        # `state_index` method to reach.
+        # `state_index` method to reach. The lookup is threaded, so the `MethodError` arrives
+        # wrapped by its task; match its message.
         plain = BandStates(Kpoints(nk, kv, fill(1/nk, nk), ng), bs.iks, bs.ibands, es;
             nw = 8, nstates_base = 2.0)
-        @test_throws MethodError find_unfolding_indices(plain, bs, nothing)
-        @test_throws MethodError find_unfolding_indices(plain, bs, symmetry)
+        @test_throws "no method matching state_index" find_unfolding_indices(plain, bs, nothing)
+        @test_throws "no method matching state_index" find_unfolding_indices(plain, bs, symmetry)
 
         # The `::Nothing` members of the star-lookup family are the star `{xk}`.
         @test state_index_in_star(bs, bs[3].xk, bs.ibands[3], nothing) == 3

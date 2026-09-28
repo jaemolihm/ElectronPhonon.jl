@@ -34,11 +34,19 @@ cached *irreducible* eigenvector rotated by the symmetry operation, a direct run
 eigenvector at the point itself, and the two are a gauge apart. Nothing checks this.
 
 * `ph_eigenpairs :: Union{Nothing, Eigenpairs}` — the same for the phonons: a cache with
-  `nbasis = nmodes` over the run's own q points, replacing the dynamical-matrix diagonalization in
-  [`compute_phonon_states`](@ref). Build it with [`phonon_eigenpairs`](@ref), or assemble it from
-  an earlier run's returned `(qpts, ph_save)`; either pins the phonon eigenmode basis of two runs
-  to each other inside a degenerate multiplet. The q points a run visits are
-  `combine_kpoint_grids(kpts, kqpts)`, not an argument, so a cache must cover that set.
+  `nbasis = nmodes`, built with [`phonon_eigenpairs`](@ref), whose ω and eigenmodes replace the
+  dynamical-matrix diagonalization; it pins the phonon eigenmode basis of two runs to each other
+  inside a degenerate multiplet. It is a lookup table on both paths: the run's q points are every
+  difference `x_{k+q} - x_k`, folded into [-0.5, 0.5), and a cache must cover that set (a full
+  grid, `phonon_eigenpairs(model, kpoints_grid(ngrid))`, always does, so one such cache serves
+  several runs on that grid).
+
+The return value is `(; kpts, qpts, el_k_save, el_kq_save, ph_save)`. `ph_save` holds the phonons
+over `qpts`: one `PhononState` per q point on the per-point path, and a
+[`BatchedPhononState`](@ref) with its stacks on `backend` on the batched path. On a device that
+batch holds `8 nmodes + 16 nmodes²` bytes per q point (ω and eigenmodes) until the caller frees
+it (e.g. `CUDA.unsafe_free!` on `ph_save.u` and `ph_save.e`) or it is collected. On incommensurate
+grids the phonons are solved per (k, q) inside the loop and `qpts` and `ph_save` are `nothing`.
 """
 function run_eph_over_k_and_kq(
         model       :: Model{FT},
@@ -290,8 +298,16 @@ function _setup_eph_over_k_and_kq(
     end
 
 
-    # Precompute phonon states if precompute_ph == true
-    if precompute_ph
+    # Precompute phonon states if precompute_ph == true. The batched loop reads only ω and the
+    # eigenmodes, as dense stacks over `qpts` on the backend; the per-point loop takes one
+    # `PhononState` per q point. Either reads a passed `ph_eigenpairs` as a lookup table.
+    if precompute_ph && batched
+        ph_save = maybe_time(verbosity) do
+            compute_phonon_states_batched(model, qpts, ["eigenvalue", "eigenvector"];
+                fourier_mode, backend, eigenpairs = ph_eigenpairs)
+        end
+        dyn_threads = nothing
+    elseif precompute_ph
         ph_save = maybe_time(verbosity) do
             # FIXME: Compute velocity_diagonal only if needed by calculator.
             compute_phonon_states(model, qpts,
@@ -717,8 +733,10 @@ function _loop_eph_over_k_and_kq_batched(
     # already live, so `free_bytes` reflects them. All buffer byte accounting lives in
     # `_outer_k_staging_bytes` (shared with `estimate_device_memory`); `nq_batch_user`
     # (Int, or nkq when nothing) stays a hard cap.
+    # `nq_grid = 0`: the phonon stacks over `qpts` are `ph_save`'s, already resident (built in the
+    # setup), so `free_bytes` reflects them.
     per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
-        nq_grid = qpts.n, nk_batch_max, calculators,
+        nq_grid = 0, nk_batch_max, calculators,
         nr_epmat = epmat_dev.nr, FT)
     nq_batch_cap = nq_batch_user === nothing ? nkq : min(nq_batch_user, nkq)
     nq_batch_max = plan_batch(backend, per_point, committed, nq_batch_cap; what = "outer-k")
@@ -758,24 +776,10 @@ function _loop_eph_over_k_and_kq_batched(
         end
         copyto!(ukqs_all_dev, ukqs_all_host)
     end
-    # Phonon eigenvectors `u` and frequencies `e` depend only on iq, so (like ukqs_all_dev above)
-    # collect the full q-grid stacks on the host and copy to the device once, then gather per
-    # batch on the device by index (below).
-    # TODO: these two are the only fields of `ph_save` this loop ever reads, and
-    # `_compute_phonon_states_device!` built them on the device before scattering them into per-q
-    # `PhononState`s — so this gather + H2D undoes a D2H. Have the setup hand this loop the device
-    # stacks directly and drop this block; see the TODO at `_scatter_phonon_states!`.
-    uph_all_dev = alloc(backend, Complex{FT}, nmodes, nmodes, qpts.n)
-    ωq_all_dev  = alloc(backend, FT, nmodes, qpts.n)
-    let uph_all_host = Array{Complex{FT}}(undef, nmodes, nmodes, qpts.n),
-        ωq_all_host  = Array{FT}(undef, nmodes, qpts.n)
-        for iq in 1:qpts.n
-            @views uph_all_host[:, :, iq] .= ph_save[iq].u
-            @views ωq_all_host[:, iq]     .= ph_save[iq].e
-        end
-        copyto!(uph_all_dev, uph_all_host)
-        copyto!(ωq_all_dev, ωq_all_host)
-    end
+    # Phonon eigenvectors `u` and frequencies `e` depend only on iq: the dense stacks over `qpts`
+    # are `ph_save`'s, already on the backend, and each (k, tile) gathers from them by index (below).
+    uph_all_dev = ph_save.u
+    ωq_all_dev  = ph_save.e
 
     # Grid coordinates as (3 × n) real device matrices, uploaded once. Both phase builds below read
     # them directly, so nothing on the phase path is staged on the host or copied H2D inside the loop.

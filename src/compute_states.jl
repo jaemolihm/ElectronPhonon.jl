@@ -3,6 +3,7 @@ using Base.Threads: nthreads, threadid, @threads
 
 export compute_electron_states
 export compute_phonon_states
+export compute_phonon_states_batched
 
 """
     compute_electron_states(model, kpts, quantities, window=(-Inf, Inf); fourier_mode="normal",
@@ -264,7 +265,9 @@ Compute the quantities listed in `quantities` and return a vector of PhononState
 `eigenpairs`: an [`Eigenpairs`](@ref) with `nbasis = nmodes` covering every q point of `kpts`. Holds
 ω and the mass-scaled eigenmodes in `e_full`/`u_full`, so the diagonalization is skipped. Used to
 fix the gauge of the phonon eigenvectors.
-TODO: Implement quantities "velocity"
+`backend` must be `CPUBackend()`: one mutable `PhononState` per q point is what the per-point CPU
+drivers consume, and costs ~13 allocations and ~1.5 kB per q point. For dense stacks, on the host or
+on a device, use [`compute_phonon_states_batched`](@ref) instead.
 """
 function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode="normal",
         eph_phonon_basis::Symbol = :eigenmode, backend=CPUBackend(),
@@ -275,6 +278,10 @@ function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode=
         quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
     end
 
+    backend isa CPUBackend || throw(ArgumentError(
+        "compute_phonon_states runs on CPUBackend only. For the phonons on a device use " *
+        "compute_phonon_states_batched(model, qpts, quantities; backend), the dense stacks the " *
+        "batched e-ph loop reads."))
     (; nmodes) = model
     _check_eigenpairs(eigenpairs, nmodes, backend)
 
@@ -283,20 +290,10 @@ function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode=
         return states
     end
 
-    if backend isa CPUBackend
-        _compute_phonon_states_cpu!(states, model, kpts, quantities, eph_phonon_basis, eigenpairs;
-                                    fourier_mode)
-    else
-        _compute_phonon_states_device!(states, model, kpts, quantities, eph_phonon_basis, backend,
-                                       eigenpairs)
-    end
-    states
-end
-
-function _compute_phonon_states_cpu!(states, model::Model{FT}, kpts, quantities,
-                                     eph_phonon_basis, eigenpairs; fourier_mode) where FT
     (; mass) = model
-    need_velocity = "velocity_diagonal" ∈ quantities
+    valueonly = quantities == ["eigenvalue"]
+    need_vdiag = "velocity_diagonal" ∈ quantities
+    need_dipole = "eph_dipole_coeff" ∈ quantities
     polar = model.polar_phonon
     @threads for iks in chunks(kpts.vectors; n = nthreads())
         # Setup thread-local WannierInterpolators. With supplied eigenpairs there is no dynamical
@@ -306,7 +303,7 @@ function _compute_phonon_states_cpu!(states, model::Model{FT}, kpts, quantities,
             register_kpoints!(itp_dyn, view(kpts.vectors, iks))
             itp_dyn
         end
-        if need_velocity
+        if need_vdiag
             dyn_R = get_interpolator(model.ph_dyn_R; fourier_mode)
             register_kpoints!(dyn_R, view(kpts.vectors, iks))
         end
@@ -315,17 +312,14 @@ function _compute_phonon_states_cpu!(states, model::Model{FT}, kpts, quantities,
             xk = kpts.vectors[ik]
             ph = states[ik]
 
-            if quantities == ["eigenvalue"]
+            if valueonly
                 _set_eigen_valueonly_from!(ph, eigenpairs, dyn, mass, polar, xk)
             else
                 _set_eigen_from!(ph, eigenpairs, dyn, mass, polar, xk)
-                if "velocity" ∈ quantities
-                    # not implemented
-                    error("full velocity for phonons not implemented")
-                elseif "velocity_diagonal" ∈ quantities
+                if need_vdiag
                     set_velocity_diag!(ph, dyn_R, xk)
                 end
-                if "eph_dipole_coeff" ∈ quantities
+                if need_dipole
                     # Use ph.u for eigenmode basis, nothing for Cartesian basis
                     u_ph_for_dipole = (eph_phonon_basis == :eigenmode) ? ph.u : nothing
                     get_eph_dipole_coeffs!(ph.eph_dipole_coeff, ph.eph_r_coeff, xk, polar, u_ph_for_dipole)
@@ -333,98 +327,145 @@ function _compute_phonon_states_cpu!(states, model::Model{FT}, kpts, quantities,
             end
         end  # ik
     end  # iks
+    states
 end
 
-# Device: batch the phonon eigensolve on the backend (same idea as _compute_electron_states_device!),
-# then a host loop copies the results into the states. velocity_diagonal is rotated on the device
-# too. polar is unsupported (the batched e-ph loop asserts no polar). Same degeneracy-gauge caveat as
-# the electrons — small g2 differences for degenerate modes, most visible on COARSE q grids.
-# Supplied eigenpairs replace the eigensolve outright, which also removes that caveat: the run
-# inherits whichever basis built the cache.
-function _compute_phonon_states_device!(states, model::Model{FT}, kpts, quantities,
-                                        eph_phonon_basis, backend, eigenpairs) where FT
+# Why this is not `compute_phonon_states` stacked afterwards: that function returns one mutable
+# `PhononState` per q point, ~13 heap objects per q, which is what the per-point loops need in their
+# `EPState` and what the batched loop over millions of q points must not pay; and it is host-only. The
+# per-q physics (eigensolve, cache copy, velocity, dipole) is shared: both builders call the same
+# kernels on the same arrays, so the host stacks here are `compute_phonon_states` bit for bit.
+"""
+    compute_phonon_states_batched(model, qpts, quantities; fourier_mode = "gridopt",
+        eph_phonon_basis = :eigenmode, backend = CPUBackend(), eigenpairs = nothing)
+        -> BatchedPhononState
+
+The phonons of `qpts` as a [`BatchedPhononState`](@ref) on `backend`: what
+[`compute_phonon_states`](@ref) computes for the same arguments, stored as dense stacks instead of
+one `PhononState` per q point. `quantities` and `eph_phonon_basis` are as there; a stack whose
+quantity is not computed is zero-length, `u` included with `["eigenvalue"]`.
+
+`eigenpairs` is a gauge-fixing lookup table, as in `compute_phonon_states`: ω and `u` of every q are
+copied from it instead of diagonalizing, so it must cover every q point of `qpts` and be resident on
+`backend`.
+
+On a GPU backend `"velocity_diagonal"`, `"eph_dipole_coeff"` and polar phonons are not supported,
+and `fourier_mode` is unused. The q set is solved in chunks of the batched dynamical-matrix
+interpolator's block width, so the device `D(q)` transient is bounded whatever `qpts.n`. As in
+[`electron_eigenpairs`](@ref), the batched eigensolve picks its own basis inside a degenerate mode
+multiplet, so device and host `u` differ there.
+"""
+function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fourier_mode = "gridopt",
+        eph_phonon_basis::Symbol = :eigenmode, backend = CPUBackend(),
+        eigenpairs::Union{Nothing, Eigenpairs} = nothing) where FT
+    allowed_quantities = ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]
+    for quantity in quantities
+        quantity ∉ allowed_quantities && error("$quantity is not an allowed quantity.")
+    end
     (; nmodes, mass) = model
-    need_velocity = "velocity_diagonal" ∈ quantities
+    _check_eigenpairs(eigenpairs, nmodes, backend)
+    valueonly = quantities == ["eigenvalue"]
+    need_vdiag = "velocity_diagonal" ∈ quantities
+    need_dipole = "eph_dipole_coeff" ∈ quantities
+    nq = qpts.n
+    if !(backend isa CPUBackend)
+        on = "compute_phonon_states_batched on $(nameof(typeof(backend)))"
+        need_vdiag && throw(ArgumentError("\"velocity_diagonal\" is not supported by $on"))
+        need_dipole && throw(ArgumentError("\"eph_dipole_coeff\" is not supported by $on"))
+    end
+
+    # Zero-filled as a `PhononState` is: a 3D dipole leaves `eph_r_coeff` unwritten, and nothing
+    # is written for an empty `quantities`.
+    vdiag = alloc_zeros(backend, FT, 3, nmodes, need_vdiag ? nq : 0)
+    eph_dipole_coeff = alloc_zeros(backend, Complex{FT}, nmodes, need_dipole ? nq : 0)
+    eph_r_coeff = alloc_zeros(backend, Complex{FT}, nmodes, 3, need_dipole ? nq : 0)
+    (nq == 0 || isempty(quantities)) && return BatchedPhononState(nmodes, qpts,
+        alloc_zeros(backend, FT, nmodes, nq), alloc_zeros(backend, Complex{FT}, nmodes, nmodes, nq),
+        vdiag, eph_dipole_coeff, eph_r_coeff)
+    nq_u = valueonly ? 0 : nq
+    if backend isa CPUBackend
+        e = alloc_zeros(backend, FT, nmodes, nq)
+        u = alloc_zeros(backend, Complex{FT}, nmodes, nmodes, nq_u)
+        _compute_phonon_states_batched_cpu!(e, u, vdiag, eph_dipole_coeff, eph_r_coeff, model,
+            qpts, eigenpairs, valueonly, need_vdiag, need_dipole, eph_phonon_basis; fourier_mode)
+    elseif eigenpairs === nothing
+        # Device (GPU) solve.
+        model.polar_phonon.use && throw(ArgumentError(
+            "compute_phonon_states_batched on a non-CPU backend does not support polar phonons"))
+        itp_dyn = get_interpolator(to_device(backend, model.ph_dyn); fourier_mode = "batched",
+                                   backend, nk_hint = nq)
+        msqrt_d = alloc(backend, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
+        e = alloc(backend, FT, nmodes, nq)
+        u = alloc(backend, Complex{FT}, nmodes, nmodes, nq_u)
+        # One chunk per Fourier block of `itp_dyn`, so the Fourier partition is that of one call
+        # over the whole set; the eigensolve is per matrix, so the chunking does not change ω or u.
+        for c in Iterators.partition(1:nq, itp_dyn.batch_size)
+            D = _fourier_hk_batched(itp_dyn, view(qpts.vectors, c))  # (nmodes, nmodes, length(c))
+            D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
+            D ./= reshape(msqrt_d, 1, nmodes, 1)
+            Esq = if valueonly
+                eigvals_batched(D)
+            else
+                Esq_c, U = eigen_batched(D)
+                U ./= reshape(msqrt_d, nmodes, 1, 1)     # mass factor: u[i,:] /= sqrt(mass[i])
+                u[:, :, c] .= U
+                Esq_c
+            end
+            e[:, c] .= sign.(Esq) .* sqrt.(abs.(Esq))  # ω = sign(ω²)·√|ω²|
+        end
+    else
+        # Device (GPU) gather from the cache (the host arm above copies it per q). The cache's
+        # columns for this q list are resolved on the host: a miss inside the device
+        # gather would surface as a bare `KernelException` naming only the device.
+        iqs = Vector{Int}(undef, nq)
+        @threads for iqs_chunk in chunks(1:nq; n = nthreads())
+            for iq in iqs_chunk
+                iqs[iq] = _eigenpairs_ik(eigenpairs, qpts.vectors[iq])
+            end
+        end
+        e = eigenpairs.e_full[:, iqs]
+        u = valueonly ? alloc(backend, Complex{FT}, nmodes, nmodes, 0) :
+                        eigenpairs.u_full[:, :, iqs]
+    end
+    BatchedPhononState(nmodes, qpts, e, u, vdiag, eph_dipole_coeff, eph_r_coeff)
+end
+
+# The host fill: `compute_phonon_states`' loop, same chunks and same per-q kernels, on q slices of
+# the stacks. A function barrier, so the `@threads` closure captures typed arguments.
+function _compute_phonon_states_batched_cpu!(e, u, vdiag, eph_dipole_coeff, eph_r_coeff,
+        model, qpts, eigenpairs, valueonly, need_vdiag, need_dipole, eph_phonon_basis;
+        fourier_mode)
+    (; mass) = model
     polar = model.polar_phonon
-    polar.use && error("compute_phonon_states on a non-CPU backend does not support polar phonons")
-    "velocity" ∈ quantities && error("full velocity for phonons not implemented")
+    @threads for iqs in chunks(qpts.vectors; n = nthreads())
+        # Thread-local interpolators; with supplied eigenpairs there is no D(q) to interpolate.
+        dyn = if eigenpairs === nothing
+            itp_dyn = get_interpolator(model.ph_dyn; fourier_mode)
+            register_kpoints!(itp_dyn, view(qpts.vectors, iqs))
+            itp_dyn
+        end
+        if need_vdiag
+            dyn_R = get_interpolator(model.ph_dyn_R; fourier_mode)
+            register_kpoints!(dyn_R, view(qpts.vectors, iqs))
+        end
 
-    # ω and the mass-scaled eigenmodes, either solved for here or taken from the cache, which
-    # already holds both in that form.
-    E_dev, U_dev = if eigenpairs === nothing
-        _ph_eigen_batched(model, kpts.vectors, backend)
-    else
-        # The lookup runs on the host: a miss inside the view would surface as a bare
-        # `KernelException` naming only the device.
-        iqs = map(xq -> _eigenpairs_ik(eigenpairs, xq), kpts.vectors)
-        # Views, not copies. Both consumers read `U_dev` and nothing writes it.
-        (view(eigenpairs.e_full, :, iqs), view(eigenpairs.u_full, :, :, iqs))
-    end
-    E = Array(E_dev)
-    U = quantities == ["eigenvalue"] ? nothing : Array(U_dev)
-    vel = if need_velocity
-        # Phonon velocity requires division by 2ω (dω²/dk = 2ω dω/dk).
-        # This is done in _scatter_phonon_states!.
-        itp_phvel = get_interpolator(to_device(backend, model.ph_dyn_R); fourier_mode="batched", backend, nk_hint=kpts.n)
-        Array(get_el_velocity_direct_batched(itp_phvel, kpts.vectors, U_dev))
-    else
-        nothing
-    end
-
-    _scatter_phonon_states!(states, kpts.vectors, E, U, vel,
-                            "eph_dipole_coeff" ∈ quantities, eph_phonon_basis, polar)
-end
-
-# ω = sign(ω²)·√|ω²| (nmodes, nq) and the mass-scaled eigenmodes (nmodes, nmodes, nq) at `xqs`, in
-# one batched eigensolve on `backend`.
-function _ph_eigen_batched(model::Model{FT}, xqs, backend) where FT
-    (; nmodes, mass) = model
-    itp_dyn = get_interpolator(to_device(backend, model.ph_dyn);
-                               fourier_mode="batched", backend, nk_hint=length(xqs))
-    D = _fourier_hk_batched(itp_dyn, xqs)  # (nmodes,nmodes,nq)
-    msqrt_d = similar(D, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
-    D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
-    D ./= reshape(msqrt_d, 1, nmodes, 1)
-    Esq_dev, U_solved = eigen_batched(D)         # ω² (nmodes,nq), U (nmodes,nmodes,nq)
-    U_solved ./= reshape(msqrt_d, nmodes, 1, 1)  # mass factor: u[i,:] /= sqrt(mass[i])
-    (sign.(Esq_dev) .* sqrt.(abs.(Esq_dev)), U_solved)
-end
-
-# Function barrier: `U`/`vel` are `nothing` or an `Array` depending on `quantities`, so they must
-# arrive as typed arguments for the reads below to be static.
-#
-# TODO: replace the `Vector{PhononState}` with a struct-of-arrays `BatchedPhononState{T, AT}` holding
-# the whole q-grid in dense stacks — `e` (nmodes, nq), `u` (nmodes, nmodes, nq), `vdiag`,
-# `eph_dipole_coeff` — with `AT` selecting host or device storage, so the same type serves both
-# backends and the GPU path never leaves the device. A `Vector` of per-q mutable structs costs ~13
-# allocations and ~1.5 kB per q point, which at the q-grids the outer-k driver builds (nq = 6.9 M for
-# Cu at nk = 200) is ~90 M allocations and ~10 GiB of churn, most of the setup's GC time.
-# `_loop_eph_over_k_and_kq_batched` shows how little of it is wanted: it reads only `.u` and `.e`, and
-# gathers them straight back into dense stacks to re-upload — data `E_dev`/`U_dev` above already hold
-# on the device — while `velocity_diagonal` and `eph_dipole_coeff`, which that driver requests, are
-# never read. Measured on Cu at nq = 436 k: 1.62 s / 5.67 M allocations / 669 MiB for the per-q
-# states, versus 0.60 s / ~3 k allocations for the device stacks alone.
-# Blast radius: `PhononState` is also consumed per-q by the CPU drivers (`epstate.ph = ph_save[iq]`),
-# `run_eph_over_q_and_k`, `wfpt.jl`, `run_coherence.jl` and `gamma_adaptive.jl`, so a per-q view into
-# the batch has to keep the `set_*!`/`copyto!` interface those rely on.
-function _scatter_phonon_states!(states, xqs, E, U, vel, need_dipole, eph_phonon_basis, polar)
-    @threads for iqs in chunks(xqs; n = nthreads())
-        for iq in iqs
-            ph = states[iq]
-            ph.xq = xqs[iq]
-            @views ph.e .= E[:, iq]
-            U === nothing && continue
-            @views ph.u .= U[:, :, iq]
-            if vel !== nothing
-                for i in 1:ph.nmodes
-                    ph.vdiag[i] = real.(Vec3(vel[i, i, 1, iq], vel[i, i, 2, iq], vel[i, i, 3, iq])) ./ (2 * ph.e[i])
+        @views for iq in iqs
+            xq = qpts.vectors[iq]
+            if valueonly
+                _set_eigen_valueonly_from!(e[:, iq], eigenpairs, dyn, mass, polar, xq)
+            else
+                _set_eigen_from!(e[:, iq], u[:, :, iq], eigenpairs, dyn, mass, polar, xq)
+                if need_vdiag
+                    _ph_velocity_diag!(vdiag[:, :, iq], dyn_R, xq, u[:, :, iq], e[:, iq])
+                end
+                if need_dipole
+                    # u for the eigenmode basis, nothing for the Cartesian basis
+                    u_ph = eph_phonon_basis == :eigenmode ? u[:, :, iq] : nothing
+                    get_eph_dipole_coeffs!(eph_dipole_coeff[:, iq], eph_r_coeff[:, :, iq], xq,
+                                           polar, u_ph)
                 end
             end
-            if need_dipole
-                # Use ph.u for eigenmode basis, nothing for Cartesian basis
-                u_ph_for_dipole = (eph_phonon_basis == :eigenmode) ? ph.u : nothing
-                get_eph_dipole_coeffs!(ph.eph_dipole_coeff, ph.eph_r_coeff, ph.xq, polar, u_ph_for_dipole)
-            end
-        end  # iq
-    end  # iqs
+        end
+    end
+    nothing
 end

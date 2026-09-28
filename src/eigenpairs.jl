@@ -136,38 +136,20 @@ end
     phonon_eigenpairs(model, qpts; fourier_mode = "gridopt", backend = CPUBackend())
 
 The phonon twin of [`electron_eigenpairs`](@ref): the frequencies ω (`e_full`) and mass-scaled
-eigenmodes (`u_full`) at every q point of `qpts`, `nbasis = nmodes`. They are what
-[`compute_phonon_states`](@ref) solves for at the same q, with the same solver, so a run handed
-this cache as `ph_eigenpairs` reproduces the run without it.
+eigenmodes (`u_full`) at every q point of `qpts`, `nbasis = nmodes`. They are the `e`/`u` stacks of
+[`compute_phonon_states_batched`](@ref) over the same q points, held without a copy, so on the host
+they are what [`compute_phonon_states`](@ref) solves for and a run handed this cache as
+`ph_eigenpairs` reproduces the run without it.
 
-On a GPU backend the whole set is one batched eigensolve, the one `compute_phonon_states` runs
-there, and the cache stays on the device; `fourier_mode` is then unused and polar phonons are not
-supported, as in that path. The electron builder's two device caveats hold here too: the batched
-eigensolve picks its own basis inside a degenerate mode multiplet, so a device-built cache differs
-from a CPU-built one there, and the whole set is one batch, so the device dynamical-matrix stack
-(`nmodes^2 * nq`) is unbounded.
+On a GPU backend the cache stays on the device; `fourier_mode` is then unused and polar phonons are
+not supported. The batched eigensolve picks its own basis inside a degenerate mode multiplet, so a
+device-built cache differs from a CPU-built one there.
 """
-function phonon_eigenpairs(model::Model{FT}, qpts; fourier_mode = "gridopt",
-                           backend = CPUBackend()) where {FT}
-    (; nmodes, mass) = model
+function phonon_eigenpairs(model::Model, qpts; fourier_mode = "gridopt", backend = CPUBackend())
     gqpts = GridKpoints(qpts)
-    if backend isa CPUBackend
-        e_full = zeros(FT, nmodes, gqpts.n)
-        u_full = zeros(Complex{FT}, nmodes, nmodes, gqpts.n)
-        @threads for iqs in chunks(gqpts.vectors; n = nthreads())
-            dyn = get_interpolator(model.ph_dyn; fourier_mode)
-            register_kpoints!(dyn, view(gqpts.vectors, iqs))
-            for iq in iqs
-                @views get_ph_eigen!(e_full[:, iq], u_full[:, :, iq], dyn, mass,
-                                     model.polar_phonon, gqpts.vectors[iq])
-            end
-        end
-        Eigenpairs(nmodes, gqpts, e_full, u_full)
-    else
-        model.polar_phonon.use && error("phonon_eigenpairs on a non-CPU backend does not " *
-                                        "support polar phonons")
-        Eigenpairs(nmodes, gqpts, _ph_eigen_batched(model, gqpts.vectors, backend)...)
-    end
+    b = compute_phonon_states_batched(model, gqpts, ["eigenvalue", "eigenvector"]; fourier_mode,
+                                      backend)
+    Eigenpairs(model.nmodes, gqpts, b.e, b.u)
 end
 
 # Guards on a caller-supplied cache, checked once per consuming call rather than per k point. Both
@@ -251,21 +233,28 @@ function _eigenvalues_on_host(eigenpairs::Eigenpairs, itp_elham, xks)
     Array(eigenpairs.e_full[:, iks])
 end
 
-# The full eigenpair of one q point, into a `PhononState`. `e` is the frequency ω and `u` the
+# The full eigenpair of one q point: into a `PhononState`, or into the `e`/`u` arrays of one q (a
+# slice of the stacks of `compute_phonon_states_batched`). `e` is the frequency ω and `u` the
 # mass-scaled eigenmode, i.e. what `get_ph_eigen!` leaves in a `PhononState` and what
 # `phonon_eigenpairs` stores, so neither the sign(ω²)√|ω²| nor the 1/√mass step is redone here.
 # Argument order follows the electron pair above, `(state, cache, what it takes to solve,
 # momentum)`; the solver arguments differ because `D(q)` needs the masses and the dipole term
 # where `H(k)` needs only its interpolator.
-_set_eigen_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
-    set_eigen!(ph, dyn, mass, polar, xq)
-
-function _set_eigen_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
-    iq = _eigenpairs_ik(eigenpairs, xq)
+function _set_eigen_from!(ph::PhononState, eigenpairs, dyn, mass, polar, xq)
     ph.xq = xq
-    @views ph.e .= eigenpairs.e_full[:, iq]
-    @views ph.u .= eigenpairs.u_full[:, :, iq]
+    _set_eigen_from!(ph.e, ph.u, eigenpairs, dyn, mass, polar, xq)
     ph
+end
+
+_set_eigen_from!(e::AbstractVector, u::AbstractMatrix, ::Nothing, dyn, mass, polar, xq) =
+    get_ph_eigen!(e, u, dyn, mass, polar, xq)
+
+function _set_eigen_from!(e::AbstractVector, u::AbstractMatrix, eigenpairs::Eigenpairs, dyn, mass,
+                          polar, xq)
+    iq = _eigenpairs_ik(eigenpairs, xq)
+    @views e .= eigenpairs.e_full[:, iq]
+    @views u .= eigenpairs.u_full[:, :, iq]
+    e, u
 end
 
 # Unlike every other consumer here this one is not inert: `e` comes from the cache's FULL
@@ -274,12 +263,17 @@ end
 # whose ω² is far below the largest ω² of its own q point -- an acoustic mode at Γ of a cell that
 # also carries optical modes -- can differ in the leading digits. Modes away from ω = 0 agree to
 # round-off.
-_set_eigen_valueonly_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
-    set_eigen_valueonly!(ph, dyn, mass, polar, xq)
-
-function _set_eigen_valueonly_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
-    iq = _eigenpairs_ik(eigenpairs, xq)
+function _set_eigen_valueonly_from!(ph::PhononState, eigenpairs, dyn, mass, polar, xq)
     ph.xq = xq
-    @views ph.e .= eigenpairs.e_full[:, iq]
+    _set_eigen_valueonly_from!(ph.e, eigenpairs, dyn, mass, polar, xq)
     ph
+end
+
+_set_eigen_valueonly_from!(e::AbstractVector, ::Nothing, dyn, mass, polar, xq) =
+    get_ph_eigen_valueonly!(e, dyn, mass, polar, xq)
+
+function _set_eigen_valueonly_from!(e::AbstractVector, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
+    iq = _eigenpairs_ik(eigenpairs, xq)
+    @views e .= eigenpairs.e_full[:, iq]
+    e
 end
