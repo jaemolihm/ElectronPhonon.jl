@@ -114,6 +114,30 @@ end
     @test all([k isa GridKpoints for k in kpts_split])
 end
 
+@testset "kpoints: GridKpoints shift" begin
+    using ElectronPhonon: get_filtered_kpoints, kpoints_grid
+
+    # 29/400 * 400 == 28.999999999999996. Taken naively, `mod(x * n, 1) / n` is one grid step, and
+    # for other points of the same grid (e.g. -29/400) a ~1e-18 residue; both must snap to zero.
+    n = 400
+    @test count(j -> !iszero(GridKpoints(Kpoints([Vec3(j / n, 0.0, 0.0)]; ngrid = (n, 1, 1))).shift),
+                -n:n) == 0
+
+    # A given shift is stored in canonical form and validated against every point.
+    N = 4
+    half = (1, 1, 1) ./ 2N
+    kpts = kpoints_grid((N, N, N); shift = half)
+    @test GridKpoints(kpts; shift = half .+ (1, 0, 3) ./ N).shift ≈ Vec3(half)
+    @test_throws "is not on the grid" GridKpoints(kpts; shift = (0, 0, 0))
+
+    # A subset of a GridKpoints keeps its parent's shift, even with no point to infer it from.
+    gridk = GridKpoints(kpts)
+    @test get_filtered_kpoints(gridk, falses(gridk.n)).shift === gridk.shift
+    # Taken from the first kept point, 29/400, the shift of this Γ grid's subset would be one step.
+    gamma = GridKpoints(kpoints_grid((n, 1, 1)))
+    @test iszero(get_filtered_kpoints(gamma, [ik > 29 for ik in 1:n]).shift)
+end
+
 @testset "kpoints: dense inverse index" begin
     using ElectronPhonon: get_filtered_kpoints, kpoints_grid, combine_kpoint_grids, unfold_kpoints,
         fold_kpoints, _hash_xk, _ik_from_hash, _use_dense_index
