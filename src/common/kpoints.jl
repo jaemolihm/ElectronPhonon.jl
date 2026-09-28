@@ -447,14 +447,14 @@ function combine_kpoint_grids(kpts, qpts, op, ngrid_kq)
     # The dense path emits the points already in the order `sort!` gives, by the signed grid
     # coordinates of the folded points, so it does not sort. Folding is per axis, so along each axis
     # that order is the table's coordinate order rotated to start at the lowest folded node: sweep
-    # the table from there. `shift` is what `GridKpoints(::Kpoints)` reads off the first point in
+    # the table from there. `shift` is what `GridKpoints(::Kpoints)` derives from the first point in
     # table order, bit for bit.
     seen = _kq_seen_table(BkS, BqS, sgn, ngrid_kq)
     ngrid = convert(NTuple{3, Int}, ngrid_kq)
     ifirst = findfirst(seen)  # [c3 + 1, c2 + 1, c1 + 1] of the first point in table order
     xfirst = Vec3((ifirst[3] - 1) / ngrid[1], (ifirst[2] - 1) / ngrid[2],
                   (ifirst[1] - 1) / ngrid[3]) + shift_kq
-    shift = mod.(xfirst .* ngrid, 1) ./ ngrid
+    shift = _canonical_grid_shift(xfirst, ngrid, sqrt(eps(T)))
     # Per axis, every coordinate folded as `shift_center!` folds and keyed as `sortperm` keys; the
     # sweep starts at the smallest key.
     start = ntuple(3) do d
@@ -566,6 +566,15 @@ function GridKpoints{T}(n, vectors::Vector{Vec3{T}}, weights, ngrid, shift;
     end
 end
 
+# The shift of the grid through node `xk`, in its canonical form in `[0, 1 ./ ngrid)`. A coordinate
+# within `atol` of a grid node snaps to it: otherwise roundoff in `xk .* ngrid`, e.g.
+# `29/400 * 400 = 28.999999999999996`, gives a shift of one full grid step or of ~1e-18 instead of 0.
+function _canonical_grid_shift(xk, ngrid, atol)
+    sk = xk .* ngrid
+    sk_frac = @. sk - round(sk)
+    @. mod(ifelse(abs(sk_frac) < atol, zero(sk_frac), sk_frac), 1) / ngrid
+end
+
 """
     GridKpoints(kpts::Kpoints, ngrid = kpts.ngrid; shift = nothing, atol, index = :auto)
 `shift` is the offset of the grid from Γ. `nothing` infers it from the first k point; pass it
@@ -585,12 +594,8 @@ function GridKpoints(kpts::Kpoints{T}, ngrid = kpts.ngrid; shift = nothing, atol
         return GridKpoints(0, Vector{Vec3{T}}(), Vector{T}(), ngrid, zero(Vec3{T}))
     end
 
-    # Canonical shift in `[0, 1 ./ ngrid)`. A coordinate within `atol` of a grid node snaps to it:
-    # otherwise roundoff in `xk .* ngrid`, e.g. `29/400 * 400 = 28.999999999999996`, gives a shift of
-    # one full grid step or of ~1e-18 instead of 0.
-    sk = (shift === nothing ? first(kpts.vectors) : Vec3{T}(shift)) .* ngrid
-    sk_frac = @. sk - round(sk)
-    shift = @. mod(ifelse(abs(sk_frac) < atol, zero(sk_frac), sk_frac), 1) / ngrid
+    shift = _canonical_grid_shift(shift === nothing ? first(kpts.vectors) : Vec3{T}(shift), ngrid,
+                                  atol)
 
     # Check if all k points are on the shifted grid
     for xk in kpts.vectors

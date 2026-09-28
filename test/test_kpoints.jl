@@ -415,29 +415,39 @@ end
 
     # The dense path emits the points in their sorted order instead of sorting. Against the same
     # table swept in plain grid order and then built, folded and `sort!`ed, it must give the same
-    # GridKpoints bit for bit, the shift (read off the first point in table order) and the index
-    # included. Odd and even grids, and shifts that move the fold boundary.
+    # GridKpoints bit for bit, the shift (derived from the first point in table order) and the index
+    # included. Odd and even grids, shifts that move the fold boundary, and a first point whose
+    # `x * n` rounds just below a node (29/400), whose shift must still snap to zero.
     let
         using ElectronPhonon: shift_center!, _grid_coords_reduced, _kq_seen_table,
             _combine_kq_dedup_dense
+        function sort_based(k, q, op, ng)
+            sk, sq = k.vectors[1], q.vectors[1]
+            seen = _kq_seen_table([_grid_coords_reduced(x, ng, sk) for x in k.vectors],
+                [_grid_coords_reduced(x, ng, sq) for x in q.vectors], op === (+) ? 1 : -1, ng)
+            xkqs = _combine_kq_dedup_dense(seen, ng, op(sk, sq))
+            ref = GridKpoints(Kpoints{Float64}(length(xkqs), xkqs, ones(length(xkqs)) ./ prod(ng), ng))
+            sort!(shift_center!(ref, (0, 0, 0)))
+        end
+        cases = Any[]
         for (ng, shift_q) in (((4, 4, 4), (0, 0, 0)), ((5, 5, 5), (0, 0, 0)),
                               ((4, 5, 6), (1//2, 0, 1//2)), ((7, 3, 8), (1//3, 1//2, 0)))
             k = GridKpoints(kpoints_grid(ng))
-            q = GridKpoints(kpoints_grid(ng; shift = shift_q))
             Random.seed!(7)
             sub = sort(randperm(k.n)[1:(k.n ÷ 4)])
             ksub = GridKpoints(Kpoints(length(sub), k.vectors[sub], k.weights[sub], k.ngrid), k.ngrid)
-            for op in (+, -)
-                kq = combine_kpoint_grids(ksub, q, op, ng)
-                sk, sq = ksub.vectors[1], q.vectors[1]
-                seen = _kq_seen_table([_grid_coords_reduced(x, ng, sk) for x in ksub.vectors],
-                    [_grid_coords_reduced(x, ng, sq) for x in q.vectors], op === (+) ? 1 : -1, ng)
-                xkqs = _combine_kq_dedup_dense(seen, ng, op(sk, sq))
-                ref = GridKpoints(Kpoints{Float64}(length(xkqs), xkqs, ones(length(xkqs)) ./ prod(ng), ng))
-                ref = sort!(shift_center!(ref, (0, 0, 0)))
-                @test all(f -> isequal(getfield(kq, f), getfield(ref, f)), fieldnames(GridKpoints))
-            end
+            push!(cases, (ksub, GridKpoints(kpoints_grid(ng; shift = shift_q)), ng))
         end
+        k29 = GridKpoints(Kpoints([Vec3(29 / 400, 0.0, 0.0), Vec3(-3 / 400, 0.0, 0.0)];
+                                  ngrid = (400, 1, 1)))
+        push!(cases, (k29, GridKpoints(Kpoints([Vec3(0.0, 0.0, 0.0)]; ngrid = (400, 1, 1))),
+                      (400, 1, 1)))
+        for (k, q, ng) in cases, op in (+, -)
+            kq = combine_kpoint_grids(k, q, op, ng)
+            ref = sort_based(k, q, op, ng)
+            @test all(f -> isequal(getfield(kq, f), getfield(ref, f)), fieldnames(GridKpoints))
+        end
+        @test iszero(combine_kpoint_grids(k29, cases[end][2], -, (400, 1, 1)).shift)
     end
 
     # Deprecated alias warns and still returns the same result.
