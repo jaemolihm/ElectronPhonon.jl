@@ -136,6 +136,13 @@ ElectronPhonon.calculator_begin!(c::_ModeDispatchCalc, ::OuterIterationBatch, ::
     @test to_device(CPUBackend(), v) === v
 end
 
+const CONTRACT_GPU_AVAILABLE = try
+    @eval using CUDA
+    CUDA.functional()
+catch
+    false
+end
+CONTRACT_GPU_AVAILABLE && CUDA.allowscalar(false)
 include("calculator_contract_harness.jl")
 
 # Every ElectronPhonon.jl calculator through the generic contract harness (MigdalEliashberg.jl's
@@ -156,9 +163,23 @@ include("calculator_contract_harness.jl")
                ids_i, ids_f = contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)
                Dict("Sₒ" => contract_group_sum(stack(c.Sₒ), 1, ids_i),
                     "Sᵢ" => contract_group_sum(contract_group_sum(stack(c.Sᵢ), 1, ids_i), 2, ids_f))
+           end,
+           # `bte_scattering_increments` summed over the modes of each pair, g2 = |ep|^2 / (2ω).
+           reference = function (c, ref)
+               Sₒ = zero.(c.Sₒ); Sᵢ = zero.(c.Sᵢ)
+               contract_foreach_reference_pair(ref, c.el_i, c.el_f) do i, j, ep, ω, ek, ekq, wtkq
+                   for (iT, (; μ, T)) in enumerate(c.occ), ν in eachindex(ω)
+                       ω[ν] < c.omega_cutoff && continue
+                       sₒ, sᵢ = ElectronPhonon.bte_scattering_increments(c.occupation_method,
+                           ek, ekq, ω[ν], abs2(ep[ν]) / (2ω[ν]), wtkq, μ, T, c.smearing_list[iT])
+                       Sₒ[iT][i] += sₒ; Sᵢ[iT][i, j] += sᵢ
+                   end
+               end
+               (; c.el_i, c.el_f, Sₒ, Sᵢ)
            end),
     ]
-    check_calculator_contract(entries, models;
-        golden_file = joinpath(@__DIR__, "calculator_contract_golden.h5"),
-        record = get(ENV, "EP_RECORD_CONTRACT_GOLDEN", "") == "1")
+    # The host eigensolve rotates levels split by less than `electron_degen_cutoff` with EPW's
+    # degenerate gauge fix and the device one does not, so a multiplet sum weighted by a function of
+    # each level's own energy moves by about split / smearing: 2.8e-7 on the ragged fixture (A100).
+    check_calculator_contract(entries, models; gpu = CONTRACT_GPU_AVAILABLE, rtol_gpu = 1e-6)
 end

@@ -9,17 +9,31 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPData, EPData
     EPDataKBatched, OuterIteration, OuterIterationBatch, get_eph_RR_to_kR!, get_eph_kR_to_kq!,
     get_next_wannier_object, get_interpolator, Vec3
 using OffsetArrays: no_offset_view
-isdefined(@__MODULE__, :contract_multiplets) || include("calculator_contract_harness.jl")
+
+# Indices of `x` grouped into runs of values within `tol` of the previous one (degenerate
+# multiplets of sorted energies).
+function contract_multiplets(x, tol)
+    groups = Vector{Vector{Int}}()
+    for i in eachindex(x)
+        if isempty(groups) || abs(x[i] - x[last(groups[end])]) > tol
+            push!(groups, [i])
+        else
+            push!(groups[end], i)
+        end
+    end
+    groups
+end
 
 # Integer grid coordinates of a k point, folded into 0:n-1: the key of a (k, k+q) pair.
 _grid_key(x, ngrid) = Tuple(mod.(round.(Int, x .* ngrid), ngrid))
 _pair_key(xk, xkq, ngrid) = (_grid_key(xk, ngrid)..., _grid_key(xkq, ngrid)...)
 
 """
-    eph_reference(model, kpts, kqpts, window_k, window_kq) -> (; g2abs, ωq, el_k, el_kq)
+    eph_reference(model, kpts, kqpts, window_k, window_kq) -> (; ep, g2abs, ωq, el_k, el_kq, wtkq)
 
-`|ep[m, n, ν]|^2` and `ω[ν]` of every pair `(k, k+q)` of `kpts × kqpts` whose two windows are not
-empty, keyed by `_pair_key`, with `m`, `n` physical bands (zero outside the windows). `model` must
+`ep[m, n, ν]`, `|ep[m, n, ν]|^2` and `ω[ν]` of every pair `(k, k+q)` of `kpts × kqpts` whose two
+windows are not empty, keyed by `_pair_key`, with `m`, `n` physical bands (zero outside the
+windows); the states and the k+q weights keyed by `_grid_key`. `model` must
 have `epmat_outer_momentum = "el"` and no polar terms; the e-ph matrix is the one of the loops
 before calculators see it (no dipole term, no 1/2ω).
 """
@@ -36,6 +50,7 @@ function eph_reference(model, kpts, kqpts, window_k, window_kq)
     dyn = get_interpolator(model.ph_dyn; fourier_mode = "normal")
     ph = PhononState(nmodes, Float64)
     ngrid = kqpts.ngrid
+    ep_pairs = Dict{NTuple{6, Int}, Array{ComplexF64, 3}}()
     g2abs = Dict{NTuple{6, Int}, Array{Float64, 3}}()
     ωq = Dict{NTuple{6, Int}, Vector{Float64}}()
     for (ik, xk) in enumerate(kpts.vectors)
@@ -49,15 +64,18 @@ function eph_reference(model, kpts, kqpts, window_k, window_kq)
             set_eigen!(ph, dyn, model.mass, model.polar_phonon, xq)
             ep = zeros(ComplexF64, elkq.nband, elk.nband, nmodes)
             get_eph_kR_to_kq!(ep, ep_ekpR, xq, ph.u, no_offset_view(elkq.u))
-            a = zeros(nw, nw, nmodes)
-            a[elkq.rng, elk.rng, :] .= abs2.(ep)
+            a = zeros(ComplexF64, nw, nw, nmodes)
+            a[elkq.rng, elk.rng, :] .= ep
             key = _pair_key(xk, xkq, ngrid)
-            g2abs[key] = a
+            ep_pairs[key] = a
+            g2abs[key] = abs2.(a)
             ωq[key] = copy(ph.e)
         end
     end
-    (; g2abs, ωq, el_k = Dict(_grid_key(x, ngrid) => el for (x, el) in zip(kpts.vectors, el_k)),
-       el_kq = Dict(_grid_key(x, ngrid) => el for (x, el) in zip(kqpts.vectors, el_kq)))
+    (; ep = ep_pairs, g2abs, ωq,
+       el_k = Dict(_grid_key(x, ngrid) => el for (x, el) in zip(kpts.vectors, el_k)),
+       el_kq = Dict(_grid_key(x, ngrid) => el for (x, el) in zip(kqpts.vectors, el_kq)),
+       wtkq = Dict(_grid_key(x, ngrid) => w for (x, w) in zip(kqpts.vectors, kqpts.weights)))
 end
 
 """

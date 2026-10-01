@@ -381,7 +381,7 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
         return b
     end
     # Device: ω into `e` (or a temporary), eigenmodes into `u` when requested.
-    e = something(b.e, alloc(backend, FT, nmodes, nq))
+    e = b.e === nothing ? alloc(backend, FT, nmodes, nq) : b.e
     if eigenpairs === nothing
         itp_dyn = get_interpolator(to_device(backend, model.ph_dyn); fourier_mode = "batched", backend, nk_hint = nq)
         msqrt_d = alloc(backend, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
@@ -520,8 +520,14 @@ function _compute_electron_states_batched(model::Model{FT}, kpts, quantities, wi
     # solved.
     E, U = if backend isa CPUBackend
         _electron_eigenpairs_cpu(model, kpts, eigenpairs, need_u; fourier_mode)
+    elseif eigenpairs === nothing
+        itp = get_interpolator(to_device(backend, model.el_ham); fourier_mode = "batched", backend, nk_hint = nk)
+        need_u ? get_el_eigen_batched(itp, kpts.vectors) : (get_el_eigen_valueonly_batched(itp, kpts.vectors), nothing)
     else
-        _electron_eigenpairs_device(model, kpts, eigenpairs, need_u, backend)
+        # Resolved on the host: a miss inside the device gather would surface as a bare
+        # `KernelException` naming only the device.
+        iks = map(xk -> _eigenpairs_ik(eigenpairs, xk), kpts.vectors)
+        (eigenpairs.e_full[:, iks], need_u ? eigenpairs.u_full[:, :, iks] : nothing)
     end
     E_host = Array(E)
     # Each k's window, as `set_window!` takes it: an energy window or an explicit band range.
@@ -569,19 +575,6 @@ function _electron_eigenpairs_cpu(model::Model{FT}, kpts, eigenpairs, need_u; fo
         end
     end
     E, U
-end
-
-# The same on the device: one batched solve, or a gather from the cache.
-function _electron_eigenpairs_device(model, kpts, eigenpairs, need_u, backend)
-    if eigenpairs === nothing
-        itp = get_interpolator(to_device(backend, model.el_ham); fourier_mode = "batched", backend, nk_hint = kpts.n)
-        need_u ? get_el_eigen_batched(itp, kpts.vectors) : (get_el_eigen_valueonly_batched(itp, kpts.vectors), nothing)
-    else
-        # Resolved on the host: a miss inside the device gather would surface as a bare
-        # `KernelException` naming only the device.
-        iks = map(xk -> _eigenpairs_ik(eigenpairs, xk), kpts.vectors)
-        (eigenpairs.e_full[:, iks], need_u ? eigenpairs.u_full[:, :, iks] : nothing)
-    end
 end
 
 # The host fill: the in-window block of each k into the box, then the windowed quantities with the

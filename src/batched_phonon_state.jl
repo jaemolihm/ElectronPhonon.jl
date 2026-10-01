@@ -82,7 +82,7 @@ device `src` is uploaded once per call, so a hot loop keeps its own device index
 function gather_batched_phonon_states!(dst::BatchedPhononState, src::BatchedPhononState, iqs)
     dst.nmodes == src.nmodes && length(iqs) <= dst.nq || throw(ArgumentError(
         "cannot gather $(length(iqs)) q points of nmodes = $(src.nmodes) into $dst"))
-    inds = _gather_index(something(src.e, src.u, src.vdiag, src.eph_dipole_coeff), iqs, src.nq)
+    inds = _gather_index(something(src.e, src.u, src.vdiag, src.eph_dipole_coeff, src.eph_r_coeff), iqs, src.nq)
     _gather_last!(dst.e, src.e, inds)
     _gather_last!(dst.u, src.u, inds)
     _gather_last!(dst.vdiag, src.vdiag, inds)
