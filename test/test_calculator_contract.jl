@@ -135,3 +135,26 @@ ElectronPhonon.calculator_begin!(c::_ModeDispatchCalc, ::OuterIterationBatch, ::
     v = [1.0, 2.0, 3.0]
     @test to_device(CPUBackend(), v) === v
 end
+
+include("calculator_contract_harness.jl")
+
+# Every ElectronPhonon.jl calculator through the generic contract harness (MigdalEliashberg.jl's
+# run the same harness from its own test_calculator_contract.jl).
+@testset "calculator contract harness" begin
+    models = (; el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el"),
+                ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph"))
+    e_F = contract_fixtures().narrow.e_F
+    K = unit_to_aru(:K); meV = unit_to_aru(:meV)
+    entries = [
+        (; name = "BoltzmannCalculator", orders = (OuterKLoop,),
+           make = () -> BoltzmannCalculator{Float64}(;
+               occ = ElectronOccupationParams(; Tlist = [300.0K, 600.0K], nlist = 4.0,
+                   μlist = [e_F, e_F], volume = models.el.volume, nelec = 0,
+                   spin_degeneracy = 2, occ_type = :FermiDirac),
+               smearing_list = [SmearingType(:Gaussian, 50.0meV), SmearingType(:Gaussian, 100.0meV)]),
+           outputs = c -> Dict("Sₒ" => stack(c.Sₒ), "Sᵢ" => stack(c.Sᵢ))),
+    ]
+    check_calculator_contract(entries, models;
+        golden_file = joinpath(@__DIR__, "calculator_contract_golden.jl"),
+        record = get(ENV, "EP_RECORD_CONTRACT_GOLDEN", "") == "1")
+end
