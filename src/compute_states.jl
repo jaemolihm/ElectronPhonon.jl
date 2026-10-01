@@ -331,9 +331,9 @@ function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode=
 end
 
 # Why this is not `compute_phonon_states` stacked afterwards: that function returns one mutable
-# `PhononState` per q point, ~13 heap objects per q, which is what the per-point loops need in their
-# `EPState` and what the batched loop over millions of q points must not pay; and it is host-only. The
-# per-q physics (eigensolve, cache copy, velocity, dipole) is shared: both builders call the same
+# `PhononState` per q point, ~13 heap objects per q, which is what the per-point loops need in
+# their `EPState` and what the batched loop over millions of q points must not pay; and it is
+# host-only. The per-q physics (eigensolve, cache copy, velocity, dipole) is shared: both builders call the same
 # kernels on the same arrays, so the host stacks here are `compute_phonon_states` bit for bit.
 """
     compute_phonon_states_batched(model, qpts, quantities; fourier_mode = "gridopt",
@@ -342,9 +342,10 @@ end
 
 The phonons of `qpts` as a [`BatchedPhononState`](@ref) on `backend`: what
 [`compute_phonon_states`](@ref) computes for the same arguments, stored as dense stacks instead of
-one `PhononState` per q point. The `fourier_mode` default is `"gridopt"` here and `"normal"` there. `quantities` lists the `BatchedPhononState` quantity names to store
-(`:e`, `:u`, `:vdiag`, `:eph_dipole_coeff`, `:eph_r_coeff`). The eigenvalue-only solve runs when
-none of them needs the eigenmodes; `eph_phonon_basis` is as in `compute_phonon_states`.
+one `PhononState` per q point. The `fourier_mode` default is `"gridopt"` here and `"normal"`
+there. `quantities` lists the `BatchedPhononState` quantity names to store (`:e`, `:u`, `:vdiag`,
+`:eph_dipole_coeff`, `:eph_r_coeff`). The eigenvalue-only solve runs when none of them needs the
+eigenmodes; `eph_phonon_basis` is as in `compute_phonon_states`.
 
 `eigenpairs` is a gauge-fixing lookup table, as in `compute_phonon_states`: ω and `u` of every q are
 copied from it instead of diagonalizing, so it must cover every q point of `qpts` and be resident on

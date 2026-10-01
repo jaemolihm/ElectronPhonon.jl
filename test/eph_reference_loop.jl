@@ -9,6 +9,7 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPData, EPData
     EPDataKBatched, OuterIteration, OuterIterationBatch, get_eph_RR_to_kR!, get_eph_kR_to_kq!,
     get_next_wannier_object, get_interpolator, Vec3
 using OffsetArrays: no_offset_view
+isdefined(@__MODULE__, :contract_multiplets) || include("calculator_contract_harness.jl")
 
 # Integer grid coordinates of a k point, folded into 0:n-1: the key of a (k, k+q) pair.
 _grid_key(x, ngrid) = Tuple(mod.(round.(Int, x .* ngrid), ngrid))
@@ -59,22 +60,9 @@ function eph_reference(model, kpts, kqpts, window_k, window_kq)
        el_kq = Dict(_grid_key(x, ngrid) => el for (x, el) in zip(kqpts.vectors, el_kq)))
 end
 
-# Indices of `x` grouped into runs of values within `tol` of the previous one (degenerate
-# multiplets of sorted energies).
-function _multiplets(x, tol)
-    groups = Vector{Vector{Int}}()
-    for i in eachindex(x)
-        if isempty(groups) || abs(x[i] - x[last(groups[end])]) > tol
-            push!(groups, [i])
-        else
-            push!(groups[end], i)
-        end
-    end
-    groups
-end
-
 """
-    compare_with_reference(ref, rec; tol_degen = 1e-6) -> (; g2_reldev, ω_dev, npairs, nmissing, nextra)
+    compare_with_reference(ref, rec; tol_degen = 1e-6)
+        -> (; g2_reldev, ω_dev, npairs, nmissing, nextra)
 
 The largest deviation of the recorded `|g|^2` from the reference over every pair of `ref`, after
 summing both over the degenerate multiplets of the in-window k and k+q bands and of the phonon
@@ -92,8 +80,9 @@ function compare_with_reference(ref, rec; tol_degen = 1e-6)
         ω = ref.ωq[key]
         # The outer-q batched payload carries no frequencies (recorded as NaN).
         all(isnan, rec.ωq[key]) || (ωdev = max(ωdev, maximum(abs, ω - rec.ωq[key])))
-        for gm in _multiplets(collect(elkq.e), tol_degen),
-                gn in _multiplets(collect(elk.e), tol_degen), gν in _multiplets(ω, tol_degen)
+        for gm in contract_multiplets(collect(elkq.e), tol_degen),
+                gn in contract_multiplets(collect(elk.e), tol_degen),
+                gν in contract_multiplets(ω, tol_degen)
             mm = elkq.rng[gm]; nn = elk.rng[gn]
             g2dev = max(g2dev, abs(sum(a[mm, nn, gν]) - sum(b[mm, nn, gν])))
         end
@@ -118,7 +107,8 @@ mutable struct _PairRecorder <: AbstractCalculator
     g2abs::Dict{NTuple{6, Int}, Array{Float64, 3}}
     ωq::Dict{NTuple{6, Int}, Vector{Float64}}
     lock::ReentrantLock
-    _PairRecorder() = new(0, 0, (0, 0, 0), nothing, nothing, nothing, Dict(), Dict(), ReentrantLock())
+    _PairRecorder() = new(0, 0, (0, 0, 0), nothing, nothing, nothing, Dict(), Dict(),
+                          ReentrantLock())
 end
 for P in (OuterKLoop, OuterQLoop, EPData, EPDataQBatched, EPDataKBatched)
     @eval ElectronPhonon.supports(::_PairRecorder, ::Type{$P}) = true
