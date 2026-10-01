@@ -15,7 +15,6 @@ using Test
 using ElectronPhonon
 using ElectronPhonon: CPUBackend, OuterKLoop, OuterQLoop, unit_to_aru, run_eph_over_k_and_kq,
     run_eph_over_q_and_k, electron_degen_cutoff, omega_acoustic
-using LinearAlgebra: norm
 
 # The windowed fixtures of the pb artifact model: nk = 12, E_F +- 0.2 eV (one in-window band per k)
 # and nk = 6, E_F - 0.5 / + 3 eV (0 to 3 bands per k, empty windows, windows ending at band nw).
@@ -51,17 +50,6 @@ function run_contract(entry, order, models, fixture, setting)
                              common..., setting...)
     end
     entry.outputs(calc)
-end
-
-_contract_sample_indices(x) = unique(round.(Int, range(1, length(x); length = min(64, length(x)))))
-
-# What the golden file keeps of one output array: its size, sum, norm, 64 evenly spaced entries, and
-# a sum weighted by the fractional part of the linear index times the golden ratio, which (unlike
-# the sum and the norm) moves when two entries trade places.
-function contract_digest(x::AbstractArray)
-    x = collect(x)
-    wsum = sum(x[i] * mod(i * 0.6180339887498949, 1) for i in eachindex(x); init = zero(eltype(x)))
-    (; size = size(x), sum = sum(x), norm = norm(x), wsum, sample = x[_contract_sample_indices(x)])
 end
 
 """
@@ -127,31 +115,21 @@ function contract_pair_sum(x, ωq, ids_i, ids_f; tol_ω = 1e-6)
     contract_group_sum(contract_group_sum(y, 2, ids_i), 3, ids_f)
 end
 
-# Whether `x` reproduces the golden digest `g`, every number to `rtol` of the array's norm.
-function contract_digest_matches(x, g; rtol)
-    d = contract_digest(x)
-    d.size == g.size || return false
-    tol = rtol * max(g.norm, floatmin())
-    tol_sum = tol * sqrt(length(x))
-    abs(d.sum - g.sum) <= tol_sum && abs(d.wsum - g.wsum) <= tol_sum &&
-        abs(d.norm - g.norm) <= tol && all(abs.(d.sample .- g.sample) .<= tol)
-end
-
 """
     check_calculator_contract(entries, models; golden_file, record = false, rtol_settings = 1e-10,
                               rtol_golden = 1e-10)
 
 Run every entry under every supported order, fixture and setting. The outputs of all settings must
-agree to `rtol_settings` (relative Frobenius norm) and reproduce the golden digests in
-`golden_file` to `rtol_golden`; the comparison has teeth only if the largest sampled entry,
-perturbed by 1e-7 of itself or swapped with its neighbour, fails it, which is asserted too.
-`models` is `(; el, ph)`, the model loaded with `epmat_outer_momentum = "el"` and `"ph"`. With
-`record = true` the digests of the first setting are written to `golden_file` instead of being
-compared.
+agree to `rtol_settings` and reproduce the golden arrays in the HDF5 file `golden_file` to
+`rtol_golden` (both `isapprox`, relative Frobenius norm); the comparison has teeth only if the
+largest entry, perturbed by 1e-7 of itself or swapped with its neighbour, fails it, which is
+asserted too. `models` is `(; el, ph)`, the model loaded with `epmat_outer_momentum = "el"` and
+`"ph"`. With `record = true` the outputs of the first setting are written to `golden_file` instead
+of being compared.
 """
 function check_calculator_contract(entries, models; golden_file, record = false,
         rtol_settings = 1e-10, rtol_golden = 1e-10)
-    golden = record ? Dict{String, Any}() : include(golden_file)
+    golden = record ? Dict{String, Array}() : read_contract_golden(golden_file)
     for entry in entries, order in entry.orders, (fname, fixture) in pairs(contract_fixtures())
         settings = contract_settings(order)
         results = Dict(name => run_contract(entry, order, models, fixture, setting)
@@ -159,23 +137,22 @@ function check_calculator_contract(entries, models; golden_file, record = false,
         ref = results[first(keys(settings))]
         @testset "$(entry.name), $(nameof(order)), $fname" begin
             for (name, out) in results, (key, x) in out
-                @test norm(x - ref[key]) <= rtol_settings * norm(ref[key])
+                @test isapprox(x, ref[key]; rtol = rtol_settings)
             end
             for (key, x) in ref
-                gkey = "$(entry.name)/$(nameof(order))/$fname/$key"
+                gkey = "$(entry.name)|$(nameof(order))|$fname|$key"
                 if record
-                    golden[gkey] = contract_digest(x)
+                    golden[gkey] = collect(x)
                 else
-                    @test haskey(golden, gkey) && contract_digest_matches(x, golden[gkey];
-                                                                          rtol = rtol_golden)
-                    idx = _contract_sample_indices(x)
-                    j = idx[argmax(abs.(vec(collect(x))[idx]))]
+                    g = golden[gkey]
+                    @test size(x) == size(g) && isapprox(x, g; rtol = rtol_golden)
+                    j = argmax(abs.(x))
                     y = collect(x); y[j] *= 1 + 1e-7
-                    @test !contract_digest_matches(y, golden[gkey]; rtol = rtol_golden)
+                    @test !isapprox(y, g; rtol = rtol_golden)
                     # Nor does it pass the largest entry trading places with the next one.
-                    y = collect(x); j2 = mod1(j + 1, length(y))
+                    y = collect(x); j2 = mod1(LinearIndices(y)[j] + 1, length(y))
                     y[j], y[j2] = y[j2], y[j]
-                    @test !contract_digest_matches(y, golden[gkey]; rtol = rtol_golden)
+                    @test !isapprox(y, g; rtol = rtol_golden)
                 end
             end
         end
@@ -184,16 +161,14 @@ function check_calculator_contract(entries, models; golden_file, record = false,
     golden
 end
 
+# The golden arrays, flat keys `calculator|order|fixture|output`, deflate-compressed.
 function write_contract_golden(path, golden)
-    open(path, "w") do io
-        println(io, "# Golden values of the calculator contract harness")
-        println(io, "# (calculator_contract_harness.jl): digests of each calculator's outputs")
-        println(io, "# on the windowed pb fixtures, from the per-point loops. Generated by")
-        println(io, "# check_calculator_contract(...; record = true).")
-        println(io, "Dict{String, Any}(")
-        for key in sort(collect(keys(golden)))
-            println(io, "    ", repr(key), " => ", repr(golden[key]), ",")
+    ElectronPhonon.HDF5.h5open(path, "w") do f
+        for (key, x) in golden
+            ElectronPhonon.HDF5.write_dataset(f, key, x; chunk = size(x), deflate = 6)
         end
-        println(io, ")")
     end
 end
+
+read_contract_golden(path) =
+    ElectronPhonon.HDF5.h5open(f -> Dict{String, Array}(k => read(f[k]) for k in keys(f)), path)

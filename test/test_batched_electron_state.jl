@@ -1,8 +1,8 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: gpu_backend, on_backend, Vec3, alloc_tile, stage!, quantity_arrays,
-    CPUBackend, unfold_rule, builder_scratch, builder_scratch_bytes, compute_electron_states_batched!,
-    unit_to_aru, BatchedWannierInterpolator, get_fourier_batched!, eigen_batched, _band_window
+using ElectronPhonon: gpu_backend, on_backend, Vec3, CPUBackend, gather_batched_electron_states!,
+    compute_electron_states_batched!, unit_to_aru, BatchedWannierInterpolator,
+    get_fourier_batched!, eigen_batched, inside_window
 using OffsetArrays: no_offset_view
 
 const BATCHED_ELECTRON_GPU_AVAILABLE = try
@@ -19,16 +19,14 @@ function _batched_electron_mismatches(b, ref)
     count(eachindex(ref)) do ik
         el = ref[ik]; nb = el.nband
         ok = nband[ik] == nb && (nb == 0 || off[ik] == first(el.rng) - 1)
-        q = keys(b.qty)
-        :e ∈ q && (ok &= isequal(Array(b.e)[1:nb, ik], collect(el.e)))
-        :u ∈ q && (ok &= isequal(Array(b.u)[:, 1:nb, ik], collect(no_offset_view(el.u))))
-        :vdiag ∈ q && (ok &= isequal(Array(b.vdiag)[:, 1:nb, ik],
-                                     reshape(reinterpret(Float64, collect(el.vdiag)), 3, nb)))
-        for name in (:v, :rbar)
-            name ∈ q || continue
-            ok &= isequal(Array(getproperty(b, name))[:, 1:nb, 1:nb, ik],
-                reshape(reinterpret(ComplexF64, collect(no_offset_view(getproperty(el, name)))),
-                        3, nb, nb))
+        b.e === nothing || (ok &= isequal(Array(b.e)[1:nb, ik], collect(el.e)))
+        b.u === nothing || (ok &= isequal(Array(b.u)[:, 1:nb, ik], collect(no_offset_view(el.u))))
+        b.vdiag === nothing || (ok &= isequal(Array(b.vdiag)[:, 1:nb, ik],
+                                              reshape(reinterpret(Float64, collect(el.vdiag)), 3, nb)))
+        for (x, y) in ((b.v, el.v), (b.rbar, el.rbar))
+            x === nothing && continue
+            ok &= isequal(Array(x)[:, 1:nb, 1:nb, ik],
+                          reshape(reinterpret(ComplexF64, collect(no_offset_view(y))), 3, nb, nb))
         end
         !ok
     end
@@ -73,7 +71,7 @@ end
         # The comparison has teeth: the windows are band-ragged, and cubicBN's position matrix
         # elements are not zero.
         b = compute_electron_states_batched(model_pb, kpts, [:e], window_wide)
-        @test extrema(b.nband) == (0, 2) && extrema(b.iband_offset) == (0, 1) && b.nbox == 2
+        @test extrema(b.nband) == (0, 2) && extrema(b.iband_offset) == (0, 1) && b.nband_max == 2
         @test maximum(abs, compute_electron_states_batched(model_bn, kpts, [:rbar]).rbar) > 0.1
 
         # With a cache: the eigenpairs are copied out per k, exactly as the per-point builder does.
@@ -87,12 +85,11 @@ end
         end
     end
 
-    @testset "quantities by name, conversions, checks" begin
+    @testset "fields, conversions, checks" begin
         b = compute_electron_states_batched(model_pb, sel, [:e, :vdiag])
-        @test b.kpts === sel.kpts && b.sel === sel && b.n == sel.kpts.n && b.nw == model_pb.nw
-        @test_throws "quantity :u was not requested" b.u
-        @test quantity_arrays(b) === (b.e, b.vdiag, b.iband_offset, b.nband)
-        @test occursin("BatchedElectronState{Float64}(nw = 4, nbox = 1", sprint(show, b))
+        @test b.kpts === sel.kpts && b.nk == sel.kpts.n && b.nw == model_pb.nw
+        @test b.u === nothing && b.v === nothing && b.rbar === nothing
+        @test occursin("BatchedElectronState{Float64}(nw = 4, nband_max = 1", sprint(show, b))
 
         # `BandStates` from the batched states equals the one from the per-point states.
         bs, _ = electron_states_to_BandStates(b, sel)
@@ -107,32 +104,24 @@ end
             compute_electron_states(model_pb, kpts, ["eigenvalue"], window_wide), 0.0; nw = 4)
         @test fb.iks == fb_ref.iks && fb.ibands == fb_ref.ibands && fb.n == 24
 
-        @test unfold_rule(:e) === :none && unfold_rule(:u) === :gauge &&
-              unfold_rule(:vdiag) === :cartesian && unfold_rule(:v) === :cartesian
-        @test_throws "no symmetry unfolding rule" unfold_rule(:rbar)
-
-        @test_throws "unknown electron quantity :velocity" compute_electron_states_batched(
+        @test_throws "unknown electron quantities [:velocity]" compute_electron_states_batched(
             model_pb, kpts, [:velocity])
         @test_throws "duplicates" compute_electron_states_batched(model_pb, kpts, [:e, :e])
-        @test_throws "quantity :e must be a Float64 array of size (1, 216)" BatchedElectronState{
-            Float64}(4, 1, 216, sel.kpts, sel, b.iband_offset, b.nband, (; e = b.e[:, 1:2]))
-        @test_throws "unknown electron quantity :nband" BatchedElectronState{Float64}(4, 1, 216,
-            sel.kpts, sel, b.iband_offset, b.nband, (; nband = b.e))
+        @test_throws "e must be (nband_max, nk)" BatchedElectronState{Float64}(4, 1, 216, sel.kpts,
+            b.iband_offset, b.nband, b.e[:, 1:2], nothing, nothing, nothing, nothing)
     end
 
-    @testset "tile, stage! and the in-tile builder" begin
+    @testset "empty container, gather and the in-tile builder" begin
         b = compute_electron_states_batched(model_pb, kpts, [:e, :u], window_wide)
         inds = [5, 2, 64, 17]
-        tile = alloc_tile(b, CPUBackend(), 6)
-        @test tile.kpts === nothing && tile.sel === nothing && tile.nbox == b.nbox
-        stage!(tile, b, inds)
+        tile = BatchedElectronState(CPUBackend(), 4, b.nband_max, 6, [:e, :u])
+        @test tile.kpts === nothing && tile.nk == 6 && tile.vdiag === nothing
+        gather_batched_electron_states!(tile, b, inds)
         # The gather copies the undefined padding along with the rest of a column, hence isequal.
         @test isequal(tile.e[:, 1:4], b.e[:, inds]) && isequal(tile.u[:, :, 1:4], b.u[:, :, inds])
         @test tile.iband_offset[1:4] == b.iband_offset[inds] && tile.nband[1:4] == b.nband[inds]
-        @test_throws "(nw, nbox) = (4, 4), the source (4, 2)" stage!(alloc_tile(
-            compute_electron_states_batched(model_pb, kpts, [:e, :u]), CPUBackend(), 6), b, inds)
-        @test_throws "cannot stage" stage!(tile,
-            compute_phonon_states_batched(model_pb, kpts, [:e, :u]), inds)
+        @test_throws "cannot gather 4 points" gather_batched_electron_states!(
+            BatchedElectronState(CPUBackend(), 4, 4, 6, [:e, :u]), b, inds)
 
         # Solved into a tile: the bands of the window, moved to local bands 1:nband, of the same
         # batched solve. Off-grid points, more tile than points.
@@ -141,27 +130,26 @@ end
         BATCHED_ELECTRON_GPU_AVAILABLE && push!(backends, gpu_backend())
         for backend in backends, window in (window_wide, window_narrow, (-Inf, Inf))
             nw = model_pb.nw
-            tile = alloc_tile(compute_electron_states_batched(model_pb, kpts, [:e, :u]), backend,
-                              53)
-            scratch = builder_scratch(model_pb, backend, [:e, :u], tile.n)
-            compute_electron_states_batched!(tile, scratch, model_pb, xks, [:e, :u], window)
+            tile = BatchedElectronState(backend, nw, nw, 53, [:e, :u])
             itp = BatchedWannierInterpolator(ElectronPhonon.to_device(backend, model_pb.el_ham);
-                                             backend, batch_size = tile.n)
+                                             backend, batch_size = tile.nk)
+            compute_electron_states_batched!(tile, itp, ElectronPhonon.alloc(backend, ComplexF64,
+                nw^2, tile.nk), model_pb, xks, window)
             hk = ElectronPhonon.alloc(backend, ComplexF64, nw^2, length(xks))
             get_fourier_batched!(hk, itp, xks)
             E, U = Array.(eigen_batched(reshape(hk, nw, nw, :)))
             e, u = Array(tile.e), Array(tile.u)
             off, nband = Array(tile.iband_offset), Array(tile.nband)
             @test all(eachindex(xks)) do j
-                r = _band_window(E[:, j], window)
+                r = inside_window(E[:, j], window...)
                 issorted(E[:, j]) && nband[j] == length(r) && (isempty(r) || off[j] == first(r) - 1) &&
                     e[1:nband[j], j] == E[r, j] && u[:, 1:nband[j], j] == U[:, r, j]
             end
         end
-        @test builder_scratch_bytes(model_pb, [:e, :u], 10) > 0
-        @test_throws "box width nw = 4" compute_electron_states_batched!(alloc_tile(b, CPUBackend(), 6),
-            builder_scratch(model_pb, CPUBackend(), [:e, :u], 6), model_pb, xks[1:2], [:e, :u],
-            window_wide)
+        itp = BatchedWannierInterpolator(model_pb.el_ham; batch_size = 6)
+        @test_throws "nband_max = nw = 4" compute_electron_states_batched!(
+            BatchedElectronState(CPUBackend(), 4, 2, 6, [:e, :u]), itp, zeros(ComplexF64, 16, 6),
+            model_pb, xks[1:2], window_wide)
     end
 
     @testset "GPU" begin
@@ -177,7 +165,8 @@ end
                 for (args, window) in (((sel,), ()), ((kpts,), (window_wide,)), ((kpts,), ()))
                     b = compute_electron_states_batched(model_pb, args..., quantities, window...;
                                                         backend)
-                    @test all(x -> on_backend(backend, x), quantity_arrays(b))
+                    @test all(x -> x === nothing || on_backend(backend, x),
+                              (b.iband_offset, b.nband, b.e, b.u, b.vdiag))
                     ref = compute_electron_states(model_pb, args..., per_point(quantities),
                                                   window...; backend)
                     nbad += _batched_electron_mismatches(b, ref)
@@ -196,12 +185,12 @@ end
             inds = [5, 2, 64, 17]
             for src in (b_host, compute_electron_states_batched(model_pb, kpts, [:e, :u],
                                                                 window_wide; backend))
-                tile = alloc_tile(src, backend, 6)
-                stage!(tile, src, inds)
+                tile = BatchedElectronState(backend, 4, src.nband_max, 6, [:e, :u])
+                gather_batched_electron_states!(tile, src, inds)
                 @test Array(tile.nband)[1:4] == Array(src.nband)[inds]
                 @test isequal(Array(tile.u)[:, :, 1:4], Array(src.u)[:, :, inds])
             end
-            @test_throws "quantity :v is not supported" compute_electron_states_batched(
+            @test_throws "quantities [:v] are not supported" compute_electron_states_batched(
                 model_pb, kpts, [:e, :v]; backend)
         end
     end

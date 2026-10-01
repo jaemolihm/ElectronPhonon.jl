@@ -87,19 +87,12 @@ Compute phonon band velocity, only the band-diagonal part.
 """
 function set_velocity_diag!(ph::PhononState{T}, dyn_R, xk::Vec3) where {T}
     @views vdiag = reshape(reinterpret(T, ph.vdiag), 3, ph.nmodes)
-    _ph_velocity_diag!(vdiag, dyn_R, xk, ph.u, ph.e)
-end
-
-# The diagonal phonon velocity `vdiag[d, ν]` at one q from the mass-scaled eigenmodes `u` and the
-# frequencies `e`, into a `(3, nmodes)` array. Shared by `set_velocity_diag!` and the batched builder
-# `compute_phonon_states_batched`, which passes a q slice of its stack.
-function _ph_velocity_diag!(vdiag, dyn_R, xk::Vec3, u, e)
-    get_ph_velocity_diag!(vdiag, dyn_R, xk, u)
+    get_ph_velocity_diag!(vdiag, dyn_R, xk, ph.u)
     # get_ph_velocity_diag! calculates the derivative of the dynamical matrix, but the
     # phonon frequency is sqrt of the eigenvalue of the dynamical matrix.
     # We use dw/dk = (d(w^2)/dk) / (2 * w).
-    for imode in eachindex(e)
-        @. vdiag[:, imode] /= 2 * e[imode]
+    for imode in 1:ph.nmodes
+        @. vdiag[:, imode] /= 2 * ph.e[imode]
     end
 end
 

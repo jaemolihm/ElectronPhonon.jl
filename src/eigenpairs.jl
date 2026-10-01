@@ -146,10 +146,8 @@ not supported. The batched eigensolve picks its own basis inside a degenerate mo
 device-built cache differs from a CPU-built one there.
 """
 function phonon_eigenpairs(model::Model, qpts; fourier_mode = "gridopt", backend = CPUBackend())
-    gqpts = GridKpoints(qpts)
-    b = compute_phonon_states_batched(model, gqpts, [:e, :u]; fourier_mode,
-                                      backend)
-    Eigenpairs(model.nmodes, gqpts, b.e, b.u)
+    b = compute_phonon_states_batched(model, GridKpoints(qpts), [:e, :u]; fourier_mode, backend)
+    Eigenpairs(model.nmodes, b.qpts, b.e, b.u)
 end
 
 # Guards on a caller-supplied cache, checked once per consuming call rather than per k point. Both
@@ -200,18 +198,6 @@ function _set_eigen_from!(el::ElectronState, eigenpairs::Eigenpairs, ham, xk)
     el.rng = 1:0
 end
 
-# The same into the `e` (nw) / `u` (nw, nw) arrays of one k, a slice of the stacks of
-# `compute_electron_states_batched`.
-_set_eigen_from!(e::AbstractVector, u::AbstractMatrix, ::Nothing, ham, xk) =
-    get_el_eigen!(e, u, length(e), ham, xk)
-
-function _set_eigen_from!(e::AbstractVector, u::AbstractMatrix, eigenpairs::Eigenpairs, ham, xk)
-    ik = _eigenpairs_ik(eigenpairs, xk)
-    @views e .= eigenpairs.e_full[:, ik]
-    @views u .= eigenpairs.u_full[:, :, ik]
-    e, u
-end
-
 _set_eigen_valueonly_from!(el::ElectronState, ::Nothing, ham, xk) =
     set_eigen_valueonly!(el, ham, xk)
 
@@ -245,28 +231,21 @@ function _eigenvalues_on_host(eigenpairs::Eigenpairs, itp_elham, xks)
     Array(eigenpairs.e_full[:, iks])
 end
 
-# The full eigenpair of one q point: into a `PhononState`, or into the `e`/`u` arrays of one q (a
-# slice of the stacks of `compute_phonon_states_batched`). `e` is the frequency ω and `u` the
+# The full eigenpair of one q point, into a `PhononState`. `e` is the frequency ω and `u` the
 # mass-scaled eigenmode, i.e. what `get_ph_eigen!` leaves in a `PhononState` and what
 # `phonon_eigenpairs` stores, so neither the sign(ω²)√|ω²| nor the 1/√mass step is redone here.
 # Argument order follows the electron pair above, `(state, cache, what it takes to solve,
 # momentum)`; the solver arguments differ because `D(q)` needs the masses and the dipole term
 # where `H(k)` needs only its interpolator.
-function _set_eigen_from!(ph::PhononState, eigenpairs, dyn, mass, polar, xq)
-    ph.xq = xq
-    _set_eigen_from!(ph.e, ph.u, eigenpairs, dyn, mass, polar, xq)
-    ph
-end
+_set_eigen_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
+    set_eigen!(ph, dyn, mass, polar, xq)
 
-_set_eigen_from!(e::AbstractVector, u::AbstractMatrix, ::Nothing, dyn, mass, polar, xq) =
-    get_ph_eigen!(e, u, dyn, mass, polar, xq)
-
-function _set_eigen_from!(e::AbstractVector, u::AbstractMatrix, eigenpairs::Eigenpairs, dyn, mass,
-                          polar, xq)
+function _set_eigen_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
     iq = _eigenpairs_ik(eigenpairs, xq)
-    @views e .= eigenpairs.e_full[:, iq]
-    @views u .= eigenpairs.u_full[:, :, iq]
-    e, u
+    ph.xq = xq
+    @views ph.e .= eigenpairs.e_full[:, iq]
+    @views ph.u .= eigenpairs.u_full[:, :, iq]
+    ph
 end
 
 # Unlike every other consumer here this one is not inert: `e` comes from the cache's FULL
@@ -275,17 +254,12 @@ end
 # whose ω² is far below the largest ω² of its own q point -- an acoustic mode at Γ of a cell that
 # also carries optical modes -- can differ in the leading digits. Modes away from ω = 0 agree to
 # round-off.
-function _set_eigen_valueonly_from!(ph::PhononState, eigenpairs, dyn, mass, polar, xq)
-    ph.xq = xq
-    _set_eigen_valueonly_from!(ph.e, eigenpairs, dyn, mass, polar, xq)
-    ph
-end
+_set_eigen_valueonly_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
+    set_eigen_valueonly!(ph, dyn, mass, polar, xq)
 
-_set_eigen_valueonly_from!(e::AbstractVector, ::Nothing, dyn, mass, polar, xq) =
-    get_ph_eigen_valueonly!(e, dyn, mass, polar, xq)
-
-function _set_eigen_valueonly_from!(e::AbstractVector, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
+function _set_eigen_valueonly_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
     iq = _eigenpairs_ik(eigenpairs, xq)
-    @views e .= eigenpairs.e_full[:, iq]
-    e
+    ph.xq = xq
+    @views ph.e .= eigenpairs.e_full[:, iq]
+    ph
 end

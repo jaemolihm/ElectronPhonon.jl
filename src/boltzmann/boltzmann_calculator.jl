@@ -367,7 +367,7 @@ end
 function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPDataQBatched, ctx) where {FT}
     (; g2s, ωqs, ik, ikqs, ibandk_offset) = p
     dev = calc.dev
-    nbandkq, nbandk, nmodes, nq_batch = size(g2s)
+    nbandkq, _, nmodes, nq_batch = size(g2s)
     # Device buffers (imap/energies/Sₒ in `dev`, the Sᵢ tile in `calc.tiled`) were built once at
     # setup. `g2s = |ep|²/(2ω)` is folded by the loop's fused kernel (payload).
 

@@ -63,7 +63,7 @@ Fields:
 - `ibandk_offset` :: k-side window-projection band offset (0-based; 0 for full-band). `eps`'s
   band-of-k axis `n` (1-based) is PHYSICAL band `ibandk_offset + n`. The offset is the first
   in-window band minus one, not clamped, so columns with `ibandk_offset + n > nw` are padding and
-  undefined: read only the first [`nbandk_physical`](@ref)`(p, nw)` columns.
+  undefined: read only the first `nbandk_physical(p, nw)` columns.
 """
 struct EPDataQBatched{AT4C, AT4R, AT2, VI} <: AbstractElPhPayload
     eps           :: AT4C

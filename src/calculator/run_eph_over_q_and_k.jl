@@ -524,13 +524,14 @@ function _loop_eph_over_q_and_k_batched(
     # ----- the k side: gathered per batch from the resident `el_k` -----
     # `el_k` holds every band; `inwin_all[b, ik]` says whether band b is inside k's window
     # (`el_k_save[ik].rng`), and `wtk_all` holds the k weights, both resident too.
-    el_k_tile = alloc_tile(el_k, backend, nk_batch_max)
+    el_k_tile = BatchedElectronState(backend, nw, nw, nk_batch_max, [:e, :u]; FT)
     inwin_all = to_device_copy(backend, [b ∈ el.rng for b in 1:nw, el in el_k_save])
     inwin     = alloc(backend, Bool, nw, nk_batch_max)
     wtk_all   = to_device_copy(backend, collect(FT, kpts.weights))
     # The k+q states, solved per batch straight into a tile of the same layout.
-    el_kq_tile = alloc_tile(el_k, backend, nk_batch_max)
-    kq_scratch = builder_scratch(model, backend, [:e, :u], nk_batch_max)
+    el_kq_tile = BatchedElectronState(backend, nw, nw, nk_batch_max, [:e, :u]; FT)
+    itp_el_ham = BatchedWannierInterpolator(to_device(backend, model.el_ham); backend, batch_size = nk_batch_max)
+    Hkq_flat   = alloc(backend, Complex{FT}, nw * nw, nk_batch_max)
 
     # ----- polar e-ph dipole (long-range) scratch -----
     # `ph.eph_dipole_coeff` is host-precomputed per q by the shared setup; `add_eph_dipole_batched!`
@@ -572,7 +573,7 @@ function _loop_eph_over_q_and_k_batched(
             # A full batch is a range, gathered with no index upload.
             iks_padded = nk_batch == nk_batch_max ? iks_batch :
                 [iks_batch; fill(kend, nk_batch_max - nk_batch)]
-            stage!(el_k_tile, el_k, iks_padded)
+            gather_batched_electron_states!(el_k_tile, el_k, iks_padded)
             inwin .= view(inwin_all, :, iks_padded)
             Uk_batch .= ifelse.(reshape(inwin, 1, nw, nk_batch_max), el_k_tile.u, zero(Complex{FT}))
             ek_batch = el_k_tile.e
@@ -584,8 +585,7 @@ function _loop_eph_over_q_and_k_batched(
             end
 
             # k+q eigensolve (batched), every band kept. No gauge fixing: χ is gauge-invariant.
-            compute_electron_states_batched!(el_kq_tile, kq_scratch, model, kqs_batch, [:e, :u],
-                                             (-Inf, Inf))
+            compute_electron_states_batched!(el_kq_tile, itp_el_ham, Hkq_flat, model, kqs_batch, (-Inf, Inf))
             Ekq, Ukq = el_kq_tile.e, el_kq_tile.u                               # (nw,·), (nw,nw,·)
 
             # k+q window mask: zero eigenvector COLUMNS m outside [wmin, wmax] (Ekq[m,k]). This

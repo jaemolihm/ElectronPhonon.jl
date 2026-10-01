@@ -159,6 +159,6 @@ include("calculator_contract_harness.jl")
            end),
     ]
     check_calculator_contract(entries, models;
-        golden_file = joinpath(@__DIR__, "calculator_contract_golden.jl"),
+        golden_file = joinpath(@__DIR__, "calculator_contract_golden.h5"),
         record = get(ENV, "EP_RECORD_CONTRACT_GOLDEN", "") == "1")
 end

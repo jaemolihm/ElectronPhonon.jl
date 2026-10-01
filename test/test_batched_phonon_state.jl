@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: phonon_eigenpairs, gpu_backend, on_backend, to_device, Vec3, alloc_tile,
-    stage!, quantity_arrays, CPUBackend
+using ElectronPhonon: phonon_eigenpairs, gpu_backend, on_backend, to_device, Vec3, CPUBackend,
+    gather_batched_phonon_states!
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
 # tests when it is unavailable or non-functional (e.g. CPU-only CI).
@@ -37,8 +37,9 @@ end
                 ref = compute_phonon_states(m, kpts,
                     [per_point_name[x] for x in quantities if haskey(per_point_name, x)];
                     fourier_mode, eigenpairs)
-                @test b.qpts === kpts && b.nmodes == m.nmodes && b.n == kpts.n
-                @test keys(b.qty) == Tuple(quantities)
+                @test b.qpts === kpts && b.nmodes == m.nmodes && b.nq == kpts.n
+                @test all(name -> (getfield(b, name) !== nothing) == (name ∈ quantities),
+                          (:e, :u, :vdiag, :eph_dipole_coeff, :eph_r_coeff))
                 @test all(eachindex(ref)) do iq
                     ph = ref[iq]
                     (:e ∉ quantities || isequal(b.e[:, iq], ph.e)) &&
@@ -61,15 +62,13 @@ end
         @test !all(iszero, b.eph_dipole_coeff)
     end
 
-    @testset "quantities by name and argument checks" begin
+    @testset "fields and argument checks" begin
         b = compute_phonon_states_batched(model_pb, kpts, [:e, :u])
-        @test_throws "quantity :vdiag was not requested" b.vdiag
-        @test propertynames(b) == (:nmodes, :n, :qpts, :qty, :e, :u)
-        @test quantity_arrays(b) === (b.e, b.u)
-        @test occursin("BatchedPhononState{Float64}(nmodes = 3, n = 64", sprint(show, b))
-        @test isempty(compute_phonon_states_batched(model_pb, kpts, Symbol[]).qty)
+        @test b.vdiag === nothing && b.eph_dipole_coeff === nothing && b.eph_r_coeff === nothing
+        @test occursin("BatchedPhononState{Float64}(nmodes = 3, nq = 64", sprint(show, b))
+        @test compute_phonon_states_batched(model_pb, kpts, Symbol[]).e === nothing
 
-        @test_throws "unknown phonon quantity :velocity" compute_phonon_states_batched(
+        @test_throws "unknown phonon quantities [:velocity]" compute_phonon_states_batched(
             model_pb, kpts, [:velocity])
         @test_throws "duplicates" compute_phonon_states_batched(model_pb, kpts, [:e, :e])
         @test_throws "eigenpairs holds nbasis" compute_phonon_states_batched(model_pb, kpts,
@@ -78,25 +77,25 @@ end
         @test_throws "does not cover" compute_phonon_states_batched(model_pb, kpts,
             [:e, :u]; eigenpairs = phonon_eigenpairs(model_pb, sub_q))
 
-        # The constructor checks every array against (nmodes, n) and the quantity names.
-        @test_throws "quantity :e must be a Float64 array of size (3, 64)" BatchedPhononState{Float64}(
-            3, 64, kpts, (; e = b.e[:, 1:2]))
-        @test_throws "qpts holds 64 points" BatchedPhononState{Float64}(3, 2, kpts, (;))
-        @test_throws "unknown phonon quantity :qpts" BatchedPhononState{Float64}(3, 64, kpts,
-            (; qpts = b.e))
+        # The constructor checks every field against (nmodes, nq).
+        @test_throws "e must be (nmodes, nq)" BatchedPhononState{Float64}(3, 64, kpts, b.e[:, 1:2],
+            b.u, nothing, nothing, nothing)
+        @test_throws "qpts holds 64 points" BatchedPhononState{Float64}(3, 2, kpts, nothing, nothing,
+            nothing, nothing, nothing)
     end
 
-    @testset "tile and stage!" begin
+    @testset "empty container and gather" begin
         b = compute_phonon_states_batched(model_pb, kpts, [:e, :u, :vdiag])
         inds = [5, 2, 64, 17]
-        tile = alloc_tile(b, CPUBackend(), 6)
-        @test tile.qpts === nothing && tile.n == 6 && keys(tile.qty) == keys(b.qty)
-        stage!(tile, b, inds)
-        @test tile.e[:, 1:4] == b.e[:, inds] && tile.u[:, :, 1:4] == b.u[:, :, inds] &&
-              tile.vdiag[:, :, 1:4] == b.vdiag[:, :, inds]
-        @test_throws "do not fit" stage!(tile, b, 1:7)
-        @test_throws "tile holds" stage!(alloc_tile(compute_phonon_states_batched(model_pb, kpts,
-            [:e]), CPUBackend(), 6), b, inds)
+        dst = BatchedPhononState(CPUBackend(), 3, 6, [:e, :u, :vdiag])
+        @test dst.qpts === nothing && dst.nq == 6 && dst.eph_dipole_coeff === nothing
+        gather_batched_phonon_states!(dst, b, inds)
+        @test dst.e[:, 1:4] == b.e[:, inds] && dst.u[:, :, 1:4] == b.u[:, :, inds] &&
+              dst.vdiag[:, :, 1:4] == b.vdiag[:, :, inds]
+        @test_throws "cannot gather 7 q points" gather_batched_phonon_states!(dst, b, 1:7)
+        @test_throws BoundsError gather_batched_phonon_states!(dst, b, [65])
+        @test_throws MethodError gather_batched_phonon_states!(BatchedPhononState(CPUBackend(), 3,
+            6, [:e, :u]), b, inds)
     end
 
     @testset "GPU" begin
@@ -132,7 +131,7 @@ end
             @test isequal(Array(b.e), Array(cache.e_full)[:, end:-1:1])
             @test isequal(Array(b.u), Array(cache.u_full)[:, :, end:-1:1])
             b_u = compute_phonon_states_batched(model_pb, rev, [:u]; backend, eigenpairs = cache)
-            @test keys(b_u.qty) == (:u,) && isequal(Array(b_u.u), Array(b.u))
+            @test b_u.e === nothing && isequal(Array(b_u.u), Array(b.u))
             sub_q = GridKpoints(Kpoints(kpts.vectors[1:kpts.n-1]; ngrid = kpts.ngrid), kpts.ngrid)
             @test_throws "does not cover" compute_phonon_states_batched(model_pb, kpts, full;
                 backend, eigenpairs = phonon_eigenpairs(model_pb, sub_q; backend))
@@ -144,12 +143,12 @@ end
             q0 = GridKpoints(Kpoints(Vec3{Float64}[]; ngrid = kpts.ngrid), kpts.ngrid)
             @test size(compute_phonon_states_batched(model_pb, q0, full; backend).u) == (3, 3, 0)
 
-            # stage! on the device, and a host container streamed into a device tile.
+            # The gather on the device, and a host container streamed into a device buffer.
             b_host = compute_phonon_states_batched(model_pb, kpts, full)
             inds = [5, 2, 64, 17]
             for src in (b, b_host)
-                tile = alloc_tile(b, backend, 6)
-                stage!(tile, src, inds)
+                tile = BatchedPhononState(backend, 3, 6, full)
+                gather_batched_phonon_states!(tile, src, inds)
                 @test on_backend(backend, tile.u)
                 @test Array(tile.e)[:, 1:4] == Array(src.e)[:, inds]
                 @test Array(tile.u)[:, :, 1:4] == Array(src.u)[:, :, inds]

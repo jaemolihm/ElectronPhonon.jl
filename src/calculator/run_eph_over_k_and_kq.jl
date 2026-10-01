@@ -707,12 +707,12 @@ function _loop_eph_over_k_and_kq_batched(
     # The k+q side of the interpolation runs full-band (uniform nw×nw): `el_kq` is built with every
     # band in its box, and the energy window is applied in the calculator scatter, where
     # out-of-window states have imap == 0 and are skipped.
-    el_kq.nbox == nw ||
+    el_kq.nband_max == nw ||
         throw(ArgumentError("the batched outer-k loop needs a full-band k+q container"))
 
     # ----- k-side window projection -----
     # The OUTER-k side does NOT need all nw bands: the calculator scatter keeps only in-window
-    # (band, k) pairs, so the k side is `el_k`'s box, `nbandk_max = el_k.nbox` eigenvector columns
+    # (band, k) pairs, so the k side is `el_k`'s box, `nbandk_max = el_k.nband_max` eigenvector columns
     # per k starting at physical band `ibandk_offsets[ik] + 1` (the first in-window band, never
     # clamped). Every downstream per-(k,q) object (the kR→kq GEMM, both gauge rotations, g2, and
     # the scatter) shrinks by nw/nbandk_max, the dominant ∝ nk·nq cost at narrow windows (e.g. TaAs
@@ -720,7 +720,7 @@ function _loop_eph_over_k_and_kq_batched(
     # 1:nw are out-of-window bands that scatter to imap == 0, and the calculators stop reading at
     # physical band nw, past which a column is undefined. Full-band runs have nbandk_max = nw and
     # every offset 0.
-    nbandk_max = el_k.nbox
+    nbandk_max = el_k.nband_max
     ibandk_offsets = Array(el_k.iband_offset)
 
     # ----- device interpolators (allocated once) -----
@@ -762,12 +762,12 @@ function _loop_eph_over_k_and_kq_batched(
     # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole batch; the inner
     # kR->kq driver reads each k's slice `ep_ekpR_all[:, :, ik_ind]` directly.
     # The outer k-batch's states, gathered from `el_k` per batch.
-    el_k_tile   = alloc_tile(el_k, backend, nk_batch_max)
+    el_k_tile   = BatchedElectronState(backend, nw, nbandk_max, nk_batch_max, [:u]; FT)
     ep_ekpR_all = alloc(backend, Complex{FT}, ndata_ekpR, nr_ep, nk_batch_max)
     ks_batch     = Vector{Vec3{FT}}(undef, nk_batch_max)
 
     # The q-tile's phonons, gathered from `ph` by `iq` per (k, q-tile).
-    ph_tile  = alloc_tile(ph, backend, nq_batch_max)
+    ph_tile  = BatchedPhononState(backend, nmodes, nq_batch_max, [:e, :u]; FT)
     epkq_dev = alloc(backend, Complex{FT}, nw, nbandk_max, nmodes, nq_batch_max)
 
     # In-place scratch for the per-k kR->kq driver (g / tmp), reused across all (k, q) so the
@@ -848,7 +848,7 @@ function _loop_eph_over_k_and_kq_batched(
         # A full batch is a range, gathered with no index upload.
         iks_padded = nk_batch == nk_batch_max ? iks_batch :
             [iks_batch; fill(kend, nk_batch_max - nk_batch)]
-        stage!(el_k_tile, el_k, iks_padded)
+        gather_batched_electron_states!(el_k_tile, el_k, iks_padded)
         uks_dev = el_k_tile.u
         for (ik_ind, ik) in enumerate(iks_padded)
             ks_batch[ik_ind] = kpts.vectors[ik]
@@ -893,11 +893,11 @@ function _loop_eph_over_k_and_kq_batched(
                 # the fused kernel can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs
                 # at width nq_batch via views into the nq_batch_max-sized buffers, so there is no
                 # padded tail. The indices are checked on the host by `_fill_iqs!` and copied once
-                # into the persistent device buffer (5-arg contiguous copy), which `stage!` takes
+                # into the persistent device buffer (5-arg contiguous copy), which the gather takes
                 # as it is.
                 _fill_iqs!(iqs_batch, qpts, xkqs_int, xks_int, ik, qstart, nq_batch)
                 copyto!(iqs_batch_dev, 1, iqs_batch, 1, nq_batch)
-                stage!(ph_tile, ph, view(iqs_batch_dev, rng_q))
+                gather_batched_phonon_states!(ph_tile, ph, view(iqs_batch_dev, rng_q))
                 uphs_dev, ωq_dev = ph_tile.u, ph_tile.e
 
                 # One batched Wannier->Bloch over this tile's q: ep_kq(q) (nw, nbandk_max, nmodes),
