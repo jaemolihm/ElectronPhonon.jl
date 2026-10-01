@@ -87,8 +87,8 @@ end
 
 How the electron quantity `name` transforms under a symmetry operation that maps a k point to an
 equivalent one: `:none` (copied), `:gauge` (rotated by the eigenvector representation of the
-operation) or `:cartesian` (rotated as a Cartesian vector, `-Scart` with time reversal), as
-`unfold_ElectronStates` applies them. Throws an `ArgumentError` for a quantity without a rule.
+operation) or `:cartesian` (rotated as a Cartesian vector, `-Scart` with time reversal, which for
+the complex `:v` also conjugates it), as `unfold_ElectronStates` applies them. Throws an `ArgumentError` for a quantity without a rule.
 """
 function unfold_rule(name::Symbol)
     name === :e && return :none

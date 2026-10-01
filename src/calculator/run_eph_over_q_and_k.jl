@@ -268,8 +268,9 @@ function _setup_eph_over_q_and_k(
 
 
     # The k states the batched loop reads, resident on the backend: full-band (the loop masks the
-    # eigenvector columns outside each k's window) and from the same solve as `el_k_save`, which the
-    # calculators and the result still receive.
+    # eigenvector columns outside each k's window). They are solved a second time, next to
+    # `el_k_save`, which the calculators and the result still receive; the two agree only because
+    # the eigensolve is deterministic, until the calculators take the container.
     el_k_batch = batched ? maybe_time(verbosity) do
             compute_electron_states_batched(model, kpts, [:e, :u]; fourier_mode, backend,
                                             eigenpairs = el_k_eigenpairs)
@@ -494,14 +495,14 @@ function _loop_eph_over_q_and_k_batched(
     # device memory allows (30% headroom for the batched drivers' recycled temporaries). All buffer
     # byte accounting lives in `_outer_q_staging_bytes` (shared with `estimate_device_memory`);
     # `nk_batch_max` stays a hard cap (the only control on the CPU backend, where `free_bytes` is
-    # unbounded). The k side is streamed per batch (below), so there is no whole-grid device stack to
-    # subtract — nothing is committed outside the per-k staging, and a tight-memory run simply shrinks
-    # the batch instead of OOM-ing.
+    # unbounded). The k container is resident from the setup, so `free_bytes` already accounts for
+    # it; the committed bytes are its window mask and weights, and a tight-memory run shrinks the
+    # batch instead of OOM-ing.
     use_polar_eph = model.polar_eph.use
 
     per_point, committed = _outer_q_staging_bytes(; nw, nmodes,
         nr_el_ham = length(model.el_ham.irvec), nr_ep_eRpq = length(ep_eRpq_obj.irvec),
-        use_polar_eph, calculators, FT)
+        use_polar_eph, calculators, nk, nk_stack = 0, FT)
     nk_batch_cap = min(Int(nk_batch_max), nk)
     nk_batch_max = plan_batch(backend, per_point, committed, nk_batch_cap; what = "outer-q")
     if verbosity > 0 && mpi_isroot()
@@ -628,7 +629,8 @@ end
 
 Estimate the device memory a batched e-ph run would use, WITHOUT running it, so a batch width can
 be sized ahead of time. Uses the same byte functions as the drivers (`_outer_{k,q}_staging_bytes`,
-full-band: `nbandk_max = nw`, so windowed runs use less), and reports both the whole-run `committed`
+full-band: `nbandk_max = nw`, so windowed runs use less, and counting the resident state stacks a
+run builds in its setup), and reports both the whole-run `committed`
 bytes and the `per_point` (per batched-inner index) bytes, plus the memory-adaptive batch width
 `plan_batch` would pick against `backend`. Which loop is estimated follows
 `model.epmat_outer_momentum` (`el` → outer-k, `ph` → outer-q). Returns a `NamedTuple`; the
@@ -655,7 +657,7 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
         nr_ep = length(get_next_wannier_object(model.epmat).irvec)
         nk_batch = min(Int(nk_outer_batch_max), Int(nk))
         per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max = nw, nmodes, nr_ep, nk, nkq,
-            nkq_stack = nkq, nq_grid = nkq, nk_batch_max = nk_batch, calculators,
+            nk_stack = nk, nkq_stack = nkq, nq_grid = nkq, nk_batch_max = nk_batch, calculators,
             nr_epmat = model.epmat.nr, FT)
         cap = nq_batch_max === nothing ? Int(nkq) : min(Int(nq_batch_max), Int(nkq))
         loop = :outer_k
@@ -663,7 +665,8 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
         use_polar_eph = model.polar_eph.use
         nr_ep_eRpq = length(get_next_wannier_object(model.epmat).irvec)
         per_point, committed = _outer_q_staging_bytes(; nw, nmodes,
-            nr_el_ham = length(model.el_ham.irvec), nr_ep_eRpq, use_polar_eph, calculators, FT)
+            nr_el_ham = length(model.el_ham.irvec), nr_ep_eRpq, use_polar_eph, calculators,
+            nk, nk_stack = nk, FT)
         cap = min(Int(nk_batch_max), Int(nk))
         loop = :outer_q
     else

@@ -246,5 +246,5 @@ public AbstractCalculator, supports, setup_calculator!, run_calculator!, postpro
     bte_window_accumulate!, eph_batched_bytes_per_point, allowed_eph_phonon_basis,
     required_el_k_quantities, _indmap_to_device, TiledDeviceOutput, tile_begin!, tile_download!,
     tile_free!, device_array, host_array, tile_offset, tile_length, tile_stride, is_block,
-    is_allocated, residency_use_block, to_device, plan_batch, estimate_device_memory
+    is_allocated, residency_use_block, to_device, plan_batch, estimate_device_memory, nbandk_physical
 

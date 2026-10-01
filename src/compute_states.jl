@@ -342,7 +342,7 @@ end
 
 The phonons of `qpts` as a [`BatchedPhononState`](@ref) on `backend`: what
 [`compute_phonon_states`](@ref) computes for the same arguments, stored as dense stacks instead of
-one `PhononState` per q point. `quantities` lists the `BatchedPhononState` quantity names to store
+one `PhononState` per q point. The `fourier_mode` default is `"gridopt"` here and `"normal"` there. `quantities` lists the `BatchedPhononState` quantity names to store
 (`:e`, `:u`, `:vdiag`, `:eph_dipole_coeff`, `:eph_r_coeff`). The eigenvalue-only solve runs when
 none of them needs the eigenmodes; `eph_phonon_basis` is as in `compute_phonon_states`.
 
@@ -514,11 +514,10 @@ end
 _electron_batched_quantities(::CPUBackend) = (:e, :u, :vdiag, :v, :rbar)
 _electron_batched_quantities(::AbstractBackend) = (:e, :u, :vdiag)
 
-function _check_electron_quantities(quantities, backend, allowed = _electron_batched_quantities(backend))
+function _check_electron_quantities(quantities, allowed, builder)
     for name in quantities
         _electron_quantity_dims(name, 0, 0, 0)   # throws on a name that is no electron quantity
-        name ∈ allowed || throw(ArgumentError("quantity :$name is not supported by the batched " *
-            "electron builder on $(nameof(typeof(backend)))"))
+        name ∈ allowed || throw(ArgumentError("quantity :$name is not supported by $builder"))
     end
     allunique(quantities) || throw(ArgumentError("quantities $quantities has duplicates"))
     nothing
@@ -527,7 +526,8 @@ end
 function _compute_electron_states_batched(model::Model{FT}, kpts, sel, quantities, window;
         fourier_mode, backend, eigenpairs) where FT
     (; nw) = model
-    _check_electron_quantities(quantities, backend)
+    _check_electron_quantities(quantities, _electron_batched_quantities(backend),
+        "the batched electron builder on $(nameof(typeof(backend)))")
     _check_eigenpairs(eigenpairs, nw, backend)
     need_u = any(∈(quantities), (:u, :vdiag, :v, :rbar))
     nk = kpts.n
@@ -697,7 +697,8 @@ function compute_electron_states_batched!(tile::BatchedElectronState, scratch, m
     (; nw) = model
     keys(tile.qty) == Tuple(quantities) || throw(ArgumentError(
         "tile holds $(keys(tile.qty)), but quantities = $quantities"))
-    _check_electron_quantities(quantities, CPUBackend(), (:e, :u))
+    _check_electron_quantities(quantities, (:e, :u),
+        "the in-tile electron builder (tile arrays $(nameof(typeof(tile.nband))))")
     tile.nw == nw && tile.nbox == nw || throw(ArgumentError(
         "a tile solved in place needs box width nw = $nw, got $(tile.nbox)"))
     nx = length(xks)
@@ -727,9 +728,9 @@ end
     builder_scratch_bytes(model, quantities, ntile) -> Int
 
 The scratch [`compute_electron_states_batched!`](@ref) needs to solve up to `ntile` points on
-`backend`, and its device bytes: the batched H(k) interpolator and its `(nw^2, ntile)` output. The
-eigensolve's `(nw, ntile)` eigenvalues (and, on a GPU, its workspace) are allocated per call and
-counted in the bytes.
+`backend`: the batched H(k) interpolator and its `(nw^2, ntile)` output, which the eigensolve
+overwrites with the eigenvectors. The bytes count the interpolator's phase, that output, and the
+per-call eigenvalues and column index; the eigensolver's own workspace is not counted.
 """
 function builder_scratch(model::Model{FT}, backend, quantities, ntile::Integer) where FT
     itp_ham = BatchedWannierInterpolator(to_device(backend, model.el_ham); backend,

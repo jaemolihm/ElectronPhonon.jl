@@ -152,7 +152,11 @@ include("calculator_contract_harness.jl")
                    μlist = [e_F, e_F], volume = models.el.volume, nelec = 0,
                    spin_degeneracy = 2, occ_type = :FermiDirac),
                smearing_list = [SmearingType(:Gaussian, 50.0meV), SmearingType(:Gaussian, 100.0meV)]),
-           outputs = c -> Dict("Sₒ" => stack(c.Sₒ), "Sᵢ" => stack(c.Sᵢ))),
+           outputs = function (c)
+               ids_i, ids_f = contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)
+               Dict("Sₒ" => contract_group_sum(stack(c.Sₒ), 1, ids_i),
+                    "Sᵢ" => contract_group_sum(contract_group_sum(stack(c.Sᵢ), 1, ids_i), 2, ids_f))
+           end),
     ]
     check_calculator_contract(entries, models;
         golden_file = joinpath(@__DIR__, "calculator_contract_golden.jl"),

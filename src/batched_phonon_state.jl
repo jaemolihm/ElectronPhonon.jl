@@ -5,9 +5,6 @@ using Base.Threads: nthreads, @threads
 
 export BatchedPhononState
 
-# The batched state containers: `BatchedPhononState` and `BatchedElectronState`.
-abstract type AbstractBatchedState end
-
 """
     BatchedPhononState{T, KT, Q}
 
@@ -74,94 +71,15 @@ function Base.show(io::IO, b::BatchedPhononState{T}) where {T}
 end
 
 
-# ---- shared by BatchedPhononState and BatchedElectronState ---------------------------------------
-
-# A quantity name must not shadow a plain field, or `getproperty` could not tell them apart.
-function _check_quantity_names(::Type{S}, names) where {S}
-    for name in names
-        name ∈ fieldnames(S) && throw(ArgumentError(
-            "quantity name :$name is a field of $(nameof(S))"))
-    end
-end
-
-# A plain field by `getfield`, any other name looked up in `qty`.
-function Base.getproperty(b::AbstractBatchedState, name::Symbol)
-    hasfield(typeof(b), name) && return getfield(b, name)
-    qty = getfield(b, :qty)
-    haskey(qty, name) || throw(ArgumentError("quantity :$name was not requested from this " *
-        "$(nameof(typeof(b))); it holds $(keys(qty))"))
-    getfield(qty, name)
-end
-
-Base.propertynames(b::AbstractBatchedState) =
-    (fieldnames(typeof(b))..., keys(getfield(b, :qty))...)
-
-"""
-    quantity_arrays(b) -> Tuple
-
-Every array of `b` with one entry per point on its last axis: the quantities, and for electrons
-`iband_offset` and `nband`. Allocation of a tile, the gather `stage!` and byte counts map over it.
-"""
 quantity_arrays(b::BatchedPhononState) = values(b.qty)
 
-"""
-    alloc_tile(b, backend, width) -> typeof(b)-like
-
-An uninitialised buffer of `width` points with the quantities, box width and element types of `b`,
-on `backend`, and no point set. Filled by [`stage!`](@ref) or by a builder.
-"""
 function alloc_tile(b::BatchedPhononState{T}, backend, width::Integer) where {T}
     qty = map(x -> alloc(backend, eltype(x), Base.front(size(x))..., width), b.qty)
     BatchedPhononState{T}(b.nmodes, Int(width), nothing, qty)
 end
 
-"""
-    stage!(tile, b, inds)
-
-Copy the points `inds` of `b` into the first `length(inds)` points of `tile`, for every array of
-[`quantity_arrays`](@ref), so a tile carries the window metadata with the states. Same-backend
-arrays are gathered directly; a host `b` into a device `tile` is gathered on the host and uploaded
-in one copy per array. Entries past `length(inds)` are left as they were. `inds` is a host vector or
-range of point indices.
-"""
-function stage!(tile::AbstractBatchedState, b::AbstractBatchedState, inds)
-    keys(tile.qty) == keys(b.qty) || throw(ArgumentError(
-        "tile holds $(keys(tile.qty)), the source $(keys(b.qty))"))
-    _check_box(tile, b)
-    length(inds) <= tile.n || throw(ArgumentError(
-        "$(length(inds)) points do not fit a tile of width $(tile.n)"))
-    checkbounds(Base.OneTo(b.n), inds)
-    # One copy of a host index vector on `b`'s backend serves every array of `b`.
-    src_inds = _index_like(first(quantity_arrays(b)), inds)
-    foreach((dst, src) -> _gather_last!(dst, src, inds, src_inds), quantity_arrays(tile),
-            quantity_arrays(b))
-    tile
-end
-
-_index_like(x, inds::AbstractUnitRange) = inds
-_index_like(x, inds) = on_backend(CPUBackend(), x) ? inds :
-    copyto!(similar(x, Int, length(inds)), inds)
-
 _check_box(tile::BatchedPhononState, b::BatchedPhononState) = tile.nmodes == b.nmodes ||
     throw(ArgumentError("tile has nmodes = $(tile.nmodes), the source $(b.nmodes)"))
-_check_box(tile, b) = throw(ArgumentError(
-    "cannot stage a $(nameof(typeof(b))) into a $(nameof(typeof(tile)))"))
-
-# Gather `src[..., inds]` into `dst[..., 1:length(inds)]`; `src_inds` is `inds` on `src`'s backend.
-# A host source and a device destination are not one broadcast: gather on the host, then one
-# contiguous upload.
-function _gather_last!(dst::AbstractArray{T, N}, src::AbstractArray{T, N}, inds,
-                       src_inds) where {T, N}
-    d = selectdim(dst, N, 1:length(inds))
-    if on_backend(CPUBackend(), src) && !on_backend(CPUBackend(), dst)
-        copyto!(d, src[ntuple(_ -> Colon(), N - 1)..., inds])
-    else
-        # `inds` was bounds-checked on the host in `stage!`; checking a device copy again would
-        # cost a reduction kernel and a device-to-host read per array.
-        @inbounds d .= view(src, ntuple(_ -> Colon(), N - 1)..., src_inds)
-    end
-    dst
-end
 
 """
     Vector{PhononState{T}}(b::BatchedPhononState{T})

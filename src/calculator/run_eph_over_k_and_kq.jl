@@ -317,8 +317,10 @@ function _setup_eph_over_k_and_kq(
     end
 
     # The electron states the batched loop reads: the outer k side in box storage, the k+q side
-    # full-band (the k+q window is applied by the calculators' index maps). The same solve as
-    # `el_k_save`/`el_kq_save`, which the calculators and the result still receive.
+    # full-band (the k+q window is applied by the calculators' index maps). They are solved a second
+    # time, next to `el_k_save`/`el_kq_save`, which the calculators and the result still receive;
+    # the two agree only because the eigensolve is deterministic, until the calculators take the
+    # containers and the duplicate solve goes.
     el_k_batch, el_kq_batch = if batched
         maybe_time(verbosity) do
             (compute_electron_states_batched(model, sel_k, [:u]; fourier_mode, backend,
@@ -738,10 +740,10 @@ function _loop_eph_over_k_and_kq_batched(
     # already live, so `free_bytes` reflects them. All buffer byte accounting lives in
     # `_outer_k_staging_bytes` (shared with `estimate_device_memory`); `nq_batch_user`
     # (Int, or nkq when nothing) stays a hard cap.
-    # The k+q eigenvector and phonon stacks were built in the setup, so `free_bytes` already
-    # accounts for them.
+    # The k, k+q and phonon stacks were built in the setup, so `free_bytes` already accounts for
+    # them.
     per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
-        nkq_stack = 0, nq_grid = 0, nk_batch_max, calculators,
+        nk_stack = 0, nkq_stack = 0, nq_grid = 0, nk_batch_max, calculators,
         nr_epmat = epmat_dev.nr, FT)
     nq_batch_cap = nq_batch_user === nothing ? nkq : min(nq_batch_user, nkq)
     nq_batch_max = plan_batch(backend, per_point, committed, nq_batch_cap; what = "outer-k")
@@ -810,8 +812,9 @@ function _loop_eph_over_k_and_kq_batched(
     # slice of ep_ekpR_all stays meaningful whether or not it has been written yet.
     fill!(P_mk, 1)
 
-    # `iq` index staging for one (k, q-tile).
+    # `iq` index staging for one (k, q-tile), on the host and on the backend.
     iqs_batch     = Vector{Int}(undef, nq_batch_max)
+    iqs_batch_dev = alloc(backend, Int, nq_batch_max)
 
     # Integer grid-coord hash for iq, replacing the per-(k,q) float normalize + `_hash_xk`:
     #   hc_i = fold(xkqs_int[i,ikq] - xks_int[i,ik], ng_i),  hash = (hc1*ng2 + hc2)*ng3 + hc3,
@@ -889,10 +892,12 @@ function _loop_eph_over_k_and_kq_batched(
                 # tile's phonon eigenvectors/frequencies by iq into `ph_tile`; ωq is gathered too so
                 # the fused kernel can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs
                 # at width nq_batch via views into the nq_batch_max-sized buffers, so there is no
-                # padded tail. The index list stays on the host: its bounds are checked there, not
-                # by a device reduction per (k, tile).
+                # padded tail. The indices are checked on the host by `_fill_iqs!` and copied once
+                # into the persistent device buffer (5-arg contiguous copy), which `stage!` takes
+                # as it is.
                 _fill_iqs!(iqs_batch, qpts, xkqs_int, xks_int, ik, qstart, nq_batch)
-                stage!(ph_tile, ph, iqs_batch[rng_q])
+                copyto!(iqs_batch_dev, 1, iqs_batch, 1, nq_batch)
+                stage!(ph_tile, ph, view(iqs_batch_dev, rng_q))
                 uphs_dev, ωq_dev = ph_tile.u, ph_tile.e
 
                 # One batched Wannier->Bloch over this tile's q: ep_kq(q) (nw, nbandk_max, nmodes),

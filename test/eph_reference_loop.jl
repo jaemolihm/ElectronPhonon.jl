@@ -1,10 +1,9 @@
-# The test-only reference for the e-ph loops (plans/unified_eph_loop_design.md section 6): a plain
-# double loop over (k, k+q) on per-point `ElectronState`s and the per-point kernels
-# `get_eph_RR_to_kR!` / `get_eph_kR_to_kq!`, with the phonons solved at each q. Its own loop
-# structure, so it is independent of every driver's batching, tiling, threading and staging; and
-# recorder calculators that read the same `|g|^2` out of each payload of the current drivers.
-# Compared on gauge-invariant quantities: |g|^2 summed over degenerate multiplets of the k band,
-# the k+q band and the phonon mode, and the phonon frequencies.
+# The test-only reference for the e-ph loops: a plain double loop over (k, k+q) on per-point
+# `ElectronState`s and the per-point kernels `get_eph_RR_to_kR!` / `get_eph_kR_to_kq!`, with the
+# phonons solved at each q. Its own loop structure, so it is independent of every driver's batching,
+# tiling, threading and staging; and recorder calculators that read the same `|g|^2` out of each
+# payload of the current drivers. Compared on gauge-invariant quantities: |g|^2 summed over
+# degenerate multiplets of the k band, the k+q band and the phonon mode, and the phonon frequencies.
 
 using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPData, EPDataQBatched,
     EPDataKBatched, OuterIteration, OuterIterationBatch, get_eph_RR_to_kR!, get_eph_kR_to_kq!,
@@ -155,7 +154,7 @@ end
 function ElectronPhonon.run_calculator!(c::_PairRecorder, p::EPDataQBatched, ctx)
     eps = Array(p.eps); ωqs = Array(p.ωqs)
     # Box columns past physical band nw are padding.
-    nbandkq, nbandk = size(eps, 1), min(size(eps, 2), c.nw - p.ibandk_offset)
+    nbandkq, nbandk = size(eps, 1), ElectronPhonon.nbandk_physical(p, c.nw)
     xk = c.kpts.vectors[p.ik]
     for (j, ikq) in enumerate(p.ikqs)
         a = zeros(c.nw, c.nw, c.nmodes)

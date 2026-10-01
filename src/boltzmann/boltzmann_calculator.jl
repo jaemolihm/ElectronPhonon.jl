@@ -373,10 +373,9 @@ function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPDataQBatched, ctx) 
 
     # k-side window projection: the band-n axis starts at physical band ibandk_offset+1, so shift
     # into the physical-band imap_i by that offset (full-band runs have ibandk_offset = 0,
-    # nbandk = nw). The offset is not clamped, so columns past physical band nw are padding and are
-    # not read; columns of out-of-window bands below it have imap == 0. The k+q axis
-    # (m ∈ 1:nbandkq = nw) is not projected.
-    nbandk = min(nbandk, size(dev.imap_i, 1) - ibandk_offset)
+    # nbandk = nw). Columns past physical band nw are padding and are not read; columns of
+    # out-of-window bands below it have imap == 0. The k+q axis (m ∈ 1:nbandkq = nw) is not projected.
+    nbandk = nbandk_physical(p, calc.nw)
     imap_i_at_k = view(dev.imap_i, ibandk_offset+1:ibandk_offset+nbandk, ik)
 
     # Scatter into this batch's Sᵢ tile (streamed to the host by the OuterIterationBatch end bracket).
