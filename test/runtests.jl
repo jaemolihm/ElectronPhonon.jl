@@ -36,6 +36,7 @@ include("common_models_from_artifacts.jl")
         include("test_ElectronState.jl")
         include("test_eigenpairs.jl")  # shared full-band eigenpair cache; GPU part skips w/o CUDA
         include("test_batched_phonon_state.jl")  # dense phonon stacks; GPU part skips w/o CUDA
+        include("test_batched_electron_state.jl")  # box-stored electron stacks; GPU part skips w/o CUDA
         include("test_eph_precomputed_states.jl")  # the eigenpair cache through the e-ph drivers
         include("test_eph_incommensurate_grids.jl")  # run_eph_over_k_and_kq's per-(k,q) phonon solve
         include("test_eph_window_scatter.jl")  # calculator-facing scatter; GPU part skips w/o CUDA

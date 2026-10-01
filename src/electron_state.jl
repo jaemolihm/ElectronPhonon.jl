@@ -116,18 +116,10 @@ end
 Find out the bands inside the window and set el.nband and el.rng.
 """
 function set_window!(el::ElectronState, window=(-Inf, Inf))
-    ibands = inside_window(el.e_full, window...)
-    if isempty(ibands)
-        el.nband = 0
-        el.rng = 1:0
-    else
-        el.rng = ibands[1]:ibands[end]
-        el.nband = length(el.rng)
-        if el.nband > el.nband_bound
-            # If el.nband is greater than nband_bound, resize the arrays.
-            resize!(el)
-        end
-    end
+    el.rng = _band_window(el.e_full, window)
+    el.nband = length(el.rng)
+    # If el.nband is greater than nband_bound, resize the arrays.
+    el.nband > el.nband_bound && resize!(el)
     return el
 end
 
@@ -139,17 +131,18 @@ per-k band extent is fixed by the selection (e.g. the multigrid, whose per-k ran
 energy window).
 """
 function set_window!(el::ElectronState, band_range::UnitRange)
-    r = intersect(band_range, 1:el.nw)
-    if isempty(r)
-        el.nband = 0
-        el.rng = 1:0
-    else
-        el.rng = r
-        el.nband = length(r)
-        el.nband > el.nband_bound && resize!(el)
-    end
+    el.rng = _band_window(el.e_full, band_range)
+    el.nband = length(el.rng)
+    el.nband > el.nband_bound && resize!(el)
     return el
 end
+
+# The physical band range of one k point, `1:0` if empty: from an energy window over the sorted
+# eigenvalues `e_full`, or an explicit band range clamped to `1:length(e_full)`. Shared by
+# `set_window!` and the batched electron builder.
+_band_window(e_full, window::Tuple) = (r = inside_window(e_full, window...); isempty(r) ? (1:0) : r)
+_band_window(e_full, band_range::UnitRange) =
+    (r = intersect(band_range, 1:length(e_full)); isempty(r) ? (1:0) : r)
 
 function set_occupation!(el::ElectronState, occ :: ElectronOccupationParams, i :: Int)
     for ib in el.rng
@@ -211,22 +204,28 @@ If `mode == :Direct`, `vel` interpolates the velocity operator.
 If `mode == :BerryConnection`, `vel` interpolates the H(R) * R operator.
 """
 function set_velocity_diag!(el::ElectronState{FT}, vel, xk, mode) where {FT}
+    velocity_diag = reshape(reinterpret(FT, no_offset_view(el.vdiag)), 3, el.nband)
+    velocity = reshape(reinterpret(Complex{FT}, no_offset_view(el.v)), 3, el.nband, el.nband)
+    _el_velocity_diag!(velocity_diag, velocity, el.nw, vel, xk, no_offset_view(el.u), mode)
+end
+
+# The band-diagonal velocity `vdiag[d, n]` of one k from its in-window eigenvectors `u_w`; `v_w` is a
+# `(3, nb, nb)` scratch for the `:Direct` mode. Shared by `set_velocity_diag!` and the batched
+# electron builder.
+function _el_velocity_diag!(vdiag, v_w, nw, vel, xk, u_w, mode)
     if mode === :Direct
-        # For direct Wannier interpolation, there is no faster way to calculate only the diagonal part.
-        # So we just calculate the full velocity matrix and set take the diagonal part.
-        velocity = reshape(reinterpret(Complex{FT}, no_offset_view(el.v)), 3, el.nband, el.nband)
-        get_el_velocity_direct!(velocity, el.nw, vel, xk, no_offset_view(el.u))
-        for i in el.rng
-            el.vdiag[i] = real.(el.v[i, i])
+        # Direct interpolation has no diagonal-only form: compute the matrix, take its diagonal.
+        get_el_velocity_direct!(v_w, nw, vel, xk, u_w)
+        for i in axes(vdiag, 2)
+            @views vdiag[:, i] .= real.(v_w[:, i, i])
         end
     elseif mode === :BerryConnection
-        # For Berry connection method, we ignore the Berry connection contribution which is
-        # zero for the diagonal part.
-        velocity_diag = reshape(reinterpret(FT, no_offset_view(el.vdiag)), 3, el.nband)
-        get_el_velocity_diag_berry_connection!(velocity_diag, el.nw, vel, xk, no_offset_view(el.u))
+        # The Berry connection contribution is zero on the diagonal.
+        get_el_velocity_diag_berry_connection!(vdiag, nw, vel, xk, u_w)
     else
         throw(ArgumentError("mode must be :Direct or :BerryConnection, not $mode."))
     end
+    vdiag
 end
 
 """

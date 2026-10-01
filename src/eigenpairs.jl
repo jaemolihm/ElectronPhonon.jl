@@ -200,6 +200,18 @@ function _set_eigen_from!(el::ElectronState, eigenpairs::Eigenpairs, ham, xk)
     el.rng = 1:0
 end
 
+# The same into the `e` (nw) / `u` (nw, nw) arrays of one k, a slice of the stacks of
+# `compute_electron_states_batched`.
+_set_eigen_from!(e::AbstractVector, u::AbstractMatrix, ::Nothing, ham, xk) =
+    get_el_eigen!(e, u, length(e), ham, xk)
+
+function _set_eigen_from!(e::AbstractVector, u::AbstractMatrix, eigenpairs::Eigenpairs, ham, xk)
+    ik = _eigenpairs_ik(eigenpairs, xk)
+    @views e .= eigenpairs.e_full[:, ik]
+    @views u .= eigenpairs.u_full[:, :, ik]
+    e, u
+end
+
 _set_eigen_valueonly_from!(el::ElectronState, ::Nothing, ham, xk) =
     set_eigen_valueonly!(el, ham, xk)
 
