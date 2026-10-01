@@ -1,5 +1,8 @@
 # Phonon quantities over a q-point set, one array per requested quantity with q on the last axis
 
+using ChunkSplitters
+using Base.Threads: nthreads, @threads
+
 export BatchedPhononState
 
 # The batched state containers: `BatchedPhononState` and `BatchedElectronState`.
@@ -118,7 +121,8 @@ end
 Copy the points `inds` of `b` into the first `length(inds)` points of `tile`, for every array of
 [`quantity_arrays`](@ref), so a tile carries the window metadata with the states. Same-backend
 arrays are gathered directly; a host `b` into a device `tile` is gathered on the host and uploaded
-in one copy per array. Entries past `length(inds)` are left as they were.
+in one copy per array. Entries past `length(inds)` are left as they were. `inds` is a host vector or
+range of point indices.
 """
 function stage!(tile::AbstractBatchedState, b::AbstractBatchedState, inds)
     keys(tile.qty) == keys(b.qty) || throw(ArgumentError(
@@ -126,22 +130,62 @@ function stage!(tile::AbstractBatchedState, b::AbstractBatchedState, inds)
     _check_box(tile, b)
     length(inds) <= tile.n || throw(ArgumentError(
         "$(length(inds)) points do not fit a tile of width $(tile.n)"))
-    foreach((dst, src) -> _gather_last!(dst, src, inds), quantity_arrays(tile), quantity_arrays(b))
+    checkbounds(Base.OneTo(b.n), inds)
+    # One copy of a host index vector on `b`'s backend serves every array of `b`.
+    src_inds = _index_like(first(quantity_arrays(b)), inds)
+    foreach((dst, src) -> _gather_last!(dst, src, inds, src_inds), quantity_arrays(tile),
+            quantity_arrays(b))
     tile
 end
+
+_index_like(x, inds::AbstractUnitRange) = inds
+_index_like(x, inds) = on_backend(CPUBackend(), x) ? inds :
+    copyto!(similar(x, Int, length(inds)), inds)
+
 _check_box(tile::BatchedPhononState, b::BatchedPhononState) = tile.nmodes == b.nmodes ||
     throw(ArgumentError("tile has nmodes = $(tile.nmodes), the source $(b.nmodes)"))
 _check_box(tile, b) = throw(ArgumentError(
     "cannot stage a $(nameof(typeof(b))) into a $(nameof(typeof(tile)))"))
 
-# Gather `src[..., inds]` into `dst[..., 1:length(inds)]`. A host source and a device destination
-# are not one broadcast: gather on the host, then one contiguous upload.
-function _gather_last!(dst::AbstractArray{T, N}, src::AbstractArray{T, N}, inds) where {T, N}
+# Gather `src[..., inds]` into `dst[..., 1:length(inds)]`; `src_inds` is `inds` on `src`'s backend.
+# A host source and a device destination are not one broadcast: gather on the host, then one
+# contiguous upload.
+function _gather_last!(dst::AbstractArray{T, N}, src::AbstractArray{T, N}, inds,
+                       src_inds) where {T, N}
     d = selectdim(dst, N, 1:length(inds))
     if on_backend(CPUBackend(), src) && !on_backend(CPUBackend(), dst)
         copyto!(d, src[ntuple(_ -> Colon(), N - 1)..., inds])
     else
-        d .= selectdim(src, N, inds)
+        # `inds` was bounds-checked on the host in `stage!`; checking a device copy again would
+        # cost a reduction kernel and a device-to-host read per array.
+        @inbounds d .= view(src, ntuple(_ -> Colon(), N - 1)..., src_inds)
     end
     dst
+end
+
+"""
+    Vector{PhononState{T}}(b::BatchedPhononState{T})
+
+One `PhononState` per q point of `b`, on the host: `xq` from `b.qpts` and every quantity `b` holds;
+a quantity it does not hold is left at `PhononState`'s zero.
+"""
+function Base.Vector{PhononState{T}}(b::BatchedPhononState{T}) where {T}
+    b.qpts === nothing && throw(ArgumentError("a tile has no q points"))
+    qty = map(Array, b.qty)
+    states = [PhononState(b.nmodes, T) for _ in 1:b.n]
+    @threads for iqs in chunks(1:b.n; n = nthreads())
+        for iq in iqs
+            ph = states[iq]
+            ph.xq = b.qpts.vectors[iq]
+            haskey(qty, :e) && (@views ph.e .= qty.e[:, iq])
+            haskey(qty, :u) && (@views ph.u .= qty.u[:, :, iq])
+            haskey(qty, :vdiag) && for i in 1:b.nmodes
+                ph.vdiag[i] = Vec3{T}(qty.vdiag[1, i, iq], qty.vdiag[2, i, iq], qty.vdiag[3, i, iq])
+            end
+            haskey(qty, :eph_dipole_coeff) &&
+                (@views ph.eph_dipole_coeff .= qty.eph_dipole_coeff[:, iq])
+            haskey(qty, :eph_r_coeff) && (@views ph.eph_r_coeff .= qty.eph_r_coeff[:, :, iq])
+        end
+    end
+    states
 end

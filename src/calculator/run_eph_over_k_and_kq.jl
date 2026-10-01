@@ -39,6 +39,9 @@ eigenvector at the point itself, and the two are a gauge apart. Nothing checks t
   an earlier run's returned `(qpts, ph_save)`; either pins the phonon eigenmode basis of two runs
   to each other inside a degenerate multiplet. The q points a run visits are
   `combine_kpoint_grids(kpts, kqpts)`, not an argument, so a cache must cover that set.
+
+Returns `(; kpts, qpts, el_k_save, el_kq_save, ph_save)`. On the batched path the phonons come from
+[`compute_phonon_states_batched`](@ref), so `ph_save` holds the frequencies and eigenmodes only.
 """
 function run_eph_over_k_and_kq(
         model       :: Model{FT},
@@ -156,8 +159,8 @@ function run_eph_over_k_and_kq(
         skip_eph && throw(ArgumentError("the batched path requires skip_eph = false"))
         _loop_eph_over_k_and_kq_batched(model,
             setup.kpts, setup.qpts, setup.kqpts,
-            setup.el_k_save, setup.el_kq_save,
-            setup.ph_save, setup.precompute_ph,
+            setup.el_k_batch, setup.el_kq_batch,
+            setup.ph_batch, setup.precompute_ph,
             setup.epmat_dev, setup.backend;
             calculators,
             energy_conservation, screening_params,
@@ -290,19 +293,41 @@ function _setup_eph_over_k_and_kq(
     end
 
 
-    # Precompute phonon states if precompute_ph == true
+    # Precompute phonon states if precompute_ph == true. The batched loop reads the dense e/u
+    # stacks `ph_batch`; the per-q states it returns are copied out of them.
     if precompute_ph
-        ph_save = maybe_time(verbosity) do
-            # FIXME: Compute velocity_diagonal only if needed by calculator.
-            compute_phonon_states(model, qpts,
-                ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"];
-                fourier_mode, backend, eigenpairs = ph_eigenpairs)
+        ph_save, ph_batch = maybe_time(verbosity) do
+            if batched
+                b = compute_phonon_states_batched(model, qpts, [:e, :u]; fourier_mode, backend,
+                                                  eigenpairs = ph_eigenpairs)
+                Vector{PhononState{FT}}(b), b
+            else
+                # FIXME: Compute velocity_diagonal only if needed by calculator.
+                compute_phonon_states(model, qpts,
+                    ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"];
+                    fourier_mode, eigenpairs = ph_eigenpairs), nothing
+            end
         end
         dyn_threads = nothing
     else
         qpts = nothing
         ph_save = nothing
+        ph_batch = nothing
         dyn_threads = get_interpolator_channel(model.ph_dyn; fourier_mode)
+    end
+
+    # The electron states the batched loop reads: the outer k side in box storage, the k+q side
+    # full-band (the k+q window is applied by the calculators' index maps). The same solve as
+    # `el_k_save`/`el_kq_save`, which the calculators and the result still receive.
+    el_k_batch, el_kq_batch = if batched
+        maybe_time(verbosity) do
+            (compute_electron_states_batched(model, sel_k, [:u]; fourier_mode, backend,
+                                             eigenpairs = el_k_eigenpairs),
+             compute_electron_states_batched(model, kqpts, [:u]; fourier_mode, backend,
+                                             eigenpairs = el_kq_eigenpairs))
+        end
+    else
+        nothing, nothing
     end
 
 
@@ -334,6 +359,7 @@ function _setup_eph_over_k_and_kq(
         kpts, qpts, kqpts,
         el_k_save, el_kq_save,
         ph_save, precompute_ph,
+        el_k_batch, el_kq_batch, ph_batch,
         nband_max,
         epstates, ep_ekpRs, epmat, ep_ekpR_obj,
         dyn_threads,
@@ -626,8 +652,8 @@ end
 function _loop_eph_over_k_and_kq_batched(
         model       :: Model{FT},
         kpts, qpts, kqpts,
-        el_k_save, el_kq_save,
-        ph_save, precompute_ph,
+        el_k, el_kq,
+        ph, precompute_ph,
         epmat_dev, backend;
         calculators = [],
         energy_conservation = (:None, 0.0),
@@ -676,29 +702,24 @@ function _loop_eph_over_k_and_kq_batched(
         "the batched path requires every calculator to support the EPDataQBatched payload " *
         "(supports(calc, EPDataQBatched) = true); it does not fall back to the per-point loop."))
 
-    # The k+q side of the interpolation runs full-band (uniform nw×nw, using the full eigenvectors
-    # `el.u_full`); the energy window is applied in the calculator scatter, where out-of-window
-    # states have imap == 0 and are skipped, so a windowed run needs no special handling there.
-    fullband = all(el.nband == nw for el in el_k_save) && all(el.nband == nw for el in el_kq_save)
+    # The k+q side of the interpolation runs full-band (uniform nw×nw): `el_kq` is built with every
+    # band in its box, and the energy window is applied in the calculator scatter, where
+    # out-of-window states have imap == 0 and are skipped.
+    el_kq.nbox == nw ||
+        throw(ArgumentError("the batched outer-k loop needs a full-band k+q container"))
 
     # ----- k-side window projection -----
     # The OUTER-k side does NOT need all nw bands: the calculator scatter keeps only in-window
-    # (band, k) pairs, so rotate the k side by only an `nbandk_max`-wide CONTIGUOUS window of
-    # eigenvector columns per k (`u_full[:, nb0+1 : nb0+nbandk_max]`, positioned to contain that k's
-    # in-window range `rng`). Every downstream per-(k,q) object — the kR→kq GEMM, both gauge
-    # rotations, g2, and the scatter — shrinks by nw/nbandk_max, the dominant ∝ nk·nq cost at narrow
-    # windows (e.g. TaAs ±0.1 eV: nbandk_max ≈ 4 of nw = 32). Out-of-window bands inside the projected
-    # window scatter to imap == 0 and are skipped exactly as before; the calculators only need the
-    # per-k physical-band offset `ibandk_offset` (0-based: ep_kq band n ↔ physical band
-    # ibandk_offset + n) to address their imaps. Full-band runs have
-    # nbandk_max = nw, ibandk_offset = 0 — the path (shapes, GEMMs, results) is unchanged.
-    # ibandk_offsets[ik]: 0-based window start = (first in-window band - 1), clamped so the
-    # nbandk_max-wide window [offset+1, offset+nbandk_max] stays within [1, nw]. The clamp only
-    # bites when a k's bands sit near the top edge: e.g. nw=4, nbandk_max=3, rng=3:4 → first-1=2
-    # exceeds nw-nbandk_max=1, so offset=1 (window 2:4 ⊇ 3:4); offset=2 would give 3:5, off the top.
-    nbandk_max = fullband ? nw : max(maximum(el -> el.nband, el_k_save; init = 1), 1)
-    ibandk_offsets = fullband ? zeros(Int, nk) :
-        [clamp(first(el.rng) - 1, 0, nw - nbandk_max) for el in el_k_save]
+    # (band, k) pairs, so the k side is `el_k`'s box, `nbandk_max = el_k.nbox` eigenvector columns
+    # per k starting at physical band `ibandk_offsets[ik] + 1` (the first in-window band, never
+    # clamped). Every downstream per-(k,q) object (the kR→kq GEMM, both gauge rotations, g2, and
+    # the scatter) shrinks by nw/nbandk_max, the dominant ∝ nk·nq cost at narrow windows (e.g. TaAs
+    # ±0.1 eV: nbandk_max ≈ 4 of nw = 32). Box columns past a k's window are padding: those inside
+    # 1:nw are out-of-window bands that scatter to imap == 0, and the calculators stop reading at
+    # physical band nw, past which a column is undefined. Full-band runs have nbandk_max = nw and
+    # every offset 0.
+    nbandk_max = el_k.nbox
+    ibandk_offsets = Array(el_k.iband_offset)
 
     # ----- device interpolators (allocated once) -----
     # `epmat_dev` (device e-ph object) was uploaded ONCE in the shared setup and threaded here through
@@ -717,8 +738,10 @@ function _loop_eph_over_k_and_kq_batched(
     # already live, so `free_bytes` reflects them. All buffer byte accounting lives in
     # `_outer_k_staging_bytes` (shared with `estimate_device_memory`); `nq_batch_user`
     # (Int, or nkq when nothing) stays a hard cap.
+    # The k+q eigenvector and phonon stacks were built in the setup, so `free_bytes` already
+    # accounts for them.
     per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
-        nq_grid = qpts.n, nk_batch_max, calculators,
+        nkq_stack = 0, nq_grid = 0, nk_batch_max, calculators,
         nr_epmat = epmat_dev.nr, FT)
     nq_batch_cap = nq_batch_user === nothing ? nkq : min(nq_batch_user, nkq)
     nq_batch_max = plan_batch(backend, per_point, committed, nq_batch_cap; what = "outer-k")
@@ -736,12 +759,13 @@ function _loop_eph_over_k_and_kq_batched(
     # RR->kR over a batch of `nk_batch_max` outer-k at once: one batched kernel per batch instead of one
     # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole batch; the inner
     # kR->kq driver reads each k's slice `ep_ekpR_all[:, :, ik_ind]` directly.
-    uks_dev     = alloc(backend, Complex{FT}, nw, nbandk_max, nk_batch_max)
-    uks_host    = Array{Complex{FT}}(undef, nw, nbandk_max, nk_batch_max)
+    # The outer k-batch's states, gathered from `el_k` per batch.
+    el_k_tile   = alloc_tile(el_k, backend, nk_batch_max)
     ep_ekpR_all = alloc(backend, Complex{FT}, ndata_ekpR, nr_ep, nk_batch_max)
     ks_batch     = Vector{Vec3{FT}}(undef, nk_batch_max)
 
-    uphs_dev = alloc(backend, Complex{FT}, nmodes, nmodes, nq_batch_max)
+    # The q-tile's phonons, gathered from `ph` by `iq` per (k, q-tile).
+    ph_tile  = alloc_tile(ph, backend, nq_batch_max)
     epkq_dev = alloc(backend, Complex{FT}, nw, nbandk_max, nmodes, nq_batch_max)
 
     # In-place scratch for the per-k kR->kq driver (g / tmp), reused across all (k, q) so the
@@ -749,33 +773,10 @@ function _loop_eph_over_k_and_kq_batched(
     # uses the first `nq_batch` columns for a partial final batch.
     kRkq_ws = KRtoKQWorkspace(epmat_dev.op_r, ndata_ekpR, nw, nbandk_max, nmodes, nq_batch_max)
 
-    # Collect the k+q electron eigenvectors on the host and copy to the device once (they do not
-    # depend on the outer k), reused across all k. Each q-batch reads a contiguous slice directly.
-    ukqs_all_dev = alloc(backend, Complex{FT}, nw, nw, nkq)
-    let ukqs_all_host = Array{Complex{FT}}(undef, nw, nw, nkq)
-        for ikq in 1:nkq
-            @views ukqs_all_host[:, :, ikq] .= el_kq_save[ikq].u_full
-        end
-        copyto!(ukqs_all_dev, ukqs_all_host)
-    end
-    # Phonon eigenvectors `u` and frequencies `e` depend only on iq, so (like ukqs_all_dev above)
-    # collect the full q-grid stacks on the host and copy to the device once, then gather per
-    # batch on the device by index (below).
-    # TODO: these two are the only fields of `ph_save` this loop ever reads, and
-    # `_compute_phonon_states_device!` built them on the device before scattering them into per-q
-    # `PhononState`s — so this gather + H2D undoes a D2H. Have the setup hand this loop the device
-    # stacks directly and drop this block; see the TODO at `_scatter_phonon_states!`.
-    uph_all_dev = alloc(backend, Complex{FT}, nmodes, nmodes, qpts.n)
-    ωq_all_dev  = alloc(backend, FT, nmodes, qpts.n)
-    let uph_all_host = Array{Complex{FT}}(undef, nmodes, nmodes, qpts.n),
-        ωq_all_host  = Array{FT}(undef, nmodes, qpts.n)
-        for iq in 1:qpts.n
-            @views uph_all_host[:, :, iq] .= ph_save[iq].u
-            @views ωq_all_host[:, iq]     .= ph_save[iq].e
-        end
-        copyto!(uph_all_dev, uph_all_host)
-        copyto!(ωq_all_dev, ωq_all_host)
-    end
+    # The k+q electron eigenvectors (independent of the outer k) and the phonons are resident on the
+    # backend, built in the setup; each q-tile reads a contiguous slice of the former and gathers
+    # the latter by `iq`.
+    ukqs_all_dev = el_kq.u
 
     # Grid coordinates as (3 × n) real device matrices, uploaded once. Both phase builds below read
     # them directly, so nothing on the phase path is staged on the host or copied H2D inside the loop.
@@ -811,7 +812,6 @@ function _loop_eph_over_k_and_kq_batched(
 
     # `iq` index staging for one (k, q-tile).
     iqs_batch     = Vector{Int}(undef, nq_batch_max)
-    iqs_batch_dev = alloc(backend, Int, nq_batch_max)
 
     # Integer grid-coord hash for iq, replacing the per-(k,q) float normalize + `_hash_xk`:
     #   hc_i = fold(xkqs_int[i,ikq] - xks_int[i,ik], ng_i),  hash = (hc1*ng2 + hc2)*ng3 + hc3,
@@ -833,7 +833,6 @@ function _loop_eph_over_k_and_kq_batched(
         xks_int[:, ik] .= _grid_coords_reduced(kpts.vectors[ik], qpts.ngrid, zero(Vec3{FT}))
     end
 
-    ωq_dev    = alloc(backend, FT, nmodes, nq_batch_max)
     g2_dev    = alloc(backend, FT, nw, nbandk_max, nmodes, nq_batch_max)
 
     for kstart in 1:nk_batch_max:nk
@@ -841,21 +840,16 @@ function _loop_eph_over_k_and_kq_batched(
         iks_batch = kstart:kend
         nk_batch = length(iks_batch)
 
-        # Stack U(k) and the k list for this outer-k batch (pad the partial tail with valid
-        # duplicated data so the batched RR->kR runs on dense `nk_batch_max`-sized arrays).
-        for (ik_ind, ik) in enumerate(iks_batch)
-            # k-side window projection: the `nbandk_max` contiguous eigenvector columns around this
-            # k's in-window range (all nw columns when full-band). The window selection itself
-            # still happens in the calculator scatter (imap == 0 outside), offset by ibandk_offsets[ik].
-            nb0 = ibandk_offsets[ik]
-            @views uks_host[:, :, ik_ind] .= el_k_save[ik].u_full[:, nb0+1:nb0+nbandk_max]
+        # Gather U(k) (the k-side box) and the k list for this outer-k batch, padding the partial
+        # tail with the last k so the batched RR->kR runs on dense `nk_batch_max`-sized arrays.
+        # A full batch is a range, gathered with no index upload.
+        iks_padded = nk_batch == nk_batch_max ? iks_batch :
+            [iks_batch; fill(kend, nk_batch_max - nk_batch)]
+        stage!(el_k_tile, el_k, iks_padded)
+        uks_dev = el_k_tile.u
+        for (ik_ind, ik) in enumerate(iks_padded)
             ks_batch[ik_ind] = kpts.vectors[ik]
         end
-        for ik_ind in (nk_batch+1):nk_batch_max
-            @views uks_host[:, :, ik_ind] .= uks_host[:, :, nk_batch]
-            ks_batch[ik_ind] = ks_batch[nk_batch]
-        end
-        copyto!(uks_dev, uks_host)
 
         if mpi_isroot() && div(kend, progress_print_step) > div(kstart - 1, progress_print_step)
             @info "$(now()) ik = $kstart:$kend / $nk"
@@ -892,21 +886,14 @@ function _loop_eph_over_k_and_kq_batched(
 
             for (ik_ind, ik) in enumerate(iks_batch)
                 # Build this (k, tile)'s q-index list (host-side integers only), then gather this
-                # tile's phonon eigenvectors/frequencies on the device by iq
-                # (uphs_dev[:,:,j] = uph_all_dev[:,:,iq[j]]); ωq gathered here too so the fused kernel
-                # can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs at width nq_batch
-                # via views into the nq_batch_max-sized buffers, so there is no padded tail.
-                # H2D copy of just the first nq_batch indices (5-arg contiguous copy — copying a host↔
-                # device SubArray view instead would fall back to scalar indexing); the device gather
-                # then reads only `view(iqs_batch_dev, rng_q)`, so the untouched tail is never used.
-                # `@inbounds`: bounds-checking a device INDEX ARRAY costs a Bool map+reduce kernel and
-                # a D2H round trip of the result per (k, tile); `iq` is already validated on the host
-                # (the guard in `_fill_iqs!`), so the device-side re-check is pure overhead.
+                # tile's phonon eigenvectors/frequencies by iq into `ph_tile`; ωq is gathered too so
+                # the fused kernel can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs
+                # at width nq_batch via views into the nq_batch_max-sized buffers, so there is no
+                # padded tail. The index list stays on the host: its bounds are checked there, not
+                # by a device reduction per (k, tile).
                 _fill_iqs!(iqs_batch, qpts, xkqs_int, xks_int, ik, qstart, nq_batch)
-                copyto!(iqs_batch_dev, 1, iqs_batch, 1, nq_batch)
-                iqs_used = view(iqs_batch_dev, rng_q)
-                @inbounds @views uphs_dev[:, :, rng_q] .= uph_all_dev[:, :, iqs_used]
-                @inbounds @views ωq_dev[:, rng_q]      .= ωq_all_dev[:, iqs_used]
+                stage!(ph_tile, ph, iqs_batch[rng_q])
+                uphs_dev, ωq_dev = ph_tile.u, ph_tile.e
 
                 # One batched Wannier->Bloch over this tile's q: ep_kq(q) (nw, nbandk_max, nmodes),
                 # folding g2 = |ep|²/(2ω) into the same fused kernel pass.

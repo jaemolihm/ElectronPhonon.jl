@@ -154,11 +154,12 @@ end
 
 function ElectronPhonon.run_calculator!(c::_PairRecorder, p::EPDataQBatched, ctx)
     eps = Array(p.eps); ωqs = Array(p.ωqs)
-    nbandkq, nbandk = size(eps, 1), size(eps, 2)
+    # Box columns past physical band nw are padding.
+    nbandkq, nbandk = size(eps, 1), min(size(eps, 2), c.nw - p.ibandk_offset)
     xk = c.kpts.vectors[p.ik]
     for (j, ikq) in enumerate(p.ikqs)
         a = zeros(c.nw, c.nw, c.nmodes)
-        a[1:nbandkq, p.ibandk_offset .+ (1:nbandk), :] .= abs2.(eps[:, :, :, j])
+        a[1:nbandkq, p.ibandk_offset .+ (1:nbandk), :] .= abs2.(eps[:, 1:nbandk, :, j])
         _record!(c, _pair_key(xk, c.kqpts.vectors[ikq], c.ngrid), a, ωqs[:, j])
     end
 end

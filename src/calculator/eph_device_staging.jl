@@ -50,12 +50,14 @@ end
 # --- outer-k GPU loop device bytes (`run_eph_over_k_and_kq`) ---------------------------------------
 #
 # Returns `(per_point, committed)` in bytes. `ndata = nw·nbandk_max·nmodes` is the k-side projected
-# e-ph data size (`= nw²·nmodes` full-band); `nr_ep` = number of R-vectors of g(k, R_ep); `nkq` /
-# `nq_grid` = k+q / q grid sizes; `nk_batch_max` = the fixed outer-k batch width.
+# e-ph data size (`= nw²·nmodes` full-band); `nr_ep` = number of R-vectors of g(k, R_ep); `nkq` =
+# k+q grid size; `nkq_stack` / `nq_grid` = the k+q eigenvector and phonon stacks to count (the
+# loop passes 0: its stacks are resident before the sizing point; the estimate passes the grid
+# sizes); `nk_batch_max` = the fixed outer-k batch width.
 # `nr_epmat` = the parent e-ph object's (`epmat_dev`) R-vector count, for the RR→kR interpolator's
 # phase scratch. The per-q term sums to `56·nw·nbandk_max·nmodes + 16·nr_ep + 16·nmodes² +
 # 8·nmodes + 8 + Σcalc`; the committed to the old hand-counted
-# `16·nw²·nkq + (16·nmodes²+8·nmodes)·nq_grid +
+# `16·nw²·nkq_stack + (16·nmodes²+8·nmodes)·nq_grid +
 # 16·nw·nbandk_max·(nmodes·nr_ep+1)·nk_batch_max` PLUS the `itp_epmat` Fourier scratch
 # `16·nr_epmat·nk_batch_max` (added 2026-07-18; the parent RR→kR interpolator, built at
 # `batch_size = nk_batch_max`, was omitted from the original hand-count — validated against a direct
@@ -63,8 +65,8 @@ end
 # `24·(nk + nkq) + 16·nr_ep·nk_batch_max`. All transition-pinned by test/test_gpu.jl.
 # Not counted: the loop's `irvecp_mat` (`24·nr_ep`, 20 kB at Cu shapes), matching how the
 # `BatchedFourierCore.irvec_mat` of the same shape has never been counted.
-function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_grid, nk_batch_max,
-        calculators, nr_epmat, FT = Float64)
+function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nkq_stack, nq_grid,
+        nk_batch_max, calculators, nr_epmat, FT = Float64)
     cx = sizeof(Complex{FT})    # 16
     rl = sizeof(FT)             # 8
     iz = sizeof(Int)            # 8
@@ -91,11 +93,11 @@ function _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_gri
     # the first `register_kpoints!`, and `itp_epmat` is driven only through `get_fourier_batched!`,
     # which never registers a k-point.
     committed =
-        cx * nw * nw * nkq +                                  # ukqs_all_dev
-        cx * nmodes * nmodes * nq_grid +                      # uph_all_dev
-        rl * nmodes * nq_grid +                               # ωq_all_dev
+        cx * nw * nw * nkq_stack +                            # k+q eigenvector stack
+        cx * nmodes * nmodes * nq_grid +                      # phonon u stack
+        rl * nmodes * nq_grid +                               # phonon ω stack
         cx * ndata * nr_ep * nk_batch_max +                   # ep_ekpR_all
-        cx * nw * nbandk_max * nk_batch_max +                 # uks_dev
+        cx * nw * nbandk_max * nk_batch_max +                 # k-side tile
         (cx * nr_epmat + rl * 3) * nk_batch_max +             # itp_epmat phase + per-batch k staging
         rl * 3 * (nk + nkq) +                                 # mxk_dev + xkq_dev
         cx * nr_ep * nk_batch_max                             # P_mk (k+q-convention phase)
