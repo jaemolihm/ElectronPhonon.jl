@@ -3,6 +3,7 @@ using Base.Threads: nthreads, threadid, @threads
 
 export compute_electron_states
 export compute_phonon_states
+export compute_phonon_states_batched
 
 """
     compute_electron_states(model, kpts, quantities, window=(-Inf, Inf); fourier_mode="normal",
@@ -427,4 +428,146 @@ function _scatter_phonon_states!(states, xqs, E, U, vel, need_dipole, eph_phonon
             end
         end  # iq
     end  # iqs
+end
+
+# Why this is not `compute_phonon_states` stacked afterwards: that function returns one mutable
+# `PhononState` per q point, ~13 heap objects per q, which is what the per-point loops need in their
+# `EPState` and what the batched loop over millions of q points must not pay; and it is host-only. The
+# per-q physics (eigensolve, cache copy, velocity, dipole) is shared: both builders call the same
+# kernels on the same arrays, so the host stacks here are `compute_phonon_states` bit for bit.
+"""
+    compute_phonon_states_batched(model, qpts, quantities; fourier_mode = "gridopt",
+        eph_phonon_basis = :eigenmode, backend = CPUBackend(), eigenpairs = nothing)
+        -> BatchedPhononState
+
+The phonons of `qpts` as a [`BatchedPhononState`](@ref) on `backend`: what
+[`compute_phonon_states`](@ref) computes for the same arguments, stored as dense stacks instead of
+one `PhononState` per q point. `quantities` lists the `BatchedPhononState` quantity names to store
+(`:e`, `:u`, `:vdiag`, `:eph_dipole_coeff`, `:eph_r_coeff`). The eigenvalue-only solve runs when
+none of them needs the eigenmodes; `eph_phonon_basis` is as in `compute_phonon_states`.
+
+`eigenpairs` is a gauge-fixing lookup table, as in `compute_phonon_states`: ω and `u` of every q are
+copied from it instead of diagonalizing, so it must cover every q point of `qpts` and be resident on
+`backend`.
+
+On a GPU backend only `:e` and `:u` are supported, polar phonons are refused and `fourier_mode` is
+unused. The q set is solved in chunks of the batched dynamical-matrix interpolator's block width,
+so the device `D(q)` transient is bounded whatever `qpts.n`. As in [`electron_eigenpairs`](@ref),
+the batched eigensolve picks its own basis inside a degenerate mode multiplet, so device and host
+`u` differ there.
+"""
+function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fourier_mode = "gridopt",
+        eph_phonon_basis::Symbol = :eigenmode, backend = CPUBackend(),
+        eigenpairs::Union{Nothing, Eigenpairs} = nothing) where FT
+    (; nmodes, mass) = model
+    for name in quantities
+        _phonon_quantity_dims(name, nmodes, 0)   # throws on a name with no branch
+    end
+    allunique(quantities) || throw(ArgumentError("quantities $quantities has duplicates"))
+    _check_eigenpairs(eigenpairs, nmodes, backend)
+    need_vdiag = :vdiag ∈ quantities
+    need_dipole = :eph_dipole_coeff ∈ quantities || :eph_r_coeff ∈ quantities
+    valueonly = !(:u ∈ quantities || need_vdiag || need_dipole)
+    nq = qpts.n
+    if !(backend isa CPUBackend)
+        unsupported = setdiff(quantities, (:e, :u))
+        isempty(unsupported) || throw(ArgumentError("quantities $unsupported are not supported " *
+            "by compute_phonon_states_batched on $(nameof(typeof(backend)))"))
+        model.polar_phonon.use && throw(ArgumentError(
+            "compute_phonon_states_batched on a non-CPU backend does not support polar phonons"))
+    end
+    qty = NamedTuple{Tuple(quantities)}(map(name -> alloc_zeros(backend,
+        _phonon_quantity_eltype(name, FT), _phonon_quantity_dims(name, nmodes, nq)...), Tuple(quantities)))
+    b = BatchedPhononState{FT}(nmodes, nq, qpts, qty)
+    (nq == 0 || isempty(quantities)) && return b
+
+    if backend isa CPUBackend
+        _compute_phonon_states_batched_cpu!(qty, model, qpts, eigenpairs, valueonly, need_vdiag,
+            need_dipole, eph_phonon_basis; fourier_mode)
+        return b
+    end
+    # Device: ω into `e` (or a temporary), eigenmodes into `u` when requested.
+    e = :e ∈ quantities ? qty.e : alloc(backend, FT, nmodes, nq)
+    if eigenpairs === nothing
+        itp_dyn = get_interpolator(to_device(backend, model.ph_dyn); fourier_mode = "batched",
+                                   backend, nk_hint = nq)
+        msqrt_d = alloc(backend, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
+        # One chunk per Fourier block of `itp_dyn`, so the Fourier partition is that of one call
+        # over the whole set; the eigensolve is per matrix, so the chunking does not change ω or u.
+        for c in Iterators.partition(1:nq, itp_dyn.batch_size)
+            D = _fourier_hk_batched(itp_dyn, view(qpts.vectors, c))  # (nmodes, nmodes, length(c))
+            D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
+            D ./= reshape(msqrt_d, 1, nmodes, 1)
+            Esq = if valueonly
+                eigvals_batched(D)
+            else
+                Esq_c, U = eigen_batched(D)
+                U ./= reshape(msqrt_d, nmodes, 1, 1)     # mass factor: u[i,:] /= sqrt(mass[i])
+                qty.u[:, :, c] .= U
+                Esq_c
+            end
+            e[:, c] .= sign.(Esq) .* sqrt.(abs.(Esq))  # ω = sign(ω²)·√|ω²|
+        end
+    else
+        # Gather from the cache. Its columns for this q list are resolved on the host: a miss
+        # inside the device gather would surface as a bare `KernelException` naming only the device.
+        iqs = Vector{Int}(undef, nq)
+        @threads for iqs_chunk in chunks(1:nq; n = nthreads())
+            for iq in iqs_chunk
+                iqs[iq] = _eigenpairs_ik(eigenpairs, qpts.vectors[iq])
+            end
+        end
+        e .= eigenpairs.e_full[:, iqs]
+        valueonly || (qty.u .= eigenpairs.u_full[:, :, iqs])
+    end
+    b
+end
+
+# The q slice `iq` of quantity `name` of `qty`, or `scratch` when it was not requested. `name` is a
+# compile-time constant, so the branch folds.
+@inline _q_slot(qty, ::Val{name}, scratch, iq) where {name} =
+    haskey(qty, name) ? selectdim(getfield(qty, name), ndims(getfield(qty, name)), iq) : scratch
+
+# The host fill: `compute_phonon_states`' loop, same chunks and same per-q kernels, on q slices of
+# the stacks (or per-chunk scratch for what was not requested). A function barrier, so the
+# `@threads` closure captures typed arguments.
+function _compute_phonon_states_batched_cpu!(qty, model::Model{FT}, qpts, eigenpairs, valueonly,
+        need_vdiag, need_dipole, eph_phonon_basis; fourier_mode) where FT
+    (; mass, nmodes) = model
+    polar = model.polar_phonon
+    @threads for iqs in chunks(qpts.vectors; n = nthreads())
+        # Thread-local interpolators; with supplied eigenpairs there is no D(q) to interpolate.
+        dyn = if eigenpairs === nothing
+            itp_dyn = get_interpolator(model.ph_dyn; fourier_mode)
+            register_kpoints!(itp_dyn, view(qpts.vectors, iqs))
+            itp_dyn
+        end
+        if need_vdiag
+            dyn_R = get_interpolator(model.ph_dyn_R; fourier_mode)
+            register_kpoints!(dyn_R, view(qpts.vectors, iqs))
+        end
+        e_s = zeros(FT, nmodes); u_s = zeros(Complex{FT}, nmodes, nmodes)
+        d_s = zeros(Complex{FT}, nmodes); r_s = zeros(Complex{FT}, nmodes, 3)
+
+        for iq in iqs
+            xq = qpts.vectors[iq]
+            e = _q_slot(qty, Val(:e), e_s, iq)
+            if valueonly
+                _set_eigen_valueonly_from!(e, eigenpairs, dyn, mass, polar, xq)
+            else
+                u = _q_slot(qty, Val(:u), u_s, iq)
+                _set_eigen_from!(e, u, eigenpairs, dyn, mass, polar, xq)
+                if need_vdiag
+                    _ph_velocity_diag!(_q_slot(qty, Val(:vdiag), nothing, iq), dyn_R, xq, u, e)
+                end
+                if need_dipole
+                    # u for the eigenmode basis, nothing for the Cartesian basis
+                    u_ph = eph_phonon_basis == :eigenmode ? u : nothing
+                    get_eph_dipole_coeffs!(_q_slot(qty, Val(:eph_dipole_coeff), d_s, iq),
+                        _q_slot(qty, Val(:eph_r_coeff), r_s, iq), xq, polar, u_ph)
+                end
+            end
+        end
+    end
+    nothing
 end
