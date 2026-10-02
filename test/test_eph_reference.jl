@@ -37,27 +37,21 @@ include("eph_reference_loop.jl")
 
         common = (; window_k = window, window_kq = window, progress_print_step = 10^9,
                   verbosity = 0)
-        # Each order runs on both `epmat` layouts: the one whose column R it contracts first
-        # (`model_el` for outer k), and the other, contracted over the row-block R.
+        # Each order requires its matching model layout: el for outer k, ph for outer q.
         outer_k = Any[("CPU", (; nchunks_threads = 4)),
-            ("CPU, small tiles", (; backend = CPUBackend(), n_outer_batch = 5, n_inner_tile = 50)),
-            ("CPU, row-block epmat", (; model = model_ph, n_outer_batch = 5, n_inner_tile = 50))]
+            ("CPU, small tiles", (; backend = CPUBackend(), n_outer_batch = 5, n_inner_tile = 50))]
         outer_q = Any[("CPU", (; nchunks_threads = 4)),
             ("CPU, small tiles", (; backend = CPUBackend(), n_inner_tile = 50, n_outer_batch = 3)),
-            ("CPU, row-block epmat", (; model = model_el, n_inner_tile = 50, n_outer_batch = 3)),
             ("CPU, precomputed k+q", (; precompute_el_kq = true, n_inner_tile = 50, nchunks_threads = 4))]
         # `run_eph_over_k_and_q` on the same commensurate grids: the pairs and values of the outer-k
         # arms above, with k + q solved per tile.
         outer_k_q = Any[("CPU", (; nchunks_threads = 4)),
-            ("CPU, small tiles", (; backend = CPUBackend(), n_outer_batch = 5, n_inner_tile = 50)),
-            ("CPU, row-block epmat", (; model = model_ph, n_outer_batch = 5, n_inner_tile = 50))]
+            ("CPU, small tiles", (; backend = CPUBackend(), n_outer_batch = 5, n_inner_tile = 50))]
         if EPH_REFERENCE_GPU_AVAILABLE
             CUDA.allowscalar(false)
             push!(outer_k, ("GPU", (; backend = gpu_backend())),
-                ("GPU, outer batch 1", (; backend = gpu_backend(), n_outer_batch = 1)),
-                ("GPU, row-block epmat", (; model = model_ph, backend = gpu_backend())))
+                ("GPU, outer batch 1", (; backend = gpu_backend(), n_outer_batch = 1)))
             push!(outer_q, ("GPU", (; backend = gpu_backend())),
-                ("GPU, row-block epmat", (; model = model_el, backend = gpu_backend(), n_outer_batch = 3)),
                 ("GPU, precomputed k+q", (; backend = gpu_backend(), precompute_el_kq = true)))
             push!(outer_k_q, ("GPU", (; backend = gpu_backend(), n_inner_tile = 50)))
         end

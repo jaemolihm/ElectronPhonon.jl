@@ -42,8 +42,7 @@ end
         el_qty, ph_qty = [:u, :e], [:u, :e]
         nb, ntile = 7, 40
         for (order, mom, dg) in ((OuterKLoop(), "el", false), (OuterKLoop(), "el", true),
-                                 (OuterKLoop(), "ph", false), (OuterQLoop(), "ph", false),
-                                 (OuterQLoop(), "el", false))
+                                 (OuterQLoop(), "ph", false))
             model = _load_model_from_artifacts("pb"; epmat_outer_momentum = mom)
             st = _setup_states(order, model, grid, grid, el_qty, ph_qty; backend, window_k = window,
                 window_kq = window, symmetry = nothing, precompute_el_kq = false, keep_all_qpts = true,
@@ -76,7 +75,7 @@ end
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
             @info "engine_bytes" order mom dg held transient counted ratio = (held + transient) / counted
             # Everything the engine holds and its stage 1 allocates is counted (0.992-1.000 measured,
-            # Pb, all five arms)...
+            # Pb, matching-layout arms)...
             @test held + transient <= 1.02 * counted
             # ...and the count is not a loose upper bound.
             @test held + transient >= 0.95 * counted

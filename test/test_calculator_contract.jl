@@ -44,6 +44,15 @@ end
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
     grid = (4, 4, 4)
 
+    # Model storage must match the loop order; reject mismatches before preparing any states.
+    model_ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
+    @test_throws "epmat_outer_momentum = \"el\"" ElectronPhonon.run_eph_over_k_and_kq(
+        model_ph, grid, grid; calculators = [_CountCalc()], symmetry = nothing)
+    @test_throws "epmat_outer_momentum = \"el\"" ElectronPhonon.run_eph_over_k_and_q(
+        model_ph, grid, grid; calculators = [_CountCalc()], symmetry = nothing)
+    @test_throws "epmat_outer_momentum = \"ph\"" ElectronPhonon.run_eph_over_q_and_k(
+        model, grid, grid; calculators = [_QCountCalc()], use_symmetry = false)
+
     # (d) Screening is disabled: any nontrivial screening_params errors at the driver entry.
     @test_throws ErrorException ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
         calculators = [_CountCalc()], symmetry = nothing, screening_params = 1,
