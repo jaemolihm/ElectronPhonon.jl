@@ -38,3 +38,13 @@ function _electron_state_equal(a::ElectronState, b::ElectronState)
         no_offset_view(a.v) == no_offset_view(b.v) &&
         no_offset_view(a.rbar) == no_offset_view(b.rbar)
 end
+
+# `model` with its epmat written to `dir` and read back as a `DiskWannierObject`.
+function _disk_epmat_model(model, dir)
+    e = model.epmat
+    write(joinpath(dir, "epmat.bin"), e.op_r)
+    disk = ElectronPhonon.DiskWannierObject(Float64, "epmat", e.nr, e.irvec, size(e.op_r, 1), dir, "epmat.bin";
+                             irvec_next = e.irvec_next)
+    names = fieldnames(typeof(model))
+    ElectronPhonon.Model(; merge(NamedTuple{names}(getfield.(Ref(model), names)), (; epmat = disk))...)
+end

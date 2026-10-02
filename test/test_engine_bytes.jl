@@ -41,10 +41,18 @@ end
         grid = (6, 6, 6)
         el_qty, ph_qty = [:u, :e], [:u, :e]
         nb, ntile = 7, 40
-        for (order, mom, dg) in ((OuterKLoop(), "el", false), (OuterKLoop(), "el", true),
-                                 (OuterKLoop(), "ph", false), (OuterQLoop(), "ph", false),
-                                 (OuterQLoop(), "el", false))
+        diskdir = mktempdir()
+        # The disk arms stream the epmat in chunks of 3 columns, of which the engine holds one.
+        for (order, mom, dg, disk) in ((OuterKLoop(), "el", false, false), (OuterKLoop(), "el", true, false),
+                                 (OuterKLoop(), "ph", false, false), (OuterQLoop(), "ph", false, false),
+                                 (OuterQLoop(), "el", false, false), (OuterKLoop(), "el", false, true),
+                                 (OuterKLoop(), "ph", false, true), (OuterQLoop(), "ph", false, true),
+                                 (OuterQLoop(), "el", false, true))
             model = _load_model_from_artifacts("pb"; epmat_outer_momentum = mom)
+            epmat_chunk_bytes = disk ? 3 * sizeof(ComplexF64) * size(model.epmat.op_r, 1) : 2^30
+            if disk
+                model = _disk_epmat_model(model, mkpath(joinpath(diskdir, mom)))
+            end
             st = _setup_states(order, model, grid, grid, el_qty, ph_qty; backend, window_k = window,
                 window_kq = window, symmetry = nothing, precompute_el_kq = false, keep_all_qpts = true,
                 eph_phonon_basis = :eigenmode, fourier_mode = "gridopt", mpi_comm_k = nothing,
@@ -53,18 +61,18 @@ end
             nbk = st.els_k.nband_max
             nbkq = st.els_kq === nothing ? model.nw : st.els_kq.nband_max
             common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1, drop_pairs = false,
-                      eph_phonon_basis = :eigenmode)
+                      eph_phonon_basis = :eigenmode, epmat_chunk_bytes)
             if order isa OuterKLoop
                 bytes = engine_bytes(OuterKEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, nkq = st.kqpts.n, el_qty, ph_qty, drop_pairs = false,
-                    covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
+                    covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode, epmat_chunk_bytes)
                 eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = dg, common...)
                 run1 = () -> stage1!(eng, st.els_k, st.kpts, 1:nb)
             else
                 bytes = engine_bytes(OuterQEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, n_outer_batch = nb, el_qty, ph_qty, drop_pairs = false,
-                    precompute_el_kq = false, eph_phonon_basis = :eigenmode)
+                    precompute_el_kq = false, eph_phonon_basis = :eigenmode, epmat_chunk_bytes)
                 eng = OuterQEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.qpts, common...)
                 run1 = () -> stage1!(eng, st.phs, st.qpts, 1:nb, :eigenmode)
@@ -74,9 +82,9 @@ end
             transient = _device_allocated(run1)
             held = _device_bytes(eng)
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
-            @info "engine_bytes" order mom dg held transient counted ratio = (held + transient) / counted
-            # Everything the engine holds and its stage 1 allocates is counted (0.992-1.000 measured,
-            # Pb, all five arms)...
+            @info "engine_bytes" order mom dg disk held transient counted ratio = (held + transient) / counted
+            # Everything the engine holds and its stage 1 allocates is counted (0.982-1.000 measured,
+            # Pb, all nine arms)...
             @test held + transient <= 1.02 * counted
             # ...and the count is not a loose upper bound.
             @test held + transient >= 0.95 * counted
@@ -103,7 +111,7 @@ end
             eph_phonon_basis = :eigenmode, fourier_mode = "gridopt", mpi_comm_k = nothing,
             el_k_eigenpairs = nothing, el_kq_eigenpairs = nothing, ph_eigenpairs = nothing, verbosity = 0)
         common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1, drop_pairs = false,
-                  eph_phonon_basis = :eigenmode)
+                  eph_phonon_basis = :eigenmode, epmat_chunk_bytes = 2^30)
         if order isa OuterKLoop
             eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                 st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = false, common...)
