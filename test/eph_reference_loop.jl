@@ -78,6 +78,61 @@ function eph_reference(model, kpts, kqpts, window_k, window_kq)
 end
 
 """
+    eph_reference_dg(model, kpts, kqpts) -> Dict(pair key => (Σ |dg[:, :, :, d]|² for d in 1:3))
+
+The covariant derivative of the e-ph matrix, `dg[m, n, ν, d]`, of every pair `(k, k+q)` of
+`kpts × kqpts` on the full band window, in the tight-binding approximation of the per-point outer-k
+loop (`covariant_derivative_of_g`): the Fourier transform of `im R_e g(R_e, R_p)` plus
+`im (r_j - r_i) g`, rotated to the electron and phonon eigenbases. Summed over the bands and modes,
+so the sums do not depend on either basis. `model` must have `epmat_outer_momentum = "el"`.
+"""
+function eph_reference_dg(model, kpts, kqpts)
+    (; nw, nmodes) = model
+    epmat_R_obj = ElectronPhonon.wannier_object_multiply_R(model.epmat, model.lattice)
+    nrp = length(epmat_R_obj.irvec_next)
+    @views for ire in axes(epmat_R_obj.op_r, 2)
+        g = Base.ReshapedArray(model.epmat.op_r[:, ire], (nw, nw, nmodes, nrp), ())
+        gR = Base.ReshapedArray(epmat_R_obj.op_r[:, ire], (nw, nw, nmodes, nrp, 3), ())
+        for idir in 1:3, iw in 1:nw
+            ri = model.wann_centers[iw][idir]
+            gR[iw, :, :, :, idir] .-= im .* ri .* g[iw, :, :, :]
+            gR[:, iw, :, :, idir] .+= im .* ri .* g[:, iw, :, :]
+        end
+    end
+    epmat_R = get_interpolator(epmat_R_obj; fourier_mode = "normal")
+    epobj_ekpR_R = get_next_wannier_object(epmat_R_obj)
+    ep_ekpR_R = get_interpolator(epobj_ekpR_R; fourier_mode = "normal")
+    dyn = get_interpolator(model.ph_dyn; fourier_mode = "normal")
+    el_k = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector"]; fourier_mode = "normal")
+    el_kq = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector"]; fourier_mode = "normal")
+    ph = PhononState(nmodes, Float64)
+    ngrid = kqpts.ngrid
+    nrp_next = length(epobj_ekpR_R.irvec)
+    out = Dict{NTuple{6, Int}, Vector{Float64}}()
+    for (ik, xk) in enumerate(kpts.vectors)
+        get_fourier!(epmat_R.out, epmat_R, xk)
+        tmp = Base.ReshapedArray(epmat_R.out, (nw * nw * nmodes, nrp_next, 3), ())
+        epobj_ekpR_R.op_r .= reshape(permutedims(tmp, (1, 3, 2)), (nw * nw * nmodes * 3, nrp_next))
+        uk = el_k[ik].u_full
+        for (ikq, xkq) in enumerate(kqpts.vectors)
+            xq = ElectronPhonon.normalize_kpoint_coordinate(xkq - xk .+ 1/2) .- 1/2
+            set_eigen!(ph, dyn, model.mass, model.polar_phonon, xq)
+            get_fourier!(ep_ekpR_R.out, ep_ekpR_R, xq)
+            dg_wan = reshape(ep_ekpR_R.out, nw, nw, nmodes, 3)
+            ukq = el_kq[ikq].u_full
+            sums = zeros(3)
+            for d in 1:3
+                dg_e = stack(ν -> ukq' * dg_wan[:, :, ν, d] * uk, 1:nmodes)       # (m, n, ν') Wannier mode
+                dg_ph = reshape(reshape(dg_e, nw * nw, nmodes) * ph.u, nw, nw, nmodes)
+                sums[d] = sum(abs2, dg_ph)
+            end
+            out[_pair_key(xk, xkq, ngrid)] = sums
+        end
+    end
+    out
+end
+
+"""
     compare_with_reference(ref, rec; tol_degen = 1e-6)
         -> (; g2_reldev, ω_dev, npairs, nmissing, nextra)
 

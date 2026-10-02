@@ -8,11 +8,6 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPData, EPBloc
 
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
 
-# An outer-k calculator without the per-point host payload: the per-point driver path must reject it
-# up front.
-mutable struct _BatchedOnlyKCalc <: AbstractCalculator end
-ElectronPhonon.supports(::_BatchedOnlyKCalc, ::Type{OuterKLoop}) = true
-
 # A minimal well-formed per-point outer-k calculator that just counts run_calculator! calls.
 mutable struct _CountCalc <: AbstractCalculator
     n :: Int
@@ -42,26 +37,13 @@ end
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
     grid = (4, 4, 4)
 
-    # (a) A calculator without the per-point payload handed to the per-point path errors BEFORE the
-    # loop starts.
-    @test_throws ArgumentError ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
-        calculators = [_BatchedOnlyKCalc()], symmetry = nothing, progress_print_step = 10^9,
-        batched = false)
-
     # (d) Screening is disabled: any nontrivial screening_params errors at the driver entry.
     @test_throws ErrorException ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
         calculators = [_CountCalc()], symmetry = nothing, screening_params = 1,
         progress_print_step = 10^9)
 
     # (b) `calculators` is a keyword argument (hard change): the positional form is gone.
-    @test_throws MethodError ElectronPhonon.run_eph_over_k_and_q(model, grid, grid, [_CountCalc()])
-
-    # (b, cont.) The kwarg form runs end-to-end and the per-(k,q) host hook is actually called. The
-    # per-point loops do not run in the current setup and bracket contract (ElectronPhonon.jl issue
-    # #72, https://github.com/jaemolihm/ElectronPhonon.jl/issues/72).
-    c = _CountCalc()
-    @test_broken (ElectronPhonon.run_eph_over_k_and_q(model, grid, grid;
-        calculators = [c], symmetry = nothing, progress_print_step = 10^9); c.n > 0)
+    @test_throws MethodError ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid, [_CountCalc()])
 end
 
 @testset "driver rejects a batched fourier_mode on a CPU backend" begin
@@ -76,7 +58,6 @@ end
         @test_throws msg ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid; fourier_mode)
         @test_throws msg ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid; fourier_mode,
                                                                 batched = true)
-        @test_throws msg ElectronPhonon.run_eph_over_k_and_q(model_el, grid, grid; fourier_mode)
         @test_throws msg ElectronPhonon.run_eph_over_q_and_k(model_ph, grid, grid; fourier_mode)
         @test_throws msg ElectronPhonon.run_eph_over_q_and_k(model_ph, grid, grid; fourier_mode,
                                                                batched = true)

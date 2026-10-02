@@ -220,16 +220,9 @@ end
                                        zeros(ComplexF64, model.nmodes, model.nmodes, 8)))
     end
 
-    # The k side is one edit in `_setup_electron_k`, shared by all three drivers, so the two
-    # siblings need only the kwarg forward covered. Their k+q states are deliberately not wired.
-    # `run_eph_over_k_and_q` is a per-point driver, which does not run in the current setup and
-    # block contract (ElectronPhonon.jl issue #72, https://github.com/jaemolihm/ElectronPhonon.jl/issues/72).
-    @testset "sibling drivers, k side" begin
-        model_el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
-        @test_broken (ElectronPhonon.run_eph_over_k_and_q(model_el, sub_a, grid;
-            calculators = [_PrecomputedStatesProbe()], fourier_mode = "gridopt",
-            progress_print_step = 10^9, verbosity = 0, symmetry = nothing); true)
-
+    # The k side is one edit in `_setup_electron_k`, shared by the drivers, so the outer-q driver
+    # needs only the kwarg forward covered. Its k+q states are deliberately not wired.
+    @testset "outer-q driver, k side" begin
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
         # The k+q grid path here must not reduce by symmetry.
         _run(; kwargs...) = ElectronPhonon.run_eph_over_q_and_k(model, sub_a, grid;

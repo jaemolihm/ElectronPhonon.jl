@@ -696,7 +696,7 @@ function _loop_eph_over_k_and_kq_batched(
     # them.
     per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nbandkq_max, nmodes, nr_ep, nk,
         nkq, nk_stack = 0, nkq_stack = 0, nq_grid = 0, nk_batch_max, calculators,
-        nr_epmat = epmat_dev.nr, FT)
+        nr_epmat = epmat_dev.nr, FT, el_k, el_kq, ph)
     nq_batch_cap = nq_batch_user === nothing ? nkq : min(nq_batch_user, nkq)
     nq_batch_max = plan_batch(backend, per_point, committed, nq_batch_cap; what = "outer-k")
     if verbosity > 0 && mpi_isroot()
@@ -855,10 +855,10 @@ function _loop_eph_over_k_and_kq_batched(
                 get_eph_kR_to_kq_batched!(ep, view(ep_ekpR_all, :, :, ik_ind), view(P_kq, :, rng_q),
                     ph_block.u, el_kq_block.u; ws = kRkq_ws)
 
-                block = EPBlock{OuterKLoop}(ep, nothing,
-                    view_batched_electron_states(el_k_tile, ik_ind:ik_ind), el_kq_block, ph_block,
-                    kpts.weights[ik], wtkq_block, kpts.vectors[ik],
-                    view(qpts.vectors, view(iqs_batch, rng_q)), ik, qstart:qend, iqs)
+                block = EPBlock{OuterKLoop}(; ep, dg = nothing,
+                    el_k = view_batched_electron_states(el_k_tile, ik_ind:ik_ind), el_kq = el_kq_block,
+                    ph = ph_block, wtk = kpts.weights[ik], wtq = wtkq_block, xk = kpts.vectors[ik],
+                    xq = view(qpts.vectors, view(iqs_batch, rng_q)), ik, ikq = qstart:qend, iq = iqs)
                 foreach(c -> run_calculator!(c, block, ctx), calculators)
             end # ik
 

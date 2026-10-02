@@ -490,7 +490,7 @@ function _loop_eph_over_q_and_k_batched(
     nbandk_max = el_k.nband_max
     per_point, committed = _outer_q_staging_bytes(; nw, nbandk_max, nmodes,
         nr_el_ham = length(model.el_ham.irvec), nr_ep_eRpq = length(ep_eRpq_obj.irvec),
-        use_polar_eph, calculators, nk, nk_stack = 0, FT)
+        use_polar_eph, calculators, nk, nk_stack = 0, FT, el_k, ph)
     nk_batch_cap = min(Int(nk_batch_max), nk)
     nk_batch_max = plan_batch(backend, per_point, committed, nk_batch_cap; what = "outer-q")
     if verbosity > 0 && mpi_isroot()
@@ -570,8 +570,9 @@ function _loop_eph_over_q_and_k_batched(
             use_polar_eph && add_eph_dipole_batched!(ep, ph_q.eph_dipole_coeff, el_kq_block.u,
                                                      el_k_block.u, view(mmats_batch, :, :, rng_k))
 
-            block = EPBlock{OuterQLoop}(ep, nothing, el_k_block, el_kq_block, ph_q, view(wtk_dev, iks_batch),
-                qpts.weights[iq], view(kpts.vectors, iks_batch), xq, iks_batch, nothing, iq)
+            block = EPBlock{OuterQLoop}(; ep, dg = nothing, el_k = el_k_block, el_kq = el_kq_block,
+                ph = ph_q, wtk = view(wtk_dev, iks_batch), wtq = qpts.weights[iq],
+                xk = view(kpts.vectors, iks_batch), xq, ik = iks_batch, ikq = nothing, iq)
             foreach(c -> run_calculator!(c, block, ctx), calculators)
         end # k batch
 

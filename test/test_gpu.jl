@@ -541,10 +541,8 @@ end
 
 # The batched outer-k loop holds no device-specific code, so it runs on a `CPUBackend` with any
 # tiling: the CUDA-free coverage of the block construction, the k+q-convention phase build and the
-# q-tiling. Its per-point twin (`batched = false`) is the comparison this testset was built on; the
-# per-point loops do not run in the current setup and block contract (ElectronPhonon.jl issue #72,
-# https://github.com/jaemolihm/ElectronPhonon.jl/issues/72).
-@testset "outer-k CPU+batched == CPU+per-point (_RecordCalc)" begin
+# q-tiling.
+@testset "outer-k CPU: default widths == small tiles (_RecordCalc)" begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
     grid = (4, 4, 4)
 
@@ -564,8 +562,6 @@ end
     @test scale > 0
     @test maximum(abs, cpt.g2 .- cba.g2) < 1e-10 * scale
     @test cpt.ωq == cba.ωq
-    @test_broken (ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid; calculators=[_RecordCalc()],
-        symmetry=nothing, progress_print_step=10^9, verbosity=0, batched=false); true)
 end
 
 # Outer-q analogue of `_RecordCalc`: a calculator for `run_eph_over_q_and_k` that accumulates a
@@ -637,9 +633,8 @@ end
 end
 
 # The outer-q loop has no CUDA-only callee either, so it runs on a `CPUBackend` with any k-batch
-# width. Its per-point twin (`batched = false`) is the comparison this testset was built on
-# (ElectronPhonon.jl issue #72, https://github.com/jaemolihm/ElectronPhonon.jl/issues/72).
-@testset "run_eph_over_q_and_k CPU+batched == CPU+per-point (D8)" begin
+# width.
+@testset "run_eph_over_q_and_k CPU: default width == partial k-batch (D8)" begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
     grid = (4, 4, 4)
 
@@ -659,9 +654,6 @@ end
     rdiff = maximum(abs, calc_pt.A .- calc_ba.A) / maximum(abs, calc_pt.A)
     @info "run_eph_over_q_and_k CPU, k-batch 10 vs default (Pb 4³)" rdiff
     @test isapprox(calc_pt.A, calc_ba.A; rtol=1e-10)
-    @test_broken (ElectronPhonon.run_eph_over_q_and_k(model, grid, grid;
-        calculators=[_RecordCalcOuterQ()], use_symmetry=false, keep_all_qpts=true,
-        progress_print_step=10^9, verbosity=0, batched=false); true)
 end
 
 # F4: force a PARTIAL outer-q k-batch (small nk_batch_max) so the DECISION-9 payload trim is a real

@@ -104,10 +104,19 @@ supports(::BoltzmannCalculator, ::Type{EPData}) = true
 required_el_quantities(::BoltzmannCalculator) = [:e, :vdiag]
 required_ph_quantities(::BoltzmannCalculator) = [:e]
 
-# The per-tile g2 scratch; the Sᵢ tile and the small per-state arrays are not counted.
-eph_batched_bytes_per_point(::BoltzmannCalculator{FT}, ::Type{<:EPBlock{OuterKLoop}}; nmodes,
-        nband_max_k, nband_max_kq, kwargs...) where {FT} =
-    (; persistent = 0, per_outer = 0, per_pair = sizeof(FT) * nband_max_kq * nband_max_k * nmodes)
+# What `setup_calculator!` allocates on the backend: the whole-run Sₒ, index maps and per-state
+# arrays, the Sᵢ tile (rows of the outer states of one k, all inner states and temperatures, per
+# outer point), and the per-tile g2 scratch. The state counts are bounded by the containers' boxes;
+# without containers (`estimate_device_memory`) only the scratch is counted.
+function eph_batched_bytes_per_point(calc::BoltzmannCalculator{FT}, ::Type{<:EPBlock{OuterKLoop}};
+        nmodes, nband_max_k, nband_max_kq, el_k = nothing, el_kq = nothing, kwargs...) where {FT}
+    per_pair = sizeof(FT) * nband_max_kq * nband_max_k * nmodes
+    (el_k === nothing || el_kq === nothing) && return (; persistent = 0, per_outer = 0, per_pair)
+    n_i, n_f, nT = sum(el_k.nband), sum(el_kq.nband), length(calc.occ)
+    persistent = sizeof(FT) * (n_i * nT + n_i + 2n_f + 3nT) +                      # Sₒ, e_i, e_f, wf, μ, T, smearing
+        sizeof(Int) * (el_k.nband_max * el_k.nk + el_kq.nband_max * el_kq.nk)     # imap_i, imap_f
+    (; persistent, per_outer = sizeof(FT) * nband_max_k * n_f * nT, per_pair)
+end
 
 function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBackend, el_k, el_kq, ph;
         sel_k, sel_kq, nmodes, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...) where {FT}
@@ -333,8 +342,8 @@ end
 # scatters into `dev.Sₒ` and the current Sᵢ tile via `bte_window_accumulate!` (same
 # `bte_scattering_increments` as the per-point EPData method above). The batched loop runs one block
 # at a time, so the scatter writes the global buffers directly.
-function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPBlock{OuterKLoop}, ctx) where {FT}
-    (; ep, ph, ik, ikq) = p
+function run_calculator!(calc::BoltzmannCalculator{FT}, block::EPBlock{OuterKLoop}, ctx) where {FT}
+    (; ep, ph, ik, ikq) = block
     dev = calc.dev
     nbandkq, nbandk, nmodes, nq_batch = size(ep)
     g2 = view(dev.g2, :, :, :, 1:nq_batch)

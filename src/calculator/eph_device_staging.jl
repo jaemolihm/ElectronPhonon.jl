@@ -49,12 +49,14 @@ end
 # phase scratch; `nk_stack` / `nkq_stack` / `nq_grid` = the resident k, k+q and phonon containers to
 # count (the loop passes 0: they are built before it sizes its tiles; the estimate passes the grid
 # sizes); `nk_batch_max` = the outer-k batch width. Each calculator adds its
-# `eph_batched_bytes_per_point` triple: `per_pair` per k+q point, `persistent` and
-# `per_outer · nk_batch_max` to the committed bytes. Not counted: the loop's `irvecp_mat`
+# `eph_batched_bytes_per_point` triple (given the run's containers `el_k`, `el_kq`, `ph`, `nothing` in
+# the estimate): `per_pair` per k+q point, `persistent` and `per_outer · nk_batch_max` to the
+# committed bytes. Not counted: the loop's `irvecp_mat`
 # (`24·nr_ep`, 20 kB at Cu shapes) and the interpolator's `cached_results`, never allocated because
 # `itp_epmat` is driven only through `get_fourier_batched!`.
 function _outer_k_staging_bytes(; nw, nbandk_max, nbandkq_max, nmodes, nr_ep, nk, nkq, nk_stack,
-        nkq_stack, nq_grid, nk_batch_max, calculators, nr_epmat, FT = Float64)
+        nkq_stack, nq_grid, nk_batch_max, calculators, nr_epmat, FT = Float64, el_k = nothing,
+        el_kq = nothing, ph = nothing)
     cx = sizeof(Complex{FT})    # 16
     rl = sizeof(FT)             # 8
     iz = sizeof(Int)            # 8
@@ -77,7 +79,7 @@ function _outer_k_staging_bytes(; nw, nbandk_max, nbandkq_max, nmodes, nr_ep, nk
         cx * nr_ep * nk_batch_max                                       # P_mk (k+q-convention phase)
     for c in calculators
         b = eph_batched_bytes_per_point(c, EPBlock{OuterKLoop}; nw, nmodes, nband_max_k = nbandk_max,
-                                        nband_max_kq = nbandkq_max)
+                                        nband_max_kq = nbandkq_max, el_k, el_kq, ph)
         per_point += b.per_pair
         committed += b.persistent + b.per_outer * nk_batch_max
     end
@@ -94,7 +96,7 @@ end
 # are not counted: both are driven only through `get_fourier_batched!`, which never registers a
 # k-point. Each calculator adds its `eph_batched_bytes_per_point` triple (one outer q per batch).
 function _outer_q_staging_bytes(; nw, nbandk_max, nmodes, nr_el_ham, nr_ep_eRpq, use_polar_eph,
-        calculators, nk, nk_stack, FT = Float64)
+        calculators, nk, nk_stack, FT = Float64, el_k = nothing, ph = nothing)
     cx = sizeof(Complex{FT})    # 16
     rl = sizeof(FT)             # 8
     iz = sizeof(Int)            # 8
@@ -114,7 +116,7 @@ function _outer_q_staging_bytes(; nw, nbandk_max, nmodes, nr_el_ham, nr_ep_eRpq,
         rl * nk                                                       # weights
     for c in calculators
         b = eph_batched_bytes_per_point(c, EPBlock{OuterQLoop}; nw, nmodes, nband_max_k = nbandk_max,
-                                        nband_max_kq = nw)
+                                        nband_max_kq = nw, el_k, el_kq = nothing, ph)
         per_point += b.per_pair
         committed += b.persistent + b.per_outer
     end

@@ -103,7 +103,10 @@ struct EPBlock{Order <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, 
     ikq   :: IKQ
     iq    :: IQ
 end
-EPBlock{O}(args...) where {O <: LoopTag} = EPBlock{O, typeof.(args)...}(args...)
+function EPBlock{O}(; ep::AT, dg::DGT, el_k::EK, el_kq::EKQ, ph::PH, wtk::WK, wtq::WQ, xk::XK, xq::XQ,
+        ik::IK, ikq::IKQ, iq::IQ) where {O <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}
+    EPBlock{O, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}(ep, dg, el_k, el_kq, ph, wtk, wtq, xk, xq, ik, ikq, iq)
+end
 
 
 """
@@ -193,8 +196,8 @@ end
 function run_calculator! end
 
 """
-    eph_batched_bytes_per_point(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k, nband_max_kq)
-        -> (; persistent, per_outer, per_pair)
+    eph_batched_bytes_per_point(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k, nband_max_kq,
+                                el_k, el_kq, ph) -> (; persistent, per_outer, per_pair)
 
 Device bytes the calculator allocates for a batched run of order `O`: whole-run buffers
 (`persistent`), per outer point of a batch (`per_outer`) and per inner pair of a tile (`per_pair`).

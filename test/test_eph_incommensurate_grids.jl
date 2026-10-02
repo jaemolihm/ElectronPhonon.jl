@@ -44,43 +44,6 @@ function ElectronPhonon.run_calculator!(c::_IncommensurateProbe, d::EPData, ctx)
     c
 end
 
-# The checks of one model; `false` on the first one that fails. The branch is the per-point loop's
-# (`batched = false`), which does not run in the current setup and block contract (ElectronPhonon.jl
-# issue #72, https://github.com/jaemolihm/ElectronPhonon.jl/issues/72), so the caller marks it broken.
-function _incommensurate_checks(model, kgrid, kqgrid, polar)
-    nk, nkq = prod(kgrid), prod(kqgrid)
-    probe = _IncommensurateProbe(Float64, model.nmodes, nk, nkq)
-    res = ElectronPhonon.run_eph_over_k_and_kq(model, kgrid, kqgrid;
-        calculators = [probe], symmetry = nothing, fourier_mode = "gridopt",
-        progress_print_step = 10^9, verbosity = 0, batched = false)
-
-    # The branch was taken: no q-point set was built, hence no precomputed phonon states, and every
-    # payload came without a q index.
-    ok = res.qpts === nothing && res.ph_save === nothing && all(probe.iq_is_nothing)
-
-    # One payload per (k, k+q) pair, no pair visited twice, over the full grids.
-    ok &= (res.kpts.n, length(res.el_kq_save)) == (nk, nkq) && probe.npayload[] == nk * nkq
-
-    # The momentum each phonon was solved at is the folded k+q - k of its pair.
-    xq_expected = [normalize_kpoint_coordinate(
-                        res.el_kq_save[ikq].xk - res.kpts.vectors[ik] .+ 1/2) .- 1/2
-                   for ik in 1:nk, ikq in 1:nkq]
-    ok &= probe.xq == xq_expected
-
-    # Reference: the phonon states at those same q points from `compute_phonon_states`, which is
-    # what the commensurate branch precomputes. It shares `set_eigen!` with the branch under test,
-    # so what this pins is the branch's wiring -- that it hands the solver the same model data and
-    # momentum the commensurate path does -- not the solver.
-    ref = compute_phonon_states(model, Kpoints(vec(probe.xq)),
-        ["eigenvalue", "eigenvector", "eph_dipole_coeff"]; fourier_mode = "gridopt")
-    ok &= reshape(probe.e, model.nmodes, :) == stack(ph -> ph.e, ref)
-    ok &= reshape(probe.u, model.nmodes, model.nmodes, :) == stack(ph -> ph.u, ref)
-    ok &= reshape(probe.dipole, model.nmodes, :) == stack(ph -> ph.eph_dipole_coeff, ref)
-
-    # Vacuity guard on the dipole comparison: zero on both sides for a non-polar model.
-    ok & ((maximum(abs, probe.dipole) > 0) == polar)
-end
-
 # `(2, 2, 2)` and `(3, 3, 3)` are the smallest pair of grids neither of which divides the other, so
 # this is the cheapest input that reaches the branch: 2^3 * 3^3 = 216 (k, q) pairs.
 @testset "run_eph_over_k_and_kq on incommensurate grids" begin
@@ -89,13 +52,47 @@ end
     # Pb is non-polar and cubicBN is polar. The branch calls `set_eph_dipole_coeff!` under
     # `skip_eph` rather than under `use_polar_dipole`, so both models run it, but only on cubicBN
     # does it produce anything: the Pb arm pins that it leaves the coefficients zero, the cubicBN
-    # arm is where the comparison has content.
+    # arm is where the comparison below has content.
     for prefix in ("pb", "cubicBN")
         @testset "$prefix" begin
             model = _load_model_from_artifacts(prefix; epmat_outer_momentum = "el")
             polar = model.use_polar_dipole
             @test polar == (prefix == "cubicBN")
-            @test_broken _incommensurate_checks(model, kgrid, kqgrid, polar)
+
+            nk, nkq = prod(kgrid), prod(kqgrid)
+            probe = _IncommensurateProbe(Float64, model.nmodes, nk, nkq)
+            res = ElectronPhonon.run_eph_over_k_and_kq(model, kgrid, kqgrid;
+                calculators = [probe], symmetry = nothing, fourier_mode = "gridopt",
+                progress_print_step = 10^9, verbosity = 0)
+
+            # The branch was taken: no q-point set was built, hence no precomputed phonon states,
+            # and every payload came without a q index.
+            @test res.qpts === nothing
+            @test res.ph_save === nothing
+            @test all(probe.iq_is_nothing)
+
+            # One payload per (k, k+q) pair, no pair visited twice, over the full grids.
+            @test (res.kpts.n, length(res.el_kq_save)) == (nk, nkq)
+            @test probe.npayload[] == nk * nkq
+
+            # The momentum each phonon was solved at is the folded k+q - k of its pair.
+            xq_expected = [normalize_kpoint_coordinate(
+                                res.el_kq_save[ikq].xk - res.kpts.vectors[ik] .+ 1/2) .- 1/2
+                           for ik in 1:nk, ikq in 1:nkq]
+            @test probe.xq == xq_expected
+
+            # Reference: the phonon states at those same q points from `compute_phonon_states`,
+            # which is what the commensurate branch precomputes. It shares `set_eigen!` with the
+            # branch under test, so what this pins is the branch's wiring -- that it hands the
+            # solver the same model data and momentum the commensurate path does -- not the solver.
+            ref = compute_phonon_states(model, Kpoints(vec(probe.xq)),
+                ["eigenvalue", "eigenvector", "eph_dipole_coeff"]; fourier_mode = "gridopt")
+            @test reshape(probe.e, model.nmodes, :) == stack(ph -> ph.e, ref)
+            @test reshape(probe.u, model.nmodes, model.nmodes, :) == stack(ph -> ph.u, ref)
+            @test reshape(probe.dipole, model.nmodes, :) == stack(ph -> ph.eph_dipole_coeff, ref)
+
+            # Vacuity guard on the dipole comparison: zero on both sides for a non-polar model.
+            @test (maximum(abs, probe.dipole) > 0) == polar
         end
     end
 end
