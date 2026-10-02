@@ -41,7 +41,8 @@ position-weighted `epmat_R` (`wannier_object_multiply_R` plus the tight-binding 
 `im (r_j - r_i) g`) into `dg`.
 """
 struct OuterKEngine{T_backend, T_epmat, T_itp_epmat, T_irvec_e_mat, T_itp_epmat_R, T_irvecp_mat,
-        T_mxk, T_xkq, T_wtkq, T_P_mk, T_P_e, T_row_scratch, T_ep_kR, T_dg_kR, T_el_k_batch, T_tiles}
+        T_mxk, T_xkq, T_wtkq, T_P_mk, T_P_e, T_row_scratch, T_ep_kR, T_dg_kR, T_el_k_batch, T_xk,
+        T_g_fourier, T_tiles}
     backend      :: T_backend
     epmat        :: T_epmat         # model.epmat on the backend
     itp_epmat    :: T_itp_epmat     # its interpolator ("el" layout), or `nothing` ("ph" layout)
@@ -59,7 +60,9 @@ struct OuterKEngine{T_backend, T_epmat, T_itp_epmat, T_irvec_e_mat, T_itp_epmat_
     ep_kR        :: T_ep_kR         # (nw nband_max_k nmodes, nr_p, n_outer_batch) stage-1 output
     dg_kR        :: T_dg_kR         # (nw nband_max_k nmodes, nr_p, 3, n_outer_batch), or `nothing`
     el_k_batch   :: T_el_k_batch    # the outer batch's k states
-    ks           :: Vector{Vec3{Float64}}
+    xk_host      :: Matrix{Float64} # (3, n_outer_batch) the batch's x_k, staged for `xk`
+    xk           :: T_xk            # (3, n_outer_batch) the batch's x_k on the backend
+    g_fourier    :: T_g_fourier     # stage-1 Fourier output, `dense_prefix` per use
     n_inner_tile :: Int
     tiles        :: T_tiles
 end
@@ -72,7 +75,7 @@ then g(k, k+q) for one q and a tile of k (stage 2), the k+q states solved per ti
 buffers' leading `maximum(nband)` columns when they are not precomputed.
 """
 struct OuterQEngine{T_backend, T_epmat, T_itp_epmat, T_irvec_p_mat, T_P_p, T_row_scratch, T_g_q,
-        T_g_rot, T_ep_Rq, T_eRpq, T_wtk, T_tiles}
+        T_g_rot, T_ep_Rq, T_eRpq, T_wtk, T_xq, T_tiles}
     backend      :: T_backend
     epmat        :: T_epmat         # model.epmat on the backend
     itp_epmat    :: T_itp_epmat     # its interpolator ("ph" layout), or `nothing` ("el" layout)
@@ -84,7 +87,8 @@ struct OuterQEngine{T_backend, T_epmat, T_itp_epmat, T_irvec_p_mat, T_P_p, T_row
     ep_Rq        :: T_ep_Rq         # (nw² nmodes, nr_e, n_outer_batch) stage-1 output
     eRpq         :: T_eRpq          # g(R_e, q) of the current q, the tiles' stage-2 parent
     wtk          :: T_wtk           # (nk,) k weights
-    qs           :: Vector{Vec3{Float64}}
+    xq_host      :: Matrix{Float64} # (3, n_outer_batch) the batch's x_q, staged for `xq`
+    xq           :: T_xq            # (3, n_outer_batch) the batch's x_q on the backend
     n_inner_tile :: Int
     tiles        :: T_tiles
 end
@@ -102,13 +106,20 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
     nepmat = length(model.epmat.op_r)
     ndata = nw * nband_max_k * nmodes
     nd = covariant_derivative_of_g ? 4 : 1                      # ep, plus three dg directions
+    nrows = nw^2 * nmodes * nr_p                                # the epmat rows that stage 1 keeps
+    nrows_max = nrows * (covariant_derivative_of_g ? 3 : 1)     # those of epmat_R with dg
     persistent =
         cx * nepmat * (covariant_derivative_of_g ? 4 : 1) +    # epmat (+ epmat_R)
-        rl * 3 * (nr_p + nr_e) +                                # R-vector matrices
+        rl * 3 * (nr_p + nr_e) * (covariant_derivative_of_g ? 2 : 1) +  # R-vector matrices
+        (el_layout ? cx * nrows : 0) + (covariant_derivative_of_g ? cx * 3nrows : 0) +  # interpolator outputs
         rl * 3 * (nk + nkq) + rl * nkq                          # mxk, xkq, wtkq
     per_outer =
         cx * ndata * nr_p * nd +                                # ep_kR (+ dg_kR)
-        cx * nr_p + (el_layout ? cx * nr_e : cx * (nr_e + nw^2 * nmodes * nr_p)) +  # P_mk + Fourier phase / row scratch
+        cx * nr_p + rl * 3 + iz +                               # P_mk, xk, a partial batch's k index
+        cx * nr_e * (covariant_derivative_of_g ? 2 : 1) +       # Fourier phases
+        (el_layout ? 0 : cx * nrows) +                          # row-contraction scratch
+        cx * nrows_max +                                        # g_fourier
+        cx * (nrows + 2 * nband_max_k * nrows ÷ nw) * nd +      # transients of eph_rotate_kR_batched!
         _electron_state_bytes(FT, nw, nband_max_k, el_qty)      # el_k_batch
     nbox = nband_max_kq * nband_max_k * nmodes
     per_pair =
@@ -187,7 +198,7 @@ function OuterKEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
     ndata = nw * nbk * nmodes
 
     tiles = map(1:nchunks) do _
-        t = (;
+        tile_bufs = (;
             ph = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT),
             iq = Vector{Int}(undef, n_inner_tile),
             iq_dev = alloc(backend, Int, n_inner_tile),
@@ -202,7 +213,7 @@ function OuterKEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
             uk_polar = model.polar_eph.use ? alloc(backend, Complex{FT}, nw * nbk * n_inner_tile) : nothing,
             mmat = model.polar_eph.use ? alloc(backend, Complex{FT}, nbkq * nbk * n_inner_tile) : nothing,
         )
-        merge(t, (; kept = drop_pairs ? (;
+        merge(tile_bufs, (; kept = drop_pairs ? (;
             keep = Vector{Int}(undef, n_inner_tile),
             el_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
             ph = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT),
@@ -213,12 +224,14 @@ function OuterKEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
             wtq = alloc(backend, FT, n_inner_tile),
             xq = Vector{Vec3{FT}}(undef, n_inner_tile)) : nothing))
     end
+    nrows_max = nw^2 * nmodes * nr_p * (covariant_derivative_of_g ? 3 : 1)
     OuterKEngine(backend, epmat, itp_epmat, irvec_e_mat, itp_epmat_R,
         _irvec_to_device_matrix(backend, irvec_p, FT), mxk, xkq, to_device_copy(backend, collect(FT, kqpts.weights)), xks_int, xkqs_int, P_mk, P_e,
         row_scratch, alloc(backend, Complex{FT}, ndata, nr_p, n_outer_batch),
         covariant_derivative_of_g ? alloc(backend, Complex{FT}, ndata, nr_p, 3, n_outer_batch) : nothing,
         BatchedElectronState(backend, nw, nbk, n_outer_batch, el_qty; FT),
-        Vector{Vec3{FT}}(undef, n_outer_batch), n_inner_tile, tiles)
+        zeros(FT, 3, n_outer_batch), alloc(backend, FT, 3, n_outer_batch), alloc(backend, Complex{FT}, nrows_max * n_outer_batch),
+        n_inner_tile, tiles)
 end
 
 """
@@ -230,45 +243,53 @@ kernels run on the full-width buffers.
 """
 function stage1!(eng::OuterKEngine, el_k, kpts, batch)
     nb = length(batch)
-    nmax = length(eng.ks)
+    nmax = size(eng.xk_host, 2)
     iks = nb == nmax ? batch : [batch; fill(last(batch), nmax - nb)]
     copy_batched_electron_states!(eng.el_k_batch, el_k, iks)
     for (j, ik) in enumerate(iks)
-        eng.ks[j] = kpts.vectors[ik]
+        eng.xk_host[:, j] .= kpts.vectors[ik]
     end
+    copyto!(eng.xk, eng.xk_host)
     @views build_fourier_phase!(eng.P_mk[:, 1:nb], eng.irvecp_mat, eng.mxk[:, batch])
     uks = eng.el_k_batch.u
+    nr_p = size(eng.P_mk, 1)
     if eng.itp_epmat !== nothing
-        get_eph_RR_to_kR_batched!(eng.ep_kR, eng.itp_epmat, eng.ks, uks; additional_phase = eng.P_mk)
+        g = dense_prefix(eng.g_fourier, eng.itp_epmat.parent.ndata, nmax)
+        get_fourier_batched!(g, eng.itp_epmat, eng.xk)
     else
-        build_fourier_phase!(eng.P_e, eng.irvec_e_mat, _kpoints_to_device_matrix(eng.backend, eng.ks))
-        g = similar(eng.epmat.op_r, size(eng.row_scratch, 1), size(eng.P_mk, 1), nmax)
-        _fourier_rows_batched!(g, eng.epmat.op_r, eng.P_e, eng.row_scratch)
-        eph_rotate_kR_batched!(eng.ep_kR, reshape(g, :, nmax), uks; additional_phase = eng.P_mk)
+        build_fourier_phase!(eng.P_e, eng.irvec_e_mat, eng.xk)
+        nd = size(eng.row_scratch, 1)
+        g = dense_prefix(eng.g_fourier, nd * nr_p, nmax)
+        _fourier_rows_batched!(reshape(g, nd, nr_p, nmax), eng.epmat.op_r, eng.P_e, eng.row_scratch)
     end
-    eng.itp_epmat_R === nothing || get_eph_RR_to_kR_batched!(eng.dg_kR, eng.itp_epmat_R, eng.ks, uks;
-        additional_phase = eng.P_mk)
+    eph_rotate_kR_batched!(eng.ep_kR, g, uks; additional_phase = eng.P_mk)
+    if eng.itp_epmat_R !== nothing
+        g = dense_prefix(eng.g_fourier, eng.itp_epmat_R.parent.ndata, nmax)
+        get_fourier_batched!(g, eng.itp_epmat_R, eng.xk)
+        eph_rotate_kR_batched!(eng.dg_kR, g, uks; additional_phase = eng.P_mk)
+    end
     eng
 end
 
 """
-    stage2!(eng::OuterKEngine, t, p)
+    stage2!(eng::OuterKEngine, tile_bufs, pairs)
 
-g(k, k+q) of the block `p` (one k, `p.n` k+q points of tile `t`) into `t.ep` (and `t.dg`): the
-kR→kq contraction on the tile's phase `p.phase`, the k+q rotation and the phonon basis (`p.ph.u`,
-or the identity for `:cartesian`).
+g(k, k+q) of the block `pairs` (one k, `pairs.n` k+q points) into `tile_bufs.ep` (and
+`tile_bufs.dg`): the kR→kq contraction on the tile's phase `pairs.phase`, the k+q rotation and the
+phonon basis (`pairs.ph.u`, or the identity for `:cartesian`).
 """
-function stage2!(eng::OuterKEngine, t, p)
-    (; n, iouter) = p
-    ep = view(t.ep, :, :, :, 1:n)
-    ws = (; g = t.g, tmp = t.tmp)
-    u_ph = t.u_ph_id === nothing ? p.ph.u : view(t.u_ph_id, :, :, 1:n)   # the phonon basis
-    get_eph_kR_to_kq_batched!(ep, view(eng.ep_kR, :, :, iouter), p.phase, u_ph, p.el_kq.u; ws...)
-    t.dg === nothing && return ep, nothing
-    dg = view(t.dg, :, :, :, :, 1:n)
-    dg_d = view(t.dg_d, :, :, :, 1:n)
+function stage2!(eng::OuterKEngine, tile_bufs, pairs)
+    (; n, iouter) = pairs
+    ep = view(tile_bufs.ep, :, :, :, 1:n)
+    ws = (; g = tile_bufs.g, tmp = tile_bufs.tmp)
+    u_ph = tile_bufs.u_ph_id === nothing ? pairs.ph.u : view(tile_bufs.u_ph_id, :, :, 1:n)   # the phonon basis
+    get_eph_kR_to_kq_batched!(ep, view(eng.ep_kR, :, :, iouter), pairs.phase, u_ph, pairs.el_kq.u; ws...)
+    tile_bufs.dg === nothing && return ep, nothing
+    dg = view(tile_bufs.dg, :, :, :, :, 1:n)
+    dg_d = view(tile_bufs.dg_d, :, :, :, 1:n)
     for d in 1:3
-        get_eph_kR_to_kq_batched!(dg_d, view(eng.dg_kR, :, :, d, iouter), p.phase, u_ph, p.el_kq.u; ws...)
+        get_eph_kR_to_kq_batched!(dg_d, view(eng.dg_kR, :, :, d, iouter), pairs.phase, u_ph,
+                                  pairs.el_kq.u; ws...)
         view(dg, :, :, :, d, :) .= dg_d
     end
     ep, dg
@@ -289,11 +310,13 @@ function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband
     persistent =
         cx * length(model.epmat.op_r) +                         # epmat
         cx * ndata * nr_e + rl * 3 * (nr_e + nr_p) +            # eRpq, R-vector matrices
+        (el_layout ? 0 : cx * ndata * nr_e) +                   # interpolator output
         (precompute_el_kq ? 0 : cx * length(model.el_ham.op_r)) +  # el_ham
         rl * nk                                                 # wtk
     per_outer =
         cx * ndata * nr_e * (eph_phonon_basis == :cartesian ? 2 : 3) +   # g_q, ep_Rq (+ g_rot)
-        cx * nr_p + (el_layout ? cx * ndata * nr_e : 0)         # Fourier phase / row scratch
+        cx * nr_p + (el_layout ? cx * ndata * nr_e : 0) +       # Fourier phase / row scratch
+        rl * 3                                                  # xq
     per_pair =
         cx * nbkq * nband_max_k * nmodes +                      # ep
         cx * ndata + cx * nbkq * nw * nmodes + cx * nw * nband_max_k * nmodes +   # g, tmp, uk_rep
@@ -334,7 +357,7 @@ function OuterQEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
 
     tiles = map(1:nchunks) do _
         # Each tile has its own interpolators: their phase scratch is written per call.
-        t = (;
+        tile_bufs = (;
             itp_eRpq = BatchedWannierInterpolator(eRpq; backend, batch_size = n_inner_tile),
             itp_el_ham = el_ham === nothing ? nothing :
                 BatchedWannierInterpolator(el_ham; backend, batch_size = n_inner_tile),
@@ -351,7 +374,7 @@ function OuterQEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
             uk_polar = model.polar_eph.use ? alloc(backend, Complex{FT}, nw * nbk * n_inner_tile) : nothing,
             mmat = model.polar_eph.use ? alloc(backend, Complex{FT}, nbkq * nbk * n_inner_tile) : nothing,
         )
-        merge(t, (; kept = drop_pairs ? (;
+        merge(tile_bufs, (; kept = drop_pairs ? (;
             keep = Vector{Int}(undef, n_inner_tile),
             el_k = BatchedElectronState(backend, nw, nbk, n_inner_tile, el_qty; FT),
             el_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
@@ -364,8 +387,8 @@ function OuterQEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
         alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch),
         eph_phonon_basis == :cartesian ? nothing : alloc(backend, Complex{FT}, nw^2, nr_e, nmodes, n_outer_batch),
         alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch), eRpq,
-        to_device_copy(backend, collect(FT, kpts.weights)), Vector{Vec3{FT}}(undef, n_outer_batch),
-        n_inner_tile, tiles)
+        to_device_copy(backend, collect(FT, kpts.weights)), zeros(FT, 3, n_outer_batch),
+        alloc(backend, FT, 3, n_outer_batch), n_inner_tile, tiles)
 end
 
 """
@@ -377,16 +400,17 @@ rotates the modes by `ph.u`, `:cartesian` leaves them), into `eng.ep_Rq[:, :, 1:
 function stage1!(eng::OuterQEngine, ph, qpts, batch, eph_phonon_basis)
     nb = length(batch)
     for (j, iq) in enumerate(batch)
-        eng.qs[j] = qpts.vectors[iq]
+        eng.xq_host[:, j] .= qpts.vectors[iq]
     end
-    qs = view(eng.qs, 1:nb)
+    copyto!(eng.xq, eng.xq_host)
+    xq = view(eng.xq, :, 1:nb)
     ndata, nr_e = size(eng.ep_Rq, 1), size(eng.ep_Rq, 2)
     g = view(eng.g_q, :, :, 1:nb)
     if eng.itp_epmat !== nothing
-        get_fourier_batched!(reshape(g, ndata * nr_e, nb), eng.itp_epmat, qs)
+        get_fourier_batched!(reshape(g, ndata * nr_e, nb), eng.itp_epmat, xq)
     else
         P = view(eng.P_p, :, 1:nb)
-        build_fourier_phase!(P, eng.irvec_p_mat, _kpoints_to_device_matrix(eng.backend, qs))
+        build_fourier_phase!(P, eng.irvec_p_mat, xq)
         _fourier_rows_batched!(g, eng.epmat.op_r, P, view(eng.row_scratch, :, 1:nb, :))
     end
     ep = view(eng.ep_Rq, :, :, 1:nb)
@@ -407,19 +431,20 @@ function stage1!(eng::OuterQEngine, ph, qpts, batch, eph_phonon_basis)
 end
 
 """
-    stage2!(eng::OuterQEngine, t, p)
+    stage2!(eng::OuterQEngine, tile_bufs, pairs)
 
-g(k, k+q) of the block `p` (one q, `p.n` k points of tile `t`) into the leading
-`(p.el_kq.nband_max, p.el_k.nband_max, nmodes, p.n)` of `t.ep`, from `eng.eRpq` (the current q).
+g(k, k+q) of the block `pairs` (one q, `pairs.n` k points) into the leading
+`(pairs.el_kq.nband_max, pairs.el_k.nband_max, nmodes, pairs.n)` of `tile_bufs.ep`, from `eng.eRpq`
+(the current q).
 """
-function stage2!(eng::OuterQEngine, t, p)
-    (; n) = p
-    nbkq, nbk = p.el_kq.nband_max, p.el_k.nband_max
-    nw, nmodes = size(t.uk_rep, 1), div(size(t.g, 1), size(t.uk_rep, 1)^2)
-    ep = dense_prefix(t.ep, nbkq, nbk, nmodes, n)
-    get_eph_Rq_to_kq_batched!(ep, t.itp_eRpq, p.xk, p.el_k.u, p.el_kq.u;
-        g = view(t.g, :, 1:n), tmp = dense_prefix(t.tmp, nbkq, nw * nmodes, n),
-        uk_rep = dense_prefix(t.uk_rep, nw, nbk, nmodes * n))
+function stage2!(eng::OuterQEngine, tile_bufs, pairs)
+    (; n) = pairs
+    nbkq, nbk = pairs.el_kq.nband_max, pairs.el_k.nband_max
+    nw, nmodes = size(tile_bufs.uk_rep, 1), div(size(tile_bufs.g, 1), size(tile_bufs.uk_rep, 1)^2)
+    ep = dense_prefix(tile_bufs.ep, nbkq, nbk, nmodes, n)
+    get_eph_Rq_to_kq_batched!(ep, tile_bufs.itp_eRpq, pairs.xk, pairs.el_k.u, pairs.el_kq.u;
+        g = view(tile_bufs.g, :, 1:n), tmp = dense_prefix(tile_bufs.tmp, nbkq, nw * nmodes, n),
+        uk_rep = dense_prefix(tile_bufs.uk_rep, nw, nbk, nmodes * n))
     ep, nothing
 end
 
@@ -427,20 +452,20 @@ end
 # ---- Both orders -----------------------------------------------------------------------------
 
 """
-    finish_ep!(block, t, model)
+    finish_ep!(block, tile_bufs, model)
 
 The terms added on a block's `ep` after the two stages, for either loop order: the polar dipole
 term `coeff[ν] · u_{k+q}' u_k` of a polar model (unscreened, as `epstate_compute_eph_dipole!`),
-with the coefficients in the block's phonon basis. `t` is the block's tile, for the scratch.
+with the coefficients in the block's phonon basis. `tile_bufs` is the block's tile, for the scratch.
 """
-function finish_ep!(block, t, model)
+function finish_ep!(block, tile_bufs, model)
     model.polar_eph.use || return block
     nbkq, nbk, _, n = size(block.ep)
     nw = model.nw
     # u_k at the block's pair extent: the shared side of `OuterKLoop` has extent 1.
-    uk = dense_prefix(t.uk_polar, nw, nbk, n)
+    uk = dense_prefix(tile_bufs.uk_polar, nw, nbk, n)
     uk .= block.el_k.u
     add_eph_dipole_batched!(block.ep, block.ph.eph_dipole_coeff, block.el_kq.u, uk,
-                            dense_prefix(t.mmat, nbkq, nbk, n))
+                            dense_prefix(tile_bufs.mmat, nbkq, nbk, n))
     block
 end

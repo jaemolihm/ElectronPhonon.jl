@@ -23,6 +23,7 @@ include("common_models_from_artifacts.jl")
         include("test_wannier.jl")
         include("test_holstein_model.jl")  # analytic Holstein Model builder (no artifacts needed)
         include("test_gpu.jl")  # skips gracefully when CUDA is unavailable
+        include("test_engine_bytes.jl")  # engine_bytes against the engines' device allocations (GPU)
         include("test_backend_alloc.jl")  # alloc_zeros / to_device_copy / is_host; GPU arm skips w/o CUDA
         include("test_mpi_wrappers.jl")  # the mpi_* wrappers on the `comm === nothing` serial path
         include("test_diagonalize.jl")

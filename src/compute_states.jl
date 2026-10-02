@@ -355,7 +355,9 @@ On a GPU backend only `:e` and `:u` are supported, polar phonons are refused and
 unused. The q set is solved in chunks of the batched dynamical-matrix interpolator's block width,
 so the device `D(q)` transient is bounded whatever `qpts.n`. As in [`electron_eigenpairs`](@ref),
 the batched eigensolve picks its own basis inside a degenerate mode multiplet, so device and host
-`u` differ there.
+`u` differ there. A GPU e-ph run therefore takes its phonon gauge from the device solve when it needs
+`e` and `u` only, and from host LAPACK (built here, then copied over) for a polar model or other
+quantities.
 """
 function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fourier_mode = "gridopt",
         eph_phonon_basis::Symbol = :eigenmode, backend = CPUBackend(),
