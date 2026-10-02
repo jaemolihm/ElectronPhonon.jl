@@ -16,7 +16,7 @@
 # - `el_k_eigenpairs`: optional `Eigenpairs` cache over the outer k points, so runs sharing one
 #   use the same eigenvector gauge.
 # - `el_quantities`: with a `Vector{Symbol}` (the batched loops) the states are the container
-#   `el_k` built from the selection; with `nothing`, the per-point `el_k_save`.
+#   `els_k` built from the selection; with `nothing`, the per-point `el_k_save`.
 function _setup_electron_k(
         model :: Model, kpts_input;
         window_k, mpi_comm_k, symmetry, fourier_mode, backend = CPUBackend(), verbosity = 1,
@@ -33,14 +33,14 @@ function _setup_electron_k(
     br = band_range(sel_k)
     iband_min, iband_max = first(br), last(br)
 
-    el_k_save, el_k = maybe_time(verbosity) do
+    el_k_save, els_k = maybe_time(verbosity) do
         el_quantities === nothing ?
             (compute_electron_states(model, sel_k, el_k_quantities; fourier_mode, backend,
                                      eigenpairs = el_k_eigenpairs), nothing) :
             (nothing, compute_electron_states_batched(model, sel_k, el_quantities; fourier_mode,
                 backend, eigenpairs = el_k_eigenpairs))
     end
-    (; kpts, iband_min, iband_max, el_k_save, el_k, sel_k)
+    (; kpts, iband_min, iband_max, el_k_save, els_k, sel_k)
 end
 
 
@@ -86,7 +86,7 @@ end
 # so the calculator sees a selection on both paths. `el_kq_quantities` (the electron-state quantities
 # to compute at k+q) is supplied by the caller, and `el_kq_eigenpairs` is the optional
 # `Eigenpairs` cache for the k+q eigensolve. `el_quantities` as in `_setup_electron_k`: a
-# `Vector{Symbol}` returns the container `el_kq` (no unfolding), `nothing` the per-point `el_kq_save`.
+# `Vector{Symbol}` returns the container `els_kq` (no unfolding), `nothing` the per-point `el_kq_save`.
 function _setup_electron_kq(model, kqpts_input;
         window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
         fourier_mode, backend = CPUBackend(), verbosity = 1,
@@ -97,14 +97,14 @@ function _setup_electron_kq(model, kqpts_input;
     # (1) prebuilt full-BZ selection: consume as-is
     if kqpts_input isa FilteredBandStates
         sel_kq = kqpts_input
-        el_kq_save, el_kq = maybe_time(verbosity) do
+        el_kq_save, els_kq = maybe_time(verbosity) do
             el_quantities === nothing ?
                 (compute_electron_states(model, sel_kq, el_kq_quantities; fourier_mode, backend,
                                          eigenpairs = el_kq_eigenpairs), nothing) :
                 (nothing, compute_electron_states_batched(model, sel_kq, el_quantities; fourier_mode,
                     backend, eigenpairs = el_kq_eigenpairs))
         end
-        return (; kqpts = sel_kq.kpts, el_kq_save, el_kq, sel_kq)
+        return (; kqpts = sel_kq.kpts, el_kq_save, els_kq, sel_kq)
     end
 
     # (2) grid: filter to the window (IBZ-reduce + unfold under symmetry), get full kqpts + nelec_kq
@@ -132,14 +132,14 @@ function _setup_electron_kq(model, kqpts_input;
             quantities=el_kq_quantities, fourier_mode, backend, verbosity,
             eigenpairs=el_kq_eigenpairs)
         sel_kq = electron_states_to_FilteredBandStates(kqpts, el_kq_save, nelec_kq; nw)
-        return (; kqpts, el_kq_save, el_kq = nothing, sel_kq)
+        return (; kqpts, el_kq_save, els_kq = nothing, sel_kq)
     end
-    el_kq = maybe_time(verbosity) do
+    els_kq = maybe_time(verbosity) do
         compute_electron_states_batched(model, kqpts, el_quantities, window_kq; fourier_mode, backend,
             eigenpairs = el_kq_eigenpairs)
     end
-    sel_kq = electron_states_to_FilteredBandStates(kqpts, el_kq, nelec_kq; nw)
-    return (; kqpts, el_kq_save = nothing, el_kq, sel_kq)
+    sel_kq = electron_states_to_FilteredBandStates(kqpts, els_kq, nelec_kq; nw)
+    return (; kqpts, el_kq_save = nothing, els_kq, sel_kq)
 end
 
 

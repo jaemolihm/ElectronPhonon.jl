@@ -183,17 +183,17 @@ ElectronPhonon.supports(::_PairRecorder, ::Type{OuterQLoop}) = true
 ElectronPhonon.calculator_begin!(::_PairRecorder, ctx) = nothing
 ElectronPhonon.calculator_end!(::_PairRecorder, ctx) = nothing
 ElectronPhonon.postprocess_calculator!(c::_PairRecorder; kwargs...) = c
-function ElectronPhonon.setup_calculator!(c::_PairRecorder, backend, el_k, el_kq, ph; nw, nmodes,
+function ElectronPhonon.setup_calculator!(c::_PairRecorder, backend, els_k, els_kq, phs; nw, nmodes,
         kwargs...)
-    c.nw, c.nmodes, c.ngrid = nw, nmodes, el_k.kpts.ngrid
+    c.nw, c.nmodes, c.ngrid = nw, nmodes, els_k.kpts.ngrid
     c
 end
 
 # Both orders: the side shared by the block has extent 1 along the pair axis.
 function ElectronPhonon.run_calculator!(c::_PairRecorder, p::EPBlock, ctx)
-    ep = Array(p.ep); ω = Array(p.ph.e)
-    offk, nbk = Array(p.el_k.iband_offset), Array(p.el_k.nband)
-    offkq, nbkq = Array(p.el_kq.iband_offset), Array(p.el_kq.nband)
+    ep = Array(p.ep); ω = Array(p.phs.e)
+    offk, nbk = Array(p.els_k.iband_offset), Array(p.els_k.nband)
+    offkq, nbkq = Array(p.els_kq.iband_offset), Array(p.els_kq.nband)
     for j in axes(ep, 4)
         jk, jkq = min(j, length(nbk)), min(j, length(nbkq))
         xk = p.xk isa Vec3 ? p.xk : p.xk[j]

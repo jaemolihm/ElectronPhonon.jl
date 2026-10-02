@@ -21,11 +21,11 @@ ElectronPhonon.supports(::_DgRecorder, ::Type{OuterKLoop}) = true
 ElectronPhonon.calculator_begin!(::_DgRecorder, ctx) = nothing
 ElectronPhonon.calculator_end!(::_DgRecorder, ctx) = nothing
 ElectronPhonon.postprocess_calculator!(c::_DgRecorder; kwargs...) = c
-ElectronPhonon.setup_calculator!(c::_DgRecorder, backend, el_k, el_kq, ph; kwargs...) =
-    (c.ngrid = el_k.kpts.ngrid; c)
+ElectronPhonon.setup_calculator!(c::_DgRecorder, backend, els_k, els_kq, phs; kwargs...) =
+    (c.ngrid = els_k.kpts.ngrid; c)
 function ElectronPhonon.run_calculator!(c::_DgRecorder, block::EPBlock{OuterKLoop}, ctx)
     dg = Array(block.dg)   # (m, n, ν, d, j)
-    nbk, nbkq = Array(block.el_k.nband)[1], Array(block.el_kq.nband)
+    nbk, nbkq = Array(block.els_k.nband)[1], Array(block.els_kq.nband)
     for (j, xq) in enumerate(block.xq)
         c.sums[_pair_key(block.xk, block.xk + xq, c.ngrid)] =
             [sum(abs2, dg[1:nbkq[j], 1:nbk, :, d, j]) for d in 1:3]

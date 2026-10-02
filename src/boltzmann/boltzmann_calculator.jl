@@ -109,16 +109,16 @@ required_el_quantities(::BoltzmannCalculator) = [:vdiag]
 # outer point), and the per-tile g2 scratch. The state counts are bounded by the containers' boxes;
 # without containers (`estimate_device_memory`) only the scratch is counted.
 function eph_batched_bytes_per_point(calc::BoltzmannCalculator{FT}, ::Type{<:EPBlock{OuterKLoop}};
-        nmodes, nband_max_k, nband_max_kq, el_k = nothing, el_kq = nothing, kwargs...) where {FT}
+        nmodes, nband_max_k, nband_max_kq, els_k = nothing, els_kq = nothing, kwargs...) where {FT}
     per_pair = sizeof(FT) * nband_max_kq * nband_max_k * nmodes
-    (el_k === nothing || el_kq === nothing) && return (; persistent = 0, per_outer = 0, per_pair)
-    n_i, n_f, nT = sum(el_k.nband), sum(el_kq.nband), length(calc.occ)
+    (els_k === nothing || els_kq === nothing) && return (; persistent = 0, per_outer = 0, per_pair)
+    n_i, n_f, nT = sum(els_k.nband), sum(els_kq.nband), length(calc.occ)
     persistent = sizeof(FT) * (n_i * nT + n_i + 2n_f + 3nT) +                      # Sₒ, e_i, e_f, wf, μ, T, smearing
-        sizeof(Int) * (el_k.nband_max * el_k.nk + el_kq.nband_max * el_kq.nk)     # imap_i, imap_f
+        sizeof(Int) * (els_k.nband_max * els_k.nk + els_kq.nband_max * els_kq.nk)     # imap_i, imap_f
     (; persistent, per_outer = sizeof(FT) * nband_max_k * n_f * nT, per_pair)
 end
 
-function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBackend, el_k, el_kq, ph;
+function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBackend, els_k, els_kq, phs;
         sel_k, sel_kq, nmodes, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...) where {FT}
     mpi_isroot() && println("Setting up BoltzmannCalculator")
     calc.done &&
@@ -141,8 +141,8 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
     # The selections' states with their energies and velocities, so el_i/el_f carry the
     # per-(k,band) weights and `nstates_base` of the selection (the multigrid double-grid partition;
     # on a uniform grid the weights derive to the per-k weight).
-    calc.el_i = BandStates(el_k, sel_k)
-    calc.el_f = BandStates(el_kq, sel_kq)
+    calc.el_i = BandStates(els_k, sel_k)
+    calc.el_f = BandStates(els_kq, sel_kq)
 
     # Chemical potential: solved directly on el_i, whose per-state energies/weights and `nstates_base`
     # give the correct auto-μ carrier count on a windowed selection (the below-window count rides on
@@ -177,7 +177,7 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
         to_device(backend, collect(FT, calc.occ.μlist)),                    # μ
         to_device(backend, collect(FT, calc.occ.Tlist)),                    # T
         to_device(backend, calc.smearing_list),                             # smearing (one per T)
-        alloc(backend, FT, el_kq.nband_max, el_k.nband_max, nmodes, n_inner_tile),   # g2
+        alloc(backend, FT, els_kq.nband_max, els_k.nband_max, nmodes, n_inner_tile),   # g2
     )
     calc
 end
@@ -345,13 +345,13 @@ end
 # `bte_scattering_increments` as the per-point EPData method above). The batched loop runs one block
 # at a time, so the scatter writes the global buffers directly.
 function run_calculator!(calc::BoltzmannCalculator{FT}, block::EPBlock{OuterKLoop}, ctx) where {FT}
-    (; ep, ph, ik, ikq) = block
+    (; ep, phs, ik, ikq) = block
     dev = calc.dev
     nmodes, nq_batch = size(ep, 3), size(ep, 4)
     g2 = view(dev.g2, :, :, :, 1:nq_batch)
-    g2 .= abs2.(ep) .* inv.(2 .* reshape(ph.e, 1, 1, nmodes, nq_batch))   # as `epstate_set_g2!`
+    g2 .= abs2.(ep) .* inv.(2 .* reshape(phs.e, 1, 1, nmodes, nq_batch))   # as `epstate_set_g2!`
     t = calc.tiled
-    bte_window_accumulate!(dev.Sₒ, device_array(t, 1), g2, ph.e,
+    bte_window_accumulate!(dev.Sₒ, device_array(t, 1), g2, phs.e,
         view(dev.imap_i, :, ik), dev.imap_f, ikq, dev.e_i, dev.e_f, dev.wf,
         dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff, tile_offset(t))
     calc

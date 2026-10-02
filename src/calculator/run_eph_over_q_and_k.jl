@@ -13,7 +13,7 @@ using OffsetArrays: no_offset_view
 Sweep the outer q points and, for each, the inner k points, handing each calculator the e-ph
 coupling as an [`EPBlock`](@ref)`{OuterQLoop}`: one q with a tile of k points, the k+q states
 solved per tile. `backend`, `batched` and `fourier_mode` mean what they do in
-[`run_eph_over_k_and_kq`](@ref). Returns `(; kpts, qpts, el_k, el_kq = nothing, ph)` with the
+[`run_eph_over_k_and_kq`](@ref). Returns `(; kpts, qpts, els_k, els_kq = nothing, phs)` with the
 k container and the host phonon container.
 
 * `el_kq_from_unfolding`: If true, compute the electron states at k+q by computing the
@@ -117,13 +117,13 @@ function run_eph_over_q_and_k(
         precompute_el_kq && throw(ArgumentError(
             "the batched path does not support precompute_el_kq (k+q states are eigensolved in the loop)."))
         _loop_eph_over_q_and_k_batched(model,
-            setup.kpts, setup.qpts, setup.el_k, setup.sel_k, setup.ph, setup.eph_buffers,
+            setup.kpts, setup.qpts, setup.els_k, setup.sel_k, setup.phs, setup.eph_buffers,
             setup.backend;
             setup.el_quantities, setup.ph_quantities, calculators, skip_eph, window_kq,
             energy_conservation, screening_params, nchunks_threads,
             progress_print_step, eph_phonon_basis, verbosity, nk_batch_max,
         )
-        return (; setup.kpts, setup.qpts, setup.el_k, el_kq = nothing, setup.ph)
+        return (; setup.kpts, setup.qpts, setup.els_k, els_kq = nothing, setup.phs)
     else
         _loop_eph_over_q_and_k(model,
             setup.kpts, setup.qpts, setup.kqpts,
@@ -186,7 +186,7 @@ function _setup_eph_over_q_and_k(
     # setup cost after the eigensolve). Default is the conservative full list.
     el_k_quantities = isempty(calculators) ? ["eigenvalue", "eigenvector", "velocity", "position"] :
         unique(reduce(vcat, required_el_k_quantities(c) for c in calculators))
-    (; kpts, iband_min, iband_max, el_k_save, el_k, sel_k) = _setup_electron_k(
+    (; kpts, iband_min, iband_max, el_k_save, els_k, sel_k) = _setup_electron_k(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity,
         el_k_quantities, el_k_eigenpairs, el_quantities)
     nk = kpts.n
@@ -215,7 +215,7 @@ function _setup_eph_over_q_and_k(
 
 
     # The phonons stay on the host on the batched path: its stage 1 (`get_eph_RR_to_Rq!`) runs there.
-    ph_save, ph = maybe_time(verbosity) do
+    ph_save, phs = maybe_time(verbosity) do
         batched ? (nothing, compute_phonon_states_batched(model, qpts, ph_quantities; fourier_mode,
                                                           eph_phonon_basis)) :
             (compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal",
@@ -277,7 +277,7 @@ function _setup_eph_over_q_and_k(
         kpts, qpts, kqpts,
         el_k_save, el_kq_save, ph_save,
         precompute_el_kq, nband_max,
-        eph_buffers, el_k, sel_k, ph, el_quantities, ph_quantities, backend,
+        eph_buffers, els_k, sel_k, phs, el_quantities, ph_quantities, backend,
         iband_min, iband_max,
     )
 end
@@ -432,7 +432,7 @@ end
 function _loop_eph_over_q_and_k_batched(
         model       :: Model{FT},
         kpts, qpts,
-        el_k, sel_k, ph,
+        els_k, sel_k, phs,
         eph_buffers :: EphOuterQLoopBuffers{FT},
         backend;
         el_quantities, ph_quantities,
@@ -484,10 +484,10 @@ function _loop_eph_over_q_and_k_batched(
     # `nk_batch_max` stays a hard cap (the only control on the CPU backend, where `free_bytes` is
     # unbounded). The k container is resident from the setup, so `free_bytes` already accounts for it.
     use_polar_eph = model.polar_eph.use
-    nbandk_max = el_k.nband_max
+    nbandk_max = els_k.nband_max
     per_point, committed = _outer_q_staging_bytes(; nw, nbandk_max, nmodes,
         nr_el_ham = length(model.el_ham.irvec), nr_ep_eRpq = length(ep_eRpq_obj.irvec),
-        use_polar_eph, calculators, nk, nk_stack = 0, FT, el_k, ph)
+        use_polar_eph, calculators, nk, nk_stack = 0, FT, els_k, phs)
     nk_batch_cap = min(Int(nk_batch_max), nk)
     nk_batch_max = plan_batch(backend, per_point, committed, nk_batch_cap; what = "outer-q")
     if verbosity > 0 && mpi_isroot()
@@ -495,7 +495,7 @@ function _loop_eph_over_q_and_k_batched(
               "$(round(per_point / 1e3, digits = 1)) kB/k; k-batch size = $nk_batch_max"
     end
 
-    foreach(c -> setup_calculator!(c, backend, el_k, nothing, ph; sel_k, sel_kq = nothing, nw,
+    foreach(c -> setup_calculator!(c, backend, els_k, nothing, phs; sel_k, sel_kq = nothing, nw,
         nmodes, nchunks_threads, n_outer_batch = 1, n_inner_tile = nk_batch_max, verbosity),
         calculators)
 
@@ -507,19 +507,19 @@ function _loop_eph_over_q_and_k_batched(
     ks_batch  = Vector{Vec3{FT}}(undef, nk_batch_max)
     kqs_batch = Vector{Vec3{FT}}(undef, nk_batch_max)
 
-    # The k side: copied per batch from the resident box container `el_k`; the weights resident too.
-    el_k_tile = BatchedElectronState(backend, nw, nbandk_max, nk_batch_max, el_quantities; FT)
+    # The k side: copied per batch from the resident box container `els_k`; the weights resident too.
+    els_k_tile = BatchedElectronState(backend, nw, nbandk_max, nk_batch_max, el_quantities; FT)
     wtk_dev   = to_device_copy(backend, collect(FT, kpts.weights))
     # The k+q states, solved per batch straight into a tile, each point's window moved to its first
     # columns (box width nw).
-    el_kq_tile = BatchedElectronState(backend, nw, nw, nk_batch_max, [:e, :u]; FT)
+    els_kq_tile = BatchedElectronState(backend, nw, nw, nk_batch_max, [:e, :u]; FT)
     itp_el_ham = BatchedWannierInterpolator(to_device(backend, model.el_ham); backend, batch_size = nk_batch_max)
     Hkq_flat   = alloc(backend, Complex{FT}, nw * nw, nk_batch_max)
 
     # The phonons: the host states drive the host stage 1; each q is copied into a width-1 tile on
     # the backend for the block and the polar dipole term.
-    phs  = Vector{PhononState{FT}}(ph)
-    ph_q = BatchedPhononState(backend, nmodes, 1, ph_quantities; FT)
+    ph_host = Vector{PhononState{FT}}(phs)
+    phs_q = BatchedPhononState(backend, nmodes, 1, ph_quantities; FT)
     mmats_batch = use_polar_eph ? alloc(backend, Complex{FT}, nw, nbandk_max, nk_batch_max) : nothing
 
     for iq in 1:nq
@@ -529,9 +529,9 @@ function _loop_eph_over_q_and_k_batched(
         xq = qpts.vectors[iq]
 
         # HOST: interpolate g(R_el, q) in the requested phonon basis, then upload to the device clone.
-        get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, phs[iq], eph_phonon_basis)
+        get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph_host[iq], eph_phonon_basis)
         copyto!(ep_eRpq_dev.op_r, ep_eRpq_obj.op_r)
-        copy_batched_phonon_states!(ph_q, ph, iq:iq)
+        copy_batched_phonon_states!(phs_q, phs, iq:iq)
 
         ctx = LoopContext(backend, OuterQLoop(), iq:iq, 1)
         foreach(c -> calculator_begin!(c, ctx), calculators)
@@ -544,9 +544,9 @@ function _loop_eph_over_q_and_k_batched(
             # Everything below runs at the batch's true width `nk_batch`, through views of the first
             # `nk_batch` columns of the `nk_batch_max`-wide buffers (a trailing-prefix view of a
             # device array is contiguous, so the batched drivers and the extension kernels take these
-            # directly). The k side of the batch is copied from `el_k` (a range, no index upload).
+            # directly). The k side of the batch is copied from `els_k` (a range, no index upload).
             rng_k = 1:nk_batch
-            copy_batched_electron_states!(el_k_tile, el_k, iks_batch)
+            copy_batched_electron_states!(els_k_tile, els_k, iks_batch)
             for (ik_ind, ik) in enumerate(iks_batch)
                 ks_batch[ik_ind]  = kpts.vectors[ik]
                 kqs_batch[ik_ind] = ks_batch[ik_ind] + xq
@@ -555,21 +555,21 @@ function _loop_eph_over_q_and_k_batched(
 
             # k+q eigensolve (batched), each point's `window_kq` bands moved to its first columns. No
             # gauge fixing.
-            compute_electron_states_batched!(el_kq_tile, itp_el_ham, Hkq_flat, model, kqs, window_kq)
-            el_k_block = view(el_k_tile, rng_k)
-            el_kq_block = view(el_kq_tile, rng_k)
+            compute_electron_states_batched!(els_kq_tile, itp_el_ham, Hkq_flat, model, kqs, window_kq)
+            els_k_block = view(els_k_tile, rng_k)
+            els_kq_block = view(els_kq_tile, rng_k)
 
             # Batched Rq→kq e-ph interpolation: ep[m,n,ν,k] = Ukq(k)' * g(k) * Uk(k). Rows and columns
             # past a point's windows are undefined, as the box columns they come from.
             ep = view(ep_batch, :, :, :, rng_k)
             ws = RqToKQWorkspace(view(ep_ws.g, :, rng_k), view(ep_ws.tmp, :, :, rng_k),
                                  view(ep_ws.uk_rep, :, :, 1:nmodes*nk_batch))
-            get_eph_Rq_to_kq_batched!(ep, itp_ep_eRpq, ks, el_k_block.u, el_kq_block.u; ws)
-            use_polar_eph && add_eph_dipole_batched!(ep, ph_q.eph_dipole_coeff, el_kq_block.u,
-                                                     el_k_block.u, view(mmats_batch, :, :, rng_k))
+            get_eph_Rq_to_kq_batched!(ep, itp_ep_eRpq, ks, els_k_block.u, els_kq_block.u; ws)
+            use_polar_eph && add_eph_dipole_batched!(ep, phs_q.eph_dipole_coeff, els_kq_block.u,
+                                                     els_k_block.u, view(mmats_batch, :, :, rng_k))
 
-            block = EPBlock{OuterQLoop}(; ep, dg = nothing, el_k = el_k_block, el_kq = el_kq_block,
-                ph = ph_q, wtk = view(wtk_dev, iks_batch), wtq = qpts.weights[iq],
+            block = EPBlock{OuterQLoop}(; ep, dg = nothing, els_k = els_k_block, els_kq = els_kq_block,
+                phs = phs_q, wtk = view(wtk_dev, iks_batch), wtq = qpts.weights[iq],
                 xk = view(kpts.vectors, iks_batch), xq, ik = iks_batch, ikq = nothing, iq)
             foreach(c -> run_calculator!(c, block, ctx), calculators)
         end # k batch

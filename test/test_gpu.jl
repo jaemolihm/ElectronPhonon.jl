@@ -466,19 +466,19 @@ ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.OuterKLoop}) = true
 # reads, so it defines no `required_el_quantities` / `required_ph_quantities`.
 ElectronPhonon.calculator_begin!(::_RecordCalc, ctx) = nothing
 ElectronPhonon.calculator_end!(::_RecordCalc, ctx) = nothing
-function ElectronPhonon.setup_calculator!(c::_RecordCalc, backend, el_k, el_kq, ph; nw, nmodes,
+function ElectronPhonon.setup_calculator!(c::_RecordCalc, backend, els_k, els_kq, phs; nw, nmodes,
         kwargs...)
-    c.g2 = zeros(nw, nw, nmodes, el_k.nk, el_kq.nk)
-    c.ωq = zeros(nw, nw, nmodes, el_k.nk, el_kq.nk)
+    c.g2 = zeros(nw, nw, nmodes, els_k.nk, els_kq.nk)
+    c.ωq = zeros(nw, nw, nmodes, els_k.nk, els_kq.nk)
     c
 end
 ElectronPhonon.postprocess_calculator!(c::_RecordCalc; kwargs...) = c
 function ElectronPhonon.run_calculator!(c::_RecordCalc, p::ElectronPhonon.EPBlock{ElectronPhonon.OuterKLoop}, ctx)
-    (; ep, ph, ik, ikq) = p
-    g2h = Array(abs2.(ep) ./ (2 .* reshape(ph.e, 1, 1, size(ep, 3), size(ep, 4))))
-    ωh = Array(ph.e)
-    offk, nbk = Array(p.el_k.iband_offset)[1], Array(p.el_k.nband)[1]
-    offkq, nbkq = Array(p.el_kq.iband_offset), Array(p.el_kq.nband)
+    (; ep, phs, ik, ikq) = p
+    g2h = Array(abs2.(ep) ./ (2 .* reshape(phs.e, 1, 1, size(ep, 3), size(ep, 4))))
+    ωh = Array(phs.e)
+    offk, nbk = Array(p.els_k.iband_offset)[1], Array(p.els_k.nband)[1]
+    offkq, nbkq = Array(p.els_kq.iband_offset), Array(p.els_kq.nband)
     for (j, ikq_j) in enumerate(ikq), ν in axes(ep, 3), n in 1:nbk, m in 1:nbkq[j]
         c.g2[offkq[j] + m, offk + n, ν, ik, ikq_j] = g2h[m, n, ν, j]
         c.ωq[offkq[j] + m, offk + n, ν, ik, ikq_j] = ωh[ν, j]
@@ -603,9 +603,9 @@ mutable struct _RecordCalcOuterQ <: ElectronPhonon.AbstractCalculator
 end
 ElectronPhonon.supports(::_RecordCalcOuterQ, ::Type{ElectronPhonon.OuterQLoop}) = true
 ElectronPhonon.allowed_eph_phonon_basis(::_RecordCalcOuterQ) = [:eigenmode]
-function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, backend, el_k, el_kq, ph;
+function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, backend, els_k, els_kq, phs;
         n_outer_batch, kwargs...)
-    c.A = zeros(ph.nq)
+    c.A = zeros(phs.nq)
     c.Adev = ElectronPhonon.alloc(backend, Float64, n_outer_batch)
     c
 end
@@ -621,8 +621,8 @@ ElectronPhonon.postprocess_calculator!(c::_RecordCalcOuterQ; kwargs...) = c
 function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.EPBlock{ElectronPhonon.OuterQLoop}, ctx)
     (; ep, wtk) = p
     nbkq, nbk, _, nkc = size(ep)
-    inwin = (reshape(1:nbkq, nbkq, 1, 1, 1) .<= reshape(p.el_kq.nband, 1, 1, 1, nkc)) .&
-            (reshape(1:nbk, 1, nbk, 1, 1) .<= reshape(p.el_k.nband, 1, 1, 1, nkc))
+    inwin = (reshape(1:nbkq, nbkq, 1, 1, 1) .<= reshape(p.els_kq.nband, 1, 1, 1, nkc)) .&
+            (reshape(1:nbk, 1, nbk, 1, 1) .<= reshape(p.els_k.nband, 1, 1, 1, nkc))
     val = sum(ifelse.(inwin, abs2.(ep), 0.0) .* reshape(wtk, 1, 1, 1, nkc))
     ib = p.iq - first(ctx.batch) + 1
     view(c.Adev, ib:ib) .+= val

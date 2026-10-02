@@ -11,10 +11,10 @@ Users subtype `AbstractCalculator` and implement:
 * `required_el_quantities(calc)`, `required_ph_quantities(calc)` — the electron and phonon
   quantities it reads beyond `e` and `u`, as `Symbol` field names of `BatchedElectronState` /
   `BatchedPhononState`.
-* `setup_calculator!(calc, backend, el_k, el_kq, ph; sel_k, sel_kq, nw, nmodes, nchunks_threads,
-  n_outer_batch, n_inner_tile, verbosity)` — run once, before the loop. `el_k`, `el_kq`, `ph` are
+* `setup_calculator!(calc, backend, els_k, els_kq, phs; sel_k, sel_kq, nw, nmodes, nchunks_threads,
+  n_outer_batch, n_inner_tile, verbosity)` — run once, before the loop. `els_k`, `els_kq`, `phs` are
   the run's state containers and `sel_k`, `sel_kq` the `FilteredBandStates` they were built from
-  (the selected states and their weights: `BandStates(el_k, sel_k)`); `el_kq` and `sel_kq` are
+  (the selected states and their weights: `BandStates(els_k, sel_k)`); `els_kq` and `sel_kq` are
   `nothing` when k+q is solved per tile. `n_outer_batch` and `n_inner_tile` are the widths the
   loop chose, which per-batch and per-tile buffers are sized to.
 * `run_calculator!(calc, block::EPBlock{O}, ctx)` — one method per supported order `O`.
@@ -80,12 +80,12 @@ fields); the side shared by the whole block has extent 1 along it and a scalar i
 
 Fields (pair axis `j`):
 - `ep` :: `(nband_max_kq, nband_max_k, nmodes, nb)` eigenbasis e-ph matrix, before `1/(2ω)`. Defined
-  on each pair's windows only: entry `[m, n, ν, j]` is meaningful for `m ≤ el_kq.nband[j]` and
-  `n ≤ el_k.nband[j]` (the shared side's index is 1).
+  on each pair's windows only: entry `[m, n, ν, j]` is meaningful for `m ≤ els_kq.nband[j]` and
+  `n ≤ els_k.nband[j]` (the shared side's index is 1).
 - `dg` :: `nothing` (the covariant derivative is not produced by the batched loops).
-- `el_k`, `el_kq` :: `BatchedElectronState` views at block extent; `el_k` has extent 1 under
+- `els_k`, `els_kq` :: `BatchedElectronState` views at block extent; `els_k` has extent 1 under
   `OuterKLoop`.
-- `ph` :: `BatchedPhononState` view; extent 1 under `OuterQLoop`.
+- `phs` :: `BatchedPhononState` view; extent 1 under `OuterQLoop`.
 - `wtk`, `wtq` :: the weights; the shared side's is a scalar, the pair side's a device vector.
 - `xk`, `xq` :: the momenta, `Vec3` on the shared side and a host vector on the pair side.
 - `ik`, `ikq`, `iq` :: indices into the run's point sets: under `OuterKLoop` `ik::Int`, `ikq` a
@@ -95,9 +95,9 @@ Fields (pair axis `j`):
 struct EPBlock{Order <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ} <: AbstractElPhPayload
     ep    :: AT
     dg    :: DGT
-    el_k  :: EK
-    el_kq :: EKQ
-    ph    :: PH
+    els_k  :: EK
+    els_kq :: EKQ
+    phs    :: PH
     wtk   :: WK
     wtq   :: WQ
     xk    :: XK
@@ -106,9 +106,10 @@ struct EPBlock{Order <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, 
     ikq   :: IKQ
     iq    :: IQ
 end
-function EPBlock{O}(; ep::AT, dg::DGT, el_k::EK, el_kq::EKQ, ph::PH, wtk::WK, wtq::WQ, xk::XK, xq::XQ,
-        ik::IK, ikq::IKQ, iq::IQ) where {O <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}
-    EPBlock{O, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}(ep, dg, el_k, el_kq, ph, wtk, wtq, xk, xq, ik, ikq, iq)
+function EPBlock{O}(; ep::AT, dg::DGT, els_k::EK, els_kq::EKQ, phs::PH, wtk::WK, wtq::WQ, xk::XK,
+        xq::XQ, ik::IK, ikq::IKQ, iq::IQ) where {O <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}
+    EPBlock{O, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}(ep, dg, els_k, els_kq, phs, wtk, wtq,
+                                                                 xk, xq, ik, ikq, iq)
 end
 
 
@@ -164,7 +165,7 @@ required_el_k_quantities(::AbstractCalculator) = ["eigenvalue", "eigenvector", "
 
 # Mandatory hook, no working default. The state arguments are positional and the catch-all leaves
 # them unannotated, so it is never ambiguous with a calculator method that leaves them untyped.
-function setup_calculator!(::AbstractCalculator, backend, el_k, el_kq, ph; kwargs...)
+function setup_calculator!(::AbstractCalculator, backend, els_k, els_kq, phs; kwargs...)
     error("setup_calculator! has to be implemented")
 end
 
@@ -201,7 +202,7 @@ function run_calculator! end
 
 """
     eph_batched_bytes_per_point(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k, nband_max_kq,
-                                el_k, el_kq, ph) -> (; persistent, per_outer, per_pair)
+                                els_k, els_kq, phs) -> (; persistent, per_outer, per_pair)
 
 Device bytes the calculator allocates for a batched run of order `O`: whole-run buffers
 (`persistent`), per outer point of a batch (`per_outer`) and per inner pair of a tile (`per_pair`).
