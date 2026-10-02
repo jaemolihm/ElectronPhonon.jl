@@ -367,13 +367,15 @@ end
 function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPDataQBatched, ctx) where {FT}
     (; g2s, ωqs, ik, ikqs, ibandk_offset) = p
     dev = calc.dev
-    nbandkq, nbandk, nmodes, nq_batch = size(g2s)
+    nbandkq, _, nmodes, nq_batch = size(g2s)
     # Device buffers (imap/energies/Sₒ in `dev`, the Sᵢ tile in `calc.tiled`) were built once at
     # setup. `g2s = |ep|²/(2ω)` is folded by the loop's fused kernel (payload).
 
-    # k-side window projection: the band-n axis covers nbandk bands starting at physical band
-    # ibandk_offset+1, so shift into the physical-band imap_i by that offset (full-band runs have
-    # ibandk_offset = 0, nbandk = nw). The k+q axis (m ∈ 1:nbandkq = nw) is not projected.
+    # k-side window projection: the band-n axis starts at physical band ibandk_offset+1, so shift
+    # into the physical-band imap_i by that offset (full-band runs have ibandk_offset = 0,
+    # nbandk = nw). Columns past physical band nw are padding and are not read; columns of
+    # out-of-window bands below it have imap == 0. The k+q axis (m ∈ 1:nbandkq = nw) is not projected.
+    nbandk = nbandk_physical(p, calc.nw)
     imap_i_at_k = view(dev.imap_i, ibandk_offset+1:ibandk_offset+nbandk, ik)
 
     # Scatter into this batch's Sᵢ tile (streamed to the host by the OuterIterationBatch end bracket).

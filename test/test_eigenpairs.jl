@@ -243,13 +243,12 @@ end
         full = ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]
         quantity_lists = (["eigenvalue"], ["eigenvalue", "eigenvector"], full)
 
-        # The device phonon path refuses polar models, so cubicBN is CPU-only there as it is in
-        # production. One `fourier_mode` only: with a cache `dyn` is never built, so every claim
-        # here is mode-independent, and the mode-crossed inertness of the cacheless path is the
-        # subject of the A/B against the pre-cache code rather than of this testset.
+        # `compute_phonon_states` is host-only. One `fourier_mode` only: with a cache `dyn` is
+        # never built, so every claim here is mode-independent, and the mode-crossed inertness of
+        # the cacheless path is the subject of the A/B against the pre-cache code rather than of
+        # this testset.
         fourier_mode = "normal"
         arms = Tuple{Any, AbstractBackend}[(model, CPUBackend()), (model_bn, CPUBackend())]
-        EIGENPAIRS_GPU_AVAILABLE && push!(arms, (model, gpu_backend()))
         for (m, backend) in arms
             solved = compute_phonon_states(m, kpts, full; fourier_mode, backend)
             cache = _phonon_eigenpairs(solved, kpts, backend)
@@ -340,39 +339,26 @@ end
         @test_throws "eigenpairs holds nbasis" compute_phonon_states(
             model, kpts, ["eigenvalue"]; eigenpairs = electron_eigenpairs(model, kpts))
 
-        # The same backend-residency rule the electron caches follow.
+        # The same backend-residency rule the electron caches follow, and the device refusal:
+        # per-q `PhononState`s are host objects, and the device's phonons are `phonon_eigenpairs`.
         if EIGENPAIRS_GPU_AVAILABLE
-            host_cache = _phonon_eigenpairs(compute_phonon_states(model, kpts, full), kpts)
-            device_cache = _phonon_eigenpairs(
-                compute_phonon_states(model, kpts, full; backend = gpu_backend()), kpts,
-                gpu_backend())
-            @test_throws "resident on the host" compute_phonon_states(
-                model, kpts, full; backend = gpu_backend(), eigenpairs = host_cache)
+            device_cache = phonon_eigenpairs(model, kpts; backend = gpu_backend())
             @test_throws "resident on the device" compute_phonon_states(
                 model, kpts, full; eigenpairs = device_cache)
-
-            # CPU and device arms fed the SAME basis agree: the eigenvectors and frequencies are
-            # bit-identical because both copy them out of the cache, and the only quantity either
-            # backend still computes, `vdiag`, agrees to the rotation's round-off. Without a cache
-            # the two bases are a multiplet rotation apart, which is what makes this worth stating.
-            host_states = compute_phonon_states(model, kpts, full)
-            dev_states = compute_phonon_states(model, kpts, full; backend = gpu_backend(),
-                eigenpairs = _phonon_eigenpairs(host_states, kpts, gpu_backend()))
-            @test all(iq -> dev_states[iq].e == host_states[iq].e &&
-                            dev_states[iq].u == host_states[iq].u, 1:kpts.n)
-            @test maximum(iq -> maximum(maximum.(abs, dev_states[iq].vdiag -
-                                                      host_states[iq].vdiag)), 1:kpts.n) < 1e-17
+            @test_throws "CPUBackend only" compute_phonon_states(
+                model, kpts, full; backend = gpu_backend())
         end
     end
 
     @testset "built by phonon_eigenpairs" begin
-        # The builder runs the solve `compute_phonon_states` runs at the same q (per-q LAPACK on the
-        # host, the batched eigensolve on the device), so the two agree bit for bit, and a cache
-        # built here is inert in a run. cubicBN covers the polar (dipole) term on the host.
+        # On the host the builder runs the per-q LAPACK solve `compute_phonon_states` runs at the
+        # same q, so the two agree bit for bit, and a cache built here is inert in a run. cubicBN
+        # covers the polar (dipole) term. The device builder has no per-q twin; its frequencies
+        # are checked against the CPU ones through the batched e-ph loop (test_gpu.jl, "batched
+        # calculator loop").
         model_bn = _load_model_from_artifacts("cubicBN"; load_epmat = false)
         arms = Tuple{Any, AbstractBackend, String}[(model, CPUBackend(), "normal"),
             (model, CPUBackend(), "gridopt"), (model_bn, CPUBackend(), "gridopt")]
-        EIGENPAIRS_GPU_AVAILABLE && push!(arms, (model, gpu_backend(), "gridopt"))
         for (m, backend, fourier_mode) in arms
             cache = phonon_eigenpairs(m, kpts; fourier_mode, backend)
             ref = compute_phonon_states(m, kpts, ["eigenvalue", "eigenvector"]; fourier_mode,

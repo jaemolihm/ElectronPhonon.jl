@@ -136,38 +136,18 @@ end
     phonon_eigenpairs(model, qpts; fourier_mode = "gridopt", backend = CPUBackend())
 
 The phonon twin of [`electron_eigenpairs`](@ref): the frequencies ω (`e_full`) and mass-scaled
-eigenmodes (`u_full`) at every q point of `qpts`, `nbasis = nmodes`. They are what
-[`compute_phonon_states`](@ref) solves for at the same q, with the same solver, so a run handed
-this cache as `ph_eigenpairs` reproduces the run without it.
+eigenmodes (`u_full`) at every q point of `qpts`, `nbasis = nmodes`. They are the `e`/`u` stacks of
+[`compute_phonon_states_batched`](@ref) over the same q points, held without a copy, so on the host
+they are what [`compute_phonon_states`](@ref) solves for and a run handed this cache as
+`ph_eigenpairs` reproduces the run without it.
 
-On a GPU backend the whole set is one batched eigensolve, the one `compute_phonon_states` runs
-there, and the cache stays on the device; `fourier_mode` is then unused and polar phonons are not
-supported, as in that path. The electron builder's two device caveats hold here too: the batched
-eigensolve picks its own basis inside a degenerate mode multiplet, so a device-built cache differs
-from a CPU-built one there, and the whole set is one batch, so the device dynamical-matrix stack
-(`nmodes^2 * nq`) is unbounded.
+On a GPU backend the cache stays on the device; `fourier_mode` is then unused and polar phonons are
+not supported. The batched eigensolve picks its own basis inside a degenerate mode multiplet, so a
+device-built cache differs from a CPU-built one there.
 """
-function phonon_eigenpairs(model::Model{FT}, qpts; fourier_mode = "gridopt",
-                           backend = CPUBackend()) where {FT}
-    (; nmodes, mass) = model
-    gqpts = GridKpoints(qpts)
-    if backend isa CPUBackend
-        e_full = zeros(FT, nmodes, gqpts.n)
-        u_full = zeros(Complex{FT}, nmodes, nmodes, gqpts.n)
-        @threads for iqs in chunks(gqpts.vectors; n = nthreads())
-            dyn = get_interpolator(model.ph_dyn; fourier_mode)
-            register_kpoints!(dyn, view(gqpts.vectors, iqs))
-            for iq in iqs
-                @views get_ph_eigen!(e_full[:, iq], u_full[:, :, iq], dyn, mass,
-                                     model.polar_phonon, gqpts.vectors[iq])
-            end
-        end
-        Eigenpairs(nmodes, gqpts, e_full, u_full)
-    else
-        model.polar_phonon.use && error("phonon_eigenpairs on a non-CPU backend does not " *
-                                        "support polar phonons")
-        Eigenpairs(nmodes, gqpts, _ph_eigen_batched(model, gqpts.vectors, backend)...)
-    end
+function phonon_eigenpairs(model::Model, qpts; fourier_mode = "gridopt", backend = CPUBackend())
+    ph_states = compute_phonon_states_batched(model, GridKpoints(qpts), [:e, :u]; fourier_mode, backend)
+    Eigenpairs(model.nmodes, ph_states.qpts, ph_states.e, ph_states.u)
 end
 
 # Guards on a caller-supplied cache, checked once per consuming call rather than per k point. Both

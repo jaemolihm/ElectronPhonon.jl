@@ -196,3 +196,4 @@ function batched_gemm!(transA::Char, transB::Char,
     end
     C
 end
+

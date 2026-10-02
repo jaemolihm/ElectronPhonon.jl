@@ -61,7 +61,9 @@ Fields:
   the `UnitRange` `qstart:qend` — `isbits`, hence passed in the kernel launch parameters rather than
   read from device memory. Consumers must index it, not assume a device array.
 - `ibandk_offset` :: k-side window-projection band offset (0-based; 0 for full-band). `eps`'s
-  band-of-k axis `n` (1-based) is PHYSICAL band `ibandk_offset + n`.
+  band-of-k axis `n` (1-based) is PHYSICAL band `ibandk_offset + n`. The offset is the first
+  in-window band minus one, not clamped, so columns with `ibandk_offset + n > nw` are padding and
+  undefined: read only the first `nbandk_physical(p, nw)` columns.
 """
 struct EPDataQBatched{AT4C, AT4R, AT2, VI} <: AbstractElPhPayload
     eps           :: AT4C
@@ -71,6 +73,14 @@ struct EPDataQBatched{AT4C, AT4R, AT2, VI} <: AbstractElPhPayload
     ikqs          :: VI
     ibandk_offset :: Int
 end
+
+"""
+    nbandk_physical(p::EPDataQBatched, nw) -> Int
+
+The number of k-side columns of `p.eps` that are physical bands (at most band `nw`); the columns
+after them are padding.
+"""
+nbandk_physical(p::EPDataQBatched, nw) = min(size(p.eps, 2), nw - p.ibandk_offset)
 
 """
     EPDataKBatched{AT4, AT3, AT2, AT1, VK} <: AbstractElPhPayload

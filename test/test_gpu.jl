@@ -516,8 +516,10 @@ ElectronPhonon.postprocess_calculator!(c::_RecordCalcBatched; kwargs...) = c
 function ElectronPhonon.run_calculator!(c::_RecordCalcBatched, p::ElectronPhonon.EPDataQBatched, ctx)
     (; eps, g2s, ωqs, ik, ikqs, ibandk_offset) = p
     nbandkq, nbandk, nm, nqc = size(eps)
-    g2dev = abs2.(eps) ./ (2 .* reshape(ωqs, 1, 1, nm, nqc))
-    @assert maximum(abs, Array(g2s .- g2dev)) <= 1e-10 * maximum(abs, Array(g2dev))
+    nbandk = ElectronPhonon.nbandk_physical(p, size(c.g2, 2))   # the rest is padding
+    g2dev = view(abs2.(eps) ./ (2 .* reshape(ωqs, 1, 1, nm, nqc)), :, 1:nbandk, :, :)
+    @assert maximum(abs, Array(view(g2s, :, 1:nbandk, :, :) .- g2dev)) <=
+        1e-10 * maximum(abs, Array(g2dev))
     g2h = Array(g2dev)   # device → host (m,n,ν,j)
     ωh = Array(ωqs)
     ikqsh = Array(ikqs)
@@ -931,42 +933,6 @@ end
     end
 end
 
-@testset "compute_phonon_states velocity_diagonal (GPU backend)" begin
-    if !GPU_AVAILABLE
-        @info "CUDA not available/functional — skipping GPU compute_phonon_states velocity test"
-    else
-        model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
-        kpts = ElectronPhonon.kpoints_grid((8, 8, 8))
-        nk, nm = kpts.n, model.nmodes
-
-        qp = ["eigenvalue", "eigenvector", "velocity_diagonal"]
-        pc = ElectronPhonon.compute_phonon_states(model, kpts, qp; fourier_mode="gridopt")
-        pg = ElectronPhonon.compute_phonon_states(model, kpts, qp;
-            backend=ElectronPhonon.gpu_backend())
-
-        # Phonon frequencies are gauge-independent → must match the CPU path.
-        wm = maximum(maximum(abs, pc[ik].e .- pg[ik].e) for ik in 1:nk)
-        @test wm < 1e-7 * maximum(maximum(abs, pc[ik].e) for ik in 1:nk)
-
-        # vdiag = real(diag(u'·dD/dk·u))/(2ω). Gauge-invariant for non-degenerate modes; compare CPU
-        # vs GPU on non-degenerate, non-Γ-acoustic modes (skip ω<1e-5 where /2ω blows up).
-        vm = vs = 0.0; n_ok = 0
-        for ik in 1:nk
-            e = pc[ik].e
-            for i in 1:nm
-                e[i] < 1e-5 && continue
-                any(j -> j != i && abs(e[j] - e[i]) < 1e-7, 1:nm) && continue
-                n_ok += 1
-                vm = max(vm, maximum(abs, pc[ik].vdiag[i] .- pg[ik].vdiag[i]))
-                vs = max(vs, maximum(abs, pc[ik].vdiag[i]))
-            end
-        end
-        @test n_ok > 0
-        @test vm < 1e-8 * vs
-    end
-end
-
-
 # Scatter round-trip: the device-resident scatter `eph_window_scatter!` (used by
 # EliashbergCalculator's device path) must (1) write COLLISION-FREE — its non-collision invariant
 # (distinct k → distinct outer state i, distinct k+q → distinct inner state f, so every target linear
@@ -1061,7 +1027,7 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
         nw, nbandk_max, nmodes, nr_ep, nk, nkq, nq_grid, nk_batch_max = 7, 5, 6, 137, 90, 200, 64, 32
         nr_epmat = 43
         per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
-            nq_grid, nk_batch_max, calculators = calcs, nr_epmat, FT)
+            nk_stack = 0, nkq_stack = nkq, nq_grid, nk_batch_max, calculators = calcs, nr_epmat, FT)
         # Formulas reproduced inline (ground truth). The per-q term dropped the child interpolator
         # (cached_results / rdotk / xkmat) and `ikqs_dev` when the k+q-convention phase hoist made
         # them unnecessary; `24·nr_ep` (phase + rdotk) became `16·nr_ep` (the caller-owned P_kq tile).
@@ -1078,6 +1044,14 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
         convention_term = 24 * (nk + nkq) + 16 * nr_ep * nk_batch_max
         @test per_point == exp_per_q
         @test committed == old_committed + itp_epmat_term + convention_term
+        # The loop's own call: its k+q and phonon stacks are resident before the sizing point.
+        _, committed_loop = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
+            nk_stack = 0, nkq_stack = 0, nq_grid = 0, nk_batch_max, calculators = calcs, nr_epmat, FT)
+        @test committed - committed_loop == 16 * nw^2 * nkq + (16 * nmodes^2 + 8 * nmodes) * nq_grid
+        # The estimate's form also counts the resident outer-k box.
+        _, committed_est = _outer_k_staging_bytes(; nw, nbandk_max, nmodes, nr_ep, nk, nkq,
+            nk_stack = nk, nkq_stack = nkq, nq_grid, nk_batch_max, calculators = calcs, nr_epmat, FT)
+        @test committed_est - committed == (16 * nw * nbandk_max + 16) * nk
     end
 
     @testset "plan_batch memory-bound warning is opt-out" begin
@@ -1093,8 +1067,11 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
     @testset "outer-q parity" begin
         nw, nmodes, nr_el_ham, nr_ep_eRpq = 4, 21, 250, 419
         for use_polar_eph in (false, true)
+            nk = 90
             per_point, committed = _outer_q_staging_bytes(; nw, nmodes, nr_el_ham, nr_ep_eRpq,
-                use_polar_eph, calculators = calcs, FT)
+                use_polar_eph, calculators = calcs, nk, nk_stack = 0, FT)
+            _, committed_est = _outer_q_staging_bytes(; nw, nmodes, nr_el_ham, nr_ep_eRpq,
+                use_polar_eph, calculators = calcs, nk, nk_stack = nk, FT)
             # `16·nr` (interpolator core phase); the `8·nr` rdotk scratch is gone with the fused
             # `build_fourier_phase!` broadcast, and the two `cached_results` terms (one per interpolator,
             # `5·nmodes`→`4·nmodes` and `8`→`7`) with the lazy allocation.
@@ -1102,7 +1079,10 @@ ElectronPhonon.free_bytes(b::_StubBackend) = b.free
                 16 * (nr_el_ham + nr_ep_eRpq) +
                 sum(ElectronPhonon.eph_batched_bytes_per_point(c, ElectronPhonon.EPDataKBatched; nw, nmodes) for c in calcs)
             @test per_point == old_per_k
-            @test committed == 0   # k side streamed: no whole-run device stack
+            # The loop counts the k side's window mask and weights; the estimate the resident
+            # k container (u, e, offsets, nband) too.
+            @test committed == (nw + 8) * nk
+            @test committed_est - committed == (16 * nw^2 + 8 * nw + 16) * nk
         end
     end
 end

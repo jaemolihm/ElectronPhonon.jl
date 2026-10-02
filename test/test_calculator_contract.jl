@@ -135,3 +135,51 @@ ElectronPhonon.calculator_begin!(c::_ModeDispatchCalc, ::OuterIterationBatch, ::
     v = [1.0, 2.0, 3.0]
     @test to_device(CPUBackend(), v) === v
 end
+
+const CONTRACT_GPU_AVAILABLE = try
+    @eval using CUDA
+    CUDA.functional()
+catch
+    false
+end
+CONTRACT_GPU_AVAILABLE && CUDA.allowscalar(false)
+include("calculator_contract_harness.jl")
+
+# Every ElectronPhonon.jl calculator through the generic contract harness (MigdalEliashberg.jl's
+# run the same harness from its own test_calculator_contract.jl).
+@testset "calculator contract harness" begin
+    models = (; el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el"),
+                ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph"))
+    e_F = contract_fixtures().narrow.e_F
+    K = unit_to_aru(:K); meV = unit_to_aru(:meV)
+    entries = [
+        (; name = "BoltzmannCalculator", orders = (OuterKLoop,),
+           make = () -> BoltzmannCalculator{Float64}(;
+               occ = ElectronOccupationParams(; Tlist = [300.0K, 600.0K], nlist = 4.0,
+                   μlist = [e_F, e_F], volume = models.el.volume, nelec = 0,
+                   spin_degeneracy = 2, occ_type = :FermiDirac),
+               smearing_list = [SmearingType(:Gaussian, 50.0meV), SmearingType(:Gaussian, 100.0meV)]),
+           outputs = function (c)
+               ids_i, ids_f = contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)
+               Dict("Sₒ" => contract_group_sum(stack(c.Sₒ), 1, ids_i),
+                    "Sᵢ" => contract_group_sum(contract_group_sum(stack(c.Sᵢ), 1, ids_i), 2, ids_f))
+           end,
+           # `bte_scattering_increments` summed over the modes of each pair, g2 = |ep|^2 / (2ω).
+           reference = function (c, ref)
+               Sₒ = zero.(c.Sₒ); Sᵢ = zero.(c.Sᵢ)
+               contract_foreach_reference_pair(ref, c.el_i, c.el_f) do i, j, ep, ω, ek, ekq, wtkq
+                   for (iT, (; μ, T)) in enumerate(c.occ), ν in eachindex(ω)
+                       ω[ν] < c.omega_cutoff && continue
+                       sₒ, sᵢ = ElectronPhonon.bte_scattering_increments(c.occupation_method,
+                           ek, ekq, ω[ν], abs2(ep[ν]) / (2ω[ν]), wtkq, μ, T, c.smearing_list[iT])
+                       Sₒ[iT][i] += sₒ; Sᵢ[iT][i, j] += sᵢ
+                   end
+               end
+               (; c.el_i, c.el_f, Sₒ, Sᵢ)
+           end),
+    ]
+    # The host eigensolve rotates levels split by less than `electron_degen_cutoff` with EPW's
+    # degenerate gauge fix and the device one does not, so a multiplet sum weighted by a function of
+    # each level's own energy moves by about split / smearing: 2.8e-7 on the ragged fixture (A100).
+    check_calculator_contract(entries, models; gpu = CONTRACT_GPU_AVAILABLE, rtol_gpu = 1e-6)
+end
