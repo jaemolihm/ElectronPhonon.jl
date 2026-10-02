@@ -53,8 +53,9 @@ end
     end
 
     # Energy conservation: a `(:Fixed, 10σ)` cut drops only pairs whose Gaussian-smeared BTE
-    # contribution is below exp(-100), so Sₒ and Sᵢ match the uncut run. Measured 0.0 and 1.1e-45
-    # relative on the per-point loop (Pb 6³, ±0.5 eV, σ = 20 meV).
+    # contribution is below exp(-100), so Sₒ and Sᵢ match the uncut run, and it does drop pairs: the
+    # pair recorder running alongside sees fewer of them. Measured 0.0 and 1.1e-45 relative on the
+    # per-point loop (Pb 6³, ±0.5 eV, σ = 20 meV).
     @testset "energy conservation" begin
         model = _load_model_from_artifacts("pb")
         eV, K, meV = unit_to_aru(:eV), unit_to_aru(:K), unit_to_aru(:meV)
@@ -63,19 +64,22 @@ end
                 occ = ElectronOccupationParams(; Tlist = [300.0K], nlist = 4.0, μlist = μ,
                     volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac),
                 smearing_list = [SmearingType(:Gaussian, σ)], occupation_method = 5);
-            run_eph_over_k_and_kq(model, (6, 6, 6), (6, 6, 6); calculators = [c], symmetry = nothing,
-                window_k = window, window_kq = window, progress_print_step = 10^9, verbosity = 0,
-                kwargs...); c)
-        c_all = runbte()
-        @test maximum(stack(c_all.Sₒ)) > 0
+            rec = _PairRecorder();
+            run_eph_over_k_and_kq(model, (6, 6, 6), (6, 6, 6); calculators = [c, rec],
+                symmetry = nothing, window_k = window, window_kq = window,
+                progress_print_step = 10^9, verbosity = 0, kwargs...); (c, rec))
+        c_all, rec_all = runbte()
+        @test maximum(stack(c_all.Sₒ)) > 0 && length(rec_all.g2abs) > 0
         # Energy conservation (#72).
-        @test_broken (c_cut = runbte(; energy_conservation = (:Fixed, 10σ));
+        @test_broken ((c_cut, rec_cut) = runbte(; energy_conservation = (:Fixed, 10σ));
+            length(rec_cut.g2abs) < length(rec_all.g2abs) &&
             isapprox(stack(c_cut.Sₒ), stack(c_all.Sₒ); rtol = 1e-12) &&
             isapprox(stack(c_cut.Sᵢ), stack(c_all.Sᵢ); rtol = 1e-12))
     end
 
-    # The covariant derivative of the e-ph matrix: Σ |dg[:, :, :, d]|² of every pair against the
-    # reference `eph_reference_dg`. Measured 6.3e-16 relative on the per-point loop at
+    # The covariant derivative of the e-ph matrix: Σ |dg[:, :, :, d]|² of every pair against
+    # `eph_reference_dg`, which reuses the per-point loop's Wannier-center correction (not an
+    # independent check of that term). Measured 6.3e-16 relative on the per-point loop at
     # `fourier_mode = "normal"` (Pb 3³, full window); at its default `"gridopt"` that loop is 0.82 off.
     @testset "covariant_derivative_of_g" begin
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
