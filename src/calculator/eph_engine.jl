@@ -103,7 +103,7 @@ q points, the k+q states are solved per (k, tile) into the tile's buffers and th
 x_k + x_q for each k.
 """
 struct OuterKEngine{T_backend, T_epmat_src, T_irvec_col_mat, T_P_col, T_irvec_row_mat, T_P_row,
-        T_itp_epmat_R, T_irvecp_mat, T_mxk, T_xkq, T_wtkq, T_P_mk, T_row_scratch, T_ep_kR, T_dg_kR, T_el_k_batch, T_xk,
+        T_itp_epmat_R, T_irvecp_mat, T_mxk, T_xkq, T_wtkq, T_P_mk, T_row_scratch, T_ep_kR, T_dg_kR, T_els_k_batch, T_xk,
         T_g_fourier, T_tiles}
     backend      :: T_backend
     epmat_src    :: T_epmat_src     # model.epmat for stage 1 (`_epmat_source`)
@@ -339,7 +339,7 @@ function stage1!(eng::OuterKEngine, els_k, kpts, batch)
     @views build_fourier_phase!(eng.P_mk[:, 1:nb], eng.irvecp_mat, eng.mxk[:, batch])
     uks = eng.els_k_batch.u
     nr_p = size(eng.P_mk, 1)
-    nd = size(uks, 1)^2 * eng.tiles[1].ph.nmodes    # nw² nmodes
+    nd = size(uks, 1)^2 * eng.tiles[1].phs.nmodes    # nw² nmodes
     g = dense_prefix(eng.g_fourier, nd * nr_p, nmax)
     if eng.P_col !== nothing
         build_fourier_phase!(eng.P_col, eng.irvec_col_mat, eng.xk)
@@ -422,7 +422,7 @@ function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband
     (; persistent, per_outer, per_pair)
 end
 
-function OuterQEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty; kpts, qpts,
+function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
         n_outer_batch, n_inner_tile, nchunks, drop_pairs, eph_phonon_basis,
         epmat_chunk_bytes) where {FT}
     (; nw, nmodes) = model

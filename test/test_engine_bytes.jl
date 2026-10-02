@@ -58,24 +58,24 @@ end
                 eph_phonon_basis = :eigenmode, fourier_mode = "gridopt", mpi_comm_k = nothing,
                 el_k_eigenpairs = nothing, el_kq_eigenpairs = nothing, ph_eigenpairs = nothing,
                 verbosity = 0)
-            nbk = st.el_k.nband_max
-            nbkq = st.el_kq === nothing ? model.nw : st.el_kq.nband_max
+            nbk = st.els_k.nband_max
+            nbkq = st.els_kq === nothing ? model.nw : st.els_kq.nband_max
             common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1, drop_pairs = false,
                       eph_phonon_basis = :eigenmode, epmat_chunk_bytes)
             if order isa OuterKLoop
                 bytes = engine_bytes(OuterKEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, nkq = st.kqpts.n, el_qty, ph_qty, drop_pairs = false,
                     covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode, epmat_chunk_bytes)
-                eng = OuterKEngine(model, backend, st.el_k, st.el_kq, st.ph, el_qty, ph_qty;
+                eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = dg, common...)
-                run1 = () -> stage1!(eng, st.el_k, st.kpts, 1:nb)
+                run1 = () -> stage1!(eng, st.els_k, st.kpts, 1:nb)
             else
                 bytes = engine_bytes(OuterQEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, n_outer_batch = nb, el_qty, ph_qty, drop_pairs = false,
                     precompute_el_kq = false, eph_phonon_basis = :eigenmode, epmat_chunk_bytes)
-                eng = OuterQEngine(model, backend, st.el_k, st.el_kq, st.ph, el_qty, ph_qty;
+                eng = OuterQEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.qpts, common...)
-                run1 = () -> stage1!(eng, st.ph, st.qpts, 1:nb, :eigenmode)
+                run1 = () -> stage1!(eng, st.phs, st.qpts, 1:nb, :eigenmode)
             end
             run1()
             CUDA.synchronize()

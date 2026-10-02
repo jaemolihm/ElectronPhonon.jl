@@ -172,10 +172,10 @@ function _run_eph_loop(order, model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_
         OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
             n_outer_batch = nb_outer, n_inner_tile = nb_inner, nchunks, drop_pairs,
             covariant_derivative_of_g, eph_phonon_basis, epmat_chunk_bytes) :
-        OuterQEngine(model, backend, el_k, el_kq, ph, el_qty, ph_qty; kpts, qpts,
+        OuterQEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
             n_outer_batch = nb_outer, n_inner_tile = nb_inner, nchunks, drop_pairs, eph_phonon_basis,
             epmat_chunk_bytes)
-    foreach(c -> setup_calculator!(c, backend, el_k, el_kq, ph; sel_k, sel_kq, nw, nmodes,
+    foreach(c -> setup_calculator!(c, backend, els_k, els_kq, phs; sel_k, sel_kq, nw, nmodes,
         nchunks_threads = nchunks, n_outer_batch = nb_outer, n_inner_tile = nb_inner, verbosity),
         calculators)
 
