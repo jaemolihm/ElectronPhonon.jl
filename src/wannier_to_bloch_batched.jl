@@ -335,9 +335,12 @@ function get_eph_Rq_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
         uk_rep = similar(parent.op_r, Complex{T}, nw, nbandk, nmodes * nk)
     else
         # `ws` is sized for the max batch width; use the first `nk` columns.
-        @assert size(ws.g, 1) == parent.ndata && size(ws.g, 2) >= nk
-        @assert size(ws.tmp)[1:2] == (nbandkq, nw * nmodes) && size(ws.tmp, 3) >= nk
-        @assert size(ws.uk_rep)[1:2] == (nw, nbandk) && size(ws.uk_rep, 3) >= nmodes * nk
+        @assert size(ws.g, 1) == parent.ndata
+        @assert size(ws.g, 2) >= nk
+        @assert size(ws.tmp)[1:2] == (nbandkq, nw * nmodes)
+        @assert size(ws.tmp, 3) >= nk
+        @assert size(ws.uk_rep)[1:2] == (nw, nbandk)
+        @assert size(ws.uk_rep, 3) >= nmodes * nk
         g, tmp, uk_rep = view(ws.g, :, 1:nk), view(ws.tmp, :, :, 1:nk), view(ws.uk_rep, :, :, 1:nmodes*nk)
     end
 
