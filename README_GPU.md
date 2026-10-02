@@ -187,8 +187,8 @@ then the phonon-basis rotation as a batched GEMM), stage 2 one `get_eph_Rq_to_kq
 the leading `maximum(nband)` columns of the tile buffers, so the block's k+q box is its widest
 window). A model whose `epmat` has its columns over the other R (`epmat_outer_momentum`)
 contracts the row-block R in stage 1 with one strided-batched GEMM against a shared phase. A
-disk-backed `epmat` streams through stage 1 in column chunks (one read, one upload and one GEMM per
-chunk, once per outer batch), and the engine holds one chunk on the device. The polar
+disk-backed `epmat` streams through stage 1 in column chunks of `epmat_chunk_bytes` (one read, one
+upload and one GEMM per chunk, once per outer batch), and the engine holds one chunk on the device. The polar
 dipole term is added on the block for both orders (`finish_ep!`).
 
 A block is `ep` `(nband_max_kq, nband_max_k, nmodes, nb)` with the states, phonons, weights and

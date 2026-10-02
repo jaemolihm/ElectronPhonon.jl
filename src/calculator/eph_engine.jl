@@ -17,30 +17,26 @@
 # column R is a GEMM against `op_r` (`_fourier_epmat_columns!`); a stage that contracts the row R is a
 # strided-batched GEMM over the columns against a shared phase (`_fourier_epmat_rows!`). Both run over
 # chunks of columns: the whole in-memory `op_r` as one chunk, or a disk-backed epmat
-# (`DiskWannierObject`) read in chunks of `EPMAT_CHUNK_BYTES`.
-
-# Bytes of `op_r` columns one chunk of a disk-backed epmat holds, on the host and on the backend: as
-# large as fits comfortably, since each chunk is one read and one GEMM. A `Ref` so a test can force
-# several chunks on a small model.
-const EPMAT_CHUNK_BYTES = Ref(2^30)
+# (`DiskWannierObject`) read in chunks of the driver's `epmat_chunk_bytes`.
 
 # `model.epmat` for stage 1: its `op_r` on the backend, or for a disk-backed epmat the object and a
-# column-chunk buffer on the host and on the backend (the same array on `CPUBackend`).
-function _epmat_source(model::Model{FT}, backend) where {FT}
+# column-chunk buffer of `chunk_bytes` on the host and on the backend (the same array on `CPUBackend`).
+function _epmat_source(model::Model{FT}, backend, chunk_bytes) where {FT}
     epmat = model.epmat
     epmat isa DiskWannierObject || return (; op_r = to_device(backend, epmat).op_r, disk = nothing)
-    ncol = _epmat_chunk_ncol(epmat, FT)
+    ncol = _epmat_chunk_ncol(epmat, FT, chunk_bytes)
     host = Matrix{Complex{FT}}(undef, epmat.ndata, ncol)
     dev = backend isa CPUBackend ? host : alloc(backend, Complex{FT}, epmat.ndata, ncol)
     (; op_r = nothing, disk = (; obj = epmat, host, dev))
 end
-_epmat_chunk_ncol(epmat, FT) = clamp(fld(EPMAT_CHUNK_BYTES[], sizeof(Complex{FT}) * epmat.ndata), 1, epmat.nr)
+_epmat_chunk_ncol(epmat, FT, chunk_bytes) =
+    clamp(fld(chunk_bytes, sizeof(Complex{FT}) * epmat.ndata), 1, epmat.nr)
 
 # The elements of `model.epmat` stage 1 holds on the backend (all of `op_r`, or one chunk) and the
 # columns of its widest chunk.
-function _epmat_device_size(model, FT)
+function _epmat_device_size(model, FT, chunk_bytes)
     epmat = model.epmat
-    ncol = epmat isa DiskWannierObject ? _epmat_chunk_ncol(epmat, FT) : epmat.nr
+    ncol = epmat isa DiskWannierObject ? _epmat_chunk_ncol(epmat, FT, chunk_bytes) : epmat.nr
     (epmat isa DiskWannierObject ? epmat.ndata * ncol : length(epmat.op_r), ncol)
 end
 
@@ -167,7 +163,7 @@ end
 
 function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband_max_kq, nk, nkq,
         el_qty, ph_qty, drop_pairs, covariant_derivative_of_g, eph_phonon_basis,
-        kq_per_tile = false) where {FT}
+        epmat_chunk_bytes, kq_per_tile = false) where {FT}
     (; nw, nmodes) = model
     cx, rl, iz = sizeof(Complex{FT}), sizeof(FT), sizeof(Int)
     el_layout = model.epmat_outer_momentum == "el"
@@ -177,7 +173,7 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
     nd = covariant_derivative_of_g ? 4 : 1                      # ep, plus three dg directions
     nrows = nw^2 * nmodes * nr_p                                # the epmat rows that stage 1 keeps
     nrows_max = nrows * (covariant_derivative_of_g ? 3 : 1)     # those of epmat_R with dg
-    nepmat, ncol = _epmat_device_size(model, FT)
+    nepmat, ncol = _epmat_device_size(model, FT, epmat_chunk_bytes)
     persistent =
         cx * nepmat + (covariant_derivative_of_g ? cx * 3 * length(model.epmat.op_r) : 0) +  # epmat, epmat_R
         rl * 3 * (nr_p + nr_e) * (covariant_derivative_of_g ? 2 : 1) +  # R-vector matrices
@@ -216,14 +212,14 @@ _phonon_state_bytes(FT, nm, qty) = sizeof(FT) * ((:e ∈ qty) * nm + (:vdiag ∈
 
 function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
         n_outer_batch, n_inner_tile, nchunks, drop_pairs, covariant_derivative_of_g,
-        eph_phonon_basis) where {FT}
+        eph_phonon_basis, epmat_chunk_bytes) where {FT}
     (; nw, nmodes) = model
     # Without a k+q container the k+q states are solved per tile, at box width nw.
     kq_per_tile = els_kq === nothing
     nbk, nbkq = els_k.nband_max, kq_per_tile ? nw : els_kq.nband_max
     inner_pts = kq_per_tile ? qpts : kqpts
     el_layout = model.epmat_outer_momentum == "el"
-    epmat_src = _epmat_source(model, backend)
+    epmat_src = _epmat_source(model, backend, epmat_chunk_bytes)
     irvec_p = el_layout ? model.epmat.irvec_next : model.epmat.irvec
     irvec_e = el_layout ? model.epmat.irvec : model.epmat.irvec_next
     nr_p = length(irvec_p)
@@ -393,7 +389,8 @@ end
 # ---- OuterQEngine ----------------------------------------------------------------------------
 
 function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband_max_kq, nk,
-        n_outer_batch, el_qty, ph_qty, drop_pairs, precompute_el_kq, eph_phonon_basis) where {FT}
+        n_outer_batch, el_qty, ph_qty, drop_pairs, precompute_el_kq, eph_phonon_basis,
+        epmat_chunk_bytes) where {FT}
     (; nw, nmodes) = model
     cx, rl, iz = sizeof(Complex{FT}), sizeof(FT), sizeof(Int)
     el_layout = model.epmat_outer_momentum == "el"
@@ -401,7 +398,7 @@ function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband
     nr_p = length(el_layout ? model.epmat.irvec_next : model.epmat.irvec)
     ndata = nw^2 * nmodes
     nbkq = precompute_el_kq ? nband_max_kq : nw
-    nepmat, ncol = _epmat_device_size(model, FT)
+    nepmat, ncol = _epmat_device_size(model, FT, epmat_chunk_bytes)
     persistent =
         cx * nepmat +                                           # epmat (or one chunk of it)
         cx * ndata * nr_e + rl * 3 * (nr_e + nr_p) +            # eRpq, R-vector matrices
@@ -425,12 +422,13 @@ function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband
     (; persistent, per_outer, per_pair)
 end
 
-function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
-        n_outer_batch, n_inner_tile, nchunks, drop_pairs, eph_phonon_basis) where {FT}
+function OuterQEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty; kpts, qpts,
+        n_outer_batch, n_inner_tile, nchunks, drop_pairs, eph_phonon_basis,
+        epmat_chunk_bytes) where {FT}
     (; nw, nmodes) = model
     nbk = els_k.nband_max
     el_layout = model.epmat_outer_momentum == "el"
-    epmat_src = _epmat_source(model, backend)
+    epmat_src = _epmat_source(model, backend, epmat_chunk_bytes)
     irvec_e = el_layout ? model.epmat.irvec : model.epmat.irvec_next
     irvec_p = el_layout ? model.epmat.irvec_next : model.epmat.irvec
     nr_e = length(irvec_e)
