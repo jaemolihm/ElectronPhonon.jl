@@ -17,7 +17,7 @@ Keywords:
 * `window_k`, `window_kq` — energy windows of the two sides (ignored for a `FilteredBandStates`).
 * `symmetry = model.symmetry` — reduces the outer k to the irreducible wedge and builds the k+q
   set by unfolding its selection; `nothing` for full grids.
-* `energy_conservation = (:None, 0.0)` — `(:Fixed, tol)` or `(:Linear, curvature)` drops the pairs
+* `energy_conservation = (:None, 0.0)` — `(:Fixed, tol)` or `(:Linear, curvature)` drops the pair_block
   with no energy-conserving process before the e-ph matrix is computed (`CPUBackend` only).
 * `covariant_derivative_of_g = false` — also compute the covariant derivative `block.dg`.
 * `eph_phonon_basis = :eigenmode` — or `:cartesian` (identity phonon rotation).
@@ -491,31 +491,34 @@ end
 
 # One outer-k batch: stage 1 for the batch, then per thread chunk its k+q tiles, each tile's phase
 # built once and reused by every k of the batch (tile-major).
-function _loop_outer_k!(eng::OuterKEngine, batch, els_k, els_kq, phs, kpts, qpts, calculators, model,
+_loop_outer_k!(eng::OuterKEngine, args...) = _loop_outer_k!(_workspace_fields(eng), args...)
+
+function _loop_outer_k!(eng::NamedTuple, batch, els_k, els_kq, phs, kpts, qpts, calculators, model,
         energy_conservation, ngrid)
-    stage1!(eng, els_k, kpts, batch)
+    _stage1!(OuterKLoop(), eng, els_k, kpts, batch)
     _foreach_chunk(length(eng.tiles), els_kq.nk) do chunk, ikqs
-        tile_bufs = eng.tiles[chunk]
-        ctx = LoopContext(eng.backend, OuterKLoop(), batch, chunk)
-        for tile in Iterators.partition(ikqs, eng.n_inner_tile)
-            n = length(tile)
-            # The k+q side is a contiguous slice of the resident container; its phase is shared by
-            # every k of the batch.
-            els_kq_t = view(els_kq, tile)
-            phase = view(tile_bufs.P_kq, :, 1:n)
-            @views build_fourier_phase!(phase, eng.irvecp_mat, eng.xkq[:, tile])
-            for (iouter, ik) in enumerate(batch)
-                # This (k, tile)'s q indices, checked on the host and copied once into the device buffer.
-                _fill_iqs!(tile_bufs.iq, qpts, eng.xkqs_int, eng.xks_int, ik, first(tile), n)
-                copyto!(tile_bufs.iq_dev, 1, tile_bufs.iq, 1, n)
-                iq = view(tile_bufs.iq_dev, 1:n)
-                copy_batched_phonon_states!(tile_bufs.phs, phs, iq)
-                pairs = (; n, iouter,
-                    els_k = view(eng.els_k_batch, iouter:iouter),
-                    els_kq = els_kq_t, phs = view(tile_bufs.phs, 1:n), phase,
-                    ik, ikq = tile, iq, wtk = kpts.weights[ik], wtq = view(eng.wtkq, tile),
-                    xk = kpts.vectors[ik], xq = view(qpts.vectors, view(tile_bufs.iq, 1:n)))
-                _block!(eng, tile_bufs, pairs, ctx, calculators, model, energy_conservation, ngrid)
+        _with_workspace(eng.tiles[chunk]) do tile_workspace
+            ctx = LoopContext(eng.backend, OuterKLoop(), batch, chunk)
+            for tile in Iterators.partition(ikqs, eng.n_inner_tile)
+                n = length(tile)
+                # The k+q side is a contiguous slice of the resident container; its phase is shared by
+                # every k of the batch.
+                els_kq_t = view(els_kq, tile)
+                phase = view(tile_workspace.P_kq, :, 1:n)
+                @views build_fourier_phase!(phase, eng.irvecp_mat, eng.xkq[:, tile])
+                for (iouter, ik) in enumerate(batch)
+                    # This (k, tile)'s q indices, checked on the host and copied once into the device buffer.
+                    _fill_iqs!(tile_workspace.iq, qpts, eng.xkqs_int, eng.xks_int, ik, first(tile), n)
+                    copyto!(tile_workspace.iq_dev, 1, tile_workspace.iq, 1, n)
+                    iq = view(tile_workspace.iq_dev, 1:n)
+                    copy_batched_phonon_states!(tile_workspace.phs, phs, iq)
+                    pair_block = (; n, iouter,
+                        els_k = view(eng.els_k_batch, iouter:iouter),
+                        els_kq = els_kq_t, phs = view(tile_workspace.phs, 1:n), phase,
+                        ik, ikq = tile, iq, wtk = kpts.weights[ik], wtq = view(eng.wtkq, tile),
+                        xk = kpts.vectors[ik], xq = view(qpts.vectors, view(tile_workspace.iq, 1:n)))
+                    _block!(eng, tile_workspace, pair_block, ctx, calculators, model, energy_conservation, ngrid)
+                end
             end
         end
     end
@@ -524,34 +527,37 @@ end
 # One outer-k batch of `run_eph_over_k_and_q`: stage 1 for the batch, then per thread chunk its q
 # tiles. The q tile's phonons are a view of the run's; the k+q states and the stage-2 phase at
 # x_k + x_q are built per (k, tile).
-function _loop_outer_k_over_q!(eng::OuterKEngine, batch, els_k, phs, kpts, qpts, calculators, model,
+_loop_outer_k_over_q!(eng::OuterKEngine, args...) = _loop_outer_k_over_q!(_workspace_fields(eng), args...)
+
+function _loop_outer_k_over_q!(eng::NamedTuple, batch, els_k, phs, kpts, qpts, calculators, model,
         energy_conservation, ngrid, window_kq)
-    stage1!(eng, els_k, kpts, batch)
+    _stage1!(OuterKLoop(), eng, els_k, kpts, batch)
     _foreach_chunk(length(eng.tiles), qpts.n) do chunk, iqs
-        tile_bufs = eng.tiles[chunk]
-        ctx = LoopContext(eng.backend, OuterKLoop(), batch, chunk)
-        for tile in Iterators.partition(iqs, eng.n_inner_tile)
-            n = length(tile)
-            phs_t = view(phs, tile)
-            for (iouter, ik) in enumerate(batch)
-                xk = kpts.vectors[ik]
-                for (j, iq) in enumerate(tile)
-                    tile_bufs.kqs[j] = xk + qpts.vectors[iq]
+        _with_workspace(eng.tiles[chunk]) do tile_workspace
+            ctx = LoopContext(eng.backend, OuterKLoop(), batch, chunk)
+            for tile in Iterators.partition(iqs, eng.n_inner_tile)
+                n = length(tile)
+                phs_t = view(phs, tile)
+                for (iouter, ik) in enumerate(batch)
+                    xk = kpts.vectors[ik]
+                    for (j, iq) in enumerate(tile)
+                        tile_workspace.kqs[j] = xk + qpts.vectors[iq]
+                    end
+                    els_kq_t = compute_electron_states_batched!(tile_workspace.els_kq, tile_workspace.itp_el_ham,
+                        tile_workspace.hk, model, view(tile_workspace.kqs, 1:n), window_kq)
+                    # x_k + x_q on the backend, as the host sum above: stage 1 folded exp(-2πi R_p · x_k)
+                    # into g(k, R_p), so the phase is the one at x_{k+q}.
+                    xkq = view(tile_workspace.xkq, :, 1:n)
+                    @views xkq .= eng.xkq[:, tile] .+ eng.xk[:, iouter]
+                    phase = view(tile_workspace.P_kq, :, 1:n)
+                    build_fourier_phase!(phase, eng.irvecp_mat, xkq)
+                    pair_block = (; n, iouter,
+                        els_k = view(eng.els_k_batch, iouter:iouter),
+                        els_kq = els_kq_t, phs = phs_t, phase,
+                        ik, ikq = nothing, iq = tile, wtk = kpts.weights[ik], wtq = view(eng.wtkq, tile),
+                        xk, xq = view(qpts.vectors, tile))
+                    _block!(eng, tile_workspace, pair_block, ctx, calculators, model, energy_conservation, ngrid)
                 end
-                els_kq_t = compute_electron_states_batched!(tile_bufs.els_kq, tile_bufs.itp_el_ham,
-                    tile_bufs.hk, model, view(tile_bufs.kqs, 1:n), window_kq)
-                # x_k + x_q on the backend, as the host sum above: stage 1 folded exp(-2πi R_p · x_k)
-                # into g(k, R_p), so the phase is the one at x_{k+q}.
-                xkq = view(tile_bufs.xkq, :, 1:n)
-                @views xkq .= eng.xkq[:, tile] .+ eng.xk[:, iouter]
-                phase = view(tile_bufs.P_kq, :, 1:n)
-                build_fourier_phase!(phase, eng.irvecp_mat, xkq)
-                pairs = (; n, iouter,
-                    els_k = view(eng.els_k_batch, iouter:iouter),
-                    els_kq = els_kq_t, phs = phs_t, phase,
-                    ik, ikq = nothing, iq = tile, wtk = kpts.weights[ik], wtq = view(eng.wtkq, tile),
-                    xk, xq = view(qpts.vectors, tile))
-                _block!(eng, tile_bufs, pairs, ctx, calculators, model, energy_conservation, ngrid)
             end
         end
     end
@@ -561,42 +567,45 @@ end
 # ---- OuterQLoop --------------------------------------------------------------------------------
 
 # One outer-q batch: stage 1 for the batch, then per q one threaded region over the k tiles.
-function _loop_outer_q!(eng::OuterQEngine, batch, els_k, els_kq, phs, kpts, kqpts, qpts, calculators,
+_loop_outer_q!(eng::OuterQEngine, args...) = _loop_outer_q!(_workspace_fields(eng), args...)
+
+function _loop_outer_q!(eng::NamedTuple, batch, els_k, els_kq, phs, kpts, kqpts, qpts, calculators,
         model, energy_conservation, ngrid, eph_phonon_basis, window_kq)
-    stage1!(eng, phs, qpts, batch, eph_phonon_basis)
+    _stage1!(OuterQLoop(), eng, phs, qpts, batch, eph_phonon_basis)
     for (iouter, iq) in enumerate(batch)
         copyto!(eng.eRpq.op_r, view(eng.ep_Rq, :, :, iouter))
         _foreach_chunk(length(eng.tiles), els_k.nk) do chunk, iks
-            tile_bufs = eng.tiles[chunk]
-            ctx = LoopContext(eng.backend, OuterQLoop(), batch, chunk)
-            xq = qpts.vectors[iq]
-            phs_q = view(phs, iq:iq)
-            for tile in Iterators.partition(iks, eng.n_inner_tile)
-                n = length(tile)
-                copy_batched_electron_states!(tile_bufs.els_k, els_k, tile)
-                for (j, ik) in enumerate(tile)
-                    tile_bufs.kqs[j] = kpts.vectors[ik] + xq
-                end
-                if els_kq === nothing
-                    # k+q solved into the tile, at the box of its largest window.
-                    els_kq_t = compute_electron_states_batched!(tile_bufs.els_kq, tile_bufs.itp_el_ham,
-                        tile_bufs.hk, model, view(tile_bufs.kqs, 1:n), window_kq)
-                    ikq = nothing
-                else
-                    # Precomputed k+q by grid lookup; 0 (dropped by `filter_pairs!`) where it is absent,
-                    # which the copy reads as point 1.
-                    for j in 1:n
-                        tile_bufs.ikq[j] = something(xk_to_ik_unsafe(tile_bufs.kqs[j], kqpts), 0)
-                        tile_bufs.ikq_copy[j] = max(tile_bufs.ikq[j], 1)
+            _with_workspace(eng.tiles[chunk]) do tile_workspace
+                ctx = LoopContext(eng.backend, OuterQLoop(), batch, chunk)
+                xq = qpts.vectors[iq]
+                phs_q = view(phs, iq:iq)
+                for tile in Iterators.partition(iks, eng.n_inner_tile)
+                    n = length(tile)
+                    copy_batched_electron_states!(tile_workspace.els_k, els_k, tile)
+                    for (j, ik) in enumerate(tile)
+                        tile_workspace.kqs[j] = kpts.vectors[ik] + xq
                     end
-                    copy_batched_electron_states!(tile_bufs.els_kq, els_kq, view(tile_bufs.ikq_copy, 1:n))
-                    els_kq_t = view(tile_bufs.els_kq, 1:n)
-                    ikq = view(tile_bufs.ikq, 1:n)
+                    if els_kq === nothing
+                        # k+q solved into the tile, at the box of its largest window.
+                        els_kq_t = compute_electron_states_batched!(tile_workspace.els_kq, tile_workspace.itp_el_ham,
+                            tile_workspace.hk, model, view(tile_workspace.kqs, 1:n), window_kq)
+                        ikq = nothing
+                    else
+                        # Precomputed k+q by grid lookup; 0 (dropped by `filter_pairs!`) where it is absent,
+                        # which the copy reads as point 1.
+                        for j in 1:n
+                            tile_workspace.ikq[j] = something(xk_to_ik_unsafe(tile_workspace.kqs[j], kqpts), 0)
+                            tile_workspace.ikq_copy[j] = max(tile_workspace.ikq[j], 1)
+                        end
+                        copy_batched_electron_states!(tile_workspace.els_kq, els_kq, view(tile_workspace.ikq_copy, 1:n))
+                        els_kq_t = view(tile_workspace.els_kq, 1:n)
+                        ikq = view(tile_workspace.ikq, 1:n)
+                    end
+                    pair_block = (; n, iouter = 0, els_k = view(tile_workspace.els_k, 1:n),
+                        els_kq = els_kq_t, phs = phs_q, phase = nothing, ik = tile, ikq, iq,
+                        wtk = view(eng.wtk, tile), wtq = qpts.weights[iq], xk = view(kpts.vectors, tile), xq)
+                    _block!(eng, tile_workspace, pair_block, ctx, calculators, model, energy_conservation, ngrid)
                 end
-                pairs = (; n, iouter = 0, els_k = view(tile_bufs.els_k, 1:n),
-                    els_kq = els_kq_t, phs = phs_q, phase = nothing, ik = tile, ikq, iq,
-                    wtk = view(eng.wtk, tile), wtq = qpts.weights[iq], xk = view(kpts.vectors, tile), xq)
-                _block!(eng, tile_bufs, pairs, ctx, calculators, model, energy_conservation, ngrid)
             end
         end
     end
@@ -607,89 +616,89 @@ end
 
 # One block: drop the pairs the loop does not compute, contract the e-ph matrix, add its terms and
 # hand it to the calculators.
-function _block!(eng, tile_bufs, pairs, ctx, calculators, model, energy_conservation, ngrid)
-    pairs = filter_pairs!(tile_bufs, pairs, ctx.order, model, energy_conservation, ngrid)
-    pairs.n == 0 && return nothing
-    ep, dg = stage2!(eng, tile_bufs, pairs)
+function _block!(eng, tile_workspace, pair_block, ctx, calculators, model, energy_conservation, ngrid)
+    pair_block = filter_pairs!(tile_workspace, pair_block, ctx.order, model, energy_conservation, ngrid)
+    pair_block.n == 0 && return nothing
+    ep, dg = _stage2!(ctx.order, eng, tile_workspace, pair_block)
     # Every pair field but the engine inputs is an `EPBlock` field.
     block = EPBlock{typeof(ctx.order)}(; ep, dg,
-        Base.structdiff(pairs, NamedTuple{(:n, :iouter, :phase)})...)
-    finish_ep!(block, tile_bufs, model)
+        Base.structdiff(pair_block, NamedTuple{(:n, :iouter, :phase)})...)
+    finish_ep!(block, tile_workspace, model)
     foreach(c -> run_calculator!(c, block, ctx), calculators)
     nothing
 end
 
 """
-    filter_pairs!(tile_bufs, pairs, order, model, energy_conservation, ngrid) -> pairs
+    filter_pairs!(tile_workspace, pair_block, order, model, energy_conservation, ngrid) -> pair_block
 
-The pairs of a block that the loop computes: `pairs` itself when none is dropped, otherwise the kept
-ones copied into the tile buffers' `tile_bufs.kept` (`pairs` is never modified, since under `OuterKLoop`
+The pairs of a block that the loop computes: `pair_block` itself when none is dropped, otherwise the kept
+ones copied into the tile buffers' `tile_workspace.kept` (`pair_block` is never modified, since under `OuterKLoop`
 one tile serves every k of a batch). A pair is dropped when its k+q is absent from the precomputed
 states, or when `energy_conservation` (`CPUBackend`) finds no energy-conserving process in it
 (`check_energy_conservation` over every mode, band pair and phonon sign, with `ngrid` the grid of
 the box). The side with a scalar index is shared by the block and carried over as it is.
 """
-function filter_pairs!(tile_bufs, pairs, order, model, energy_conservation, ngrid)
-    kept_bufs = tile_bufs.kept
-    kept_bufs === nothing && return pairs
+function filter_pairs!(tile_workspace, pair_block, order, model, energy_conservation, ngrid)
+    kept_bufs = tile_workspace.kept
+    kept_bufs === nothing && return pair_block
     mode, tol = energy_conservation
     # Whether pair `j` has an energy-conserving process, by `check_energy_conservation` on its host
     # arrays (local box bands; the shared side has extent 1).
     vec3(v, i) = v === nothing ? nothing : reinterpret(reshape, Vec3{eltype(v)}, view(v, :, :, i))
     function conserves(j)
-        jk, jq = min(j, pairs.els_k.nk), min(j, pairs.phs.nq)
-        states_k = (; e = view(pairs.els_k.e, :, jk))
-        states_kq = (; e = view(pairs.els_kq.e, :, j), vdiag = vec3(pairs.els_kq.vdiag, j))
-        states_ph = (; e = view(pairs.phs.e, :, jq), vdiag = vec3(pairs.phs.vdiag, jq))
+        jk, jq = min(j, pair_block.els_k.nk), min(j, pair_block.phs.nq)
+        states_k = (; e = view(pair_block.els_k.e, :, jk))
+        states_kq = (; e = view(pair_block.els_kq.e, :, j), vdiag = vec3(pair_block.els_kq.vdiag, j))
+        states_ph = (; e = view(pair_block.phs.e, :, jq), vdiag = vec3(pair_block.phs.vdiag, jq))
         any(check_energy_conservation(states_k, states_kq, states_ph, ib, jb, imode, sign_ph, ngrid,
                                       model.recip_lattice, mode, tol)
-            for imode in 1:pairs.phs.nmodes, jb in 1:pairs.els_kq.nband[j], ib in 1:pairs.els_k.nband[jk],
+            for imode in 1:pair_block.phs.nmodes, jb in 1:pair_block.els_kq.nband[j], ib in 1:pair_block.els_k.nband[jk],
                 sign_ph in (-1, 1))
     end
     nkeep = 0
-    for j in 1:pairs.n
-        pairs.ikq === nothing || pairs.ikq[j] != 0 || continue
+    for j in 1:pair_block.n
+        pair_block.ikq === nothing || pair_block.ikq[j] != 0 || continue
         mode === :None || conserves(j) || continue
         kept_bufs.keep[nkeep += 1] = j
     end
-    nkeep == pairs.n && return pairs
-    nkeep == 0 && return merge(pairs, (; n = 0))
+    nkeep == pair_block.n && return pair_block
+    nkeep == 0 && return merge(pair_block, (; n = 0))
     copyto!(kept_bufs.keep_dev, 1, kept_bufs.keep, 1, nkeep)
-    _copy_kept_pairs(order, kept_bufs, pairs, nkeep)
+    _copy_kept_pairs(order, kept_bufs, pair_block, nkeep)
 end
 
 # Copy the kept pairs of a block into the kept buffers, as views of the kept extent: under `OuterKLoop`
 # the k+q side, the phonons and the shared phase; under `OuterQLoop` the k and k+q sides. The side the
 # block shares is carried over as it is.
-function _copy_kept_pairs(::OuterKLoop, kept_bufs, pairs, n)
+function _copy_kept_pairs(::OuterKLoop, kept_bufs, pair_block, n)
     keep, keep_dev, kept = view(kept_bufs.keep, 1:n), view(kept_bufs.keep_dev, 1:n), 1:n
     els_kq = view(copy_batched_electron_states!(reshape_view_batched_electron_states(
-        kept_bufs.els_kq, pairs.els_kq.nband_max, kept_bufs.els_kq.nk), pairs.els_kq, keep_dev), kept)
-    phs = view(copy_batched_phonon_states!(kept_bufs.phs, pairs.phs, keep_dev), kept)
-    phase = view(_copy_last_axis!(kept_bufs.P_kq, pairs.phase, keep_dev), :, kept)
-    iq = view(_copy_last_axis!(kept_bufs.iq_dev, pairs.iq, keep_dev), kept)
-    wtq = view(_copy_last_axis!(kept_bufs.wtq, pairs.wtq, keep_dev), kept)
+        kept_bufs.els_kq, pair_block.els_kq.nband_max, kept_bufs.els_kq.nk), pair_block.els_kq, keep_dev), kept)
+    phs = view(copy_batched_phonon_states!(kept_bufs.phs, pair_block.phs, keep_dev), kept)
+    phase = view(_copy_last_axis!(kept_bufs.P_kq, pair_block.phase, keep_dev), :, kept)
+    iq = view(_copy_last_axis!(kept_bufs.iq_dev, pair_block.iq, keep_dev), kept)
+    wtq = view(_copy_last_axis!(kept_bufs.wtq, pair_block.wtq, keep_dev), kept)
     for (i, j) in enumerate(keep)
-        pairs.ikq === nothing || (kept_bufs.ikq[i] = pairs.ikq[j])
-        kept_bufs.xq[i] = pairs.xq[j]
+        pair_block.ikq === nothing || (kept_bufs.ikq[i] = pair_block.ikq[j])
+        kept_bufs.xq[i] = pair_block.xq[j]
     end
-    ikq = pairs.ikq === nothing ? nothing : view(kept_bufs.ikq, kept)
-    merge(pairs, (; n, els_kq, phs, phase, iq, wtq, ikq, xq = view(kept_bufs.xq, kept)))
+    ikq = pair_block.ikq === nothing ? nothing : view(kept_bufs.ikq, kept)
+    merge(pair_block, (; n, els_kq, phs, phase, iq, wtq, ikq, xq = view(kept_bufs.xq, kept)))
 end
 
-function _copy_kept_pairs(::OuterQLoop, kept_bufs, pairs, n)
+function _copy_kept_pairs(::OuterQLoop, kept_bufs, pair_block, n)
     keep, keep_dev, kept = view(kept_bufs.keep, 1:n), view(kept_bufs.keep_dev, 1:n), 1:n
     copy_els(els_dst, els_src) = view(copy_batched_electron_states!(reshape_view_batched_electron_states(
         els_dst, els_src.nband_max, els_dst.nk), els_src, keep_dev), kept)
-    els_k, els_kq = copy_els(kept_bufs.els_k, pairs.els_k), copy_els(kept_bufs.els_kq, pairs.els_kq)
-    wtk = view(_copy_last_axis!(kept_bufs.wtk, pairs.wtk, keep_dev), kept)
+    els_k, els_kq = copy_els(kept_bufs.els_k, pair_block.els_k), copy_els(kept_bufs.els_kq, pair_block.els_kq)
+    wtk = view(_copy_last_axis!(kept_bufs.wtk, pair_block.wtk, keep_dev), kept)
     for (i, j) in enumerate(keep)
-        kept_bufs.ik[i] = pairs.ik[j]
-        kept_bufs.xk[i] = pairs.xk[j]
-        pairs.ikq === nothing || (kept_bufs.ikq[i] = pairs.ikq[j])
+        kept_bufs.ik[i] = pair_block.ik[j]
+        kept_bufs.xk[i] = pair_block.xk[j]
+        pair_block.ikq === nothing || (kept_bufs.ikq[i] = pair_block.ikq[j])
     end
-    ikq = pairs.ikq === nothing ? nothing : view(kept_bufs.ikq, kept)
-    merge(pairs, (; n, els_k, els_kq, wtk, ikq, ik = view(kept_bufs.ik, kept), xk = view(kept_bufs.xk, kept)))
+    ikq = pair_block.ikq === nothing ? nothing : view(kept_bufs.ikq, kept)
+    merge(pair_block, (; n, els_k, els_kq, wtk, ikq, ik = view(kept_bufs.ik, kept), xk = view(kept_bufs.xk, kept)))
 end
 
 """

@@ -681,7 +681,7 @@ one batched Fourier transform with `itp_ham` (the `BatchedWannierInterpolator` o
 `els`'s backend, block width at least `length(xks)`) into the `(nw^2, ≥ length(xks))` scratch `hk`,
 one batched eigensolve, then each point's bands inside the energy `window` moved to local bands
 `1:nband`. Returns the `length(xks)` points as a container whose box is the largest `nband` of
-them (at least 1), stored in the leading elements of `els`'s arrays (`dense_prefix`), so the
+them (at least 1), stored in the leading elements of `els`'s arrays (`reshape_buffer_view`), so the
 blocks built on it shrink with the window. The batched eigensolve applies no degeneracy gauge fix,
 as in `eigen_batched`.
 """

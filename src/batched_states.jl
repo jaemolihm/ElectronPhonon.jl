@@ -1,14 +1,5 @@
 # Shared helpers of the batched state containers.
 
-"""
-    dense_prefix(buf, dims...) -> AbstractArray
-
-The array of size `dims` stored in the leading `prod(dims)` elements of `buf`, with its own dense
-strides: a smaller box in a buffer sized for the largest one. On a device it is a device array, so
-the batched GEMMs and fused kernels take it.
-"""
-dense_prefix(buf, dims...) = reshape(view(vec(buf), 1:prod(dims)), dims)
-
 # The index side of `copy_batched_electron_states!` / `copy_batched_phonon_states!`: `inds` on the
 # backend of `array_on_backend`. A range, or an index array already on that backend, is returned as
 # it is; a host vector is checked against `1:npoints` on the host and uploaded once.
