@@ -339,7 +339,8 @@ function stage1!(eng::OuterKEngine, els_k, kpts, batch)
     @views build_fourier_phase!(eng.P_mk[:, 1:nb], eng.irvecp_mat, eng.mxk[:, batch])
     uks = eng.els_k_batch.u
     nr_p = size(eng.P_mk, 1)
-    nd = size(uks, 1)^2 * eng.tiles[1].phs.nmodes    # nw² nmodes
+    nw, nbk = size(uks, 1), size(uks, 2)
+    nd = nw^2 * (size(eng.ep_kR, 1) ÷ (nw * nbk))    # nw² nmodes
     g = dense_prefix(eng.g_fourier, nd * nr_p, nmax)
     if eng.P_col !== nothing
         build_fourier_phase!(eng.P_col, eng.irvec_col_mat, eng.xk)
