@@ -14,6 +14,10 @@ catch
     false
 end
 
+# `CUDA.@allocated f()`, expanded at run time: the macro needs `CUDA` when the file is lowered, which
+# fails where CUDA is not installed (CI) even though the GPU branch never runs there.
+_device_allocated(f) = @eval CUDA.@allocated $f()
+
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
 
 # Bytes of every device array reachable from `x` (fields, tuples, vectors), each array once.
@@ -67,7 +71,7 @@ end
             end
             run1()
             CUDA.synchronize()
-            transient = CUDA.@allocated run1()
+            transient = _device_allocated(run1)
             held = _device_bytes(eng)
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
             @info "engine_bytes" order mom dg held transient counted ratio = (held + transient) / counted
@@ -121,7 +125,7 @@ end
         nbytes = if backend isa ElectronPhonon.CPUBackend
             @allocated stage2!(eng, t, pairs)
         else
-            CUDA.synchronize(); CUDA.@allocated stage2!(eng, t, pairs)
+            CUDA.synchronize(); _device_allocated(() -> stage2!(eng, t, pairs))
         end
         @info "stage2! allocations" order backend = nameof(typeof(backend)) nbytes
         # Measured (Pb, A100): 80 and 112 bytes on the CPU, 32 and 992 bytes (the k list) on the
