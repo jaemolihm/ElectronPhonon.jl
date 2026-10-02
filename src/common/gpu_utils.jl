@@ -192,8 +192,9 @@ otherwise; the CUDA extension uses `CUBLAS.gemm_strided_batched!`.
 function batched_gemm!(transA::Char, transB::Char,
                        A::AbstractArray{T,3}, B::AbstractArray{T,3}, C::AbstractArray{T,3}) where {T}
     @assert size(A, 3) == size(B, 3) == size(C, 3)
-    # `BLAS.gemm!` takes the slices as they are; through `mul!` and its adjoint wrappers, Julia 1.13
-    # heap-allocates the slices of every batch and runs the loop ~15% slower.
+    # `BLAS.gemm!` takes the trans `Char`s directly. `mul!` on `_batched_op` wrappers chosen by the
+    # runtime `Char`s is dispatched at run time over Union-typed operands, which allocates per call
+    # on Julia >= 1.12.
     use_blas = T <: LinearAlgebra.BlasFloat &&
         all(X -> X isa StridedArray && on_backend(CPUBackend(), X) && stride(X, 1) == 1, (A, B, C))
     @views for b in axes(C, 3)
