@@ -48,7 +48,7 @@ newcalc() = EliashbergCalculator{Float64}(; nmodes = model.nmodes)
 
 run_cpu(g, win) = (c = newcalc(); EP.run_eph_over_k_and_kq(model, (g,g,g), (g,g,g); calculators=[c],
     symmetry=nothing, window_k=win, window_kq=win,
-    fourier_mode="gridopt", nchunks_threads=12, progress_print_step=10^9); c)
+    nchunks_threads=12, progress_print_step=10^9); c)
 
 run_gpu(g, win) = (c = newcalc(); EP.run_eph_over_k_and_kq(model, (g,g,g), (g,g,g); calculators=[c],
     symmetry=nothing, window_k=win, window_kq=win,

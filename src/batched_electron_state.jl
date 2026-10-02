@@ -124,3 +124,20 @@ The points `inds` of `els` as a `BatchedElectronState` of views (no copy), with 
         view_points(els.v),
         view_points(els.rbar))
 end
+
+# The first `nk` points of `buf` as a container of box width `nband_max ≤ buf.nband_max`, its arrays
+# the dense leading elements of `buf`'s (`dense_prefix`), with `kpts = nothing`.
+function prefix_batched_electron_states(buf::BatchedElectronState{T}, nband_max, nk) where {T}
+    nband_max <= buf.nband_max && nk <= buf.nk || throw(ArgumentError(
+        "a box of $nband_max bands and $nk points does not fit $buf"))
+    prefix(x, dims...) = x === nothing ? nothing : dense_prefix(x, dims...)
+    BatchedElectronState{T}(buf.nw, nband_max, nk, nothing,
+        view(buf.iband_offset, 1:nk),
+        view(buf.nband, 1:nk),
+        prefix(buf.e, nband_max, nk),
+        prefix(buf.u, buf.nw, nband_max, nk),
+        prefix(buf.vdiag, 3, nband_max, nk),
+        prefix(buf.v, 3, nband_max, nband_max, nk),
+        prefix(buf.rbar, 3, nband_max, nband_max, nk))
+end
+

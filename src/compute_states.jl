@@ -670,15 +670,18 @@ function _fill_electron_states_batched_device!(els, model, E, U, offset_h, backe
 end
 
 """
-    compute_electron_states_batched!(els, itp_ham, hk, model, xks, window)
+    compute_electron_states_batched!(dst, itp_ham, hk, model, xks, window)
+        -> BatchedElectronState
 
-Solve the electron states at the k points `xks` (a host vector of at most `els.nk` points) straight
-into the first `length(xks)` points of `els`, a [`BatchedElectronState`](@ref) with
-`nband_max = nw` and fields `e` and/or `u`: one batched Fourier transform with `itp_ham` (the
-`BatchedWannierInterpolator` of `model.el_ham` on `els`'s backend, block width at least
-`length(xks)`) into the `(nw^2, ≥ length(xks))` scratch `hk`, one batched eigensolve, then each
-point's bands inside the energy `window` moved to local bands `1:nband`. The batched eigensolve
-applies no degeneracy gauge fix, as in `eigen_batched`.
+Solve the electron states at the k points `xks` (a host vector of at most `dst.nk` points) into the
+buffers of `dst`, a [`BatchedElectronState`](@ref) with `nband_max = nw` and fields `e` and/or `u`:
+one batched Fourier transform with `itp_ham` (the `BatchedWannierInterpolator` of `model.el_ham` on
+`dst`'s backend, block width at least `length(xks)`) into the `(nw^2, ≥ length(xks))` scratch `hk`,
+one batched eigensolve, then each point's bands inside the energy `window` moved to local bands
+`1:nband`. Returns the `length(xks)` points as a container whose box is the largest `nband` of
+them (at least 1), stored in the leading elements of `dst`'s arrays (`dense_prefix`), so the
+blocks built on it shrink with the window. The batched eigensolve applies no degeneracy gauge fix,
+as in `eigen_batched`.
 """
 function compute_electron_states_batched!(els::BatchedElectronState, itp_ham, hk, model::Model, xks,
         window::Tuple)
@@ -688,8 +691,8 @@ function compute_electron_states_batched!(els::BatchedElectronState, itp_ham, hk
     els.nw == nw && els.nband_max == nw ||
         throw(ArgumentError("a buffer solved in place needs nband_max = nw = $nw, got $(els.nband_max)"))
     nx = length(xks)
-    nx <= els.nk || throw(ArgumentError("$nx points do not fit a buffer of width $(els.nk)"))
-    nx == 0 && return els
+    nx <= dst.nk || throw(ArgumentError("$nx points do not fit a buffer of width $(dst.nk)"))
+    nx == 0 && return prefix_batched_electron_states(dst, 1, 0)
     hk_x = view(hk, :, 1:nx)
     get_fourier_batched!(hk_x, itp_ham, xks)
     H = reshape(hk_x, nw, nw, nx)
@@ -698,14 +701,15 @@ function compute_electron_states_batched!(els::BatchedElectronState, itp_ham, hk
     wmin, wmax = window
     off = vec(sum(E .< wmin; dims = 1))
     nb = max.(vec(sum(E .<= wmax; dims = 1)) .- off, 0)
-    view(els.iband_offset, 1:nx) .= ifelse.(nb .> 0, off, 0)
-    view(els.nband, 1:nx) .= nb
+    view(dst.iband_offset, 1:nx) .= ifelse.(nb .> 0, off, 0)
+    view(dst.nband, 1:nx) .= nb
+    out = prefix_batched_electron_states(dst, max(maximum(nb), 1), nx)
     # col[n, j]: the column of point j's band offset + n in the (nw, nw * nx) view, clamped into
     # 1:nw on the padding.
-    col = vec(min.(reshape(off, 1, nx) .+ (1:nw), nw) .+ nw .* reshape(0:nx-1, 1, nx))
-    els.e === nothing || (view(els.e, :, 1:nx) .= reshape(view(vec(E), col), nw, nx))
-    U === nothing || (view(reshape(els.u, nw, :), :, 1:nw*nx) .= view(reshape(U, nw, :), :, col))
-    els
+    col = vec(min.(reshape(off, 1, nx) .+ (1:out.nband_max), nw) .+ nw .* reshape(0:nx-1, 1, nx))
+    out.e === nothing || (vec(out.e) .= view(vec(E), col))
+    out.u === nothing || (reshape(out.u, nw, :) .= view(reshape(U, nw, :), :, col))
+    out
 end
 
 """

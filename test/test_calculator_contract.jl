@@ -1,34 +1,32 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPData, EPBlock, supports,
-    LoopContext, CPUBackend, OuterIteration, calculator_begin!, calculator_end!, to_device
+using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, supports,
+    LoopContext, CPUBackend, calculator_begin!, calculator_end!, to_device
 
 # Calculator-contract checks (CPU-only): the `supports` trait, the fail-early checks the drivers do
 # at entry, the `calculators`-as-kwarg change, and the screening-disabled error.
 
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
 
-# A minimal well-formed per-point outer-k calculator that just counts run_calculator! calls.
+# A minimal well-formed outer-k calculator that just counts run_calculator! calls.
 mutable struct _CountCalc <: AbstractCalculator
-    n :: Int
-    _CountCalc() = new(0)
+    n :: Threads.Atomic{Int}
+    _CountCalc() = new(Threads.Atomic{Int}(0))
 end
 ElectronPhonon.supports(::_CountCalc, ::Type{OuterKLoop}) = true
-ElectronPhonon.supports(::_CountCalc, ::Type{EPData}) = true
-ElectronPhonon.setup_calculator!(c::_CountCalc, backend, mode, kpts, qpts, el_states; kwargs...) = c
+ElectronPhonon.setup_calculator!(c::_CountCalc, backend, el_k, el_kq, ph; kwargs...) = c
 ElectronPhonon.postprocess_calculator!(c::_CountCalc; kwargs...) = c
-ElectronPhonon.run_calculator!(c::_CountCalc, ::EPData, ctx) = (c.n += 1; c)
-ElectronPhonon.calculator_begin!(::_CountCalc, ::OuterIteration, ctx) = nothing
-ElectronPhonon.calculator_end!(::_CountCalc, ::OuterIteration, ctx) = nothing
+ElectronPhonon.run_calculator!(c::_CountCalc, ::EPBlock, ctx) = (Threads.atomic_add!(c.n, 1); c)
+ElectronPhonon.calculator_begin!(::_CountCalc, ctx) = nothing
+ElectronPhonon.calculator_end!(::_CountCalc, ctx) = nothing
 
 @testset "supports contract (DECISION-1)" begin
     c = _CountCalc()
     # Type arguments: declared true, undeclared default false.
     @test supports(c, OuterKLoop) == true
-    @test supports(c, EPData) == true
     @test supports(c, OuterQLoop) == false
-    @test supports(c, EPBlock) == false
-    # Non-Type argument (a foot-gun) must throw, not silently return false.
+    # Anything but a loop-tag type (an instance, a payload type) must throw, not silently return false.
+    @test_throws ErrorException supports(c, EPBlock)
     @test_throws ErrorException supports(c, OuterKLoop())
     @test_throws ErrorException supports(c, 5)
 end
@@ -46,21 +44,18 @@ end
     @test_throws MethodError ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid, [_CountCalc()])
 end
 
-@testset "driver rejects a batched fourier_mode on a CPU backend" begin
-    # The message is the guard's own, so a match also shows it fired before any setup work.
+@testset "the loop-shape keywords are gone" begin
+    # `batched`, `fourier_mode` and `eph_buffers` selected loop shapes that no longer exist.
     model_el = ElectronPhonon.holstein_model(; t = 0.1, ω₀ = 0.01, g = 0.02, alat = 5.0, ε₀ = 0.05,
         dimension = 3, epmat_outer_momentum = "el", verbose = false)
     model_ph = ElectronPhonon.holstein_model(; t = 0.1, ω₀ = 0.01, g = 0.02, alat = 5.0, ε₀ = 0.05,
         dimension = 3, epmat_outer_momentum = "ph", verbose = false)
     grid = (2, 2, 2)
-    for fourier_mode in ("batched", "batched-gridopt")
-        msg = "fourier_mode = \"$fourier_mode\" is not supported"
-        @test_throws msg ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid; fourier_mode)
-        @test_throws msg ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid; fourier_mode,
-                                                                batched = true)
-        @test_throws msg ElectronPhonon.run_eph_over_q_and_k(model_ph, grid, grid; fourier_mode)
-        @test_throws msg ElectronPhonon.run_eph_over_q_and_k(model_ph, grid, grid; fourier_mode,
-                                                               batched = true)
+    for kw in ((; batched = true), (; fourier_mode = "gridopt"), (; eph_buffers = nothing))
+        @test_throws MethodError ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid;
+            calculators = [_CountCalc()], kw...)
+        @test_throws MethodError ElectronPhonon.run_eph_over_q_and_k(model_ph, grid, grid;
+            calculators = [_CountCalc()], kw...)
     end
 end
 

@@ -36,23 +36,33 @@ include("eph_reference_loop.jl")
 
         common = (; window_k = window, window_kq = window, progress_print_step = 10^9,
                   verbosity = 0)
+        # Each order runs on both `epmat` layouts: the one whose column R it contracts first
+        # (`model_el` for outer k), and the other, contracted over the row-block R.
         outer_k = Any[("CPU", (; nchunks_threads = 4)),
-            ("CPU, small tiles", (; backend = CPUBackend(), nk_outer_batch_max = 5, nq_batch_max = 50))]
+            ("CPU, small tiles", (; backend = CPUBackend(), n_outer_batch = 5, n_inner_tile = 50)),
+            ("CPU, row-block epmat", (; model = model_ph, n_outer_batch = 5, n_inner_tile = 50))]
         outer_q = Any[("CPU", (; nchunks_threads = 4)),
-            ("CPU, small tiles", (; backend = CPUBackend(), nk_batch_max = 50))]
+            ("CPU, small tiles", (; backend = CPUBackend(), n_inner_tile = 50, n_outer_batch = 3)),
+            ("CPU, row-block epmat", (; model = model_el, n_inner_tile = 50, n_outer_batch = 3)),
+            ("CPU, precomputed k+q", (; precompute_el_kq = true, n_inner_tile = 50, nchunks_threads = 4))]
         if EPH_REFERENCE_GPU_AVAILABLE
             CUDA.allowscalar(false)
             push!(outer_k, ("GPU", (; backend = gpu_backend())),
-                ("GPU, outer batch 1", (; backend = gpu_backend(), nk_outer_batch_max = 1)))
-            push!(outer_q, ("GPU", (; backend = gpu_backend())))
+                ("GPU, outer batch 1", (; backend = gpu_backend(), n_outer_batch = 1)),
+                ("GPU, row-block epmat", (; model = model_ph, backend = gpu_backend())))
+            push!(outer_q, ("GPU", (; backend = gpu_backend())),
+                ("GPU, row-block epmat", (; model = model_el, backend = gpu_backend(), n_outer_batch = 3)),
+                ("GPU, precomputed k+q", (; backend = gpu_backend(), precompute_el_kq = true)))
         end
-        for (order, arms) in (("outer k", outer_k), ("outer q", outer_q)), (name, kw) in arms
+        for (order, arms) in (("outer k", outer_k), ("outer q", outer_q)), (name, kw_arm) in arms
             rec = _PairRecorder()
+            (; model) = merge((; model = order == "outer k" ? model_el : model_ph), kw_arm)
+            kw = Base.structdiff(kw_arm, NamedTuple{(:model,)})
             if order == "outer k"
-                run_eph_over_k_and_kq(model_el, grid, grid; calculators = [rec],
+                run_eph_over_k_and_kq(model, grid, grid; calculators = [rec],
                                       symmetry = nothing, common..., kw...)
             else
-                run_eph_over_q_and_k(model_ph, grid, grid; calculators = [rec],
+                run_eph_over_q_and_k(model, grid, grid; calculators = [rec],
                                      use_symmetry = false, common..., kw...)
             end
             dev = compare_with_reference(ref, rec)

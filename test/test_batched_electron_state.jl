@@ -123,7 +123,8 @@ end
             BatchedElectronState(CPUBackend(), 4, 4, 6, [:e, :u]), els, inds)
 
         # Solved into a tile: the bands of the window, moved to local bands 1:nband, of the same
-        # batched solve. Off-grid points, more tile than points.
+        # batched solve, in a box as wide as the largest window. Off-grid points, more tile than
+        # points.
         xks = kpts.vectors[1:50] .+ Ref(Vec3(0.013, 0.02, -0.01))
         backends = Any[CPUBackend()]
         BATCHED_ELECTRON_GPU_AVAILABLE && push!(backends, gpu_backend())
@@ -132,13 +133,16 @@ end
             tile = BatchedElectronState(backend, nw, nw, 53, [:e, :u])
             itp = BatchedWannierInterpolator(ElectronPhonon.to_device(backend, model_pb.el_ham);
                                              backend, batch_size = tile.nk)
-            compute_electron_states_batched!(tile, itp, ElectronPhonon.alloc(backend, ComplexF64,
+            out = compute_electron_states_batched!(tile, itp, ElectronPhonon.alloc(backend, ComplexF64,
                 nw^2, tile.nk), model_pb, xks, window)
             hk = ElectronPhonon.alloc(backend, ComplexF64, nw^2, length(xks))
             get_fourier_batched!(hk, itp, xks)
             E, U = Array.(eigen_batched(reshape(hk, nw, nw, :)))
-            e, u = Array(tile.e), Array(tile.u)
-            off, nband = Array(tile.iband_offset), Array(tile.nband)
+            e, u = Array(out.e), Array(out.u)
+            off, nband = Array(out.iband_offset), Array(out.nband)
+            @test out.nk == length(xks) && out.nband_max == max(maximum(nband), 1)
+            # The box is the leading memory of the tile's buffers.
+            @test vec(Array(out.u)) == vec(Array(tile.u))[1:length(out.u)]
             @test all(eachindex(xks)) do j
                 r = inside_window(E[:, j], window...)
                 issorted(E[:, j]) && nband[j] == length(r) && (isempty(r) || off[j] == first(r) - 1) &&

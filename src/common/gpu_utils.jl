@@ -204,3 +204,11 @@ function _batched_gemm!(opA::FA, opB::FB, A, B, C) where {FA, FB}
     C
 end
 
+"""
+    dense_prefix(buf, dims...) -> AbstractArray
+
+The array of size `dims` stored in the leading `prod(dims)` elements of `buf`, with its own dense
+strides: a smaller box in a buffer sized for the largest one. On a device it is a device array, so
+the batched GEMMs and fused kernels take it.
+"""
+dense_prefix(buf, dims...) = reshape(view(vec(buf), 1:prod(dims)), dims)

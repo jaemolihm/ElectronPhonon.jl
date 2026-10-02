@@ -83,12 +83,12 @@ end
             bad = Eigenpairs(model.nw, kgrid, cache.e_full[:, perm],
                                      cache.u_full[:, :, perm])
 
-            run_a = _run(sub_a; backend, fourier_mode)
-            run_a_cached = _run(sub_a; backend, fourier_mode,
+            run_a = _run(sub_a; backend)
+            run_a_cached = _run(sub_a; backend,
                                 el_k_eigenpairs = cache, el_kq_eigenpairs = cache)
-            run_b_cached = _run(sub_b; backend, fourier_mode,
+            run_b_cached = _run(sub_b; backend,
                                 el_k_eigenpairs = cache, el_kq_eigenpairs = cache)
-            run_a_bad = _run(sub_a; backend, fourier_mode,
+            run_a_bad = _run(sub_a; backend,
                              el_k_eigenpairs = bad, el_kq_eigenpairs = bad)
 
             # A cache is inert: it holds the same eigensolve output on the same H(k), so a
@@ -132,9 +132,9 @@ end
             # backends: unguarded, a device cache would instead fail inside the indexing kernel,
             # as a bare `KernelException`.
             partial = electron_eigenpairs(model, subset(1:60); backend, fourier_mode)
-            @test_throws "does not cover" _run(sub_b; backend, fourier_mode,
+            @test_throws "does not cover" _run(sub_b; backend,
                                                el_k_eigenpairs = partial)
-            @test_throws "does not cover" _run(sub_a; backend, fourier_mode,
+            @test_throws "does not cover" _run(sub_a; backend,
                                                el_kq_eigenpairs = partial)
 
             # A prebuilt k+q `FilteredBandStates` takes its own early return in
@@ -142,12 +142,12 @@ end
             # the cross driver uses, since it passes prebuilt selections for both positionals.
             sel_kq = ElectronPhonon.filter_electron_states(grid, model.nw, model.el_ham,
                                                            (-Inf, Inf); fourier_mode)
-            prebuilt = _run(sub_a, sel_kq; backend, fourier_mode)
-            prebuilt_cached = _run(sub_a, sel_kq; backend, fourier_mode,
+            prebuilt = _run(sub_a, sel_kq; backend)
+            prebuilt_cached = _run(sub_a, sel_kq; backend,
                                    el_kq_eigenpairs = cache)
-            prebuilt_bad = _run(sub_a, sel_kq; backend, fourier_mode, el_kq_eigenpairs = bad)
-            @test _states_equal(prebuilt_cached.els_kq, prebuilt.els_kq)
-            @test _u_deviation(prebuilt.els_kq, prebuilt_bad.els_kq) > 1
+            prebuilt_bad = _run(sub_a, sel_kq; backend, el_kq_eigenpairs = bad)
+            @test _states_equal(prebuilt_cached.el_kq, prebuilt.el_kq)
+            @test _u_deviation(prebuilt.el_kq, prebuilt_bad.el_kq) > 1
         end
 
         # `el_kq_eigenpairs` also composes with `el_kq_from_unfolding = true` (the cache is looked
@@ -161,8 +161,8 @@ end
         # A cache built with the other Fourier mode is a second, independent tooth on CPU: it
         # differs from what the run would have computed by O(1) inside a degenerate multiplet.
         cache_normal = electron_eigenpairs(model, kgrid; fourier_mode = "normal")
-        run_gridopt = _run(sub_a; fourier_mode = "gridopt")
-        run_normal_cache = _run(sub_a; fourier_mode = "gridopt",
+        run_gridopt = _run(sub_a)
+        run_normal_cache = _run(sub_a;
                                 el_k_eigenpairs = cache_normal, el_kq_eigenpairs = cache_normal)
         @test _u_deviation(run_gridopt.els_k, run_normal_cache.els_k) > 1
         @test _u_deviation(run_gridopt.els_kq, run_normal_cache.els_kq) > 1
@@ -176,8 +176,7 @@ end
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
         _run(kpts_in, kqpts_in = grid; kwargs...) = ElectronPhonon.run_eph_over_k_and_kq(
             model, kpts_in, kqpts_in; calculators = [_PrecomputedStatesProbe()],
-            symmetry = nothing, progress_print_step = 10^9, verbosity = 0,
-            fourier_mode = "gridopt", kwargs...)
+            symmetry = nothing, progress_print_step = 10^9, verbosity = 0, kwargs...)
 
         backends = AbstractBackend[CPUBackend()]
         PRECOMPUTED_STATES_GPU_AVAILABLE && push!(backends, gpu_backend())
@@ -211,10 +210,9 @@ end
                                                     fourier_mode = "gridopt"))
         end
 
-        # On incommensurate k / k+q grids there is no q-point set at all -- the phonons are solved
-        # per (k, q) inside the per-point loop -- so a cache cannot be honoured and is refused rather
-        # than ignored.
-        @test_throws "requires commensurate" _run((2, 2, 2), (3, 3, 3);
+        # Incommensurate k / k+q grids span no q-point set, so the run is refused at entry, cache
+        # or not.
+        @test_throws "commensurate k and k+q grids" _run((2, 2, 2), (3, 3, 3);
             ph_eigenpairs = Eigenpairs(model.nmodes, GridKpoints(kpoints_grid((2, 2, 2))),
                                        zeros(model.nmodes, 8),
                                        zeros(ComplexF64, model.nmodes, model.nmodes, 8)))
@@ -226,7 +224,7 @@ end
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
         # The k+q grid path here must not reduce by symmetry.
         _run(; kwargs...) = ElectronPhonon.run_eph_over_q_and_k(model, sub_a, grid;
-            calculators = [_PrecomputedStatesProbe()], fourier_mode = "gridopt",
+            calculators = [_PrecomputedStatesProbe()],
             progress_print_step = 10^9, verbosity = 0, use_symmetry = false, keep_all_qpts = true,
             kwargs...)
         run_plain = _run()

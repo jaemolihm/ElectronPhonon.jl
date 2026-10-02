@@ -25,8 +25,10 @@ Users subtype `AbstractCalculator` and implement:
 The contract:
 * **Any batch width.** Every `length(ctx.batch) ≥ 1` must work; a per-outer-point reduction loops
   over `ctx.batch` in the brackets.
-* **Writes.** Writes indexed by an inner-tile point are disjoint across blocks; every other write
-  needs per-`ctx.chunk` partials reduced in `calculator_end!` (`ctx.chunk` is 1 on the device).
+* **Writes.** On the CPU the blocks of different thread chunks run concurrently. Writes indexed by
+  an inner-tile point are disjoint across blocks; every other write, and every per-tile scratch,
+  is per `ctx.chunk` (`nchunks_threads` at setup), with partials reduced in `calculator_end!`
+  (`ctx.chunk` is 1 on the device).
 * **Extents.** Every array of a block holds exactly the block's points. Band `n` of a block's
   electron side is physical band `iband_offset[j] + n` only for `n ≤ nband[j]`; entries past it
   (including box columns past band `nw`) are undefined. Loop over `1:nband[j]` or through an index
@@ -72,27 +74,32 @@ struct LoopContext{BT <: AbstractBackend, OT <: LoopTag}
 end
 
 """
-    EPBlock{Order <: LoopTag, ...} <: AbstractElPhPayload
+    EPBlock{Order <: LoopTag, ...}
 
 The e-ph matrix of one block: one outer point with a tile of inner points, on the run's backend.
 Order-agnostic code broadcasts over the pair axis (the last axis of `ep` and of the tile-shaped
 fields); the side shared by the whole block has extent 1 along it and a scalar index.
 
 Fields (pair axis `j`):
-- `ep` :: `(nband_max_kq, nband_max_k, nmodes, nb)` eigenbasis e-ph matrix, before `1/(2ω)`. Defined
-  on each pair's windows only: entry `[m, n, ν, j]` is meaningful for `m ≤ els_kq.nband[j]` and
-  `n ≤ els_k.nband[j]` (the shared side's index is 1).
-- `dg` :: `nothing` (the covariant derivative is not produced by the batched loops).
-- `els_k`, `els_kq` :: `BatchedElectronState` views at block extent; `els_k` has extent 1 under
+- `ep` :: `(nband_max_kq, nband_max_k, nmodes, nb)` eigenbasis e-ph matrix, before `1/(2ω)`, in the
+  run's phonon basis, the polar term included. Defined on each pair's windows only: entry
+  `[m, n, ν, j]` is meaningful for `m ≤ el_kq.nband[j]` and `n ≤ el_k.nband[j]` (the shared side's
+  index is 1). `nband_max_kq == el_kq.nband_max`; under `OuterQLoop` with the k+q states solved per
+  tile it is the block's largest k+q window, so it differs between blocks and is at most `nw`.
+- `dg` :: `(nband_max_kq, nband_max_k, nmodes, 3, nb)` covariant derivative of `ep` along the
+  Cartesian direction `d` (`OuterKLoop` with `covariant_derivative_of_g`, no polar term), else
+  `nothing`.
+- `el_k`, `el_kq` :: `BatchedElectronState` views at block extent; `el_k` has extent 1 under
   `OuterKLoop`.
 - `phs` :: `BatchedPhononState` view; extent 1 under `OuterQLoop`.
 - `wtk`, `wtq` :: the weights; the shared side's is a scalar, the pair side's a device vector.
 - `xk`, `xq` :: the momenta, `Vec3` on the shared side and a host vector on the pair side.
-- `ik`, `ikq`, `iq` :: indices into the run's point sets: under `OuterKLoop` `ik::Int`, `ikq` a
-  `UnitRange` into the k+q container and `iq` a device vector into the q set; under `OuterQLoop`
-  `iq::Int`, `ik` a `UnitRange` and `ikq === nothing` (k+q solved per tile).
+- `ik`, `ikq`, `iq` :: indices into the run's point sets: under `OuterKLoop` `ik::Int`, `ikq` into
+  the k+q container (a `UnitRange`, or a host vector when pairs were dropped) and `iq` a device
+  vector into the q set; under `OuterQLoop` `iq::Int`, `ik` into the k set (a `UnitRange` or a host
+  vector) and `ikq` into the precomputed k+q container, or `nothing` when k+q is solved per tile.
 """
-struct EPBlock{Order <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ} <: AbstractElPhPayload
+struct EPBlock{Order <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}
     ep    :: AT
     dg    :: DGT
     els_k  :: EK
@@ -116,19 +123,16 @@ end
 """
     supports(calc, ::Type{T}) -> Bool
 
-Declare that `calc` handles loop order `T` (`OuterKLoop` / `OuterQLoop`). The per-point loops also
-ask about their payload type (`EPData`). Default `false`. The drivers check this up front and fail
-loudly on a calculator that does not support their order.
+Declare that `calc` handles loop order `T` (`OuterKLoop` / `OuterQLoop`). Default `false`. The
+drivers check this up front and fail loudly on a calculator that does not support their order.
 
 The second argument must be a *type* (e.g. `supports(calc, OuterKLoop)`), not an instance: a non-Type
 argument throws, so a typo like `supports(calc, OuterKLoop())` fails loudly instead of silently
 returning `false`.
 """
 supports(::AbstractCalculator, ::Type{<:LoopTag}) = false
-supports(::AbstractCalculator, ::Type{<:AbstractElPhPayload}) = false
 supports(::AbstractCalculator, x) = error(
-    "supports(calc, x) expects a loop-tag TYPE (e.g. supports(calc, OuterKLoop)); got " *
-    "x::$(typeof(x)). Pass the Type, not an instance.")
+    "supports(calc, x) expects a loop-tag type, OuterKLoop or OuterQLoop; got $x (::$(typeof(x))).")
 
 
 # =============================================================================
@@ -155,14 +159,6 @@ as the fields of `BatchedElectronState` (`:vdiag`, `:v`, `:rbar`) and `BatchedPh
 required_el_quantities(::AbstractCalculator) = Symbol[]
 required_ph_quantities(::AbstractCalculator) = Symbol[]
 
-"""
-    required_el_k_quantities(calc::AbstractCalculator) -> Vector{String}
-
-The per-point outer-q loop's k-side electron quantities, as `compute_electron_states` strings.
-Default is the full list.
-"""
-required_el_k_quantities(::AbstractCalculator) = ["eigenvalue", "eigenvector", "velocity", "position"]
-
 # Mandatory hook, no working default. The state arguments are positional and the catch-all leaves
 # them unannotated, so it is never ambiguous with a calculator method that leaves them untyped.
 function setup_calculator!(::AbstractCalculator, backend, els_k, els_kq, phs; kwargs...)
@@ -183,15 +179,6 @@ end
 function calculator_end!(calc::AbstractCalculator, ctx)
     error("calculator_end!($(typeof(calc)), ::$(typeof(ctx))) is not defined. Every calculator " *
           "defines the begin/end brackets, even as an explicit no-op (`= nothing`).")
-end
-
-# The per-point loops' scope bracket (with their `EPData` payload).
-struct OuterIteration end
-function calculator_begin!(calc::AbstractCalculator, scope, ctx)
-    error("calculator_begin!($(typeof(calc)), ::$(typeof(scope)), ::$(typeof(ctx))) is not defined.")
-end
-function calculator_end!(calc::AbstractCalculator, scope, ctx)
-    error("calculator_end!($(typeof(calc)), ::$(typeof(scope)), ::$(typeof(ctx))) is not defined.")
 end
 
 
@@ -218,11 +205,10 @@ eph_batched_bytes_per_point(::AbstractCalculator, ::Type{<:EPBlock}; kwargs...) 
 #  `eph_window_scatter!` (calculator_utils.jl) and the backend primitives (gpu_utils.jl) are marked
 #  here too — `public`, like `export`, permits forward references to names defined later in the module.
 public AbstractCalculator, supports, setup_calculator!, run_calculator!, postprocess_calculator!,
-    calculator_begin!, calculator_end!, OuterKLoop, OuterQLoop, OuterIteration,
-    AbstractElPhPayload, EPData, EPBlock, LoopContext, AbstractBackend, CPUBackend, GPUBackend,
+    calculator_begin!, calculator_end!, OuterKLoop, OuterQLoop, EPBlock, LoopContext, AbstractBackend, CPUBackend, GPUBackend,
     gpu_backend, alloc, free_bytes, synchronize, batched_gemm!, eph_window_scatter!,
     bte_window_accumulate!, eph_batched_bytes_per_point, allowed_eph_phonon_basis,
-    required_el_quantities, required_ph_quantities, required_el_k_quantities, _indmap_to_device,
+    required_el_quantities, required_ph_quantities, _indmap_to_device,
     TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array,
     tile_offset, tile_length, tile_stride, is_block, is_allocated, residency_use_block, to_device,
     plan_batch, estimate_device_memory
