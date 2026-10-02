@@ -134,3 +134,17 @@ end
         end
     end
 end
+
+@testset "outer q: empty k window, precomputed k+q off the q grid" begin
+    model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
+    eV = unit_to_aru(:eV)
+    # No k state in the window: the inner set is empty, on 16 thread chunks.
+    rec = _PairRecorder()
+    out = run_eph_over_q_and_k(model, (4, 4, 4), (2, 2, 2); calculators = [rec], use_symmetry = false,
+        keep_all_qpts = true, window_k = (100eV, 101eV), window_kq = (100eV, 101eV),
+        nchunks_threads = 16, verbosity = 0)
+    @test out.kpts.n == 0 && isempty(rec.g2abs)
+    # k + q of a 6³ k grid is off a 3³ q grid, where the precomputed k+q states live.
+    @test_throws "multiple of the k grid" run_eph_over_q_and_k(model, (6, 6, 6), (3, 3, 3);
+        calculators = [_PairRecorder()], use_symmetry = false, precompute_el_kq = true, verbosity = 0)
+end

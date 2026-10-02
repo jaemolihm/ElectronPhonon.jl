@@ -7,8 +7,8 @@ using Dates: now
 
 Sweep the outer k points and, for each, the inner k+q points (on a grid commensurate with the k
 grid), handing each calculator the e-ph coupling as an [`EPBlock`](@ref)`{OuterKLoop}`: one outer k
-with a tile of k+q points. `kpts` and `kqpts` are a grid size, a k-point set or a prebuilt
-`FilteredBandStates`. Returns `(; kpts, qpts, el_k, el_kq, ph)`, the run's state containers
+with a tile of k+q points. `kpts` and `kqpts` are grids: a grid size, a k-point set on a grid or a
+prebuilt `FilteredBandStates` of one (the phonons are built on the q grid the two span). Returns `(; kpts, qpts, el_k, el_kq, ph)`, the run's state containers
 (`BatchedElectronState`, `BatchedPhononState`).
 
 Keywords:
@@ -46,7 +46,9 @@ q set), which builds them once on the k+q grid; a pair whose k+q has no state in
 then dropped. Returns `(; kpts, qpts, el_k, el_kq, ph)`, `el_kq = nothing` when solved per tile.
 
 Keywords as in [`run_eph_over_k_and_kq`](@ref), except: `use_symmetry = true` reduces the k points
-with `model.symmetry`; `keep_all_qpts = false` drops the q points with no k+q state in `window_kq`;
+with `model.symmetry`; `keep_all_qpts = false` (outer q only) drops the q points with no k+q state
+in `window_kq`; `precompute_el_kq` needs a q grid that is a multiple of the k grid; `mpi_comm_k` is
+refused;
 `n_outer_batch` q points per stage-1 batch and per bracket, 16 on a GPU and 1 on the CPU (stage 1
 gains nothing from a wider batch there, while a calculator's per-q buffers are held per thread
 chunk); `n_inner_tile` k points per block, at most `2^15` on a GPU; no `covariant_derivative_of_g`;
@@ -74,16 +76,13 @@ function _run_eph(order::LoopTag, model::Model{FT}, kpts_input, second_input;
         window_k = (-Inf, Inf),
         window_kq = (-Inf, Inf),
         symmetry = model.symmetry,
-        el_kq_from_unfolding = false,
         precompute_el_kq = false,
         keep_all_qpts = false,
         energy_conservation = (:None, 0.0),
         covariant_derivative_of_g = false,
         eph_phonon_basis::Symbol = :eigenmode,
-        skip_eph = false,
         screening_params = nothing,
         mpi_comm_k = nothing,
-        mpi_comm_q = nothing,
         n_outer_batch = nothing,
         n_inner_tile = nothing,
         nchunks_threads = nthreads(),
@@ -99,8 +98,8 @@ function _run_eph(order::LoopTag, model::Model{FT}, kpts_input, second_input;
     ph_qty = union(loop_ph_quantities(model, energy_conservation),
                    required_ph_quantities.(calculators)...)
     _check_run(order, model, backend, calculators, kpts_input, second_input, el_qty;
-        energy_conservation, covariant_derivative_of_g, eph_phonon_basis, el_kq_from_unfolding,
-        precompute_el_kq, skip_eph, screening_params, mpi_comm_k, mpi_comm_q, el_kq_eigenpairs)
+        energy_conservation, covariant_derivative_of_g, eph_phonon_basis, precompute_el_kq,
+        screening_params, mpi_comm_k, el_kq_eigenpairs)
 
     (; el_k, el_kq, ph, kpts, kqpts, qpts, sel_k, sel_kq) = _setup_states(order, model, kpts_input,
         second_input, el_qty, ph_qty; backend, window_k, window_kq, symmetry, precompute_el_kq,
@@ -122,33 +121,15 @@ function _run_eph_loop(order, model, el_k, el_kq, ph, kpts, kqpts, qpts, sel_k, 
         window_kq, fill_padding_nan, progress_print_step, verbosity)
     (; nw, nmodes) = model
 
-    # The widths. The outer batch is a fixed default; the inner tile fills the free device memory
-    # left after the persistent and per-batch buffers (`plan_batch`), on the CPU a cache-sized tile
-    # per thread chunk.
     nchunks = backend isa CPUBackend ? nchunks_threads : 1
     drop_pairs = energy_conservation[1] !== :None || (order isa OuterQLoop && precompute_el_kq)
     n_outer = order isa OuterKLoop ? kpts.n : qpts.n
     n_inner = order isa OuterKLoop ? kqpts.n : kpts.n
-    outer_default = order isa OuterKLoop ? 256 : backend isa CPUBackend ? 1 : 16
-    nb_outer = max(1, min(something(n_outer_batch, outer_default), n_outer))
-    inner_default = backend isa CPUBackend ? 1024 : order isa OuterKLoop ? n_inner : 2^15
-    inner_cap = max(1, min(cld(n_inner, nchunks), something(n_inner_tile, inner_default)))
-    nband_max_k = el_k.nband_max
-    nband_max_kq = el_kq === nothing ? nw : el_kq.nband_max
-    bytes = order isa OuterKLoop ?
-        engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk = kpts.n, nkq = kqpts.n,
-            el_qty, ph_qty, drop_pairs, covariant_derivative_of_g, eph_phonon_basis) :
-        engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk = kpts.n,
-            n_outer_batch = nb_outer, el_qty, ph_qty, drop_pairs, precompute_el_kq, eph_phonon_basis)
-    for c in calculators
-        b = eph_batched_bytes_per_point(c, EPBlock{typeof(order)}; nw, nmodes, nband_max_k,
-                                        nband_max_kq, el_k, el_kq, ph, nchunks_threads = nchunks)
-        bytes = (; persistent = bytes.persistent + b.persistent,
-                   per_outer = bytes.per_outer + b.per_outer, per_pair = bytes.per_pair + b.per_pair)
-    end
-    committed = bytes.persistent + bytes.per_outer * nb_outer
-    nb_inner = plan_batch(backend, bytes.per_pair * nchunks, committed, inner_cap;
-                          what = order isa OuterKLoop ? "outer-k" : "outer-q")
+    (; nb_outer, nb_inner, committed, bytes) = _plan_widths(order, model, backend, calculators;
+        n_outer, n_inner, nk = kpts.n, nkq = order isa OuterKLoop ? kqpts.n : 0, nchunks,
+        n_outer_batch, n_inner_tile, nband_max_k = el_k.nband_max,
+        nband_max_kq = el_kq === nothing ? nw : el_kq.nband_max, el_k, el_kq, ph, el_qty, ph_qty,
+        drop_pairs, precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis)
     if verbosity > 0 && mpi_isroot()
         @info "e-ph loop: committed = $(round(committed / 1e9, digits = 2)) GB, " *
               "$(round(bytes.per_pair / 1e3, digits = 1)) kB per pair; outer batch = $nb_outer, " *
@@ -193,6 +174,37 @@ function _run_eph_loop(order, model, el_k, el_kq, ph, kpts, kqpts, qpts, sel_k, 
 end
 
 
+# The widths of a run and the device bytes behind them, for `_run_eph` and `estimate_device_memory`
+# alike. The outer batch is a fixed default (256 outer k; 16 q on a device and 1 on the CPU). The
+# inner tile fills the free device memory left after the persistent and per-batch buffers
+# (`plan_batch` on `engine_bytes` plus each calculator's `eph_batched_bytes_per_point`, `per_pair`
+# once per chunk), capped at all inner points on a device (`2^15` k under `OuterQLoop`) and at a
+# cache-sized 1024 per chunk on the CPU.
+function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, nkq, nchunks,
+        n_outer_batch, n_inner_tile, nband_max_k, nband_max_kq, el_k, el_kq, ph, el_qty, ph_qty,
+        drop_pairs, precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis)
+    (; nw, nmodes) = model
+    outer_default = order isa OuterKLoop ? 256 : backend isa CPUBackend ? 1 : 16
+    nb_outer = max(1, min(something(n_outer_batch, outer_default), n_outer))
+    inner_default = backend isa CPUBackend ? 1024 : order isa OuterKLoop ? n_inner : 2^15
+    inner_cap = max(1, min(cld(n_inner, nchunks), something(n_inner_tile, inner_default)))
+    bytes = order isa OuterKLoop ?
+        engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk, nkq, el_qty, ph_qty,
+            drop_pairs, covariant_derivative_of_g, eph_phonon_basis) :
+        engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk, n_outer_batch = nb_outer,
+            el_qty, ph_qty, drop_pairs, precompute_el_kq, eph_phonon_basis)
+    for c in calculators
+        b = eph_batched_bytes_per_point(c, EPBlock{typeof(order)}; nw, nmodes, nband_max_k,
+                                        nband_max_kq, el_k, el_kq, ph, nchunks_threads = nchunks)
+        bytes = (; persistent = bytes.persistent + b.persistent,
+                   per_outer = bytes.per_outer + b.per_outer, per_pair = bytes.per_pair + b.per_pair)
+    end
+    committed = bytes.persistent + bytes.per_outer * nb_outer
+    nb_inner = plan_batch(backend, bytes.per_pair * nchunks, committed, inner_cap;
+                          what = order isa OuterKLoop ? "outer-k" : "outer-q")
+    (; nb_outer, nb_inner, committed, bytes)
+end
+
 """
     plan_batch(backend, per_point, committed, cap; headroom_num = 7, headroom_den = 10, what = "",
                warn = true) -> nbatch
@@ -232,8 +244,8 @@ end
 # Every refusal of the loop, before any state is built. `el_qty` is the union of the electron
 # quantities of the loop and the calculators.
 function _check_run(order, model, backend, calculators, kpts_input, second_input, el_qty;
-        energy_conservation, covariant_derivative_of_g, eph_phonon_basis, el_kq_from_unfolding,
-        precompute_el_kq, skip_eph, screening_params, mpi_comm_k, mpi_comm_q, el_kq_eigenpairs)
+        energy_conservation, covariant_derivative_of_g, eph_phonon_basis, precompute_el_kq,
+        screening_params, mpi_comm_k, el_kq_eigenpairs)
     Order = typeof(order)
     isempty(calculators) && throw(ArgumentError("the e-ph loop requires at least one calculator."))
     for calc in calculators
@@ -249,14 +261,9 @@ function _check_run(order, model, backend, calculators, kpts_input, second_input
     model.epmat isa WannierObject || throw(ArgumentError(
         "a disk-backed epmat ($(typeof(model.epmat))) is not supported by the e-ph loop; load the " *
         "model into memory"))
-    skip_eph && throw(ArgumentError("the e-ph loop requires skip_eph = false"))
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")
-    mpi_comm_q === nothing || throw(ArgumentError("mpi_comm_q is not implemented"))
-    el_kq_from_unfolding && throw(ArgumentError(
-        "el_kq_from_unfolding = true is not supported: the k+q states are computed directly on the " *
-        "full k+q set"))
     mode = energy_conservation[1]
     mode ∈ (:None, :Fixed, :Linear) ||
         throw(ArgumentError("energy_conservation mode must be :None, :Fixed or :Linear, got :$mode"))
@@ -279,6 +286,14 @@ function _check_run(order, model, backend, calculators, kpts_input, second_input
         q_on_grid = second_input isa NTuple{3, Int} || (second_input isa AbstractKpoints && all(second_input.ngrid .> 0))
         (precompute_el_kq || mode === :Linear) && !q_on_grid && throw(ArgumentError(
             "precompute_el_kq and adaptive energy conservation need a q grid, not a q list"))
+        # The precomputed k+q states live on the q grid, which holds every k + q only when it is a
+        # multiple of the k grid.
+        if precompute_el_kq
+            ng_k, ng_q = _input_ngrid(kpts_input), _input_ngrid(second_input)
+            all(mod.(ng_q, ng_k) .== 0) || throw(ArgumentError(
+                "precompute_el_kq needs a q grid that is a multiple of the k grid (got k $ng_k, " *
+                "q $ng_q): k + q is off the q grid otherwise"))
+        end
         if !precompute_el_kq
             issubset(el_qty, (:e, :u)) || throw(ArgumentError(
                 "run_eph_over_q_and_k solves the k+q states per tile, with `e` and `u` only; the " *
@@ -405,6 +420,7 @@ end
 # `f(chunk, inds)` for each CPU thread chunk of the inner points `1:n`, threaded only when there is
 # more than one chunk: a device run stays on the calling task, whose stream the brackets use.
 function _foreach_chunk(f, nchunks, n)
+    n == 0 && return nothing
     nchunks == 1 && return f(1, 1:n)
     @threads for (chunk, inds) in collect(enumerate(chunks(1:n; n = min(nchunks, n))))
         f(chunk, inds)
@@ -497,7 +513,7 @@ end
 # One block: drop the pairs the loop does not compute, contract the e-ph matrix, add its terms and
 # hand it to the calculators.
 function _block!(eng, tile_bufs, pairs, ctx, calculators, model, energy_conservation, ngrid)
-    pairs = filter_pairs!(tile_bufs, pairs, model, energy_conservation, ngrid)
+    pairs = filter_pairs!(tile_bufs, pairs, ctx.order, model, energy_conservation, ngrid)
     pairs.n == 0 && return nothing
     ep, dg = stage2!(eng, tile_bufs, pairs)
     # Every pair field but the engine inputs is an `EPBlock` field.
@@ -509,7 +525,7 @@ function _block!(eng, tile_bufs, pairs, ctx, calculators, model, energy_conserva
 end
 
 """
-    filter_pairs!(tile_bufs, pairs, model, energy_conservation, ngrid) -> pairs
+    filter_pairs!(tile_bufs, pairs, order, model, energy_conservation, ngrid) -> pairs
 
 The pairs of a block that the loop computes: `pairs` itself when none is dropped, otherwise the kept
 ones copied into the tile buffers' `tile_bufs.kept` (`pairs` is never modified, since under `OuterKLoop`
@@ -518,7 +534,7 @@ states, or when `energy_conservation` (`CPUBackend`) finds no energy-conserving 
 (`check_energy_conservation` over every mode, band pair and phonon sign, with `ngrid` the grid of
 the box). The side with a scalar index is shared by the block and carried over as it is.
 """
-function filter_pairs!(tile_bufs, pairs, model, energy_conservation, ngrid)
+function filter_pairs!(tile_bufs, pairs, order, model, energy_conservation, ngrid)
     kept_bufs = tile_bufs.kept
     kept_bufs === nothing && return pairs
     mode, tol = energy_conservation
@@ -542,66 +558,74 @@ function filter_pairs!(tile_bufs, pairs, model, energy_conservation, ngrid)
         kept_bufs.keep[nkeep += 1] = j
     end
     nkeep == pairs.n && return pairs
-    keep = view(kept_bufs.keep, 1:nkeep)
-    keep_dev = _copy_indices_on_backend(pairs.el_kq.nband, keep, pairs.n)
-    kept = 1:nkeep
-    # Copy the kept columns of a host vector, of a backend array (by `keep_dev`), or of a state
-    # container into the kept buffers, as views of the kept extent.
-    copy_kept_host!(dst, src) = (for (i, j) in enumerate(keep); dst[i] = src[j]; end; view(dst, kept))
-    copy_kept!(dst, src) =
-        view(_copy_last_axis!(dst, src, keep_dev), ntuple(_ -> Colon(), ndims(dst) - 1)..., kept)
-    copy_kept_electron_states!(buf, src) = view_batched_electron_states(copy_batched_electron_states!(
+    nkeep == 0 && return merge(pairs, (; n = 0))
+    copyto!(kept_bufs.keep_dev, 1, kept_bufs.keep, 1, nkeep)
+    _copy_kept_pairs(order, kept_bufs, pairs, nkeep)
+end
+
+# Copy the kept pairs of a block into the kept buffers, as views of the kept extent: under `OuterKLoop`
+# the k+q side, the phonons and the shared phase; under `OuterQLoop` the k and k+q sides. The side the
+# block shares is carried over as it is.
+function _copy_kept_pairs(::OuterKLoop, kept_bufs, pairs, n)
+    keep, keep_dev, kept = view(kept_bufs.keep, 1:n), view(kept_bufs.keep_dev, 1:n), 1:n
+    el_kq = view_batched_electron_states(copy_batched_electron_states!(prefix_batched_electron_states(
+        kept_bufs.el_kq, pairs.el_kq.nband_max, kept_bufs.el_kq.nk), pairs.el_kq, keep_dev), kept)
+    ph = view_batched_phonon_states(copy_batched_phonon_states!(kept_bufs.ph, pairs.ph, keep_dev), kept)
+    phase = view(_copy_last_axis!(kept_bufs.P_kq, pairs.phase, keep_dev), :, kept)
+    iq = view(_copy_last_axis!(kept_bufs.iq_dev, pairs.iq, keep_dev), kept)
+    wtq = view(_copy_last_axis!(kept_bufs.wtq, pairs.wtq, keep_dev), kept)
+    for (i, j) in enumerate(keep)
+        kept_bufs.ikq[i] = pairs.ikq[j]
+        kept_bufs.xq[i] = pairs.xq[j]
+    end
+    merge(pairs, (; n, el_kq, ph, phase, iq, wtq, ikq = view(kept_bufs.ikq, kept),
+                    xq = view(kept_bufs.xq, kept)))
+end
+
+function _copy_kept_pairs(::OuterQLoop, kept_bufs, pairs, n)
+    keep, keep_dev, kept = view(kept_bufs.keep, 1:n), view(kept_bufs.keep_dev, 1:n), 1:n
+    copy_el(buf, src) = view_batched_electron_states(copy_batched_electron_states!(
         prefix_batched_electron_states(buf, src.nband_max, buf.nk), src, keep_dev), kept)
-    el_kq = copy_kept_electron_states!(kept_bufs.el_kq, pairs.el_kq)
-    el_k = pairs.ik isa Integer ? pairs.el_k : copy_kept_electron_states!(kept_bufs.el_k, pairs.el_k)
-    ph = pairs.iq isa Integer ? pairs.ph :
-        view_batched_phonon_states(copy_batched_phonon_states!(kept_bufs.ph, pairs.ph, keep_dev), kept)
-    phase = pairs.phase === nothing ? nothing : copy_kept!(kept_bufs.P_kq, pairs.phase)
-    ikq = pairs.ikq === nothing ? nothing : copy_kept_host!(kept_bufs.ikq, pairs.ikq)
-    ik = pairs.ik isa Integer ? pairs.ik : copy_kept_host!(kept_bufs.ik, pairs.ik)
-    iq = pairs.iq isa Integer ? pairs.iq : copy_kept!(kept_bufs.iq_dev, pairs.iq)
-    wtk = pairs.wtk isa Number ? pairs.wtk : copy_kept!(kept_bufs.wtk, pairs.wtk)
-    wtq = pairs.wtq isa Number ? pairs.wtq : copy_kept!(kept_bufs.wtq, pairs.wtq)
-    xk = pairs.xk isa Vec3 ? pairs.xk : copy_kept_host!(kept_bufs.xk, pairs.xk)
-    xq = pairs.xq isa Vec3 ? pairs.xq : copy_kept_host!(kept_bufs.xq, pairs.xq)
-    merge(pairs, (; n = nkeep, el_k, el_kq, ph, phase, ik, ikq, iq, wtk, wtq, xk, xq))
+    el_k, el_kq = copy_el(kept_bufs.el_k, pairs.el_k), copy_el(kept_bufs.el_kq, pairs.el_kq)
+    wtk = view(_copy_last_axis!(kept_bufs.wtk, pairs.wtk, keep_dev), kept)
+    for (i, j) in enumerate(keep)
+        kept_bufs.ik[i] = pairs.ik[j]
+        kept_bufs.xk[i] = pairs.xk[j]
+        pairs.ikq === nothing || (kept_bufs.ikq[i] = pairs.ikq[j])
+    end
+    ikq = pairs.ikq === nothing ? nothing : view(kept_bufs.ikq, kept)
+    merge(pairs, (; n, el_k, el_kq, wtk, ikq, ik = view(kept_bufs.ik, kept), xk = view(kept_bufs.xk, kept)))
 end
 
 """
     estimate_device_memory(model; nk, nkq, n_outer_batch = nothing, n_inner_tile = nothing,
-                           calculators = [], backend = CPUBackend()) -> NamedTuple
+                           calculators = [], backend = CPUBackend(), nchunks_threads = nthreads())
+        -> NamedTuple
 
 Estimate the device memory of an e-ph run without running it, from the byte counts the loop plans
 with (`engine_bytes` and the calculators' `eph_batched_bytes_per_point`) at box widths `nw`, so a
 windowed run uses less. The order follows `model.epmat_outer_momentum` (`el` → outer-k, `ph` →
 outer-q); the state containers are not counted. Returns `(; loop, committed, per_pair, batch,
-free)`, `batch` the inner tile `plan_batch` would pick on `backend` (the cap on a `CPUBackend`).
+free)`, `batch` the inner tile the run would pick on `backend`, with the run's defaults.
 
 Actual device usage starts ~100-150 MB higher: the CUDA library context and workspace (cuBLAS
 etc.) are allocated lazily on the first kernel launch and are not a per-run buffer.
 """
 function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer, n_outer_batch = nothing,
-        n_inner_tile = nothing, calculators = [], backend::AbstractBackend = CPUBackend()) where {FT}
-    (; nw, nmodes) = model
+        n_inner_tile = nothing, calculators = [], backend::AbstractBackend = CPUBackend(),
+        nchunks_threads = nthreads()) where {FT}
     outer_k = model.epmat_outer_momentum == "el"
+    order = outer_k ? OuterKLoop() : OuterQLoop()
     el_qty = union([:u], required_el_quantities.(calculators)...)
     ph_qty = union(loop_ph_quantities(model, (:None, 0.0)), required_ph_quantities.(calculators)...)
-    nb = min(something(n_outer_batch, outer_k ? 256 : 16), outer_k ? Int(nk) : Int(nkq))
-    bytes = outer_k ?
-        engine_bytes(OuterKEngine, model; nband_max_k = nw, nband_max_kq = nw, nk, nkq, el_qty, ph_qty,
-            drop_pairs = false, covariant_derivative_of_g = false, eph_phonon_basis = :eigenmode) :
-        engine_bytes(OuterQEngine, model; nband_max_k = nw, nband_max_kq = nw, nk, n_outer_batch = nb,
-            el_qty, ph_qty, drop_pairs = false, precompute_el_kq = false, eph_phonon_basis = :eigenmode)
-    for c in calculators
-        b = eph_batched_bytes_per_point(c, EPBlock{outer_k ? OuterKLoop : OuterQLoop}; nw, nmodes,
-                                        nband_max_k = nw, nband_max_kq = nw)
-        bytes = (; persistent = bytes.persistent + b.persistent, per_outer = bytes.per_outer + b.per_outer,
-                   per_pair = bytes.per_pair + b.per_pair)
-    end
-    committed = bytes.persistent + bytes.per_outer * nb
-    cap = something(n_inner_tile, outer_k ? Int(nkq) : min(2^15, Int(nk)))
-    batch = plan_batch(backend, bytes.per_pair, committed, cap; what = outer_k ? "outer_k" : "outer_q")
-    (; loop = outer_k ? :outer_k : :outer_q, committed, bytes.per_pair, batch, free = free_bytes(backend))
+    (; nb_inner, committed, bytes) = _plan_widths(order, model, backend, calculators;
+        n_outer = outer_k ? Int(nk) : Int(nkq), n_inner = outer_k ? Int(nkq) : Int(nk), nk, nkq,
+        nchunks = backend isa CPUBackend ? nchunks_threads : 1, n_outer_batch, n_inner_tile,
+        nband_max_k = model.nw, nband_max_kq = model.nw, el_k = nothing, el_kq = nothing, ph = nothing,
+        el_qty, ph_qty, drop_pairs = false, precompute_el_kq = false, covariant_derivative_of_g = false,
+        eph_phonon_basis = :eigenmode)
+    (; loop = outer_k ? :outer_k : :outer_q, committed, bytes.per_pair, batch = nb_inner,
+       free = free_bytes(backend))
 end
 
 

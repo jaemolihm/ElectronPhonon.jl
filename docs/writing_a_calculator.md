@@ -28,8 +28,12 @@ rot.
   (`ctx.batch`, the outer indices of the batch). There is no default: define both, even as `= nothing`.
 - `postprocess_calculator!(calc; kwargs...)` — once, after the loop.
 - Optionally `eph_batched_bytes_per_point(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k,
-  nband_max_kq) -> (; persistent, per_outer, per_pair)`, the device bytes the calculator allocates,
-  so the loop sizes its tiles to the free memory.
+  nband_max_kq, el_k, el_kq, ph, nchunks_threads) -> (; persistent, per_outer, per_pair)`, the device
+  bytes the calculator allocates, so the loop sizes its tiles to the free memory. The loop counts
+  `persistent` once, `per_outer` once per outer point of a batch and `per_pair` once per inner point
+  of a tile and per thread chunk; a per-outer buffer the calculator holds per chunk multiplies by
+  `nchunks_threads` itself. `el_k`, `el_kq`, `ph` are `nothing` in `estimate_device_memory`. Accept
+  `kwargs...` for keywords added later.
 
 ## A complete minimal example
 
@@ -64,17 +68,17 @@ end
 
 ElectronPhonon.calculator_begin!(c::EphG2SumCalculator, ctx) = (fill!(c.part, 0.0); c)
 
-# One outer k (`p.ik`) with a tile of k+q points. Band entries past a point's window are undefined,
+# One outer k (`block.ik`) with a tile of k+q points. Band entries past a point's window are undefined,
 # so select the in-window ones with `ifelse` (never multiply by a 0/1 mask). The scratch and the write,
 # which is indexed by the outer point, not by an inner one, are this call's chunk slot.
-function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, p::EPBlock{OuterKLoop}, ctx)
-    (; ep, phs, els_k, els_kq, wtq) = p
+function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterKLoop}, ctx)
+    (; ep, ph, el_k, el_kq, wtq) = block
     nbkq, nbk, nmodes, nq = size(ep)
     g2 = view(c.g2, :, :, :, 1:nq, ctx.chunk)
     g2 .= ifelse.((reshape(1:nbkq, nbkq, 1, 1, 1) .<= reshape(el_kq.nband, 1, 1, 1, nq)) .&
                   (reshape(1:nbk, 1, nbk, 1, 1) .<= reshape(el_k.nband, 1, 1, 1, 1)),
                   abs2.(ep) ./ (2 .* reshape(ph.e, 1, 1, nmodes, nq)), 0.0) .* reshape(wtq, 1, 1, 1, nq)
-    c.part[ctx.chunk, p.ik - first(ctx.batch) + 1] += sum(g2)
+    c.part[ctx.chunk, block.ik - first(ctx.batch) + 1] += sum(g2)
     c
 end
 
@@ -124,7 +128,10 @@ up through an index map that is 0 past it (`_indmap_to_device`), or select with 
 - **Writes.** Writes indexed by an inner-tile point are disjoint across blocks. Every other write
   (indexed by the outer point, or a reduction over the inner points) goes to a per-`ctx.chunk`
   partial, reduced in `calculator_end!`, as in the example. Per-tile scratch is per chunk too: on
-  the CPU the blocks of different chunks run concurrently. `ctx.chunk` is 1 on a device.
+  the CPU the blocks of different chunks run concurrently. `ctx.chunk` is 1 on a device. Data of the
+  block's shared side (the outer k's energies under `OuterKLoop`, the q's frequencies under
+  `OuterQLoop`) is not an inner-tile write either: concurrent blocks write the same slot, so record
+  it once, in the brackets or at setup.
 - **Brackets** run serially, once around every outer batch, on every backend.
 
 ## What `setup_calculator!` receives

@@ -668,10 +668,10 @@ end
     @test isapprox(calc_pt.A, calc_ba.A; rtol=1e-10)
 end
 
-# F4: force a PARTIAL outer-q k-batch (small n_inner_tile) so the DECISION-9 payload trim is a real
-# width-nk_batch < n_inner_tile trim, not the identity trim of the single-batch test above. nk=64,
-# n_inner_tile=10 ⇒ 7 batches, the last of width 4 — the trimmed-view path is exercised end-to-end.
-@testset "run_eph_over_q_and_k partial k-batch trim (CPU vs GPU, DECISION-9)" begin
+# A PARTIAL outer-q k tile (small n_inner_tile), so the block is a real trim to the tile's width, not
+# the identity trim of the single-tile test above. nk=64, n_inner_tile=10 ⇒ 7 tiles, the last of
+# width 4.
+@testset "run_eph_over_q_and_k partial k tile (CPU vs GPU)" begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping run_eph_over_q_and_k partial-batch test"
     else
@@ -926,7 +926,7 @@ end
 @testset "estimate_device_memory" begin
     for (mom, loop) in (("el", :outer_k), ("ph", :outer_q))
         est = ElectronPhonon.estimate_device_memory(_load_model_from_artifacts("pb";
-            epmat_outer_momentum = mom); nk = 64, nkq = 64)
+            epmat_outer_momentum = mom); nk = 64, nkq = 64, nchunks_threads = 1)
         @test est.loop == loop && est.committed > 0 && est.per_pair > 0 && est.batch == 64
     end
 end

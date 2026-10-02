@@ -130,7 +130,7 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
         (eph_phonon_basis == :cartesian ? cx * nmodes^2 : 0) +  # identity basis
         (model.polar_eph.use ? cx * (nw * nband_max_k + nband_max_kq * nband_max_k) : 0)  # polar scratch
     drop_pairs && (per_pair += _electron_state_bytes(FT, nw, nband_max_kq, el_qty) +
-        _phonon_state_bytes(FT, nmodes, ph_qty) + cx * nr_p + 3iz + rl + 3rl)   # the kept copy
+        _phonon_state_bytes(FT, nmodes, ph_qty) + cx * nr_p + 5iz + rl + 3rl)   # the kept copy
     (; persistent, per_outer, per_pair)
 end
 
@@ -215,6 +215,7 @@ function OuterKEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
         )
         merge(tile_bufs, (; kept = drop_pairs ? (;
             keep = Vector{Int}(undef, n_inner_tile),
+            keep_dev = alloc(backend, Int, n_inner_tile),
             el_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
             ph = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT),
             P_kq = alloc(backend, Complex{FT}, nr_p, n_inner_tile),
@@ -327,7 +328,7 @@ function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband
         (precompute_el_kq ? 0 : cx * nw^2 * 3) +                # k+q Hamiltonian and its eigensolve
         (model.polar_eph.use ? cx * (nw * nband_max_k + nbkq * nband_max_k) : 0)   # polar scratch
     drop_pairs && (per_pair += _electron_state_bytes(FT, nw, nband_max_k, el_qty) +
-        _electron_state_bytes(FT, nw, nbkq, el_qty) + 2iz + rl + 3rl)   # the kept copy
+        _electron_state_bytes(FT, nw, nbkq, el_qty) + 4iz + rl + 3rl)   # the kept copy
     (; persistent, per_outer, per_pair)
 end
 
@@ -376,6 +377,7 @@ function OuterQEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
         )
         merge(tile_bufs, (; kept = drop_pairs ? (;
             keep = Vector{Int}(undef, n_inner_tile),
+            keep_dev = alloc(backend, Int, n_inner_tile),
             el_k = BatchedElectronState(backend, nw, nbk, n_inner_tile, el_qty; FT),
             el_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
             ik = Vector{Int}(undef, n_inner_tile),
@@ -440,7 +442,7 @@ g(k, k+q) of the block `pairs` (one q, `pairs.n` k points) into the leading
 function stage2!(eng::OuterQEngine, tile_bufs, pairs)
     (; n) = pairs
     nbkq, nbk = pairs.el_kq.nband_max, pairs.el_k.nband_max
-    nw, nmodes = size(tile_bufs.uk_rep, 1), div(size(tile_bufs.g, 1), size(tile_bufs.uk_rep, 1)^2)
+    nw, nmodes = size(tile_bufs.uk_rep, 1), pairs.ph.nmodes
     ep = dense_prefix(tile_bufs.ep, nbkq, nbk, nmodes, n)
     get_eph_Rq_to_kq_batched!(ep, tile_bufs.itp_eRpq, pairs.xk, pairs.el_k.u, pairs.el_kq.u;
         g = view(tile_bufs.g, :, 1:n), tmp = dense_prefix(tile_bufs.tmp, nbkq, nw * nmodes, n),

@@ -44,7 +44,7 @@ end
     run_sel(kk, kq; backend, n_inner_tile = nothing,
             n_outer_batch = 256) = (c = mkcalc();
         EP.run_eph_over_k_and_kq(model, kk, kq; calculators = [c], symmetry = sym,
-            el_kq_from_unfolding = false, window_k = w_wide, window_kq = w_wide,
+            window_k = w_wide, window_kq = w_wide,
             backend, n_inner_tile, n_outer_batch,
             progress_print_step = 10^9, verbosity = 0); c)
     solve(c) = EP.solve_electron_bte(c.el_i, c.el_f, c.Sᵢ, stack(c.Sₒ), occ(), sym; interpolate = false)
@@ -151,7 +151,7 @@ end
     mkcalc(o) = BoltzmannCalculator{Float64}(; occ = o,
         smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
     run_grid(o, kk, kq) = EP.run_eph_over_k_and_kq(model, kk, kq;
-        calculators = [mkcalc(o)], symmetry = sym, el_kq_from_unfolding = false,
+        calculators = [mkcalc(o)], symmetry = sym,
         window_k = w_wide, window_kq = w_wide, backend = bk,
         progress_print_step = 10^9, verbosity = 0)
 

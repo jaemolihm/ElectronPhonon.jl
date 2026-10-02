@@ -150,14 +150,6 @@ end
             @test _u_deviation(prebuilt.el_kq, prebuilt_bad.el_kq) > 1
         end
 
-        # `el_kq_eigenpairs` also composes with `el_kq_from_unfolding = true` (the cache is looked
-        # up at the irreducible points and the unfolding rotation carries its gauge into the star),
-        # and the driver's docstring says so, but that combination is NOT exercised anywhere in
-        # this repo: `unfold_ElectronStates` reads `model.el_sym.operators`, and `el_sym` is
-        # `nothing` for every test artifact model, so the path throws with or without a cache.
-        # test/test_unfold.jl is commented out of runtests.jl for the same reason.
-        @test _load_model_from_artifacts("pb"; load_epmat = false).el_sym === nothing
-
         # A cache built with the other Fourier mode is a second, independent tooth on CPU: it
         # differs from what the run would have computed by O(1) inside a degenerate multiplet.
         cache_normal = electron_eigenpairs(model, kgrid; fourier_mode = "normal")

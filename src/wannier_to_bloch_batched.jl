@@ -293,9 +293,9 @@ function get_eph_Rq_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
     parent = itp_epobj_eRpq.parent
     @assert parent.ndata == nw^2 * nmodes
 
-    g      = something(g, similar(parent.op_r, Complex{T}, parent.ndata, nk))
-    tmp    = something(tmp, similar(parent.op_r, Complex{T}, nbandkq, nw * nmodes, nk))
-    uk_rep = something(uk_rep, similar(parent.op_r, Complex{T}, nw, nbandk, nmodes * nk))
+    g      = g === nothing ? similar(parent.op_r, Complex{T}, parent.ndata, nk) : g
+    tmp    = tmp === nothing ? similar(parent.op_r, Complex{T}, nbandkq, nw * nmodes, nk) : tmp
+    uk_rep = uk_rep === nothing ? similar(parent.op_r, Complex{T}, nw, nbandk, nmodes * nk) : uk_rep
     @assert size(g) == (parent.ndata, nk)
     @assert size(tmp) == (nbandkq, nw * nmodes, nk)
     @assert size(uk_rep) == (nw, nbandk, nmodes * nk)

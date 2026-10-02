@@ -280,9 +280,10 @@ Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
 - `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`, `eigvals_batched`/
   `eigen_batched` (`heevjBatched!`), `batched_gemm!` (`gemm_strided_batched!`), and the fused
   rotation / window-scatter kernels.
-- `src/calculator/run_eph_over_k_and_kq.jl` — `backend` / `batched` / `n_inner_tile` / `n_outer_batch`
-  keywords; backend-generic `_loop_eph_over_k_and_kq_batched` and the batched calculator payload.
-  Per-point path unchanged.
+- `src/calculator/run_eph.jl` — both drivers as one `_run_eph` (entry checks, state containers,
+  `plan_batch`, brackets) with the two loop bodies; `src/calculator/eph_engine.jl` — the
+  `OuterKEngine` / `OuterQEngine` stages and `engine_bytes`. Backend-generic; `backend`,
+  `n_outer_batch`, `n_inner_tile` and `nchunks_threads` select placement and widths.
 - `benchmark/bench_el_eigen_gpu.jl`, `benchmark/bench_eph_gpu.jl`,
   `benchmark/bench_eliashberg_loop_gpu.jl` — CPU-vs-GPU benchmarks.
 - `test/test_gpu.jl` — GPU-guarded tests (skip when CUDA is unavailable or the Pb data dir is
