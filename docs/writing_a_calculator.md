@@ -1,92 +1,87 @@
 # Writing your own calculator
 
 A **calculator** computes a physical property during one pass of an e-ph driver
-(`run_eph_over_k_and_q`, `run_eph_over_q_and_k`, or `run_eph_over_k_and_kq`). The driver builds the
-electron and phonon states and the e-ph matrix elements and hands them to each calculator as a
-**payload** together with a **`LoopContext`**. You subtype `ElectronPhonon.AbstractCalculator` and
-implement a few methods; nothing about the GPU is required for a CPU-only calculator.
+(`run_eph_over_k_and_kq`, outer loop over k, or `run_eph_over_q_and_k`, outer loop over q). The
+driver builds the electron and phonon states and the e-ph matrix elements and hands them to each
+calculator one **block** at a time, an [`EPBlock`](@ref) of one outer point with a tile of inner
+points, together with a **`LoopContext`**. You subtype `ElectronPhonon.AbstractCalculator` and
+implement a few methods; the same methods run on the CPU and on a GPU when they are written with
+broadcasts and `alloc(backend, …)`.
 
 The authoritative reference is the docstrings in `src/calculator/AbstractCalculator.jl`. This guide
 is the tutorial; its example is executed verbatim by `test/test_calculator_guide.jl`, so it cannot
 rot.
 
-## The mandatory surface
+## The surface
 
-A calculator must implement:
+- `supports(calc, ::Type{OuterKLoop})` / `supports(calc, ::Type{OuterQLoop})` — the loop orders the
+  calculator handles (default `false`; pass the type, not an instance). The driver refuses a
+  calculator that does not support its order.
+- `required_el_quantities(calc)`, `required_ph_quantities(calc)` — the state quantities it reads
+  beyond the energies `e` and eigenvectors `u`, which the loop always provides on both electron sides
+  and on the phonons, as field names of `BatchedElectronState` (`:vdiag`, `:v`, `:rbar`) and
+  `BatchedPhononState` (`:vdiag`, …). Default: none.
+- `setup_calculator!(calc, backend, els_k, els_kq, phs; sel_k, sel_kq, nw, nmodes, nchunks_threads,
+  n_outer_batch, n_inner_tile, verbosity)` — once, before the loop (see below).
+- `run_calculator!(calc, block::EPBlock{OuterKLoop}, ctx)` (or `{OuterQLoop}`) — once per block.
+- `calculator_begin!(calc, ctx)` / `calculator_end!(calc, ctx)` — around every outer batch
+  (`ctx.batch`, the outer indices of the batch). There is no default: define both, even as `= nothing`.
+- `postprocess_calculator!(calc; kwargs...)` — once, after the loop.
+- Optionally `eph_batched_bytes_per_point(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k,
+  nband_max_kq) -> (; persistent, per_outer, per_pair)`, the device bytes the calculator allocates,
+  so the loop sizes its tiles to the free memory.
 
-- `setup_calculator!(calc, backend, mode, kpts, qpts, el_states; kwargs...)` — run once, before the
-  loop. `backend` and `mode` are positional; see "What `setup_calculator!` receives" below.
-- `run_calculator!(calc, payload, ctx)` — one method per payload *type* the calculator consumes.
-  The host per-(k,q) payload is `EPData`; the batched payloads (`EPDataQBatched` / `EPDataKBatched`)
-  are for the batched path — normally a GPU run (see "Migrating to the GPU" below).
-- `postprocess_calculator!(calc; kwargs...)` — run once, after the loop.
-- `supports(calc, ::Type{T})` — declare the driver loop shapes (`OuterKLoop` / `OuterQLoop`) and
-  the payload types the calculator handles. The default is `false`; the second argument must be a
-  *type* (`supports(calc, OuterKLoop)`, not `supports(calc, OuterKLoop())` — passing an instance
-  throws). The driver checks these up front and errors if it would hand the calculator a loop or
-  payload it does not declare.
+## A complete minimal example
 
-Optionally, `calculator_begin!(calc, scope, ctx)` / `calculator_end!(calc, scope, ctx)` bracket one
-outer iteration (`OuterIteration()`) or one batch of outer iterations (`OuterIterationBatch()`).
-There is no default: define a method for every (scope, loop-mode) combination the loops you support
-fire, even as an explicit no-op — see the table under "Adding a GPU path" for which those are.
-
-Which loop shape? `OuterKLoop` calculators run under `run_eph_over_k_and_q` /
-`run_eph_over_k_and_kq` (outer loop over k); `OuterQLoop` calculators run under
-`run_eph_over_q_and_k` (outer loop over q). A calculator declares whichever it is built for.
-
-## A complete minimal CPU-only example
-
-This calculator sums `|g|²/(2ω)` (weighted by the q-point weight) over all inner k+q points, bands,
-and modes, giving one number per outer k-point. It runs under `run_eph_over_k_and_kq` (outer k).
+This calculator sums `wtq · |g|²/(2ω)` over the in-window bands, the modes and the k+q points of
+each outer k-point. It runs under `run_eph_over_k_and_kq`.
 
 <!-- doc-example:begin -->
 ```julia
 using ElectronPhonon
-using ElectronPhonon: AbstractCalculator, OuterKLoop, EPData, OuterIteration
+using ElectronPhonon: AbstractCalculator, OuterKLoop, EPBlock, alloc
 
-# One value per outer k: Σ over (k+q, m, n, ν) of wtq · g2[m, n, ν].
+# One value per outer k: Σ over (k+q, m, n, ν) of wtq · |ep[m, n, ν]|² / (2ω[ν]).
 mutable struct EphG2SumCalculator <: AbstractCalculator
     per_k :: Vector{Float64}   # result, indexed by outer-k index
-    chunk :: Vector{Float64}   # per-thread-chunk partial sum for the CURRENT outer k
-    EphG2SumCalculator() = new(Float64[], Float64[])
+    part  :: Matrix{Float64}   # (chunk, outer point of the batch) partial sums
+    g2    :: Any               # per-tile scratch on the run's backend
+    EphG2SumCalculator() = new(Float64[], zeros(0, 0), nothing)
 end
 
-# This calculator runs under the outer-k drivers and consumes the host per-(k,q) payload.
-ElectronPhonon.supports(::EphG2SumCalculator, ::Type{OuterKLoop})    = true
-ElectronPhonon.supports(::EphG2SumCalculator, ::Type{EPData}) = true
+ElectronPhonon.supports(::EphG2SumCalculator, ::Type{OuterKLoop}) = true
+# The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator reads,
+# so it defines no `required_el_quantities` / `required_ph_quantities`.
 
-# Run once before the loop. `nchunks_threads` is the number of thread chunks the inner loop uses;
-# allocate one partial-sum slot per chunk so concurrent calls never touch the same slot.
-function ElectronPhonon.setup_calculator!(c::EphG2SumCalculator, backend, mode, kpts, qpts, el_states;
-        nchunks_threads, kwargs...)
-    c.per_k = zeros(kpts.n)
-    c.chunk = zeros(nchunks_threads)
+# Buffers are sized here, from the widths the loop chose; `run_calculator!` allocates nothing.
+function ElectronPhonon.setup_calculator!(c::EphG2SumCalculator, backend, els_k, els_kq, phs;
+        nmodes, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...)
+    c.per_k = zeros(els_k.nk)
+    c.part = zeros(nchunks_threads, n_outer_batch)
+    c.g2 = alloc(backend, Float64, els_kq.nband_max, els_k.nband_max, nmodes, n_inner_tile)
     c
 end
 
-# Serial, before the threaded inner loop for this outer k: zero the per-chunk partials.
-function ElectronPhonon.calculator_begin!(c::EphG2SumCalculator, ::OuterIteration, ctx)
-    fill!(c.chunk, 0.0)
+ElectronPhonon.calculator_begin!(c::EphG2SumCalculator, ctx) = (fill!(c.part, 0.0); c)
+
+# One outer k (`p.ik`) with a tile of k+q points. Band entries past a point's window are undefined,
+# so select the in-window ones with `ifelse` (never multiply by a 0/1 mask). The write is indexed by
+# the outer point, not by an inner one, so it goes to this call's chunk slot.
+function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, p::EPBlock{OuterKLoop}, ctx)
+    (; ep, phs, els_k, els_kq, wtq) = p
+    nbkq, nbk, nmodes, nq = size(ep)
+    g2 = view(c.g2, :, :, :, 1:nq)
+    g2 .= ifelse.((reshape(1:nbkq, nbkq, 1, 1, 1) .<= reshape(els_kq.nband, 1, 1, 1, nq)) .&
+                  (reshape(1:nbk, 1, nbk, 1, 1) .<= reshape(els_k.nband, 1, 1, 1, 1)),
+                  abs2.(ep) ./ (2 .* reshape(phs.e, 1, 1, nmodes, nq)), 0.0) .*
+          reshape(wtq, 1, 1, 1, nq)
+    c.part[ctx.chunk, p.ik - first(ctx.batch) + 1] += sum(g2)
     c
 end
 
-# Called CONCURRENTLY from @threads over inner-k+q chunks at fixed outer k. Accumulate into THIS
-# chunk's slot (`p.id_chunk`) — never a shared slot — so there is no data race.
-function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, p::EPData, ctx)
-    epstate = p.epstate
-    s = 0.0
-    for ν in 1:epstate.ph.nmodes, n in epstate.el_k.rng, m in epstate.el_kq.rng
-        s += epstate.wtq * epstate.g2[m, n, ν]
-    end
-    c.chunk[p.id_chunk] += s
-    c
-end
-
-# Serial, after the threaded region: reduce the per-chunk partials into this outer k's result.
-# `ctx.outer_index` is the current outer-k index.
-function ElectronPhonon.calculator_end!(c::EphG2SumCalculator, ::OuterIteration, ctx)
-    c.per_k[ctx.outer_index] = sum(c.chunk)
+# After the batch: reduce the partials into the outer points of the batch.
+function ElectronPhonon.calculator_end!(c::EphG2SumCalculator, ctx)
+    c.per_k[ctx.batch] .= vec(sum(view(c.part, :, 1:length(ctx.batch)); dims = 1))
     c
 end
 
@@ -102,153 +97,72 @@ run_eph_over_k_and_kq(model, (nk, nk, nk), (nk, nk, nk); calculators = [calc])
 calc.per_k   # one number per outer k-point
 ```
 
-## The threading contract (read this)
+## The block
 
-On all CPU paths `run_calculator!(calc, ::EPData, ctx)` is called **concurrently** from
-`@threads` over inner (k+q or k) chunks at a fixed outer index. Mutating shared calculator state
-from it races. Two safe patterns:
+Each array of an `EPBlock` has the pairs of the block on its last axis; the side shared by the whole
+block has extent 1 there. Under `OuterKLoop`: `ep` is `(nband_max_kq, nband_max_k, nmodes, nq)`,
+`els_k` the outer k (extent 1), `els_kq` and `phs` the tile's k+q points and phonons, `ik::Int`,
+`ikq` the k+q indices (a range), `iq` the q indices, `wtk::Float64`, `wtq` the k+q weights. Under
+`OuterQLoop` the roles swap: `phs` has extent 1, `iq::Int`, `ik` a range, and `ikq === nothing`
+(k+q is solved per tile). `ep` is the e-ph matrix before the `1/(2ω)`; a calculator that needs
+`|g|²/(2ω)` forms it.
 
-1. **Per-chunk buffers indexed by `payload.id_chunk`** (the example above): each concurrent call
-   writes only its own chunk's slot. `id_chunk ∈ 1:nchunks_threads`, the count passed to
-   `setup_calculator!`.
-2. **Writes to disjoint slots**: if each call writes a distinct output location (e.g. a unique
-   `(band, k+q)` entry), no per-chunk buffer is needed.
+**Extents.** Every array of a block holds exactly the block's points, so take the extents from the
+arrays themselves: a size mismatch between them is then detectable, and the scatter helpers check
+the sizes of their inputs on entry (an `@inbounds` loop or a device kernel would not catch a read
+past the block). The band axes are a box: local band `n` of point `j` is physical band
+`iband_offset[j] + n` for `n ≤ nband[j]`, and everything past it (including box columns past band
+`nw`) is undefined. Array bounds cannot catch a read there, so loop over `1:nband[j]`, look states
+up through an index map that is 0 past it (`_indmap_to_device`), or select with `ifelse` on
+`n ≤ nband[j]` as the example does; never multiply the padding by a 0/1 mask.
 
-`calculator_begin!(calc, OuterIteration(), ctx)` and `calculator_end!(calc, OuterIteration(), ctx)`
-run **serially**, outside the threaded region, once per outer iteration. Cross-chunk reductions
-(summing the per-chunk partials, scattering into the final output for this outer index) belong
-there — `ctx.outer_index` is the current outer index (`ik` for outer-k loops, `iq` for the outer-q
-loop). `postprocess_calculator!` runs once after the whole loop.
+## The threading and batch contract
 
-`run_calculator!` is a dynamic dispatch per (k,q) per calculator (F11c): keep its body substantial
-rather than trivial — if you need many tiny operations, batch them inside the calculator.
+- **Any batch width.** The loop chooses `n_outer_batch` and `n_inner_tile` at runtime and passes
+  them to `setup_calculator!`; size per-batch buffers to the first and per-tile scratch to the
+  second. Every `length(ctx.batch) ≥ 1` must work.
+- **Writes.** Writes indexed by an inner-tile point are disjoint across blocks. Every other write
+  (indexed by the outer point, or a reduction over the inner points) goes to a per-`ctx.chunk`
+  partial, reduced in `calculator_end!`, as in the example. `ctx.chunk` is 1 on a device.
+- **Brackets** run serially, once around every outer batch, on every backend.
 
 ## What `setup_calculator!` receives
 
-`setup_calculator!(calc, backend, mode, kpts, qpts, el_states; kwargs...)` is called with the run's
-`backend::AbstractBackend` and loop-shape `mode::LoopMode` (both POSITIONAL, so they can be dispatched
-on and cannot be silently absorbed by `kwargs...`), then the outer k-points `kpts`, the q-points `qpts`
-(may be `nothing` when phonons are computed on the fly), the electron states at k `el_states`, and
-these keyword arguments (splat the rest with `kwargs...`):
+`els_k`, `els_kq`, `phs` are the run's containers (`BatchedElectronState`, `BatchedPhononState`) on
+the run's `backend`, holding the requested quantities; `els_kq` is `nothing` when k+q is solved per
+tile.
+`sel_k`, `sel_kq` are the `FilteredBandStates` selections they were built from: the selected states
+with their weights (per state on a multigrid selection) and the below-window carrier count
+`nstates_base`. `BandStates(els_k, sel_k)` gives the flattened per-state view (energies, velocities,
+weights) that `BoltzmannCalculator` and the MigdalEliashberg calculators keep.
 
-- `nw`, `nmodes` — number of Wannier bands / phonon modes.
-- `rng_band` — the in-window band range at k.
-- `el_states_kq`, `kqpts` — electron states / k-points at k+q (may be `nothing`).
-- `nelec_below_window_k`, `nelec_below_window_kq` — carrier counts below the window.
-- `nchunks_threads` — number of inner-loop thread chunks (size per-chunk buffers to this).
-- `verbosity` — printing verbosity.
+## Device buffers
 
-The two positional arguments:
-
-- `backend :: AbstractBackend` — the compute backend (`CPUBackend()` / `GPUBackend(proto)`), i.e. where
-  arrays live. A CPU-only calculator ignores it.
-- `mode :: LoopMode` — the loop SHAPE this run will use: `SingleMode()` (the driver will hand you
-  per-(k,q) `EPData`) or `BatchedMode()` (it will hand you a batched payload). This is what to dispatch
-  or branch on when deciding which buffers to build, NOT `backend`: the two axes are independent, and
-  batched-on-`CPUBackend` is a supported validation configuration. A per-point-only calculator ignores
-  it. Being positional, both can be dispatched on:
-  `setup_calculator!(c::MyCalc, backend, ::BatchedMode, kpts, qpts, el_states; kwargs...)`.
-
-Leaving them untyped (`backend, mode`) is fine and is the normal spelling — the erroring
-`AbstractCalculator` fallback deliberately leaves them untyped too, so your method wins on the
-calculator type without needing annotations.
-
-If your calculator only reads eigenvalues/eigenvectors of the outer-k states (not velocity or
-position), override `required_el_k_quantities(calc) = ["eigenvalue", "eigenvector"]` so the outer-q
-driver skips the velocity/position interpolation (the default is the full list).
-
-## Migrating a calculator to the GPU
-
-The batched path is an explicit opt-in with no silent fallback: `run_eph_over_k_and_kq(...;
-backend = ElectronPhonon.gpu_backend())` (or `run_eph_over_q_and_k(...; backend = ...)`) requires
-**every** calculator to support the corresponding batched payload, and a calculator that does not opt
-in errors loudly. Two orthogonal keywords control this: `backend` says where arrays live and is
-carried in `ctx.backend`, while `batched` says which payload/loop shape runs and is carried in
-`ctx.mode` (`SingleMode()` / `BatchedMode()`). `batched` defaults from `backend`, so a GPU run passes
-`backend` alone; passing `batched = true` on a `CPUBackend` runs the batched loop on host arrays,
-which is how the batched path is tested without CUDA.
-
-To add a GPU path to an existing CPU calculator:
-
-1. Declare the batched payload: `supports(calc, ::Type{EPDataQBatched}) = true` (outer-k) or
-   `supports(calc, ::Type{EPDataKBatched}) = true` (outer-q).
-2. Implement `run_calculator!(calc, p::EPDataQBatched, ctx)` (resp. `EPDataKBatched`).
-   The payload carries the e-ph matrices for a whole batch **on the device** (`p.eps`, `p.g2s`,
-   `p.ωqs`, batch indices …). Write it backend-generically — only `alloc(ctx.backend, T, dims...)`,
-   `similar`, `copyto!`, broadcasting, `mul!`, and scatter-assignment — so the same method runs on
-   CPU arrays and `CuArray`s and adds no CUDA dependency of its own.
-3. Manage device buffers. `setup_calculator!` receives the run's `backend` and `mode` as its first two
-   arguments, so build whole-run device buffers (index maps, band energies, weights — anything
-   intrinsic to the state sets) there with `alloc(backend, …)` / `to_device(backend, …)`, dispatched or
-   gated on `mode isa BatchedMode`. Do **not** key on `backend isa GPUBackend`: that builds the wrong
-   buffers under the CPU+batched validation configuration (the bug this guide used to recommend). The
-   alloc helpers are backend-generic, so on a `CPUBackend` they yield host arrays and the same code
-   path works. Use the brackets only for per-iteration state, and mind **which brackets the loop you are
-   targeting actually fires**:
-
-   | loop | brackets fired |
-   |---|---|
-   | per-point outer-k / outer-q (`SingleMode`) | `OuterIteration` per k / per q |
-   | batched outer-q (`BatchedMode`) | `OuterIteration` per q |
-   | **batched outer-k (`BatchedMode`)** | **`OuterIterationBatch` only — no per-k bracket** |
-
-   The batched outer-k loop runs its q-tile loop *outside* the k loop (one Fourier phase tile is reused
-   by every k of the batch), so a single k's work is spread over the whole batch and has no
-   begin/end point. A per-k device reduction there must move to `OuterIterationBatch`; a
-   `calculator_begin!(calc, OuterIteration(), ctx)` method written for that loop would simply never
-   run. Allocate/zero the per-iteration device accumulator in the bracket the loop does fire, using
-   `ctx.backend`, and copy the result device→host in the matching `calculator_end!`. Declare
-   per-point device scratch via `eph_batched_bytes_per_point(calc, PayloadType; nw, nmodes)` so the
-   loop's memory-adaptive batch sizing accounts for it.
-
-   If a bracket is shared between loop shapes (e.g. the `OuterIteration` bracket, fired by the CPU
-   loops in `SingleMode` and by the GPU outer-q loop in `BatchedMode`), select the batched behavior
-   from the loop **mode** carried in `ctx`, never the backend: either dispatch on
-   `ctx::LoopContext{<:AbstractBackend, SingleMode}` vs `{<:AbstractBackend, BatchedMode}`, or branch
-   on `ctx.mode isa ElectronPhonon.BatchedMode`. `ctx.backend` is only for allocation
-   (`alloc(ctx.backend, …)`) / `free_bytes` / `synchronize`, not for telling the loop shapes apart.
+Build whole-run buffers (state-index maps, energies, weights) in `setup_calculator!` with
+`alloc(backend, …)` / `to_device(backend, …)`; on a `CPUBackend` they are host arrays and the same
+code runs. `_indmap_to_device(backend, states)` builds a state-index map in the box coordinates of
+the containers built from that selection (0 for a band that is not a state and on the padding), so a
+kernel looks a state up from a block's local band index and never reads the padding. Declare the bytes in
+`eph_batched_bytes_per_point`.
 
 ### Tiling a large outer-k output over the device: `TiledDeviceOutput`
 
-A device-resident outer-k calculator whose output is indexed by the outer-k *state* (so it grows
-with the grid — e.g. an `(nmodes, n_i, n_f)` coupling, or an `(n_i, n_f, nT)` scattering matrix)
-should not always hold the whole thing on the device. `ElectronPhonon.TiledDeviceOutput` is an
-opt-in helper that owns exactly that bookkeeping, so `BoltzmannCalculator` and `EliashbergCalculator`
-both use it instead of hand-rolling it:
+A device-resident outer-k calculator whose output is indexed by the outer-k *state* (an
+`(nmodes, n_i, n_f)` coupling, an `(n_i, n_f, nT)` scattering matrix) should not always hold the
+whole thing on the device. `ElectronPhonon.TiledDeviceOutput` owns that bookkeeping:
 
-- Construct it once (at `setup_calculator!`) from the full output shape and which axis is tiled over
-  outer-k states — any dims, any tiled-axis position, and `narr` arrays of identical tiling per
-  instance (`EliashbergCalculator` holds g2 and ωq in one instance):
-  `TiledDeviceOutput{FT}((nmodes, n_i, n_f), 2, calc.el_i; narr = 2, force_block)`.
-- It decides **full-device-resident vs per-tile block** residency from `free_bytes(ctx.backend)`
+- Construct it once in `setup_calculator!` from the full output shape, the axis tiled over outer-k
+  states and the outer batch width: `TiledDeviceOutput{FT}((nmodes, n_i, n_f), 2, calc.el_i,
+  n_outer_batch; narr = 2, force_block)`.
+- It decides full-device-resident vs per-tile block residency from `free_bytes(ctx.backend)`
   (override with `force_block`), allocates lazily on the first batch, computes the outer-k tile
-  ranges (with the contiguity guarantee), zeros the active tile per batch, and does the contiguous
-  device→host download.
-- In your `calculator_begin!(…, OuterIterationBatch(), ctx)` call `tile_begin!(t, ctx)`; scatter into
-  `device_array(t, k)` using `tile_offset(t)` / `tile_stride(t)` (the scatter stays yours —
-  `eph_window_scatter!`, its complex sibling `eph_window_scatter_reim!`, or your own); in
-  `calculator_end!(…, OuterIterationBatch(), ctx)` flush a block tile with `tile_download!(t)` +
-  a small view-copy into your host output; in
-  `postprocess_calculator!` copy a full-resident buffer back and `tile_free!(t)`.
+  ranges, zeros the active tile per batch, and does the contiguous device→host download.
+- In `calculator_begin!(calc, ctx)` call `tile_begin!(t, ctx)`; scatter into `device_array(t, k)`
+  using `tile_offset(t)` / `tile_stride(t)` (`eph_window_scatter!`, `eph_window_scatter_reim!`, or
+  your own); in `calculator_end!(calc, ctx)` flush a block tile with `tile_download!(t)` and a small
+  view-copy into your host output; in `postprocess_calculator!` copy a full-resident buffer back and
+  `tile_free!(t)`.
 
-The lazily-allocated device buffers are held behind a `Union{Nothing, …}` / `Vector{Any}` handle;
-type stability is preserved because the scatter kernel (a typed generic function) is the
-function-boundary type barrier — everything the helper itself does runs once per batch (cold).
-
-### Whole-run device buffers at setup
-
-Band energies, integration weights, and state-index maps are intrinsic to the state sets, not to any
-one loop iteration, so build them once in `setup_calculator!` from the `backend` it is handed (they
-would otherwise pollute `LoopContext`, which describes only the current iteration). Upload arrays
-with `to_device(backend, host_array)` and build the device state-index map with
-`_indmap_to_device(backend, states, nw)`. Key this on the **loop shape**, not the backend:
-`setup_calculator!` also receives `mode::LoopMode` positionally, so build these buffers when
-`mode isa BatchedMode` (the per-point path uses the `EPData` method and needs no such buffers). Do
-not test `backend isa GPUBackend` — that would build the wrong buffers under the CPU+batched
-validation configuration. All three helpers are backend-generic, so on a `CPUBackend` they simply
-yield host arrays.
-
-`BoltzmannCalculator` (`src/boltzmann/boltzmann_calculator.jl`) and `EliashbergCalculator`
-(MigdalEliashberg.jl) are worked references: each has both a CPU `EPData` method and a GPU
-batched method sharing the same output arrays, and both use `TiledDeviceOutput`. See `README_GPU.md`
-for the device-loop details.
+`BoltzmannCalculator` (`src/boltzmann/boltzmann_calculator.jl`) and `G2Calculator` /
+`EPElementCalculator` (MigdalEliashberg.jl) are worked references. See `README_GPU.md` for the
+device-loop details.

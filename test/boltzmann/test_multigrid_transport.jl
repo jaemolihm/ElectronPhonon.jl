@@ -10,8 +10,8 @@ using LinearAlgebra
 # weights; the k+q selection is its explicit symmetry unfold (`unfold_band_states`). Checks:
 #   1. multigrid vs uniform reference — the double-grid σ discrepancy (reported, not pre-toleranced);
 #   2. the fine refinement improves accuracy — multigrid beats the coarse grid alone;
-#   3. per-point-vs-batched equality on the multigrid — the per-final-state weight is bit-identical on
-#      both (run for CPU+batched always, and for GPU+batched when CUDA is available);
+#   3. tiling and backend equality on the multigrid — the per-final-state weight is bit-identical on
+#      every arm (CPU always, and GPU when CUDA is available);
 #   4. over-selection regression — a wide-tail band at a fine-only node is absent from el_i/el_f;
 #   5. auto-μ succeeds on the windowed multigrid selection (no bracket failure).
 # All solved with interpolate=false (unfold-only δf feedback, exact on the shared multigrid spec).
@@ -94,11 +94,11 @@ end
         end
     end
 
-    # Per-point-vs-batched equality on the multigrid: the same calculator, both loop shapes fold the
-    # identical bte_scattering_increments with the per-final-state weight, so Sₒ/Sᵢ and σ agree to
-    # ~machine eps. The CPU+per-point reference is the ground truth for both batched arms.
+    # Tiling equality on the multigrid: the same calculator at the default widths and with small
+    # tiles folds the identical bte_scattering_increments with the per-final-state weight, so Sₒ/Sᵢ and
+    # σ agree to ~machine eps. The CPU run at the default widths is the reference for the other arms.
     #
-    # The CPU+batched arm needs no CUDA, so this block does real work on a CPU-only machine — which is
+    # The small-tile arm needs no CUDA, so this block does real work on a CPU-only machine — which is
     # the point: it covers the multigrid's per-(k,band) weights through the batched payload and the
     # tiled Sᵢ path. Both caps are explicit because `plan_batch` returns the requested cap verbatim on
     # a `CPUBackend`, and they tile different axes: `nq_batch_max` the per-q staging within a k-batch,
@@ -106,11 +106,11 @@ end
     # latter makes ntiles > 1, so 3 (against this selection's small nk) is what gives a nonzero
     # `tile_offset` and exercises the per-tile Sᵢ writeback rather than a single whole-run tile.
     #
-    # Under CUDA, `c_mg` is already the GPU+batched arm and this is a genuinely different run; without
-    # CUDA `c_mg` IS a CPU+per-point multigrid pass, so reuse it rather than paying for an identical
-    # second one on every CPU-only CI run.
-    c_mg_pt = _CUDA_OK ? run_sel(sel_k, sel_kq; backend = EP.CPUBackend(), batched = false) : c_mg
-    @testset "multigrid: CPU+batched == CPU+per-point" begin
+    # Under CUDA, `c_mg` is already the GPU arm and this is a genuinely different run; without CUDA
+    # `c_mg` IS the CPU multigrid pass at the default widths, so reuse it rather than paying for an
+    # identical second one on every CPU-only CI run.
+    c_mg_pt = _CUDA_OK ? run_sel(sel_k, sel_kq; backend = EP.CPUBackend()) : c_mg
+    @testset "multigrid: CPU small tiles == CPU default widths" begin
         c_mg_cb = run_sel(sel_k, sel_kq; backend = EP.CPUBackend(), batched = true,
                           nq_batch_max = 64, nk_outer_batch_max = 3)
         # See the note above: assert the precondition for ntiles > 1, since `tile_offset` is reset at

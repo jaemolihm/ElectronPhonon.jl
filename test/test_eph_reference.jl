@@ -36,11 +36,10 @@ include("eph_reference_loop.jl")
 
         common = (; window_k = window, window_kq = window, progress_print_step = 10^9,
                   verbosity = 0)
-        outer_k = Any[("per-point", (; nchunks_threads = 4)),
-            ("batched CPU", (; backend = CPUBackend(), batched = true, nk_outer_batch_max = 5,
-                              nq_batch_max = 50))]
-        outer_q = Any[("per-point", (; nchunks_threads = 4)),
-            ("batched CPU", (; backend = CPUBackend(), batched = true, nk_batch_max = 50))]
+        outer_k = Any[("CPU", (; nchunks_threads = 4)),
+            ("CPU, small tiles", (; backend = CPUBackend(), nk_outer_batch_max = 5, nq_batch_max = 50))]
+        outer_q = Any[("CPU", (; nchunks_threads = 4)),
+            ("CPU, small tiles", (; backend = CPUBackend(), nk_batch_max = 50))]
         if EPH_REFERENCE_GPU_AVAILABLE
             CUDA.allowscalar(false)
             push!(outer_k, ("GPU", (; backend = gpu_backend())),

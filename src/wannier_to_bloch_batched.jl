@@ -241,9 +241,9 @@ Fourier phase `exp(2πi R_p · x_q)` as `phase`, `(nr, nq)`; and the rotations. 
 rather than a q-list is what lets a caller build it once and reuse it over many `k` — the GPU
 outer-k loop does that via the k+q convention of [`get_eph_RR_to_kR_batched!`](@ref).
 
-Pass a [`KRtoKQWorkspace`](@ref) as `ws` (sized for at least this `nq`) to reuse the `g` / `tmp`
+Pass a [`KRtoKQWorkspace`](@ref) as `ws`, sized for exactly this `nq`, to reuse the `g` / `tmp`
 scratch across calls instead of allocating it each call — the per-k hot path in the GPU loop does
-this, sizing `ws` for the max batch width and passing `nq ≤` that for a partial final batch.
+this with views of the leading `nq` columns of buffers sized for the max batch width.
 """
 function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
                                    ep_kR::AbstractMatrix, phase::AbstractMatrix, u_phs, ukqs;
@@ -261,12 +261,9 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
         g   = similar(ep_kR, Complex{T}, ndata, nq)
         tmp = similar(ep_kR, Complex{T}, nbandkq, nbandk * nmodes, nq)
     else
-        # `ws` is sized for the max batch width; use the first `nq` columns (a partial final batch
-        # passes nq < capacity), so the whole loop runs without padding the batch back up.
-        @assert size(ws.g, 1) == ndata && size(ws.g, 2) >= nq
-        @assert size(ws.tmp, 1) == nbandkq && size(ws.tmp, 2) == nbandk * nmodes && size(ws.tmp, 3) >= nq
-        g   = view(ws.g, :, 1:nq)
-        tmp = view(ws.tmp, :, :, 1:nq)
+        @assert size(ws.g) == (ndata, nq)
+        @assert size(ws.tmp) == (nbandkq, nbandk * nmodes, nq)
+        g, tmp = ws.g, ws.tmp
     end
 
     mul!(g, ep_kR, phase)                                              # (nw*nbandk*nmodes, nq)
@@ -311,9 +308,9 @@ The parent is the electron-Wannier / phonon-Bloch object (`op_r` `(nw^2*nmodes, 
 `ep_kq_all[m,n,ν,k] = Σ_{iw,jw} conj(ukqs[iw,m,k]) · g[iw,jw,ν,k] · uks[jw,n,k]` is applied as two
 `batched_gemm!`s (`ukq(k)'` on the left over batch `k`, `uk(k)` on the right over batch `(ν,k)`).
 
-Pass an [`RqToKQWorkspace`](@ref) (sized for at least this `nk`) as `ws` to reuse the
+Pass an [`RqToKQWorkspace`](@ref), sized for exactly this `nk`, as `ws` to reuse the
 `g`/`tmp`/`uk_rep` scratch across calls instead of allocating it each call — the per-q hot loop does
-this, passing `nk ≤` that width for a partial final batch.
+this with views of the leading `nk` points of buffers sized for the max batch width.
 
 Full-band only: like [`get_eph_RR_to_kR_batched!`](@ref), all `nk` k-points must share the same
 `nbandk`/`nbandkq` (energy windows are handled by callers with masks).
@@ -334,14 +331,10 @@ function get_eph_Rq_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
         tmp    = similar(parent.op_r, Complex{T}, nbandkq, nw * nmodes, nk)
         uk_rep = similar(parent.op_r, Complex{T}, nw, nbandk, nmodes * nk)
     else
-        # `ws` is sized for the max batch width; use the first `nk` columns.
-        @assert size(ws.g, 1) == parent.ndata
-        @assert size(ws.g, 2) >= nk
-        @assert size(ws.tmp)[1:2] == (nbandkq, nw * nmodes)
-        @assert size(ws.tmp, 3) >= nk
-        @assert size(ws.uk_rep)[1:2] == (nw, nbandk)
-        @assert size(ws.uk_rep, 3) >= nmodes * nk
-        g, tmp, uk_rep = view(ws.g, :, 1:nk), view(ws.tmp, :, :, 1:nk), view(ws.uk_rep, :, :, 1:nmodes*nk)
+        @assert size(ws.g) == (parent.ndata, nk)
+        @assert size(ws.tmp) == (nbandkq, nw * nmodes, nk)
+        @assert size(ws.uk_rep) == (nw, nbandk, nmodes * nk)
+        g, tmp, uk_rep = ws.g, ws.tmp, ws.uk_rep
     end
 
     # Fourier over R_el at every k -> g(k) in (nw, nw, nmodes, nk); index legend g[iw, jw, ν, k]
@@ -387,16 +380,16 @@ end
 """
     add_eph_dipole_batched!(eps, coeffs, ukqs, uks, mmats)
 
-Add the polar (long-range) e-ph dipole term to a batch of e-ph matrices `eps` `(nw, nw, nmodes, nk)`,
-the batched counterpart of the per-k `epstate_compute_eph_dipole!` (unscreened, ϵ ≡ 1):
-`eps[m,n,ν,k] += coeffs[ν] · Σ_iw conj(ukqs[iw,m,k]) uks[iw,n,k]`. Window-masked eigenvector columns
-make the overlap vanish for out-of-window `m`/`n`. `mmats` is `(nw, nw, nk)` scratch on the same
-backend. Runs on the backend of `eps` (the `batched_gemm!` + broadcast are backend-generic).
+Add the polar (long-range) e-ph dipole term to a batch of e-ph matrices `eps`
+`(nbandkq, nbandk, nmodes, nk)`, the batched counterpart of the per-k `epstate_compute_eph_dipole!`
+(unscreened, ϵ ≡ 1): `eps[m,n,ν,k] += coeffs[ν] · Σ_iw conj(ukqs[iw,m,k]) uks[iw,n,k]`, with `ukqs`
+`(nw, nbandkq, nk)` and `uks` `(nw, nbandk, nk)`. `mmats` is `(nbandkq, nbandk, nk)` scratch on the
+same backend. Runs on the backend of `eps` (the `batched_gemm!` + broadcast are backend-generic).
 """
 function add_eph_dipole_batched!(eps, coeffs, ukqs, uks, mmats)
-    nw, _, nmodes, nk = size(eps)
+    nbandkq, nbandk, nmodes, nk = size(eps)
     batched_gemm!('C', 'N', ukqs, uks, mmats)   # mmats[m,n,k] = Σ_iw conj(ukqs[iw,m,k]) uks[iw,n,k]
-    eps .+= reshape(coeffs, 1, 1, nmodes, 1) .* reshape(mmats, nw, nw, 1, nk)
+    eps .+= reshape(coeffs, 1, 1, nmodes, 1) .* reshape(mmats, nbandkq, nbandk, 1, nk)
     eps
 end
 

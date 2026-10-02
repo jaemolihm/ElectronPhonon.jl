@@ -3,12 +3,10 @@
 # imap addressing; rather than copying g2/ωq it folds the temperature-dependent occupation physics
 # into Sₒ/Sᵢ via the shared `bte_scattering_increments` (see src/boltzmann/bte_scattering_core.jl).
 #
-# One calculator, both loop shapes: the same calculator instance serves the per-point and the batched
-# path. `run_eph_over_k_and_kq`'s `batched` selects which payload `run_calculator!` is dispatched on:
-# `EPData` (host loop, per (ik,iq,ikq)) or `EPDataQBatched` (batched, per k-batch), and `backend`
-# selects where its arrays live. Both fold the identical `bte_scattering_increments`, so they compute
-# the same scattering (to round-off); the per-point path serves as the validation reference for the
-# batched one.
+# One method per block, `run_calculator!(::EPBlock{OuterKLoop})`, on every backend (`backend` selects
+# where its arrays live): it forms g2 = |ep|²/(2ω) in a per-tile scratch and folds it through
+# `bte_scattering_increments`. The per-point `EPData` method, which folds the same function, stays
+# for the per-point loop until that loop is merged into the batched one (ElectronPhonon.jl #72).
 #
 # Output layout is what the transport solver (`solve_electron_bte` / `solve_thermoelectric_bte`)
 # consumes unchanged:
@@ -17,7 +15,7 @@
 #
 # Device memory (Sᵢ): the scattering-in matrix Sᵢ (n_i·n_f·nT) is the large object. On the GPU it
 # is never held whole on the device — it is tiled over outer k, each tile filled by one k-batch and
-# streamed to the host (OuterIterationBatch begin/end brackets), so only one tile (≈ one k-batch of rows)
+# streamed to the host (calculator_begin!/end! brackets), so only one tile (≈ one k-batch of rows)
 # is device-resident. This bounds device memory to the tile regardless of grid size at no measurable
 # speed cost: streaming is within ~2% of a single whole-Sᵢ copy even at 1.1 GB Sᵢ, because the D2H
 # bytes moved are identical either way. There is deliberately no full-device-resident Sᵢ path. (Sₒ is
@@ -36,16 +34,17 @@ export BoltzmannCalculator
 # calculator; touched only at hook granularity (one kernel launch per call), so the function boundary
 # keeps the hot code type-stable. The tiled Sᵢ output lives in `calc.tiled` (a `TiledDeviceOutput`).
 # The energies/weights/index maps are intrinsic to the state sets, so they are uploaded at setup.
-struct BoltzmannDeviceBuffers{MT, MI, VT, ST}
+struct BoltzmannDeviceBuffers{MT, MI, VT, ST, GT}
     Sₒ       :: MT      # (n_i, nT)  — small, device-resident
-    imap_i   :: MI      # (nw, n_k)  physical-band → outer state index
-    imap_f   :: MI      # (nw, n_kq) physical-band → inner state index
+    imap_i   :: MI      # (nband_max_k, n_k)   box band → outer state index (0: none)
+    imap_f   :: MI      # (nband_max_kq, n_kq) box band → inner state index (0: none)
     e_i      :: VT      # (n_i,) outer energies
     e_f      :: VT      # (n_f,) inner energies
     wf       :: VT      # (n_f,) per-final-state BZ weight; indexed by the inner state f
     μ        :: VT      # (nT,)
     T        :: VT      # (nT,)
     smearing :: ST      # (nT,)
+    g2       :: GT      # (nband_max_kq, nband_max_k, nmodes, n_inner_tile) per-tile scratch
 end
 
 Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
@@ -67,9 +66,6 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # Physical-band range (iband_min:iband_max) spanning the in-window bands; set at setup. The CPU
     # per-chunk Sₒ/Sᵢ buffers are OffsetArrays indexed over this band range. (1:0 = not set yet.)
     rng_band::UnitRange{Int} = 1:0
-    # Full (Wannier) band count (= model.nw); set at setup. Batched path only: sizes the physical-band
-    # device index maps built in the first OuterIterationBatch begin. (0 = not set yet.)
-    nw::Int = 0
 
     # --- State (BandStates) --- the (iband, ik) → state reverse map is `el_*.indmap` (via state_index)
     # The per-final-state BZ weight is `state_weights(el_f)` (el_f carries a materialized per-state
@@ -87,14 +83,8 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     Sₒ_buffer::Vector{Vector{OffsetVector{FT, Vector{FT}}}} = Vector{Vector{OffsetVector{FT, Vector{FT}}}}()
     Sᵢ_buffer::Vector{Vector{OffsetMatrix{FT, Matrix{FT}}}} = Vector{Vector{OffsetMatrix{FT, Matrix{FT}}}}()
 
-    # Loop shape, set at setup from the driver's `mode`: `true` on a batched run (on either backend).
-    # The explicit flag is the authoritative per-point-vs-batched discriminator (do not infer the run
-    # shape from the backend, nor from `dev`/`tiled` being set).
-    batched::Bool = false
-
-    # --- Device buffers (batched path) ---
-    # Built once in `setup_calculator!` on a batched run; `nothing` on the per-point path. See
-    # `BoltzmannDeviceBuffers`.
+    # --- Device buffers ---
+    # Built once in `setup_calculator!`. See `BoltzmannDeviceBuffers`.
     dev::Union{Nothing, BoltzmannDeviceBuffers} = nothing
 
     # --- Tiled Sᵢ device output (batched path) ---
@@ -110,12 +100,26 @@ end
 
 supports(::BoltzmannCalculator, ::Type{OuterKLoop}) = true
 supports(::BoltzmannCalculator, ::Type{EPData}) = true
-supports(::BoltzmannCalculator, ::Type{EPDataQBatched}) = true
+# The loop always provides `e`, `u` and the e-ph matrix elements; this lists the extra quantities:
+# the band velocities of both sides (`BandStates`).
+required_el_quantities(::BoltzmannCalculator) = [:vdiag]
 
-function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBackend, mode::LoopMode,
-        kpts, qpts, el_states;
-        el_states_kq, kqpts, sel_k, sel_kq, nchunks_threads, rng_band,
-        nw, kwargs...) where {FT}
+# What `setup_calculator!` allocates on the backend: the whole-run Sₒ, index maps and per-state
+# arrays, the Sᵢ tile (rows of the outer states of one k, all inner states and temperatures, per
+# outer point), and the per-tile g2 scratch. The state counts are bounded by the containers' boxes;
+# without containers (`estimate_device_memory`) only the scratch is counted.
+function eph_batched_bytes_per_point(calc::BoltzmannCalculator{FT}, ::Type{<:EPBlock{OuterKLoop}};
+        nmodes, nband_max_k, nband_max_kq, els_k = nothing, els_kq = nothing, kwargs...) where {FT}
+    per_pair = sizeof(FT) * nband_max_kq * nband_max_k * nmodes
+    (els_k === nothing || els_kq === nothing) && return (; persistent = 0, per_outer = 0, per_pair)
+    n_i, n_f, nT = sum(els_k.nband), sum(els_kq.nband), length(calc.occ)
+    persistent = sizeof(FT) * (n_i * nT + n_i + 2n_f + 3nT) +                      # Sₒ, e_i, e_f, wf, μ, T, smearing
+        sizeof(Int) * (els_k.nband_max * els_k.nk + els_kq.nband_max * els_kq.nk)     # imap_i, imap_f
+    (; persistent, per_outer = sizeof(FT) * nband_max_k * n_f * nT, per_pair)
+end
+
+function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBackend, els_k, els_kq, phs;
+        sel_k, sel_kq, nmodes, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...) where {FT}
     mpi_isroot() && println("Setting up BoltzmannCalculator")
     calc.done &&
         throw(ArgumentError("this BoltzmannCalculator has already been run; reconstruct the " *
@@ -133,14 +137,12 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
     1 <= calc.occupation_method <= 6 ||
         throw(ArgumentError("occupation_method must be an integer in 1:6, got $(calc.occupation_method)"))
     calc.nchunks = nchunks_threads
-    calc.rng_band = rng_band
-    calc.nw = nw
 
-    # Build the rich BandStates (es/vs attached) directly on the prebuilt selections, so el_i/el_f
-    # carry the per-(k,band) weights and `nstates_base` of the selection (the multigrid double-grid
-    # partition; on a uniform grid the weights are empty and derive to the per-k weight, unchanged).
-    calc.el_i, _ = electron_states_to_BandStates(el_states, sel_k)
-    calc.el_f, _ = electron_states_to_BandStates(el_states_kq, sel_kq)
+    # The selections' states with their energies and velocities, so el_i/el_f carry the
+    # per-(k,band) weights and `nstates_base` of the selection (the multigrid double-grid partition;
+    # on a uniform grid the weights derive to the per-k weight).
+    calc.el_i = BandStates(els_k, sel_k)
+    calc.el_f = BandStates(els_kq, sel_kq)
 
     # Chemical potential: solved directly on el_i, whose per-state energies/weights and `nstates_base`
     # give the correct auto-μ carrier count on a windowed selection (the below-window count rides on
@@ -158,47 +160,32 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
     calc.Sᵢ = [zeros(FT, n_i, n_f) for _ in 1:nT]
     # Tiled Sᵢ device output: shape (n_i, n_f, nT), tiled over the outer-k state axis (axis 1), always
     # block mode (there is deliberately no full-device-resident Sᵢ path). Metadata only at setup; the
-    # device/host tile buffers are lazy in `tile_begin!` (batched runs only, first batch), so this is
-    # cheap on the per-point path where `tile_begin!` never runs.
-    calc.tiled = TiledDeviceOutput{FT}((n_i, n_f, nT), 1, calc.el_i; narr = 1, force_block = true)
+    # device/host tile buffers are lazy in `tile_begin!` (first batch).
+    calc.tiled = TiledDeviceOutput{FT}((n_i, n_f, nT), 1, calc.el_i, n_outer_batch; narr = 1,
+                                       force_block = true)
 
-    # Batched path: build the whole-run device buffers now (backend is a positional argument here). The
-    # band energies/weights/index maps are intrinsic to the state sets and temperatures, so they are
-    # set up once here rather than lazily during the loop. `alloc`/`to_device`/`_indmap_to_device` are
-    # backend-generic, so on a `CPUBackend` these are host arrays. On the per-point path nothing is
-    # built (`dev` stays `nothing`; it uses the `run_calculator!(::EPData)` loop instead). Keyed on
-    # `mode`, NOT on `backend isa GPUBackend` — see the `AbstractCalculator` docstring.
-    calc.batched = mode isa BatchedMode
-    if calc.batched
-        calc.dev = BoltzmannDeviceBuffers(
-            alloc_zeros(backend, FT, n_i, nT),                                  # Sₒ
-            _indmap_to_device(backend, calc.el_i, calc.nw),                     # imap_i
-            _indmap_to_device(backend, calc.el_f, calc.nw),                     # imap_f
-            to_device(backend, calc.el_i.es),                                   # e_i  (per outer state)
-            to_device(backend, calc.el_f.es),                                   # e_f  (per inner state)
-            to_device(backend, collect(FT, state_weights(calc.el_f))),          # wf   (per inner state f)
-            to_device(backend, collect(FT, calc.occ.μlist)),                    # μ
-            to_device(backend, collect(FT, calc.occ.Tlist)),                    # T
-            to_device(backend, calc.smearing_list),                             # smearing (one per T)
-        )
-    else
-        # Per-point path: build the per-chunk thread buffers here (mirror of the eager device buffers
-        # above). Guarded by `!batched` because they are large (nchunks·nT·rng_band·n_f) and the
-        # batched path must not allocate them. `calculator_begin!` only zeros them per outer k.
-        rb = calc.rng_band
-        calc.Sₒ_buffer = [[OffsetArray(zeros(FT, length(rb)), rb) for _ in 1:nT] for _ in 1:calc.nchunks]
-        calc.Sᵢ_buffer = [[OffsetArray(zeros(FT, length(rb), n_f), rb, :) for _ in 1:nT] for _ in 1:calc.nchunks]
-    end
+    # The whole-run device buffers: the band energies/weights/index maps are intrinsic to the state
+    # sets and temperatures, so they are set up once here. `alloc`/`to_device` are backend-generic, so
+    # on a `CPUBackend` these are host arrays.
+    calc.dev = BoltzmannDeviceBuffers(
+        alloc_zeros(backend, FT, n_i, nT),                                  # Sₒ
+        _indmap_to_device(backend, calc.el_i),                              # imap_i
+        _indmap_to_device(backend, calc.el_f),                              # imap_f
+        to_device(backend, calc.el_i.es),                                   # e_i  (per outer state)
+        to_device(backend, calc.el_f.es),                                   # e_f  (per inner state)
+        to_device(backend, collect(FT, state_weights(calc.el_f))),          # wf   (per inner state f)
+        to_device(backend, collect(FT, calc.occ.μlist)),                    # μ
+        to_device(backend, collect(FT, calc.occ.Tlist)),                    # T
+        to_device(backend, calc.smearing_list),                             # smearing (one per T)
+        alloc(backend, FT, els_kq.nband_max, els_k.nband_max, nmodes, n_inner_tile),   # g2
+    )
     calc
 end
 
 # --- Per-point (non-batched, EPData) path --------------------------------------------
 
-# Per-point path: zero the per-chunk thread buffers for the new outer k (the buffers are allocated in
-# `setup_calculator!`). Dispatched on `SingleMode`; the batched outer-k loop fires no per-k
-# `OuterIteration` bracket at all — its device lifecycle lives in the OuterIterationBatch brackets.
-function calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIteration,
-        ctx::LoopContext{CPUBackend, SingleMode}) where {FT}
+# Per-point path: zero the per-chunk thread buffers for the new outer k.
+function calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIteration, ctx) where {FT}
     for c in eachindex(calc.Sₒ_buffer)
         for x in calc.Sₒ_buffer[c]; x .= 0; end
         for x in calc.Sᵢ_buffer[c]; x .= 0; end
@@ -209,8 +196,8 @@ end
 # Per-point path: called per (ik, iq, ikq) by the host e-ph loop; accumulates into the per-chunk thread
 # buffers, reduced into Sₒ/Sᵢ by the OuterIteration end bracket. The `(m, n, iT, imode)` loop below
 # mirrors, term for term (`ek`/`ekq`/`ωq`/`sₒ_ν`/`sᵢ_ν`/`sₒ`/`sᵢ`), the work in
-# `bte_window_accumulate!` (the EPDataQBatched path); both fold the identical `bte_scattering_increments`.
-function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData, ctx::LoopContext{CPUBackend, SingleMode}) where {FT}
+# `bte_window_accumulate!` (the EPBlock path); both fold the identical `bte_scattering_increments`.
+function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData, ctx) where {FT}
     (; epstate, ikq, id_chunk) = p
     Sₒ = calc.Sₒ_buffer[id_chunk]
     Sᵢ = calc.Sᵢ_buffer[id_chunk]
@@ -246,10 +233,8 @@ function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPData, ctx::LoopCont
     calc
 end
 
-# Per-point path: reduce the per-chunk buffers into the global Sₒ/Sᵢ. Dispatched on `SingleMode`; the
-# batched loop (`BatchedMode`) runs the default no-op.
-function calculator_end!(calc::BoltzmannCalculator, ::OuterIteration,
-        ctx::LoopContext{CPUBackend, SingleMode})
+# Per-point path: reduce the per-chunk buffers into the global Sₒ/Sᵢ.
+function calculator_end!(calc::BoltzmannCalculator, ::OuterIteration, ctx)
     ik = ctx.outer_index
     @inbounds @views for n in calc.rng_band
         ind_el_i = state_index(calc.el_i, ik, n)
@@ -264,24 +249,18 @@ function calculator_end!(calc::BoltzmannCalculator, ::OuterIteration,
     calc
 end
 
-# --- Batched path (EPDataQBatched) ---------------------------------------------------
+# --- Blocks (EPBlock) ----------------------------------------------------------------
 
-# Batched path: called by the batched e-ph loop once per outer-k batch, before its k iterations. The
-# run's device buffers (`calc.dev`) were built once in `setup_calculator!`; here it only records this
-# batch's Sᵢ tile range and zeros the tile's active region (via `calc.tiled`). The `BatchedMode`
-# annotation records the only mode this scope is ever fired in (`OuterIterationBatch`/`SingleMode`
-# does not occur); brackets have no default, so this method is required rather than an override.
-function calculator_begin!(calc::BoltzmannCalculator{FT}, ::OuterIterationBatch,
-        ctx::LoopContext{<:AbstractBackend, BatchedMode}) where {FT}
+# Once per outer-k batch, before its blocks: record this batch's Sᵢ tile range and zero the tile's
+# active region (via `calc.tiled`).
+function calculator_begin!(calc::BoltzmannCalculator{FT}, ctx::LoopContext) where {FT}
     # Sᵢ tile for this batch (block mode: zeroed and its range recorded by the helper).
     tile_begin!(calc.tiled, ctx)
     calc
 end
 
-# Batched path: stream this batch's Sᵢ tile from device to the host output (called once per
-# outer-k batch, after its k iterations). Dispatched on `BatchedMode`.
-function calculator_end!(calc::BoltzmannCalculator, ::OuterIterationBatch,
-        ctx::LoopContext{<:AbstractBackend, BatchedMode})
+# Once per outer-k batch, after its blocks: stream the batch's Sᵢ tile from device to the host output.
+function calculator_end!(calc::BoltzmannCalculator, ctx::LoopContext)
     t = calc.tiled
     ni = tile_length(t)
     if ni > 0
@@ -289,7 +268,7 @@ function calculator_end!(calc::BoltzmannCalculator, ::OuterIterationBatch,
         tile_download!(t)             # contiguous device→host copy into the tile's host mirror
         host = host_array(t, 1)
         @inbounds for iT in 1:length(calc.occ)
-            @views calc.Sᵢ[iT][i0+1:i0+ni, :] .= host[1:ni, :, iT]
+            @views calc.Sᵢ[iT][i0+1:i0+ni, :] .= host[:, :, iT]
         end
     end
     calc
@@ -297,11 +276,11 @@ end
 
 """
     bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
-                           μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nq_batch, i0)
+                           μs, Ts, ηs, method, ω_cutoff, i0)
 
 Accumulate the BTE scattering-out (Sₒ) and scattering-in (Sᵢ) contributions of one k+q batch into
 the (in-energy-window) device buffers — the transport analogue of `eph_window_scatter!`, and the
-device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPDataQBatched, ctx)` (its sole caller, so it lives here). For every
+device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPBlock{OuterKLoop}, ctx)` (its sole caller, so it lives here). For every
 `(m, n, j)` of the batch look up the outer/inner states `i = imap_i_at_k[n]`,
 `f = imap_f[m, ikqs[j]]` (skip if either is out-of-window, `== 0`), the per-final-state weight
 `wtq = wf[f]`, then for each temperature
@@ -316,15 +295,15 @@ device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPDataQBatched
     is a collision-free plain write (no atomics needed). `Sᵢ` is streamed to the host one tile per
     outer-k batch, so `Sᵢ_out` is the current tile and the row is the tile-local `i - i0`.
 
-`imap_i_at_k` is `imap_i[:, ik]` — the outer-state indices at the batch's fixed outer k `ik`.
-`i0` is the global-i offset of the current `Sᵢ` tile.
+`imap_i_at_k` is `imap_i[:, ik]` — the outer-state indices of the box bands at the batch's fixed
+outer k `ik` — and `imap_f` is in the k+q container's box coordinates; both are 0 on the box padding,
+so its `g2vals` entries are never read. `i0` is the global-i offset of the current `Sᵢ` tile. The
+extents are those of `g2vals` `(nbandkq, nbandk, nmodes, nq_batch)`; `ωqmat`, `ikqs` and the index
+maps must agree with them, or a `DimensionMismatch` is thrown.
 
-The generic method below serves the CPU+batched validation configuration
-(`run_eph_over_k_and_kq(...; batched = true)` on a `CPUBackend`), where the whole batched loop runs
-on host arrays; the CUDA extension provides a `CuArray` kernel. Dispatch is on
-`Sₒ_out::CuArray, Sᵢ_out::CuArray`, so a GPU run can only reach the generic method if `calc.dev` was
-itself built on a `CPUBackend`, i.e. only in that deliberate configuration (and
-`CUDA.allowscalar(false)` turns any accidental host/device mixing into a hard error). The physics
+The generic method below serves a run on a `CPUBackend`, where the whole loop runs on host arrays;
+the CUDA extension provides a `CuArray` kernel. Dispatch is on `Sₒ_out::CuArray, Sᵢ_out::CuArray`
+(and `CUDA.allowscalar(false)` turns any accidental host/device mixing into a hard error). The physics
 lives entirely in `bte_scattering_increments`, so both methods and the per-(k,q) host loop above
 compute the same scattering (validated in `test/boltzmann/test_gpu_boltzmann_calculator.jl`).
 `eph_window_scatter!` (src/calculator/calculator_utils.jl) ships the same generic + `CuArray` pair.
@@ -334,8 +313,8 @@ batched loop is single-threaded over its (k, q-tile) iterations, so there is no 
 the kernel's concurrent writes.
 """
 function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
-        e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff,
-        nbandkq::Int, nbandk::Int, nmodes::Int, nq_batch::Int, i0::Int)
+        e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff, i0::Int)
+    nbandkq, nbandk, nmodes, nq_batch = _scatter_extents(g2vals, ωqmat, ikqs, imap_i_at_k, imap_f)
     nT = length(μs)
     @inbounds for iq_batch in 1:nq_batch, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_at_k[n]         # outer (k) state index; 0 = out of window → skip
@@ -361,40 +340,28 @@ function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k,
     nothing
 end
 
-# Batched path: called once per outer-k batch by the batched e-ph loop; scatters into `dev.Sₒ` and the
-# current Sᵢ tile via `bte_window_accumulate!` (the batched analogue of the per-point EPData loop
-# above — same `bte_scattering_increments`). No per-chunk reduction: the scatter writes the global buffers.
-function run_calculator!(calc::BoltzmannCalculator{FT}, p::EPDataQBatched, ctx) where {FT}
-    (; g2s, ωqs, ik, ikqs, ibandk_offset) = p
+# One block: one outer k with a tile of k+q points. Forms g2 = |ep|²/(2ω) in the per-tile scratch and
+# scatters into `dev.Sₒ` and the current Sᵢ tile via `bte_window_accumulate!` (same
+# `bte_scattering_increments` as the per-point EPData method above). The batched loop runs one block
+# at a time, so the scatter writes the global buffers directly.
+function run_calculator!(calc::BoltzmannCalculator{FT}, block::EPBlock{OuterKLoop}, ctx) where {FT}
+    (; ep, phs, ik, ikq) = block
     dev = calc.dev
-    nbandkq, _, nmodes, nq_batch = size(g2s)
-    # Device buffers (imap/energies/Sₒ in `dev`, the Sᵢ tile in `calc.tiled`) were built once at
-    # setup. `g2s = |ep|²/(2ω)` is folded by the loop's fused kernel (payload).
-
-    # k-side window projection: the band-n axis starts at physical band ibandk_offset+1, so shift
-    # into the physical-band imap_i by that offset (full-band runs have ibandk_offset = 0,
-    # nbandk = nw). Columns past physical band nw are padding and are not read; columns of
-    # out-of-window bands below it have imap == 0. The k+q axis (m ∈ 1:nbandkq = nw) is not projected.
-    nbandk = nbandk_physical(p, calc.nw)
-    imap_i_at_k = view(dev.imap_i, ibandk_offset+1:ibandk_offset+nbandk, ik)
-
-    # Scatter into this batch's Sᵢ tile (streamed to the host by the OuterIterationBatch end bracket).
+    nmodes, nq_batch = size(ep, 3), size(ep, 4)
+    g2 = view(dev.g2, :, :, :, 1:nq_batch)
+    g2 .= abs2.(ep) .* inv.(2 .* reshape(phs.e, 1, 1, nmodes, nq_batch))   # as `epstate_set_g2!`
     t = calc.tiled
-    bte_window_accumulate!(dev.Sₒ, device_array(t, 1), g2s, ωqs,
-        imap_i_at_k, dev.imap_f, ikqs, dev.e_i, dev.e_f, dev.wf,
-        dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff,
-        nbandkq, nbandk, nmodes, nq_batch, tile_offset(t))
+    bte_window_accumulate!(dev.Sₒ, device_array(t, 1), g2, phs.e,
+        view(dev.imap_i, :, ik), dev.imap_f, ikq, dev.e_i, dev.e_f, dev.wf,
+        dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff, tile_offset(t))
     calc
 end
 
 function postprocess_calculator!(calc::BoltzmannCalculator{FT}; kwargs...) where {FT}
     calc.done = true    # single-use: `setup_calculator!` errors on a re-run
-    # Per-point run: no device buffers to stream/free. On the batched no-batch corner (this rank owns
-    # no outer k: empty MPI slice / empty window) `dev.Sₒ` is still the setup zeros, so streaming it
-    # below leaves Sₒ zero as intended.
-    calc.batched || return calc
-    # Batched path: Sₒ is kept in `dev`, so copy it to the host output here. (Sᵢ was already streamed
-    # one tile per outer-k batch in the OuterIterationBatch end bracket.)
+    # Sₒ is kept in `dev`, so copy it to the host output here (Sᵢ was already streamed one tile per
+    # outer-k batch in the end bracket). With no batch on this rank (empty MPI slice or window)
+    # `dev.Sₒ` is still the setup zeros.
     Sₒ_host = Array(calc.dev.Sₒ)        # (n_i, nT)
     @inbounds for iT in 1:length(calc.occ)
         @views calc.Sₒ[iT] .= Sₒ_host[:, iT]

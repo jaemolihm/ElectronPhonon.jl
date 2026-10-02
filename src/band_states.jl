@@ -71,8 +71,7 @@ struct BandStates{T, KT <: AbstractKpoints{T}} <: AbstractBandStates{T, KT}
     nband_ignore::Int       # bands below the lowest indexed one = minimum(iband) - 1, subtracted
                             # so band `iband` maps to `indmap` row `iband - nband_ignore ∈ 1:nband`
     nw::Int                 # full (Wannier) band count of the model these states came from; the
-                            # physical-band extent (≥ nband_ignore + nband). Informational — the
-                            # device index-map pad width is passed explicitly to `_indmap_to_device`.
+                            # physical-band extent (≥ nband_ignore + nband). Informational.
     kpts::KT                # k-grid: vectors, weights, ngrid (+ hash if GridKpoints)
     iks::Vector{Int}        # per-state k index into kpts (k-vector/weight derived via this)
     ibands::Vector{Int}     # per-state band index (mode index for phonons)
@@ -194,8 +193,8 @@ k-index `ik` is stored directly (no deduplication: `kpts` already holds the dist
 `state_index(xk, …)` queries); callers holding a plain `Kpoints` promote it first.
 
 `imap` is a view of the `BandStates`' own `indmap` with its rows offset by `nband_ignore`, not a
-second copy — query the same map with `state_index`, or build a device copy for the GPU scatter with
-`_indmap_to_device`.
+second copy — query the same map with `state_index`, or build a device map in the box coordinates
+of a container built from the same selection with `_indmap_to_device`.
 
 This is the `BandStates` replacement for `electron_states_to_BTStates`.
 """
@@ -272,30 +271,6 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
         copy(sel.iks), copy(sel.ibands), es, vs, copy(sel.weights), sel.nstates_base,
         copy(sel.indmap), copy(sel.band_extent))
     bs, OffsetArray(bs.indmap, band_range(bs), 1:sel.kpts.n)
-end
-
-# Build a device `(nband_physical, nk)` integer index map addressable by PHYSICAL band: row `iband` ∈
-# 1:nband_physical holds the flattened state index for `(iband, ik)`, and 0 where that band is absent
-# / out of the energy window, so a device kernel can look a state up directly from its physical band
-# index. (`s.indmap` is stored band-offset by `nband_ignore`; this places its rows at their
-# physical-band positions `nband_ignore+1 : nband_ignore+nband`.)
-#
-# `nband_physical` is the physical-band row count (row stride) to pad to — a property of the
-# CONSUMER's index space, not of `s`, so it is passed explicitly rather than read from `s.nw`: the
-# two callers choose it differently (Boltzmann passes `model.nw`; ME passes `nbandkq`).
-#
-# Why the full physical-band rows and not the (smaller) in-window / projected band count:
-#   * k+q map: the scatter indexes it by the physical k+q band `m`. The k+q band axis is NOT
-#     window-projected (all bands are kept; out-of-window ones are the 0 entries), so it needs a row
-#     per physical band.
-#   * k map: the scatter reads it as a per-k *shifted* window `view(·, ibandk_offset+1 : +nbandk, ik)`
-#     (the k side IS projected to nbandk). It could be stored as just `nbandk` rows by baking each k's
-#     `ibandk_offset` into its column, but this Int map is tiny next to the streamed Sᵢ (GBs), so both
-#     maps share the one physical-band layout and the k side simply offsets at read time.
-function _indmap_to_device(backend::AbstractBackend, s::AbstractBandStates, nband_physical::Integer)
-    indmap_host = zeros(Int, nband_physical, s.kpts.n)
-    @views indmap_host[s.nband_ignore+1 : s.nband_ignore+s.nband, :] .= s.indmap
-    to_device(backend, indmap_host)
 end
 
 """
@@ -471,6 +446,21 @@ function state_index(s::AbstractBandStates{T, <:GridKpoints},
     ik === nothing ? 0 : state_index(s, ik, iband)
 end
 state_index(s::AbstractBandStates, st::NamedTuple) = state_index(s, st.xk, st.iband)
+
+# The state index map of `states` in the box coordinates of a container built from it, on
+# `backend`: entry `[n, ik]` is the index in `states` of physical band `first(band_extent[ik]) + n - 1`
+# at k point `ik`, 0 where that band is not a state of `states` or `n > length(band_extent[ik])`. The
+# builders size a container's box from the same extents (offset `first - 1`, `nband = length`,
+# `nband_max` the largest length), so a kernel looks a state up from a block's local band index and
+# never reads the box padding.
+function _indmap_to_device(backend::AbstractBackend, states::AbstractBandStates)
+    band_extent = states.band_extent
+    indmap = zeros(Int, maximum(length, band_extent; init = 0), length(band_extent))
+    for ik in eachindex(band_extent), (n, iband) in enumerate(band_extent[ik])
+        indmap[n, ik] = state_index(states, ik, iband)
+    end
+    to_device(backend, indmap)
+end
 
 """
     state_index_in_star(s, xk, iband, symmetry) -> Int

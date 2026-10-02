@@ -1,13 +1,12 @@
 # The test-only reference for the e-ph loops: a plain double loop over (k, k+q) on per-point
 # `ElectronState`s and the per-point kernels `get_eph_RR_to_kR!` / `get_eph_kR_to_kq!`, with the
 # phonons solved at each q. Its own loop structure, so it is independent of every driver's batching,
-# tiling, threading and staging; and recorder calculators that read the same `|g|^2` out of each
-# payload of the current drivers. Compared on gauge-invariant quantities: |g|^2 summed over
+# tiling, threading and staging; and a recorder calculator that reads the same `|g|^2` out of each
+# block of the current drivers. Compared on gauge-invariant quantities: |g|^2 summed over
 # degenerate multiplets of the k band, the k+q band and the phonon mode, and the phonon frequencies.
 
-using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPData, EPDataQBatched,
-    EPDataKBatched, OuterIteration, OuterIterationBatch, get_eph_RR_to_kR!, get_eph_kR_to_kq!,
-    get_next_wannier_object, get_interpolator, Vec3
+using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, get_eph_RR_to_kR!,
+    get_eph_kR_to_kq!, get_next_wannier_object, get_interpolator, Vec3
 using OffsetArrays: no_offset_view
 
 # Indices of `x` grouped into runs of values within `tol` of the previous one (degenerate
@@ -79,6 +78,61 @@ function eph_reference(model, kpts, kqpts, window_k, window_kq)
 end
 
 """
+    eph_reference_dg(model, kpts, kqpts) -> Dict(pair key => (Σ |dg[:, :, :, d]|² for d in 1:3))
+
+The covariant derivative of the e-ph matrix, `dg[m, n, ν, d]`, of every pair `(k, k+q)` of
+`kpts × kqpts` on the full band window, in the tight-binding approximation of the per-point outer-k
+loop (`covariant_derivative_of_g`): the Fourier transform of `im R_e g(R_e, R_p)` plus
+`im (r_j - r_i) g`, rotated to the electron and phonon eigenbases. Summed over the bands and modes,
+so the sums do not depend on either basis. `model` must have `epmat_outer_momentum = "el"`.
+"""
+function eph_reference_dg(model, kpts, kqpts)
+    (; nw, nmodes) = model
+    epmat_R_obj = ElectronPhonon.wannier_object_multiply_R(model.epmat, model.lattice)
+    nrp = length(epmat_R_obj.irvec_next)
+    @views for ire in axes(epmat_R_obj.op_r, 2)
+        g = Base.ReshapedArray(model.epmat.op_r[:, ire], (nw, nw, nmodes, nrp), ())
+        gR = Base.ReshapedArray(epmat_R_obj.op_r[:, ire], (nw, nw, nmodes, nrp, 3), ())
+        for idir in 1:3, iw in 1:nw
+            ri = model.wann_centers[iw][idir]
+            gR[iw, :, :, :, idir] .-= im .* ri .* g[iw, :, :, :]
+            gR[:, iw, :, :, idir] .+= im .* ri .* g[:, iw, :, :]
+        end
+    end
+    epmat_R = get_interpolator(epmat_R_obj; fourier_mode = "normal")
+    epobj_ekpR_R = get_next_wannier_object(epmat_R_obj)
+    ep_ekpR_R = get_interpolator(epobj_ekpR_R; fourier_mode = "normal")
+    dyn = get_interpolator(model.ph_dyn; fourier_mode = "normal")
+    el_k = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector"]; fourier_mode = "normal")
+    el_kq = compute_electron_states(model, kqpts, ["eigenvalue", "eigenvector"]; fourier_mode = "normal")
+    ph = PhononState(nmodes, Float64)
+    ngrid = kqpts.ngrid
+    nrp_next = length(epobj_ekpR_R.irvec)
+    out = Dict{NTuple{6, Int}, Vector{Float64}}()
+    for (ik, xk) in enumerate(kpts.vectors)
+        get_fourier!(epmat_R.out, epmat_R, xk)
+        tmp = Base.ReshapedArray(epmat_R.out, (nw * nw * nmodes, nrp_next, 3), ())
+        epobj_ekpR_R.op_r .= reshape(permutedims(tmp, (1, 3, 2)), (nw * nw * nmodes * 3, nrp_next))
+        uk = el_k[ik].u_full
+        for (ikq, xkq) in enumerate(kqpts.vectors)
+            xq = ElectronPhonon.normalize_kpoint_coordinate(xkq - xk .+ 1/2) .- 1/2
+            set_eigen!(ph, dyn, model.mass, model.polar_phonon, xq)
+            get_fourier!(ep_ekpR_R.out, ep_ekpR_R, xq)
+            dg_wan = reshape(ep_ekpR_R.out, nw, nw, nmodes, 3)
+            ukq = el_kq[ikq].u_full
+            sums = zeros(3)
+            for d in 1:3
+                dg_e = stack(ν -> ukq' * dg_wan[:, :, ν, d] * uk, 1:nmodes)       # (m, n, ν') Wannier mode
+                dg_ph = reshape(reshape(dg_e, nw * nw, nmodes) * ph.u, nw, nw, nmodes)
+                sums[d] = sum(abs2, dg_ph)
+            end
+            out[_pair_key(xk, xkq, ngrid)] = sums
+        end
+    end
+    out
+end
+
+"""
     compare_with_reference(ref, rec; tol_degen = 1e-6)
         -> (; g2_reldev, ω_dev, npairs, nmissing, nextra)
 
@@ -96,8 +150,7 @@ function compare_with_reference(ref, rec; tol_degen = 1e-6)
         b = rec.g2abs[key]
         elk = ref.el_k[key[1:3]]; elkq = ref.el_kq[key[4:6]]
         ω = ref.ωq[key]
-        # The outer-q batched payload carries no frequencies (recorded as NaN).
-        all(isnan, rec.ωq[key]) || (ωdev = max(ωdev, maximum(abs, ω - rec.ωq[key])))
+        ωdev = max(ωdev, maximum(abs, ω - rec.ωq[key]))
         for gm in contract_multiplets(collect(elkq.e), tol_degen),
                 gn in contract_multiplets(collect(elk.e), tol_degen),
                 gν in contract_multiplets(ω, tol_degen)
@@ -105,76 +158,53 @@ function compare_with_reference(ref, rec; tol_degen = 1e-6)
             g2dev = max(g2dev, abs(sum(a[mm, nn, gν]) - sum(b[mm, nn, gν])))
         end
     end
-    # A loop may hand a calculator pairs with an empty window on one side (the outer-q batched loop
-    # masks instead of skipping); they must carry no coupling.
+    # A loop may hand a calculator pairs with an empty window on one side (the outer-q loop solves
+    # k+q per tile and does not skip them); they must carry no coupling.
     nextra = count(key -> !haskey(ref.g2abs, key) && !iszero(rec.g2abs[key]), keys(rec.g2abs))
     (; g2_reldev = g2dev / scale, ω_dev = ωdev, npairs = length(ref.g2abs), nmissing, nextra)
 end
 
-# ---- recorders: |g|^2 per pair out of each payload --------------------------------------------
+# ---- recorder: |g|^2 per pair out of each block ----------------------------------------------
 
-# One recorder for every loop and payload. Writes are keyed by the pair, so concurrent chunks
-# write different entries; the Dict itself is guarded by a lock.
+# One recorder for both loop orders. Writes are keyed by the pair; the Dict is guarded by a lock.
 mutable struct _PairRecorder <: AbstractCalculator
     nw::Int
     nmodes::Int
     ngrid::NTuple{3, Int}
-    kpts::Any
-    qpts::Any
-    kqpts::Any
     g2abs::Dict{NTuple{6, Int}, Array{Float64, 3}}
     ωq::Dict{NTuple{6, Int}, Vector{Float64}}
     lock::ReentrantLock
-    _PairRecorder() = new(0, 0, (0, 0, 0), nothing, nothing, nothing, Dict(), Dict(),
-                          ReentrantLock())
+    _PairRecorder() = new(0, 0, (0, 0, 0), Dict(), Dict(), ReentrantLock())
 end
-for P in (OuterKLoop, OuterQLoop, EPData, EPDataQBatched, EPDataKBatched)
-    @eval ElectronPhonon.supports(::_PairRecorder, ::Type{$P}) = true
-end
-ElectronPhonon.allowed_eph_phonon_basis(::_PairRecorder) = [:eigenmode]
-ElectronPhonon.required_el_k_quantities(::_PairRecorder) = ["eigenvalue", "eigenvector"]
-ElectronPhonon.calculator_begin!(::_PairRecorder, ::Any, ctx) = nothing
-ElectronPhonon.calculator_end!(::_PairRecorder, ::Any, ctx) = nothing
+ElectronPhonon.supports(::_PairRecorder, ::Type{OuterKLoop}) = true
+ElectronPhonon.supports(::_PairRecorder, ::Type{OuterQLoop}) = true
+# The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator
+# reads, so it defines no `required_el_quantities` / `required_ph_quantities`.
+ElectronPhonon.calculator_begin!(::_PairRecorder, ctx) = nothing
+ElectronPhonon.calculator_end!(::_PairRecorder, ctx) = nothing
 ElectronPhonon.postprocess_calculator!(c::_PairRecorder; kwargs...) = c
-function ElectronPhonon.setup_calculator!(c::_PairRecorder, backend, mode, kpts, qpts, el_states;
-        nw, nmodes, kqpts = nothing, kwargs...)
-    c.nw, c.nmodes = nw, nmodes
-    c.kpts, c.qpts, c.kqpts = kpts, qpts, kqpts
-    c.ngrid = kpts.ngrid
+function ElectronPhonon.setup_calculator!(c::_PairRecorder, backend, els_k, els_kq, phs; nw, nmodes,
+        kwargs...)
+    c.nw, c.nmodes, c.ngrid = nw, nmodes, els_k.kpts.ngrid
     c
 end
 
-function _record!(c::_PairRecorder, key, a, ω)
-    lock(c.lock) do
-        c.g2abs[key] = a
-        c.ωq[key] = ω
-    end
-end
-
-function ElectronPhonon.run_calculator!(c::_PairRecorder, p::EPData, ctx)
-    (; epstate, xk, xq) = p
-    (; el_k, el_kq, ph) = epstate
-    a = zeros(c.nw, c.nw, c.nmodes)
-    a[el_kq.rng, el_k.rng, :] .= abs2.(no_offset_view(epstate.ep))
-    _record!(c, _pair_key(xk, xk + xq, c.ngrid), a, copy(ph.e))
-end
-
-function ElectronPhonon.run_calculator!(c::_PairRecorder, p::EPDataQBatched, ctx)
-    eps = Array(p.eps); ωqs = Array(p.ωqs)
-    # Box columns past physical band nw are padding.
-    nbandkq, nbandk = size(eps, 1), ElectronPhonon.nbandk_physical(p, c.nw)
-    xk = c.kpts.vectors[p.ik]
-    for (j, ikq) in enumerate(p.ikqs)
+# Both orders: the side shared by the block has extent 1 along the pair axis.
+function ElectronPhonon.run_calculator!(c::_PairRecorder, p::EPBlock, ctx)
+    ep = Array(p.ep); ω = Array(p.phs.e)
+    offk, nbk = Array(p.els_k.iband_offset), Array(p.els_k.nband)
+    offkq, nbkq = Array(p.els_kq.iband_offset), Array(p.els_kq.nband)
+    for j in axes(ep, 4)
+        jk, jkq = min(j, length(nbk)), min(j, length(nbkq))
+        xk = p.xk isa Vec3 ? p.xk : p.xk[j]
+        xq = p.xq isa Vec3 ? p.xq : p.xq[j]
+        nn, mm = 1:nbk[jk], 1:nbkq[jkq]
         a = zeros(c.nw, c.nw, c.nmodes)
-        a[1:nbandkq, p.ibandk_offset .+ (1:nbandk), :] .= abs2.(eps[:, 1:nbandk, :, j])
-        _record!(c, _pair_key(xk, c.kqpts.vectors[ikq], c.ngrid), a, ωqs[:, j])
-    end
-end
-
-function ElectronPhonon.run_calculator!(c::_PairRecorder, p::EPDataKBatched, ctx)
-    eps = Array(p.eps)
-    xq = c.qpts.vectors[p.iq]
-    for (j, xk) in enumerate(p.xks)
-        _record!(c, _pair_key(xk, xk + xq, c.ngrid), abs2.(eps[:, :, :, j]), fill(NaN, c.nmodes))
+        a[offkq[jkq] .+ mm, offk[jk] .+ nn, :] .= abs2.(ep[mm, nn, :, j])
+        lock(c.lock) do
+            key = _pair_key(xk, xk + xq, c.ngrid)
+            c.g2abs[key] = a
+            c.ωq[key] = ω[:, min(j, size(ω, 2))]
+        end
     end
 end

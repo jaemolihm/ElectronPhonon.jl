@@ -39,8 +39,8 @@ end
     # Evaluate the guide's example verbatim (defines the struct + interface methods).
     include_string(@__MODULE__, code)
 
-    # Run it on the Pb artifact model (outer-k driver). This is threaded (@threads over k+q chunks),
-    # so it also exercises the per-chunk (id_chunk) thread-safety pattern the guide documents.
+    # Run it on the Pb artifact model (outer-k driver), with several outer batches and inner tiles,
+    # so the per-chunk partials and their reduction over `ctx.batch` are exercised.
     # `invokelatest`: the calculator type + its interface methods were just defined by
     # `include_string`, so construct-and-run must execute at the latest world age to see them.
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
@@ -49,7 +49,8 @@ end
         T = getfield(@__MODULE__, :EphG2SumCalculator)
         c = T()
         ElectronPhonon.run_eph_over_k_and_kq(model, (nk, nk, nk), (nk, nk, nk);
-            calculators = [c], symmetry = nothing, progress_print_step = 10^9)
+            calculators = [c], symmetry = nothing, progress_print_step = 10^9,
+            nk_outer_batch_max = 5, nq_batch_max = 7)
         c
     end
 

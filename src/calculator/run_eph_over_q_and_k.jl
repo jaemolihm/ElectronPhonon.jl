@@ -10,17 +10,11 @@ using OffsetArrays: no_offset_view
 """
     run_eph_over_q_and_k(model, kpts, qpts; calculators, backend, batched, kwargs...)
 
-Sweep the outer q points and, for each, the inner k points. `backend` and `batched` mean exactly what
-they do in [`run_eph_over_k_and_kq`](@ref):
-
-* `backend :: AbstractBackend = CPUBackend()` — array placement
-  (`backend = ElectronPhonon.gpu_backend()` for a GPU run).
-* `batched :: Union{Nothing, Bool} = nothing` — payload/loop shape: the per-(k,q) host
-  [`EPData`](@ref) (`false`) or the batched [`EPDataKBatched`](@ref) (`true`). `nothing` derives it
-  from `backend`. An explicit `batched = false` on a GPU backend is an `ArgumentError`;
-  `batched = true` on a `CPUBackend` is a validation configuration.
-* `fourier_mode = "gridopt"` — `"gridopt"` or `"normal"` on a `CPUBackend` (a batched mode is an
-  `ArgumentError`); the batched loop ignores it.
+Sweep the outer q points and, for each, the inner k points, handing each calculator the e-ph
+coupling as an [`EPBlock`](@ref)`{OuterQLoop}`: one q with a tile of k points, the k+q states
+solved per tile. `backend`, `batched` and `fourier_mode` mean what they do in
+[`run_eph_over_k_and_kq`](@ref). Returns `(; kpts, qpts, els_k, els_kq = nothing, phs)` with the
+k container and the host phonon container.
 
 * `el_kq_from_unfolding`: If true, compute the electron states at k+q by computing the
     states at k+q in the irreducible BZ and unfolding them to the full BZ. This is useful to
@@ -73,24 +67,18 @@ function run_eph_over_q_and_k(
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")
-    # Resolve the loop shape once, here (see `run_eph_over_k_and_kq` for the full rationale):
-    # `nothing` derives it from the backend, and an EXPLICIT `batched = false` on a GPU backend is an
-    # error rather than silently overridden. Nothing below this entry sees anything but a `Bool`.
-    batched_resolved = batched === nothing ? !(backend isa CPUBackend) : batched
+    # Resolve the loop shape once, here (see `run_eph_over_k_and_kq`).
+    batched_resolved = batched === nothing ? true : batched
     (backend isa CPUBackend || batched_resolved) || throw(ArgumentError(
         "batched = false is not supported on a GPU backend: the per-(k,q) host `EPData` payload " *
         "cannot be built from device arrays. Pass backend = CPUBackend() for the per-point path."))
-    if batched_resolved && backend isa CPUBackend && verbosity > 0 && mpi_isroot()
-        @info "batched e-ph loop on CPUBackend: validation configuration (serial, unoptimized); " *
-              "omit `batched` for production CPU runs."
-    end
 
     for calc in calculators
         if !supports(calc, OuterQLoop)
             throw(ArgumentError("$calc does not support the outer-q loop. Use run_eph_over_k_and_q instead."))
         end
         # The per-point path hands each calculator the per-(k,q) host `EPData`; it must declare
-        # support. The batched path uses `EPDataKBatched` (checked in `_loop_eph_over_q_and_k_batched`).
+        # support.
         if !batched_resolved && !supports(calc, EPData)
             throw(ArgumentError("$calc does not declare support for the per-(k,q) host payload; " *
                 "define supports(::$(typeof(calc)), ::Type{EPData}) = true."))
@@ -129,13 +117,13 @@ function run_eph_over_q_and_k(
         precompute_el_kq && throw(ArgumentError(
             "the batched path does not support precompute_el_kq (k+q states are eigensolved in the loop)."))
         _loop_eph_over_q_and_k_batched(model,
-            setup.kpts, setup.qpts,
-            setup.el_k_save, setup.el_k_batch, setup.ph_save, setup.eph_buffers,
+            setup.kpts, setup.qpts, setup.els_k, setup.sel_k, setup.phs, setup.eph_buffers,
             setup.backend;
-            calculators, skip_eph, window_kq,
-            energy_conservation, screening_params,
+            setup.el_quantities, setup.ph_quantities, calculators, skip_eph, window_kq,
+            energy_conservation, screening_params, nchunks_threads,
             progress_print_step, eph_phonon_basis, verbosity, nk_batch_max,
         )
+        return (; setup.kpts, setup.qpts, setup.els_k, els_kq = nothing, setup.phs)
     else
         _loop_eph_over_q_and_k(model,
             setup.kpts, setup.qpts, setup.kqpts,
@@ -183,6 +171,13 @@ function _setup_eph_over_q_and_k(
 
     symmetry = use_symmetry ? model.symmetry : nothing
 
+    # The quantities the batched loop builds the containers with: its own (the energies and
+    # eigenvectors of both electron sides and the phonons; the dipole coefficients of a polar model)
+    # and the calculators' extra ones.
+    el_quantities = batched ? union([:e, :u], required_el_quantities.(calculators)...) : nothing
+    ph_quantities = union([:e, :u], model.polar_eph.use ? [:eph_dipole_coeff] : Symbol[],
+                          required_ph_quantities.(calculators)...)
+
     # Generate k points and electron states at k (shared setup core; a non-CPU backend takes the
     # batched device eigensolve for the window test). Each calculator declares the k-side quantities
     # it needs via
@@ -191,9 +186,9 @@ function _setup_eph_over_q_and_k(
     # setup cost after the eigensolve). Default is the conservative full list.
     el_k_quantities = isempty(calculators) ? ["eigenvalue", "eigenvector", "velocity", "position"] :
         unique(reduce(vcat, required_el_k_quantities(c) for c in calculators))
-    (; kpts, iband_min, iband_max, el_k_save, sel_k) = _setup_electron_k(
+    (; kpts, iband_min, iband_max, el_k_save, els_k, sel_k) = _setup_electron_k(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity,
-        el_k_quantities, el_k_eigenpairs)
+        el_k_quantities, el_k_eigenpairs, el_quantities)
     nk = kpts.n
 
     # Generate q points
@@ -219,8 +214,12 @@ function _setup_eph_over_q_and_k(
     end
 
 
-    ph_save = maybe_time(verbosity) do
-        compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal", "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis)
+    # The phonons stay on the host on the batched path: its stage 1 (`get_eph_RR_to_Rq!`) runs there.
+    ph_save, phs = maybe_time(verbosity) do
+        batched ? (nothing, compute_phonon_states_batched(model, qpts, ph_quantities; fourier_mode,
+                                                          eph_phonon_basis)) :
+            (compute_phonon_states(model, qpts, ["eigenvalue", "eigenvector", "velocity_diagonal",
+                                                 "eph_dipole_coeff"]; fourier_mode, eph_phonon_basis), nothing)
     end
 
 
@@ -250,8 +249,8 @@ function _setup_eph_over_q_and_k(
 
     # Maximum number of electron bands to decide the size of e-ph matrix buffer.
     # If k+q are not precomputed, we don't know the maximum number of bands, so use nw.
-    nband_max = precompute_el_kq ? max(maximum(el.nband for el in el_k_save),
-                                       maximum(el.nband for el in el_kq_save)) : nw
+    nband_max = precompute_el_kq && !batched ? max(maximum(el.nband for el in el_k_save),
+                                                   maximum(el.nband for el in el_kq_save)) : nw
 
 
     # The batched loop queries `epmat` one q at a time, so it cannot take a batched Fourier mode.
@@ -267,22 +266,9 @@ function _setup_eph_over_q_and_k(
     end
 
 
-    # The k states the batched loop reads, resident on the backend: full-band (the loop masks the
-    # eigenvector columns outside each k's window). They are solved a second time, next to
-    # `el_k_save`, which the calculators and the result still receive; the two agree only because
-    # the eigensolve is deterministic, until the calculators take the container.
-    el_k_batch = batched ? maybe_time(verbosity) do
-            compute_electron_states_batched(model, kpts, [:e, :u]; fourier_mode, backend,
-                                            eigenpairs = el_k_eigenpairs)
-        end : nothing
-
-    # Chemical potential is solved inside each calculator's `setup_calculator!` (via
-    # `set_chemical_potential!`), not here. On a GPU backend a calculator can run its ncarrier sums on
-    # the device via `backend.proto` (the bisection sweeps all in-window states many times and
-    # dominates the setup at dense grids); the generic `compute_ncarrier` broadcast+sum works for
-    # every occ_type on the device, so no occ_type is special-cased.
-    _setup_calculators!(calculators, backend, batched ? BatchedMode() : SingleMode(),
-        kpts, qpts, el_k_save;
+    # Chemical potential is solved inside each calculator's `setup_calculator!`, not here; the batched
+    # loop sets the calculators up once it has chosen its batch width.
+    batched || _setup_calculators!(calculators, backend, nothing, kpts, qpts, el_k_save;
         nw, nmodes, rng_band = iband_min:iband_max, el_states_kq = el_kq_save, kqpts,
         sel_k, sel_kq, nchunks_threads, verbosity,
     )
@@ -291,7 +277,7 @@ function _setup_eph_over_q_and_k(
         kpts, qpts, kqpts,
         el_k_save, el_kq_save, ph_save,
         precompute_el_kq, nband_max,
-        eph_buffers, el_k_batch, backend,
+        eph_buffers, els_k, sel_k, phs, el_quantities, ph_quantities, backend,
         iband_min, iband_max,
     )
 end
@@ -430,32 +416,32 @@ end
 #  so no CUDA code lives here (the device methods live in the CUDA extension).
 #
 #  Per q: interpolate g(R_el, q) on the HOST (`get_eph_RR_to_Rq!`, nq is small), upload it,
-#  then loop over the outer k points in batches. Each batch: batched k+q eigensolve (window-masked
-#  by zeroing out-of-window eigenvector columns), batched Rq→kq e-ph interpolation, and one call to
-#  `run_calculator!(calc, ::EPDataKBatched, ctx)`. The per-q device accumulator is bracketed
-#  by the `calculator_begin!/end!(…, OuterIteration(), ctx)` brackets, the same ones the CPU loop uses.
+#  then loop over the outer k points in batches. Each batch: batched k+q eigensolve into a box tile
+#  (window `window_kq`), batched Rq→kq e-ph interpolation on the k and k+q boxes, and one
+#  `run_calculator!(calc, ::EPBlock{OuterQLoop}, ctx)`. One `calculator_begin!/end!(calc, ctx)` pair
+#  brackets each q (`ctx.batch = iq:iq`).
 #
-#  Backend: `GPUBackend` is the production configuration; nothing here is device-specific, so the
-#  loop also runs on `CPUBackend` (`batched = true`) as a validation configuration (serial k-batches,
-#  `mul!`-loop `batched_gemm!`, and `plan_batch` returns the `nk_batch_max` cap verbatim). The `_dev`
-#  suffix means "on `backend`", which is the host there.
+#  Backend: nothing here is device-specific, so the loop runs on `GPUBackend` and `CPUBackend` alike
+#  (serial k-batches, `mul!`-loop `batched_gemm!`, and `plan_batch` returns the `nk_batch_max` cap
+#  verbatim on the CPU). The `_dev` suffix means "on `backend`", which is the host there.
 #
 #  Scope (asserted below; the per-point path handles the rest): no screening,
-#  energy_conservation = (:None, 0.0), skip_eph = false, and every calculator supports the
-#  `EPDataKBatched` payload. Windows are supported via eigenvector-column masking (out-of-window
-#  states contribute exactly 0), so the batched full-band nw×nw shapes stay uniform. Polar models are
-#  supported: the `polar_eph` dipole term is added on the device per batch (`add_eph_dipole_batched!`).
+#  energy_conservation = (:None, 0.0), skip_eph = false, k+q quantities `e` and `u` only. Polar
+#  models are supported: the `polar_eph` dipole term is added on the device per batch
+#  (`add_eph_dipole_batched!`).
 function _loop_eph_over_q_and_k_batched(
         model       :: Model{FT},
         kpts, qpts,
-        el_k_save, el_k, ph_save,
+        els_k, sel_k, phs,
         eph_buffers :: EphOuterQLoopBuffers{FT},
         backend;
+        el_quantities, ph_quantities,
         calculators = [],
         skip_eph = false,
         window_kq = (-Inf, Inf),
         energy_conservation = (:None, 0.0),
         screening_params = nothing,
+        nchunks_threads = nthreads(),
         progress_print_step = 20,
         eph_phonon_basis::Symbol = :eigenmode,
         verbosity::Int = 1,
@@ -473,9 +459,11 @@ function _loop_eph_over_q_and_k_batched(
     # screening_params === nothing also guarantees ϵ ≡ 1 in the polar dipole term below.
     screening_params === nothing || throw(ArgumentError(
         "the batched path does not support screening_params."))
-    (!isempty(calculators) && all(c -> supports(c, EPDataKBatched), calculators)) || throw(ArgumentError(
-        "the batched outer-q path requires every calculator to support the EPDataKBatched payload. " *
-        "Use the per-point path otherwise."))
+    isempty(calculators) && throw(ArgumentError("the batched path requires at least one calculator."))
+    # The in-tile k+q builder fills `e` and `u` only, and the electron list applies to both sides.
+    issubset(el_quantities, (:e, :u)) || throw(ArgumentError(
+        "run_eph_over_q_and_k solves the k+q states per tile, with `e` and `u` only; the calculators " *
+        "request $(setdiff(el_quantities, (:e, :u)))"))
 
     # ----- device clone of the electron-Wannier / phonon-Bloch e-ph object -----
     # `get_eph_RR_to_Rq!` runs on the HOST per q into `ep_eRpq_obj`; its op_r is then uploaded
@@ -492,17 +480,14 @@ function _loop_eph_over_q_and_k_batched(
     # ----- memory-adaptive k-batch size -----
     # Every per-batch device buffer scales with the batch size: the loop's own staging plus each
     # calculator's per-k device scratch (`eph_batched_bytes_per_point`). Cap the batch at what free
-    # device memory allows (30% headroom for the batched drivers' recycled temporaries). All buffer
-    # byte accounting lives in `_outer_q_staging_bytes` (shared with `estimate_device_memory`);
+    # device memory allows (30% headroom for the batched drivers' recycled temporaries).
     # `nk_batch_max` stays a hard cap (the only control on the CPU backend, where `free_bytes` is
-    # unbounded). The k container is resident from the setup, so `free_bytes` already accounts for
-    # it; the committed bytes are its window mask and weights, and a tight-memory run shrinks the
-    # batch instead of OOM-ing.
+    # unbounded). The k container is resident from the setup, so `free_bytes` already accounts for it.
     use_polar_eph = model.polar_eph.use
-
-    per_point, committed = _outer_q_staging_bytes(; nw, nmodes,
+    nbandk_max = els_k.nband_max
+    per_point, committed = _outer_q_staging_bytes(; nw, nbandk_max, nmodes,
         nr_el_ham = length(model.el_ham.irvec), nr_ep_eRpq = length(ep_eRpq_obj.irvec),
-        use_polar_eph, calculators, nk, nk_stack = 0, FT)
+        use_polar_eph, calculators, nk, nk_stack = 0, FT, els_k, phs)
     nk_batch_cap = min(Int(nk_batch_max), nk)
     nk_batch_max = plan_batch(backend, per_point, committed, nk_batch_cap; what = "outer-q")
     if verbosity > 0 && mpi_isroot()
@@ -510,51 +495,46 @@ function _loop_eph_over_q_and_k_batched(
               "$(round(per_point / 1e3, digits = 1)) kB/k; k-batch size = $nk_batch_max"
     end
 
+    foreach(c -> setup_calculator!(c, backend, els_k, nothing, phs; sel_k, sel_kq = nothing, nw,
+        nmodes, nchunks_threads, n_outer_batch = 1, n_inner_tile = nk_batch_max, verbosity),
+        calculators)
+
     itp_ep_eRpq = BatchedWannierInterpolator(ep_eRpq_dev; backend, batch_size = nk_batch_max)
 
     # ----- persistent per-batch device workspace (sized to nk_batch_max) -----
-    ep_ws     = RqToKQWorkspace(ep_eRpq_dev.op_r, ndata_eRpq, nw, nw, nmodes, nk_batch_max)
-    ep_batch  = alloc(backend, Complex{FT}, nw, nw, nmodes, nk_batch_max)
-    Uk_batch  = alloc(backend, Complex{FT}, nw, nw, nk_batch_max)
-    Ukq_batch = alloc(backend, Complex{FT}, nw, nw, nk_batch_max)
+    ep_ws     = RqToKQWorkspace(ep_eRpq_dev.op_r, ndata_eRpq, nw, nbandk_max, nmodes, nk_batch_max)
+    ep_batch  = alloc(backend, Complex{FT}, nw, nbandk_max, nmodes, nk_batch_max)
     ks_batch  = Vector{Vec3{FT}}(undef, nk_batch_max)
     kqs_batch = Vector{Vec3{FT}}(undef, nk_batch_max)
 
-    # ----- the k side: copied per batch from the resident `el_k` -----
-    # `el_k` holds every band; `inwin_all[ib, ik]` says whether band ib is inside k's window
-    # (`el_k_save[ik].rng`), and `wtk_all` holds the k weights, both resident too.
-    el_k_tile = BatchedElectronState(backend, nw, nw, nk_batch_max, [:e, :u]; FT)
-    inwin_all = to_device_copy(backend, [ib ∈ el.rng for ib in 1:nw, el in el_k_save])
-    wtk_all   = to_device_copy(backend, collect(FT, kpts.weights))
-    # The k+q states, solved per batch straight into a tile of the same layout.
-    el_kq_tile = BatchedElectronState(backend, nw, nw, nk_batch_max, [:e, :u]; FT)
+    # The k side: copied per batch from the resident box container `els_k`; the weights resident too.
+    els_k_tile = BatchedElectronState(backend, nw, nbandk_max, nk_batch_max, el_quantities; FT)
+    wtk_dev   = to_device_copy(backend, collect(FT, kpts.weights))
+    # The k+q states, solved per batch straight into a tile, each point's window moved to its first
+    # columns (box width nw).
+    els_kq_tile = BatchedElectronState(backend, nw, nw, nk_batch_max, [:e, :u]; FT)
     itp_el_ham = BatchedWannierInterpolator(to_device(backend, model.el_ham); backend, batch_size = nk_batch_max)
     Hkq_flat   = alloc(backend, Complex{FT}, nw * nw, nk_batch_max)
 
-    # ----- polar e-ph dipole (long-range) scratch -----
-    # `ph.eph_dipole_coeff` is host-precomputed per q by the shared setup; `add_eph_dipole_batched!`
-    # applies the term on the device.
-    mmats_batch = use_polar_eph ? alloc(backend, Complex{FT}, nw, nw, nk_batch_max) : nothing
-    coeffs_dev  = use_polar_eph ? alloc(backend, Complex{FT}, nmodes) : nothing
-
-    wmin, wmax = window_kq
+    # The phonons: the host states drive the host stage 1; each q is copied into a width-1 tile on
+    # the backend for the block and the polar dipole term.
+    ph_host = Vector{PhononState{FT}}(phs)
+    phs_q = BatchedPhononState(backend, nmodes, 1, ph_quantities; FT)
+    mmats_batch = use_polar_eph ? alloc(backend, Complex{FT}, nw, nbandk_max, nk_batch_max) : nothing
 
     for iq in 1:nq
         if verbosity > 0 && mod(iq, progress_print_step) == 0 && mpi_isroot()
             @info "iq = $iq"; flush(stdout); flush(stderr)
         end
         xq = qpts.vectors[iq]
-        ph = ph_save[iq]
 
         # HOST: interpolate g(R_el, q) in the requested phonon basis, then upload to the device clone.
-        get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph, eph_phonon_basis)
+        get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph_host[iq], eph_phonon_basis)
         copyto!(ep_eRpq_dev.op_r, ep_eRpq_obj.op_r)
-        use_polar_eph && copyto!(coeffs_dev, ph.eph_dipole_coeff)
+        copy_batched_phonon_states!(phs_q, phs, iq:iq)
 
-        # Per-q calculator begin: allocate (first q) + zero the device accumulator (OuterIteration
-        # bracket, same as the CPU loop; ctx carries backend + n_batch_max for the device buffer).
-        ctx_q = LoopContext(backend, BatchedMode(), iq, 1:0, nk_batch_max)
-        foreach(c -> calculator_begin!(c, OuterIteration(), ctx_q), calculators)
+        ctx = LoopContext(backend, OuterQLoop(), iq:iq, 1)
+        foreach(c -> calculator_begin!(c, ctx), calculators)
 
         for kstart in 1:nk_batch_max:nk
             kend = min(kstart + nk_batch_max - 1, nk)
@@ -564,43 +544,37 @@ function _loop_eph_over_q_and_k_batched(
             # Everything below runs at the batch's true width `nk_batch`, through views of the first
             # `nk_batch` columns of the `nk_batch_max`-wide buffers (a trailing-prefix view of a
             # device array is contiguous, so the batched drivers and the extension kernels take these
-            # directly). The k side of the batch is copied from `el_k` (a range, no index upload).
-            # `Uk` is zero outside each k's in-window range, so the full nw×nw Rq→kq rotation
-            # reproduces the CPU's windowed rotation with zeros outside.
+            # directly). The k side of the batch is copied from `els_k` (a range, no index upload).
             rng_k = 1:nk_batch
-            copy_batched_electron_states!(el_k_tile, el_k, iks_batch)
-            Uk = view(Uk_batch, :, :, rng_k)
-            Uk .= ifelse.(reshape(view(inwin_all, :, iks_batch), 1, nw, nk_batch),
-                          view(el_k_tile.u, :, :, rng_k), zero(Complex{FT}))
+            copy_batched_electron_states!(els_k_tile, els_k, iks_batch)
             for (ik_ind, ik) in enumerate(iks_batch)
                 ks_batch[ik_ind]  = kpts.vectors[ik]
                 kqs_batch[ik_ind] = ks_batch[ik_ind] + xq
             end
             ks, kqs = view(ks_batch, rng_k), view(kqs_batch, rng_k)
 
-            # k+q eigensolve (batched), every band kept. No gauge fixing: χ is gauge-invariant.
-            compute_electron_states_batched!(el_kq_tile, itp_el_ham, Hkq_flat, model, kqs, (-Inf, Inf))
-            Ekq = view(el_kq_tile.e, :, rng_k)                                  # (nw, nk_batch)
+            # k+q eigensolve (batched), each point's `window_kq` bands moved to its first columns. No
+            # gauge fixing.
+            compute_electron_states_batched!(els_kq_tile, itp_el_ham, Hkq_flat, model, kqs, window_kq)
+            els_k_block = view(els_k_tile, rng_k)
+            els_kq_block = view(els_kq_tile, rng_k)
 
-            # k+q window mask: zero eigenvector COLUMNS m outside [wmin, wmax] (Ekq[m,k]). This
-            # zeroes ep_kq[m,·] and every k+q-side matrix element for out-of-window m, so those
-            # (m,n) pairs contribute exactly 0 — reproducing the CPU's `for m in el_kq.rng` loop.
-            Ukq = view(Ukq_batch, :, :, rng_k)
-            Ukq .= view(el_kq_tile.u, :, :, rng_k) .* reshape((Ekq .>= wmin) .& (Ekq .<= wmax), 1, nw, nk_batch)
-
-            # Batched Rq→kq e-ph interpolation: ep[m,n,ν,k] = Ukq(k)' * g(k) * Uk(k).
+            # Batched Rq→kq e-ph interpolation: ep[m,n,ν,k] = Ukq(k)' * g(k) * Uk(k). Rows and columns
+            # past a point's windows are undefined, as the box columns they come from.
             ep = view(ep_batch, :, :, :, rng_k)
-            get_eph_Rq_to_kq_batched!(ep, itp_ep_eRpq, ks, Uk, Ukq; ws = ep_ws)
-            use_polar_eph && add_eph_dipole_batched!(ep, coeffs_dev, Ukq, Uk,
-                                                     view(mmats_batch, :, :, rng_k))
+            ws = RqToKQWorkspace(view(ep_ws.g, :, rng_k), view(ep_ws.tmp, :, :, rng_k),
+                                 view(ep_ws.uk_rep, :, :, 1:nmodes*nk_batch))
+            get_eph_Rq_to_kq_batched!(ep, itp_ep_eRpq, ks, els_k_block.u, els_kq_block.u; ws)
+            use_polar_eph && add_eph_dipole_batched!(ep, phs_q.eph_dipole_coeff, els_kq_block.u,
+                                                     els_k_block.u, view(mmats_batch, :, :, rng_k))
 
-            payload = EPDataKBatched(ep, view(el_k_tile.e, :, rng_k), Ekq, Uk, Ukq,
-                view(wtk_all, iks_batch), ks, iq)
-            foreach(c -> run_calculator!(c, payload, ctx_q), calculators)
+            block = EPBlock{OuterQLoop}(; ep, dg = nothing, els_k = els_k_block, els_kq = els_kq_block,
+                phs = phs_q, wtk = view(wtk_dev, iks_batch), wtq = qpts.weights[iq],
+                xk = view(kpts.vectors, iks_batch), xq, ik = iks_batch, ikq = nothing, iq)
+            foreach(c -> run_calculator!(c, block, ctx), calculators)
         end # k batch
 
-        # Per-q calculator end: device→host scatter into the per-q output arrays (OuterIteration bracket).
-        foreach(c -> calculator_end!(c, OuterIteration(), ctx_q), calculators)
+        foreach(c -> calculator_end!(c, ctx), calculators)
 
         # Bound the host look-ahead to one q so per-q device scratch does not pile up in the pool.
         synchronize(backend)
@@ -616,7 +590,7 @@ end
 
 Estimate the device memory a batched e-ph run would use, WITHOUT running it, so a batch width can
 be sized ahead of time. Uses the same byte functions as the drivers (`_outer_{k,q}_staging_bytes`,
-full-band: `nbandk_max = nw`, so windowed runs use less, and counting the resident state stacks a
+full-band: box widths `nw`, so windowed runs use less, and counting the resident state containers a
 run builds in its setup), and reports both the whole-run `committed`
 bytes and the `per_point` (per batched-inner index) bytes, plus the memory-adaptive batch width
 `plan_batch` would pick against `backend`. Which loop is estimated follows
@@ -643,7 +617,8 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
     if model.epmat_outer_momentum == "el"
         nr_ep = length(get_next_wannier_object(model.epmat).irvec)
         nk_batch = min(Int(nk_outer_batch_max), Int(nk))
-        per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max = nw, nmodes, nr_ep, nk, nkq,
+        per_point, committed = _outer_k_staging_bytes(; nw, nbandk_max = nw, nbandkq_max = nw, nmodes,
+            nr_ep, nk, nkq,
             nk_stack = nk, nkq_stack = nkq, nq_grid = nkq, nk_batch_max = nk_batch, calculators,
             nr_epmat = model.epmat.nr, FT)
         cap = nq_batch_max === nothing ? Int(nkq) : min(Int(nq_batch_max), Int(nkq))
@@ -651,7 +626,7 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer,
     elseif model.epmat_outer_momentum == "ph"
         use_polar_eph = model.polar_eph.use
         nr_ep_eRpq = length(get_next_wannier_object(model.epmat).irvec)
-        per_point, committed = _outer_q_staging_bytes(; nw, nmodes,
+        per_point, committed = _outer_q_staging_bytes(; nw, nbandk_max = nw, nmodes,
             nr_el_ham = length(model.el_ham.irvec), nr_ep_eRpq, use_polar_eph, calculators,
             nk, nk_stack = nk, FT)
         cap = min(Int(nk_batch_max), Int(nk))

@@ -25,20 +25,17 @@ function contract_fixtures()
        ragged = (; grid = (6, 6, 6), window = (e_F - 0.5eV, e_F + 3eV), e_F))
 end
 
-# The loop settings of each order: the per-point loop with several thread chunks, the batched loop
-# on the CPU at outer batch width 1 and > 1 with many small inner tiles, and with `gpu = true` the
-# batched loop on the GPU.
+# The loop settings of each order: the CPU loop with its default widths and several thread chunks,
+# at outer batch width 1 and > 1 with many small inner tiles, and with `gpu = true` on the GPU.
 function contract_settings(::Type{OuterKLoop}; gpu = false)
-    s = (per_point = (; nchunks_threads = 4),
-         batched_outer1 = (; backend = CPUBackend(), batched = true, nk_outer_batch_max = 1,
-                             nq_batch_max = 37),
-         batched_outer5 = (; backend = CPUBackend(), batched = true, nk_outer_batch_max = 5,
-                             nq_batch_max = 37))
+    s = (default = (; nchunks_threads = 4),
+         outer1 = (; backend = CPUBackend(), nk_outer_batch_max = 1, nq_batch_max = 37),
+         outer5 = (; backend = CPUBackend(), nk_outer_batch_max = 5, nq_batch_max = 37))
     gpu ? (; s..., gpu = (; backend = gpu_backend(), nq_batch_max = 37)) : s
 end
 function contract_settings(::Type{OuterQLoop}; gpu = false)
-    s = (per_point = (; nchunks_threads = 4),
-         batched = (; backend = CPUBackend(), batched = true, nk_batch_max = 37))
+    s = (default = (; nchunks_threads = 4),
+         tiles = (; backend = CPUBackend(), nk_batch_max = 37))
     gpu ? (; s..., gpu = (; backend = gpu_backend(), nk_batch_max = 37)) : s
 end
 
