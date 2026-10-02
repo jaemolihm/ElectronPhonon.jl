@@ -100,9 +100,9 @@ end
 
 supports(::BoltzmannCalculator, ::Type{OuterKLoop}) = true
 supports(::BoltzmannCalculator, ::Type{EPData}) = true
-# Energies and velocities of both sides (`BandStates`), and the phonon frequencies.
-required_el_quantities(::BoltzmannCalculator) = [:e, :vdiag]
-required_ph_quantities(::BoltzmannCalculator) = [:e]
+# The loop always provides `e`, `u` and the e-ph matrix elements; this lists the extra quantities:
+# the band velocities of both sides (`BandStates`).
+required_el_quantities(::BoltzmannCalculator) = [:vdiag]
 
 # What `setup_calculator!` allocates on the backend: the whole-run Sₒ, index maps and per-state
 # arrays, the Sᵢ tile (rows of the outer states of one k, all inner states and temperatures, per
@@ -169,8 +169,8 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
     # on a `CPUBackend` these are host arrays.
     calc.dev = BoltzmannDeviceBuffers(
         alloc_zeros(backend, FT, n_i, nT),                                  # Sₒ
-        _indmap_to_device(backend, calc.el_i, el_k),                        # imap_i
-        _indmap_to_device(backend, calc.el_f, el_kq),                       # imap_f
+        _indmap_to_device(backend, calc.el_i),                              # imap_i
+        _indmap_to_device(backend, calc.el_f),                              # imap_f
         to_device(backend, calc.el_i.es),                                   # e_i  (per outer state)
         to_device(backend, calc.el_f.es),                                   # e_f  (per inner state)
         to_device(backend, collect(FT, state_weights(calc.el_f))),          # wf   (per inner state f)
@@ -268,7 +268,7 @@ function calculator_end!(calc::BoltzmannCalculator, ctx::LoopContext)
         tile_download!(t)             # contiguous device→host copy into the tile's host mirror
         host = host_array(t, 1)
         @inbounds for iT in 1:length(calc.occ)
-            @views calc.Sᵢ[iT][i0+1:i0+ni, :] .= host[1:ni, :, iT]
+            @views calc.Sᵢ[iT][i0+1:i0+ni, :] .= host[:, :, iT]
         end
     end
     calc
@@ -313,6 +313,7 @@ the kernel's concurrent writes.
 function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
         e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff,
         nbandkq::Int, nbandk::Int, nmodes::Int, nq_batch::Int, i0::Int)
+    _check_scatter_extents(g2vals, ωqmat, ikqs, imap_i_at_k, imap_f, nbandkq, nbandk, nmodes, nq_batch)
     nT = length(μs)
     @inbounds for iq_batch in 1:nq_batch, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_at_k[n]         # outer (k) state index; 0 = out of window → skip

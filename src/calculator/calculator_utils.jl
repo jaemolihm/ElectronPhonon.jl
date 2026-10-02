@@ -3,6 +3,21 @@
 # backend/device primitives (`to_device`, `batched_gemm!`, …) live in `common/gpu_utils.jl`; this
 # file holds the higher-level, calculator-facing helpers built on top of them.
 
+# The block arrays a scatter reads must have exactly the extents it is given, so a full-width buffer
+# passed with a smaller count fails here instead of being read past the block (the device kernels
+# index unchecked). The index maps need only cover the box bands. `ωq === nothing` skips its check.
+function _check_scatter_extents(vals, ωq, ikqs, imap_i_col, imap_f, nbandkq, nbandk, nm, nq_batch)
+    size(vals) == (nbandkq, nbandk, nm, nq_batch) || throw(DimensionMismatch(
+        "block values are $(size(vals)), the scatter was given ($nbandkq, $nbandk, $nm, $nq_batch)"))
+    ωq === nothing || size(ωq) == (nm, nq_batch) ||
+        throw(DimensionMismatch("ωq is $(size(ωq)), the scatter was given ($nm, $nq_batch)"))
+    length(ikqs) == nq_batch ||
+        throw(DimensionMismatch("$(length(ikqs)) k+q indices for $nq_batch block points"))
+    length(imap_i_col) >= nbandk && size(imap_f, 1) >= nbandkq ||
+        throw(DimensionMismatch("the index maps cover fewer bands than the block box"))
+    nothing
+end
+
 """
     eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
                         nbandkq, nbandk, nm, nq_batch, ni_stride, i0)
@@ -37,6 +52,7 @@ test that checks the CPU and CUDA methods agree and that no two writes collide.
 function eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
                              nbandkq::Int, nbandk::Int, nm::Int, nq_batch::Int, ni_stride::Int,
                              i0::Int)
+    _check_scatter_extents(g2vals, ωq, ikqs, imap_i_col, imap_f, nbandkq, nbandk, nm, nq_batch)
     @inbounds for iq_batch in 1:nq_batch, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_col[n]
         f = imap_f[m, ikqs[iq_batch]]
@@ -69,6 +85,7 @@ Generic (CPU/fallback) method; the CUDA extension provides a one-kernel `CuArray
 function eph_window_scatter_reim!(re_out, im_out, ωq_out, epvals, imap_i_col, imap_f, ikqs, ωq,
                                   nbandkq::Int, nbandk::Int, nm::Int, nq_batch::Int,
                                   ni_stride::Int, i0::Int)
+    _check_scatter_extents(epvals, ωq, ikqs, imap_i_col, imap_f, nbandkq, nbandk, nm, nq_batch)
     for iq_batch in 1:nq_batch, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_col[n]
         f = imap_f[m, ikqs[iq_batch]]

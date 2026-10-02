@@ -9,7 +9,8 @@ of one block, an outer point with a tile of inner points, as an [`EPBlock`](@ref
 Users subtype `AbstractCalculator` and implement:
 * `supports(calc, ::Type{<:LoopTag})` — the loop orders (`OuterKLoop`, `OuterQLoop`) it handles.
 * `required_el_quantities(calc)`, `required_ph_quantities(calc)` — the electron and phonon
-  quantities it reads, as `Symbol` field names of `BatchedElectronState` / `BatchedPhononState`.
+  quantities it reads beyond `e` and `u`, as `Symbol` field names of `BatchedElectronState` /
+  `BatchedPhononState`.
 * `setup_calculator!(calc, backend, el_k, el_kq, ph; sel_k, sel_kq, nw, nmodes, nchunks_threads,
   n_outer_batch, n_inner_tile, verbosity)` — run once, before the loop. `el_k`, `el_kq`, `ph` are
   the run's state containers and `sel_k`, `sel_kq` the `FilteredBandStates` they were built from
@@ -26,9 +27,11 @@ The contract:
   over `ctx.batch` in the brackets.
 * **Writes.** Writes indexed by an inner-tile point are disjoint across blocks; every other write
   needs per-`ctx.chunk` partials reduced in `calculator_end!` (`ctx.chunk` is 1 on the device).
-* **Windows.** Band `n` of a block's electron side is physical band `iband_offset[j] + n` only for
-  `n ≤ nband[j]`; entries past it (including box columns past band `nw`) are undefined and must not
-  be read. A reduction over the whole box selects with `ifelse`, never by multiplying with a mask.
+* **Extents.** Every array of a block holds exactly the block's points. Band `n` of a block's
+  electron side is physical band `iband_offset[j] + n` only for `n ≤ nband[j]`; entries past it
+  (including box columns past band `nw`) are undefined. Loop over `1:nband[j]` or through an index
+  map that is 0 past it (`_indmap_to_device`); a reduction over the whole box selects with `ifelse`
+  on `n ≤ nband[j]`, never by multiplying with a mask.
 * **No allocation in `run_calculator!`**: size buffers at setup from `n_outer_batch` /
   `n_inner_tile`, and declare their bytes in `eph_batched_bytes_per_point`.
 
@@ -143,9 +146,10 @@ allowed_eph_phonon_basis(::AbstractCalculator) = [:eigenmode]
     required_el_quantities(calc) -> Vector{Symbol}
     required_ph_quantities(calc) -> Vector{Symbol}
 
-The electron (k and k+q side alike) and phonon quantities the calculator reads, named as the fields
-of `BatchedElectronState` (`:e`, `:u`, `:vdiag`, ...) and `BatchedPhononState` (`:e`, `:u`, ...).
-The loop adds what it needs itself and builds the union. Default: none.
+The electron (k and k+q side alike) and phonon quantities the calculator reads beyond the ones the
+loop always provides (the energies `e`, the eigenvectors `u` and the e-ph matrix elements), named
+as the fields of `BatchedElectronState` (`:vdiag`, `:v`, `:rbar`) and `BatchedPhononState`
+(`:vdiag`, `:eph_dipole_coeff`, ...). The loop builds the union. Default: none.
 """
 required_el_quantities(::AbstractCalculator) = Symbol[]
 required_ph_quantities(::AbstractCalculator) = Symbol[]

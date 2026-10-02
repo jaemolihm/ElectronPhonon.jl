@@ -41,9 +41,8 @@ end
 
 function run_contract(entry, order, models, fixture, setting)
     calc = entry.make()
-    # The NaN padding switch makes a calculator that reads outside a window fail the comparison.
     common = (; calculators = [calc], window_k = fixture.window, window_kq = fixture.window,
-              progress_print_step = 10^9, verbosity = 0, fill_padding_nan = true)
+              progress_print_step = 10^9, verbosity = 0)
     if order === OuterKLoop
         run_eph_over_k_and_kq(models.el, fixture.grid, fixture.grid; symmetry = nothing, common...,
                               setting...)

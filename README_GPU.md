@@ -219,7 +219,10 @@ point's in-window bands in its first `nband[j]` columns (physical band `iband_of
 to the container's `nband_max`. Every e-ph matrix inherits the box on both electron sides, so a
 narrow window shrinks every per-(k, q) object by `nw / nband_max` on each side. The padding is
 undefined; the calculators build their state-index maps in box coordinates (`_indmap_to_device(backend,
-states, container)`, 0 on the padding), so the existing scatter kernels skip it with no window code.
+states)` on the selection the containers were built from, 0 on the padding), so the existing scatter
+kernels skip it with no window code. Array bounds cannot catch a read of the band padding, so every
+reader is bounded by `nband` or by such a map. On the point axis every array a block hands over has
+exactly the block's points, so a read past them is a bounds error, not a read of stale data.
 Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
 
 ## Abandoned (tried, decided against)

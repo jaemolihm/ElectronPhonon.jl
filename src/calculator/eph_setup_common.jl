@@ -22,7 +22,7 @@ function _setup_electron_k(
         window_k, mpi_comm_k, symmetry, fourier_mode, backend = CPUBackend(), verbosity = 1,
         el_k_quantities = ["eigenvalue", "eigenvector", "velocity", "position"],
         el_k_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
-        el_quantities = nothing, fill_padding_nan = false,
+        el_quantities = nothing,
     )
     (; nw) = model
     sel_k = kpts_input isa FilteredBandStates ? kpts_input :
@@ -38,7 +38,7 @@ function _setup_electron_k(
             (compute_electron_states(model, sel_k, el_k_quantities; fourier_mode, backend,
                                      eigenpairs = el_k_eigenpairs), nothing) :
             (nothing, compute_electron_states_batched(model, sel_k, el_quantities; fourier_mode,
-                backend, eigenpairs = el_k_eigenpairs, fill_padding_nan))
+                backend, eigenpairs = el_k_eigenpairs))
     end
     (; kpts, iband_min, iband_max, el_k_save, el_k, sel_k)
 end
@@ -91,7 +91,7 @@ function _setup_electron_kq(model, kqpts_input;
         window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
         fourier_mode, backend = CPUBackend(), verbosity = 1,
         el_kq_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
-        el_quantities = nothing, fill_padding_nan = false)
+        el_quantities = nothing)
     (; nw) = model
 
     # (1) prebuilt full-BZ selection: consume as-is
@@ -102,7 +102,7 @@ function _setup_electron_kq(model, kqpts_input;
                 (compute_electron_states(model, sel_kq, el_kq_quantities; fourier_mode, backend,
                                          eigenpairs = el_kq_eigenpairs), nothing) :
                 (nothing, compute_electron_states_batched(model, sel_kq, el_quantities; fourier_mode,
-                    backend, eigenpairs = el_kq_eigenpairs, fill_padding_nan))
+                    backend, eigenpairs = el_kq_eigenpairs))
         end
         return (; kqpts = sel_kq.kpts, el_kq_save, el_kq, sel_kq)
     end
@@ -136,7 +136,7 @@ function _setup_electron_kq(model, kqpts_input;
     end
     el_kq = maybe_time(verbosity) do
         compute_electron_states_batched(model, kqpts, el_quantities, window_kq; fourier_mode, backend,
-            eigenpairs = el_kq_eigenpairs, fill_padding_nan)
+            eigenpairs = el_kq_eigenpairs)
     end
     sel_kq = electron_states_to_FilteredBandStates(kqpts, el_kq, nelec_kq; nw)
     return (; kqpts, el_kq_save = nothing, el_kq, sel_kq)

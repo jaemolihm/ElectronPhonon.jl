@@ -339,6 +339,8 @@ end
 function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, ωq_out::CuArray, g2vals,
         imap_i_col, imap_f, ikqs, ωq,
         nbandkq::Int, nbandk::Int, nm::Int, nq_batch::Int, ni_stride::Int, i0::Int)
+    ElectronPhonon._check_scatter_extents(g2vals, ωq, ikqs, imap_i_col, imap_f, nbandkq, nbandk, nm,
+                                          nq_batch)
     N = nbandkq * nbandk * nm * nq_batch
     threads = 256
     blocks = cld(N, threads)
@@ -373,6 +375,8 @@ end
 function ElectronPhonon.eph_window_scatter_reim!(re_out::CuArray, im_out::CuArray, ωq_out, epvals,
         imap_i_col, imap_f, ikqs, ωq,
         nbandkq::Int, nbandk::Int, nm::Int, nq_batch::Int, ni_stride::Int, i0::Int)
+    ElectronPhonon._check_scatter_extents(epvals, ωq, ikqs, imap_i_col, imap_f, nbandkq, nbandk, nm,
+                                          nq_batch)
     N = nbandkq * nbandk * nm * nq_batch
     threads = 256
     blocks = cld(N, threads)
@@ -431,6 +435,8 @@ end
 function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
         imap_i_at_k, imap_f, ikqs, e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff,
         nbandkq::Int, nbandk::Int, nmodes::Int, nq_batch::Int, i0::Int)
+    ElectronPhonon._check_scatter_extents(g2vals, ωqmat, ikqs, imap_i_at_k, imap_f, nbandkq, nbandk,
+                                          nmodes, nq_batch)
     nT = length(μs)
     N = nbandkq * nbandk * nq_batch
     threads = 256

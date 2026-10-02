@@ -50,7 +50,7 @@ end
         c = T()
         ElectronPhonon.run_eph_over_k_and_kq(model, (nk, nk, nk), (nk, nk, nk);
             calculators = [c], symmetry = nothing, progress_print_step = 10^9,
-            nk_outer_batch_max = 5, nq_batch_max = 7, fill_padding_nan = true)
+            nk_outer_batch_max = 5, nq_batch_max = 7)
         c
     end
 

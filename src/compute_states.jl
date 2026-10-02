@@ -489,27 +489,24 @@ solve runs when none of them needs the eigenvectors.
 
 Keywords as in `compute_electron_states`: `fourier_mode = "normal"`, `backend = CPUBackend()`,
 `eigenpairs = nothing` (a gauge-fixing cache covering every k, resident on `backend`).
-`fill_padding_nan = true` sets the box entries past each point's window to NaN (a test switch).
 
 On a GPU backend only `:e`, `:u` and `:vdiag` are supported and `fourier_mode` is unused. The
 batched eigensolve picks its own basis inside a degenerate multiplet, as in `compute_electron_states`.
 """
 function compute_electron_states_batched(model::Model, sel::FilteredBandStates, quantities;
-        fourier_mode = "normal", backend = CPUBackend(), eigenpairs::Union{Nothing, Eigenpairs} = nothing,
-        fill_padding_nan = false)
+        fourier_mode = "normal", backend = CPUBackend(), eigenpairs::Union{Nothing, Eigenpairs} = nothing)
     _compute_electron_states_batched(model, sel.kpts, quantities, sel.band_extent; fourier_mode, backend,
-                                     eigenpairs, fill_padding_nan)
+                                     eigenpairs)
 end
 
 function compute_electron_states_batched(model::Model, kpts::AbstractKpoints, quantities,
         window::Tuple = (-Inf, Inf); fourier_mode = "normal", backend = CPUBackend(),
-        eigenpairs::Union{Nothing, Eigenpairs} = nothing, fill_padding_nan = false)
-    _compute_electron_states_batched(model, kpts, quantities, window; fourier_mode, backend, eigenpairs,
-                                     fill_padding_nan)
+        eigenpairs::Union{Nothing, Eigenpairs} = nothing)
+    _compute_electron_states_batched(model, kpts, quantities, window; fourier_mode, backend, eigenpairs)
 end
 
 function _compute_electron_states_batched(model::Model{FT}, kpts, quantities, window;
-        fourier_mode, backend, eigenpairs, fill_padding_nan) where FT
+        fourier_mode, backend, eigenpairs) where FT
     (; nw) = model
     nk = kpts.n
     backend isa CPUBackend || isempty(setdiff(quantities, (:e, :u, :vdiag))) || throw(ArgumentError(
@@ -550,7 +547,6 @@ function _compute_electron_states_batched(model::Model{FT}, kpts, quantities, wi
     else
         _fill_electron_states_batched_device!(el_states, model, E, U, offset_h, backend)
     end
-    fill_padding_nan && fill_padding_nan!(el_states)
     el_states
 end
 
@@ -673,7 +669,7 @@ function _fill_electron_states_batched_device!(el_states, model, E, U, offset_h,
 end
 
 """
-    compute_electron_states_batched!(dst, itp_ham, hk, model, xks, window; fill_padding_nan = false)
+    compute_electron_states_batched!(dst, itp_ham, hk, model, xks, window)
 
 Solve the electron states at the k points `xks` (a host vector of at most `dst.nk` points) straight
 into the first `length(xks)` points of `dst`, a [`BatchedElectronState`](@ref) with
@@ -681,11 +677,10 @@ into the first `length(xks)` points of `dst`, a [`BatchedElectronState`](@ref) w
 `BatchedWannierInterpolator` of `model.el_ham` on `dst`'s backend, block width at least
 `length(xks)`) into the `(nw^2, ≥ length(xks))` scratch `hk`, one batched eigensolve, then each
 point's bands inside the energy `window` moved to local bands `1:nband`. The batched eigensolve
-applies no degeneracy gauge fix, as in `eigen_batched`. `fill_padding_nan = true` sets the entries
-past each point's window to NaN.
+applies no degeneracy gauge fix, as in `eigen_batched`.
 """
 function compute_electron_states_batched!(dst::BatchedElectronState, itp_ham, hk, model::Model, xks,
-        window::Tuple; fill_padding_nan = false)
+        window::Tuple)
     (; nw) = model
     dst.vdiag === nothing && dst.v === nothing && dst.rbar === nothing || throw(ArgumentError(
         "the in-tile electron builder fills e and u only"))
@@ -709,7 +704,6 @@ function compute_electron_states_batched!(dst::BatchedElectronState, itp_ham, hk
     col = vec(min.(reshape(off, 1, nx) .+ (1:nw), nw) .+ nw .* reshape(0:nx-1, 1, nx))
     dst.e === nothing || (view(dst.e, :, 1:nx) .= reshape(view(vec(E), col), nw, nx))
     U === nothing || (view(reshape(dst.u, nw, :), :, 1:nw*nx) .= view(reshape(U, nw, :), :, col))
-    fill_padding_nan && fill_padding_nan!(dst)
     dst
 end
 

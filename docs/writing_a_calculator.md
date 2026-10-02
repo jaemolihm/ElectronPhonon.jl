@@ -17,9 +17,10 @@ rot.
 - `supports(calc, ::Type{OuterKLoop})` / `supports(calc, ::Type{OuterQLoop})` — the loop orders the
   calculator handles (default `false`; pass the type, not an instance). The driver refuses a
   calculator that does not support its order.
-- `required_el_quantities(calc)`, `required_ph_quantities(calc)` — the state quantities it reads, as
-  field names of `BatchedElectronState` (`:e`, `:u`, `:vdiag`, …) and `BatchedPhononState` (`:e`,
-  `:u`, …). The loop adds what it needs itself.
+- `required_el_quantities(calc)`, `required_ph_quantities(calc)` — the state quantities it reads
+  beyond the energies `e` and eigenvectors `u`, which the loop always provides on both electron sides
+  and on the phonons, as field names of `BatchedElectronState` (`:vdiag`, `:v`, `:rbar`) and
+  `BatchedPhononState` (`:vdiag`, …). Default: none.
 - `setup_calculator!(calc, backend, el_k, el_kq, ph; sel_k, sel_kq, nw, nmodes, nchunks_threads,
   n_outer_batch, n_inner_tile, verbosity)` — once, before the loop (see below).
 - `run_calculator!(calc, block::EPBlock{OuterKLoop}, ctx)` (or `{OuterQLoop}`) — once per block.
@@ -49,7 +50,8 @@ mutable struct EphG2SumCalculator <: AbstractCalculator
 end
 
 ElectronPhonon.supports(::EphG2SumCalculator, ::Type{OuterKLoop}) = true
-ElectronPhonon.required_ph_quantities(::EphG2SumCalculator) = [:e]   # the frequencies
+# The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator reads,
+# so it defines no `required_el_quantities` / `required_ph_quantities`.
 
 # Buffers are sized here, from the widths the loop chose; `run_calculator!` allocates nothing.
 function ElectronPhonon.setup_calculator!(c::EphG2SumCalculator, backend, el_k, el_kq, ph;
@@ -104,10 +106,13 @@ block has extent 1 there. Under `OuterKLoop`: `ep` is `(nband_max_kq, nband_max_
 (k+q is solved per tile). `ep` is the e-ph matrix before the `1/(2ω)`; a calculator that needs
 `|g|²/(2ω)` forms it.
 
-**Windows.** The state containers store a box: local band `n` of point `j` is physical band
-`iband_offset[j] + n` for `n ≤ nband[j]`, and everything past it (including box columns past band
-`nw`) is undefined. Never read it. The tests run the drivers with `fill_padding_nan = true`, which
-fills the padding with NaN.
+**Extents.** Every array of a block holds exactly the block's points, so indexing past them is an
+error rather than a read of another block's data. The band axes are a box: local band `n` of point
+`j` is physical band `iband_offset[j] + n` for `n ≤ nband[j]`, and everything past it (including box
+columns past band `nw`) is undefined. Array bounds cannot catch a read there, so loop over
+`1:nband[j]`, look states up through an index map that is 0 past it (`_indmap_to_device`), or
+select with `ifelse` on `n ≤ nband[j]` as the example does; never multiply the padding by a 0/1
+mask.
 
 ## The threading and batch contract
 
@@ -132,9 +137,9 @@ weights) that `BoltzmannCalculator` and the MigdalEliashberg calculators keep.
 
 Build whole-run buffers (state-index maps, energies, weights) in `setup_calculator!` with
 `alloc(backend, …)` / `to_device(backend, …)`; on a `CPUBackend` they are host arrays and the same
-code runs. `_indmap_to_device(backend, states, el_k)` builds a state-index map in the container's box
-coordinates (0 for a band that is not a state and on the padding), so a kernel looks a state up from
-a block's local band index and never reads the padding. Declare the bytes in
+code runs. `_indmap_to_device(backend, states)` builds a state-index map in the box coordinates of
+the containers built from that selection (0 for a band that is not a state and on the padding), so a
+kernel looks a state up from a block's local band index and never reads the padding. Declare the bytes in
 `eph_batched_bytes_per_point`.
 
 ### Tiling a large outer-k output over the device: `TiledDeviceOutput`

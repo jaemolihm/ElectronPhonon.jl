@@ -18,8 +18,8 @@ end
 struct _PrecomputedStatesProbe <: AbstractCalculator end
 ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{OuterKLoop}) = true
 ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{OuterQLoop}) = true
-ElectronPhonon.required_el_quantities(::_PrecomputedStatesProbe) = [:e, :u]
-ElectronPhonon.required_ph_quantities(::_PrecomputedStatesProbe) = [:e, :u]
+# The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator
+# reads, so it defines no `required_el_quantities` / `required_ph_quantities`.
 ElectronPhonon.calculator_begin!(::_PrecomputedStatesProbe, ctx) = nothing
 ElectronPhonon.calculator_end!(::_PrecomputedStatesProbe, ctx) = nothing
 ElectronPhonon.setup_calculator!(c::_PrecomputedStatesProbe, backend, el_k, el_kq, ph; kwargs...) = c

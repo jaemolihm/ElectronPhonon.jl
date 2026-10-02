@@ -378,7 +378,7 @@ end
 
 # Partial final q-batch: the GPU loop runs a batch narrower than the preallocated `nq_batch_max`
 # by passing contiguous device VIEWS (`view(buf, :,:,:, 1:nq_batch)`) into
-# `get_eph_kR_to_kq_batched!` and reusing the max-width workspace. This checks that path directly:
+# `get_eph_kR_to_kq_batched!`, its workspace as views of the max-width one. This checks that path directly:
 # the sliced-view result must match the full-width result, through BOTH `eph_apply_rotations!`
 # branches — the fused kernel (`nw*nmodes ≤ _FUSED_ROT_MAX_NWNM`) and the cuBLAS
 # `gemm_strided_batched!` path (above it), where a reshape of a view must stay a strided CuArray.
@@ -395,11 +395,12 @@ function check_eph_partial_view(nw, nmodes; rtol)
     kR_to_kq_from_qs!(full, ElectronPhonon.gpu_backend(),
         get_interpolator(obj; fourier_mode="batched", backend = ElectronPhonon.gpu_backend(), batch_size=nq),
         qs, uphs, ukqs; ws)
-    # Same call restricted to the first m q-points via views into the max-width buffers, reusing ws.
+    # Same call restricted to the first m q-points via views into the max-width buffers and ws.
     part = CuArray(zeros(ComplexF64, nband, nband, nmodes, nq))
     kR_to_kq_from_qs!(view(part, :, :, :, 1:m), ElectronPhonon.gpu_backend(),
         get_interpolator(obj; fourier_mode="batched", backend = ElectronPhonon.gpu_backend(), batch_size=nq),
-        view(qs, 1:m), view(uphs, :, :, 1:m), view(ukqs, :, :, 1:m); ws)
+        view(qs, 1:m), view(uphs, :, :, 1:m), view(ukqs, :, :, 1:m);
+        ws = ElectronPhonon.KRtoKQWorkspace(view(ws.g, :, 1:m), view(ws.tmp, :, :, 1:m)))
     @test isapprox(Array(view(part, :, :, :, 1:m)), Array(view(full, :, :, :, 1:m)); rtol)
 end
 
@@ -438,7 +439,8 @@ mutable struct _RecordCalc <: ElectronPhonon.AbstractCalculator
     _RecordCalc() = new(zeros(0, 0, 0, 0, 0), zeros(0, 0, 0, 0, 0))
 end
 ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.OuterKLoop}) = true
-ElectronPhonon.required_ph_quantities(::_RecordCalc) = [:e]
+# The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator
+# reads, so it defines no `required_el_quantities` / `required_ph_quantities`.
 ElectronPhonon.calculator_begin!(::_RecordCalc, ctx) = nothing
 ElectronPhonon.calculator_end!(::_RecordCalc, ctx) = nothing
 function ElectronPhonon.setup_calculator!(c::_RecordCalc, backend, el_k, el_kq, ph; nw, nmodes,

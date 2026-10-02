@@ -12,7 +12,7 @@ using OffsetArrays: no_offset_view
 
 Sweep the outer q points and, for each, the inner k points, handing each calculator the e-ph
 coupling as an [`EPBlock`](@ref)`{OuterQLoop}`: one q with a tile of k points, the k+q states
-solved per tile. `backend`, `batched`, `fourier_mode` and `fill_padding_nan` mean what they do in
+solved per tile. `backend`, `batched` and `fourier_mode` mean what they do in
 [`run_eph_over_k_and_kq`](@ref). Returns `(; kpts, qpts, el_k, el_kq = nothing, ph)` with the
 k container and the host phonon container.
 
@@ -54,7 +54,6 @@ function run_eph_over_q_and_k(
         batched :: Union{Nothing, Bool} = nothing,   # Payload/loop shape (nothing = derive from `backend`)
         nk_batch_max = 2^15,      # Batched: max number of outer k points processed per batch
         el_k_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
-        fill_padding_nan :: Bool = false,
     ) where {FT}
 
     if model.epmat_outer_momentum != "ph"
@@ -107,7 +106,7 @@ function run_eph_over_q_and_k(
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, precompute_el_kq, use_symmetry,
         keep_all_qpts, eph_phonon_basis, calculators, nchunks_threads,
-        verbosity, eph_buffers, backend, batched = batched_resolved, el_k_eigenpairs, fill_padding_nan,
+        verbosity, eph_buffers, backend, batched = batched_resolved, el_k_eigenpairs,
     )
 
     if batched_resolved
@@ -122,7 +121,7 @@ function run_eph_over_q_and_k(
             setup.backend;
             setup.el_quantities, setup.ph_quantities, calculators, skip_eph, window_kq,
             energy_conservation, screening_params, nchunks_threads,
-            progress_print_step, eph_phonon_basis, verbosity, nk_batch_max, fill_padding_nan,
+            progress_print_step, eph_phonon_basis, verbosity, nk_batch_max,
         )
         return (; setup.kpts, setup.qpts, setup.el_k, el_kq = nothing, setup.ph)
     else
@@ -166,18 +165,17 @@ function _setup_eph_over_q_and_k(
         backend :: AbstractBackend = CPUBackend(),
         batched :: Bool = false,
         el_k_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
-        fill_padding_nan :: Bool = false,
     ) where {FT}
 
     (; nw, nmodes) = model
 
     symmetry = use_symmetry ? model.symmetry : nothing
 
-    # The quantities the batched loop builds the containers with: its own (the electron
-    # eigenvectors; the phonon eigenvectors for the host stage 1 and the dipole coefficients of a
-    # polar model) and the calculators'.
-    el_quantities = batched ? union([:u], required_el_quantities.(calculators)...) : nothing
-    ph_quantities = union([:u], model.polar_eph.use ? [:eph_dipole_coeff] : Symbol[],
+    # The quantities the batched loop builds the containers with: its own (the energies and
+    # eigenvectors of both electron sides and the phonons; the dipole coefficients of a polar model)
+    # and the calculators' extra ones.
+    el_quantities = batched ? union([:e, :u], required_el_quantities.(calculators)...) : nothing
+    ph_quantities = union([:e, :u], model.polar_eph.use ? [:eph_dipole_coeff] : Symbol[],
                           required_ph_quantities.(calculators)...)
 
     # Generate k points and electron states at k (shared setup core; a non-CPU backend takes the
@@ -190,7 +188,7 @@ function _setup_eph_over_q_and_k(
         unique(reduce(vcat, required_el_k_quantities(c) for c in calculators))
     (; kpts, iband_min, iband_max, el_k_save, el_k, sel_k) = _setup_electron_k(
         model, kpts_input; window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity,
-        el_k_quantities, el_k_eigenpairs, el_quantities, fill_padding_nan)
+        el_k_quantities, el_k_eigenpairs, el_quantities)
     nk = kpts.n
 
     # Generate q points
@@ -448,7 +446,6 @@ function _loop_eph_over_q_and_k_batched(
         eph_phonon_basis::Symbol = :eigenmode,
         verbosity::Int = 1,
         nk_batch_max = 2^15,
-        fill_padding_nan::Bool = false,
     ) where {FT}
 
     (; nw, nmodes) = model
@@ -558,15 +555,16 @@ function _loop_eph_over_q_and_k_batched(
 
             # k+q eigensolve (batched), each point's `window_kq` bands moved to its first columns. No
             # gauge fixing.
-            compute_electron_states_batched!(el_kq_tile, itp_el_ham, Hkq_flat, model, kqs, window_kq;
-                                             fill_padding_nan)
+            compute_electron_states_batched!(el_kq_tile, itp_el_ham, Hkq_flat, model, kqs, window_kq)
             el_k_block = view(el_k_tile, rng_k)
             el_kq_block = view(el_kq_tile, rng_k)
 
             # Batched Rq→kq e-ph interpolation: ep[m,n,ν,k] = Ukq(k)' * g(k) * Uk(k). Rows and columns
             # past a point's windows are undefined, as the box columns they come from.
             ep = view(ep_batch, :, :, :, rng_k)
-            get_eph_Rq_to_kq_batched!(ep, itp_ep_eRpq, ks, el_k_block.u, el_kq_block.u; ws = ep_ws)
+            ws = RqToKQWorkspace(view(ep_ws.g, :, rng_k), view(ep_ws.tmp, :, :, rng_k),
+                                 view(ep_ws.uk_rep, :, :, 1:nmodes*nk_batch))
+            get_eph_Rq_to_kq_batched!(ep, itp_ep_eRpq, ks, el_k_block.u, el_kq_block.u; ws)
             use_polar_eph && add_eph_dipole_batched!(ep, ph_q.eph_dipole_coeff, el_kq_block.u,
                                                      el_k_block.u, view(mmats_batch, :, :, rng_k))
 

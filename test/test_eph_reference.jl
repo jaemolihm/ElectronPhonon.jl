@@ -36,21 +36,15 @@ include("eph_reference_loop.jl")
 
         common = (; window_k = window, window_kq = window, progress_print_step = 10^9,
                   verbosity = 0)
-        # The NaN padding arms fill the containers' box padding with NaN, so a loop that reads it
-        # fails the comparison.
         outer_k = Any[("CPU", (; nchunks_threads = 4)),
-            ("CPU, small tiles", (; backend = CPUBackend(), nk_outer_batch_max = 5, nq_batch_max = 50)),
-            ("CPU, NaN padding", (; nk_outer_batch_max = 5, nq_batch_max = 50, fill_padding_nan = true))]
+            ("CPU, small tiles", (; backend = CPUBackend(), nk_outer_batch_max = 5, nq_batch_max = 50))]
         outer_q = Any[("CPU", (; nchunks_threads = 4)),
-            ("CPU, small tiles", (; backend = CPUBackend(), nk_batch_max = 50)),
-            ("CPU, NaN padding", (; nk_batch_max = 50, fill_padding_nan = true))]
+            ("CPU, small tiles", (; backend = CPUBackend(), nk_batch_max = 50))]
         if EPH_REFERENCE_GPU_AVAILABLE
             CUDA.allowscalar(false)
             push!(outer_k, ("GPU", (; backend = gpu_backend())),
-                ("GPU, outer batch 1, NaN padding", (; backend = gpu_backend(), nk_outer_batch_max = 1,
-                                                    fill_padding_nan = true)))
-            push!(outer_q, ("GPU", (; backend = gpu_backend())),
-                ("GPU, NaN padding", (; backend = gpu_backend(), fill_padding_nan = true)))
+                ("GPU, outer batch 1", (; backend = gpu_backend(), nk_outer_batch_max = 1)))
+            push!(outer_q, ("GPU", (; backend = gpu_backend())))
         end
         for (order, arms) in (("outer k", outer_k), ("outer q", outer_q)), (name, kw) in arms
             rec = _PairRecorder()

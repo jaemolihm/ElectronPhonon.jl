@@ -11,8 +11,6 @@ coupling as an [`EPBlock`](@ref)`{OuterKLoop}`: one outer k with a tile of k+q p
   ElectronPhonon.jl issue #72).
 * `fourier_mode = "gridopt"` — `"gridopt"` or `"normal"` on a `CPUBackend` (a batched mode is an
   `ArgumentError`).
-* `fill_padding_nan = false` — fill the state containers' box entries outside each window with NaN,
-  so that a calculator that reads them fails (a test switch).
 
 The batched path has a narrower scope than the per-point one (no polar/long-range, no screening,
 `energy_conservation = (:None, 0.0)`, commensurate grids, no `covariant_derivative_of_g`, no
@@ -72,7 +70,6 @@ function run_eph_over_k_and_kq(
         el_k_eigenpairs  :: Union{Nothing, Eigenpairs} = nothing,
         el_kq_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
         ph_eigenpairs    :: Union{Nothing, Eigenpairs} = nothing,
-        fill_padding_nan :: Bool = false,
         verbosity::Int = 1,
     ) where {FT}
 
@@ -137,7 +134,7 @@ function run_eph_over_k_and_kq(
         mpi_comm_k, mpi_comm_q, fourier_mode, window_k, window_kq,
         el_kq_from_unfolding, symmetry, calculators, nchunks_threads,
         covariant_derivative_of_g, backend, batched = batched_resolved, verbosity,
-        el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, fill_padding_nan,
+        el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs,
     )
 
     if batched_resolved
@@ -198,16 +195,15 @@ function _setup_eph_over_k_and_kq(
         el_k_eigenpairs  :: Union{Nothing, Eigenpairs} = nothing,
         el_kq_eigenpairs :: Union{Nothing, Eigenpairs} = nothing,
         ph_eigenpairs    :: Union{Nothing, Eigenpairs} = nothing,
-        fill_padding_nan :: Bool = false,
         verbosity::Int = 1,
     ) where {FT}
 
     (; nw, nmodes) = model
 
-    # The quantities the batched loop builds the containers with: its own (the electron and phonon
-    # eigenvectors) and the calculators'.
-    el_quantities = batched ? union([:u], required_el_quantities.(calculators)...) : nothing
-    ph_quantities = union([:u], required_ph_quantities.(calculators)...)
+    # The quantities the batched loop builds the containers with: its own (the energies and
+    # eigenvectors of both electron sides and the phonons) and the calculators' extra ones.
+    el_quantities = batched ? union([:e, :u], required_el_quantities.(calculators)...) : nothing
+    ph_quantities = union([:e, :u], required_ph_quantities.(calculators)...)
 
     # Outer k and k+q setup via the shared role helpers. Each yields a `FilteredBandStates` selection
     # (a prebuilt one passed through verbatim, or filtered from a grid — the k+q grid path also
@@ -215,13 +211,13 @@ function _setup_eph_over_k_and_kq(
     # `ElectronState`s, or on the batched path a container built from the selection.
     (; kpts, iband_min, iband_max, el_k_save, el_k, sel_k) = _setup_electron_k(model, kpts_input;
         window_k, mpi_comm_k, symmetry, fourier_mode, backend, verbosity, el_k_eigenpairs,
-        el_quantities, fill_padding_nan)
+        el_quantities)
     nk = kpts.n
 
     el_kq_quantities = ["eigenvalue", "eigenvector", "velocity", "position"]
     (; kqpts, el_kq_save, el_kq, sel_kq) = _setup_electron_kq(model, kqpts_input;
         window_kq, mpi_comm_q, symmetry, el_kq_from_unfolding, el_kq_quantities,
-        fourier_mode, backend, verbosity, el_kq_eigenpairs, el_quantities, fill_padding_nan)
+        fourier_mode, backend, verbosity, el_kq_eigenpairs, el_quantities)
 
 
     # Precompute qpts and phonon states if k and k+q meshes are commensurate
@@ -727,8 +723,8 @@ function _loop_eph_over_k_and_kq_batched(
     epkq_dev = alloc(backend, Complex{FT}, nbandkq_max, nbandk_max, nmodes, nq_batch_max)
 
     # In-place scratch for the per-k kR->kq driver (g / tmp), reused across all (k, q) so the
-    # driver allocates nothing per call. Sized for the max batch width `nq_batch_max`; the driver
-    # uses the first `nq_batch` columns for a partial final batch.
+    # driver allocates nothing per call. Sized for the max batch width `nq_batch_max`; each tile
+    # passes views of its first `nq_batch` columns.
     kRkq_ws = KRtoKQWorkspace(epmat_dev.op_r, ndata_ekpR, nbandkq_max, nbandk_max, nmodes, nq_batch_max)
 
     # The k+q states (independent of the outer k) and the phonons are resident on the backend,
@@ -839,6 +835,7 @@ function _loop_eph_over_k_and_kq_batched(
             el_kq_block = view(el_kq, qstart:qend)
             wtkq_block = view(wtkq_dev, qstart:qend)
             ep = view(epkq_dev, :, :, :, rng_q)
+            ws = KRtoKQWorkspace(view(kRkq_ws.g, :, rng_q), view(kRkq_ws.tmp, :, :, rng_q))
 
             for (ik_ind, ik) in enumerate(iks_batch)
                 # This (k, tile)'s q indices, checked on the host by `_fill_iqs!` and copied once into
@@ -853,7 +850,7 @@ function _loop_eph_over_k_and_kq_batched(
 
                 # One batched Wannier->Bloch over this tile's q: ep (nbandkq_max, nbandk_max, nmodes, q).
                 get_eph_kR_to_kq_batched!(ep, view(ep_ekpR_all, :, :, ik_ind), view(P_kq, :, rng_q),
-                    ph_block.u, el_kq_block.u; ws = kRkq_ws)
+                    ph_block.u, el_kq_block.u; ws)
 
                 block = EPBlock{OuterKLoop}(; ep, dg = nothing,
                     el_k = view(el_k_tile, ik_ind:ik_ind), el_kq = el_kq_block,

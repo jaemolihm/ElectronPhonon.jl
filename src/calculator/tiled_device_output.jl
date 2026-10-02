@@ -77,8 +77,10 @@ is_block(t::TiledDeviceOutput) = t.block
 
 # The k-th device output buffer (the scatter target); `1:narr`.
 device_array(t::TiledDeviceOutput, k::Integer = 1) = t.dev[k]
-# The k-th contiguous host mirror (block mode; valid after `tile_download!`).
-host_array(t::TiledDeviceOutput, k::Integer = 1) = t.host[k]
+# The current tile of the k-th host mirror (block mode; valid after `tile_download!`): its leading
+# `tile_length` entries along the tiled axis, so the rows a previous, larger tile left are out of
+# bounds.
+host_array(t::TiledDeviceOutput, k::Integer = 1) = selectdim(t.host[k], t.i_axis, 1:t.tile_ni)
 # Global-i offset of the current tile (0 in full mode).
 tile_offset(t::TiledDeviceOutput) = t.tile_i0
 # Number of outer states in the current tile.
@@ -130,7 +132,7 @@ function tile_begin!(t::TiledDeviceOutput{FT}, ctx) where {FT}
 end
 
 # Download the current tile (block mode): a single contiguous device→host copy per buffer into the
-# host mirrors. The calculator then copies the mirror's leading `tile_length` slice into its output.
+# host mirrors. The calculator then copies `host_array(t, k)` into its output.
 function tile_download!(t::TiledDeviceOutput)
     for k in 1:t.narr
         copyto!(t.host[k], t.dev[k])

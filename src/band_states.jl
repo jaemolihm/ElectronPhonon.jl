@@ -71,8 +71,7 @@ struct BandStates{T, KT <: AbstractKpoints{T}} <: AbstractBandStates{T, KT}
     nband_ignore::Int       # bands below the lowest indexed one = minimum(iband) - 1, subtracted
                             # so band `iband` maps to `indmap` row `iband - nband_ignore ∈ 1:nband`
     nw::Int                 # full (Wannier) band count of the model these states came from; the
-                            # physical-band extent (≥ nband_ignore + nband). Informational — the
-                            # device index-map pad width is passed explicitly to `_indmap_to_device`.
+                            # physical-band extent (≥ nband_ignore + nband). Informational.
     kpts::KT                # k-grid: vectors, weights, ngrid (+ hash if GridKpoints)
     iks::Vector{Int}        # per-state k index into kpts (k-vector/weight derived via this)
     ibands::Vector{Int}     # per-state band index (mode index for phonons)
@@ -194,8 +193,8 @@ k-index `ik` is stored directly (no deduplication: `kpts` already holds the dist
 `state_index(xk, …)` queries); callers holding a plain `Kpoints` promote it first.
 
 `imap` is a view of the `BandStates`' own `indmap` with its rows offset by `nband_ignore`, not a
-second copy — query the same map with `state_index`, or build a device map in a container's box
-coordinates with `_indmap_to_device`.
+second copy — query the same map with `state_index`, or build a device map in the box coordinates
+of a container built from the same selection with `_indmap_to_device`.
 
 This is the `BandStates` replacement for `electron_states_to_BTStates`.
 """

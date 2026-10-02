@@ -178,7 +178,8 @@ mutable struct _PairRecorder <: AbstractCalculator
 end
 ElectronPhonon.supports(::_PairRecorder, ::Type{OuterKLoop}) = true
 ElectronPhonon.supports(::_PairRecorder, ::Type{OuterQLoop}) = true
-ElectronPhonon.required_ph_quantities(::_PairRecorder) = [:e]
+# The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator
+# reads, so it defines no `required_el_quantities` / `required_ph_quantities`.
 ElectronPhonon.calculator_begin!(::_PairRecorder, ctx) = nothing
 ElectronPhonon.calculator_end!(::_PairRecorder, ctx) = nothing
 ElectronPhonon.postprocess_calculator!(c::_PairRecorder; kwargs...) = c
