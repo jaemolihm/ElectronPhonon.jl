@@ -152,7 +152,7 @@ using ElectronPhonon: holstein_model, Structure, restrict_symmetry_to_dimension
         calc, res = run_bte(g)
 
         # The phonon states come straight back from the driver — no calculator needed.
-        @test all(p.e[1] ≈ ω₀ for p in res.ph_save)
+        @test all(≈(ω₀), res.ph.e[1, :])
 
         Sₒ = calc.Sₒ[1]
         e_i = calc.el_i.es

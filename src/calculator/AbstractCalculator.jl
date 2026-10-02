@@ -2,133 +2,116 @@
     AbstractCalculator
 
 A calculator computes properties of the system during a single pass of one of the e-ph drivers
-(`run_eph_over_k_and_q`, `run_eph_over_q_and_k`, `run_eph_over_k_and_kq`). Once the electron and
-phonon states and the e-ph matrix elements are formed, the driver hands them to each calculator as a
-**payload** (a subtype of [`AbstractElPhPayload`]) together with a [`LoopContext`].
+(`run_eph_over_k_and_kq`, `run_eph_over_q_and_k`). The driver hands each calculator the e-ph matrix
+of one block, an outer point with a tile of inner points, as an [`EPBlock`](@ref) together with a
+[`LoopContext`](@ref).
 
 Users subtype `AbstractCalculator` and implement:
-* `setup_calculator!(calc, backend::AbstractBackend, mode::LoopMode, kpts, qpts, el_states; kwargs...)`
-  — run once, before the loop. The two arguments describing the run come first and are POSITIONAL:
-  `backend` (where arrays live) and `mode` (`SingleMode()` / `BatchedMode()`, which loop shape will
-  run). Splat everything else with `kwargs...`.
-
-  **Dispatch device-buffer construction on `mode`, never on `backend isa GPUBackend`.** The two axes
-  are independent: the batched loop also runs on a `CPUBackend` (a validation configuration), where a
-  backend test silently builds the per-point buffers and skips the batched readback. That was a real
-  bug in `BoltzmannCalculator` (its `on_gpu` flag), which is why these are positional rather than
-  keywords — a required keyword is absorbed by any `kwargs...` signature, so an out-of-date calculator
-  keeps compiling and computes the wrong thing; a positional argument breaks loudly at load time, and
-  it lets a calculator write `setup_calculator!(c, ::CPUBackend, ::BatchedMode, …)` instead of
-  branching inside one method.
-* `run_calculator!(calc, payload::AbstractElPhPayload, ctx::LoopContext)` — one method per payload
-  type the calculator consumes (host per-(k,q), or one of the device-batched payloads).
+* `supports(calc, ::Type{<:LoopTag})` — the loop orders (`OuterKLoop`, `OuterQLoop`) it handles.
+* `required_el_quantities(calc)`, `required_ph_quantities(calc)` — the electron and phonon
+  quantities it reads, as `Symbol` field names of `BatchedElectronState` / `BatchedPhononState`.
+* `setup_calculator!(calc, backend, el_k, el_kq, ph; sel_k, sel_kq, nw, nmodes, nchunks_threads,
+  n_outer_batch, n_inner_tile, verbosity)` — run once, before the loop. `el_k`, `el_kq`, `ph` are
+  the run's state containers and `sel_k`, `sel_kq` the `FilteredBandStates` they were built from
+  (the selected states and their weights: `BandStates(el_k, sel_k)`); `el_kq` and `sel_kq` are
+  `nothing` when k+q is solved per tile. `n_outer_batch` and `n_inner_tile` are the widths the
+  loop chose, which per-batch and per-tile buffers are sized to.
+* `run_calculator!(calc, block::EPBlock{O}, ctx)` — one method per supported order `O`.
+* `calculator_begin!(calc, ctx)` / `calculator_end!(calc, ctx)` — around every outer batch
+  (`ctx.batch`, never empty). There is no default; a calculator with nothing to do defines `= nothing`.
 * `postprocess_calculator!(calc; kwargs...)` — run once, after the loop.
-* `supports(calc, ::Type{<:LoopTag})` / `supports(calc, ::Type{<:AbstractElPhPayload})` — declare
-  which loop shapes and payloads the calculator handles (default `false`).
 
-* `calculator_begin!(calc, scope, ctx)` / `calculator_end!(calc, scope, ctx)` — begin/end brackets
-  around one outer iteration (`OuterIteration()`) or one batch of outer iterations
-  (`OuterIterationBatch()`). There is NO default: a calculator must define these for every
-  (scope, loop-mode) combination its supported loops fire, even as an explicit no-op (`= nothing`);
-  a missing method is a loud error, not a silent skip. The batched outer-k loop fires only
-  `OuterIterationBatch` (see the bracket comment below).
+The contract:
+* **Any batch width.** Every `length(ctx.batch) ≥ 1` must work; a per-outer-point reduction loops
+  over `ctx.batch` in the brackets.
+* **Writes.** Writes indexed by an inner-tile point are disjoint across blocks; every other write
+  needs per-`ctx.chunk` partials reduced in `calculator_end!` (`ctx.chunk` is 1 on the device).
+* **Windows.** Band `n` of a block's electron side is physical band `iband_offset[j] + n` only for
+  `n ≤ nband[j]`; entries past it (including box columns past band `nw`) are undefined and must not
+  be read. A reduction over the whole box selects with `ifelse`, never by multiplying with a mask.
+* **No allocation in `run_calculator!`**: size buffers at setup from `n_outer_batch` /
+  `n_inner_tile`, and declare their bytes in `eph_batched_bytes_per_point`.
 
 Optionally:
-* `eph_batched_bytes_per_point(calc, PayloadType; nw, nmodes)` — per-point device scratch (bytes)
-  the calculator holds, so the batched loops' memory-adaptive batch sizing can account for it.
+* `eph_batched_bytes_per_point(calc, ::Type{<:EPBlock{O}}; kwargs...)` — device bytes the
+  calculator holds, `(; persistent, per_outer, per_pair)`, for the loops' memory planning.
 * `allowed_eph_phonon_basis(calc)` — phonon bases the calculator accepts.
-* `required_el_k_quantities(calc)` — outer-k electron-state quantities the calculator needs (the
-  outer-q driver computes the union; override to skip velocity/position).
 
-See `docs/writing_a_calculator.md` for a worked example.
-
-The public (unexported) calculator API is the `public` declaration at the bottom of this file — that
-declaration is the single authoritative list, deliberately not restated here (two copies drifted apart
-once already). Query it at the REPL rather than trusting prose:
-
-```julia
-filter(n -> Base.ispublic(ElectronPhonon, n), names(ElectronPhonon; all = true))
-```
-
-Every name in it is reachable as `ElectronPhonon.<name>`. Broadly it covers the hooks and traits above,
-the loop/scope tags, the payload types, `LoopContext` with its `LoopMode`s, the backend primitives, the
-`TiledDeviceOutput` helper, and the device-memory batch-sizing helpers.
+See `docs/writing_a_calculator.md` for a worked example. The public (unexported) calculator API is
+the `public` declaration at the bottom of this file.
 """
 abstract type AbstractCalculator end
 
 
 # =============================================================================
-#  The payload family (`AbstractElPhPayload`, `EPData`, `EPDataQBatched`, `EPDataKBatched`) is defined
-#  in src/EPData.jl (next to `EPState`, which the host payload wraps), included before this file. A
-#  payload carries all per-call data in typed fields (self-describing), and the loop-level state lives
-#  in `LoopContext` below. `run_calculator!` dispatches on the payload type, so the interface grows by
-#  adding payload/scope *types*, never new hook *names*.
-
-
-# =============================================================================
-#  LoopContext — loop-level state, carried into every hook.
-
-# Loop-mode singletons name the SHAPE of the loop driving a hook, independent of the backend: a hook
-# that must behave differently for the per-(k, q) host loop vs the device-batched loop dispatches on
-# the mode, NOT the backend. The two are orthogonal — the batched loop still fires the per-iteration
-# `OuterIteration` brackets, so `LoopContext{<:GPUBackend}` alone cannot tell a per-point hook from a
-# per-batch one (it would run a CPU per-point reduction inside the batched loop).
-abstract type LoopMode end
-struct SingleMode <: LoopMode end     # per-(k, q) host inner loops (CPU paths)
-struct BatchedMode <: LoopMode end   # device-batched loops (one outer index, a batch of inner ones)
+#  Loop-order tags: the order a calculator supports, and the type parameter of `EPBlock` and
+#  `LoopContext`.
+abstract type LoopTag end
+struct OuterKLoop <: LoopTag end    # run_eph_over_k_and_kq (outer k, inner k+q)
+struct OuterQLoop <: LoopTag end    # run_eph_over_q_and_k (outer q, inner k)
 
 """
-    LoopContext{BT <: AbstractBackend, MT <: LoopMode}
+    LoopContext{BT <: AbstractBackend, OT <: LoopTag}
 
-Loop-level state passed to every calculator hook. Replaces the ad-hoc per-hook kwargs (`ik`, `iq`,
-`gpu_array`, `nk_batch_max`, `kstart`, `kend`) with one typed object.
-
-`BT` is the backend type and `MT` the loop mode; the backend is first, so a partial annotation
-`LoopContext{<:GPUBackend}` still names "any mode on a GPU backend". Backend-dependent hooks dispatch
-on the *mode* (`LoopContext{<:AbstractBackend, SingleMode}` / `{<:AbstractBackend, BatchedMode}`), not
-the backend, so the batched loop's per-iteration bracket does not collide with the per-point one.
+Loop-level state passed to every calculator hook.
 
 Fields:
-- `backend`     :: `CPUBackend()` or `GPUBackend(proto)` — allocation / free / synchronize routes.
-- `mode`        :: `SingleMode()` (per-(k, q) host loop) or `BatchedMode()` (device-batched loop).
-- `outer_index` :: current outer index (`ik` for outer-k loops, `iq` for the outer-q loop); `0` at
-  batch scope.
-- `batch`       :: outer-iteration range of the current batch (`1:0` on the CPU paths).
-- `n_batch_max` :: loop batch cap, for device-buffer sizing.
+- `backend` :: `CPUBackend()` or `GPUBackend(proto)`.
+- `order` :: `OuterKLoop()` or `OuterQLoop()`.
+- `batch` :: the outer indices of the current outer batch, never empty.
+- `chunk` :: the CPU thread slot of this `run_calculator!` call; 1 in the brackets and on a device.
 """
-struct LoopContext{BT <: AbstractBackend, MT <: LoopMode}
-    backend     :: BT
-    mode        :: MT
-    outer_index :: Int
-    batch       :: UnitRange{Int}
-    n_batch_max :: Int
+struct LoopContext{BT <: AbstractBackend, OT <: LoopTag}
+    backend :: BT
+    order :: OT
+    batch :: UnitRange{Int}
+    chunk :: Int
 end
 
-# SingleMode context (CPU per-(k, q) host loops): there is no batch, so a SingleMode context cannot be
-# handed a spurious batch — fill `batch = 1:0`, `n_batch_max = 0` automatically.
-LoopContext(backend::AbstractBackend, ::SingleMode, outer_index::Integer) =
-    LoopContext(backend, SingleMode(), outer_index, 1:0, 0)
+"""
+    EPBlock{Order <: LoopTag, ...} <: AbstractElPhPayload
 
-# BatchedMode context at batch scope (device loops): there is no single outer index spanning the whole
-# batch, so `outer_index = 0` is the "no single outer index — use `batch`" sentinel.
-LoopContext(backend::AbstractBackend, ::BatchedMode, batch::UnitRange, n_batch_max::Integer) =
-    LoopContext(backend, BatchedMode(), 0, batch, n_batch_max)
+The e-ph matrix of one block: one outer point with a tile of inner points, on the run's backend.
+Order-agnostic code broadcasts over the pair axis (the last axis of `ep` and of the tile-shaped
+fields); the side shared by the whole block has extent 1 along it and a scalar index.
 
+Fields (pair axis `j`):
+- `ep` :: `(nband_max_kq, nband_max_k, nmodes, nb)` eigenbasis e-ph matrix, before `1/(2ω)`. Defined
+  on each pair's windows only: entry `[m, n, ν, j]` is meaningful for `m ≤ el_kq.nband[j]` and
+  `n ≤ el_k.nband[j]` (the shared side's index is 1).
+- `dg` :: `nothing` (the covariant derivative is not produced by the batched loops).
+- `el_k`, `el_kq` :: `BatchedElectronState` views at block extent; `el_k` has extent 1 under
+  `OuterKLoop`.
+- `ph` :: `BatchedPhononState` view; extent 1 under `OuterQLoop`.
+- `wtk`, `wtq` :: the weights; the shared side's is a scalar, the pair side's a device vector.
+- `xk`, `xq` :: the momenta, `Vec3` on the shared side and a host vector on the pair side.
+- `ik`, `ikq`, `iq` :: indices into the run's point sets: under `OuterKLoop` `ik::Int`, `ikq` a
+  `UnitRange` into the k+q container and `iq` a device vector into the q set; under `OuterQLoop`
+  `iq::Int`, `ik` a `UnitRange` and `ikq === nothing` (k+q solved per tile).
+"""
+struct EPBlock{Order <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ} <: AbstractElPhPayload
+    ep    :: AT
+    dg    :: DGT
+    el_k  :: EK
+    el_kq :: EKQ
+    ph    :: PH
+    wtk   :: WK
+    wtq   :: WQ
+    xk    :: XK
+    xq    :: XQ
+    ik    :: IK
+    ikq   :: IKQ
+    iq    :: IQ
+end
+EPBlock{O}(args...) where {O <: LoopTag} = EPBlock{O, typeof.(args)...}(args...)
 
-# =============================================================================
-#  Capability trait — one extensible declaration replacing the `allow_*` quartet.
-
-# Loop-shape tags: a calculator declares compatibility with a driver's loop shape.
-abstract type LoopTag end
-struct OuterKLoop <: LoopTag end    # run_eph_over_k_and_kq / run_eph_over_k_and_q (outer k)
-struct OuterQLoop <: LoopTag end    # run_eph_over_q_and_k (outer q)
 
 """
     supports(calc, ::Type{T}) -> Bool
 
-Declare that `calc` handles loop shape `T` (an `OuterKLoop` / `OuterQLoop` tag type) or payload `T`
-(an `AbstractElPhPayload` type). Default `false` for both families. The drivers check this up front
-and fail loudly if a calculator does not support the loop/payload they will hand it.
+Declare that `calc` handles loop order `T` (`OuterKLoop` / `OuterQLoop`). The per-point loops also
+ask about their payload type (`EPData`). Default `false`. The drivers check this up front and fail
+loudly on a calculator that does not support their order.
 
 The second argument must be a *type* (e.g. `supports(calc, OuterKLoop)`), not an instance: a non-Type
 argument throws, so a typo like `supports(calc, OuterKLoop())` fails loudly instead of silently
@@ -137,12 +120,12 @@ returning `false`.
 supports(::AbstractCalculator, ::Type{<:LoopTag}) = false
 supports(::AbstractCalculator, ::Type{<:AbstractElPhPayload}) = false
 supports(::AbstractCalculator, x) = error(
-    "supports(calc, x) expects a loop-tag or payload TYPE (e.g. supports(calc, OuterKLoop) or " *
-    "supports(calc, EPData)); got x::$(typeof(x)). Pass the Type, not an instance.")
+    "supports(calc, x) expects a loop-tag TYPE (e.g. supports(calc, OuterKLoop)); got " *
+    "x::$(typeof(x)). Pass the Type, not an instance.")
 
 
 # =============================================================================
-#  Lifecycle: run-once initializers stay named; the per-iteration brackets unify.
+#  Lifecycle
 
 """
     allowed_eph_phonon_basis(calc::AbstractCalculator) -> Vector{Symbol}
@@ -154,28 +137,27 @@ Return the list of phonon bases the calculator supports for e-ph matrix elements
 allowed_eph_phonon_basis(::AbstractCalculator) = [:eigenmode]
 
 """
+    required_el_quantities(calc) -> Vector{Symbol}
+    required_ph_quantities(calc) -> Vector{Symbol}
+
+The electron (k and k+q side alike) and phonon quantities the calculator reads, named as the fields
+of `BatchedElectronState` (`:e`, `:u`, `:vdiag`, ...) and `BatchedPhononState` (`:e`, `:u`, ...).
+The loop adds what it needs itself and builds the union. Default: none.
+"""
+required_el_quantities(::AbstractCalculator) = Symbol[]
+required_ph_quantities(::AbstractCalculator) = Symbol[]
+
+"""
     required_el_k_quantities(calc::AbstractCalculator) -> Vector{String}
 
-Return the electron-state quantities at the outer k-points the calculator needs the driver to
-compute. The outer-q driver (`run_eph_over_q_and_k`) computes the union over its calculators, so a
-calculator that only reads eigenvalues/eigenvectors can override this to skip the
-velocity/position interpolation (the dominant setup cost after the eigensolve). Default is the
-conservative full list.
+The per-point outer-q loop's k-side electron quantities, as `compute_electron_states` strings.
+Default is the full list.
 """
 required_el_k_quantities(::AbstractCalculator) = ["eigenvalue", "eigenvector", "velocity", "position"]
 
-# Mandatory hook, no working default. `backend` and `mode` are POSITIONAL and come before the
-# state/grid arguments, so a calculator can dispatch on them (`::CPUBackend`, `::BatchedMode`) instead
-# of branching, and so a calculator still on the old signature fails loudly here instead of silently
-# absorbing them into `kwargs...`. `mode`, not `backend`, is the per-point-vs-batched discriminator —
-# see the `AbstractCalculator` docstring.
-#
-# Arguments 2 and 3 are deliberately UNANNOTATED. Annotating them `::AbstractBackend, ::LoopMode`
-# makes this method ambiguous with any calculator method that leaves them untyped (the natural
-# spelling: `setup_calculator!(c::MyCalc, backend, mode, kpts, qpts, el_states; kwargs...)`), because
-# neither candidate is more specific — the subtype wins on argument 1, the abstract types win on 2-3.
-# A catch-all must not compete on the arguments it does not dispatch on.
-function setup_calculator!(::AbstractCalculator, backend, mode, kpts, qpts, el_states; kwargs...)
+# Mandatory hook, no working default. The state arguments are positional and the catch-all leaves
+# them unannotated, so it is never ambiguous with a calculator method that leaves them untyped.
+function setup_calculator!(::AbstractCalculator, backend, el_k, el_kq, ph; kwargs...)
     error("setup_calculator! has to be implemented")
 end
 
@@ -183,54 +165,43 @@ function postprocess_calculator!(::AbstractCalculator; kwargs...)
     error("postprocess_calculator! has to be implemented")
 end
 
-# Scope singletons name the iteration level being bracketed, so the call reads as a sentence:
-# `calculator_begin!(calc, OuterIteration(), ctx)` = "at the beginning of one outer iteration".
-struct OuterIteration end        # one iteration of the outer loop (one ik / one iq)
-struct OuterIterationBatch end   # one batch of consecutive outer iterations (batched loops)
+# The one bracket, around every outer batch. There is NO no-op default: a missing method is a loud
+# error, never a silent skip; a calculator that does nothing there defines `= nothing`. `ctx` is
+# unannotated so the fallback is never ambiguous with a calculator method that leaves it untyped.
+function calculator_begin!(calc::AbstractCalculator, ctx)
+    error("calculator_begin!($(typeof(calc)), ::$(typeof(ctx))) is not defined. Every calculator " *
+          "defines the begin/end brackets, even as an explicit no-op (`= nothing`).")
+end
+function calculator_end!(calc::AbstractCalculator, ctx)
+    error("calculator_end!($(typeof(calc)), ::$(typeof(ctx))) is not defined. Every calculator " *
+          "defines the begin/end brackets, even as an explicit no-op (`= nothing`).")
+end
 
-# Begin/end brackets. There is NO no-op default: a calculator MUST define the brackets for every
-# (scope, loop-mode) combination the drivers fire on it, even when it wants a no-op — a missing
-# method is a loud error, never a silent skip (a silently-skipped bracket is a hard-to-find bug). The
-# combinations follow what the calculator `supports`: OuterIteration/SingleMode (per-point loops),
-# OuterIteration/BatchedMode (batched outer-q per-q accumulator), and OuterIterationBatch/BatchedMode
-# (batched outer-k per-batch). OuterIterationBatch/SingleMode is never fired, and neither is
-# OuterIteration/BatchedMode in the BATCHED OUTER-K loop: there the q-tile loop runs outside the k loop,
-# so a single k's work is spread over the whole batch and has no per-k begin/end point — a
-# calculator needing a per-k device reduction there must do it at OuterIterationBatch scope.
-# A calculator that does nothing at a scope defines an explicit no-op (`= nothing`).
+# The per-point loops' scope bracket (with their `EPData` payload).
+struct OuterIteration end
 function calculator_begin!(calc::AbstractCalculator, scope, ctx)
-    error("calculator_begin!($(typeof(calc)), ::$(typeof(scope)), ::$(typeof(ctx))) is not " *
-          "defined. Every calculator must define the begin/end brackets for the (scope, loop-mode) " *
-          "combinations its supported loops fire, even as an explicit no-op (`= nothing`).")
+    error("calculator_begin!($(typeof(calc)), ::$(typeof(scope)), ::$(typeof(ctx))) is not defined.")
 end
 function calculator_end!(calc::AbstractCalculator, scope, ctx)
-    error("calculator_end!($(typeof(calc)), ::$(typeof(scope)), ::$(typeof(ctx))) is not " *
-          "defined. Every calculator must define the begin/end brackets for the (scope, loop-mode) " *
-          "combinations its supported loops fire, even as an explicit no-op (`= nothing`).")
+    error("calculator_end!($(typeof(calc)), ::$(typeof(scope)), ::$(typeof(ctx))) is not defined.")
 end
 
 
 # =============================================================================
-#  Execution hook — one function, dispatched on the payload type.
-#
-# `run_calculator!(calc, payload, ctx)`:
-#   * `EPData`         — host per-(k, q) callback (CPU inner loops).
-#   * `EPDataQBatched` — device, outer-k loop (one k, batch of k+q).
-#   * `EPDataKBatched` — device, outer-q loop (one q, batch of k).
-# There is deliberately no catch-all default: calling a payload a calculator does not implement is a
-# `MethodError`, and the drivers reject unsupported calculators up front via `supports`. The empty
-# generic-function declaration below creates the binding that calculators extend.
+#  Execution hook, dispatched on the block's loop order. There is deliberately no catch-all
+#  default: the drivers reject unsupported calculators up front via `supports`.
 function run_calculator! end
 
 """
-    eph_batched_bytes_per_point(calc, ::Type{<:AbstractElPhPayload}; nw, nmodes) -> Int
+    eph_batched_bytes_per_point(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k, nband_max_kq)
+        -> (; persistent, per_outer, per_pair)
 
-Device bytes of per-point scratch the calculator's batched `run_calculator!` path holds (its
-workspace arrays sized `(…, batch)`, divided by the batch width). The batched loops sum this over the
-calculators and combine it with their own per-point staging cost to derive a memory-adaptive batch
-width from `free_bytes`. Default `0` (no per-point device scratch).
+Device bytes the calculator allocates for a batched run of order `O`: whole-run buffers
+(`persistent`), per outer point of a batch (`per_outer`) and per inner pair of a tile (`per_pair`).
+The loops add them to their own counts to size the inner tile against `free_bytes`. Default zeros.
 """
-eph_batched_bytes_per_point(::AbstractCalculator, ::Type{<:AbstractElPhPayload}; nw, nmodes) = 0
+eph_batched_bytes_per_point(::AbstractCalculator, ::Type{<:EPBlock}; kwargs...) =
+    (; persistent = 0, per_outer = 0, per_pair = 0)
 
 
 # =============================================================================
@@ -240,11 +211,11 @@ eph_batched_bytes_per_point(::AbstractCalculator, ::Type{<:AbstractElPhPayload};
 #  here too — `public`, like `export`, permits forward references to names defined later in the module.
 public AbstractCalculator, supports, setup_calculator!, run_calculator!, postprocess_calculator!,
     calculator_begin!, calculator_end!, OuterKLoop, OuterQLoop, OuterIteration,
-    OuterIterationBatch, AbstractElPhPayload, EPData, EPDataQBatched, EPDataKBatched,
-    LoopContext, SingleMode, BatchedMode, LoopMode, AbstractBackend, CPUBackend, GPUBackend,
+    AbstractElPhPayload, EPData, EPBlock, LoopContext, AbstractBackend, CPUBackend, GPUBackend,
     gpu_backend, alloc, free_bytes, synchronize, batched_gemm!, eph_window_scatter!,
     bte_window_accumulate!, eph_batched_bytes_per_point, allowed_eph_phonon_basis,
-    required_el_k_quantities, _indmap_to_device, TiledDeviceOutput, tile_begin!, tile_download!,
-    tile_free!, device_array, host_array, tile_offset, tile_length, tile_stride, is_block,
-    is_allocated, residency_use_block, to_device, plan_batch, estimate_device_memory
+    required_el_quantities, required_ph_quantities, required_el_k_quantities, _indmap_to_device,
+    TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array,
+    tile_offset, tile_length, tile_stride, is_block, is_allocated, residency_use_block, to_device,
+    plan_batch, estimate_device_memory
 

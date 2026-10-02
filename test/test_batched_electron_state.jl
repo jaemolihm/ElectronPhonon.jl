@@ -92,12 +92,11 @@ end
         @test occursin("BatchedElectronState{Float64}(nw = 4, nband_max = 1", sprint(show, el_states))
 
         # `BandStates` from the batched states equals the one from the per-point states.
-        bs, _ = electron_states_to_BandStates(el_states, sel)
+        bs = BandStates(el_states, sel)
         bs_ref, _ = electron_states_to_BandStates(
             compute_electron_states(model_pb, sel, ["eigenvalue", "velocity_diagonal"]), sel)
         @test bs.es == bs_ref.es && bs.vs == bs_ref.vs && bs.iks == bs_ref.iks
-        @test isempty(electron_states_to_BandStates(
-            compute_electron_states_batched(model_pb, sel, [:e]), sel)[1].vs)
+        @test isempty(BandStates(compute_electron_states_batched(model_pb, sel, [:e]), sel).vs)
         fb = electron_states_to_FilteredBandStates(kpts,
             compute_electron_states_batched(model_pb, kpts, [:e], window_wide), 0.0; nw = 4)
         fb_ref = electron_states_to_FilteredBandStates(kpts,

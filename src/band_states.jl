@@ -31,7 +31,7 @@ subtypes:
     `vs`), used for the scatter, transport, and the δf feedback.
 
 The `(k, band)`-selection machinery (`state_index`, `_build_indmap`, `state_weights`, `state_xks`,
-`ind_range_for_k_range`, `_indmap_to_device`, `find_unfolding_indices`, the length/index interface,
+`ind_range_for_k_range`, `find_unfolding_indices`, the length/index interface,
 and the `bt_*` accessors) dispatches on `AbstractBandStates`, so both subtypes share it. The
 `es`/`vs`-dependent methods (transport, δf feedback, the per-state iterator) stay on `BandStates`.
 
@@ -194,8 +194,8 @@ k-index `ik` is stored directly (no deduplication: `kpts` already holds the dist
 `state_index(xk, …)` queries); callers holding a plain `Kpoints` promote it first.
 
 `imap` is a view of the `BandStates`' own `indmap` with its rows offset by `nband_ignore`, not a
-second copy — query the same map with `state_index`, or build a device copy for the GPU scatter with
-`_indmap_to_device`.
+second copy — query the same map with `state_index`, or build a device map in a container's box
+coordinates with `_indmap_to_device`.
 
 This is the `BandStates` replacement for `electron_states_to_BTStates`.
 """
@@ -272,30 +272,6 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
         copy(sel.iks), copy(sel.ibands), es, vs, copy(sel.weights), sel.nstates_base,
         copy(sel.indmap), copy(sel.band_extent))
     bs, OffsetArray(bs.indmap, band_range(bs), 1:sel.kpts.n)
-end
-
-# Build a device `(nband_physical, nk)` integer index map addressable by PHYSICAL band: row `iband` ∈
-# 1:nband_physical holds the flattened state index for `(iband, ik)`, and 0 where that band is absent
-# / out of the energy window, so a device kernel can look a state up directly from its physical band
-# index. (`s.indmap` is stored band-offset by `nband_ignore`; this places its rows at their
-# physical-band positions `nband_ignore+1 : nband_ignore+nband`.)
-#
-# `nband_physical` is the physical-band row count (row stride) to pad to — a property of the
-# CONSUMER's index space, not of `s`, so it is passed explicitly rather than read from `s.nw`: the
-# two callers choose it differently (Boltzmann passes `model.nw`; ME passes `nbandkq`).
-#
-# Why the full physical-band rows and not the (smaller) in-window / projected band count:
-#   * k+q map: the scatter indexes it by the physical k+q band `m`. The k+q band axis is NOT
-#     window-projected (all bands are kept; out-of-window ones are the 0 entries), so it needs a row
-#     per physical band.
-#   * k map: the scatter reads it as a per-k *shifted* window `view(·, ibandk_offset+1 : +nbandk, ik)`
-#     (the k side IS projected to nbandk). It could be stored as just `nbandk` rows by baking each k's
-#     `ibandk_offset` into its column, but this Int map is tiny next to the streamed Sᵢ (GBs), so both
-#     maps share the one physical-band layout and the k side simply offsets at read time.
-function _indmap_to_device(backend::AbstractBackend, s::AbstractBandStates, nband_physical::Integer)
-    indmap_host = zeros(Int, nband_physical, s.kpts.n)
-    @views indmap_host[s.nband_ignore+1 : s.nband_ignore+s.nband, :] .= s.indmap
-    to_device(backend, indmap_host)
 end
 
 """

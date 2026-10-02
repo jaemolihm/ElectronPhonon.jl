@@ -104,3 +104,52 @@ function copy_batched_electron_states!(dst::BatchedElectronState, src::BatchedEl
     _copy_last_axis!(dst.rbar, src.rbar, inds)
     dst
 end
+
+"""
+    view_batched_electron_states(el_states, inds::AbstractUnitRange)
+
+The points `inds` of `el_states` as a `BatchedElectronState` of views (no copy), with `kpts = nothing`.
+"""
+@views function view_batched_electron_states(el_states::BatchedElectronState{T}, inds::AbstractUnitRange) where {T}
+    # Colons rather than `selectdim`, so a device view stays a device array.
+    view_points(x) = x === nothing ? nothing : x[ntuple(_ -> Colon(), ndims(x) - 1)..., inds]
+    BatchedElectronState{T}(el_states.nw, el_states.nband_max, length(inds), nothing,
+        el_states.iband_offset[inds],
+        el_states.nband[inds],
+        view_points(el_states.e),
+        view_points(el_states.u),
+        view_points(el_states.vdiag),
+        view_points(el_states.v),
+        view_points(el_states.rbar))
+end
+
+# The state index map of `states` in the box coordinates of the container `el_states` it was
+# selected over, on `backend`: entry `[n, ik]` is the index in `states` of physical band
+# `el_states.iband_offset[ik] + n` at k point `ik`, 0 where that band is not a state of `states` or
+# `n > el_states.nband[ik]`. A kernel looks a state up from a block's local band index, so it never
+# reads the box padding.
+function _indmap_to_device(backend::AbstractBackend, states::AbstractBandStates, el_states::BatchedElectronState)
+    states.kpts.n == el_states.nk || throw(ArgumentError("states hold $(states.kpts.n) k points, el_states $(el_states.nk)"))
+    offset = Array(el_states.iband_offset); nband = Array(el_states.nband)
+    indmap = zeros(Int, el_states.nband_max, el_states.nk)
+    for ik in 1:el_states.nk, n in 1:nband[ik]
+        indmap[n, ik] = state_index(states, ik, offset[ik] + n)
+    end
+    to_device(backend, indmap)
+end
+
+# Set the box entries past each point's `nband` to NaN, in every band axis, so that a reader that
+# reads the padding sees it (the `fill_padding_nan` switch of the e-ph drivers).
+function fill_padding_nan!(el_states::BatchedElectronState{T}) where {T}
+    pad = reshape(1:el_states.nband_max, :, 1) .> reshape(el_states.nband, 1, :)   # (n, k) on the backend
+    nanc = Complex{T}(NaN, NaN)
+    el_states.e === nothing || (el_states.e .= ifelse.(pad, T(NaN), el_states.e))
+    el_states.u === nothing || (el_states.u .= ifelse.(reshape(pad, 1, size(pad)...), nanc, el_states.u))
+    el_states.vdiag === nothing || (el_states.vdiag .= ifelse.(reshape(pad, 1, size(pad)...), T(NaN), el_states.vdiag))
+    for x in (el_states.v, el_states.rbar)
+        x === nothing && continue
+        pad2 = reshape(pad, 1, el_states.nband_max, 1, el_states.nk) .| reshape(pad, 1, 1, el_states.nband_max, el_states.nk)
+        x .= ifelse.(pad2, nanc, x)
+    end
+    el_states
+end

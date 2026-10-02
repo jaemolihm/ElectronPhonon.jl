@@ -26,8 +26,9 @@ distinct f), so the writes never collide (no atomics needed). Generic (CPU/fallb
 CUDA extension provides a one-kernel `CuArray` method.
 
 A helper for downstream device-resident calculators: from their `run_calculator!(calc,
-::EPDataQBatched, ctx)` method they call this to scatter each e-ph batch's `g2`/`ωq` into their own window-mapped device
-accumulators. The library itself stays agnostic to any particular calculator.
+::EPBlock{OuterKLoop}, ctx)` method they call this to scatter each block's `g2`/`ωq` into their own
+window-mapped device accumulators, with `imap_i_col` / `imap_f` in the containers' box coordinates
+(see `_indmap_to_device`). The library itself stays agnostic to any particular calculator.
 
 TODO: the non-collision invariant (unique `lin` indices across the run) has no in-repo test —
 correctness currently rides on the downstream calculator's tests. Add a small scatter round-trip

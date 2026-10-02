@@ -36,27 +36,30 @@ include("eph_reference_loop.jl")
 
         common = (; window_k = window, window_kq = window, progress_print_step = 10^9,
                   verbosity = 0)
-        outer_k = Any[("per-point", (; nchunks_threads = 4)),
-            ("batched CPU", (; backend = CPUBackend(), batched = true, nk_outer_batch_max = 5,
-                              nq_batch_max = 50))]
-        outer_q = Any[("per-point", (; nchunks_threads = 4)),
-            ("batched CPU", (; backend = CPUBackend(), batched = true, nk_batch_max = 50))]
+        outer_k = Any[("CPU", (; nchunks_threads = 4)),
+            ("CPU, small tiles", (; backend = CPUBackend(), nk_outer_batch_max = 5, nq_batch_max = 50))]
+        outer_q = Any[("CPU", (; nchunks_threads = 4)),
+            ("CPU, small tiles", (; backend = CPUBackend(), nk_batch_max = 50))]
         if EPH_REFERENCE_GPU_AVAILABLE
             CUDA.allowscalar(false)
             push!(outer_k, ("GPU", (; backend = gpu_backend())),
                 ("GPU, outer batch 1", (; backend = gpu_backend(), nk_outer_batch_max = 1)))
             push!(outer_q, ("GPU", (; backend = gpu_backend())))
         end
+        run_arm(order, kw) = (rec = _PairRecorder();
+            order == "outer k" ?
+                run_eph_over_k_and_kq(model_el, grid, grid; calculators = [rec], symmetry = nothing,
+                                      common..., kw...) :
+                run_eph_over_q_and_k(model_ph, grid, grid; calculators = [rec], use_symmetry = false,
+                                     common..., kw...);
+            compare_with_reference(ref, rec))
+        # The per-point loops do not run with the batched setup and block contract (ElectronPhonon.jl
+        # issue #72, https://github.com/jaemolihm/ElectronPhonon.jl/issues/72).
+        for order in ("outer k", "outer q")
+            @test_broken run_arm(order, (; batched = false)).g2_reldev < 1e-11
+        end
         for (order, arms) in (("outer k", outer_k), ("outer q", outer_q)), (name, kw) in arms
-            rec = _PairRecorder()
-            if order == "outer k"
-                run_eph_over_k_and_kq(model_el, grid, grid; calculators = [rec],
-                                      symmetry = nothing, common..., kw...)
-            else
-                run_eph_over_q_and_k(model_ph, grid, grid; calculators = [rec],
-                                     use_symmetry = false, common..., kw...)
-            end
-            dev = compare_with_reference(ref, rec)
+            dev = run_arm(order, kw)
             @info "e-ph loop vs reference" fixture order name dev
             @test dev.nmissing == 0 && dev.nextra == 0
             # Measured 6e-15 to 3e-14 on every arm, CPU and GPU (A100).

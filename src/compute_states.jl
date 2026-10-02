@@ -489,23 +489,27 @@ solve runs when none of them needs the eigenvectors.
 
 Keywords as in `compute_electron_states`: `fourier_mode = "normal"`, `backend = CPUBackend()`,
 `eigenpairs = nothing` (a gauge-fixing cache covering every k, resident on `backend`).
+`fill_padding_nan = true` sets the box entries past each point's window to NaN (a test switch).
 
 On a GPU backend only `:e`, `:u` and `:vdiag` are supported and `fourier_mode` is unused. The
 batched eigensolve picks its own basis inside a degenerate multiplet, as in `compute_electron_states`.
 """
 function compute_electron_states_batched(model::Model, sel::FilteredBandStates, quantities;
-        fourier_mode = "normal", backend = CPUBackend(), eigenpairs::Union{Nothing, Eigenpairs} = nothing)
-    _compute_electron_states_batched(model, sel.kpts, quantities, sel.band_extent; fourier_mode, backend, eigenpairs)
+        fourier_mode = "normal", backend = CPUBackend(), eigenpairs::Union{Nothing, Eigenpairs} = nothing,
+        fill_padding_nan = false)
+    _compute_electron_states_batched(model, sel.kpts, quantities, sel.band_extent; fourier_mode, backend,
+                                     eigenpairs, fill_padding_nan)
 end
 
 function compute_electron_states_batched(model::Model, kpts::AbstractKpoints, quantities,
         window::Tuple = (-Inf, Inf); fourier_mode = "normal", backend = CPUBackend(),
-        eigenpairs::Union{Nothing, Eigenpairs} = nothing)
-    _compute_electron_states_batched(model, kpts, quantities, window; fourier_mode, backend, eigenpairs)
+        eigenpairs::Union{Nothing, Eigenpairs} = nothing, fill_padding_nan = false)
+    _compute_electron_states_batched(model, kpts, quantities, window; fourier_mode, backend, eigenpairs,
+                                     fill_padding_nan)
 end
 
 function _compute_electron_states_batched(model::Model{FT}, kpts, quantities, window;
-        fourier_mode, backend, eigenpairs) where FT
+        fourier_mode, backend, eigenpairs, fill_padding_nan) where FT
     (; nw) = model
     nk = kpts.n
     backend isa CPUBackend || isempty(setdiff(quantities, (:e, :u, :vdiag))) || throw(ArgumentError(
@@ -546,6 +550,7 @@ function _compute_electron_states_batched(model::Model{FT}, kpts, quantities, wi
     else
         _fill_electron_states_batched_device!(el_states, model, E, U, offset_h, backend)
     end
+    fill_padding_nan && fill_padding_nan!(el_states)
     el_states
 end
 
@@ -668,7 +673,7 @@ function _fill_electron_states_batched_device!(el_states, model, E, U, offset_h,
 end
 
 """
-    compute_electron_states_batched!(dst, itp_ham, hk, model, xks, window)
+    compute_electron_states_batched!(dst, itp_ham, hk, model, xks, window; fill_padding_nan = false)
 
 Solve the electron states at the k points `xks` (a host vector of at most `dst.nk` points) straight
 into the first `length(xks)` points of `dst`, a [`BatchedElectronState`](@ref) with
@@ -676,9 +681,11 @@ into the first `length(xks)` points of `dst`, a [`BatchedElectronState`](@ref) w
 `BatchedWannierInterpolator` of `model.el_ham` on `dst`'s backend, block width at least
 `length(xks)`) into the `(nw^2, ≥ length(xks))` scratch `hk`, one batched eigensolve, then each
 point's bands inside the energy `window` moved to local bands `1:nband`. The batched eigensolve
-applies no degeneracy gauge fix, as in `eigen_batched`.
+applies no degeneracy gauge fix, as in `eigen_batched`. `fill_padding_nan = true` sets the entries
+past each point's window to NaN.
 """
-function compute_electron_states_batched!(dst::BatchedElectronState, itp_ham, hk, model::Model, xks, window::Tuple)
+function compute_electron_states_batched!(dst::BatchedElectronState, itp_ham, hk, model::Model, xks,
+        window::Tuple; fill_padding_nan = false)
     (; nw) = model
     dst.vdiag === nothing && dst.v === nothing && dst.rbar === nothing || throw(ArgumentError(
         "the in-tile electron builder fills e and u only"))
@@ -702,18 +709,19 @@ function compute_electron_states_batched!(dst::BatchedElectronState, itp_ham, hk
     col = vec(min.(reshape(off, 1, nx) .+ (1:nw), nw) .+ nw .* reshape(0:nx-1, 1, nx))
     dst.e === nothing || (view(dst.e, :, 1:nx) .= reshape(view(vec(E), col), nw, nx))
     U === nothing || (view(reshape(dst.u, nw, :), :, 1:nw*nx) .= view(reshape(U, nw, :), :, col))
+    fill_padding_nan && fill_padding_nan!(dst)
     dst
 end
 
 """
-    electron_states_to_BandStates(el_states::BatchedElectronState, sel::FilteredBandStates)
-        -> (BandStates, imap)
+    BandStates(el_states::BatchedElectronState, sel::FilteredBandStates) -> BandStates
 
-The `BatchedElectronState` method of the `Vector{ElectronState}` one: state `i` takes its energy and
-velocity from local band `sel.ibands[i] - el_states.iband_offset[k]` of its k point. `vs` is empty
-when `el_states` holds no `vdiag`. Every selected band must be inside the box window of its k point.
+The states of the selection `sel` with their energies and velocities from the container `el_states`
+built from it: state `i` reads local band `sel.ibands[i] - el_states.iband_offset[k]` of its k point.
+The states, weights and `nstates_base` are the selection's. `vs` is empty when `el_states` holds no
+`vdiag`. Every selected band must be inside the box of its k point.
 """
-function electron_states_to_BandStates(el_states::BatchedElectronState{T}, sel::FilteredBandStates{T}) where {T}
+function BandStates(el_states::BatchedElectronState{T}, sel::FilteredBandStates{T}) where {T}
     el_states.nk == sel.kpts.n || throw(ArgumentError("el_states holds $(el_states.nk) k points, sel $(sel.kpts.n)"))
     e = Array(el_states.e); off = Array(el_states.iband_offset); nband = Array(el_states.nband)
     vdiag = el_states.vdiag === nothing ? nothing : Array(el_states.vdiag)
@@ -728,10 +736,9 @@ function electron_states_to_BandStates(el_states::BatchedElectronState{T}, sel::
         es[i] = e[nl, ik]
         vdiag === nothing || (vs[i] = Vec3{T}(vdiag[1, nl, ik], vdiag[2, nl, ik], vdiag[3, nl, ik]))
     end
-    bs = BandStates{T, typeof(sel.kpts)}(n, sel.nband, sel.nband_ignore, sel.nw, sel.kpts,
+    BandStates{T, typeof(sel.kpts)}(n, sel.nband, sel.nband_ignore, sel.nw, sel.kpts,
         copy(sel.iks), copy(sel.ibands), es, vs, copy(sel.weights), sel.nstates_base,
         copy(sel.indmap), copy(sel.band_extent))
-    bs, OffsetArray(bs.indmap, band_range(bs), 1:sel.kpts.n)
 end
 
 """
