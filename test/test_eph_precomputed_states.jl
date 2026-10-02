@@ -175,7 +175,7 @@ end
         for backend in backends
             plain = _run(sub_a; backend)
             qpts = plain.qpts
-            cache = _phonon_eigenpairs(Vector{PhononState{Float64}}(plain.phs), qpts, backend)
+            cache = Eigenpairs(model.nmodes, qpts, plain.ph.e, plain.ph.u)
             rot = circshift(1:qpts.n, 1)
             rotated = Eigenpairs(model.nmodes, qpts, cache.e_full[:, rot], cache.u_full[:, :, rot])
 

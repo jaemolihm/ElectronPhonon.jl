@@ -1,8 +1,5 @@
 # Phonon quantities over a q-point set, one array per quantity with q on the last axis
 
-using ChunkSplitters
-using Base.Threads: nthreads, @threads
-
 export BatchedPhononState
 
 """
@@ -106,32 +103,4 @@ The points `inds` of `phs` as a `BatchedPhononState` of views (no copy), with `q
         view_points(phs.vdiag),
         view_points(phs.eph_dipole_coeff),
         view_points(phs.eph_r_coeff))
-end
-
-"""
-    Vector{PhononState{T}}(phs::BatchedPhononState{T})
-
-One `PhononState` per q point of `phs`, on the host: `xq` from `phs.qpts` and every
-quantity `phs` holds; a quantity it does not hold is left at `PhononState`'s zero.
-"""
-function Base.Vector{PhononState{T}}(phs::BatchedPhononState{T}) where {T}
-    phs.qpts === nothing && throw(ArgumentError("a per-batch buffer has no q points"))
-    host(x) = x === nothing ? nothing : Array(x)
-    e, u, vdiag, dip, rco = host(phs.e), host(phs.u), host(phs.vdiag), host(phs.eph_dipole_coeff),
-        host(phs.eph_r_coeff)
-    states = [PhononState(phs.nmodes, T) for _ in 1:phs.nq]
-    @threads for iqs in chunks(1:phs.nq; n = nthreads())
-        for iq in iqs
-            ph = states[iq]
-            ph.xq = phs.qpts.vectors[iq]
-            e === nothing || (@views ph.e .= e[:, iq])
-            u === nothing || (@views ph.u .= u[:, :, iq])
-            vdiag === nothing || for i in 1:phs.nmodes
-                ph.vdiag[i] = Vec3{T}(vdiag[1, i, iq], vdiag[2, i, iq], vdiag[3, i, iq])
-            end
-            dip === nothing || (@views ph.eph_dipole_coeff .= dip[:, iq])
-            rco === nothing || (@views ph.eph_r_coeff .= rco[:, :, iq])
-        end
-    end
-    states
 end
