@@ -440,16 +440,15 @@ end
         ep = zeros(ComplexF64, nband, nband, nmodes, nq)
         ep_kR, phase = rand(ComplexF64, ndata, nr), rand(ComplexF64, nr, nq)
         uphs, ukqs = rand(ComplexF64, nmodes, nmodes, nq), rand(ComplexF64, nw, nband, nq)
-        wide_g = ElectronPhonon.KRtoKQWorkspace(rand(ComplexF64, ndata, nq + 2),
-                                                rand(ComplexF64, nband, nband * nmodes, nq))
-        @test_throws AssertionError get_eph_kR_to_kq_batched!(ep, ep_kR, phase, uphs, ukqs; ws = wide_g)
+        @test_throws AssertionError get_eph_kR_to_kq_batched!(ep, ep_kR, phase, uphs, ukqs;
+            g = rand(ComplexF64, ndata, nq + 2), tmp = rand(ComplexF64, nband, nband * nmodes, nq))
         eRpq = WannierObject(irvec, rand(ComplexF64, nw^2 * nmodes, nr))
         itp = get_interpolator(eRpq; fourier_mode = "batched", backend = ElectronPhonon.CPUBackend(),
                                batch_size = nq)
         ks, uks = [Vec3(rand(3)...) for _ in 1:nq], rand(ComplexF64, nw, nband, nq)
-        wide_uk = ElectronPhonon.RqToKQWorkspace(rand(ComplexF64, nw^2 * nmodes, nq),
-            rand(ComplexF64, nband, nw * nmodes, nq), rand(ComplexF64, nw, nband, nmodes * (nq + 2)))
-        @test_throws AssertionError get_eph_Rq_to_kq_batched!(ep, itp, ks, uks, ukqs; ws = wide_uk)
+        @test_throws AssertionError get_eph_Rq_to_kq_batched!(ep, itp, ks, uks, ukqs;
+            g = rand(ComplexF64, nw^2 * nmodes, nq), tmp = rand(ComplexF64, nband, nw * nmodes, nq),
+            uk_rep = rand(ComplexF64, nw, nband, nmodes * (nq + 2)))
     end
 end
 

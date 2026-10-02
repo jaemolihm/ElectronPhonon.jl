@@ -128,8 +128,9 @@ end
             CUDA.synchronize(); _device_allocated(() -> stage2!(eng, t, pairs))
         end
         @info "stage2! allocations" order backend = nameof(typeof(backend)) nbytes
-        # Measured (Pb, A100): 80 and 112 bytes on the CPU, 32 and 992 bytes (the k list) on the
-        # GPU; the outer-q stage-2 scratch (g, tmp, uk_rep) alone is of order 1e5 bytes here.
+        # Measured (Pb): 80 and 112 bytes on the CPU with Julia 1.11, 0 and 32 with 1.13 (ccqlin059);
+        # 32 and 992 bytes (the k list) on the GPU (A100). The outer-q stage-2 scratch (g, tmp,
+        # uk_rep) alone is of order 1e5 bytes here.
         @test nbytes <= 24 * ntile + 2048
     end
 end

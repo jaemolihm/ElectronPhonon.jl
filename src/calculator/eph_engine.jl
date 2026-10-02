@@ -192,8 +192,9 @@ function OuterKEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
     for ik in 1:kpts.n
         xks_int[:, ik] .= _grid_coords_reduced(kpts.vectors[ik], qpts.ngrid, zero(Vec3{FT}))
     end
-    # Only columns 1:nb of P_mk are rewritten for a partial last batch; 1 keeps the padded slice of
-    # ep_kR the plain g(k, R_p) of the repeated last k.
+    # Only columns 1:nb of P_mk are rewritten for a partial last batch. The padded columns of ep_kR
+    # (the repeated last k) are never read: they hold g(k, R_p) times 1 when the partial batch is
+    # the first, otherwise times the phase a previous batch left in that column; finite either way.
     P_mk = fill!(alloc(backend, Complex{FT}, nr_p, n_outer_batch), 1)
     ndata = nw * nbk * nmodes
 
