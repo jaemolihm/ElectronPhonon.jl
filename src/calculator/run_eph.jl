@@ -47,11 +47,12 @@ tile of q points, whose index is `iq` (`ikq === nothing`). The k+q states are so
 `e` and `u` only, and the phonons are built once on `qpts`. Returns
 `(; kpts, qpts, els_k, els_kq = nothing, phs)`.
 
-Keywords as in [`run_eph_over_k_and_kq`](@ref), except: `kpts` is a grid size, a k-point set on a
-grid (a k path with its `ngrid`) or a prebuilt `FilteredBandStates`; `symmetry = nothing`, the only
-value accepted (the outer k points are not reduced); `n_inner_tile` q points per block; no `vdiag`
-(for a calculator or `:Linear` energy conservation) and no `el_kq_eigenpairs`, which need the k+q
-points on a grid. Calculators that read the k+q selection (`sel_kq`) are not supported.
+Keywords as in [`run_eph_over_k_and_kq`](@ref), except: `kpts` is any k list (e.g. a band path,
+not necessarily on a grid), a grid size or a prebuilt `FilteredBandStates`; `el_k_eigenpairs` only
+for k points on a grid (the cache is looked up on one); `symmetry = nothing`, the only value
+accepted (the outer k points are not reduced); `n_inner_tile` q points per block; no `vdiag` (for a
+calculator or `:Linear` energy conservation) and no `el_kq_eigenpairs`, which need the k+q points
+on a grid. Calculators that read the k+q selection (`sel_kq`) are not supported.
 """
 run_eph_over_k_and_q(model::Model, kpts_input, qpts_input; symmetry = nothing, kwargs...) =
     _run_eph(OuterKLoop(), model, kpts_input, qpts_input, true; symmetry, kwargs...)
@@ -119,7 +120,8 @@ function _run_eph(order::LoopTag, model::Model{FT}, kpts_input, second_input, kq
                    required_ph_quantities.(calculators)...)
     _check_run(order, model, backend, calculators, kpts_input, second_input, el_qty;
         energy_conservation, covariant_derivative_of_g, eph_phonon_basis, fourier_mode,
-        precompute_el_kq, screening_params, mpi_comm_k, el_kq_eigenpairs, symmetry, kq_per_tile)
+        precompute_el_kq, screening_params, mpi_comm_k, el_kq_eigenpairs, symmetry, kq_per_tile,
+        el_k_eigenpairs)
 
     (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq) = _setup_states(order, model, kpts_input,
         second_input, el_qty, ph_qty; kq_per_tile, backend, window_k, window_kq, symmetry, precompute_el_kq,
@@ -273,7 +275,7 @@ end
 function _check_run(order, model, backend, calculators, kpts_input, second_input, el_qty;
         energy_conservation, covariant_derivative_of_g, eph_phonon_basis, fourier_mode,
         precompute_el_kq, screening_params, mpi_comm_k, el_kq_eigenpairs, symmetry = nothing,
-        kq_per_tile = false)
+        kq_per_tile = false, el_k_eigenpairs = nothing)
     Order = typeof(order)
     isempty(calculators) && throw(ArgumentError("the e-ph loop requires at least one calculator."))
     for calc in calculators
@@ -308,9 +310,8 @@ function _check_run(order, model, backend, calculators, kpts_input, second_input
         if kq_per_tile
             symmetry === nothing || throw(ArgumentError(
                 "run_eph_over_k_and_q does not reduce the outer k points: pass symmetry = nothing"))
-            all(_input_ngrid(kpts_input) .> 0) || throw(ArgumentError(
-                "run_eph_over_k_and_q needs the outer k points on a grid: a grid size, a k-point " *
-                "set with its ngrid (a k path on a grid) or a FilteredBandStates"))
+            (el_k_eigenpairs === nothing || all(_input_ngrid(kpts_input) .> 0)) || throw(ArgumentError(
+                "el_k_eigenpairs needs the outer k points on a grid: the cache is looked up on one"))
             mode === :Linear && throw(ArgumentError(
                 "run_eph_over_k_and_q solves the k+q states per tile, which adaptive energy " *
                 "conservation (:Linear) cannot use: it needs the k+q velocities on a grid"))
@@ -330,6 +331,9 @@ function _check_run(order, model, backend, calculators, kpts_input, second_input
     else
         covariant_derivative_of_g && throw(ArgumentError(
             "covariant_derivative_of_g is not supported by run_eph_over_q_and_k"))
+        all(_input_ngrid(kpts_input) .> 0) || throw(ArgumentError(
+            "run_eph_over_q_and_k needs the k points on a grid: a grid size, a k-point set on a " *
+            "grid or a FilteredBandStates of one"))
         mpi_comm_k === nothing || throw(ArgumentError("mpi_comm_k is not implemented for run_eph_over_q_and_k"))
         q_on_grid = second_input isa NTuple{3, Int} || (second_input isa AbstractKpoints && all(second_input.ngrid .> 0))
         (precompute_el_kq || mode === :Linear) && !q_on_grid && throw(ArgumentError(

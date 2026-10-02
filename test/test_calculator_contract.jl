@@ -25,6 +25,10 @@ struct _VdiagCountCalc <: AbstractCalculator end
 ElectronPhonon.supports(::_VdiagCountCalc, ::Type{OuterKLoop}) = true
 ElectronPhonon.required_el_quantities(::_VdiagCountCalc) = [:vdiag]
 
+# An outer-q calculator, for the outer-q entry checks.
+struct _QCountCalc <: AbstractCalculator end
+ElectronPhonon.supports(::_QCountCalc, ::Type{OuterQLoop}) = true
+
 @testset "supports contract (DECISION-1)" begin
     c = _CountCalc()
     # Type arguments: declared true, undeclared default false.
@@ -48,15 +52,20 @@ end
     # (b) `calculators` is a keyword argument (hard change): the positional form is gone.
     @test_throws MethodError ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid, [_CountCalc()])
 
-    # `run_eph_over_k_and_q` refuses a reduced outer k set, an outer k list off a grid, and what
-    # needs the k+q points on a grid: velocities at k+q, adaptive energy conservation and a k+q
-    # eigenpair cache.
+    # `run_eph_over_k_and_q` refuses a reduced outer k set, a k eigenpair cache for an outer k list on
+    # no grid, and what needs the k+q points on a grid: velocities at k+q, adaptive energy
+    # conservation and a k+q eigenpair cache.
     kq_run(; kw...) = ElectronPhonon.run_eph_over_k_and_q(model, grid, grid;
         calculators = [_CountCalc()], progress_print_step = 10^9, kw...)
     @test model.symmetry !== nothing
     @test_throws ArgumentError kq_run(symmetry = model.symmetry)
     @test_throws ArgumentError ElectronPhonon.run_eph_over_k_and_q(model,
-        Kpoints([Vec3(0.1, 0.2, 0.3)]), grid; calculators = [_CountCalc()])
+        Kpoints([Vec3(0.1, 0.2, 0.3)]), grid; calculators = [_CountCalc()],
+        el_k_eigenpairs = ElectronPhonon.electron_eigenpairs(model, kpoints_grid(grid)))
+    # The other drivers keep their grid requirement on the k points.
+    @test_throws ArgumentError ElectronPhonon.run_eph_over_q_and_k(
+        _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph"), Kpoints([Vec3(0.1, 0.2, 0.3)]),
+        grid; calculators = [_QCountCalc()])
     @test_throws ArgumentError kq_run(calculators = [_VdiagCountCalc()])
     @test_throws ArgumentError kq_run(energy_conservation = (:Linear, 1.0))
     @test_throws ArgumentError kq_run(el_kq_eigenpairs =

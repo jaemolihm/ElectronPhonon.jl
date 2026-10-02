@@ -84,7 +84,8 @@ end
     eph_reference_k_and_q(model, kpts, qpts, window_k, window_kq, ngrid)
 
 [`eph_reference`](@ref) over the pairs `(k, k + q)` of `kpts × qpts`, the pairs of
-`run_eph_over_k_and_q`, keyed on the grid `ngrid` that holds every k + q.
+`run_eph_over_k_and_q`, keyed on `ngrid`. A fine `ngrid` (`10^6` per axis) keys points on no grid by
+their rounded coordinates, which match because the driver forms the same `x_k + x_q`.
 """
 function eph_reference_k_and_q(model, kpts, qpts, window_k, window_kq, ngrid)
     xkqs = [xk + xq for xk in kpts.vectors for xq in qpts.vectors]
