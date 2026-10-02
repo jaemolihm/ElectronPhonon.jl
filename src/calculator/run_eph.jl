@@ -34,7 +34,6 @@ Keywords:
   visits on its side (the q points are `combine_kpoint_grids(kpts, kqpts)`) and be resident on
   `backend`.
 * `mpi_comm_k` — splits the outer k points across ranks.
-* `fill_padding_nan = false` — fill the box entries outside each window with NaN (a test switch).
 """
 run_eph_over_k_and_kq(model::Model, kpts_input, kqpts_input; kwargs...) =
     _run_eph(OuterKLoop(), model, kpts_input, kqpts_input; kwargs...)
@@ -62,15 +61,13 @@ run_eph_over_q_and_k(model::Model, kpts_input, qpts_input; use_symmetry::Bool = 
              symmetry = use_symmetry ? model.symmetry : nothing, kwargs...)
 
 
-# The quantities the loop reads itself, on both electron sides and on the phonons.
-# Energy conservation reads the energies, and its `:Linear` mode the velocities of the k+q side and
-# the phonons.
-function loop_el_quantities((mode, _))
-    [:u; mode === :None ? Symbol[] : [:e]; mode === :Linear ? [:vdiag] : Symbol[]]
-end
+# The quantities the loop provides itself, on both electron sides and on the phonons: always the
+# energies and eigenvectors, the dipole coefficients of a polar model, and for the `:Linear` energy
+# conservation the velocities of the k+q side and the phonons.
+loop_el_quantities((mode, _)) = [:e; :u; mode === :Linear ? [:vdiag] : Symbol[]]
 function loop_ph_quantities(model, (mode, _))
-    [:u; model.polar_eph.use ? [:eph_dipole_coeff] : Symbol[];
-     mode === :None ? Symbol[] : [:e]; mode === :Linear ? [:vdiag] : Symbol[]]
+    [:e; :u; model.polar_eph.use ? [:eph_dipole_coeff] : Symbol[];
+     mode === :Linear ? [:vdiag] : Symbol[]]
 end
 
 function _run_eph(order::LoopTag, model::Model{FT}, kpts_input, second_input;
@@ -93,7 +90,6 @@ function _run_eph(order::LoopTag, model::Model{FT}, kpts_input, second_input;
         el_k_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         el_kq_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         ph_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
-        fill_padding_nan::Bool = false,
         progress_print_step = 20,
         verbosity::Int = 1,
     ) where {FT}
@@ -108,13 +104,13 @@ function _run_eph(order::LoopTag, model::Model{FT}, kpts_input, second_input;
     (; el_k, el_kq, ph, kpts, kqpts, qpts, sel_k, sel_kq) = _setup_states(order, model, kpts_input,
         second_input, el_qty, ph_qty; backend, window_k, window_kq, symmetry, precompute_el_kq,
         keep_all_qpts, eph_phonon_basis, fourier_mode, mpi_comm_k, el_k_eigenpairs,
-        el_kq_eigenpairs, ph_eigenpairs, fill_padding_nan, verbosity)
+        el_kq_eigenpairs, ph_eigenpairs, verbosity)
     # The containers' types depend on the runtime quantity lists, and inference of the loop on the
     # abstract types does not terminate (> 30 min for an outer-q run), so it is not let through.
     Base.inferencebarrier(_run_eph_loop)(order, model, el_k, el_kq, ph, kpts, kqpts, qpts, sel_k,
         sel_kq, el_qty, ph_qty; calculators, backend, symmetry, precompute_el_kq, energy_conservation,
         covariant_derivative_of_g, eph_phonon_basis, n_outer_batch, n_inner_tile, nchunks_threads,
-        window_kq, fill_padding_nan, progress_print_step, verbosity)
+        window_kq, progress_print_step, verbosity)
 end
 
 # The loop of `_run_eph` on the built states, compiled for their concrete types (`el_kq` and `kqpts`
@@ -122,7 +118,7 @@ end
 function _run_eph_loop(order, model, el_k, el_kq, ph, kpts, kqpts, qpts, sel_k, sel_kq, el_qty,
         ph_qty; calculators, backend, symmetry, precompute_el_kq, energy_conservation,
         covariant_derivative_of_g, eph_phonon_basis, n_outer_batch, n_inner_tile, nchunks_threads,
-        window_kq, fill_padding_nan, progress_print_step, verbosity)
+        window_kq, progress_print_step, verbosity)
     (; nw, nmodes) = model
 
     nchunks = backend isa CPUBackend ? nchunks_threads : 1
@@ -164,7 +160,7 @@ function _run_eph_loop(order, model, el_k, el_kq, ph, kpts, kqpts, qpts, sel_k, 
                            energy_conservation, ngrid)
         else
             _loop_outer_q!(eng, batch, el_k, el_kq, ph, kpts, kqpts, qpts, calculators, model,
-                           energy_conservation, ngrid, eph_phonon_basis, window_kq, fill_padding_nan)
+                           energy_conservation, ngrid, eph_phonon_basis, window_kq)
         end
         foreach(c -> calculator_end!(c, ctx), calculators)
         # Bound the host look-ahead to one batch, so its device scratch does not pile up in the pool.
@@ -322,7 +318,7 @@ _input_ngrid(x::AbstractKpoints) = x.ngrid
 function _setup_states(order, model::Model{FT}, kpts_input, second_input, el_qty, ph_qty; backend,
         window_k, window_kq, symmetry, precompute_el_kq, keep_all_qpts, eph_phonon_basis,
         fourier_mode, mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs,
-        fill_padding_nan, verbosity) where {FT}
+        verbosity) where {FT}
     (; nw, nmodes) = model
     # The host solves of a GPU run (q filter, polar phonons) keep the default interpolation.
     backend isa CPUBackend || (fourier_mode = "gridopt")
@@ -333,7 +329,7 @@ function _setup_states(order, model::Model{FT}, kpts_input, second_input, el_qty
     kpts = sel_k.kpts
     el_k = maybe_time(verbosity) do
         compute_electron_states_batched(model, sel_k, el_qty; fourier_mode, backend,
-            eigenpairs = el_k_eigenpairs, fill_padding_nan)
+            eigenpairs = el_k_eigenpairs)
     end
 
     if order isa OuterKLoop
@@ -343,7 +339,7 @@ function _setup_states(order, model::Model{FT}, kpts_input, second_input, el_qty
             kqpts = sel_kq.kpts
             el_kq = maybe_time(verbosity) do
                 compute_electron_states_batched(model, sel_kq, el_qty; fourier_mode, backend,
-                    eigenpairs = el_kq_eigenpairs, fill_padding_nan)
+                    eigenpairs = el_kq_eigenpairs)
             end
         else
             # A grid, filtered to the window; under symmetry IBZ-filtered, then unfolded.
@@ -353,7 +349,7 @@ function _setup_states(order, model::Model{FT}, kpts_input, second_input, el_qty
             kqpts = symmetry === nothing ? sel_kqf.kpts : unfold_kpoints(sel_kqf.kpts, symmetry)[1]
             el_kq = maybe_time(verbosity) do
                 compute_electron_states_batched(model, kqpts, el_qty, window_kq; fourier_mode, backend,
-                    eigenpairs = el_kq_eigenpairs, fill_padding_nan)
+                    eigenpairs = el_kq_eigenpairs)
             end
             sel_kq = electron_states_to_FilteredBandStates(kqpts, el_kq, sel_kqf.nstates_base; nw)
         end
@@ -375,7 +371,7 @@ function _setup_states(order, model::Model{FT}, kpts_input, second_input, el_qty
             kqpts = GridKpoints(sel_kq.kpts)
             el_kq = maybe_time(verbosity) do
                 compute_electron_states_batched(model, sel_kq, el_qty; fourier_mode, backend,
-                    eigenpairs = el_kq_eigenpairs, fill_padding_nan)
+                    eigenpairs = el_kq_eigenpairs)
             end
         else
             sel_kq = kqpts = el_kq = nothing
@@ -475,7 +471,7 @@ end
 
 # One outer-q batch: stage 1 for the batch, then per q one threaded region over the k tiles.
 function _loop_outer_q!(eng::OuterQEngine, batch, el_k, el_kq, ph, kpts, kqpts, qpts, calculators,
-        model, energy_conservation, ngrid, eph_phonon_basis, window_kq, fill_padding_nan)
+        model, energy_conservation, ngrid, eph_phonon_basis, window_kq)
     stage1!(eng, ph, qpts, batch, eph_phonon_basis)
     for (iouter, iq) in enumerate(batch)
         copyto!(eng.eRpq.op_r, view(eng.ep_Rq, :, :, iouter))
@@ -493,7 +489,7 @@ function _loop_outer_q!(eng::OuterQEngine, batch, el_k, el_kq, ph, kpts, kqpts, 
                 if el_kq === nothing
                     # k+q solved into the tile, at the box of its largest window.
                     el_kq_t = compute_electron_states_batched!(tile_bufs.el_kq, tile_bufs.itp_el_ham,
-                        tile_bufs.hk, model, view(tile_bufs.kqs, 1:n), window_kq; fill_padding_nan)
+                        tile_bufs.hk, model, view(tile_bufs.kqs, 1:n), window_kq)
                     ikq = nothing
                 else
                     # Precomputed k+q by grid lookup; 0 (dropped by `filter_pairs!`) where it is absent,
@@ -624,7 +620,7 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer, n_o
         nchunks_threads = nthreads()) where {FT}
     outer_k = model.epmat_outer_momentum == "el"
     order = outer_k ? OuterKLoop() : OuterQLoop()
-    el_qty = union([:u], required_el_quantities.(calculators)...)
+    el_qty = union(loop_el_quantities((:None, 0.0)), required_el_quantities.(calculators)...)
     ph_qty = union(loop_ph_quantities(model, (:None, 0.0)), required_ph_quantities.(calculators)...)
     (; nb_inner, committed, bytes) = _plan_widths(order, model, backend, calculators;
         n_outer = outer_k ? Int(nk) : Int(nkq), n_inner = outer_k ? Int(nkq) : Int(nk), nk, nkq,

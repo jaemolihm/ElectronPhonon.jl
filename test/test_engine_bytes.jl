@@ -43,8 +43,8 @@ end
             model = _load_model_from_artifacts("pb"; epmat_outer_momentum = mom)
             st = _setup_states(order, model, grid, grid, el_qty, ph_qty; backend, window_k = window,
                 window_kq = window, symmetry = nothing, precompute_el_kq = false, keep_all_qpts = true,
-                eph_phonon_basis = :eigenmode, mpi_comm_k = nothing, el_k_eigenpairs = nothing,
-                el_kq_eigenpairs = nothing, ph_eigenpairs = nothing, fill_padding_nan = false,
+                eph_phonon_basis = :eigenmode, fourier_mode = "gridopt", mpi_comm_k = nothing,
+                el_k_eigenpairs = nothing, el_kq_eigenpairs = nothing, ph_eigenpairs = nothing,
                 verbosity = 0)
             nbk = st.el_k.nband_max
             nbkq = st.el_kq === nothing ? model.nw : st.el_kq.nband_max
@@ -96,8 +96,8 @@ end
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum = order isa OuterKLoop ? "el" : "ph")
         st = _setup_states(order, model, grid, grid, el_qty, ph_qty; backend, window_k = window,
             window_kq = window, symmetry = nothing, precompute_el_kq = false, keep_all_qpts = true,
-            eph_phonon_basis = :eigenmode, mpi_comm_k = nothing, el_k_eigenpairs = nothing,
-            el_kq_eigenpairs = nothing, ph_eigenpairs = nothing, fill_padding_nan = false, verbosity = 0)
+            eph_phonon_basis = :eigenmode, fourier_mode = "gridopt", mpi_comm_k = nothing,
+            el_k_eigenpairs = nothing, el_kq_eigenpairs = nothing, ph_eigenpairs = nothing, verbosity = 0)
         common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1, drop_pairs = false,
                   eph_phonon_basis = :eigenmode)
         if order isa OuterKLoop

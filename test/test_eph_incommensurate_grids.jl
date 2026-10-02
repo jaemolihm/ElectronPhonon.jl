@@ -24,6 +24,7 @@ ElectronPhonon.supports(::_NeverRunCalc, ::Type{OuterKLoop}) = true
     # check (it reads the grid of every input kind).
     @test ElectronPhonon._check_run(OuterKLoop(), model, ElectronPhonon.CPUBackend(), [_NeverRunCalc()],
         (2, 2, 2), kpoints_grid((4, 4, 4)), [:u]; energy_conservation = (:None, 0.0),
-        covariant_derivative_of_g = false, eph_phonon_basis = :eigenmode, precompute_el_kq = false,
-        screening_params = nothing, mpi_comm_k = nothing, el_kq_eigenpairs = nothing) === nothing
+        covariant_derivative_of_g = false, eph_phonon_basis = :eigenmode, fourier_mode = "gridopt",
+        precompute_el_kq = false, screening_params = nothing, mpi_comm_k = nothing,
+        el_kq_eigenpairs = nothing) === nothing
 end

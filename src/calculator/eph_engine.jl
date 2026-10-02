@@ -282,7 +282,7 @@ phonon basis (`pairs.ph.u`, or the identity for `:cartesian`).
 function stage2!(eng::OuterKEngine, tile_bufs, pairs)
     (; n, iouter) = pairs
     ep = view(tile_bufs.ep, :, :, :, 1:n)
-    ws = (; g = tile_bufs.g, tmp = tile_bufs.tmp)
+    ws = (; g = view(tile_bufs.g, :, 1:n), tmp = view(tile_bufs.tmp, :, :, 1:n))
     u_ph = tile_bufs.u_ph_id === nothing ? pairs.ph.u : view(tile_bufs.u_ph_id, :, :, 1:n)   # the phonon basis
     get_eph_kR_to_kq_batched!(ep, view(eng.ep_kR, :, :, iouter), pairs.phase, u_ph, pairs.el_kq.u; ws...)
     tile_bufs.dg === nothing && return ep, nothing
