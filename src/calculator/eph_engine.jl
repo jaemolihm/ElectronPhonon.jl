@@ -269,9 +269,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
         xks_int[:, ik] .= _grid_coords_reduced(kpts.vectors[ik], qpts.ngrid, zero(Vec3{FT}))
     end
     el_ham = kq_per_tile ? to_device(backend, model.el_ham) : nothing
-    # Only columns 1:nb of P_mk are rewritten for a partial last batch. The padded columns of ep_kR
-    # (the repeated last k) are never read: they hold g(k, R_p) times 1 when the partial batch is
-    # the first, otherwise times the phase a previous batch left in that column; finite either way.
+    # A partial last batch operates on views of the leading columns of the maximum-capacity buffers.
     P_mk = fill!(alloc(backend, Complex{FT}, nr_p, n_outer_batch), 1)
     ndata = nw * nbk * nmodes
 
@@ -324,36 +322,42 @@ end
     stage1!(eng::OuterKEngine, els_k, kpts, batch)
 
 g(k, R_p) for the outer k points `batch`, rotated by `u_k` and multiplied by `exp(-2πi R_p · x_k)`,
-into `eng.ep_kR` (and `eng.dg_kR`). A partial last batch is padded with its last k, so the batched
-kernels run on the full-width buffers.
+into the first `length(batch)` points of `eng.ep_kR` (and `eng.dg_kR`).
 """
 function stage1!(eng::OuterKEngine, els_k, kpts, batch)
     nb = length(batch)
     nmax = size(eng.xk_host, 2)
-    iks = nb == nmax ? batch : [batch; fill(last(batch), nmax - nb)]
-    copy_batched_electron_states!(eng.els_k_batch, els_k, iks)
-    for (j, ik) in enumerate(iks)
+    copy_batched_electron_states!(eng.els_k_batch, els_k, batch)
+    for (j, ik) in enumerate(batch)
         eng.xk_host[:, j] .= kpts.vectors[ik]
     end
-    copyto!(eng.xk, eng.xk_host)
-    @views build_fourier_phase!(eng.P_mk[:, 1:nb], eng.irvecp_mat, eng.mxk[:, batch])
-    uks = eng.els_k_batch.u
-    nr_p = size(eng.P_mk, 1)
+    xk = view(eng.xk, :, 1:nb)
+    copyto!(xk, 1, eng.xk_host, 1, length(xk))
+    P_mk = view(eng.P_mk, :, 1:nb)
+    @views build_fourier_phase!(P_mk, eng.irvecp_mat, eng.mxk[:, batch])
+    uks = view(eng.els_k_batch.u, :, :, 1:nb)
+    nr_p = size(P_mk, 1)
     nw, nbk = size(uks, 1), size(uks, 2)
     nd = nw^2 * (size(eng.ep_kR, 1) ÷ (nw * nbk))    # nw² nmodes
-    g = dense_prefix(eng.g_fourier, nd * nr_p, nmax)
+    g = dense_prefix(eng.g_fourier, nd * nr_p, nb)
     if eng.P_col !== nothing
-        build_fourier_phase!(eng.P_col, eng.irvec_col_mat, eng.xk)
-        _fourier_epmat_columns!(g, eng.epmat_src, eng.P_col)
+        P_col = view(eng.P_col, :, 1:nb)
+        build_fourier_phase!(P_col, eng.irvec_col_mat, xk)
+        _fourier_epmat_columns!(g, eng.epmat_src, P_col)
     else
-        build_fourier_phase!(eng.P_row, eng.irvec_row_mat, eng.xk)
-        _fourier_epmat_rows!(reshape(g, nd, nr_p, nmax), eng.epmat_src, eng.P_row, eng.row_scratch)
+        P_row = view(eng.P_row, :, 1:nb)
+        build_fourier_phase!(P_row, eng.irvec_row_mat, xk)
+        ncol = length(eng.row_scratch) ÷ (nd * nmax)
+        row_scratch = dense_prefix(eng.row_scratch, nd, nb, ncol)
+        _fourier_epmat_rows!(reshape(g, nd, nr_p, nb), eng.epmat_src, P_row, row_scratch)
     end
-    eph_rotate_kR_batched!(eng.ep_kR, g, uks; additional_phase = eng.P_mk)
+    ep_kR = view(eng.ep_kR, :, :, 1:nb)
+    eph_rotate_kR_batched!(ep_kR, g, uks; additional_phase = P_mk)
     if eng.itp_epmat_R !== nothing
-        g = dense_prefix(eng.g_fourier, eng.itp_epmat_R.parent.ndata, nmax)
-        get_fourier_batched!(g, eng.itp_epmat_R, eng.xk)
-        eph_rotate_kR_batched!(eng.dg_kR, g, uks; additional_phase = eng.P_mk)
+        g = dense_prefix(eng.g_fourier, eng.itp_epmat_R.parent.ndata, nb)
+        get_fourier_batched!(g, eng.itp_epmat_R, xk)
+        dg_kR = view(eng.dg_kR, :, :, :, 1:nb)
+        eph_rotate_kR_batched!(dg_kR, g, uks; additional_phase = P_mk)
     end
     eng
 end
