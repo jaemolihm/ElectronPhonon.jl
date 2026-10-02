@@ -2,7 +2,7 @@
     AbstractCalculator
 
 A calculator computes properties of the system during a single pass of one of the e-ph drivers
-(`run_eph_over_k_and_kq`, `run_eph_over_q_and_k`). The driver hands each calculator the e-ph matrix
+(`run_eph_over_k_and_kq`, `run_eph_over_k_and_q`, `run_eph_over_q_and_k`). The driver hands each calculator the e-ph matrix
 of one block, an outer point with a tile of inner points, as an [`EPBlock`](@ref) together with a
 [`LoopContext`](@ref).
 
@@ -52,7 +52,7 @@ abstract type AbstractCalculator end
 #  Loop-order tags: the order a calculator supports, and the type parameter of `EPBlock` and
 #  `LoopContext`.
 abstract type LoopTag end
-struct OuterKLoop <: LoopTag end    # run_eph_over_k_and_kq (outer k, inner k+q)
+struct OuterKLoop <: LoopTag end    # run_eph_over_k_and_kq / _k_and_q (outer k, inner k+q / q)
 struct OuterQLoop <: LoopTag end    # run_eph_over_q_and_k (outer q, inner k)
 
 """
@@ -84,8 +84,9 @@ Fields (pair axis `j`):
 - `ep` :: `(nband_max_kq, nband_max_k, nmodes, nb)` eigenbasis e-ph matrix, before `1/(2ω)`, in the
   run's phonon basis, the polar term included. Defined on each pair's windows only: entry
   `[m, n, ν, j]` is meaningful for `m ≤ els_kq.nband[j]` and `n ≤ els_k.nband[j]` (the shared side's
-  index is 1). `nband_max_kq == els_kq.nband_max`; under `OuterQLoop` with the k+q states solved per
-  tile it is the block's largest k+q window, so it differs between blocks and is at most `nw`.
+  index is 1). `nband_max_kq == els_kq.nband_max`; with the k+q states solved per tile
+  (`run_eph_over_q_and_k`, `run_eph_over_k_and_q`) it is the block's largest k+q window, so it
+  differs between blocks and is at most `nw`.
 - `dg` :: `(nband_max_kq, nband_max_k, nmodes, 3, nb)` covariant derivative of `ep` along the
   Cartesian direction `d` (`OuterKLoop` with `covariant_derivative_of_g`, no polar term), else
   `nothing`.
@@ -96,7 +97,8 @@ Fields (pair axis `j`):
 - `xk`, `xq` :: the momenta, `Vec3` on the shared side and a host vector on the pair side.
 - `ik`, `ikq`, `iq` :: indices into the run's point sets: under `OuterKLoop` `ik::Int`, `ikq` into
   the k+q container (a `UnitRange`, or a host vector when pairs were dropped) and `iq` a device
-  vector into the q set; under `OuterQLoop` `iq::Int`, `ik` into the k set (a `UnitRange` or a host
+  vector into the q set, or under `run_eph_over_k_and_q` `ikq === nothing` and `iq` the q tile (a
+  `UnitRange`, or a host vector when pairs were dropped); under `OuterQLoop` `iq::Int`, `ik` into the k set (a `UnitRange` or a host
   vector) and `ikq` into the precomputed k+q container, or `nothing` when k+q is solved per tile.
 """
 struct EPBlock{Order <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}

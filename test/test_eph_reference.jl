@@ -1,6 +1,7 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: CPUBackend, gpu_backend, unit_to_aru, run_eph_over_k_and_kq, run_eph_over_q_and_k
+using ElectronPhonon: CPUBackend, gpu_backend, unit_to_aru, run_eph_over_k_and_kq, run_eph_over_k_and_q,
+    run_eph_over_q_and_k
 
 const EPH_REFERENCE_GPU_AVAILABLE = try
     @eval using CUDA
@@ -45,6 +46,11 @@ include("eph_reference_loop.jl")
             ("CPU, small tiles", (; backend = CPUBackend(), n_inner_tile = 50, n_outer_batch = 3)),
             ("CPU, row-block epmat", (; model = model_el, n_inner_tile = 50, n_outer_batch = 3)),
             ("CPU, precomputed k+q", (; precompute_el_kq = true, n_inner_tile = 50, nchunks_threads = 4))]
+        # `run_eph_over_k_and_q` on the same commensurate grids: the pairs and values of the outer-k
+        # arms above, with k + q solved per tile.
+        outer_k_q = Any[("CPU", (; nchunks_threads = 4)),
+            ("CPU, small tiles", (; backend = CPUBackend(), n_outer_batch = 5, n_inner_tile = 50)),
+            ("CPU, row-block epmat", (; model = model_ph, n_outer_batch = 5, n_inner_tile = 50))]
         if EPH_REFERENCE_GPU_AVAILABLE
             CUDA.allowscalar(false)
             push!(outer_k, ("GPU", (; backend = gpu_backend())),
@@ -53,14 +59,18 @@ include("eph_reference_loop.jl")
             push!(outer_q, ("GPU", (; backend = gpu_backend())),
                 ("GPU, row-block epmat", (; model = model_el, backend = gpu_backend(), n_outer_batch = 3)),
                 ("GPU, precomputed k+q", (; backend = gpu_backend(), precompute_el_kq = true)))
+            push!(outer_k_q, ("GPU", (; backend = gpu_backend(), n_inner_tile = 50)))
         end
-        for (order, arms) in (("outer k", outer_k), ("outer q", outer_q)), (name, kw_arm) in arms
+        for (order, arms) in (("outer k", outer_k), ("outer k, inner q", outer_k_q), ("outer q", outer_q)),
+                (name, kw_arm) in arms
             rec = _PairRecorder()
-            (; model) = merge((; model = order == "outer k" ? model_el : model_ph), kw_arm)
+            (; model) = merge((; model = order == "outer q" ? model_ph : model_el), kw_arm)
             kw = Base.structdiff(kw_arm, NamedTuple{(:model,)})
             if order == "outer k"
                 run_eph_over_k_and_kq(model, grid, grid; calculators = [rec],
                                       symmetry = nothing, common..., kw...)
+            elseif order == "outer k, inner q"
+                run_eph_over_k_and_q(model, grid, grid; calculators = [rec], common..., kw...)
             else
                 run_eph_over_q_and_k(model, grid, grid; calculators = [rec],
                                      use_symmetry = false, common..., kw...)
@@ -69,6 +79,39 @@ include("eph_reference_loop.jl")
             @info "e-ph loop vs reference" fixture order name dev
             @test dev.nmissing == 0 && dev.nextra == 0
             # Measured 6e-15 to 3e-14 on every arm, CPU and GPU (A100).
+            @test dev.g2_reldev < 1e-11
+            @test dev.ω_dev < 1e-10
+        end
+    end
+end
+
+# `run_eph_over_k_and_q` off the commensurate grids: k on a short path with q on a grid, and k on a
+# grid with q on a path (a q list with no grid). Every k + q lies on the 24³ grid the pairs are
+# keyed on, which neither side's own grid holds.
+@testset "run_eph_over_k_and_q against the reference double loop" begin
+    model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
+    eV = unit_to_aru(:eV)
+    e_F = 11.68eV
+    window = (e_F - 0.5eV, e_F + 3eV)
+    ngrid = (24, 24, 24)
+    path(dir, js) = [Vec3(j / 24 .* dir...) for j in js]
+    # The k path crosses the window (0, 1, 1, 3, 2, 2 in-window bands); the q path starts at Γ.
+    kpath = Kpoints(6, path((1, 1, 0), 6:11), fill(1 / 6, 6), ngrid)
+    qpath = Kpoints(6, path((1, 0, 0), 0:5), fill(1 / 6, 6), (0, 0, 0))
+    grid4 = kpoints_grid((4, 4, 4))
+    common = (; window_k = window, window_kq = window, progress_print_step = 10^9, verbosity = 0)
+    for (name, kpts, qpts) in (("k path, q grid", kpath, grid4), ("k grid, q path", grid4, qpath))
+        ref = eph_reference_k_and_q(model, kpts, qpts, window, window, ngrid)
+        @test !isempty(ref.g2abs)
+        arms = Any[("CPU", (; nchunks_threads = 4)), ("CPU, small tiles", (; n_inner_tile = 5))]
+        EPH_REFERENCE_GPU_AVAILABLE && push!(arms, ("GPU", (; backend = gpu_backend())))
+        for (arm, kw) in arms
+            rec = _PairRecorder(ngrid)
+            run_eph_over_k_and_q(model, kpts, qpts; calculators = [rec], common..., kw...)
+            dev = compare_with_reference(ref, rec)
+            @info "run_eph_over_k_and_q vs reference" name arm dev
+            @test dev.nmissing == 0 && dev.nextra == 0
+            # Measured 2e-15 to 4e-15, CPU and GPU (A6000).
             @test dev.g2_reldev < 1e-11
             @test dev.ω_dev < 1e-10
         end

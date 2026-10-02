@@ -1,12 +1,12 @@
 # Writing your own calculator
 
 A **calculator** computes a physical property during one pass of an e-ph driver
-(`run_eph_over_k_and_kq`, outer loop over k, or `run_eph_over_q_and_k`, outer loop over q). The
-driver builds the electron and phonon states and the e-ph matrix elements and hands them to each
-calculator one **block** at a time, an [`EPBlock`](@ref) of one outer point with a tile of inner
-points, together with a **`LoopContext`**. You subtype `ElectronPhonon.AbstractCalculator` and
-implement a few methods; the same methods run on the CPU and on a GPU when they are written with
-broadcasts and `alloc(backend, …)`.
+(`run_eph_over_k_and_kq` and `run_eph_over_k_and_q`, outer loop over k, or `run_eph_over_q_and_k`,
+outer loop over q). The driver builds the electron and phonon states and the e-ph matrix elements
+and hands them to each calculator one **block** at a time, an [`EPBlock`](@ref) of one outer point
+with a tile of inner points, together with a **`LoopContext`**. You subtype
+`ElectronPhonon.AbstractCalculator` and implement a few methods; the same methods run on the CPU and
+on a GPU when they are written with broadcasts and `alloc(backend, …)`.
 
 The authoritative reference is the docstrings in `src/calculator/AbstractCalculator.jl`. This guide
 is the tutorial; its example is executed verbatim by `test/test_calculator_guide.jl`, so it cannot
@@ -57,24 +57,27 @@ ElectronPhonon.supports(::EphG2SumCalculator, ::Type{OuterKLoop}) = true
 # The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator reads,
 # so it defines no `required_el_quantities` / `required_ph_quantities`.
 
-# Buffers are sized here, from the widths the loop chose; `run_calculator!` allocates nothing.
+# Buffers are sized here, from the widths the loop chose; `run_calculator!` allocates nothing. The
+# k+q box is the container's, or at most `nw` when k+q is solved per tile (`els_kq === nothing`).
 function ElectronPhonon.setup_calculator!(c::EphG2SumCalculator, backend, els_k, els_kq, phs;
-        nmodes, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...)
+        nw, nmodes, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...)
     c.per_k = zeros(els_k.nk)
     c.part = zeros(nchunks_threads, n_outer_batch)
-    c.g2 = alloc(backend, Float64, els_kq.nband_max, els_k.nband_max, nmodes, n_inner_tile, nchunks_threads)
+    nbkq = els_kq === nothing ? nw : els_kq.nband_max
+    c.g2 = alloc(backend, Float64, nbkq * els_k.nband_max * nmodes * n_inner_tile, nchunks_threads)
     c
 end
 
 ElectronPhonon.calculator_begin!(c::EphG2SumCalculator, ctx) = (fill!(c.part, 0.0); c)
 
 # One outer k (`block.ik`) with a tile of k+q points. Band entries past a point's window are undefined,
-# so select the in-window ones with `ifelse` (never multiply by a 0/1 mask). The scratch and the write,
-# which is indexed by the outer point, not by an inner one, are this call's chunk slot.
+# so select the in-window ones with `ifelse` (never multiply by a 0/1 mask). The scratch, at the
+# block's shape, and the write, which is indexed by the outer point, not by an inner one, are this
+# call's chunk slot.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterKLoop}, ctx)
     (; ep, phs, els_k, els_kq, wtq) = block
     nbkq, nbk, nmodes, nq = size(ep)
-    g2 = view(c.g2, :, :, :, 1:nq, ctx.chunk)
+    g2 = reshape(view(c.g2, 1:length(ep), ctx.chunk), size(ep))
     g2 .= ifelse.((reshape(1:nbkq, nbkq, 1, 1, 1) .<= reshape(els_kq.nband, 1, 1, 1, nq)) .&
                   (reshape(1:nbk, 1, nbk, 1, 1) .<= reshape(els_k.nband, 1, 1, 1, 1)),
                   abs2.(ep) ./ (2 .* reshape(phs.e, 1, 1, nmodes, nq)), 0.0) .* reshape(wtq, 1, 1, 1, nq)
@@ -106,7 +109,8 @@ Each array of an `EPBlock` has the pairs of the block on its last axis; the side
 block has extent 1 there. Under `OuterKLoop`: `ep` is `(nband_max_kq, nband_max_k, nmodes, nq)`,
 `els_k` the outer k (extent 1), `els_kq` and `phs` the tile's k+q points and phonons, `ik::Int`,
 `ikq` the k+q indices (a range, or a host vector when the loop dropped pairs), `iq` the q indices,
-`wtk::Float64`, `wtq` the k+q weights. Under `OuterQLoop` the roles swap: `phs` has extent 1,
+`wtk::Float64`, `wtq` the k+q weights; under `run_eph_over_k_and_q` the inner points are the q
+points, `ikq === nothing` and the k+q states are solved per tile. Under `OuterQLoop` the roles swap: `phs` has extent 1,
 `iq::Int`, `ik` the k indices, and `ikq === nothing` when k+q is solved per tile; then
 `nband_max_kq` is the block's largest k+q window, which differs between blocks. `ep` is the e-ph matrix before the `1/(2ω)`; a calculator that needs
 `|g|²/(2ω)` forms it.
