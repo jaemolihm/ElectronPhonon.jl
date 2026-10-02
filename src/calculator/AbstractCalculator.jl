@@ -83,13 +83,13 @@ fields); the side shared by the whole block has extent 1 along it and a scalar i
 Fields (pair axis `j`):
 - `ep` :: `(nband_max_kq, nband_max_k, nmodes, nb)` eigenbasis e-ph matrix, before `1/(2ω)`, in the
   run's phonon basis, the polar term included. Defined on each pair's windows only: entry
-  `[m, n, ν, j]` is meaningful for `m ≤ el_kq.nband[j]` and `n ≤ el_k.nband[j]` (the shared side's
-  index is 1). `nband_max_kq == el_kq.nband_max`; under `OuterQLoop` with the k+q states solved per
+  `[m, n, ν, j]` is meaningful for `m ≤ els_kq.nband[j]` and `n ≤ els_k.nband[j]` (the shared side's
+  index is 1). `nband_max_kq == els_kq.nband_max`; under `OuterQLoop` with the k+q states solved per
   tile it is the block's largest k+q window, so it differs between blocks and is at most `nw`.
 - `dg` :: `(nband_max_kq, nband_max_k, nmodes, 3, nb)` covariant derivative of `ep` along the
   Cartesian direction `d` (`OuterKLoop` with `covariant_derivative_of_g`, no polar term), else
   `nothing`.
-- `el_k`, `el_kq` :: `BatchedElectronState` views at block extent; `el_k` has extent 1 under
+- `els_k`, `els_kq` :: `BatchedElectronState` views at block extent; `els_k` has extent 1 under
   `OuterKLoop`.
 - `phs` :: `BatchedPhononState` view; extent 1 under `OuterQLoop`.
 - `wtk`, `wtq` :: the weights; the shared side's is a scalar, the pair side's a device vector.

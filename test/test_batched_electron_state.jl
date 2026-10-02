@@ -186,12 +186,12 @@ end
             # A host container streamed into a device tile, and a device one copied in place.
             b_host = compute_electron_states_batched(model_pb, kpts, [:e, :u], window_wide)
             inds = [5, 2, 64, 17]
-            for src in (b_host, compute_electron_states_batched(model_pb, kpts, [:e, :u],
+            for els_src in (b_host, compute_electron_states_batched(model_pb, kpts, [:e, :u],
                                                                 window_wide; backend))
-                tile = BatchedElectronState(backend, 4, src.nband_max, 6, [:e, :u])
-                copy_batched_electron_states!(tile, src, inds)
-                @test Array(tile.nband)[1:4] == Array(src.nband)[inds]
-                @test isequal(Array(tile.u)[:, :, 1:4], Array(src.u)[:, :, inds])
+                tile = BatchedElectronState(backend, 4, els_src.nband_max, 6, [:e, :u])
+                copy_batched_electron_states!(tile, els_src, inds)
+                @test Array(tile.nband)[1:4] == Array(els_src.nband)[inds]
+                @test isequal(Array(tile.u)[:, :, 1:4], Array(els_src.u)[:, :, inds])
             end
             @test_throws "quantities [:v] are not supported" compute_electron_states_batched(
                 model_pb, kpts, [:e, :v]; backend)

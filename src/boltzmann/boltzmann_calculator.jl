@@ -166,7 +166,7 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
         to_device(backend, collect(FT, calc.occ.μlist)),                    # μ
         to_device(backend, collect(FT, calc.occ.Tlist)),                    # T
         to_device(backend, calc.smearing_list),                             # smearing (one per T)
-        alloc(backend, FT, el_kq.nband_max, el_k.nband_max, nmodes, n_inner_tile, nchunks_threads),   # g2
+        alloc(backend, FT, els_kq.nband_max, els_k.nband_max, nmodes, n_inner_tile, nchunks_threads),   # g2
     )
     calc
 end
@@ -270,9 +270,9 @@ function run_calculator!(calc::BoltzmannCalculator{FT}, block::EPBlock{OuterKLoo
     dev = calc.dev
     nmodes, nq_batch = size(ep, 3), size(ep, 4)
     g2 = view(dev.g2, :, :, :, 1:nq_batch, ctx.chunk)
-    g2 .= abs2.(ep) .* inv.(2 .* reshape(ph.e, 1, 1, nmodes, nq_batch))   # as `epstate_set_g2!`
+    g2 .= abs2.(ep) .* inv.(2 .* reshape(phs.e, 1, 1, nmodes, nq_batch))   # as `epstate_set_g2!`
     t = calc.tiled
-    bte_window_accumulate!(view(dev.Sₒ, :, :, ctx.chunk), device_array(t, 1), g2, ph.e,
+    bte_window_accumulate!(view(dev.Sₒ, :, :, ctx.chunk), device_array(t, 1), g2, phs.e,
         view(dev.imap_i, :, ik), dev.imap_f, ikq, dev.e_i, dev.e_f, dev.wf,
         dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff, tile_offset(t))
     calc

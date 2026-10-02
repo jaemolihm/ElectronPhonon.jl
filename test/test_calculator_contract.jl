@@ -14,7 +14,7 @@ mutable struct _CountCalc <: AbstractCalculator
     _CountCalc() = new(Threads.Atomic{Int}(0))
 end
 ElectronPhonon.supports(::_CountCalc, ::Type{OuterKLoop}) = true
-ElectronPhonon.setup_calculator!(c::_CountCalc, backend, el_k, el_kq, ph; kwargs...) = c
+ElectronPhonon.setup_calculator!(c::_CountCalc, backend, els_k, els_kq, phs; kwargs...) = c
 ElectronPhonon.postprocess_calculator!(c::_CountCalc; kwargs...) = c
 ElectronPhonon.run_calculator!(c::_CountCalc, ::EPBlock, ctx) = (Threads.atomic_add!(c.n, 1); c)
 ElectronPhonon.calculator_begin!(::_CountCalc, ctx) = nothing

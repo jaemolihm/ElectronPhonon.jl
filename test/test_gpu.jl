@@ -594,9 +594,9 @@ mutable struct _RecordCalcOuterQ <: ElectronPhonon.AbstractCalculator
 end
 ElectronPhonon.supports(::_RecordCalcOuterQ, ::Type{ElectronPhonon.OuterQLoop}) = true
 ElectronPhonon.allowed_eph_phonon_basis(::_RecordCalcOuterQ) = [:eigenmode]
-function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, backend, el_k, el_kq, ph;
+function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, backend, els_k, els_kq, phs;
         n_outer_batch, nchunks_threads, kwargs...)
-    c.A = zeros(ph.nq)
+    c.A = zeros(phs.nq)
     c.Adev = ElectronPhonon.alloc(backend, Float64, n_outer_batch, nchunks_threads)
     c
 end

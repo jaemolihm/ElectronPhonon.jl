@@ -41,7 +41,7 @@ position-weighted `epmat_R` (`wannier_object_multiply_R` plus the tight-binding 
 `im (r_j - r_i) g`) into `dg`.
 """
 struct OuterKEngine{T_backend, T_epmat, T_itp_epmat, T_irvec_e_mat, T_itp_epmat_R, T_irvecp_mat,
-        T_mxk, T_xkq, T_wtkq, T_P_mk, T_P_e, T_row_scratch, T_ep_kR, T_dg_kR, T_el_k_batch, T_xk,
+        T_mxk, T_xkq, T_wtkq, T_P_mk, T_P_e, T_row_scratch, T_ep_kR, T_dg_kR, T_els_k_batch, T_xk,
         T_g_fourier, T_tiles}
     backend      :: T_backend
     epmat        :: T_epmat         # model.epmat on the backend
@@ -59,7 +59,7 @@ struct OuterKEngine{T_backend, T_epmat, T_itp_epmat, T_irvec_e_mat, T_itp_epmat_
     row_scratch  :: T_row_scratch   # (nw² nmodes, n_outer_batch, nr_p) for it, or `nothing`
     ep_kR        :: T_ep_kR         # (nw nband_max_k nmodes, nr_p, n_outer_batch) stage-1 output
     dg_kR        :: T_dg_kR         # (nw nband_max_k nmodes, nr_p, 3, n_outer_batch), or `nothing`
-    el_k_batch   :: T_el_k_batch    # the outer batch's k states
+    els_k_batch   :: T_els_k_batch    # the outer batch's k states
     xk_host      :: Matrix{Float64} # (3, n_outer_batch) the batch's x_k, staged for `xk`
     xk           :: T_xk            # (3, n_outer_batch) the batch's x_k on the backend
     g_fourier    :: T_g_fourier     # stage-1 Fourier output, `dense_prefix` per use
@@ -120,13 +120,13 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
         (el_layout ? 0 : cx * nrows) +                          # row-contraction scratch
         cx * nrows_max +                                        # g_fourier
         cx * (nrows + 2 * nband_max_k * nrows ÷ nw) * nd +      # transients of eph_rotate_kR_batched!
-        _electron_state_bytes(FT, nw, nband_max_k, el_qty)      # el_k_batch
+        _electron_state_bytes(FT, nw, nband_max_k, el_qty)      # els_k_batch
     nbox = nband_max_kq * nband_max_k * nmodes
     per_pair =
         cx * nbox * (covariant_derivative_of_g ? 5 : 1) +       # ep (+ dg and its per-direction scratch)
         cx * ndata + cx * nbox +                                # stage-2 scratch g, tmp
         cx * nr_p + 2iz +                                       # P_kq, iq
-        _phonon_state_bytes(FT, nmodes, ph_qty) +               # ph tile
+        _phonon_state_bytes(FT, nmodes, ph_qty) +               # phs tile
         (eph_phonon_basis == :cartesian ? cx * nmodes^2 : 0) +  # identity basis
         (model.polar_eph.use ? cx * (nw * nband_max_k + nband_max_kq * nband_max_k) : 0)  # polar scratch
     drop_pairs && (per_pair += _electron_state_bytes(FT, nw, nband_max_kq, el_qty) +
@@ -140,11 +140,11 @@ _electron_state_bytes(FT, nw, nb, qty) = 2sizeof(Int) +
 _phonon_state_bytes(FT, nm, qty) = sizeof(FT) * ((:e ∈ qty) * nm + (:vdiag ∈ qty) * 3nm) +
     sizeof(Complex{FT}) * ((:u ∈ qty) * nm^2 + (:eph_dipole_coeff ∈ qty) * nm + (:eph_r_coeff ∈ qty) * 3nm)
 
-function OuterKEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty; kpts, kqpts, qpts,
+function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
         n_outer_batch, n_inner_tile, nchunks, drop_pairs, covariant_derivative_of_g,
         eph_phonon_basis) where {FT}
     (; nw, nmodes) = model
-    nbk, nbkq = el_k.nband_max, el_kq.nband_max
+    nbk, nbkq = els_k.nband_max, els_kq.nband_max
     el_layout = model.epmat_outer_momentum == "el"
     epmat = to_device(backend, model.epmat)
     irvec_p = el_layout ? model.epmat.irvec_next : model.epmat.irvec
@@ -200,7 +200,7 @@ function OuterKEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
 
     tiles = map(1:nchunks) do _
         tile_bufs = (;
-            ph = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT),
+            phs = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT),
             iq = Vector{Int}(undef, n_inner_tile),
             iq_dev = alloc(backend, Int, n_inner_tile),
             P_kq = alloc(backend, Complex{FT}, nr_p, n_inner_tile),
@@ -217,8 +217,8 @@ function OuterKEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
         merge(tile_bufs, (; kept = drop_pairs ? (;
             keep = Vector{Int}(undef, n_inner_tile),
             keep_dev = alloc(backend, Int, n_inner_tile),
-            el_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
-            ph = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT),
+            els_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
+            phs = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT),
             P_kq = alloc(backend, Complex{FT}, nr_p, n_inner_tile),
             ikq = Vector{Int}(undef, n_inner_tile),
             iq = Vector{Int}(undef, n_inner_tile),
@@ -237,23 +237,23 @@ function OuterKEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
 end
 
 """
-    stage1!(eng::OuterKEngine, el_k, kpts, batch)
+    stage1!(eng::OuterKEngine, els_k, kpts, batch)
 
 g(k, R_p) for the outer k points `batch`, rotated by `u_k` and multiplied by `exp(-2πi R_p · x_k)`,
 into `eng.ep_kR` (and `eng.dg_kR`). A partial last batch is padded with its last k, so the batched
 kernels run on the full-width buffers.
 """
-function stage1!(eng::OuterKEngine, el_k, kpts, batch)
+function stage1!(eng::OuterKEngine, els_k, kpts, batch)
     nb = length(batch)
     nmax = size(eng.xk_host, 2)
     iks = nb == nmax ? batch : [batch; fill(last(batch), nmax - nb)]
-    copy_batched_electron_states!(eng.el_k_batch, el_k, iks)
+    copy_batched_electron_states!(eng.els_k_batch, els_k, iks)
     for (j, ik) in enumerate(iks)
         eng.xk_host[:, j] .= kpts.vectors[ik]
     end
     copyto!(eng.xk, eng.xk_host)
     @views build_fourier_phase!(eng.P_mk[:, 1:nb], eng.irvecp_mat, eng.mxk[:, batch])
-    uks = eng.el_k_batch.u
+    uks = eng.els_k_batch.u
     nr_p = size(eng.P_mk, 1)
     if eng.itp_epmat !== nothing
         g = dense_prefix(eng.g_fourier, eng.itp_epmat.parent.ndata, nmax)
@@ -278,20 +278,20 @@ end
 
 g(k, k+q) of the block `pairs` (one k, `pairs.n` k+q points) into `tile_bufs.ep` (and
 `tile_bufs.dg`): the kR→kq contraction on the tile's phase `pairs.phase`, the k+q rotation and the
-phonon basis (`pairs.ph.u`, or the identity for `:cartesian`).
+phonon basis (`pairs.phs.u`, or the identity for `:cartesian`).
 """
 function stage2!(eng::OuterKEngine, tile_bufs, pairs)
     (; n, iouter) = pairs
     ep = view(tile_bufs.ep, :, :, :, 1:n)
     ws = (; g = view(tile_bufs.g, :, 1:n), tmp = view(tile_bufs.tmp, :, :, 1:n))
-    u_ph = tile_bufs.u_ph_id === nothing ? pairs.ph.u : view(tile_bufs.u_ph_id, :, :, 1:n)   # the phonon basis
-    get_eph_kR_to_kq_batched!(ep, view(eng.ep_kR, :, :, iouter), pairs.phase, u_ph, pairs.el_kq.u; ws...)
+    u_ph = tile_bufs.u_ph_id === nothing ? pairs.phs.u : view(tile_bufs.u_ph_id, :, :, 1:n)   # the phonon basis
+    get_eph_kR_to_kq_batched!(ep, view(eng.ep_kR, :, :, iouter), pairs.phase, u_ph, pairs.els_kq.u; ws...)
     tile_bufs.dg === nothing && return ep, nothing
     dg = view(tile_bufs.dg, :, :, :, :, 1:n)
     dg_d = view(tile_bufs.dg_d, :, :, :, 1:n)
     for d in 1:3
         get_eph_kR_to_kq_batched!(dg_d, view(eng.dg_kR, :, :, d, iouter), pairs.phase, u_ph,
-                                  pairs.el_kq.u; ws...)
+                                  pairs.els_kq.u; ws...)
         view(dg, :, :, :, d, :) .= dg_d
     end
     ep, dg
@@ -333,10 +333,10 @@ function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband
     (; persistent, per_outer, per_pair)
 end
 
-function OuterQEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty; kpts, qpts,
+function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
         n_outer_batch, n_inner_tile, nchunks, drop_pairs, eph_phonon_basis) where {FT}
     (; nw, nmodes) = model
-    nbk = el_k.nband_max
+    nbk = els_k.nband_max
     el_layout = model.epmat_outer_momentum == "el"
     epmat = to_device(backend, model.epmat)
     irvec_e = el_layout ? model.epmat.irvec : model.epmat.irvec_next
@@ -352,10 +352,10 @@ function OuterQEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
         irvec_p_mat = P_p = row_scratch = nothing
     end
     eRpq = WannierObject(irvec_e, alloc_zeros(backend, Complex{FT}, ndata, nr_e))
-    el_ham = el_kq === nothing ? to_device(backend, model.el_ham) : nothing
+    el_ham = els_kq === nothing ? to_device(backend, model.el_ham) : nothing
     # The k+q box: the precomputed container's, or `nw` for the per-tile solve, whose blocks use its
     # leading `maximum(nband)` columns.
-    nbkq = el_kq === nothing ? nw : el_kq.nband_max
+    nbkq = els_kq === nothing ? nw : els_kq.nband_max
 
     tiles = map(1:nchunks) do _
         # Each tile has its own interpolators: their phase scratch is written per call.
@@ -363,9 +363,9 @@ function OuterQEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
             itp_eRpq = BatchedWannierInterpolator(eRpq; backend, batch_size = n_inner_tile),
             itp_el_ham = el_ham === nothing ? nothing :
                 BatchedWannierInterpolator(el_ham; backend, batch_size = n_inner_tile),
-            el_k = BatchedElectronState(backend, nw, nbk, n_inner_tile, el_qty; FT),
-            el_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
-            hk = el_kq === nothing ? alloc(backend, Complex{FT}, nw^2, n_inner_tile) : nothing,
+            els_k = BatchedElectronState(backend, nw, nbk, n_inner_tile, el_qty; FT),
+            els_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
+            hk = els_kq === nothing ? alloc(backend, Complex{FT}, nw^2, n_inner_tile) : nothing,
             kqs = Vector{Vec3{FT}}(undef, n_inner_tile),
             ikq = Vector{Int}(undef, n_inner_tile),     # 0: k+q absent from the precomputed states
             ikq_copy = Vector{Int}(undef, n_inner_tile),
@@ -379,8 +379,8 @@ function OuterQEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
         merge(tile_bufs, (; kept = drop_pairs ? (;
             keep = Vector{Int}(undef, n_inner_tile),
             keep_dev = alloc(backend, Int, n_inner_tile),
-            el_k = BatchedElectronState(backend, nw, nbk, n_inner_tile, el_qty; FT),
-            el_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
+            els_k = BatchedElectronState(backend, nw, nbk, n_inner_tile, el_qty; FT),
+            els_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
             ik = Vector{Int}(undef, n_inner_tile),
             ikq = Vector{Int}(undef, n_inner_tile),
             wtk = alloc(backend, FT, n_inner_tile),
@@ -395,12 +395,12 @@ function OuterQEngine(model::Model{FT}, backend, el_k, el_kq, ph, el_qty, ph_qty
 end
 
 """
-    stage1!(eng::OuterQEngine, ph, qpts, batch, eph_phonon_basis)
+    stage1!(eng::OuterQEngine, phs, qpts, batch, eph_phonon_basis)
 
 g(R_e, q) for the outer q points `batch` in the phonon basis `eph_phonon_basis` (`:eigenmode`
-rotates the modes by `ph.u`, `:cartesian` leaves them), into `eng.ep_Rq[:, :, 1:length(batch)]`.
+rotates the modes by `phs.u`, `:cartesian` leaves them), into `eng.ep_Rq[:, :, 1:length(batch)]`.
 """
-function stage1!(eng::OuterQEngine, ph, qpts, batch, eph_phonon_basis)
+function stage1!(eng::OuterQEngine, phs, qpts, batch, eph_phonon_basis)
     nb = length(batch)
     for (j, iq) in enumerate(batch)
         eng.xq_host[:, j] .= qpts.vectors[iq]
@@ -427,7 +427,7 @@ function stage1!(eng::OuterQEngine, ph, qpts, batch, eph_phonon_basis)
         g_rot = view(eng.g_rot, :, :, :, 1:nb)
         permutedims!(g_rot, reshape(g, nw2, nmodes, nr_e, nb), (1, 3, 2, 4))
         ep_rot = reshape(view(eng.g_q, :, :, 1:nb), nw2 * nr_e, nmodes, nb)   # g is consumed
-        batched_gemm!('N', 'N', reshape(g_rot, nw2 * nr_e, nmodes, nb), view(ph.u, :, :, batch), ep_rot)
+        batched_gemm!('N', 'N', reshape(g_rot, nw2 * nr_e, nmodes, nb), view(phs.u, :, :, batch), ep_rot)
         permutedims!(reshape(ep, nw2, nmodes, nr_e, nb), reshape(ep_rot, nw2, nr_e, nmodes, nb), (1, 3, 2, 4))
     end
     eng
@@ -437,15 +437,15 @@ end
     stage2!(eng::OuterQEngine, tile_bufs, pairs)
 
 g(k, k+q) of the block `pairs` (one q, `pairs.n` k points) into the leading
-`(pairs.el_kq.nband_max, pairs.el_k.nband_max, nmodes, pairs.n)` of `tile_bufs.ep`, from `eng.eRpq`
+`(pairs.els_kq.nband_max, pairs.els_k.nband_max, nmodes, pairs.n)` of `tile_bufs.ep`, from `eng.eRpq`
 (the current q).
 """
 function stage2!(eng::OuterQEngine, tile_bufs, pairs)
     (; n) = pairs
-    nbkq, nbk = pairs.el_kq.nband_max, pairs.el_k.nband_max
-    nw, nmodes = size(tile_bufs.uk_rep, 1), pairs.ph.nmodes
+    nbkq, nbk = pairs.els_kq.nband_max, pairs.els_k.nband_max
+    nw, nmodes = size(tile_bufs.uk_rep, 1), pairs.phs.nmodes
     ep = dense_prefix(tile_bufs.ep, nbkq, nbk, nmodes, n)
-    get_eph_Rq_to_kq_batched!(ep, tile_bufs.itp_eRpq, pairs.xk, pairs.el_k.u, pairs.el_kq.u;
+    get_eph_Rq_to_kq_batched!(ep, tile_bufs.itp_eRpq, pairs.xk, pairs.els_k.u, pairs.els_kq.u;
         g = view(tile_bufs.g, :, 1:n), tmp = dense_prefix(tile_bufs.tmp, nbkq, nw * nmodes, n),
         uk_rep = dense_prefix(tile_bufs.uk_rep, nw, nbk, nmodes * n))
     ep, nothing
@@ -467,8 +467,8 @@ function finish_ep!(block, tile_bufs, model)
     nw = model.nw
     # u_k at the block's pair extent: the shared side of `OuterKLoop` has extent 1.
     uk = dense_prefix(tile_bufs.uk_polar, nw, nbk, n)
-    uk .= block.el_k.u
-    add_eph_dipole_batched!(block.ep, block.ph.eph_dipole_coeff, block.el_kq.u, uk,
+    uk .= block.els_k.u
+    add_eph_dipole_batched!(block.ep, block.phs.eph_dipole_coeff, block.els_kq.u, uk,
                             dense_prefix(tile_bufs.mmat, nbkq, nbk, n))
     block
 end

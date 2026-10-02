@@ -146,8 +146,8 @@ end
             prebuilt_cached = _run(sub_a, sel_kq; backend,
                                    el_kq_eigenpairs = cache)
             prebuilt_bad = _run(sub_a, sel_kq; backend, el_kq_eigenpairs = bad)
-            @test _states_equal(prebuilt_cached.el_kq, prebuilt.el_kq)
-            @test _u_deviation(prebuilt.el_kq, prebuilt_bad.el_kq) > 1
+            @test _states_equal(prebuilt_cached.els_kq, prebuilt.els_kq)
+            @test _u_deviation(prebuilt.els_kq, prebuilt_bad.els_kq) > 1
         end
 
         # A cache built with the other Fourier mode is a second, independent tooth on CPU: it
@@ -175,7 +175,7 @@ end
         for backend in backends
             plain = _run(sub_a; backend)
             qpts = plain.qpts
-            cache = Eigenpairs(model.nmodes, qpts, plain.ph.e, plain.ph.u)
+            cache = Eigenpairs(model.nmodes, qpts, plain.phs.e, plain.phs.u)
             rot = circshift(1:qpts.n, 1)
             rotated = Eigenpairs(model.nmodes, qpts, cache.e_full[:, rot], cache.u_full[:, :, rot])
 
