@@ -122,18 +122,3 @@ The points `inds` of `el_states` as a `BatchedElectronState` of views (no copy),
         view_points(el_states.v),
         view_points(el_states.rbar))
 end
-
-# The state index map of `states` in the box coordinates of a container built from it, on
-# `backend`: entry `[n, ik]` is the index in `states` of physical band `first(band_extent[ik]) + n - 1`
-# at k point `ik`, 0 where that band is not a state of `states` or `n > length(band_extent[ik])`. The
-# builders size a container's box from the same extents (offset `first - 1`, `nband = length`,
-# `nband_max` the largest length), so a kernel looks a state up from a block's local band index and
-# never reads the box padding.
-function _indmap_to_device(backend::AbstractBackend, states::AbstractBandStates)
-    band_extent = states.band_extent
-    indmap = zeros(Int, maximum(length, band_extent; init = 0), length(band_extent))
-    for ik in eachindex(band_extent), (n, iband) in enumerate(band_extent[ik])
-        indmap[n, ik] = state_index(states, ik, iband)
-    end
-    to_device(backend, indmap)
-end

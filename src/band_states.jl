@@ -31,7 +31,7 @@ subtypes:
     `vs`), used for the scatter, transport, and the δf feedback.
 
 The `(k, band)`-selection machinery (`state_index`, `_build_indmap`, `state_weights`, `state_xks`,
-`ind_range_for_k_range`, `find_unfolding_indices`, the length/index interface,
+`ind_range_for_k_range`, `_indmap_to_device`, `find_unfolding_indices`, the length/index interface,
 and the `bt_*` accessors) dispatches on `AbstractBandStates`, so both subtypes share it. The
 `es`/`vs`-dependent methods (transport, δf feedback, the per-state iterator) stay on `BandStates`.
 
@@ -446,6 +446,21 @@ function state_index(s::AbstractBandStates{T, <:GridKpoints},
     ik === nothing ? 0 : state_index(s, ik, iband)
 end
 state_index(s::AbstractBandStates, st::NamedTuple) = state_index(s, st.xk, st.iband)
+
+# The state index map of `states` in the box coordinates of a container built from it, on
+# `backend`: entry `[n, ik]` is the index in `states` of physical band `first(band_extent[ik]) + n - 1`
+# at k point `ik`, 0 where that band is not a state of `states` or `n > length(band_extent[ik])`. The
+# builders size a container's box from the same extents (offset `first - 1`, `nband = length`,
+# `nband_max` the largest length), so a kernel looks a state up from a block's local band index and
+# never reads the box padding.
+function _indmap_to_device(backend::AbstractBackend, states::AbstractBandStates)
+    band_extent = states.band_extent
+    indmap = zeros(Int, maximum(length, band_extent; init = 0), length(band_extent))
+    for ik in eachindex(band_extent), (n, iband) in enumerate(band_extent[ik])
+        indmap[n, ik] = state_index(states, ik, iband)
+    end
+    to_device(backend, indmap)
+end
 
 """
     state_index_in_star(s, xk, iband, symmetry) -> Int

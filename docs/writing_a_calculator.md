@@ -106,13 +106,14 @@ block has extent 1 there. Under `OuterKLoop`: `ep` is `(nband_max_kq, nband_max_
 (k+q is solved per tile). `ep` is the e-ph matrix before the `1/(2ω)`; a calculator that needs
 `|g|²/(2ω)` forms it.
 
-**Extents.** Every array of a block holds exactly the block's points, so indexing past them is an
-error rather than a read of another block's data. The band axes are a box: local band `n` of point
-`j` is physical band `iband_offset[j] + n` for `n ≤ nband[j]`, and everything past it (including box
-columns past band `nw`) is undefined. Array bounds cannot catch a read there, so loop over
-`1:nband[j]`, look states up through an index map that is 0 past it (`_indmap_to_device`), or
-select with `ifelse` on `n ≤ nband[j]` as the example does; never multiply the padding by a 0/1
-mask.
+**Extents.** Every array of a block holds exactly the block's points, so take the extents from the
+arrays themselves: a size mismatch between them is then detectable, and the scatter helpers check
+the sizes of their inputs on entry (an `@inbounds` loop or a device kernel would not catch a read
+past the block). The band axes are a box: local band `n` of point `j` is physical band
+`iband_offset[j] + n` for `n ≤ nband[j]`, and everything past it (including box columns past band
+`nw`) is undefined. Array bounds cannot catch a read there, so loop over `1:nband[j]`, look states
+up through an index map that is 0 past it (`_indmap_to_device`), or select with `ifelse` on
+`n ≤ nband[j]` as the example does; never multiply the padding by a 0/1 mask.
 
 ## The threading and batch contract
 

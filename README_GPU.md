@@ -222,7 +222,9 @@ undefined; the calculators build their state-index maps in box coordinates (`_in
 states)` on the selection the containers were built from, 0 on the padding), so the existing scatter
 kernels skip it with no window code. Array bounds cannot catch a read of the band padding, so every
 reader is bounded by `nband` or by such a map. On the point axis every array a block hands over has
-exactly the block's points, so a read past them is a bounds error, not a read of stale data.
+exactly the block's points, so a reader takes its extents from the arrays themselves and a size
+mismatch between them is detectable; the scatter kernels check the sizes of their inputs on entry,
+since neither their `@inbounds` host loops nor the device kernels check bounds.
 Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
 
 ## Abandoned (tried, decided against)

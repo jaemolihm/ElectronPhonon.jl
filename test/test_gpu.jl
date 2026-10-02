@@ -429,6 +429,29 @@ end
     end
 end
 
+@testset "kR→kq and Rq→kq workspaces must have the block's exact extent" begin
+    # A workspace array at a wider batch than the block (the full buffer rather than a view of its
+    # leading columns) fails the size assertion instead of being used past the block. Each wide
+    # array is one the kernels would otherwise reach with a `DimensionMismatch`, not an assertion.
+    let nw = 3, nband = 3, nmodes = 2, nr = 4, nq = 5
+        irvec = [Vec3(i, 0, 0) for i in 0:nr-1]
+        ndata = nw * nband * nmodes
+        ep = zeros(ComplexF64, nband, nband, nmodes, nq)
+        ep_kR, phase = rand(ComplexF64, ndata, nr), rand(ComplexF64, nr, nq)
+        uphs, ukqs = rand(ComplexF64, nmodes, nmodes, nq), rand(ComplexF64, nw, nband, nq)
+        wide_g = ElectronPhonon.KRtoKQWorkspace(rand(ComplexF64, ndata, nq + 2),
+                                                rand(ComplexF64, nband, nband * nmodes, nq))
+        @test_throws AssertionError get_eph_kR_to_kq_batched!(ep, ep_kR, phase, uphs, ukqs; ws = wide_g)
+        eRpq = WannierObject(irvec, rand(ComplexF64, nw^2 * nmodes, nr))
+        itp = get_interpolator(eRpq; fourier_mode = "batched", backend = ElectronPhonon.CPUBackend(),
+                               batch_size = nq)
+        ks, uks = [Vec3(rand(3)...) for _ in 1:nq], rand(ComplexF64, nw, nband, nq)
+        wide_uk = ElectronPhonon.RqToKQWorkspace(rand(ComplexF64, nw^2 * nmodes, nq),
+            rand(ComplexF64, nband, nw * nmodes, nq), rand(ComplexF64, nw, nband, nmodes * (nq + 2)))
+        @test_throws AssertionError get_eph_Rq_to_kq_batched!(ep, itp, ks, uks, ukqs; ws = wide_uk)
+    end
+end
+
 
 # A minimal AbstractCalculator that records the mode-resolved g2 = |ep|²/2ω and phonon frequency for
 # every (ik, ikq) at physical bands, from the blocks of `run_eph_over_k_and_kq`. It mirrors what
@@ -865,11 +888,11 @@ end
             len = nm * ni_stride * n_f
             g2c = zeros(FT, len); ωc = zeros(FT, len)
             ElectronPhonon.eph_window_scatter!(g2c, ωc, g2vals, imap_i_col, imap_f, ikqs, ωq,
-                nw, nbandk, nm, nqc, ni_stride, i0)
+                ni_stride, i0)
             g2g = CUDA.zeros(FT, len); ωg = CUDA.zeros(FT, len)
             ElectronPhonon.eph_window_scatter!(g2g, ωg, CUDA.CuArray(g2vals),
                 CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), CUDA.CuArray(ikqs), CUDA.CuArray(ωq),
-                nw, nbandk, nm, nqc, ni_stride, i0)
+                ni_stride, i0)
             @test Array(g2g) == g2c                     # same integer indexing + copy ⇒ bit-identical
             @test Array(ωg) == ωc
         end
@@ -881,11 +904,11 @@ end
         len = nm * n_i * n_f
         g2c = zeros(FT, len); ωc = zeros(FT, len)
         ElectronPhonon.eph_window_scatter!(g2c, ωc, g2vals, imap_i_col, imap_f, rng_ikqs, ωq,
-            nw, nbandk, nm, nqc, n_i, 0)
+            n_i, 0)
         g2g = CUDA.zeros(FT, len); ωg = CUDA.zeros(FT, len)
         ElectronPhonon.eph_window_scatter!(g2g, ωg, CUDA.CuArray(g2vals),
             CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), rng_ikqs, CUDA.CuArray(ωq),
-            nw, nbandk, nm, nqc, n_i, 0)
+            n_i, 0)
         @test Array(g2g) == g2c
         @test Array(ωg) == ωc
     end

@@ -185,14 +185,23 @@ synchronize(::CPUBackend) = nothing
     batched_gemm!(transA, transB, A, B, C)
 
 `C[:,:,b] = op(transA, A[:,:,b]) * op(transB, B[:,:,b])` for every batch `b` (α=1, β=0),
-where `op('N',X)=X`, `op('T',X)=transpose(X)`, `op('C',X)=adjoint(X)`. The CPU method loops
-over `mul!`; the CUDA extension uses `CUBLAS.gemm_strided_batched!`.
+where `op('N',X)=X`, `op('T',X)=transpose(X)`, `op('C',X)=adjoint(X)`. The generic method loops
+over the batches, calling `BLAS.gemm!` on host BLAS-type arrays with unit first stride and `mul!`
+otherwise; the CUDA extension uses `CUBLAS.gemm_strided_batched!`.
 """
 function batched_gemm!(transA::Char, transB::Char,
                        A::AbstractArray{T,3}, B::AbstractArray{T,3}, C::AbstractArray{T,3}) where {T}
     @assert size(A, 3) == size(B, 3) == size(C, 3)
+    # `BLAS.gemm!` takes the slices as they are; through `mul!` and its adjoint wrappers, Julia 1.13
+    # heap-allocates the slices of every batch and runs the loop ~15% slower.
+    use_blas = T <: LinearAlgebra.BlasFloat &&
+        all(X -> X isa StridedArray && on_backend(CPUBackend(), X) && stride(X, 1) == 1, (A, B, C))
     @views for b in axes(C, 3)
-        mul!(C[:, :, b], _batched_op(transA, A[:, :, b]), _batched_op(transB, B[:, :, b]))
+        if use_blas
+            BLAS.gemm!(transA, transB, one(T), A[:, :, b], B[:, :, b], zero(T), C[:, :, b])
+        else
+            mul!(C[:, :, b], _batched_op(transA, A[:, :, b]), _batched_op(transB, B[:, :, b]))
+        end
     end
     C
 end

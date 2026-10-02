@@ -276,7 +276,7 @@ end
 
 """
     bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
-                           μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nq_batch, i0)
+                           μs, Ts, ηs, method, ω_cutoff, i0)
 
 Accumulate the BTE scattering-out (Sₒ) and scattering-in (Sᵢ) contributions of one k+q batch into
 the (in-energy-window) device buffers — the transport analogue of `eph_window_scatter!`, and the
@@ -297,7 +297,9 @@ device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPBlock{OuterK
 
 `imap_i_at_k` is `imap_i[:, ik]` — the outer-state indices of the box bands at the batch's fixed
 outer k `ik` — and `imap_f` is in the k+q container's box coordinates; both are 0 on the box padding,
-so its `g2vals` entries are never read. `i0` is the global-i offset of the current `Sᵢ` tile.
+so its `g2vals` entries are never read. `i0` is the global-i offset of the current `Sᵢ` tile. The
+extents are those of `g2vals` `(nbandkq, nbandk, nmodes, nq_batch)`; `ωqmat`, `ikqs` and the index
+maps must agree with them, or a `DimensionMismatch` is thrown.
 
 The generic method below serves a run on a `CPUBackend`, where the whole loop runs on host arrays;
 the CUDA extension provides a `CuArray` kernel. Dispatch is on `Sₒ_out::CuArray, Sᵢ_out::CuArray`
@@ -311,9 +313,8 @@ batched loop is single-threaded over its (k, q-tile) iterations, so there is no 
 the kernel's concurrent writes.
 """
 function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
-        e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff,
-        nbandkq::Int, nbandk::Int, nmodes::Int, nq_batch::Int, i0::Int)
-    _check_scatter_extents(g2vals, ωqmat, ikqs, imap_i_at_k, imap_f, nbandkq, nbandk, nmodes, nq_batch)
+        e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff, i0::Int)
+    nbandkq, nbandk, nmodes, nq_batch = _scatter_extents(g2vals, ωqmat, ikqs, imap_i_at_k, imap_f)
     nT = length(μs)
     @inbounds for iq_batch in 1:nq_batch, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_at_k[n]         # outer (k) state index; 0 = out of window → skip
@@ -346,14 +347,13 @@ end
 function run_calculator!(calc::BoltzmannCalculator{FT}, block::EPBlock{OuterKLoop}, ctx) where {FT}
     (; ep, ph, ik, ikq) = block
     dev = calc.dev
-    nbandkq, nbandk, nmodes, nq_batch = size(ep)
+    nmodes, nq_batch = size(ep, 3), size(ep, 4)
     g2 = view(dev.g2, :, :, :, 1:nq_batch)
     g2 .= abs2.(ep) .* inv.(2 .* reshape(ph.e, 1, 1, nmodes, nq_batch))   # as `epstate_set_g2!`
     t = calc.tiled
     bte_window_accumulate!(dev.Sₒ, device_array(t, 1), g2, ph.e,
         view(dev.imap_i, :, ik), dev.imap_f, ikq, dev.e_i, dev.e_f, dev.wf,
-        dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff,
-        nbandkq, nbandk, nmodes, nq_batch, tile_offset(t))
+        dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff, tile_offset(t))
     calc
 end
 

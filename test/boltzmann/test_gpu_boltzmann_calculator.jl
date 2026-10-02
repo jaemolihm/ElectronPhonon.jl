@@ -85,7 +85,7 @@ function check_bte_accumulate_methods(arr, zdev)
         EP.bte_window_accumulate!(Sod,Sid,arr(g2vals),arr(ωqmat),
             arr(imap_i_at_k),arr(imap_f),arr(ikqs),
             arr(e_i),arr(e_f),arr(wf),
-            arr(μs),arr(Ts),arr(ηs),method,ωcut,nw,nw,nmodes,nq_batch,0)
+            arr(μs),arr(Ts),arr(ηs),method,ωcut,0)
         @test Array(Sod) ≈ So rtol=1e-10
         @test Array(Sid) ≈ Si rtol=1e-10
     end
@@ -113,7 +113,7 @@ function check_bte_accumulate_tile(arr, zdev)
         EP.bte_window_accumulate!(Sod,Sid,arr(g2vals),arr(ωqmat),
             arr(imap_i_at_k),arr(imap_f),arr(ikqs),
             arr(e_i),arr(e_f),arr(wf),
-            arr(μs),arr(Ts),arr(ηs),method,ωcut,nw,nw,nmodes,nq_batch,i0)
+            arr(μs),arr(Ts),arr(ηs),method,ωcut,i0)
         @test Array(Sod) ≈ So rtol=1e-10
         @test Array(Sid) ≈ Si rtol=1e-10
         # out-of-window outer band 1 contributes nowhere; global rows 1..3,8..10 stay zero

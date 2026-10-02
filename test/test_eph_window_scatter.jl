@@ -52,7 +52,7 @@ end
     N = nm * n_i * n_f
     re, im_out, w = (zeros(N), zeros(N), zeros(N))
     eph_window_scatter_reim!(re, im_out, w, ep, imap_i_col, imap_f, ikqs, ωq,
-                             nbandkq, nbandk, nm, nq_batch, n_i, 0)
+                             n_i, 0)
     re_ref, im_ref, w_ref = _scatter_reference(ep, ωq, imap_i_col, imap_f, ikqs, n_i, n_f, 0)
     @test reshape(re, nm, n_i, n_f) == re_ref
     @test reshape(im_out, nm, n_i, n_f) == im_ref
@@ -68,7 +68,7 @@ end
     g2, w2 = (zeros(N), zeros(N))
     eph_window_scatter!(g2, w2, abs2.(ep) ./ (2 .* reshape(ωq, 1, 1, nm, nq_batch)),
                         imap_i_col, imap_f, ikqs, ωq,
-                        nbandkq, nbandk, nm, nq_batch, n_i, 0)
+                        n_i, 0)
     written = w .!= 0
     @test (re[written].^2 .+ im_out[written].^2) ./ (2 .* w[written]) == g2[written]
     @test w == w2
@@ -77,7 +77,7 @@ end
     # of a two-run caller, which already has the frequencies from the first.
     re_noω, im_noω = (zeros(N), zeros(N))
     eph_window_scatter_reim!(re_noω, im_noω, nothing, ep, imap_i_col, imap_f, ikqs, nothing,
-                             nbandkq, nbandk, nm, nq_batch, n_i, 0)
+                             n_i, 0)
     @test re_noω == re
     @test im_noω == im_out
 
@@ -86,7 +86,7 @@ end
     i0, ni_stride = 2, 1
     re_b, im_b, w_b = (zeros(nm * ni_stride * n_f) for _ in 1:3)
     eph_window_scatter_reim!(re_b, im_b, w_b, ep, imap_i_col, imap_f, ikqs, ωq,
-                             nbandkq, nbandk, nm, nq_batch, ni_stride, i0)
+                             ni_stride, i0)
     re_bref, im_bref, w_bref = _scatter_reference(ep, ωq, imap_i_col, imap_f, ikqs, ni_stride,
                                                   n_f, i0)
     @test reshape(re_b, nm, ni_stride, n_f) == re_bref
@@ -101,7 +101,7 @@ end
             re_d, im_d, w_d = (CUDA.zeros(Float64, N) for _ in 1:3)
             eph_window_scatter_reim!(re_d, im_d, w_d, to_dev(ep), to_dev(imap_i_col),
                                      to_dev(imap_f), to_dev(ikqs), to_dev(ωq),
-                                     nbandkq, nbandk, nm, nq_batch, n_i, 0)
+                                     n_i, 0)
             @test Array(re_d) == re
             @test Array(im_d) == im_out
             @test Array(w_d) == w
@@ -112,7 +112,7 @@ end
             re_bd, im_bd, w_bd = (CUDA.zeros(Float64, nm * ni_stride * n_f) for _ in 1:3)
             eph_window_scatter_reim!(re_bd, im_bd, w_bd, to_dev(ep), to_dev(imap_i_col),
                                      to_dev(imap_f), to_dev(ikqs), to_dev(ωq),
-                                     nbandkq, nbandk, nm, nq_batch, ni_stride, i0)
+                                     ni_stride, i0)
             @test Array(re_bd) == re_b
             @test Array(im_bd) == im_b
             @test Array(w_bd) == w_b
@@ -129,7 +129,7 @@ end
             eph_window_scatter_reim!(views[1], views[2], views[3],
                                      view(ep_pad, :, :, :, 1:nq_batch), to_dev(imap_i_col),
                                      to_dev(imap_f), to_dev(ikqs), to_dev(ωq),
-                                     nbandkq, nbandk, nm, nq_batch, n_i, 0)
+                                     n_i, 0)
             @test Array(pads[1]) == vcat(zeros(N), re, zeros(N))
             @test Array(pads[2]) == vcat(zeros(N), im_out, zeros(N))
             @test Array(pads[3]) == vcat(zeros(N), w, zeros(N))
@@ -138,11 +138,30 @@ end
             re_n, im_n = (CUDA.zeros(Float64, N) for _ in 1:2)
             eph_window_scatter_reim!(re_n, im_n, nothing, to_dev(ep), to_dev(imap_i_col),
                                      to_dev(imap_f), to_dev(ikqs), nothing,
-                                     nbandkq, nbandk, nm, nq_batch, n_i, 0)
+                                     n_i, 0)
             @test Array(re_n) == re
             @test Array(im_n) == im_out
         else
             @info "CUDA not functional - skipping the GPU eph_window_scatter_reim! test"
         end
     end
+end
+
+# The scatters loop over the extents of their block values unchecked (`@inbounds` on the host, no
+# bounds checks in the device kernels). A block value buffer at its full width, handed over with
+# the k+q list and frequencies of fewer points, must be refused rather than read past the block.
+@testset "scatters refuse block arrays of mismatched extent" begin
+    nbandkq, nbandk, nm, nq_batch, nkq = 3, 2, 2, 4, 6
+    imap_i_col, imap_f = [1, 2], reshape(collect(1:nbandkq * nkq), nbandkq, nkq)
+    ikqs, ωq = collect(1:nq_batch), fill(0.01, nm, nq_batch)
+    full = rand(nbandkq, nbandk, nm, nq_batch + 2)
+    N = nm * 2 * nbandkq * nkq
+    @test_throws DimensionMismatch eph_window_scatter!(zeros(N), zeros(N), full, imap_i_col, imap_f,
+                                                       ikqs, ωq, 2, 0)
+    @test_throws DimensionMismatch eph_window_scatter_reim!(zeros(N), zeros(N), zeros(N),
+        complex.(full), imap_i_col, imap_f, ikqs, ωq, 2, 0)
+    @test_throws DimensionMismatch ElectronPhonon.bte_window_accumulate!(zeros(2, 1),
+        zeros(2, nbandkq * nkq, 1), full, ωq, imap_i_col, imap_f, ikqs, zeros(2),
+        zeros(nbandkq * nkq), ones(nbandkq * nkq), [0.0], [0.01],
+        [SmearingType(:Gaussian, 0.005)], 5, 0.0, 0)
 end
