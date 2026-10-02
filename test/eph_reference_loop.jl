@@ -28,15 +28,18 @@ _grid_key(x, ngrid) = Tuple(mod.(round.(Int, x .* ngrid), ngrid))
 _pair_key(xk, xkq, ngrid) = (_grid_key(xk, ngrid)..., _grid_key(xkq, ngrid)...)
 
 """
-    eph_reference(model, kpts, kqpts, window_k, window_kq) -> (; ep, g2abs, ωq, el_k, el_kq, wtkq)
+    eph_reference(model, kpts, kqpts, window_k, window_kq; ngrid = kqpts.ngrid,
+                  kq_indices = ik -> eachindex(kqpts.vectors))
+        -> (; ep, g2abs, ωq, el_k, el_kq, wtkq)
 
-`ep[m, n, ν]`, `|ep[m, n, ν]|^2` and `ω[ν]` of every pair `(k, k+q)` of `kpts × kqpts` whose two
-windows are not empty, keyed by `_pair_key`, with `m`, `n` physical bands (zero outside the
-windows); the states and the k+q weights keyed by `_grid_key`. `model` must
-have `epmat_outer_momentum = "el"` and no polar terms; the e-ph matrix is the one of the loops
-before calculators see it (no dipole term, no 1/2ω).
+`ep[m, n, ν]`, `|ep[m, n, ν]|^2` and `ω[ν]` of every pair `(k, k+q)` of `kpts × kqpts` (for each k
+only the k+q points `kq_indices(ik)`) whose two windows are not empty, keyed by `_pair_key` on
+`ngrid`, with `m`, `n` physical bands (zero outside the windows); the states and the k+q weights
+keyed by `_grid_key`. `model` must have `epmat_outer_momentum = "el"` and no polar terms; the e-ph
+matrix is the one of the loops before calculators see it (no dipole term, no 1/2ω).
 """
-function eph_reference(model, kpts, kqpts, window_k, window_kq)
+function eph_reference(model, kpts, kqpts, window_k, window_kq; ngrid = kqpts.ngrid,
+                       kq_indices = ik -> eachindex(kqpts.vectors))
     (; nw, nmodes) = model
     (model.polar_phonon.use || model.polar_eph.use) && error("eph_reference has no polar term")
     el_k = compute_electron_states(model, kpts, ["eigenvalue", "eigenvector"], window_k;
@@ -48,7 +51,6 @@ function eph_reference(model, kpts, kqpts, window_k, window_kq)
     ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode = "normal")
     dyn = get_interpolator(model.ph_dyn; fourier_mode = "normal")
     ph = PhononState(nmodes, Float64)
-    ngrid = kqpts.ngrid
     ep_pairs = Dict{NTuple{6, Int}, Array{ComplexF64, 3}}()
     g2abs = Dict{NTuple{6, Int}, Array{Float64, 3}}()
     ωq = Dict{NTuple{6, Int}, Vector{Float64}}()
@@ -56,7 +58,8 @@ function eph_reference(model, kpts, kqpts, window_k, window_kq)
         elk = el_k[ik]
         elk.nband == 0 && continue
         get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(elk.u))
-        for (ikq, xkq) in enumerate(kqpts.vectors)
+        for ikq in kq_indices(ik)
+            xkq = kqpts.vectors[ikq]
             elkq = el_kq[ikq]
             elkq.nband == 0 && continue
             xq = xkq - xk
@@ -75,6 +78,20 @@ function eph_reference(model, kpts, kqpts, window_k, window_kq)
        el_k = Dict(_grid_key(x, ngrid) => el for (x, el) in zip(kpts.vectors, el_k)),
        el_kq = Dict(_grid_key(x, ngrid) => el for (x, el) in zip(kqpts.vectors, el_kq)),
        wtkq = Dict(_grid_key(x, ngrid) => w for (x, w) in zip(kqpts.vectors, kqpts.weights)))
+end
+
+"""
+    eph_reference_k_and_q(model, kpts, qpts, window_k, window_kq, ngrid)
+
+[`eph_reference`](@ref) over the pairs `(k, k + q)` of `kpts × qpts`, the pairs of
+`run_eph_over_k_and_q`, keyed on `ngrid`. A fine `ngrid` (`10^6` per axis) keys points on no grid by
+their rounded coordinates, which match because the driver forms the same `x_k + x_q`.
+"""
+function eph_reference_k_and_q(model, kpts, qpts, window_k, window_kq, ngrid)
+    xkqs = [xk + xq for xk in kpts.vectors for xq in qpts.vectors]
+    kqpts = Kpoints(length(xkqs), xkqs, repeat(qpts.weights, kpts.n), ngrid)
+    eph_reference(model, kpts, kqpts, window_k, window_kq; ngrid,
+                  kq_indices = ik -> (ik - 1) * qpts.n .+ (1:qpts.n))
 end
 
 """
@@ -166,7 +183,8 @@ end
 
 # ---- recorder: |g|^2 per pair out of each block ----------------------------------------------
 
-# One recorder for both loop orders. Writes are keyed by the pair; the Dict is guarded by a lock.
+# One recorder for both loop orders. Writes are keyed by the pair on `ngrid`, the run's k grid unless
+# given; the Dict is guarded by a lock.
 mutable struct _PairRecorder <: AbstractCalculator
     nw::Int
     nmodes::Int
@@ -174,7 +192,7 @@ mutable struct _PairRecorder <: AbstractCalculator
     g2abs::Dict{NTuple{6, Int}, Array{Float64, 3}}
     ωq::Dict{NTuple{6, Int}, Vector{Float64}}
     lock::ReentrantLock
-    _PairRecorder() = new(0, 0, (0, 0, 0), Dict(), Dict(), ReentrantLock())
+    _PairRecorder(ngrid = (0, 0, 0)) = new(0, 0, ngrid, Dict(), Dict(), ReentrantLock())
 end
 ElectronPhonon.supports(::_PairRecorder, ::Type{OuterKLoop}) = true
 ElectronPhonon.supports(::_PairRecorder, ::Type{OuterQLoop}) = true
@@ -185,7 +203,8 @@ ElectronPhonon.calculator_end!(::_PairRecorder, ctx) = nothing
 ElectronPhonon.postprocess_calculator!(c::_PairRecorder; kwargs...) = c
 function ElectronPhonon.setup_calculator!(c::_PairRecorder, backend, els_k, els_kq, phs; nw, nmodes,
         kwargs...)
-    c.nw, c.nmodes, c.ngrid = nw, nmodes, els_k.kpts.ngrid
+    c.nw, c.nmodes = nw, nmodes
+    all(iszero, c.ngrid) && (c.ngrid = els_k.kpts.ngrid)
     c
 end
 

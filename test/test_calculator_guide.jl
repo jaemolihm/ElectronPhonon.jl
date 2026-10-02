@@ -50,7 +50,7 @@ end
         c = T()
         ElectronPhonon.run_eph_over_k_and_kq(model, (nk, nk, nk), (nk, nk, nk);
             calculators = [c], symmetry = nothing, progress_print_step = 10^9,
-            nk_outer_batch_max = 5, nq_batch_max = 7)
+            n_outer_batch = 5, n_inner_tile = 7)
         c
     end
 
@@ -59,4 +59,14 @@ end
     # g2 = |ep|²/(2ω) can be negative where ω < 0 (Pb's soft acoustic modes on a coarse grid), so
     # only assert the result is finite and non-trivial (nonzero e-ph coupling recorded).
     @test maximum(abs, calc.per_k) > 0
+
+    # `run_eph_over_k_and_q` on the same commensurate grids hands the calculator the same pairs,
+    # with k + q solved per tile, so it gives the same sums. Measured 1e-15 relative.
+    calc_q = Base.invokelatest() do
+        c = getfield(@__MODULE__, :EphG2SumCalculator)()
+        ElectronPhonon.run_eph_over_k_and_q(model, (nk, nk, nk), (nk, nk, nk);
+            calculators = [c], progress_print_step = 10^9, n_outer_batch = 5, n_inner_tile = 7)
+        c
+    end
+    @test calc_q.per_k ≈ calc.per_k rtol = 1e-10
 end

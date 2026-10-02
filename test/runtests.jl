@@ -23,6 +23,7 @@ include("common_models_from_artifacts.jl")
         include("test_wannier.jl")
         include("test_holstein_model.jl")  # analytic Holstein Model builder (no artifacts needed)
         include("test_gpu.jl")  # skips gracefully when CUDA is unavailable
+        include("test_engine_bytes.jl")  # engine_bytes against the engines' device allocations (GPU)
         include("test_backend_alloc.jl")  # alloc_zeros / to_device_copy / is_host; GPU arm skips w/o CUDA
         include("test_mpi_wrappers.jl")  # the mpi_* wrappers on the `comm === nothing` serial path
         include("test_diagonalize.jl")
@@ -39,8 +40,8 @@ include("common_models_from_artifacts.jl")
         include("test_batched_electron_state.jl")  # box-stored electron stacks; GPU part skips w/o CUDA
         include("test_eph_precomputed_states.jl")  # the eigenpair cache through the e-ph drivers
         include("test_eph_reference.jl")  # every e-ph loop against the reference double loop
-        # include("test_eph_incommensurate_grids.jl")  # per-point only; becomes the entry-error test in Stage C (issue #72)
-        include("test_eph_loop_features.jl")  # #72 features on the default loop, as @test_broken
+        include("test_eph_incommensurate_grids.jl")  # outer-k refuses incommensurate grids at entry
+        include("test_eph_loop_features.jl")  # outer-k polar, energy conservation, dg (#72)
         include("test_eph_window_scatter.jl")  # calculator-facing scatter; GPU part skips w/o CUDA
         include("test_high_symmetry_kpath.jl")
         include("test_postprocess_compute.jl")

@@ -69,7 +69,7 @@ function run_bte_multigrid(model, nk_narrow, nk_wide; η, window_narrow, window_
         smearing_list = [SmearingType(:Lorentzian, η) for _ in 1:length(occ)],
         occupation_method = method)
     EP.run_eph_over_k_and_kq(model, sel_k, sel_kq;
-        calculators = [calc], symmetry, el_kq_from_unfolding = false,
+        calculators = [calc], symmetry,
         window_k = window_wide, window_kq = window_wide, backend,
         nchunks_threads = Threads.nthreads(), progress_print_step = 200)
 

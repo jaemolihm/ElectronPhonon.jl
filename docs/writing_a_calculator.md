@@ -1,12 +1,12 @@
 # Writing your own calculator
 
 A **calculator** computes a physical property during one pass of an e-ph driver
-(`run_eph_over_k_and_kq`, outer loop over k, or `run_eph_over_q_and_k`, outer loop over q). The
-driver builds the electron and phonon states and the e-ph matrix elements and hands them to each
-calculator one **block** at a time, an [`EPBlock`](@ref) of one outer point with a tile of inner
-points, together with a **`LoopContext`**. You subtype `ElectronPhonon.AbstractCalculator` and
-implement a few methods; the same methods run on the CPU and on a GPU when they are written with
-broadcasts and `alloc(backend, …)`.
+(`run_eph_over_k_and_kq` and `run_eph_over_k_and_q`, outer loop over k, or `run_eph_over_q_and_k`,
+outer loop over q). The driver builds the electron and phonon states and the e-ph matrix elements
+and hands them to each calculator one **block** at a time, an [`EPBlock`](@ref) of one outer point
+with a tile of inner points, together with a **`LoopContext`**. You subtype
+`ElectronPhonon.AbstractCalculator` and implement a few methods; the same methods run on the CPU and
+on a GPU when they are written with broadcasts and `alloc(backend, …)`.
 
 The authoritative reference is the docstrings in `src/calculator/AbstractCalculator.jl`. This guide
 is the tutorial; its example is executed verbatim by `test/test_calculator_guide.jl`, so it cannot
@@ -28,8 +28,12 @@ rot.
   (`ctx.batch`, the outer indices of the batch). There is no default: define both, even as `= nothing`.
 - `postprocess_calculator!(calc; kwargs...)` — once, after the loop.
 - Optionally `eph_batched_bytes_per_point(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k,
-  nband_max_kq) -> (; persistent, per_outer, per_pair)`, the device bytes the calculator allocates,
-  so the loop sizes its tiles to the free memory.
+  nband_max_kq, els_k, els_kq, phs, nchunks_threads) -> (; persistent, per_outer, per_pair)`, the device
+  bytes the calculator allocates, so the loop sizes its tiles to the free memory. The loop counts
+  `persistent` once, `per_outer` once per outer point of a batch and `per_pair` once per inner point
+  of a tile and per thread chunk; a per-outer buffer the calculator holds per chunk multiplies by
+  `nchunks_threads` itself. `els_k`, `els_kq`, `phs` are `nothing` in `estimate_device_memory`. Accept
+  `kwargs...` for keywords added later.
 
 ## A complete minimal example
 
@@ -45,7 +49,7 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, EPBlock, alloc
 mutable struct EphG2SumCalculator <: AbstractCalculator
     per_k :: Vector{Float64}   # result, indexed by outer-k index
     part  :: Matrix{Float64}   # (chunk, outer point of the batch) partial sums
-    g2    :: Any               # per-tile scratch on the run's backend
+    g2    :: Any               # per-tile scratch of each chunk, on the run's backend
     EphG2SumCalculator() = new(Float64[], zeros(0, 0), nothing)
 end
 
@@ -53,29 +57,31 @@ ElectronPhonon.supports(::EphG2SumCalculator, ::Type{OuterKLoop}) = true
 # The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator reads,
 # so it defines no `required_el_quantities` / `required_ph_quantities`.
 
-# Buffers are sized here, from the widths the loop chose; `run_calculator!` allocates nothing.
+# Buffers are sized here, from the widths the loop chose; `run_calculator!` allocates nothing. The
+# k+q box is the container's, or at most `nw` when k+q is solved per tile (`els_kq === nothing`).
 function ElectronPhonon.setup_calculator!(c::EphG2SumCalculator, backend, els_k, els_kq, phs;
-        nmodes, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...)
+        nw, nmodes, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...)
     c.per_k = zeros(els_k.nk)
     c.part = zeros(nchunks_threads, n_outer_batch)
-    c.g2 = alloc(backend, Float64, els_kq.nband_max, els_k.nband_max, nmodes, n_inner_tile)
+    nbkq = els_kq === nothing ? nw : els_kq.nband_max
+    c.g2 = alloc(backend, Float64, nbkq * els_k.nband_max * nmodes * n_inner_tile, nchunks_threads)
     c
 end
 
 ElectronPhonon.calculator_begin!(c::EphG2SumCalculator, ctx) = (fill!(c.part, 0.0); c)
 
-# One outer k (`p.ik`) with a tile of k+q points. Band entries past a point's window are undefined,
-# so select the in-window ones with `ifelse` (never multiply by a 0/1 mask). The write is indexed by
-# the outer point, not by an inner one, so it goes to this call's chunk slot.
-function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, p::EPBlock{OuterKLoop}, ctx)
-    (; ep, phs, els_k, els_kq, wtq) = p
+# One outer k (`block.ik`) with a tile of k+q points. Band entries past a point's window are undefined,
+# so select the in-window ones with `ifelse` (never multiply by a 0/1 mask). The scratch, at the
+# block's shape, and the write, which is indexed by the outer point, not by an inner one, are this
+# call's chunk slot.
+function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterKLoop}, ctx)
+    (; ep, phs, els_k, els_kq, wtq) = block
     nbkq, nbk, nmodes, nq = size(ep)
-    g2 = view(c.g2, :, :, :, 1:nq)
+    g2 = reshape(view(c.g2, 1:length(ep), ctx.chunk), size(ep))
     g2 .= ifelse.((reshape(1:nbkq, nbkq, 1, 1, 1) .<= reshape(els_kq.nband, 1, 1, 1, nq)) .&
                   (reshape(1:nbk, 1, nbk, 1, 1) .<= reshape(els_k.nband, 1, 1, 1, 1)),
-                  abs2.(ep) ./ (2 .* reshape(phs.e, 1, 1, nmodes, nq)), 0.0) .*
-          reshape(wtq, 1, 1, 1, nq)
-    c.part[ctx.chunk, p.ik - first(ctx.batch) + 1] += sum(g2)
+                  abs2.(ep) ./ (2 .* reshape(phs.e, 1, 1, nmodes, nq)), 0.0) .* reshape(wtq, 1, 1, 1, nq)
+    c.part[ctx.chunk, block.ik - first(ctx.batch) + 1] += sum(g2)
     c
 end
 
@@ -102,9 +108,11 @@ calc.per_k   # one number per outer k-point
 Each array of an `EPBlock` has the pairs of the block on its last axis; the side shared by the whole
 block has extent 1 there. Under `OuterKLoop`: `ep` is `(nband_max_kq, nband_max_k, nmodes, nq)`,
 `els_k` the outer k (extent 1), `els_kq` and `phs` the tile's k+q points and phonons, `ik::Int`,
-`ikq` the k+q indices (a range), `iq` the q indices, `wtk::Float64`, `wtq` the k+q weights. Under
-`OuterQLoop` the roles swap: `phs` has extent 1, `iq::Int`, `ik` a range, and `ikq === nothing`
-(k+q is solved per tile). `ep` is the e-ph matrix before the `1/(2ω)`; a calculator that needs
+`ikq` the k+q indices (a range, or a host vector when the loop dropped pairs), `iq` the q indices,
+`wtk::Float64`, `wtq` the k+q weights; under `run_eph_over_k_and_q` the inner points are the q
+points, `ikq === nothing` and the k+q states are solved per tile. Under `OuterQLoop` the roles swap: `phs` has extent 1,
+`iq::Int`, `ik` the k indices, and `ikq === nothing` when k+q is solved per tile; then
+`nband_max_kq` is the block's largest k+q window, which differs between blocks. `ep` is the e-ph matrix before the `1/(2ω)`; a calculator that needs
 `|g|²/(2ω)` forms it.
 
 **Extents.** Every array of a block holds exactly the block's points, so take the extents from the
@@ -123,7 +131,11 @@ up through an index map that is 0 past it (`_indmap_to_device`), or select with 
   second. Every `length(ctx.batch) ≥ 1` must work.
 - **Writes.** Writes indexed by an inner-tile point are disjoint across blocks. Every other write
   (indexed by the outer point, or a reduction over the inner points) goes to a per-`ctx.chunk`
-  partial, reduced in `calculator_end!`, as in the example. `ctx.chunk` is 1 on a device.
+  partial, reduced in `calculator_end!`, as in the example. Per-tile scratch is per chunk too: on
+  the CPU the blocks of different chunks run concurrently. `ctx.chunk` is 1 on a device. Data of the
+  block's shared side (the outer k's energies under `OuterKLoop`, the q's frequencies under
+  `OuterQLoop`) is not an inner-tile write either: concurrent blocks write the same slot, so record
+  it once, in the brackets or at setup.
 - **Brackets** run serially, once around every outer batch, on every backend.
 
 ## What `setup_calculator!` receives

@@ -159,57 +159,51 @@ block::EPBlock{OuterKLoop|OuterQLoop}, ctx::LoopContext)`, one method per loop o
 backend. The full spec is in the docstrings of `src/calculator/AbstractCalculator.jl`, and
 `docs/writing_a_calculator.md` is the tutorial. This section covers the device side.
 
-`run_eph_over_k_and_kq` / `run_eph_over_q_and_k` take the backend (plus `nq_batch_max` /
-`nk_outer_batch_max` for outer-k, `nk_batch_max` for outer-q):
+`run_eph_over_k_and_kq` / `run_eph_over_q_and_k` are one loop, `_run_eph` in
+`src/calculator/run_eph.jl`, with an engine per order in `src/calculator/eph_engine.jl`
+(`OuterKEngine`, `OuterQEngine`). They take the backend and the two widths:
 
 - `backend :: AbstractBackend = CPUBackend()` — where arrays live. Pass
-  `backend = ElectronPhonon.gpu_backend()` for a GPU run; `model.epmat` is uploaded once and the
-  backend is carried in `LoopContext` as `ctx.backend`.
+  `backend = ElectronPhonon.gpu_backend()` for a GPU run; `model.epmat` is uploaded once per run and
+  the backend is carried in `LoopContext` as `ctx.backend`.
+- `n_outer_batch` — outer points per stage-1 batch and per calculator bracket; `n_inner_tile` —
+  inner points per block, sized to free device memory on a GPU.
 
-The loop holds no device-specific code, so it runs on host arrays on a `CPUBackend` (serial
-k-batches, `batched_gemm!` a `mul!` loop, `plan_batch` returning the requested cap verbatim since
-`free_bytes(::CPUBackend)` is `typemax(Int)`). A CPU run does **not** cover the CUDA kernels
-(`_bte_window_accumulate_kernel!`, `_window_scatter_kernel!`, the fused rotation kernel,
-`CUBLAS.gemm_strided_batched!`, the cuSOLVER batched eigensolve): those need the GPU box.
+The loop holds no device-specific code, so it runs on host arrays on a `CPUBackend`, where the
+inner points are split into `nchunks_threads` thread chunks, each with its own tile buffers
+(`eng.tiles[chunk]`); a device run uses one chunk on the calling task. A CPU run does **not** cover
+the CUDA kernels (`_bte_window_accumulate_kernel!`, `_window_scatter_kernel!`, the fused rotation
+kernels, `CUBLAS.gemm_strided_batched!`, the cuSOLVER batched eigensolve): those need the GPU box.
 
-The outer-k loop processes a batch of outer k with one list-batched `get_eph_RR_to_kR_batched!` and
-batches the inner `ikq` loop (in tiles of `nq_batch_max`) through one `get_eph_kR_to_kq_batched!`.
-The two caps tile different axes: `nq_batch_max` the inner per-q staging, `nk_outer_batch_max` the
-outer-k axis that the calculator brackets and a calculator's `TiledDeviceOutput` tile follow.
+Each order is two stages. **Outer k:** stage 1 is one list-batched `get_eph_RR_to_kR_batched!` over
+the outer batch, which stores the kR intermediate in the **k+q convention**
+(`g̃(k, R_p) = conj(exp(2πi R_p·x_k)) · g(k, R_p)`, folded in via `additional_phase`), so the
+stage-2 Fourier phase `exp(2πi R_p·x_{k+q})` of a k+q tile is the same for every k of the batch:
+the loop is `k-batch -> k+q tile (phase built once) -> k -> block`, and stage 2 is one
+`get_eph_kR_to_kq_batched!` per block with the phonon basis fused into its right rotation.
+**Outer q:** stage 1 is `g(R_e, q)` for the outer batch on the device (one GEMM over the q batch,
+then the phonon-basis rotation as a batched GEMM), stage 2 one `get_eph_Rq_to_kq_batched!` per
+`(q, k tile)` after the k+q states of the tile are solved (`compute_electron_states_batched!`, into
+the leading `maximum(nband)` columns of the tile buffers, so the block's k+q box is its widest
+window). A model whose `epmat` has its columns over the other R (`epmat_outer_momentum`)
+contracts the row-block R in stage 1 with one strided-batched GEMM against a shared phase. The polar
+dipole term is added on the block for both orders (`finish_ep!`).
 
-Its nesting is `k-batch -> q-tile -> k -> q(device)`: the q-tile loop sits **outside** the per-k
-loop. `get_eph_RR_to_kR_batched!` stores the kR intermediate in the **k+q convention**
-(`g̃(k, R_p) = conj(exp(2πi R_p·x_k)) · g(k, R_p)`, folded into its output copy via the
-`additional_phase` argument), so the kR→kq Fourier phase is `exp(2πi R_p·x_{k+q})` — built from
-the fixed k+q list and therefore identical for every k of the batch. One built phase tile is reused
-by all `nk_outer_batch_max` outer k, and the q-vector never enters the interpolation.
+A block is `ep` `(nband_max_kq, nband_max_k, nmodes, nb)` with the states, phonons, weights and
+indices of its pairs; the side shared by the block has extent 1 (see `EPBlock`). Under outer k a
+k's k+q tiles are not contiguous (the tile loop is outside the k loop), so a per-k reduction is
+done in the brackets around the outer batch (`ctx.batch`).
 
-A calculator computes on the device-resident blocks:
+Memory: `engine_bytes` counts the engine's buffers next to their `alloc` calls, each calculator
+adds its `eph_batched_bytes_per_point` triple `(; persistent, per_outer, per_pair)`, and
+`plan_batch(backend, per_point, committed, cap; …)` turns the sum into the inner-tile width
+(committed-vs-free check + 30% headroom) before the engine is built. `estimate_device_memory(model;
+nk, nkq, …)` reports the same counts ahead of a run. Actual device usage starts **~100-150 MB
+higher** because of a fixed CUDA library context/workspace floor (cuBLAS etc.) allocated lazily on
+the first kernel launch.
 
-- **Outer-k loop (`run_eph_over_k_and_kq`).** One block per `(k, q-tile)`: `ep`
-  `(nband_max_kq, nband_max_k, nmodes, nq)`, the outer k's states (extent 1), the tile's k+q states
-  and phonons, `ik`, the k+q index range `ikq` (`isbits`, so it rides in the kernel launch
-  parameters) and the q indices. Outer k is serial, but a k's q-tiles are **not** contiguous (the
-  tile loop is outside the k loop), so a per-k reduction is done in the brackets around the outer
-  batch (`ctx.batch`).
-- **Outer-q loop (`run_eph_over_q_and_k`).** One block per `(q, k-batch)`: `ep`
-  `(nw, nband_max_k, nmodes, nk)`, the batch's k states, the k+q states solved for the batch (each
-  point's window in its first columns, width `nw`), the phonons at q (extent 1), `wtk`, `xk`, `iq`.
-  One outer batch is one q. The block is trimmed to the batch's actual width, so a consumer reads
-  its own size from any field and never sees a padded tail.
-- Both loops fold their device-buffer byte accounting into `src/calculator/eph_device_staging.jl`:
-  `_outer_{k,q}_staging_bytes(…)` return the loop's `(per_point, committed)` device-byte counts,
-  each calculator adds its `eph_batched_bytes_per_point` triple `(; persistent, per_outer,
-  per_pair)`, and `plan_batch(backend, per_point, committed, cap; …)` turns those into the
-  memory-adaptive batch width (committed-vs-free check + 30% headroom). The calculators are set up
-  after it, with the chosen widths. `estimate_device_memory(model; nk, nkq, batch kwargs…)` calls
-  the same byte functions to report committed + per-point bytes ahead of a run (and the drivers
-  print them at `verbosity > 0`). These counts cover the driver's own device buffers; actual device
-  usage starts **~100-150 MB higher** because of a fixed CUDA library context/workspace floor
-  (cuBLAS etc.) allocated lazily on the first in-loop kernel launch — treat it as a fixed additive
-  constant on top of the estimate.
-- A calculator implements its block method backend-generically (only `alloc(ctx.backend, …)` /
-  `similar`/`copyto!`/broadcast/scatter-assignment) and adds no CUDA dependency of its own.
+A calculator implements its block method backend-generically (only `alloc(ctx.backend, …)` /
+`similar`/`copyto!`/broadcast/scatter-assignment) and adds no CUDA dependency of its own.
 
 ### Full-band interpolation on the GPU, with energy windows (design note)
 
@@ -286,9 +280,10 @@ Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
 - `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`, `eigvals_batched`/
   `eigen_batched` (`heevjBatched!`), `batched_gemm!` (`gemm_strided_batched!`), and the fused
   rotation / window-scatter kernels.
-- `src/calculator/run_eph_over_k_and_kq.jl` — `backend` / `batched` / `nq_batch_max` / `nk_outer_batch_max`
-  keywords; backend-generic `_loop_eph_over_k_and_kq_batched` and the batched calculator payload.
-  Per-point path unchanged.
+- `src/calculator/run_eph.jl` — both drivers as one `_run_eph` (entry checks, state containers,
+  `plan_batch`, brackets) with the two loop bodies; `src/calculator/eph_engine.jl` — the
+  `OuterKEngine` / `OuterQEngine` stages and `engine_bytes`. Backend-generic; `backend`,
+  `n_outer_batch`, `n_inner_tile` and `nchunks_threads` select placement and widths.
 - `benchmark/bench_el_eigen_gpu.jl`, `benchmark/bench_eph_gpu.jl`,
   `benchmark/bench_eliashberg_loop_gpu.jl` — CPU-vs-GPU benchmarks.
 - `test/test_gpu.jl` — GPU-guarded tests (skip when CUDA is unavailable or the Pb data dir is

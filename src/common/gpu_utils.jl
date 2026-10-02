@@ -203,4 +203,3 @@ function _batched_gemm!(opA::FA, opB::FB, A, B, C) where {FA, FB}
     end
     C
 end
-

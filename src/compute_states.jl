@@ -355,7 +355,9 @@ On a GPU backend only `:e` and `:u` are supported, polar phonons are refused and
 unused. The q set is solved in chunks of the batched dynamical-matrix interpolator's block width,
 so the device `D(q)` transient is bounded whatever `qpts.n`. As in [`electron_eigenpairs`](@ref),
 the batched eigensolve picks its own basis inside a degenerate mode multiplet, so device and host
-`u` differ there.
+`u` differ there. A GPU e-ph run therefore takes its phonon gauge from the device solve when it needs
+`e` and `u` only, and from host LAPACK (built here, then copied over) for a polar model or other
+quantities.
 """
 function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fourier_mode = "gridopt",
         eph_phonon_basis::Symbol = :eigenmode, backend = CPUBackend(),
@@ -671,14 +673,17 @@ end
 
 """
     compute_electron_states_batched!(els, itp_ham, hk, model, xks, window)
+        -> BatchedElectronState
 
-Solve the electron states at the k points `xks` (a host vector of at most `els.nk` points) straight
-into the first `length(xks)` points of `els`, a [`BatchedElectronState`](@ref) with
-`nband_max = nw` and fields `e` and/or `u`: one batched Fourier transform with `itp_ham` (the
-`BatchedWannierInterpolator` of `model.el_ham` on `els`'s backend, block width at least
-`length(xks)`) into the `(nw^2, ≥ length(xks))` scratch `hk`, one batched eigensolve, then each
-point's bands inside the energy `window` moved to local bands `1:nband`. The batched eigensolve
-applies no degeneracy gauge fix, as in `eigen_batched`.
+Solve the electron states at the k points `xks` (a host vector of at most `els.nk` points) into the
+buffers of `els`, a [`BatchedElectronState`](@ref) with `nband_max = nw` and fields `e` and/or `u`:
+one batched Fourier transform with `itp_ham` (the `BatchedWannierInterpolator` of `model.el_ham` on
+`els`'s backend, block width at least `length(xks)`) into the `(nw^2, ≥ length(xks))` scratch `hk`,
+one batched eigensolve, then each point's bands inside the energy `window` moved to local bands
+`1:nband`. Returns the `length(xks)` points as a container whose box is the largest `nband` of
+them (at least 1), stored in the leading elements of `els`'s arrays (`dense_prefix`), so the
+blocks built on it shrink with the window. The batched eigensolve applies no degeneracy gauge fix,
+as in `eigen_batched`.
 """
 function compute_electron_states_batched!(els::BatchedElectronState, itp_ham, hk, model::Model, xks,
         window::Tuple)
@@ -689,7 +694,7 @@ function compute_electron_states_batched!(els::BatchedElectronState, itp_ham, hk
         throw(ArgumentError("a buffer solved in place needs nband_max = nw = $nw, got $(els.nband_max)"))
     nx = length(xks)
     nx <= els.nk || throw(ArgumentError("$nx points do not fit a buffer of width $(els.nk)"))
-    nx == 0 && return els
+    nx == 0 && return reshape_view_batched_electron_states(els, 1, 0)
     hk_x = view(hk, :, 1:nx)
     get_fourier_batched!(hk_x, itp_ham, xks)
     H = reshape(hk_x, nw, nw, nx)
@@ -700,12 +705,13 @@ function compute_electron_states_batched!(els::BatchedElectronState, itp_ham, hk
     nb = max.(vec(sum(E .<= wmax; dims = 1)) .- off, 0)
     view(els.iband_offset, 1:nx) .= ifelse.(nb .> 0, off, 0)
     view(els.nband, 1:nx) .= nb
+    els_out = reshape_view_batched_electron_states(els, max(maximum(nb), 1), nx)
     # col[n, j]: the column of point j's band offset + n in the (nw, nw * nx) view, clamped into
     # 1:nw on the padding.
-    col = vec(min.(reshape(off, 1, nx) .+ (1:nw), nw) .+ nw .* reshape(0:nx-1, 1, nx))
-    els.e === nothing || (view(els.e, :, 1:nx) .= reshape(view(vec(E), col), nw, nx))
-    U === nothing || (view(reshape(els.u, nw, :), :, 1:nw*nx) .= view(reshape(U, nw, :), :, col))
-    els
+    col = vec(min.(reshape(off, 1, nx) .+ (1:els_out.nband_max), nw) .+ nw .* reshape(0:nx-1, 1, nx))
+    els_out.e === nothing || (vec(els_out.e) .= view(vec(E), col))
+    els_out.u === nothing || (reshape(els_out.u, nw, :) .= view(reshape(U, nw, :), :, col))
+    els_out
 end
 
 """

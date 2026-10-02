@@ -26,17 +26,20 @@ function contract_fixtures()
 end
 
 # The loop settings of each order: the CPU loop with its default widths and several thread chunks,
-# at outer batch width 1 and > 1 with many small inner tiles, and with `gpu = true` on the GPU.
+# at outer batch width 1 and > 1 with many small inner tiles, with the `"normal"` setup
+# interpolation, and with `gpu = true` on the GPU.
 function contract_settings(::Type{OuterKLoop}; gpu = false)
     s = (default = (; nchunks_threads = 4),
-         outer1 = (; backend = CPUBackend(), nk_outer_batch_max = 1, nq_batch_max = 37),
-         outer5 = (; backend = CPUBackend(), nk_outer_batch_max = 5, nq_batch_max = 37))
-    gpu ? (; s..., gpu = (; backend = gpu_backend(), nq_batch_max = 37)) : s
+         outer1 = (; backend = CPUBackend(), n_outer_batch = 1, n_inner_tile = 37),
+         outer5 = (; backend = CPUBackend(), n_outer_batch = 5, n_inner_tile = 37),
+         normal = (; backend = CPUBackend(), fourier_mode = "normal"))
+    gpu ? (; s..., gpu = (; backend = gpu_backend(), n_inner_tile = 37)) : s
 end
 function contract_settings(::Type{OuterQLoop}; gpu = false)
     s = (default = (; nchunks_threads = 4),
-         tiles = (; backend = CPUBackend(), nk_batch_max = 37))
-    gpu ? (; s..., gpu = (; backend = gpu_backend(), nk_batch_max = 37)) : s
+         tiles = (; backend = CPUBackend(), n_inner_tile = 37),
+         normal = (; backend = CPUBackend(), fourier_mode = "normal"))
+    gpu ? (; s..., gpu = (; backend = gpu_backend(), n_inner_tile = 37)) : s
 end
 
 function run_contract(entry, order, models, fixture, setting)

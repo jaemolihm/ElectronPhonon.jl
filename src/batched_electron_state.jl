@@ -124,3 +124,28 @@ The points `inds` of `els` as a `BatchedElectronState` of views (no copy), with 
         view_points(els.v),
         view_points(els.rbar))
 end
+
+"""
+    reshape_view_batched_electron_states(els, nband_max, nk) -> BatchedElectronState
+
+A container of box width `nband_max ≤ els.nband_max` and `nk ≤ els.nk` points on the memory of
+`els`, as `Base.reshape` is for an array: each quantity is the dense leading elements of `els`'s
+array taken at the new dimensions (`dense_prefix`), so the contents are reinterpreted, not moved.
+When `nband_max` shrinks, point `k` of the result is not point `k` of `els`: write the contents
+through the result before reading them. `iband_offset` and `nband` are views of the first `nk`
+points of `els`'s, and `kpts = nothing`.
+"""
+function reshape_view_batched_electron_states(els::BatchedElectronState{T}, nband_max, nk) where {T}
+    nband_max <= els.nband_max && nk <= els.nk || throw(ArgumentError(
+        "a box of $nband_max bands and $nk points does not fit $els"))
+    prefix(x, dims...) = x === nothing ? nothing : dense_prefix(x, dims...)
+    BatchedElectronState{T}(els.nw, nband_max, nk, nothing,
+        view(els.iband_offset, 1:nk),
+        view(els.nband, 1:nk),
+        prefix(els.e, nband_max, nk),
+        prefix(els.u, els.nw, nband_max, nk),
+        prefix(els.vdiag, 3, nband_max, nk),
+        prefix(els.v, 3, nband_max, nband_max, nk),
+        prefix(els.rbar, 3, nband_max, nband_max, nk))
+end
+
