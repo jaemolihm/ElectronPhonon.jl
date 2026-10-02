@@ -694,7 +694,7 @@ function compute_electron_states_batched!(els::BatchedElectronState, itp_ham, hk
         throw(ArgumentError("a buffer solved in place needs nband_max = nw = $nw, got $(els.nband_max)"))
     nx = length(xks)
     nx <= dst.nk || throw(ArgumentError("$nx points do not fit a buffer of width $(dst.nk)"))
-    nx == 0 && return prefix_batched_electron_states(dst, 1, 0)
+    nx == 0 && return reshape_view_batched_electron_states(dst, 1, 0)
     hk_x = view(hk, :, 1:nx)
     get_fourier_batched!(hk_x, itp_ham, xks)
     H = reshape(hk_x, nw, nw, nx)
@@ -705,7 +705,7 @@ function compute_electron_states_batched!(els::BatchedElectronState, itp_ham, hk
     nb = max.(vec(sum(E .<= wmax; dims = 1)) .- off, 0)
     view(dst.iband_offset, 1:nx) .= ifelse.(nb .> 0, off, 0)
     view(dst.nband, 1:nx) .= nb
-    out = prefix_batched_electron_states(dst, max(maximum(nb), 1), nx)
+    out = reshape_view_batched_electron_states(dst, max(maximum(nb), 1), nx)
     # col[n, j]: the column of point j's band offset + n in the (nw, nw * nx) view, clamped into
     # 1:nw on the padding.
     col = vec(min.(reshape(off, 1, nx) .+ (1:out.nband_max), nw) .+ nw .* reshape(0:nx-1, 1, nx))

@@ -572,7 +572,7 @@ end
 # block shares is carried over as it is.
 function _copy_kept_pairs(::OuterKLoop, kept_bufs, pairs, n)
     keep, keep_dev, kept = view(kept_bufs.keep, 1:n), view(kept_bufs.keep_dev, 1:n), 1:n
-    el_kq = view(copy_batched_electron_states!(prefix_batched_electron_states(
+    el_kq = view(copy_batched_electron_states!(reshape_view_batched_electron_states(
         kept_bufs.el_kq, pairs.el_kq.nband_max, kept_bufs.el_kq.nk), pairs.el_kq, keep_dev), kept)
     ph = view(copy_batched_phonon_states!(kept_bufs.ph, pairs.ph, keep_dev), kept)
     phase = view(_copy_last_axis!(kept_bufs.P_kq, pairs.phase, keep_dev), :, kept)
@@ -589,7 +589,7 @@ end
 function _copy_kept_pairs(::OuterQLoop, kept_bufs, pairs, n)
     keep, keep_dev, kept = view(kept_bufs.keep, 1:n), view(kept_bufs.keep_dev, 1:n), 1:n
     copy_el(buf, src) = view(copy_batched_electron_states!(
-        prefix_batched_electron_states(buf, src.nband_max, buf.nk), src, keep_dev), kept)
+        reshape_view_batched_electron_states(buf, src.nband_max, buf.nk), src, keep_dev), kept)
     el_k, el_kq = copy_el(kept_bufs.el_k, pairs.el_k), copy_el(kept_bufs.el_kq, pairs.el_kq)
     wtk = view(_copy_last_axis!(kept_bufs.wtk, pairs.wtk, keep_dev), kept)
     for (i, j) in enumerate(keep)
