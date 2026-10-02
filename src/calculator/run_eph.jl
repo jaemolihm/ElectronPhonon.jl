@@ -34,6 +34,9 @@ Keywords:
   visits on its side (the q points are `combine_kpoint_grids(kpts, kqpts)`) and be resident on
   `backend`.
 * `mpi_comm_k` — splits the outer k points across ranks.
+`model.epmat` may be disk-backed (`DiskWannierObject`): stage 1 then reads it in column chunks of
+`EPMAT_CHUNK_BYTES[]` once per outer batch, on either order and either layout (no
+`covariant_derivative_of_g`).
 """
 run_eph_over_k_and_kq(model::Model, kpts_input, kqpts_input; kwargs...) =
     _run_eph(OuterKLoop(), model, kpts_input, kqpts_input; kwargs...)
@@ -291,9 +294,8 @@ function _check_run(order, model, backend, calculators, kpts_input, second_input
     (backend isa CPUBackend && fourier_mode ∉ ("gridopt", "normal")) && throw(ArgumentError(
         "fourier_mode = \"$fourier_mode\" is not supported on a CPU backend. Use \"gridopt\" " *
         "(the default) or \"normal\"."))
-    model.epmat isa WannierObject || throw(ArgumentError(
-        "a disk-backed epmat ($(typeof(model.epmat))) is not supported by the e-ph loop; load the " *
-        "model into memory"))
+    model.epmat isa Union{WannierObject, DiskWannierObject} || throw(ArgumentError(
+        "the e-ph loop needs model.epmat in memory or on disk, got $(typeof(model.epmat))"))
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")
@@ -307,6 +309,9 @@ function _check_run(order, model, backend, calculators, kpts_input, second_input
         precompute_el_kq && throw(ArgumentError("precompute_el_kq is an outer-q option"))
         covariant_derivative_of_g && model.epmat_outer_momentum != "el" && throw(ArgumentError(
             "covariant_derivative_of_g needs a model loaded with epmat_outer_momentum = \"el\""))
+        covariant_derivative_of_g && model.epmat isa DiskWannierObject && throw(ArgumentError(
+            "covariant_derivative_of_g needs model.epmat in memory: the position-weighted epmat " *
+            "is built from it"))
         if kq_per_tile
             symmetry === nothing || throw(ArgumentError(
                 "run_eph_over_k_and_q does not reduce the outer k points: pass symmetry = nothing"))

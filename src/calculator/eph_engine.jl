@@ -1,7 +1,7 @@
 # The e-ph interpolation engines of the two loop orders (`_run_eph`, run_eph.jl). Each holds one
-# run's device copy of `model.epmat`, its stage-1 output for one outer batch, and one tile of
-# buffers per CPU thread chunk (`eng.tiles[chunk]`), and wraps the batched kernels of
-# `wannier_to_bloch_batched.jl`:
+# run's device copy of `model.epmat` (or one column chunk of a disk-backed epmat), its stage-1
+# output for one outer batch, and one tile of buffers per CPU thread chunk (`eng.tiles[chunk]`), and
+# wraps the batched kernels of `wannier_to_bloch_batched.jl`:
 #
 #   stage1!  contract the outer R of `epmat` for an outer batch, apply the outer rotation;
 #   stage2!  contract the other R for one block (outer point × inner tile), apply the remaining
@@ -14,19 +14,83 @@
 #
 # `epmat` layouts: `op_r` rows are `(a, ν, R_row)` (a = Wannier pair) and its columns are the other R,
 # with `epmat_outer_momentum` naming the column R ("el": R_e, "ph": R_p). A stage that contracts the
-# column R is one GEMM against `op_r` (`get_fourier_batched!`); a stage that contracts the row R is
-# one strided-batched GEMM over the columns against a shared phase (`_fourier_rows_batched!`).
+# column R is a GEMM against `op_r` (`_fourier_epmat_columns!`); a stage that contracts the row R is a
+# strided-batched GEMM over the columns against a shared phase (`_fourier_epmat_rows!`). Both run over
+# chunks of columns: the whole in-memory `op_r` as one chunk, or a disk-backed epmat
+# (`DiskWannierObject`) read in chunks of `EPMAT_CHUNK_BYTES`.
+
+# Bytes of `op_r` columns one chunk of a disk-backed epmat holds, on the host and on the backend: as
+# large as fits comfortably, since each chunk is one read and one GEMM. A `Ref` so a test can force
+# several chunks on a small model.
+const EPMAT_CHUNK_BYTES = Ref(2^30)
+
+# `model.epmat` for stage 1: its `op_r` on the backend, or for a disk-backed epmat the object and a
+# column-chunk buffer on the host and on the backend (the same array on `CPUBackend`).
+function _epmat_source(model::Model{FT}, backend) where {FT}
+    epmat = model.epmat
+    epmat isa DiskWannierObject || return (; op_r = to_device(backend, epmat).op_r, disk = nothing)
+    ncol = _epmat_chunk_ncol(epmat, FT)
+    host = Matrix{Complex{FT}}(undef, epmat.ndata, ncol)
+    dev = backend isa CPUBackend ? host : alloc(backend, Complex{FT}, epmat.ndata, ncol)
+    (; op_r = nothing, disk = (; obj = epmat, host, dev))
+end
+_epmat_chunk_ncol(epmat, FT) = clamp(fld(EPMAT_CHUNK_BYTES[], sizeof(Complex{FT}) * epmat.ndata), 1, epmat.nr)
+
+# The elements of `model.epmat` stage 1 holds on the backend (all of `op_r`, or one chunk) and the
+# columns of its widest chunk.
+function _epmat_device_size(model, FT)
+    epmat = model.epmat
+    ncol = epmat isa DiskWannierObject ? _epmat_chunk_ncol(epmat, FT) : epmat.nr
+    (epmat isa DiskWannierObject ? epmat.ndata * ncol : length(epmat.op_r), ncol)
+end
+
+# `f(cols, A)` for the column chunks `A = op_r[:, cols]` of `src` in order: the in-memory `op_r` as
+# one chunk; a disk-backed epmat read chunk by chunk (one contiguous read, then one upload).
+function _foreach_epmat_chunk(f, src)
+    src.disk === nothing && return f(axes(src.op_r, 2), src.op_r)
+    (; obj, host, dev) = src.disk
+    open(joinpath(obj.dir, obj.filename), "r") do io
+        for cols in Iterators.partition(1:obj.nr, size(host, 2))
+            n = obj.ndata * length(cols)
+            seek(io, sizeof(eltype(host)) * obj.ndata * (first(cols) - 1))
+            GC.@preserve host unsafe_read(io, pointer(host), sizeof(eltype(host)) * n)
+            dev === host || copyto!(dev, 1, host, 1, n)    # one contiguous upload
+            f(cols, dense_prefix(dev, obj.ndata, length(cols)))
+        end
+    end
+    nothing
+end
+
+# `g[:, j] = Σ_ic op_r[:, ic] · phase[ic, j]`: the Fourier transform over the column R, accumulated
+# over the column chunks.
+function _fourier_epmat_columns!(g, src, phase)
+    _foreach_epmat_chunk(src) do cols, A
+        P = length(cols) == size(phase, 1) ? phase : view(phase, cols, :)
+        mul!(g, A, P, true, first(cols) == 1 ? false : true)
+    end
+    g
+end
 
 # `out[a, ic, j] = Σ_ir op_r[(a, ir), ic] · phase[ir, j]` for `op_r` `(nd · nr_row, nr_col)`: the
-# Fourier transform over the row-block R of a two-R object, as one strided-batched GEMM over the
-# columns with the phase shared by all of them (batch extent 1). `scratch` is `(nd, nj, nr_col)`.
-function _fourier_rows_batched!(out, op_r, phase, scratch)
-    nd, nj, nr_col = size(scratch)
+# Fourier transform over the row-block R, as one strided-batched GEMM over the columns of each chunk
+# with the phase shared by all of them (batch extent 1). `scratch` holds `nd · nj · ncol` for the
+# widest chunk.
+function _fourier_epmat_rows!(out, src, phase, scratch)
+    nd, nr_col, nj = size(out)
     nr_row = size(phase, 1)
-    @assert size(op_r) == (nd * nr_row, nr_col)
-    @assert size(out) == (nd, nr_col, nj)
-    batched_gemm!('N', 'N', reshape(op_r, nd, nr_row, nr_col), reshape(phase, nr_row, nj, 1), scratch)
-    permutedims!(out, scratch, (1, 3, 2))
+    _foreach_epmat_chunk(src) do cols, A
+        nc = length(cols)
+        @assert size(A) == (nd * nr_row, nc)
+        s = dense_prefix(scratch, nd, nj, nc)
+        batched_gemm!('N', 'N', reshape(A, nd, nr_row, nc), reshape(phase, nr_row, nj, 1), s)
+        if nc == nr_col
+            permutedims!(out, s, (1, 3, 2))
+        else
+            # A broadcast, which a device view of `out` takes (`permutedims!` into it would not).
+            view(out, :, cols, :) .= PermutedDimsArray(s, (1, 3, 2))
+        end
+    end
+    out
 end
 
 
@@ -42,13 +106,15 @@ position-weighted `epmat_R` (`wannier_object_multiply_R` plus the tight-binding 
 q points, the k+q states are solved per (k, tile) into the tile's buffers and the phase is built at
 x_k + x_q for each k.
 """
-struct OuterKEngine{T_backend, T_epmat, T_itp_epmat, T_irvec_e_mat, T_itp_epmat_R, T_irvecp_mat,
-        T_mxk, T_xkq, T_wtkq, T_P_mk, T_P_e, T_row_scratch, T_ep_kR, T_dg_kR, T_els_k_batch, T_xk,
+struct OuterKEngine{T_backend, T_epmat_src, T_irvec_col_mat, T_P_col, T_irvec_row_mat, T_P_row,
+        T_itp_epmat_R, T_irvecp_mat, T_mxk, T_xkq, T_wtkq, T_P_mk, T_row_scratch, T_ep_kR, T_dg_kR, T_el_k_batch, T_xk,
         T_g_fourier, T_tiles}
     backend      :: T_backend
-    epmat        :: T_epmat         # model.epmat on the backend
-    itp_epmat    :: T_itp_epmat     # its interpolator ("el" layout), or `nothing` ("ph" layout)
-    irvec_e_mat  :: T_irvec_e_mat   # (nr_e, 3) R_e of the row contraction ("ph" layout), or `nothing`
+    epmat_src    :: T_epmat_src     # model.epmat for stage 1 (`_epmat_source`)
+    irvec_col_mat :: T_irvec_col_mat # (nr_e, 3) R_e of the column contraction ("el" layout), or `nothing`
+    P_col        :: T_P_col         # (nr_e, n_outer_batch) its phase, or `nothing`
+    irvec_row_mat :: T_irvec_row_mat # (nr_e, 3) R_e of the row contraction ("ph" layout), or `nothing`
+    P_row        :: T_P_row         # (nr_e, n_outer_batch) its phase, or `nothing`
     itp_epmat_R  :: T_itp_epmat_R   # interpolator of epmat_R (dg), or `nothing`
     irvecp_mat   :: T_irvecp_mat    # (nr_p, 3) R_p
     mxk          :: T_mxk           # (3, nk) -x_k
@@ -57,8 +123,7 @@ struct OuterKEngine{T_backend, T_epmat, T_itp_epmat, T_irvec_e_mat, T_itp_epmat_
     xks_int      :: Matrix{Int}     # (3, nk) k grid coordinates, reduced
     xkqs_int     :: Matrix{Int}     # (3, nkq) k+q grid coordinates, reduced, minus the q shift
     P_mk         :: T_P_mk          # (nr_p, n_outer_batch) exp(-2πi R_p · x_k)
-    P_e          :: T_P_e           # (nr_e, n_outer_batch) row-contraction phase, or `nothing`
-    row_scratch  :: T_row_scratch   # (nw² nmodes, n_outer_batch, nr_p) for it, or `nothing`
+    row_scratch  :: T_row_scratch   # nw² nmodes · n_outer_batch · (columns of a chunk), or `nothing`
     ep_kR        :: T_ep_kR         # (nw nband_max_k nmodes, nr_p, n_outer_batch) stage-1 output
     dg_kR        :: T_dg_kR         # (nw nband_max_k nmodes, nr_p, 3, n_outer_batch), or `nothing`
     els_k_batch   :: T_els_k_batch    # the outer batch's k states
@@ -76,14 +141,16 @@ The `OuterQLoop` engine: g(R_e, q) for an outer-q batch with the phonon basis ap
 then g(k, k+q) for one q and a tile of k (stage 2), the k+q states solved per tile into the
 buffers' leading `maximum(nband)` columns when they are not precomputed.
 """
-struct OuterQEngine{T_backend, T_epmat, T_itp_epmat, T_irvec_p_mat, T_P_p, T_row_scratch, T_g_q,
+struct OuterQEngine{T_backend, T_epmat_src, T_irvec_col_mat, T_P_col, T_irvec_row_mat, T_P_row,
+        T_row_scratch, T_g_q,
         T_g_rot, T_ep_Rq, T_eRpq, T_wtk, T_xq, T_tiles}
     backend      :: T_backend
-    epmat        :: T_epmat         # model.epmat on the backend
-    itp_epmat    :: T_itp_epmat     # its interpolator ("ph" layout), or `nothing` ("el" layout)
-    irvec_p_mat  :: T_irvec_p_mat   # (nr_p, 3) R_p of the row contraction ("el" layout), or `nothing`
-    P_p          :: T_P_p           # (nr_p, n_outer_batch) row-contraction phase, or `nothing`
-    row_scratch  :: T_row_scratch   # (nw² nmodes, n_outer_batch, nr_e) for it, or `nothing`
+    epmat_src    :: T_epmat_src     # model.epmat for stage 1 (`_epmat_source`)
+    irvec_col_mat :: T_irvec_col_mat # (nr_p, 3) R_p of the column contraction ("ph" layout), or `nothing`
+    P_col        :: T_P_col         # (nr_p, n_outer_batch) its phase, or `nothing`
+    irvec_row_mat :: T_irvec_row_mat # (nr_p, 3) R_p of the row contraction ("el" layout), or `nothing`
+    P_row        :: T_P_row         # (nr_p, n_outer_batch) its phase, or `nothing`
+    row_scratch  :: T_row_scratch   # nw² nmodes · n_outer_batch · (columns of a chunk), or `nothing`
     g_q          :: T_g_q           # (nw² nmodes, nr_e, n_outer_batch) stage-1 Fourier output
     g_rot        :: T_g_rot         # (nw², nr_e, nmodes, n_outer_batch) basis scratch, or `nothing`
     ep_Rq        :: T_ep_Rq         # (nw² nmodes, nr_e, n_outer_batch) stage-1 output
@@ -106,22 +173,22 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
     el_layout = model.epmat_outer_momentum == "el"
     nr_p = length(el_layout ? model.epmat.irvec_next : model.epmat.irvec)
     nr_e = length(el_layout ? model.epmat.irvec : model.epmat.irvec_next)
-    nepmat = length(model.epmat.op_r)
     ndata = nw * nband_max_k * nmodes
     nd = covariant_derivative_of_g ? 4 : 1                      # ep, plus three dg directions
     nrows = nw^2 * nmodes * nr_p                                # the epmat rows that stage 1 keeps
     nrows_max = nrows * (covariant_derivative_of_g ? 3 : 1)     # those of epmat_R with dg
+    nepmat, ncol = _epmat_device_size(model, FT)
     persistent =
-        cx * nepmat * (covariant_derivative_of_g ? 4 : 1) +    # epmat (+ epmat_R)
+        cx * nepmat + (covariant_derivative_of_g ? cx * 3 * length(model.epmat.op_r) : 0) +  # epmat, epmat_R
         rl * 3 * (nr_p + nr_e) * (covariant_derivative_of_g ? 2 : 1) +  # R-vector matrices
-        (el_layout ? cx * nrows : 0) + (covariant_derivative_of_g ? cx * 3nrows : 0) +  # interpolator outputs
+        (covariant_derivative_of_g ? cx * 3nrows : 0) +         # epmat_R interpolator output
         rl * 3 * (nk + nkq) + rl * nkq +                        # mxk, xkq, wtkq
         (kq_per_tile ? cx * length(model.el_ham.op_r) : 0)      # el_ham
     per_outer =
         cx * ndata * nr_p * nd +                                # ep_kR (+ dg_kR)
         cx * nr_p + rl * 3 + iz +                               # P_mk, xk, a partial batch's k index
         cx * nr_e * (covariant_derivative_of_g ? 2 : 1) +       # Fourier phases
-        (el_layout ? 0 : cx * nrows) +                          # row-contraction scratch
+        (el_layout ? 0 : cx * nw^2 * nmodes * ncol) +           # row-contraction scratch
         cx * nrows_max +                                        # g_fourier
         cx * (nrows + 2 * nband_max_k * nrows ÷ nw) * nd +      # transients of eph_rotate_kR_batched!
         _electron_state_bytes(FT, nw, nband_max_k, el_qty)      # els_k_batch
@@ -156,17 +223,20 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     nbk, nbkq = els_k.nband_max, kq_per_tile ? nw : els_kq.nband_max
     inner_pts = kq_per_tile ? qpts : kqpts
     el_layout = model.epmat_outer_momentum == "el"
-    epmat = to_device(backend, model.epmat)
+    epmat_src = _epmat_source(model, backend)
     irvec_p = el_layout ? model.epmat.irvec_next : model.epmat.irvec
+    irvec_e = el_layout ? model.epmat.irvec : model.epmat.irvec_next
     nr_p = length(irvec_p)
+    irvec_e_mat = _irvec_to_device_matrix(backend, irvec_e, FT)
+    P_e = alloc(backend, Complex{FT}, length(irvec_e), n_outer_batch)
     if el_layout
-        itp_epmat = BatchedWannierInterpolator(epmat; backend, batch_size = n_outer_batch)
-        irvec_e_mat = P_e = row_scratch = nothing
+        irvec_col_mat, P_col = irvec_e_mat, P_e
+        irvec_row_mat = P_row = row_scratch = nothing
     else
-        itp_epmat = nothing
-        irvec_e_mat = _irvec_to_device_matrix(backend, model.epmat.irvec_next, FT)
-        P_e = alloc(backend, Complex{FT}, length(model.epmat.irvec_next), n_outer_batch)
-        row_scratch = alloc(backend, Complex{FT}, nw^2 * nmodes, n_outer_batch, nr_p)
+        irvec_col_mat = P_col = nothing
+        irvec_row_mat, P_row = irvec_e_mat, P_e
+        ncol = epmat_src.disk === nothing ? nr_p : size(epmat_src.disk.host, 2)
+        row_scratch = alloc(backend, Complex{FT}, nw^2 * nmodes * n_outer_batch * ncol)
     end
     itp_epmat_R = if covariant_derivative_of_g
         # The position-weighted e-ph matrix, `im R_e g(R_e, R_p)` plus the tight-binding term
@@ -245,10 +315,9 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
             xq = Vector{Vec3{FT}}(undef, n_inner_tile)) : nothing))
     end
     nrows_max = nw^2 * nmodes * nr_p * (covariant_derivative_of_g ? 3 : 1)
-    OuterKEngine(backend, epmat, itp_epmat, irvec_e_mat, itp_epmat_R,
+    OuterKEngine(backend, epmat_src, irvec_col_mat, P_col, irvec_row_mat, P_row, itp_epmat_R,
         _irvec_to_device_matrix(backend, irvec_p, FT), mxk, xkq,
-        to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int, P_mk, P_e,
-        row_scratch, alloc(backend, Complex{FT}, ndata, nr_p, n_outer_batch),
+        to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int, P_mk, row_scratch, alloc(backend, Complex{FT}, ndata, nr_p, n_outer_batch),
         covariant_derivative_of_g ? alloc(backend, Complex{FT}, ndata, nr_p, 3, n_outer_batch) : nothing,
         BatchedElectronState(backend, nw, nbk, n_outer_batch, el_qty; FT),
         zeros(FT, 3, n_outer_batch), alloc(backend, FT, 3, n_outer_batch), alloc(backend, Complex{FT}, nrows_max * n_outer_batch),
@@ -274,14 +343,14 @@ function stage1!(eng::OuterKEngine, els_k, kpts, batch)
     @views build_fourier_phase!(eng.P_mk[:, 1:nb], eng.irvecp_mat, eng.mxk[:, batch])
     uks = eng.els_k_batch.u
     nr_p = size(eng.P_mk, 1)
-    if eng.itp_epmat !== nothing
-        g = dense_prefix(eng.g_fourier, eng.itp_epmat.parent.ndata, nmax)
-        get_fourier_batched!(g, eng.itp_epmat, eng.xk)
+    nd = size(uks, 1)^2 * eng.tiles[1].ph.nmodes    # nw² nmodes
+    g = dense_prefix(eng.g_fourier, nd * nr_p, nmax)
+    if eng.P_col !== nothing
+        build_fourier_phase!(eng.P_col, eng.irvec_col_mat, eng.xk)
+        _fourier_epmat_columns!(g, eng.epmat_src, eng.P_col)
     else
-        build_fourier_phase!(eng.P_e, eng.irvec_e_mat, eng.xk)
-        nd = size(eng.row_scratch, 1)
-        g = dense_prefix(eng.g_fourier, nd * nr_p, nmax)
-        _fourier_rows_batched!(reshape(g, nd, nr_p, nmax), eng.epmat.op_r, eng.P_e, eng.row_scratch)
+        build_fourier_phase!(eng.P_row, eng.irvec_row_mat, eng.xk)
+        _fourier_epmat_rows!(reshape(g, nd, nr_p, nmax), eng.epmat_src, eng.P_row, eng.row_scratch)
     end
     eph_rotate_kR_batched!(eng.ep_kR, g, uks; additional_phase = eng.P_mk)
     if eng.itp_epmat_R !== nothing
@@ -332,15 +401,15 @@ function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband
     nr_p = length(el_layout ? model.epmat.irvec_next : model.epmat.irvec)
     ndata = nw^2 * nmodes
     nbkq = precompute_el_kq ? nband_max_kq : nw
+    nepmat, ncol = _epmat_device_size(model, FT)
     persistent =
-        cx * length(model.epmat.op_r) +                         # epmat
+        cx * nepmat +                                           # epmat (or one chunk of it)
         cx * ndata * nr_e + rl * 3 * (nr_e + nr_p) +            # eRpq, R-vector matrices
-        (el_layout ? 0 : cx * ndata * nr_e) +                   # interpolator output
         (precompute_el_kq ? 0 : cx * length(model.el_ham.op_r)) +  # el_ham
         rl * nk                                                 # wtk
     per_outer =
         cx * ndata * nr_e * (eph_phonon_basis == :cartesian ? 2 : 3) +   # g_q, ep_Rq (+ g_rot)
-        cx * nr_p + (el_layout ? cx * ndata * nr_e : 0) +       # Fourier phase / row scratch
+        cx * nr_p + (el_layout ? cx * ndata * ncol : 0) +       # Fourier phase / row scratch
         rl * 3                                                  # xq
     per_pair =
         cx * nbkq * nband_max_k * nmodes +                      # ep
@@ -361,18 +430,21 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     (; nw, nmodes) = model
     nbk = els_k.nband_max
     el_layout = model.epmat_outer_momentum == "el"
-    epmat = to_device(backend, model.epmat)
+    epmat_src = _epmat_source(model, backend)
     irvec_e = el_layout ? model.epmat.irvec : model.epmat.irvec_next
+    irvec_p = el_layout ? model.epmat.irvec_next : model.epmat.irvec
     nr_e = length(irvec_e)
     ndata = nw^2 * nmodes
+    irvec_p_mat = _irvec_to_device_matrix(backend, irvec_p, FT)
+    P_p = alloc(backend, Complex{FT}, length(irvec_p), n_outer_batch)
     if el_layout
-        itp_epmat = nothing
-        irvec_p_mat = _irvec_to_device_matrix(backend, model.epmat.irvec_next, FT)
-        P_p = alloc(backend, Complex{FT}, length(model.epmat.irvec_next), n_outer_batch)
-        row_scratch = alloc(backend, Complex{FT}, ndata, n_outer_batch, nr_e)
+        irvec_col_mat = P_col = nothing
+        irvec_row_mat, P_row = irvec_p_mat, P_p
+        ncol = epmat_src.disk === nothing ? nr_e : size(epmat_src.disk.host, 2)
+        row_scratch = alloc(backend, Complex{FT}, ndata * n_outer_batch * ncol)
     else
-        itp_epmat = BatchedWannierInterpolator(epmat; backend, batch_size = n_outer_batch)
-        irvec_p_mat = P_p = row_scratch = nothing
+        irvec_col_mat, P_col = irvec_p_mat, P_p
+        irvec_row_mat = P_row = row_scratch = nothing
     end
     eRpq = WannierObject(irvec_e, alloc_zeros(backend, Complex{FT}, ndata, nr_e))
     el_ham = els_kq === nothing ? to_device(backend, model.el_ham) : nothing
@@ -409,7 +481,7 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
             wtk = alloc(backend, FT, n_inner_tile),
             xk = Vector{Vec3{FT}}(undef, n_inner_tile)) : nothing))
     end
-    OuterQEngine(backend, epmat, itp_epmat, irvec_p_mat, P_p, row_scratch,
+    OuterQEngine(backend, epmat_src, irvec_col_mat, P_col, irvec_row_mat, P_row, row_scratch,
         alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch),
         eph_phonon_basis == :cartesian ? nothing : alloc(backend, Complex{FT}, nw^2, nr_e, nmodes, n_outer_batch),
         alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch), eRpq,
@@ -432,12 +504,14 @@ function stage1!(eng::OuterQEngine, phs, qpts, batch, eph_phonon_basis)
     xq = view(eng.xq, :, 1:nb)
     ndata, nr_e = size(eng.ep_Rq, 1), size(eng.ep_Rq, 2)
     g = view(eng.g_q, :, :, 1:nb)
-    if eng.itp_epmat !== nothing
-        get_fourier_batched!(reshape(g, ndata * nr_e, nb), eng.itp_epmat, xq)
+    if eng.P_col !== nothing
+        P = view(eng.P_col, :, 1:nb)
+        build_fourier_phase!(P, eng.irvec_col_mat, xq)
+        _fourier_epmat_columns!(reshape(g, ndata * nr_e, nb), eng.epmat_src, P)
     else
-        P = view(eng.P_p, :, 1:nb)
-        build_fourier_phase!(P, eng.irvec_p_mat, xq)
-        _fourier_rows_batched!(g, eng.epmat.op_r, P, view(eng.row_scratch, :, 1:nb, :))
+        P = view(eng.P_row, :, 1:nb)
+        build_fourier_phase!(P, eng.irvec_row_mat, xq)
+        _fourier_epmat_rows!(g, eng.epmat_src, P, eng.row_scratch)
     end
     ep = view(eng.ep_Rq, :, :, 1:nb)
     if eph_phonon_basis == :cartesian
