@@ -836,7 +836,7 @@ function _loop_eph_over_k_and_kq_batched(
             # The k+q side of the tile: a contiguous slice of the resident container (no copy). Its
             # index list is the plain range of the tile, `isbits`, so it rides in the kernel launch
             # parameters instead of costing a device buffer and a global load per thread.
-            el_kq_block = view_batched_electron_states(el_kq, qstart:qend)
+            el_kq_block = view(el_kq, qstart:qend)
             wtkq_block = view(wtkq_dev, qstart:qend)
             ep = view(epkq_dev, :, :, :, rng_q)
 
@@ -849,14 +849,14 @@ function _loop_eph_over_k_and_kq_batched(
                 copyto!(iqs_batch_dev, 1, iqs_batch, 1, nq_batch)
                 iqs = view(iqs_batch_dev, rng_q)
                 copy_batched_phonon_states!(ph_tile, ph, iqs)
-                ph_block = view_batched_phonon_states(ph_tile, rng_q)
+                ph_block = view(ph_tile, rng_q)
 
                 # One batched Wannier->Bloch over this tile's q: ep (nbandkq_max, nbandk_max, nmodes, q).
                 get_eph_kR_to_kq_batched!(ep, view(ep_ekpR_all, :, :, ik_ind), view(P_kq, :, rng_q),
                     ph_block.u, el_kq_block.u; ws = kRkq_ws)
 
                 block = EPBlock{OuterKLoop}(; ep, dg = nothing,
-                    el_k = view_batched_electron_states(el_k_tile, ik_ind:ik_ind), el_kq = el_kq_block,
+                    el_k = view(el_k_tile, ik_ind:ik_ind), el_kq = el_kq_block,
                     ph = ph_block, wtk = kpts.weights[ik], wtq = wtkq_block, xk = kpts.vectors[ik],
                     xq = view(qpts.vectors, view(iqs_batch, rng_q)), ik, ikq = qstart:qend, iq = iqs)
                 foreach(c -> run_calculator!(c, block, ctx), calculators)

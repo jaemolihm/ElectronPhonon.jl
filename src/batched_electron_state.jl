@@ -106,11 +106,11 @@ function copy_batched_electron_states!(dst::BatchedElectronState, src::BatchedEl
 end
 
 """
-    view_batched_electron_states(el_states, inds::AbstractUnitRange)
+    view(el_states::BatchedElectronState, inds::AbstractUnitRange)
 
 The points `inds` of `el_states` as a `BatchedElectronState` of views (no copy), with `kpts = nothing`.
 """
-@views function view_batched_electron_states(el_states::BatchedElectronState{T}, inds::AbstractUnitRange) where {T}
+@views function Base.view(el_states::BatchedElectronState{T}, inds::AbstractUnitRange) where {T}
     # Colons rather than `selectdim`, so a device view stays a device array.
     view_points(x) = x === nothing ? nothing : x[ntuple(_ -> Colon(), ndims(x) - 1)..., inds]
     BatchedElectronState{T}(el_states.nw, el_states.nband_max, length(inds), nothing,

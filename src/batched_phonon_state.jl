@@ -92,11 +92,11 @@ function copy_batched_phonon_states!(dst::BatchedPhononState, src::BatchedPhonon
 end
 
 """
-    view_batched_phonon_states(ph_states, inds::AbstractUnitRange)
+    view(ph_states::BatchedPhononState, inds::AbstractUnitRange)
 
 The points `inds` of `ph_states` as a `BatchedPhononState` of views (no copy), with `qpts = nothing`.
 """
-@views function view_batched_phonon_states(ph_states::BatchedPhononState{T}, inds::AbstractUnitRange) where {T}
+@views function Base.view(ph_states::BatchedPhononState{T}, inds::AbstractUnitRange) where {T}
     # Colons rather than `selectdim`, so a device view stays a device array.
     view_points(x) = x === nothing ? nothing : x[ntuple(_ -> Colon(), ndims(x) - 1)..., inds]
     BatchedPhononState{T}(ph_states.nmodes, length(inds), nothing,

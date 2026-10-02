@@ -560,8 +560,8 @@ function _loop_eph_over_q_and_k_batched(
             # gauge fixing.
             compute_electron_states_batched!(el_kq_tile, itp_el_ham, Hkq_flat, model, kqs, window_kq;
                                              fill_padding_nan)
-            el_k_block = view_batched_electron_states(el_k_tile, rng_k)
-            el_kq_block = view_batched_electron_states(el_kq_tile, rng_k)
+            el_k_block = view(el_k_tile, rng_k)
+            el_kq_block = view(el_kq_tile, rng_k)
 
             # Batched Rq→kq e-ph interpolation: ep[m,n,ν,k] = Ukq(k)' * g(k) * Uk(k). Rows and columns
             # past a point's windows are undefined, as the box columns they come from.
