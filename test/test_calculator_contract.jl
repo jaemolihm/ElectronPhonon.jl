@@ -45,18 +45,22 @@ end
 end
 
 @testset "the loop-shape keywords are gone" begin
-    # `batched`, `fourier_mode` and `eph_buffers` selected loop shapes that no longer exist.
+    # `batched` and `eph_buffers` selected loop shapes that no longer exist.
     model_el = ElectronPhonon.holstein_model(; t = 0.1, ω₀ = 0.01, g = 0.02, alat = 5.0, ε₀ = 0.05,
         dimension = 3, epmat_outer_momentum = "el", verbose = false)
     model_ph = ElectronPhonon.holstein_model(; t = 0.1, ω₀ = 0.01, g = 0.02, alat = 5.0, ε₀ = 0.05,
         dimension = 3, epmat_outer_momentum = "ph", verbose = false)
     grid = (2, 2, 2)
-    for kw in ((; batched = true), (; fourier_mode = "gridopt"), (; eph_buffers = nothing))
+    for kw in ((; batched = true), (; eph_buffers = nothing))
         @test_throws MethodError ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid;
             calculators = [_CountCalc()], kw...)
         @test_throws MethodError ElectronPhonon.run_eph_over_q_and_k(model_ph, grid, grid;
             calculators = [_CountCalc()], kw...)
     end
+    # `fourier_mode` selects the setup interpolation (`_check_run`, shared by both orders); a
+    # batched mode is refused on the CPU.
+    @test_throws ArgumentError ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid;
+        calculators = [_CountCalc()], fourier_mode = "batched")
 end
 
 # One bracket per outer batch, with no default: a calculator that defines none fails loudly.

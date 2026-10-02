@@ -21,6 +21,9 @@ Keywords:
   with no energy-conserving process before the e-ph matrix is computed (`CPUBackend` only).
 * `covariant_derivative_of_g = false` — also compute the covariant derivative `block.dg`.
 * `eph_phonon_basis = :eigenmode` — or `:cartesian` (identity phonon rotation).
+* `fourier_mode = "gridopt"` — or `"normal"`: the interpolation of the setup-time state solves on a
+  `CPUBackend` (any other value is an `ArgumentError`; a GPU backend ignores it). The e-ph matrix
+  always uses the batched interpolator.
 * `n_outer_batch = 256` — outer k points per stage-1 batch and per calculator bracket.
 * `n_inner_tile` — k+q points per block: as many as fit the free device memory on a GPU, at most
   1024 per thread chunk on the CPU.
@@ -81,6 +84,7 @@ function _run_eph(order::LoopTag, model::Model{FT}, kpts_input, second_input;
         energy_conservation = (:None, 0.0),
         covariant_derivative_of_g = false,
         eph_phonon_basis::Symbol = :eigenmode,
+        fourier_mode = "gridopt",
         screening_params = nothing,
         mpi_comm_k = nothing,
         n_outer_batch = nothing,
@@ -98,13 +102,13 @@ function _run_eph(order::LoopTag, model::Model{FT}, kpts_input, second_input;
     ph_qty = union(loop_ph_quantities(model, energy_conservation),
                    required_ph_quantities.(calculators)...)
     _check_run(order, model, backend, calculators, kpts_input, second_input, el_qty;
-        energy_conservation, covariant_derivative_of_g, eph_phonon_basis, precompute_el_kq,
-        screening_params, mpi_comm_k, el_kq_eigenpairs)
+        energy_conservation, covariant_derivative_of_g, eph_phonon_basis, fourier_mode,
+        precompute_el_kq, screening_params, mpi_comm_k, el_kq_eigenpairs)
 
     (; el_k, el_kq, ph, kpts, kqpts, qpts, sel_k, sel_kq) = _setup_states(order, model, kpts_input,
         second_input, el_qty, ph_qty; backend, window_k, window_kq, symmetry, precompute_el_kq,
-        keep_all_qpts, eph_phonon_basis, mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs,
-        ph_eigenpairs, fill_padding_nan, verbosity)
+        keep_all_qpts, eph_phonon_basis, fourier_mode, mpi_comm_k, el_k_eigenpairs,
+        el_kq_eigenpairs, ph_eigenpairs, fill_padding_nan, verbosity)
     # The containers' types depend on the runtime quantity lists, and inference of the loop on the
     # abstract types does not terminate (> 30 min for an outer-q run), so it is not let through.
     Base.inferencebarrier(_run_eph_loop)(order, model, el_k, el_kq, ph, kpts, kqpts, qpts, sel_k,
@@ -244,8 +248,8 @@ end
 # Every refusal of the loop, before any state is built. `el_qty` is the union of the electron
 # quantities of the loop and the calculators.
 function _check_run(order, model, backend, calculators, kpts_input, second_input, el_qty;
-        energy_conservation, covariant_derivative_of_g, eph_phonon_basis, precompute_el_kq,
-        screening_params, mpi_comm_k, el_kq_eigenpairs)
+        energy_conservation, covariant_derivative_of_g, eph_phonon_basis, fourier_mode,
+        precompute_el_kq, screening_params, mpi_comm_k, el_kq_eigenpairs)
     Order = typeof(order)
     isempty(calculators) && throw(ArgumentError("the e-ph loop requires at least one calculator."))
     for calc in calculators
@@ -258,6 +262,9 @@ function _check_run(order, model, backend, calculators, kpts_input, second_input
     end
     eph_phonon_basis ∈ (:eigenmode, :cartesian) ||
         throw(ArgumentError("eph_phonon_basis must be :eigenmode or :cartesian, got :$eph_phonon_basis"))
+    (backend isa CPUBackend && fourier_mode ∉ ("gridopt", "normal")) && throw(ArgumentError(
+        "fourier_mode = \"$fourier_mode\" is not supported on a CPU backend. Use \"gridopt\" " *
+        "(the default) or \"normal\"."))
     model.epmat isa WannierObject || throw(ArgumentError(
         "a disk-backed epmat ($(typeof(model.epmat))) is not supported by the e-ph loop; load the " *
         "model into memory"))
@@ -314,10 +321,11 @@ _input_ngrid(x::AbstractKpoints) = x.ngrid
 # per tile under `OuterQLoop`), the q set and its phonons, all on `backend`.
 function _setup_states(order, model::Model{FT}, kpts_input, second_input, el_qty, ph_qty; backend,
         window_k, window_kq, symmetry, precompute_el_kq, keep_all_qpts, eph_phonon_basis,
-        mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, fill_padding_nan,
-        verbosity) where {FT}
+        fourier_mode, mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs,
+        fill_padding_nan, verbosity) where {FT}
     (; nw, nmodes) = model
-    fourier_mode = "gridopt"
+    # The host solves of a GPU run (q filter, polar phonons) keep the default interpolation.
+    backend isa CPUBackend || (fourier_mode = "gridopt")
     sel_k = kpts_input isa FilteredBandStates ? kpts_input : maybe_time(verbosity) do
         filter_electron_states(kpts_input, nw, model.el_ham, window_k; symmetry, fourier_mode, backend,
                                mpi_comm = mpi_comm_k)
@@ -442,7 +450,7 @@ function _loop_outer_k!(eng::OuterKEngine, batch, el_k, el_kq, ph, kpts, qpts, c
             n = length(tile)
             # The k+q side is a contiguous slice of the resident container; its phase is shared by
             # every k of the batch.
-            el_kq_t = view_batched_electron_states(el_kq, tile)
+            el_kq_t = view(el_kq, tile)
             phase = view(tile_bufs.P_kq, :, 1:n)
             @views build_fourier_phase!(phase, eng.irvecp_mat, eng.xkq[:, tile])
             for (iouter, ik) in enumerate(batch)
@@ -452,8 +460,8 @@ function _loop_outer_k!(eng::OuterKEngine, batch, el_k, el_kq, ph, kpts, qpts, c
                 iq = view(tile_bufs.iq_dev, 1:n)
                 copy_batched_phonon_states!(tile_bufs.ph, ph, iq)
                 pairs = (; n, iouter,
-                    el_k = view_batched_electron_states(eng.el_k_batch, iouter:iouter),
-                    el_kq = el_kq_t, ph = view_batched_phonon_states(tile_bufs.ph, 1:n), phase,
+                    el_k = view(eng.el_k_batch, iouter:iouter),
+                    el_kq = el_kq_t, ph = view(tile_bufs.ph, 1:n), phase,
                     ik, ikq = tile, iq, wtk = kpts.weights[ik], wtq = view(eng.wtkq, tile),
                     xk = kpts.vectors[ik], xq = view(qpts.vectors, view(tile_bufs.iq, 1:n)))
                 _block!(eng, tile_bufs, pairs, ctx, calculators, model, energy_conservation, ngrid)
@@ -475,7 +483,7 @@ function _loop_outer_q!(eng::OuterQEngine, batch, el_k, el_kq, ph, kpts, kqpts, 
             tile_bufs = eng.tiles[chunk]
             ctx = LoopContext(eng.backend, OuterQLoop(), batch, chunk)
             xq = qpts.vectors[iq]
-            ph_q = view_batched_phonon_states(ph, iq:iq)
+            ph_q = view(ph, iq:iq)
             for tile in Iterators.partition(iks, eng.n_inner_tile)
                 n = length(tile)
                 copy_batched_electron_states!(tile_bufs.el_k, el_k, tile)
@@ -495,10 +503,10 @@ function _loop_outer_q!(eng::OuterQEngine, batch, el_k, el_kq, ph, kpts, kqpts, 
                         tile_bufs.ikq_copy[j] = max(tile_bufs.ikq[j], 1)
                     end
                     copy_batched_electron_states!(tile_bufs.el_kq, el_kq, view(tile_bufs.ikq_copy, 1:n))
-                    el_kq_t = view_batched_electron_states(tile_bufs.el_kq, 1:n)
+                    el_kq_t = view(tile_bufs.el_kq, 1:n)
                     ikq = view(tile_bufs.ikq, 1:n)
                 end
-                pairs = (; n, iouter = 0, el_k = view_batched_electron_states(tile_bufs.el_k, 1:n),
+                pairs = (; n, iouter = 0, el_k = view(tile_bufs.el_k, 1:n),
                     el_kq = el_kq_t, ph = ph_q, phase = nothing, ik = tile, ikq, iq,
                     wtk = view(eng.wtk, tile), wtq = qpts.weights[iq], xk = view(kpts.vectors, tile), xq)
                 _block!(eng, tile_bufs, pairs, ctx, calculators, model, energy_conservation, ngrid)
@@ -568,9 +576,9 @@ end
 # block shares is carried over as it is.
 function _copy_kept_pairs(::OuterKLoop, kept_bufs, pairs, n)
     keep, keep_dev, kept = view(kept_bufs.keep, 1:n), view(kept_bufs.keep_dev, 1:n), 1:n
-    el_kq = view_batched_electron_states(copy_batched_electron_states!(prefix_batched_electron_states(
+    el_kq = view(copy_batched_electron_states!(prefix_batched_electron_states(
         kept_bufs.el_kq, pairs.el_kq.nband_max, kept_bufs.el_kq.nk), pairs.el_kq, keep_dev), kept)
-    ph = view_batched_phonon_states(copy_batched_phonon_states!(kept_bufs.ph, pairs.ph, keep_dev), kept)
+    ph = view(copy_batched_phonon_states!(kept_bufs.ph, pairs.ph, keep_dev), kept)
     phase = view(_copy_last_axis!(kept_bufs.P_kq, pairs.phase, keep_dev), :, kept)
     iq = view(_copy_last_axis!(kept_bufs.iq_dev, pairs.iq, keep_dev), kept)
     wtq = view(_copy_last_axis!(kept_bufs.wtq, pairs.wtq, keep_dev), kept)
@@ -584,7 +592,7 @@ end
 
 function _copy_kept_pairs(::OuterQLoop, kept_bufs, pairs, n)
     keep, keep_dev, kept = view(kept_bufs.keep, 1:n), view(kept_bufs.keep_dev, 1:n), 1:n
-    copy_el(buf, src) = view_batched_electron_states(copy_batched_electron_states!(
+    copy_el(buf, src) = view(copy_batched_electron_states!(
         prefix_batched_electron_states(buf, src.nband_max, buf.nk), src, keep_dev), kept)
     el_k, el_kq = copy_el(kept_bufs.el_k, pairs.el_k), copy_el(kept_bufs.el_kq, pairs.el_kq)
     wtk = view(_copy_last_axis!(kept_bufs.wtk, pairs.wtk, keep_dev), kept)

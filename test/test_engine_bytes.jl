@@ -84,8 +84,7 @@ end
 # block's size, on the CPU or on a device (the k list of an outer-q block is staged per call, 24
 # bytes per point).
 @testset "stage2! allocates no scratch" begin
-    using ElectronPhonon: stage2!, view_batched_electron_states, view_batched_phonon_states,
-        prefix_batched_electron_states
+    using ElectronPhonon: stage2!, prefix_batched_electron_states
     eV = unit_to_aru(:eV); e_F = 11.68eV
     window = (e_F - 0.5eV, e_F + 3eV)
     grid = (6, 6, 6)
@@ -107,16 +106,16 @@ end
             stage1!(eng, st.el_k, st.kpts, 1:nb)
             t = eng.tiles[1]
             pairs = (; n = ntile, iouter = 1, phase = view(t.P_kq, :, 1:ntile),
-                     ph = view_batched_phonon_states(t.ph, 1:ntile),
-                     el_kq = view_batched_electron_states(st.el_kq, 1:ntile))
+                     ph = view(t.ph, 1:ntile),
+                     el_kq = view(st.el_kq, 1:ntile))
         else
             eng = OuterQEngine(model, backend, st.el_k, st.el_kq, st.ph, el_qty, ph_qty;
                 st.kpts, st.qpts, common...)
             stage1!(eng, st.ph, st.qpts, 1:nb, :eigenmode)
             t = eng.tiles[1]
-            pairs = (; n = ntile, el_k = view_batched_electron_states(t.el_k, 1:ntile),
+            pairs = (; n = ntile, el_k = view(t.el_k, 1:ntile),
                      el_kq = prefix_batched_electron_states(t.el_kq, model.nw, ntile),
-                     ph = view_batched_phonon_states(st.ph, 1:1), xk = view(st.kpts.vectors, 1:ntile))
+                     ph = view(st.ph, 1:1), xk = view(st.kpts.vectors, 1:ntile))
         end
         stage2!(eng, t, pairs)
         nbytes = if backend isa ElectronPhonon.CPUBackend
