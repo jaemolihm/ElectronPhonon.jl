@@ -362,7 +362,7 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
         eigenpairs::Union{Nothing, Eigenpairs} = nothing) where FT
     (; nmodes, mass) = model
     nq = qpts.n
-    b = BatchedPhononState(backend, nmodes, nq, quantities; qpts, FT)
+    ph_states = BatchedPhononState(backend, nmodes, nq, quantities; qpts, FT)
     _check_eigenpairs(eigenpairs, nmodes, backend)
     need_dipole = :eph_dipole_coeff ∈ quantities || :eph_r_coeff ∈ quantities
     valueonly = !(:u ∈ quantities || :vdiag ∈ quantities || need_dipole)
@@ -373,22 +373,22 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
         model.polar_phonon.use && throw(ArgumentError(
             "compute_phonon_states_batched on a non-CPU backend does not support polar phonons"))
     end
-    (nq == 0 || isempty(quantities)) && return b
+    (nq == 0 || isempty(quantities)) && return ph_states
 
     if backend isa CPUBackend
-        _compute_phonon_states_batched_cpu!(b, model, eigenpairs, valueonly, need_dipole,
+        _compute_phonon_states_batched_cpu!(ph_states, model, eigenpairs, valueonly, need_dipole,
                                             eph_phonon_basis; fourier_mode)
-        return b
+        return ph_states
     end
     # Device: ω into `e` (or a temporary), eigenmodes into `u` when requested.
-    e = b.e === nothing ? alloc(backend, FT, nmodes, nq) : b.e
+    e = ph_states.e === nothing ? alloc(backend, FT, nmodes, nq) : ph_states.e
     if eigenpairs === nothing
         itp_dyn = get_interpolator(to_device(backend, model.ph_dyn); fourier_mode = "batched", backend, nk_hint = nq)
         msqrt_d = alloc(backend, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
         # One chunk per Fourier block of `itp_dyn`, so the Fourier partition is that of one call
         # over the whole set; the eigensolve is per matrix, so the chunking does not change ω or u.
-        for c in Iterators.partition(1:nq, itp_dyn.batch_size)
-            D = _fourier_hk_batched(itp_dyn, view(qpts.vectors, c))  # (nmodes, nmodes, length(c))
+        for iq_chunk in Iterators.partition(1:nq, itp_dyn.batch_size)
+            D = _fourier_hk_batched(itp_dyn, view(qpts.vectors, iq_chunk))  # (nmodes, nmodes, length(iq_chunk))
             D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
             D ./= reshape(msqrt_d, 1, nmodes, 1)
             Esq = if valueonly
@@ -396,10 +396,10 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
             else
                 Esq_c, U = eigen_batched(D)
                 U ./= reshape(msqrt_d, nmodes, 1, 1)     # mass factor: u[i,:] /= sqrt(mass[i])
-                b.u[:, :, c] .= U
+                ph_states.u[:, :, iq_chunk] .= U
                 Esq_c
             end
-            e[:, c] .= sign.(Esq) .* sqrt.(abs.(Esq))  # ω = sign(ω²)·√|ω²|
+            e[:, iq_chunk] .= sign.(Esq) .* sqrt.(abs.(Esq))  # ω = sign(ω²)·√|ω²|
         end
     else
         # Gather from the cache. Its columns for this q list are resolved on the host: a miss
@@ -411,18 +411,18 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
             end
         end
         e .= eigenpairs.e_full[:, iqs]
-        valueonly || (b.u .= eigenpairs.u_full[:, :, iqs])
+        valueonly || (ph_states.u .= eigenpairs.u_full[:, :, iqs])
     end
-    b
+    ph_states
 end
 
 # The host fill: `compute_phonon_states`' loop, same chunks and same per-q kernels, on q slices of
 # the stacks (or per-chunk scratch for what was not requested). A function barrier, so the
 # `@threads` closure captures typed arguments.
-function _compute_phonon_states_batched_cpu!(b, model::Model{FT}, eigenpairs, valueonly,
+function _compute_phonon_states_batched_cpu!(ph_states, model::Model{FT}, eigenpairs, valueonly,
         need_dipole, eph_phonon_basis; fourier_mode) where FT
     (; mass, nmodes) = model
-    (; qpts) = b
+    (; qpts) = ph_states
     polar = model.polar_phonon
     @threads for iqs in chunks(qpts.vectors; n = nthreads())
         # Thread-local interpolators; with supplied eigenpairs there is no D(q) to interpolate.
@@ -431,7 +431,7 @@ function _compute_phonon_states_batched_cpu!(b, model::Model{FT}, eigenpairs, va
             register_kpoints!(itp_dyn, view(qpts.vectors, iqs))
             itp_dyn
         end
-        if b.vdiag !== nothing
+        if ph_states.vdiag !== nothing
             dyn_R = get_interpolator(model.ph_dyn_R; fourier_mode)
             register_kpoints!(dyn_R, view(qpts.vectors, iqs))
         end
@@ -439,8 +439,8 @@ function _compute_phonon_states_batched_cpu!(b, model::Model{FT}, eigenpairs, va
         d_s = zeros(Complex{FT}, nmodes); r_s = zeros(Complex{FT}, nmodes, 3)
         @views for iq in iqs
             xq = qpts.vectors[iq]
-            e = b.e === nothing ? e_s : b.e[:, iq]
-            u = b.u === nothing ? u_s : b.u[:, :, iq]
+            e = ph_states.e === nothing ? e_s : ph_states.e[:, iq]
+            u = ph_states.u === nothing ? u_s : ph_states.u[:, :, iq]
             if eigenpairs !== nothing
                 jq = _eigenpairs_ik(eigenpairs, xq)
                 e .= eigenpairs.e_full[:, jq]
@@ -451,17 +451,17 @@ function _compute_phonon_states_batched_cpu!(b, model::Model{FT}, eigenpairs, va
                 get_ph_eigen!(e, u, dyn, mass, polar, xq)
             end
             valueonly && continue
-            if b.vdiag !== nothing
+            if ph_states.vdiag !== nothing
                 # dω/dk = (dω²/dk) / (2ω), as `set_velocity_diag!(::PhononState, ...)`
-                get_ph_velocity_diag!(b.vdiag[:, :, iq], dyn_R, xq, u)
+                get_ph_velocity_diag!(ph_states.vdiag[:, :, iq], dyn_R, xq, u)
                 for imode in 1:nmodes
-                    b.vdiag[:, imode, iq] ./= 2 .* e[imode]
+                    ph_states.vdiag[:, imode, iq] ./= 2 .* e[imode]
                 end
             end
             if need_dipole
                 # u for the eigenmode basis, nothing for the Cartesian basis
-                get_eph_dipole_coeffs!(b.eph_dipole_coeff === nothing ? d_s : b.eph_dipole_coeff[:, iq],
-                    b.eph_r_coeff === nothing ? r_s : b.eph_r_coeff[:, :, iq], xq, polar,
+                get_eph_dipole_coeffs!(ph_states.eph_dipole_coeff === nothing ? d_s : ph_states.eph_dipole_coeff[:, iq],
+                    ph_states.eph_r_coeff === nothing ? r_s : ph_states.eph_r_coeff[:, :, iq], xq, polar,
                     eph_phonon_basis == :eigenmode ? u : nothing)
             end
         end
@@ -532,21 +532,21 @@ function _compute_electron_states_batched(model::Model{FT}, kpts, quantities, wi
     E_host = Array(E)
     # Each k's window, as `set_window!` takes it: an energy window or an explicit band range.
     rngs = map(1:nk) do ik
-        w = _window_for(window, ik)
-        r = w isa Tuple ? inside_window(view(E_host, :, ik), w...) : intersect(w, 1:nw)
-        isempty(r) ? (1:0) : r
+        window_ik = _window_for(window, ik)
+        rng = window_ik isa Tuple ? inside_window(view(E_host, :, ik), window_ik...) : intersect(window_ik, 1:nw)
+        isempty(rng) ? (1:0) : rng
     end
     nband_h = length.(rngs)
-    offset_h = [isempty(r) ? 0 : first(r) - 1 for r in rngs]
-    b = BatchedElectronState(backend, nw, maximum(nband_h; init = 0), nk, quantities; kpts, FT)
-    copyto!(b.iband_offset, offset_h); copyto!(b.nband, nband_h)
-    nk == 0 && return b
+    offset_h = [isempty(rng) ? 0 : first(rng) - 1 for rng in rngs]
+    el_states = BatchedElectronState(backend, nw, maximum(nband_h; init = 0), nk, quantities; kpts, FT)
+    copyto!(el_states.iband_offset, offset_h); copyto!(el_states.nband, nband_h)
+    nk == 0 && return el_states
     if backend isa CPUBackend
-        _fill_electron_states_batched_cpu!(b, model, E, U, rngs; fourier_mode)
+        _fill_electron_states_batched_cpu!(el_states, model, E, U, rngs; fourier_mode)
     else
-        _fill_electron_states_batched_device!(b, model, E, U, offset_h, backend)
+        _fill_electron_states_batched_device!(el_states, model, E, U, offset_h, backend)
     end
-    b
+    el_states
 end
 
 # Full-band `E` (nw, nk) and, when `need_u`, `U` (nw, nw, nk) on the host, with
@@ -580,11 +580,11 @@ end
 # The host fill: the in-window block of each k into the box, then the windowed quantities with the
 # per-point kernels on the in-window eigenvectors (`compute_electron_states`' chunks), through
 # contiguous per-chunk scratch so the kernels see the arrays they see on the per-point path.
-function _fill_electron_states_batched_cpu!(b, model::Model{FT}, E, U, rngs; fourier_mode) where FT
+function _fill_electron_states_batched_cpu!(el_states, model::Model{FT}, E, U, rngs; fourier_mode) where FT
     (; nw, el_velocity_mode) = model
-    (; kpts) = b
-    need_position = b.rbar !== nothing || (b.v !== nothing && el_velocity_mode === :BerryConnection)
-    need_velocity = b.vdiag !== nothing || b.v !== nothing
+    (; kpts) = el_states
+    need_position = el_states.rbar !== nothing || (el_states.v !== nothing && el_velocity_mode === :BerryConnection)
+    need_velocity = el_states.vdiag !== nothing || el_states.v !== nothing
     @threads for iks in chunks(kpts.vectors; n = 2nthreads())
         if need_velocity
             vel = get_interpolator(el_velocity_mode === :Direct ? model.el_vel : model.el_ham_R; fourier_mode)
@@ -596,42 +596,42 @@ function _fill_electron_states_batched_cpu!(b, model::Model{FT}, E, U, rngs; fou
         end
         v_s = zeros(Complex{FT}, 3 * nw * nw); r_s = zeros(Complex{FT}, 3 * nw * nw)
         @views for ik in iks
-            r = rngs[ik]
-            nb = length(r)
+            rng = rngs[ik]
+            nb = length(rng)
             xk = kpts.vectors[ik]
-            b.e === nothing || (b.e[1:nb, ik] .= E[r, ik])
+            el_states.e === nothing || (el_states.e[1:nb, ik] .= E[rng, ik])
             U === nothing && continue
-            b.u === nothing || (b.u[:, 1:nb, ik] .= U[:, r, ik])
-            u_w = U[:, r, ik]
+            el_states.u === nothing || (el_states.u[:, 1:nb, ik] .= U[:, rng, ik])
+            u_w = U[:, rng, ik]
             rbar_w = reshape(r_s[1:3nb*nb], 3, nb, nb)
             if need_position
                 get_el_velocity_direct!(rbar_w, nw, pos, xk, u_w)
-                b.rbar === nothing || (b.rbar[:, 1:nb, 1:nb, ik] .= rbar_w)
+                el_states.rbar === nothing || (el_states.rbar[:, 1:nb, 1:nb, ik] .= rbar_w)
             end
             v_w = reshape(v_s[1:3nb*nb], 3, nb, nb)
-            if b.v !== nothing
+            if el_states.v !== nothing
                 if el_velocity_mode === :Direct
                     get_el_velocity_direct!(v_w, nw, vel, xk, u_w)
                 else
-                    get_el_velocity_berry_connection!(v_w, nw, vel, E[r, ik], xk, u_w,
+                    get_el_velocity_berry_connection!(v_w, nw, vel, E[rng, ik], xk, u_w,
                         reinterpret(reshape, Vec3{Complex{FT}}, rbar_w))
                 end
-                b.v[:, 1:nb, 1:nb, ik] .= v_w
-                if b.vdiag !== nothing
+                el_states.v[:, 1:nb, 1:nb, ik] .= v_w
+                if el_states.vdiag !== nothing
                     for i in 1:nb
-                        b.vdiag[:, i, ik] .= real.(v_w[:, i, i])
+                        el_states.vdiag[:, i, ik] .= real.(v_w[:, i, i])
                     end
                 end
-            elseif b.vdiag !== nothing
+            elseif el_states.vdiag !== nothing
                 # As `set_velocity_diag!(::ElectronState, ...)`: direct interpolation has no
                 # diagonal-only form, and the Berry connection term is zero on the diagonal.
                 if el_velocity_mode === :Direct
                     get_el_velocity_direct!(v_w, nw, vel, xk, u_w)
                     for i in 1:nb
-                        b.vdiag[:, i, ik] .= real.(v_w[:, i, i])
+                        el_states.vdiag[:, i, ik] .= real.(v_w[:, i, i])
                     end
                 elseif el_velocity_mode === :BerryConnection
-                    get_el_velocity_diag_berry_connection!(b.vdiag[:, 1:nb, ik], nw, vel, xk, u_w)
+                    get_el_velocity_diag_berry_connection!(el_states.vdiag[:, 1:nb, ik], nw, vel, xk, u_w)
                 else
                     throw(ArgumentError("mode must be :Direct or :BerryConnection, not $el_velocity_mode."))
                 end
@@ -644,16 +644,16 @@ end
 # The device fill: gather each k's in-window columns into the box, and the band-diagonal velocity
 # from the full-band rotation, as `_compute_electron_states_device!` reads it. Box entries past
 # `nband` gather a clamped in-range index, so they hold some other band's value (undefined).
-function _fill_electron_states_batched_device!(b, model, E, U, offset_h, backend)
+function _fill_electron_states_batched_device!(el_states, model, E, U, offset_h, backend)
     (; nw) = model
-    (; nk, nband_max, kpts) = b
+    (; nk, nband_max, kpts) = el_states
     # band[n, k]: the physical band of box column n at k, clamped into 1:nw on the padding.
     band = [min(offset_h[ik] + n, nw) for n in 1:nband_max, ik in 1:nk]
     col = to_device_copy(backend, vec(band .+ nw .* (0:nk-1)'))   # column of U's (nw, nw*nk) view
-    b.e === nothing || (vec(b.e) .= view(vec(E), col))
+    el_states.e === nothing || (vec(el_states.e) .= view(vec(E), col))
     U === nothing && return nothing
-    b.u === nothing || (reshape(b.u, nw, :) .= view(reshape(U, nw, :), :, col))
-    if b.vdiag !== nothing
+    el_states.u === nothing || (reshape(el_states.u, nw, :) .= view(reshape(U, nw, :), :, col))
+    if el_states.vdiag !== nothing
         Mop = model.el_velocity_mode === :Direct ? model.el_vel :
               model.el_velocity_mode === :BerryConnection ? model.el_ham_R :
               throw(ArgumentError("unknown el_velocity_mode $(model.el_velocity_mode)"))
@@ -662,7 +662,7 @@ function _fill_electron_states_batched_device!(b, model, E, U, offset_h, backend
         # vdiag[d, n, k] = real(vel[b, b, d, k]) with b = band[n, k]
         diag_lin = to_device_copy(backend, [band[n, ik] + nw * (band[n, ik] - 1) +
             nw^2 * (d - 1) + 3nw^2 * (ik - 1) for d in 1:3, n in 1:nband_max, ik in 1:nk])
-        b.vdiag .= real.(view(vec(vel), diag_lin))
+        el_states.vdiag .= real.(view(vec(vel), diag_lin))
     end
     nothing
 end
@@ -706,17 +706,17 @@ function compute_electron_states_batched!(dst::BatchedElectronState, itp_ham, hk
 end
 
 """
-    electron_states_to_BandStates(b::BatchedElectronState, sel::FilteredBandStates)
+    electron_states_to_BandStates(el_states::BatchedElectronState, sel::FilteredBandStates)
         -> (BandStates, imap)
 
 The `BatchedElectronState` method of the `Vector{ElectronState}` one: state `i` takes its energy and
-velocity from local band `sel.ibands[i] - b.iband_offset[k]` of its k point. `vs` is empty when `b`
-holds no `vdiag`. Every selected band must be inside the box window of its k point.
+velocity from local band `sel.ibands[i] - el_states.iband_offset[k]` of its k point. `vs` is empty
+when `el_states` holds no `vdiag`. Every selected band must be inside the box window of its k point.
 """
-function electron_states_to_BandStates(b::BatchedElectronState{T}, sel::FilteredBandStates{T}) where {T}
-    b.nk == sel.kpts.n || throw(ArgumentError("b holds $(b.nk) k points, sel $(sel.kpts.n)"))
-    e = Array(b.e); off = Array(b.iband_offset); nband = Array(b.nband)
-    vdiag = b.vdiag === nothing ? nothing : Array(b.vdiag)
+function electron_states_to_BandStates(el_states::BatchedElectronState{T}, sel::FilteredBandStates{T}) where {T}
+    el_states.nk == sel.kpts.n || throw(ArgumentError("el_states holds $(el_states.nk) k points, sel $(sel.kpts.n)"))
+    e = Array(el_states.e); off = Array(el_states.iband_offset); nband = Array(el_states.nband)
+    vdiag = el_states.vdiag === nothing ? nothing : Array(el_states.vdiag)
     n = sel.n
     es = zeros(T, n)
     vs = zeros(Vec3{T}, vdiag === nothing ? 0 : n)
@@ -735,16 +735,16 @@ function electron_states_to_BandStates(b::BatchedElectronState{T}, sel::Filtered
 end
 
 """
-    electron_states_to_FilteredBandStates(kpts, b::BatchedElectronState, nstates_base; nw)
+    electron_states_to_FilteredBandStates(kpts, el_states::BatchedElectronState, nstates_base; nw)
 
 The `BatchedElectronState` method of the `Vector{ElectronState}` one: the bands of each k point are
 its box window, `iband_offset[k] .+ (1:nband[k])`.
 """
-function electron_states_to_FilteredBandStates(kpts, b::BatchedElectronState, nstates_base; nw)
+function electron_states_to_FilteredBandStates(kpts, el_states::BatchedElectronState, nstates_base; nw)
     gkpts = kpts isa GridKpoints ? kpts : GridKpoints(kpts)
-    off = Array(b.iband_offset); nband = Array(b.nband)
+    off = Array(el_states.iband_offset); nband = Array(el_states.nband)
     iks = Int[]; ibands = Int[]
-    for ik in 1:b.nk, n in 1:nband[ik]
+    for ik in 1:el_states.nk, n in 1:nband[ik]
         push!(iks, ik); push!(ibands, off[ik] + n)
     end
     FilteredBandStates(gkpts, iks, ibands; nw, nstates_base)

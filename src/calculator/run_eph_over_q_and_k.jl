@@ -517,16 +517,14 @@ function _loop_eph_over_q_and_k_batched(
     ep_batch  = alloc(backend, Complex{FT}, nw, nw, nmodes, nk_batch_max)
     Uk_batch  = alloc(backend, Complex{FT}, nw, nw, nk_batch_max)
     Ukq_batch = alloc(backend, Complex{FT}, nw, nw, nk_batch_max)
-    wtk_batch = alloc(backend, FT, nk_batch_max)
     ks_batch  = Vector{Vec3{FT}}(undef, nk_batch_max)
     kqs_batch = Vector{Vec3{FT}}(undef, nk_batch_max)
 
-    # ----- the k side: gathered per batch from the resident `el_k` -----
-    # `el_k` holds every band; `inwin_all[b, ik]` says whether band b is inside k's window
+    # ----- the k side: copied per batch from the resident `el_k` -----
+    # `el_k` holds every band; `inwin_all[ib, ik]` says whether band ib is inside k's window
     # (`el_k_save[ik].rng`), and `wtk_all` holds the k weights, both resident too.
     el_k_tile = BatchedElectronState(backend, nw, nw, nk_batch_max, [:e, :u]; FT)
-    inwin_all = to_device_copy(backend, [b ∈ el.rng for b in 1:nw, el in el_k_save])
-    inwin     = alloc(backend, Bool, nw, nk_batch_max)
+    inwin_all = to_device_copy(backend, [ib ∈ el.rng for ib in 1:nw, el in el_k_save])
     wtk_all   = to_device_copy(backend, collect(FT, kpts.weights))
     # The k+q states, solved per batch straight into a tile of the same layout.
     el_kq_tile = BatchedElectronState(backend, nw, nw, nk_batch_max, [:e, :u]; FT)
@@ -563,52 +561,41 @@ function _loop_eph_over_q_and_k_batched(
             iks_batch = kstart:kend
             nk_batch = length(iks_batch)
 
-            # The k side of the batch, gathered from `el_k`, and the k / k+q lists. `Uk` is
-            # zero outside each k's in-window range, so the full nw×nw Rq→kq rotation reproduces
-            # the CPU's windowed rotation with zeros outside. The tail (partial final batch) is
-            # padded with the last valid k so the batched Fourier / eigensolve see finite data; its
-            # weight is zeroed so that a padded k column cannot double-count into the q-summed χ
-            # (the calculator multiplies by `wtk`), unlike the outer-k loop, where padded duplicates
-            # scatter to a unique in-window index harmlessly.
-            # A full batch is a range, gathered with no index upload.
-            iks_padded = nk_batch == nk_batch_max ? iks_batch :
-                [iks_batch; fill(kend, nk_batch_max - nk_batch)]
-            gather_batched_electron_states!(el_k_tile, el_k, iks_padded)
-            inwin .= view(inwin_all, :, iks_padded)
-            Uk_batch .= ifelse.(reshape(inwin, 1, nw, nk_batch_max), el_k_tile.u, zero(Complex{FT}))
-            ek_batch = el_k_tile.e
-            wtk_batch .= 0
-            view(wtk_batch, 1:nk_batch) .= view(wtk_all, iks_batch)
-            for (ik_ind, ik) in enumerate(iks_padded)
+            # Everything below runs at the batch's true width `nk_batch`, through views of the first
+            # `nk_batch` columns of the `nk_batch_max`-wide buffers (a trailing-prefix view of a
+            # device array is contiguous, so the batched drivers and the extension kernels take these
+            # directly). The k side of the batch is copied from `el_k` (a range, no index upload).
+            # `Uk` is zero outside each k's in-window range, so the full nw×nw Rq→kq rotation
+            # reproduces the CPU's windowed rotation with zeros outside.
+            rng_k = 1:nk_batch
+            copy_batched_electron_states!(el_k_tile, el_k, iks_batch)
+            Uk = view(Uk_batch, :, :, rng_k)
+            Uk .= ifelse.(reshape(view(inwin_all, :, iks_batch), 1, nw, nk_batch),
+                          view(el_k_tile.u, :, :, rng_k), zero(Complex{FT}))
+            for (ik_ind, ik) in enumerate(iks_batch)
                 ks_batch[ik_ind]  = kpts.vectors[ik]
                 kqs_batch[ik_ind] = ks_batch[ik_ind] + xq
             end
+            ks, kqs = view(ks_batch, rng_k), view(kqs_batch, rng_k)
 
             # k+q eigensolve (batched), every band kept. No gauge fixing: χ is gauge-invariant.
-            compute_electron_states_batched!(el_kq_tile, itp_el_ham, Hkq_flat, model, kqs_batch, (-Inf, Inf))
-            Ekq, Ukq = el_kq_tile.e, el_kq_tile.u                               # (nw,·), (nw,nw,·)
+            compute_electron_states_batched!(el_kq_tile, itp_el_ham, Hkq_flat, model, kqs, (-Inf, Inf))
+            Ekq = view(el_kq_tile.e, :, rng_k)                                  # (nw, nk_batch)
 
             # k+q window mask: zero eigenvector COLUMNS m outside [wmin, wmax] (Ekq[m,k]). This
             # zeroes ep_kq[m,·] and every k+q-side matrix element for out-of-window m, so those
             # (m,n) pairs contribute exactly 0 — reproducing the CPU's `for m in el_kq.rng` loop.
-            mask_kq = (Ekq .>= wmin) .& (Ekq .<= wmax)                    # (nw, ·) Bool
-            Ukq_batch .= Ukq .* reshape(mask_kq, 1, nw, nk_batch_max)
+            Ukq = view(Ukq_batch, :, :, rng_k)
+            Ukq .= view(el_kq_tile.u, :, :, rng_k) .* reshape((Ekq .>= wmin) .& (Ekq .<= wmax), 1, nw, nk_batch)
 
-            # Batched Rq→kq e-ph interpolation: ep_batch[m,n,ν,k] = Ukq(k)' * g(k) * Uk(k).
-            get_eph_Rq_to_kq_batched!(ep_batch, itp_ep_eRpq, ks_batch, Uk_batch, Ukq_batch; ws = ep_ws)
+            # Batched Rq→kq e-ph interpolation: ep[m,n,ν,k] = Ukq(k)' * g(k) * Uk(k).
+            ep = view(ep_batch, :, :, :, rng_k)
+            get_eph_Rq_to_kq_batched!(ep, itp_ep_eRpq, ks, Uk, Ukq; ws = ep_ws)
+            use_polar_eph && add_eph_dipole_batched!(ep, coeffs_dev, Ukq, Uk,
+                                                     view(mmats_batch, :, :, rng_k))
 
-            use_polar_eph && add_eph_dipole_batched!(ep_batch, coeffs_dev, Ukq_batch, Uk_batch, mmats_batch)
-
-            # Hand the calculator width-`nk_batch` views (the outer-k convention): the internal
-            # staging stays padded to `nk_batch_max` for the dense batched eigensolve / Fourier, but
-            # the payload is trimmed so an unweighted reduction cannot count padded columns. (The
-            # internal `wtk` zero-padding above is kept as defense-in-depth.) A trailing-prefix view
-            # of a device array is contiguous, so the extension kernels take these directly.
-            rng_k = 1:nk_batch
-            payload = EPDataKBatched(
-                view(ep_batch, :, :, :, rng_k), view(ek_batch, :, rng_k), view(Ekq, :, rng_k),
-                view(Uk_batch, :, :, rng_k), view(Ukq_batch, :, :, rng_k), view(wtk_batch, rng_k),
-                view(ks_batch, rng_k), iq)
+            payload = EPDataKBatched(ep, view(el_k_tile.e, :, rng_k), Ekq, Uk, Ukq,
+                view(wtk_all, iks_batch), ks, iq)
             foreach(c -> run_calculator!(c, payload, ctx_q), calculators)
         end # k batch
 

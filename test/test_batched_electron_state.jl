@@ -1,6 +1,6 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: gpu_backend, on_backend, Vec3, CPUBackend, gather_batched_electron_states!,
+using ElectronPhonon: gpu_backend, on_backend, Vec3, CPUBackend, copy_batched_electron_states!,
     compute_electron_states_batched!, unit_to_aru, BatchedWannierInterpolator,
     get_fourier_batched!, eigen_batched, inside_window
 using OffsetArrays: no_offset_view
@@ -12,18 +12,18 @@ catch
     false
 end
 
-# Every quantity of `b` at its in-window bands against the `ElectronState`s `ref`, with `isequal`;
-# returns the number of k points that differ. Box entries past `nband` are undefined and not read.
-function _batched_electron_mismatches(b, ref)
-    off, nband = Array(b.iband_offset), Array(b.nband)
+# Every quantity of `el_states` at its in-window bands against the `ElectronState`s `ref`, with
+# `isequal`; returns the number of k points that differ. Box entries past `nband` are undefined and not read.
+function _batched_electron_mismatches(el_states, ref)
+    off, nband = Array(el_states.iband_offset), Array(el_states.nband)
     count(eachindex(ref)) do ik
         el = ref[ik]; nb = el.nband
         ok = nband[ik] == nb && (nb == 0 || off[ik] == first(el.rng) - 1)
-        b.e === nothing || (ok &= isequal(Array(b.e)[1:nb, ik], collect(el.e)))
-        b.u === nothing || (ok &= isequal(Array(b.u)[:, 1:nb, ik], collect(no_offset_view(el.u))))
-        b.vdiag === nothing || (ok &= isequal(Array(b.vdiag)[:, 1:nb, ik],
+        el_states.e === nothing || (ok &= isequal(Array(el_states.e)[1:nb, ik], collect(el.e)))
+        el_states.u === nothing || (ok &= isequal(Array(el_states.u)[:, 1:nb, ik], collect(no_offset_view(el.u))))
+        el_states.vdiag === nothing || (ok &= isequal(Array(el_states.vdiag)[:, 1:nb, ik],
                                               reshape(reinterpret(Float64, collect(el.vdiag)), 3, nb)))
-        for (x, y) in ((b.v, el.v), (b.rbar, el.rbar))
+        for (x, y) in ((el_states.v, el.v), (el_states.rbar, el.rbar))
             x === nothing && continue
             ok &= isequal(Array(x)[:, 1:nb, 1:nb, ik],
                           reshape(reinterpret(ComplexF64, collect(no_offset_view(y))), 3, nb, nb))
@@ -60,39 +60,39 @@ end
             inputs = m === model_pb ? (((sel,), ()), ((kpts,), (window_wide,)), ((kpts,), ())) :
                                       (((kpts,), ()),)
             for (args, window) in inputs
-                b = compute_electron_states_batched(m, args..., quantities, window...; fourier_mode)
+                el_states = compute_electron_states_batched(m, args..., quantities, window...; fourier_mode)
                 ref = compute_electron_states(m, args..., per_point(quantities), window...;
                                               fourier_mode)
-                nbad += _batched_electron_mismatches(b, ref)
+                nbad += _batched_electron_mismatches(el_states, ref)
             end
             m.el_velocity_mode = :Direct
         end
         @test nbad == 0
         # The comparison has teeth: the windows are band-ragged, and cubicBN's position matrix
         # elements are not zero.
-        b = compute_electron_states_batched(model_pb, kpts, [:e], window_wide)
-        @test extrema(b.nband) == (0, 2) && extrema(b.iband_offset) == (0, 1) && b.nband_max == 2
+        el_states = compute_electron_states_batched(model_pb, kpts, [:e], window_wide)
+        @test extrema(el_states.nband) == (0, 2) && extrema(el_states.iband_offset) == (0, 1) && el_states.nband_max == 2
         @test maximum(abs, compute_electron_states_batched(model_bn, kpts, [:rbar]).rbar) > 0.1
 
         # With a cache: the eigenpairs are copied out per k, exactly as the per-point builder does.
         cache = electron_eigenpairs(model_pb, kpts; fourier_mode = "normal")
         @test all(quantity_lists) do quantities
-            b = compute_electron_states_batched(model_pb, kpts, quantities, window_wide;
+            el_states = compute_electron_states_batched(model_pb, kpts, quantities, window_wide;
                                                 eigenpairs = cache)
             ref = compute_electron_states(model_pb, kpts, per_point(quantities), window_wide;
                                           eigenpairs = cache)
-            _batched_electron_mismatches(b, ref) == 0
+            _batched_electron_mismatches(el_states, ref) == 0
         end
     end
 
     @testset "fields, conversions, checks" begin
-        b = compute_electron_states_batched(model_pb, sel, [:e, :vdiag])
-        @test b.kpts === sel.kpts && b.nk == sel.kpts.n && b.nw == model_pb.nw
-        @test b.u === nothing && b.v === nothing && b.rbar === nothing
-        @test occursin("BatchedElectronState{Float64}(nw = 4, nband_max = 1", sprint(show, b))
+        el_states = compute_electron_states_batched(model_pb, sel, [:e, :vdiag])
+        @test el_states.kpts === sel.kpts && el_states.nk == sel.kpts.n && el_states.nw == model_pb.nw
+        @test el_states.u === nothing && el_states.v === nothing && el_states.rbar === nothing
+        @test occursin("BatchedElectronState{Float64}(nw = 4, nband_max = 1", sprint(show, el_states))
 
         # `BandStates` from the batched states equals the one from the per-point states.
-        bs, _ = electron_states_to_BandStates(b, sel)
+        bs, _ = electron_states_to_BandStates(el_states, sel)
         bs_ref, _ = electron_states_to_BandStates(
             compute_electron_states(model_pb, sel, ["eigenvalue", "velocity_diagonal"]), sel)
         @test bs.es == bs_ref.es && bs.vs == bs_ref.vs && bs.iks == bs_ref.iks
@@ -108,20 +108,20 @@ end
             model_pb, kpts, [:velocity])
         @test_throws "duplicates" compute_electron_states_batched(model_pb, kpts, [:e, :e])
         @test_throws "e must be (nband_max, nk)" BatchedElectronState{Float64}(4, 1, 216, sel.kpts,
-            b.iband_offset, b.nband, b.e[:, 1:2], nothing, nothing, nothing, nothing)
+            el_states.iband_offset, el_states.nband, el_states.e[:, 1:2], nothing, nothing, nothing, nothing)
     end
 
-    @testset "empty container, gather and the in-tile builder" begin
-        b = compute_electron_states_batched(model_pb, kpts, [:e, :u], window_wide)
+    @testset "empty container, copy and the in-tile builder" begin
+        el_states = compute_electron_states_batched(model_pb, kpts, [:e, :u], window_wide)
         inds = [5, 2, 64, 17]
-        tile = BatchedElectronState(CPUBackend(), 4, b.nband_max, 6, [:e, :u])
+        tile = BatchedElectronState(CPUBackend(), 4, el_states.nband_max, 6, [:e, :u])
         @test tile.kpts === nothing && tile.nk == 6 && tile.vdiag === nothing
-        gather_batched_electron_states!(tile, b, inds)
-        # The gather copies the undefined padding along with the rest of a column, hence isequal.
-        @test isequal(tile.e[:, 1:4], b.e[:, inds]) && isequal(tile.u[:, :, 1:4], b.u[:, :, inds])
-        @test tile.iband_offset[1:4] == b.iband_offset[inds] && tile.nband[1:4] == b.nband[inds]
-        @test_throws "cannot gather 4 points" gather_batched_electron_states!(
-            BatchedElectronState(CPUBackend(), 4, 4, 6, [:e, :u]), b, inds)
+        copy_batched_electron_states!(tile, el_states, inds)
+        # The copy takes the undefined padding along with the rest of a column, hence isequal.
+        @test isequal(tile.e[:, 1:4], el_states.e[:, inds]) && isequal(tile.u[:, :, 1:4], el_states.u[:, :, inds])
+        @test tile.iband_offset[1:4] == el_states.iband_offset[inds] && tile.nband[1:4] == el_states.nband[inds]
+        @test_throws "cannot copy 4 points" copy_batched_electron_states!(
+            BatchedElectronState(CPUBackend(), 4, 4, 6, [:e, :u]), el_states, inds)
 
         # Solved into a tile: the bands of the window, moved to local bands 1:nband, of the same
         # batched solve. Off-grid points, more tile than points.
@@ -163,30 +163,30 @@ end
                     [:e, :u, :vdiag], [:vdiag])
                 model_pb.el_velocity_mode = mode
                 for (args, window) in (((sel,), ()), ((kpts,), (window_wide,)), ((kpts,), ()))
-                    b = compute_electron_states_batched(model_pb, args..., quantities, window...;
+                    el_states = compute_electron_states_batched(model_pb, args..., quantities, window...;
                                                         backend)
                     @test all(x -> x === nothing || on_backend(backend, x),
-                              (b.iband_offset, b.nband, b.e, b.u, b.vdiag))
+                              (el_states.iband_offset, el_states.nband, el_states.e, el_states.u, el_states.vdiag))
                     ref = compute_electron_states(model_pb, args..., per_point(quantities),
                                                   window...; backend)
-                    nbad += _batched_electron_mismatches(b, ref)
+                    nbad += _batched_electron_mismatches(el_states, ref)
                 end
                 model_pb.el_velocity_mode = :Direct
             end
             @test nbad == 0
             cache = electron_eigenpairs(model_pb, kpts; backend)
-            b = compute_electron_states_batched(model_pb, kpts, [:e, :u, :vdiag], window_wide;
+            el_states = compute_electron_states_batched(model_pb, kpts, [:e, :u, :vdiag], window_wide;
                                                 backend, eigenpairs = cache)
-            @test _batched_electron_mismatches(b, compute_electron_states(model_pb, kpts,
+            @test _batched_electron_mismatches(el_states, compute_electron_states(model_pb, kpts,
                 per_point([:e, :u, :vdiag]), window_wide; backend, eigenpairs = cache)) == 0
 
-            # A host container streamed into a device tile, and a device one gathered in place.
+            # A host container streamed into a device tile, and a device one copied in place.
             b_host = compute_electron_states_batched(model_pb, kpts, [:e, :u], window_wide)
             inds = [5, 2, 64, 17]
             for src in (b_host, compute_electron_states_batched(model_pb, kpts, [:e, :u],
                                                                 window_wide; backend))
                 tile = BatchedElectronState(backend, 4, src.nband_max, 6, [:e, :u])
-                gather_batched_electron_states!(tile, src, inds)
+                copy_batched_electron_states!(tile, src, inds)
                 @test Array(tile.nband)[1:4] == Array(src.nband)[inds]
                 @test isequal(Array(tile.u)[:, :, 1:4], Array(src.u)[:, :, inds])
             end

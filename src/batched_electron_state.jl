@@ -50,17 +50,12 @@ struct BatchedElectronState{T, KT <: Union{Nothing, AbstractKpoints{T}}, IT <: A
     function BatchedElectronState{T}(nw, nband_max, nk, kpts::KT, iband_offset::IT, nband::IT, e::ET,
             u::UT, vdiag::VDT, v::VT, rbar::RT) where {T, KT, IT, ET, UT, VDT, VT, RT}
         kpts === nothing || kpts.n == nk || throw(ArgumentError("kpts holds $(kpts.n) points, nk = $nk"))
-        length(iband_offset) == length(nband) == nk ||
-            throw(ArgumentError("iband_offset and nband must have length nk = $nk"))
+        length(iband_offset) == length(nband) == nk || throw(ArgumentError("iband_offset and nband must have length nk = $nk"))
         e === nothing || size(e) == (nband_max, nk) || throw(ArgumentError("e must be (nband_max, nk)"))
-        u === nothing || size(u) == (nw, nband_max, nk) ||
-            throw(ArgumentError("u must be (nw, nband_max, nk)"))
-        vdiag === nothing || size(vdiag) == (3, nband_max, nk) ||
-            throw(ArgumentError("vdiag must be (3, nband_max, nk)"))
-        v === nothing || size(v) == (3, nband_max, nband_max, nk) ||
-            throw(ArgumentError("v must be (3, nband_max, nband_max, nk)"))
-        rbar === nothing || size(rbar) == (3, nband_max, nband_max, nk) ||
-            throw(ArgumentError("rbar must be (3, nband_max, nband_max, nk)"))
+        u === nothing || size(u) == (nw, nband_max, nk) || throw(ArgumentError("u must be (nw, nband_max, nk)"))
+        vdiag === nothing || size(vdiag) == (3, nband_max, nk) || throw(ArgumentError("vdiag must be (3, nband_max, nk)"))
+        v === nothing || size(v) == (3, nband_max, nband_max, nk) || throw(ArgumentError("v must be (3, nband_max, nband_max, nk)"))
+        rbar === nothing || size(rbar) == (3, nband_max, nband_max, nk) || throw(ArgumentError("rbar must be (3, nband_max, nband_max, nk)"))
         new{T, KT, IT, ET, UT, VDT, VT, RT}(nw, nband_max, nk, kpts, iband_offset, nband, e, u, vdiag,
                                             v, rbar)
     end
@@ -72,65 +67,40 @@ function BatchedElectronState(backend, nw, nband_max, nk, quantities; kpts = not
     unknown = setdiff(quantities, (:e, :u, :vdiag, :v, :rbar))
     isempty(unknown) || throw(ArgumentError("unknown electron quantities $unknown"))
     allunique(quantities) || throw(ArgumentError("quantities $quantities has duplicates"))
-    a(name, T, dims...) = name ∈ quantities ? alloc(backend, T, dims...) : nothing
-    BatchedElectronState{FT}(nw, nband_max, nk, kpts, alloc_zeros(backend, Int, nk),
-        alloc_zeros(backend, Int, nk), a(:e, FT, nband_max, nk), a(:u, Complex{FT}, nw, nband_max, nk),
-        a(:vdiag, FT, 3, nband_max, nk), a(:v, Complex{FT}, 3, nband_max, nband_max, nk),
-        a(:rbar, Complex{FT}, 3, nband_max, nband_max, nk))
+    alloc_if_required(name, T, dims...) = name ∈ quantities ? alloc(backend, T, dims...) : nothing
+    BatchedElectronState{FT}(nw, nband_max, nk, kpts,
+        alloc_zeros(backend, Int, nk),                                     # iband_offset
+        alloc_zeros(backend, Int, nk),                                     # nband
+        alloc_if_required(:e, FT, nband_max, nk),
+        alloc_if_required(:u, Complex{FT}, nw, nband_max, nk),
+        alloc_if_required(:vdiag, FT, 3, nband_max, nk),
+        alloc_if_required(:v, Complex{FT}, 3, nband_max, nband_max, nk),
+        alloc_if_required(:rbar, Complex{FT}, 3, nband_max, nband_max, nk))
 end
 
-function Base.show(io::IO, b::BatchedElectronState{T}) where {T}
-    print(io, "BatchedElectronState{$T}(nw = $(b.nw), nband_max = $(b.nband_max), nk = $(b.nk), " *
-              "$(typeof(b.nband)))")
+function Base.show(io::IO, el_states::BatchedElectronState{T}) where {T}
+    print(io, "BatchedElectronState{$T}(nw = $(el_states.nw), nband_max = $(el_states.nband_max), nk = $(el_states.nk), " *
+              "$(typeof(el_states.nband)))")
 end
 
 """
-    gather_batched_electron_states!(dst, src, inds)
+    copy_batched_electron_states!(dst, src, inds)
 
 Copy the k points `inds` of `src` into the first `length(inds)` points of `dst`, field by field (a
 `nothing` field is skipped), `iband_offset` and `nband` included. `inds` is a range or a host vector,
 checked here, or an index array already on `src`'s device, used as it is: its caller has checked
 it. A host index vector for a device `src` is uploaded once per call.
 """
-function gather_batched_electron_states!(dst::BatchedElectronState, src::BatchedElectronState, inds)
+function copy_batched_electron_states!(dst::BatchedElectronState, src::BatchedElectronState, inds)
     dst.nw == src.nw && dst.nband_max == src.nband_max && length(inds) <= dst.nk ||
-        throw(ArgumentError("cannot gather $(length(inds)) points of $src into $dst"))
-    i = _gather_index(src.nband, inds, src.nk)
-    _gather_last!(dst.iband_offset, src.iband_offset, i)
-    _gather_last!(dst.nband, src.nband, i)
-    _gather_last!(dst.e, src.e, i)
-    _gather_last!(dst.u, src.u, i)
-    _gather_last!(dst.vdiag, src.vdiag, i)
-    _gather_last!(dst.v, src.v, i)
-    _gather_last!(dst.rbar, src.rbar, i)
-    dst
-end
-
-# The gather shared with `gather_batched_phonon_states!`.
-
-# `inds` on the backend of `x`: a range or an index array already on that backend as it is, a host
-# vector checked against `1:n` on the host and uploaded once.
-function _gather_index(x, inds, n)
-    host_inds = on_backend(CPUBackend(), inds)
-    host_inds && checkbounds(Base.OneTo(n), inds)
-    host_inds && !(inds isa AbstractUnitRange) && !on_backend(CPUBackend(), x) ?
-        copyto!(similar(x, Int, length(inds)), inds) : inds
-end
-
-# Copy `src[..., inds]` into `dst[..., 1:length(inds)]`. A host source and a device destination are
-# not one broadcast: gather on the host, then one contiguous upload.
-_gather_last!(::Nothing, ::Nothing, inds) = nothing
-function _gather_last!(dst::AbstractArray{T, N}, src::AbstractArray{T, N}, inds) where {T, N}
-    d = selectdim(dst, N, 1:length(inds))
-    colons = ntuple(_ -> Colon(), N - 1)
-    if !on_backend(CPUBackend(), src)
-        # The indices were checked on the host (`_gather_index`); a device check would cost a
-        # reduction kernel and a device-to-host read per array.
-        @inbounds d .= view(src, colons..., inds)
-    elseif on_backend(CPUBackend(), dst)
-        d .= view(src, colons..., inds)
-    else
-        copyto!(d, src[colons..., inds])
-    end
+        throw(ArgumentError("cannot copy $(length(inds)) points of $src into $dst"))
+    inds = _copy_indices_on_backend(src.nband, inds, src.nk)
+    _copy_last_axis!(dst.iband_offset, src.iband_offset, inds)
+    _copy_last_axis!(dst.nband, src.nband, inds)
+    _copy_last_axis!(dst.e, src.e, inds)
+    _copy_last_axis!(dst.u, src.u, inds)
+    _copy_last_axis!(dst.vdiag, src.vdiag, inds)
+    _copy_last_axis!(dst.v, src.v, inds)
+    _copy_last_axis!(dst.rbar, src.rbar, inds)
     dst
 end

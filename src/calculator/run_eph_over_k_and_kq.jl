@@ -298,9 +298,9 @@ function _setup_eph_over_k_and_kq(
     if precompute_ph
         ph_save, ph_batch = maybe_time(verbosity) do
             if batched
-                b = compute_phonon_states_batched(model, qpts, [:e, :u]; fourier_mode, backend,
+                ph_states = compute_phonon_states_batched(model, qpts, [:e, :u]; fourier_mode, backend,
                                                   eigenpairs = ph_eigenpairs)
-                Vector{PhononState{FT}}(b), b
+                Vector{PhononState{FT}}(ph_states), ph_states
             else
                 # FIXME: Compute velocity_diagonal only if needed by calculator.
                 compute_phonon_states(model, qpts,
@@ -629,7 +629,7 @@ end
 # ---- per-(k, q-tile) `iq` index build ------------------------------------------------------------
 #
 # Fill `iqs[1:nq]` with the index into `qpts` of `x_{k+q} - x_k` for outer k `ik` and every k+q of
-# the tile `qstart .+ (0:nq-1)`; the caller uploads it for the device phonon gather. A standalone
+# the tile `qstart .+ (0:nq-1)`; the caller uploads it for the device phonon copy. A standalone
 # function so the `ik`/`qstart`/`nq` it works on are typed arguments rather than `Core.Box`-wrapped
 # captures of the three enclosing loop bodies.
 function _fill_iqs!(iqs, qpts, xkqs_int, xks_int, ik, qstart, nq)
@@ -761,12 +761,12 @@ function _loop_eph_over_k_and_kq_batched(
     # RR->kR over a batch of `nk_batch_max` outer-k at once: one batched kernel per batch instead of one
     # launch-bound single-k call per k. `ep_ekpR_all` holds g(k, R_ep) for the whole batch; the inner
     # kR->kq driver reads each k's slice `ep_ekpR_all[:, :, ik_ind]` directly.
-    # The outer k-batch's states, gathered from `el_k` per batch.
+    # The outer k-batch's states, copied from `el_k` per batch.
     el_k_tile   = BatchedElectronState(backend, nw, nbandk_max, nk_batch_max, [:u]; FT)
     ep_ekpR_all = alloc(backend, Complex{FT}, ndata_ekpR, nr_ep, nk_batch_max)
     ks_batch     = Vector{Vec3{FT}}(undef, nk_batch_max)
 
-    # The q-tile's phonons, gathered from `ph` by `iq` per (k, q-tile).
+    # The q-tile's phonons, copied from `ph` by `iq` per (k, q-tile).
     ph_tile  = BatchedPhononState(backend, nmodes, nq_batch_max, [:e, :u]; FT)
     epkq_dev = alloc(backend, Complex{FT}, nw, nbandk_max, nmodes, nq_batch_max)
 
@@ -776,7 +776,7 @@ function _loop_eph_over_k_and_kq_batched(
     kRkq_ws = KRtoKQWorkspace(epmat_dev.op_r, ndata_ekpR, nw, nbandk_max, nmodes, nq_batch_max)
 
     # The k+q electron eigenvectors (independent of the outer k) and the phonons are resident on the
-    # backend, built in the setup; each q-tile reads a contiguous slice of the former and gathers
+    # backend, built in the setup; each q-tile reads a contiguous slice of the former and copies
     # the latter by `iq`.
     ukqs_all_dev = el_kq.u
 
@@ -821,7 +821,7 @@ function _loop_eph_over_k_and_kq_batched(
     # reproducing `_hash_xk` bit-identically with no Float64 in the hot loop. Requires every k and
     # k+q to lie exactly on the q-grid (ngrid a multiple of both meshes) — guaranteed by precompute_ph,
     # asserted above. Only `iq` is needed: the q-VECTOR no longer enters the interpolation (the
-    # kR->kq phase is built from x_{k+q}), so this loop gathers phonon data by index only.
+    # kR->kq phase is built from x_{k+q}), so this loop copies phonon data by index only.
     # Both coordinate lists are reduced into `0:ng-1` here, once, so the per-pair fold is
     # `_wrap_reduced` (a compare-and-add) instead of `mod` (a runtime integer division). The q-grid
     # shift is subtracted on the k+q side only: q = x_{k+q} - x_k - shift, and folding it into one
@@ -845,10 +845,10 @@ function _loop_eph_over_k_and_kq_batched(
 
         # Gather U(k) (the k-side box) and the k list for this outer-k batch, padding the partial
         # tail with the last k so the batched RR->kR runs on dense `nk_batch_max`-sized arrays.
-        # A full batch is a range, gathered with no index upload.
+        # A full batch is a range, copied with no index upload.
         iks_padded = nk_batch == nk_batch_max ? iks_batch :
             [iks_batch; fill(kend, nk_batch_max - nk_batch)]
-        gather_batched_electron_states!(el_k_tile, el_k, iks_padded)
+        copy_batched_electron_states!(el_k_tile, el_k, iks_padded)
         uks_dev = el_k_tile.u
         for (ik_ind, ik) in enumerate(iks_padded)
             ks_batch[ik_ind] = kpts.vectors[ik]
@@ -888,16 +888,16 @@ function _loop_eph_over_k_and_kq_batched(
             ikqs_used = qstart:qend
 
             for (ik_ind, ik) in enumerate(iks_batch)
-                # Build this (k, tile)'s q-index list (host-side integers only), then gather this
-                # tile's phonon eigenvectors/frequencies by iq into `ph_tile`; ωq is gathered too so
+                # Build this (k, tile)'s q-index list (host-side integers only), then copy this
+                # tile's phonon eigenvectors/frequencies by iq into `ph_tile`; ωq is copied too so
                 # the fused kernel can fold g2 = |ep|²/(2ω) in the same pass. Everything below runs
                 # at width nq_batch via views into the nq_batch_max-sized buffers, so there is no
                 # padded tail. The indices are checked on the host by `_fill_iqs!` and copied once
-                # into the persistent device buffer (5-arg contiguous copy), which the gather takes
+                # into the persistent device buffer (5-arg contiguous copy), which `copy_batched_phonon_states!` takes
                 # as it is.
                 _fill_iqs!(iqs_batch, qpts, xkqs_int, xks_int, ik, qstart, nq_batch)
                 copyto!(iqs_batch_dev, 1, iqs_batch, 1, nq_batch)
-                gather_batched_phonon_states!(ph_tile, ph, view(iqs_batch_dev, rng_q))
+                copy_batched_phonon_states!(ph_tile, ph, view(iqs_batch_dev, rng_q))
                 uphs_dev, ωq_dev = ph_tile.u, ph_tile.e
 
                 # One batched Wannier->Bloch over this tile's q: ep_kq(q) (nw, nbandk_max, nmodes),
