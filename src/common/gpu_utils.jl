@@ -179,30 +179,27 @@ the GPU e-ph loop so per-tile scratch does not pile up in the memory pool.
 """
 synchronize(::CPUBackend) = nothing
 
-@inline _batched_op(t::Char, X) = t == 'N' ? X : (t == 'T' ? transpose(X) : adjoint(X))
+_batched_opf(t::Char) = t == 'N' ? identity : (t == 'T' ? transpose : adjoint)
 
 """
     batched_gemm!(transA, transB, A, B, C)
 
 `C[:,:,b] = op(transA, A[:,:,b]) * op(transB, B[:,:,b])` for every batch `b` (α=1, β=0),
-where `op('N',X)=X`, `op('T',X)=transpose(X)`, `op('C',X)=adjoint(X)`. The generic method loops
-over the batches, calling `BLAS.gemm!` on host BLAS-type arrays with unit first stride and `mul!`
-otherwise; the CUDA extension uses `CUBLAS.gemm_strided_batched!`.
+where `op('N',X)=X`, `op('T',X)=transpose(X)`, `op('C',X)=adjoint(X)`. An `A` or `B` with batch
+extent 1 is shared by every batch, as in cuBLAS' stride-0 batching. The generic method loops over
+the batches with `mul!`; the CUDA extension uses `CUBLAS.gemm_strided_batched!`.
 """
 function batched_gemm!(transA::Char, transB::Char,
                        A::AbstractArray{T,3}, B::AbstractArray{T,3}, C::AbstractArray{T,3}) where {T}
-    @assert size(A, 3) == size(B, 3) == size(C, 3)
-    # `BLAS.gemm!` takes the trans `Char`s directly. `mul!` on `_batched_op` wrappers chosen by the
-    # runtime `Char`s is dispatched at run time over Union-typed operands, which allocates per call
-    # on Julia >= 1.12.
-    use_blas = T <: LinearAlgebra.BlasFloat &&
-        all(X -> X isa StridedArray && on_backend(CPUBackend(), X) && stride(X, 1) == 1, (A, B, C))
+    @assert size(A, 3) in (1, size(C, 3))
+    @assert size(B, 3) in (1, size(C, 3))
+    _batched_gemm!(_batched_opf(transA), _batched_opf(transB), A, B, C)
+end
+
+# Function barrier: `opA`/`opB` are concrete here, so `mul!` is statically dispatched.
+function _batched_gemm!(opA::FA, opB::FB, A, B, C) where {FA, FB}
     @views for b in axes(C, 3)
-        if use_blas
-            BLAS.gemm!(transA, transB, one(T), A[:, :, b], B[:, :, b], zero(T), C[:, :, b])
-        else
-            mul!(C[:, :, b], _batched_op(transA, A[:, :, b]), _batched_op(transB, B[:, :, b]))
-        end
+        mul!(C[:, :, b], opA(A[:, :, min(b, end)]), opB(B[:, :, min(b, end)]))
     end
     C
 end
