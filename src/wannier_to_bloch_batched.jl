@@ -156,47 +156,24 @@ end
 #  wins on the GPU. Rotation matrices are stacked along the batch dimension.
 
 """
-    get_eph_RR_to_kR_batched!(ep_ekpR_all, itp_epmat::BatchedWannierInterpolator, ks, uks; additional_phase=nothing)
-
-Batched over a list of k-points `ks`. `uks` is `(nw, nband, nk)` (one `uk` per k).
-Writes `ep_ekpR_all`, shape `(nw*nband*nmodes, nr_ep, ..., nk)` — slice `k` is the `op_r` of the
-electron-Bloch / phonon-Wannier object at `ks[k]`. Axes between `nr_ep` and `nk` are further row
-axes of `itp_epmat.parent` slower than `R_p` (the Cartesian direction of a position-weighted `epmat`).
-
-One batched Fourier (`get_fourier_batched!`) over `R_el`, then [`eph_rotate_kR_batched!`](@ref).
-
-`additional_phase`, if given, is `(nr_ep × nk)` — one entry per (parent `irvec_next` R-vector, k) —
-and multiplies the output, so the stored child object is `additional_phase[ip, k] · g(k, R_p)`
-instead of the plain `g(k, R_p)`. It is folded into the final `copyto!`, which already reads and
-writes the whole array, so it costs nothing. The outer-k engine passes `conj(exp(2πi R_p · x_k))`
-here to store `g` in the k+q convention, which makes the following `R_p` Fourier a function of
-`x_{k+q}` alone and hence independent of the outer `k`.
-
-Requires a UNIFORM `nband` across the batch: `ep_ekpR_all` is sized exactly
-`(nw*nband*nmodes, …)`, so all `nk` k-points must share the same `nband` (unlike the per-k
-`get_eph_RR_to_kR!`, which handles a per-k window). A windowed run satisfies this by projecting
-every k onto the same `nbandk_max`-wide eigenvector window (`nband = nbandk_max`); full-band is the
-`nband = nw` special case.
-"""
-function get_eph_RR_to_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T}},
-                                   itp_epmat::BatchedWannierInterpolator{T}, ks, uks;
-                                   additional_phase=nothing) where {T}
-    epmat = itp_epmat.parent
-    nk = size(uks, 3)
-    @assert length(ks) == nk
-    g = similar(epmat.op_r, Complex{T}, epmat.ndata, nk)
-    get_fourier_batched!(g, itp_epmat, ks)                              # (nw^2*nmodes*nr_ep, nk)
-    eph_rotate_kR_batched!(ep_ekpR_all, g, uks; additional_phase)
-end
-
-"""
     eph_rotate_kR_batched!(ep_ekpR_all, g, uks; additional_phase=nothing)
 
-The k rotation of [`get_eph_RR_to_kR_batched!`](@ref) on the Fourier-transformed `g`
+The k rotation of the e-ph matrix Fourier-transformed over `R_el` at a list of k points, `g`
 `(nw^2 * M, nk)`, viewed as `g[iw, jw, M, k]` with `M` the remaining row axes (`nmodes`, `R_p`,
 ...): `ep_ekpR_all[iw, n, M, k] = Σ_jw g[iw, jw, M, k] uks[jw, n, k]`, recast as
 `transpose(uk(k)) * permute(g(k))` in one `batched_gemm!`, times `additional_phase` along `R_p`
-(the second axis of `ep_ekpR_all`).
+(the second axis of `ep_ekpR_all`). `uks` is `(nw, nband, nk)`, and `ep_ekpR_all` is
+`(nw*nband*nmodes, nr_ep, ..., nk)`: slice `k` is the `op_r` of the electron-Bloch /
+phonon-Wannier object at that k.
+
+`additional_phase`, if given, is `(nr_ep × nk)` and multiplies the output, so the result is
+`additional_phase[ip, k] · g(k, R_p)`. It is folded into the final copy, which already reads and
+writes the whole array. The outer-k engine passes `conj(exp(2πi R_p · x_k))` to store `g` in the
+k+q convention, which makes the following `R_p` Fourier a function of `x_{k+q}` alone and hence
+independent of the outer `k`.
+
+All `nk` points share one `nband` (unlike the per-k `get_eph_RR_to_kR!`, which handles a per-k
+window): a windowed run projects every k onto the same `nbandk_max`-wide eigenvector window.
 """
 function eph_rotate_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T}}, g, uks;
                                 additional_phase=nothing) where {T}
@@ -234,7 +211,7 @@ One batched Fourier over `R_ep`, then two `batched_gemm!`s for the per-q rotatio
 The three inputs are the kR intermediate `g(k, R_p)` as `ep_kR`, `(nw*nbandk*nmodes, nr)`; the
 Fourier phase `exp(2πi R_p · x_q)` as `phase`, `(nr, nq)`; and the rotations. Taking the phase
 rather than a q-list is what lets a caller build it once and reuse it over many `k` — the outer-k
-engine does that via the k+q convention of [`get_eph_RR_to_kR_batched!`](@ref).
+engine does that via the k+q convention of [`eph_rotate_kR_batched!`](@ref).
 
 `g` `(nw*nbandk*nmodes, nq)` and `tmp` `(nbandkq, nbandk*nmodes, nq)` are the scratch at exactly
 this `nq`, reused across calls; `nothing` allocates them.
@@ -262,58 +239,14 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
 end
 
 """
-    get_eph_Rq_to_kq_batched!(ep_kq_all, itp_epobj_eRpq::BatchedWannierInterpolator, ks, uks, ukqs;
-                              g=nothing, tmp=nothing, uk_rep=nothing)
-
-Batched over a list of k-points `ks` (for a fixed q). Counterpart of [`get_eph_Rq_to_kq!`](@ref)
-that runs on the backend of `itp_epobj_eRpq.parent.op_r` — the list-batched inner-k step of the
-outer-q e-ph loop. `uks` is `(nw, nbandk, nk)` and `ukqs` is `(nw, nbandkq, nk)` (one eigenvector
-per k / k+q). Writes `ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nk)`.
-
-The parent is the electron-Wannier / phonon-Bloch object (`op_r` `(nw^2*nmodes, nr_el)`, the
-outer-q stage 1 at the current q). One batched Fourier over `R_el` gives
-`g(k)` `(nw^2*nmodes, nk)`, viewed as `g[iw, jw, ν, k]`, then the per-k rotation
-`ep_kq_all[m,n,ν,k] = Σ_{iw,jw} conj(ukqs[iw,m,k]) · g[iw,jw,ν,k] · uks[jw,n,k]` is applied as two
-`batched_gemm!`s (`ukq(k)'` on the left over batch `k`, `uk(k)` on the right over batch `(ν,k)`).
-
-`g` `(nw^2*nmodes, nk)`, `tmp` `(nbandkq, nw*nmodes, nk)` and `uk_rep` `(nw, nbandk, nmodes*nk)`
-are the scratch at exactly this `nk`; `nothing` allocates them.
-
-All `nk` k-points share the same `nbandk`/`nbandkq` box (entries past a point's window are
-undefined, as in the containers).
-"""
-function get_eph_Rq_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
-                                   itp_epobj_eRpq::BatchedWannierInterpolator{T}, ks, uks, ukqs;
-                                   g=nothing, tmp=nothing, uk_rep=nothing) where {T}
-    nbandkq, nbandk, nmodes, nk = size(ep_kq_all)
-    nw = size(uks, 1)
-    @assert size(uks) == (nw, nbandk, nk)
-    @assert size(ukqs) == (nw, nbandkq, nk)
-    @assert length(ks) == nk
-    parent = itp_epobj_eRpq.parent
-    @assert parent.ndata == nw^2 * nmodes
-
-    g      = g === nothing ? similar(parent.op_r, Complex{T}, parent.ndata, nk) : g
-    tmp    = tmp === nothing ? similar(parent.op_r, Complex{T}, nbandkq, nw * nmodes, nk) : tmp
-    uk_rep = uk_rep === nothing ? similar(parent.op_r, Complex{T}, nw, nbandk, nmodes * nk) : uk_rep
-    @assert size(g) == (parent.ndata, nk)
-    @assert size(tmp) == (nbandkq, nw * nmodes, nk)
-    @assert size(uk_rep) == (nw, nbandk, nmodes * nk)
-
-    # Fourier over R_el at every k -> g(k) in (nw, nw, nmodes, nk); index legend g[iw, jw, ν, k]
-    # with iw the k+q-side (ukq) leg and jw the k-side (uk) leg.
-    get_fourier_batched!(g, itp_epobj_eRpq, ks)                        # (nw^2*nmodes, nk)
-
-    eph_apply_rotations_rqkq!(ep_kq_all, g, uks, ukqs, tmp, uk_rep)
-    ep_kq_all
-end
-
-"""
     eph_apply_rotations_rqkq!(ep_kq_all, g, uks, ukqs, tmp, uk_rep)
 
-Apply the two per-k electron gauge rotations of the Rq→kq driver to the Fourier-interpolated `g`
-(`(nw²·nmodes, nk)`, viewed as `g[iw, jw, ν, k]`), writing
+Apply the two per-k electron gauge rotations of the Rq→kq step (fixed q, a list of k; the batched
+counterpart of [`get_eph_Rq_to_kq!`](@ref)) to `g`, the electron-Wannier / phonon-Bloch e-ph matrix
+Fourier-transformed over `R_el` at every k (`(nw²·nmodes, nk)`, viewed as `g[iw, jw, ν, k]`), writing
 `ep_kq_all[m, n, ν, k] = Σ_{iw,jw} conj(ukqs[iw,m,k]) · g[iw,jw,ν,k] · uks[jw,n,k]`.
+`uks` is `(nw, nbandk, nk)`, `ukqs` `(nw, nbandkq, nk)`; `tmp` `(nbandkq, nw*nmodes, nk)` and
+`uk_rep` `(nw, nbandk, nmodes*nk)` are scratch at exactly this `nk`.
 
 Generic method: two `batched_gemm!`s (`ukq(k)'` on the left over batch `k`; `uk(k)` on the right
 over batch `(ν,k)` after replicating `uks` over the modes into `uk_rep`), so any backend works.

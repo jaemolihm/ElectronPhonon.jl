@@ -38,7 +38,7 @@ Keywords:
 * `mpi_comm_k` — splits the outer k points across ranks.
 """
 run_eph_over_k_and_kq(model::Model, kpts_input, kqpts_input; kwargs...) =
-    _run_eph(OuterKLoop(), model, kpts_input, kqpts_input; kwargs...)
+    _run_eph(OuterKLoop(), model, kpts_input, kqpts_input; inner_loop_kq = true, kwargs...)
 
 """
     run_eph_over_k_and_q(model, kpts, qpts; calculators, backend, kwargs...)
@@ -82,7 +82,7 @@ chunk); `n_inner_tile` k points per block, at most `2^15` on a GPU; no `covarian
 `el_kq_eigenpairs` only with `precompute_el_kq`.
 """
 run_eph_over_q_and_k(model::Model, kpts_input, qpts_input; use_symmetry::Bool = true, kwargs...) =
-    _run_eph(OuterQLoop(), model, kpts_input, qpts_input;
+    _run_eph(OuterQLoop(), model, kpts_input, qpts_input; inner_loop_kq = false,
              symmetry = use_symmetry ? model.symmetry : nothing, kwargs...)
 
 
@@ -96,10 +96,10 @@ function loop_ph_quantities(model, (energy_conservation_mode, _))
      energy_conservation_mode === :Linear ? [:vdiag] : Symbol[]]
 end
 
-# `inner_loop_kq` (`OuterKLoop` only): true for run_eph_over_k_and_kq (inner k+q grid),
-# false for run_eph_over_k_and_q (inner q points, with k+q solved per tile).
+# `inner_loop_kq`: true for run_eph_over_k_and_kq (inner k+q grid), false for
+# run_eph_over_k_and_q (inner q points, with k+q solved per tile) and under `OuterQLoop`.
 function _prepare_engine(order::LoopTag, model::Model{FT}, kpts_input, second_input;
-        inner_loop_kq = true,
+        inner_loop_kq,
         calculators = [],
         el_quantities = Symbol[],
         ph_quantities = Symbol[],
@@ -266,7 +266,8 @@ Prepare an outer-q engine without running calculators, for a model loaded with
 [`OuterKEngine`](@ref); `stage2!(eng, iq, k_indices)` returns a complete block.
 """
 function OuterQEngine(model::Model, kpts, qpts; symmetry = nothing, nchunks_threads = 1, kwargs...)
-    _prepare_engine(OuterQLoop(), model, kpts, qpts; symmetry, nchunks_threads, kwargs...)
+    _prepare_engine(OuterQLoop(), model, kpts, qpts; inner_loop_kq = false, symmetry, nchunks_threads,
+        kwargs...)
 end
 
 # Production drivers share the engine constructors' preparation and calculator-ready stages.
@@ -307,10 +308,8 @@ function _run_eph_loop(eng, order, calculators; symmetry, progress_print_step, v
         synchronize(eng.backend)
     end
 
-    # Preserve the drivers' return values and outer-q postprocessing symmetry contract.
-    symmetry_post = order isa OuterQLoop ? eng.model.symmetry : symmetry
     for calculator in calculators
-        postprocess_calculator!(calculator; qpts = eng.qpts, symmetry = symmetry_post)
+        postprocess_calculator!(calculator; qpts = eng.qpts, symmetry)
     end
     (; kpts = eng.kpts, qpts = eng.qpts, els_k = eng.els_k, els_kq = eng.els_kq, phs = eng.phs)
 end
@@ -325,7 +324,7 @@ end
 # cache-sized 1024 per chunk on the CPU.
 function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, nkq, nchunks,
         n_outer_batch, n_inner_tile, nband_max_k, nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
-        drop_pairs, precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq = true)
+        drop_pairs, precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq)
     (; nw, nmodes) = model
     outer_default = order isa OuterKLoop ? 256 : backend isa CPUBackend ? 1 : 16
     nbatch_outer = max(1, min(something(n_outer_batch, outer_default), n_outer))
@@ -388,8 +387,8 @@ end
 # quantities of the loop and the calculators.
 function _check_run(order, model, backend, calculators, kpts_input, second_input, el_qty;
         energy_conservation, covariant_derivative_of_g, eph_phonon_basis, fourier_mode,
-        precompute_el_kq, screening_params, mpi_comm_k, el_kq_eigenpairs, symmetry = nothing,
-        inner_loop_kq = true, el_k_eigenpairs = nothing)
+        precompute_el_kq, screening_params, mpi_comm_k, el_kq_eigenpairs, symmetry,
+        inner_loop_kq, el_k_eigenpairs)
     Order = typeof(order)
     for calc in calculators
         supports(calc, Order) || throw(ArgumentError("$calc does not support the " *
@@ -478,7 +477,7 @@ _input_ngrid(x::AbstractKpoints) = x.ngrid
 # per tile: under `OuterQLoop`, or under `OuterKLoop` with `inner_loop_kq = false`), the q set and its
 # phonons, all on `backend`.
 function _setup_states(order, model::Model{FT}, kpts_input, second_input, el_qty, ph_qty;
-        inner_loop_kq = true, backend,
+        inner_loop_kq, backend,
         window_k, window_kq, symmetry, precompute_el_kq, keep_all_qpts, eph_phonon_basis,
         fourier_mode, mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs,
         verbosity) where {FT}
@@ -600,21 +599,21 @@ function _loop_outer_k!(eng::OuterKEngine, batch, calculators)
     nothing
 end
 
-function _loop_outer_k_chunk!(eng, tile_workspace, calculators; chunk, inner_indices)
+function _loop_outer_k_chunk!(eng_fields, tile_workspace, calculators; chunk, inner_indices)
     # function barrier for one CPU/GPU chunk's concrete states and reusable buffers.
-    ctx = LoopContext(eng.backend, OuterKLoop(), eng.batch, chunk)
+    ctx = LoopContext(eng_fields.backend, OuterKLoop(), eng_fields.batch, chunk)
 
-    for tile in Iterators.partition(inner_indices, eng.n_inner_tile)
+    for tile in Iterators.partition(inner_indices, eng_fields.n_inner_tile)
         # A resident k+q tile shares its Fourier phase across all outer k points.
         phase = nothing
-        if eng.els_kq !== nothing
+        if eng_fields.els_kq !== nothing
             phase = view(tile_workspace.P_kq, :, 1:length(tile))
-            @views build_fourier_phase!(phase, eng.irvecp_mat, eng.xkq[:, tile])
+            @views build_fourier_phase!(phase, eng_fields.irvecp_mat, eng_fields.xkq[:, tile])
         end
 
-        for ik in eng.batch
-            # The same stage-2 worker also serves standalone stage2!(eng, ik, tile).
-            block = _stage2!(OuterKLoop(), eng, tile_workspace, ik, tile; phase)
+        for ik in eng_fields.batch
+            # The same stage-2 worker also serves standalone stage2!(eng_fields, ik, tile).
+            block = _stage2!(OuterKLoop(), eng_fields, tile_workspace, ik, tile; phase)
             block === nothing && continue
 
             for calculator in calculators
@@ -648,13 +647,13 @@ function _loop_outer_q!(eng::OuterQEngine, batch, calculators)
     nothing
 end
 
-function _loop_outer_q_chunk!(eng, tile_workspace, calculators; chunk, iks, iq)
+function _loop_outer_q_chunk!(eng_fields, tile_workspace, calculators; chunk, iks, iq)
     # function barrier for one chunk's concrete state containers and Fourier/rotation scratch.
-    ctx = LoopContext(eng.backend, OuterQLoop(), eng.batch, chunk)
+    ctx = LoopContext(eng_fields.backend, OuterQLoop(), eng_fields.batch, chunk)
 
-    for tile in Iterators.partition(iks, eng.n_inner_tile)
+    for tile in Iterators.partition(iks, eng_fields.n_inner_tile)
         # The same stage-2 worker gathers/solves states and returns a complete block for direct calls.
-        block = _stage2!(OuterQLoop(), eng, tile_workspace, iq, tile)
+        block = _stage2!(OuterQLoop(), eng_fields, tile_workspace, iq, tile)
         block === nothing && continue
 
         for calculator in calculators
@@ -690,7 +689,7 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer, n_o
         nchunks = backend isa CPUBackend ? nchunks_threads : 1, n_outer_batch, n_inner_tile,
         nband_max_k = model.nw, nband_max_kq = model.nw, els_k = nothing, els_kq = nothing, phs = nothing,
         el_qty, ph_qty, drop_pairs = false, precompute_el_kq = false, covariant_derivative_of_g = false,
-        eph_phonon_basis = :eigenmode)
+        eph_phonon_basis = :eigenmode, inner_loop_kq = outer_k)
     (; loop = outer_k ? :outer_k : :outer_q, committed, bytes.per_pair, batch = nbatch_inner,
        free = free_bytes(backend))
 end

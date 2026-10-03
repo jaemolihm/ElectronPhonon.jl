@@ -121,16 +121,6 @@ struct EPBlock{Order <: LoopTag, AT, DGT, EK <: BatchedElectronState, EKQ <: Bat
     iq    :: IQ
 end
 
-# Borrow output storage with exactly the same point and band extents as the states.
-function EPBlock{O}(workspace, els_k::BatchedElectronState, els_kq::BatchedElectronState,
-        phs::BatchedPhononState; kwargs...) where {O <: LoopTag}
-    n = O === OuterKLoop ? els_kq.nk : els_k.nk
-    dims = (els_kq.nband_max, els_k.nband_max, phs.nmodes, n)
-    ep = reshape_buffer_view(workspace.ep, dims...)
-    dg = O === OuterKLoop && workspace.dg !== nothing ?
-        reshape_buffer_view(workspace.dg, dims[1:3]..., 3, n) : nothing
-    EPBlock{O}(; ep, dg, els_k, els_kq, phs, kwargs...)
-end
 function EPBlock{O}(; ep::AT, dg::DGT, els_k::EK, els_kq::EKQ, phs::PH, wtk::WK, wtq::WQ, xk::XK,
         xq::XQ, ik::IK, ikq::IKQ, iq::IQ) where {O <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}
     EPBlock{O, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}(ep, dg, els_k, els_kq, phs, wtk, wtq,

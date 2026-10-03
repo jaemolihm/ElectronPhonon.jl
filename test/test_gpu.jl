@@ -3,8 +3,8 @@ using ElectronPhonon
 using ElectronPhonon: WannierObject, Vec3, get_eph_RR_to_kR!, get_eph_kR_to_kq!, get_eph_Rq_to_kq!, to_device
 # Batched drivers / primitives are internal (unexported); import the ones the tests use.
 using ElectronPhonon: eigvals_batched, eigen_batched, get_el_eigen_batched, get_el_eigen_valueonly_batched,
-    get_el_velocity_direct_batched, get_eph_RR_to_kR_batched!, get_eph_kR_to_kq_batched!,
-    get_eph_Rq_to_kq_batched!, eph_apply_rotations!, eph_apply_rotations_rqkq!, batched_gemm!
+    get_el_velocity_direct_batched, get_eph_kR_to_kq_batched!, eph_rotate_kR_batched!,
+    eph_apply_rotations!, eph_apply_rotations_rqkq!, batched_gemm!, get_fourier_batched!
 using LinearAlgebra
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
@@ -32,6 +32,23 @@ function kR_to_kq_from_qs!(ep_kq_all, backend, itp_ep_ekpR, qs, u_phs, ukqs; ws 
         irvec_mat, xkmat)
     @views get_eph_kR_to_kq_batched!(ep_kq_all, parent.op_r[1:parent.ndata, :], phase, u_phs, ukqs;
                                      ws..., g2_out, ωq)
+end
+
+# The RR→kR and Rq→kq steps as the engines run them: one batched Fourier transform over R_el at a
+# k-list, then the rotation kernel. Like `kR_to_kq_from_qs!`, they allocate their own scratch.
+function RR_to_kR_from_ks!(ep_ekpR_all, itp_epmat, ks, uks; additional_phase = nothing)
+    g = similar(itp_epmat.parent.op_r, ComplexF64, itp_epmat.parent.ndata, length(ks))
+    get_fourier_batched!(g, itp_epmat, ks)
+    eph_rotate_kR_batched!(ep_ekpR_all, g, uks; additional_phase)
+end
+function Rq_to_kq_from_ks!(ep_kq_all, itp_epobj_eRpq, ks, uks, ukqs)
+    nbandkq, nbandk, nmodes, nk = size(ep_kq_all)
+    nw = size(uks, 1)
+    op_r = itp_epobj_eRpq.parent.op_r
+    g = similar(op_r, ComplexF64, nw^2 * nmodes, nk)
+    get_fourier_batched!(g, itp_epobj_eRpq, ks)
+    eph_apply_rotations_rqkq!(ep_kq_all, g, uks, ukqs, similar(op_r, ComplexF64, nbandkq, nw * nmodes, nk),
+                              similar(op_r, ComplexF64, nw, nbandk, nmodes * nk))
 end
 
 # A mis-dispatch (a device view falling back to the generic scalar `batched_gemm!` instead of the
@@ -80,7 +97,7 @@ function check_eph_batched(backend; rtol)
 
     # list-batched RR→kR over all k — check every column
     ep_all = arr_dev(zeros(ComplexF64, nwe*nband*nmodes, nr_ep, nk2))
-    get_eph_RR_to_kR_batched!(ep_all, get_interpolator(epmat_d; fourier_mode="batched", backend, batch_size=nk2), ks, arr_dev(uks))
+    RR_to_kR_from_ks!(ep_all, get_interpolator(epmat_d; fourier_mode="batched", backend, batch_size=nk2), ks, arr_dev(uks))
     ep_all_h = Array(ep_all)
     for ik in 1:nk2
         @test isapprox(ep_all_h[:, :, ik], refs_RR[ik]; rtol)
@@ -105,8 +122,8 @@ function check_eph_batched(backend; rtol)
     end
     eRpq_d = to_dev(eRpq_obj)
     ep_rqkq = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nk2))
-    get_eph_Rq_to_kq_batched!(ep_rqkq, get_interpolator(eRpq_d; fourier_mode="batched", backend, batch_size=nk2),
-                              ks, arr_dev(uks), arr_dev(ukqs_k))
+    Rq_to_kq_from_ks!(ep_rqkq, get_interpolator(eRpq_d; fourier_mode="batched", backend, batch_size=nk2),
+                      ks, arr_dev(uks), arr_dev(ukqs_k))
     ep_rqkq_h = Array(ep_rqkq)
     for ik in 1:nk2
         @test isapprox(ep_rqkq_h[:, :, :, ik], ep_rqkq_ref[:, :, :, ik]; rtol)
@@ -156,7 +173,7 @@ end
 end
 
 """
-`get_eph_kR_to_kq_batched!` and the k+q convention of `get_eph_RR_to_kR_batched!`, on `backend`
+`get_eph_kR_to_kq_batched!` and the k+q convention of `eph_rotate_kR_batched!`, on `backend`
 (as in [`check_eph_batched`](@ref)).
 
 1. With the same `build_fourier_phase!(qs)` phase, the interpolator path (`kR_to_kq_from_qs!`, whose
@@ -193,7 +210,7 @@ function check_eph_kq_convention(backend; rtol)
 
     # (a) reference: q convention, interpolator + qs method
     ep_kR_q = arr_dev(zeros(ComplexF64, ndata, nr_ep, 1))
-    get_eph_RR_to_kR_batched!(ep_kR_q, itp_epmat, [xk], uk)
+    RR_to_kR_from_ks!(ep_kR_q, itp_epmat, [xk], uk)
     obj_q = to_dev(WannierObject(irvec_ep, Array(ep_kR_q)[:, :, 1]))
     ref = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq))
     kR_to_kq_from_qs!(ref, backend, get_interpolator(obj_q; fourier_mode="batched", backend, batch_size=nq),
@@ -208,12 +225,12 @@ function check_eph_kq_convention(backend; rtol)
     @test Array(out_b) == Array(ref)
 
     # (c) k+q convention: fold conj(exp(2πi R_p·x_k)) into the child, transform at x_{k+q}.
-    # `get_eph_RR_to_kR_batched!` multiplies by whatever it is handed, so conjugate here.
+    # `eph_rotate_kR_batched!` multiplies by whatever it is handed, so conjugate here.
     P_mk = arr_dev(zeros(ComplexF64, nr_ep, 1))
     ElectronPhonon.build_fourier_phase!(P_mk, irvecp_mat, arr_dev(reshape([xk[d] for d in 1:3], 3, 1)))
     P_mk .= conj.(P_mk)
     ep_kR_kq = arr_dev(zeros(ComplexF64, ndata, nr_ep, 1))
-    get_eph_RR_to_kR_batched!(ep_kR_kq, itp_epmat, [xk], uk; additional_phase = P_mk)
+    RR_to_kR_from_ks!(ep_kR_kq, itp_epmat, [xk], uk; additional_phase = P_mk)
     P_kq = arr_dev(zeros(ComplexF64, nr_ep, nq))
     ElectronPhonon.build_fourier_phase!(P_kq, irvecp_mat,
                                   arr_dev([xkq[d] for d in 1:3, xkq in xkqs]))
@@ -430,25 +447,16 @@ end
     end
 end
 
-@testset "kR→kq and Rq→kq workspaces must have the block's exact extent" begin
+@testset "kR→kq workspaces must have the block's exact extent" begin
     # A workspace array at a wider batch than the block (the full buffer rather than a view of its
-    # leading columns) fails the size assertion instead of being used past the block. Each wide
-    # array is one the kernels would otherwise reach with a `DimensionMismatch`, not an assertion.
+    # leading columns) fails the size assertion instead of being used past the block.
     let nw = 3, nband = 3, nmodes = 2, nr = 4, nq = 5
-        irvec = [Vec3(i, 0, 0) for i in 0:nr-1]
         ndata = nw * nband * nmodes
         ep = zeros(ComplexF64, nband, nband, nmodes, nq)
         ep_kR, phase = rand(ComplexF64, ndata, nr), rand(ComplexF64, nr, nq)
         uphs, ukqs = rand(ComplexF64, nmodes, nmodes, nq), rand(ComplexF64, nw, nband, nq)
         @test_throws AssertionError get_eph_kR_to_kq_batched!(ep, ep_kR, phase, uphs, ukqs;
             g = rand(ComplexF64, ndata, nq + 2), tmp = rand(ComplexF64, nband, nband * nmodes, nq))
-        eRpq = WannierObject(irvec, rand(ComplexF64, nw^2 * nmodes, nr))
-        itp = get_interpolator(eRpq; fourier_mode = "batched", backend = ElectronPhonon.CPUBackend(),
-                               batch_size = nq)
-        ks, uks = [Vec3(rand(3)...) for _ in 1:nq], rand(ComplexF64, nw, nband, nq)
-        @test_throws AssertionError get_eph_Rq_to_kq_batched!(ep, itp, ks, uks, ukqs;
-            g = rand(ComplexF64, nw^2 * nmodes, nq), tmp = rand(ComplexF64, nband, nw * nmodes, nq),
-            uk_rep = rand(ComplexF64, nw, nband, nmodes * (nq + 2)))
     end
 end
 

@@ -148,9 +148,9 @@ each k/q its own rotation matrix, which is a stack of independent GEMMs with dis
 This uses `batched_gemm!(transA, transB, A, B, C)` — a `mul!` loop on the CPU and
 `CUBLAS.gemm_strided_batched!` in the extension. This is the only e-ph-related extension code.
 
-All four drivers (`get_eph_RR_to_kR_batched!` / `get_eph_kR_to_kq_batched!`, each in single and
-list-batched forms) live in `wannier_to_bloch_batched.jl` and pick CPU/GPU by the backend of
-`parent.op_r`.
+The list-batched kernels (`eph_rotate_kR_batched!`, `get_eph_kR_to_kq_batched!`,
+`eph_apply_rotations_rqkq!`) live in `wannier_to_bloch_batched.jl` and run on the backend of their
+arrays.
 
 ### Calculator integration
 

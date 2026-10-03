@@ -82,7 +82,7 @@ end
 
 
 """
-    _fourier_batched!(out, core::BatchedFourierCore, xkmat::AbstractMatrix, op_r=core.parent.op_r)
+    _fourier_batched!(out, core::BatchedFourierCore, xkmat::AbstractMatrix)
 
 Fourier-transform `core.parent` at the `(3 × nk)` crystal coordinates `xkmat`, writing into `out`
 `(ndata, nk)`. One broadcast for the phases ([`build_fourier_phase!`](@ref)) and one GEMM for the
@@ -91,20 +91,17 @@ transform (`op_r * phase`), so it runs on any backend without scalar indexing.
 PARTIAL, internal: `xkmat` and `out` must already live on `core.backend`, and `nk` must not exceed
 `core.batch_size`. Staging a host k-list and splitting a longer one into blocks belong to the total
 [`get_fourier_batched!`](@ref) on the interpolator.
-`op_r` may be a same-shaped view of another batch's data with the same R vectors; the e-ph
-outer-q engine uses this to share stage-1 outputs read-only across independent phase workspaces.
 """
-function _fourier_batched!(out, core::BatchedFourierCore, xkmat::AbstractMatrix, op_r=core.parent.op_r)
+function _fourier_batched!(out, core::BatchedFourierCore, xkmat::AbstractMatrix)
     (; parent, phase) = core
     ndata = parent.ndata
     nk = size(xkmat, 2)
     @assert size(out) == (ndata, nk)
     @assert nk <= core.batch_size
-    @assert size(op_r) == size(parent.op_r)
 
     @views build_fourier_phase!(phase[:, 1:nk], core.irvec_mat, xkmat)
     # BLAS3 gemm: much faster than multiple BLAS2 gemv calls
-    @views mul!(out, op_r[1:ndata, :], phase[:, 1:nk])
+    @views mul!(out, parent.op_r[1:ndata, :], phase[:, 1:nk])
     out
 end
 

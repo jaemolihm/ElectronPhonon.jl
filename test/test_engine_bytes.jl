@@ -44,7 +44,8 @@ end
         for (order, mom, dg) in ((OuterKLoop(), "el", false), (OuterKLoop(), "el", true),
                                  (OuterQLoop(), "ph", false))
             model = _load_model_from_artifacts("pb"; epmat_outer_momentum = mom)
-            st = _setup_states(order, model, grid, grid, el_qty, ph_qty; backend, window_k = window,
+            st = _setup_states(order, model, grid, grid, el_qty, ph_qty;
+                inner_loop_kq = order isa OuterKLoop, backend, window_k = window,
                 window_kq = window, symmetry = nothing, precompute_el_kq = false, keep_all_qpts = true,
                 eph_phonon_basis = :eigenmode, fourier_mode = "gridopt", mpi_comm_k = nothing,
                 el_k_eigenpairs = nothing, el_kq_eigenpairs = nothing, ph_eigenpairs = nothing,
@@ -56,6 +57,7 @@ end
             if order isa OuterKLoop
                 bytes = engine_bytes(OuterKEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, nkq = st.kqpts.n, el_qty, ph_qty, drop_pairs = false,
+                    inner_loop_kq = true,
                     covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
                 eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = dg, common...)
@@ -98,7 +100,8 @@ end
     ENGINE_BYTES_GPU && push!(backends, ElectronPhonon.gpu_backend())
     for backend in backends, order in (OuterKLoop(), OuterQLoop())
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum = order isa OuterKLoop ? "el" : "ph")
-        st = _setup_states(order, model, grid, grid, el_qty, ph_qty; backend, window_k = window,
+        st = _setup_states(order, model, grid, grid, el_qty, ph_qty;
+            inner_loop_kq = order isa OuterKLoop, backend, window_k = window,
             window_kq = window, symmetry = nothing, precompute_el_kq = false, keep_all_qpts = true,
             eph_phonon_basis = :eigenmode, fourier_mode = "gridopt", mpi_comm_k = nothing,
             el_k_eigenpairs = nothing, el_kq_eigenpairs = nothing, ph_eigenpairs = nothing, verbosity = 0)

@@ -26,5 +26,6 @@ ElectronPhonon.supports(::_NeverRunCalc, ::Type{OuterKLoop}) = true
         (2, 2, 2), kpoints_grid((4, 4, 4)), [:u]; energy_conservation = (:None, 0.0),
         covariant_derivative_of_g = false, eph_phonon_basis = :eigenmode, fourier_mode = "gridopt",
         precompute_el_kq = false, screening_params = nothing, mpi_comm_k = nothing,
-        el_kq_eigenpairs = nothing) === nothing
+        el_kq_eigenpairs = nothing, symmetry = nothing, inner_loop_kq = true,
+        el_k_eigenpairs = nothing) === nothing
 end
