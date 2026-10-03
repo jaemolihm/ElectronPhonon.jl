@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: OuterKLoop, OuterQLoop, OuterKEngine, OuterQEngine, engine_bytes, stage1!,
-    _setup_states, unit_to_aru
+    _run_options, _setup_states, unit_to_aru
 
 # `engine_bytes` is what `plan_batch` sizes the inner tile from, before the engine exists: it must
 # cover the device arrays the engine constructor allocates (summed `sizeof`) and what one `stage1!`
@@ -44,12 +44,10 @@ end
         for (order, mom, dg) in ((OuterKLoop(), "el", false), (OuterKLoop(), "el", true),
                                  (OuterQLoop(), "ph", false))
             model = _load_model_from_artifacts("pb"; epmat_outer_momentum = mom)
-            st = _setup_states(order, model, grid, grid, el_qty, ph_qty;
-                inner_loop_kq = order isa OuterKLoop, backend, window_k = window,
-                window_kq = window, symmetry = nothing, precompute_el_kq = false, keep_all_qpts = true,
-                eph_phonon_basis = :eigenmode, fourier_mode = "gridopt", mpi_comm_k = nothing,
-                el_k_eigenpairs = nothing, el_kq_eigenpairs = nothing, ph_eigenpairs = nothing,
+            options = _run_options(model; inner_loop_kq = order isa OuterKLoop, backend,
+                window_k = window, window_kq = window, symmetry = nothing, keep_all_qpts = true,
                 verbosity = 0)
+            st = _setup_states(order, model, grid, grid, options)
             nbk = st.els_k.nband_max
             nbkq = st.els_kq === nothing ? model.nw : st.els_kq.nband_max
             common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1,
@@ -87,9 +85,10 @@ end
     end
 end
 
-# The stage-2 contraction reuses tile scratch; state preparation/eigensolves are measured
-# separately. On a device the outer-q k list is staged per call (24 bytes per point).
-@testset "stage2! contraction allocates no scratch" begin
+# `stage2!` runs once per block, on the tile's preallocated scratch: with resident k+q states (no
+# per-tile eigensolve) it allocates no array of the block's size, on the CPU or on a device. On a
+# device the outer-q k list is staged per call (24 bytes per point).
+@testset "stage2! allocates no scratch" begin
     using ElectronPhonon: stage2!
     eV = unit_to_aru(:eV); e_F = 11.68eV
     window = (e_F - 0.5eV, e_F + 3eV)
@@ -100,33 +99,29 @@ end
     ENGINE_BYTES_GPU && push!(backends, ElectronPhonon.gpu_backend())
     for backend in backends, order in (OuterKLoop(), OuterQLoop())
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum = order isa OuterKLoop ? "el" : "ph")
-        st = _setup_states(order, model, grid, grid, el_qty, ph_qty;
-            inner_loop_kq = order isa OuterKLoop, backend, window_k = window,
-            window_kq = window, symmetry = nothing, precompute_el_kq = false, keep_all_qpts = true,
-            eph_phonon_basis = :eigenmode, fourier_mode = "gridopt", mpi_comm_k = nothing,
-            el_k_eigenpairs = nothing, el_kq_eigenpairs = nothing, ph_eigenpairs = nothing, verbosity = 0)
+        options = _run_options(model; inner_loop_kq = order isa OuterKLoop, backend,
+            window_k = window, window_kq = window, symmetry = nothing, keep_all_qpts = true,
+            precompute_el_kq = order isa OuterQLoop, verbosity = 0)
+        st = _setup_states(order, model, grid, grid, options)
         common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1,
                   eph_phonon_basis = :eigenmode)
         if order isa OuterKLoop
             eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                 st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = false, common...)
-            stage1!(eng, 1:nb)
         else
             eng = OuterQEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
-                st.kpts, st.qpts, common...)
-            stage1!(eng, 1:nb)
+                st.kpts, st.kqpts, st.qpts, common...)
         end
-        block = stage2!(eng, 1, 1:ntile)
-        t = ElectronPhonon._workspace_fields(eng.tiles[1])
-        fields = ElectronPhonon._workspace_fields(eng)
-        contract = order isa OuterKLoop ?
-            () -> ElectronPhonon._contract!(order, fields, t, block, 1, view(t.P_kq, :, 1:ntile)) :
-            () -> ElectronPhonon._contract!(order, fields, t, block, 1)
-        contract()
+        stage1!(eng, 1:nb)
+        # The worker behind `stage2!`, on the concrete fields, so the dispatch is not measured.
+        tile_workspace = ElectronPhonon._workspace_fields(eng.tiles[1])
+        eng_fields = ElectronPhonon._workspace_fields(eng)
+        run2 = () -> ElectronPhonon._stage2!(order, eng_fields, tile_workspace, 1, 1:ntile)
+        run2()
         nbytes = if backend isa ElectronPhonon.CPUBackend
-            @allocated contract()
+            @allocated run2()
         else
-            CUDA.synchronize(); _device_allocated(contract)
+            CUDA.synchronize(); _device_allocated(run2)
         end
         @info "stage2! allocations" order backend = nameof(typeof(backend)) nbytes
         # Only small view/dispatch wrappers and the staged k list may be allocated; the rotation

@@ -96,9 +96,12 @@ function loop_ph_quantities(model, (energy_conservation_mode, _))
      energy_conservation_mode === :Linear ? [:vdiag] : Symbol[]]
 end
 
+# The options of an e-ph run with their defaults, shared by the drivers and the engine constructors.
 # `inner_loop_kq`: true for run_eph_over_k_and_kq (inner k+q grid), false for
 # run_eph_over_k_and_q (inner q points, with k+q solved per tile) and under `OuterQLoop`.
-function _prepare_engine(order::LoopTag, model::Model{FT}, kpts_input, second_input;
+# `el_qty` / `ph_qty` are the state quantities of the run: those of the loop, of the caller
+# (`el_quantities` / `ph_quantities`) and of the calculators.
+function _run_options(model::Model;
         inner_loop_kq,
         calculators = [],
         el_quantities = Symbol[],
@@ -122,76 +125,28 @@ function _prepare_engine(order::LoopTag, model::Model{FT}, kpts_input, second_in
         el_kq_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         ph_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         verbosity::Int = 1,
-    ) where {FT}
-
+    )
     nchunks_threads > 0 || throw(ArgumentError("nchunks_threads must be positive"))
     (n_outer_batch === nothing || n_outer_batch > 0) || throw(ArgumentError("n_outer_batch must be positive"))
     (n_inner_tile === nothing || n_inner_tile > 0) || throw(ArgumentError("n_inner_tile must be positive"))
     el_qty = union(loop_el_quantities(energy_conservation), el_quantities, required_el_quantities.(calculators)...)
     ph_qty = union(loop_ph_quantities(model, energy_conservation), ph_quantities,
                    required_ph_quantities.(calculators)...)
-    _check_run(order, model, backend, calculators, kpts_input, second_input, el_qty;
-        energy_conservation, covariant_derivative_of_g, eph_phonon_basis, fourier_mode,
-        precompute_el_kq, screening_params, mpi_comm_k, el_kq_eigenpairs, symmetry, inner_loop_kq,
-        el_k_eigenpairs)
-
-    # Prepare resident electron/phonon states and the point sets needed by the chosen driver.
-    (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq) = _setup_states(
-        order,
-        model,
-        kpts_input,
-        second_input,
-        el_qty,
-        ph_qty;
-        inner_loop_kq,
-        backend,
-        window_k,
-        window_kq,
-        symmetry,
-        precompute_el_kq,
-        keep_all_qpts,
-        eph_phonon_basis,
-        fourier_mode,
-        mpi_comm_k,
-        el_k_eigenpairs,
-        el_kq_eigenpairs,
-        ph_eigenpairs,
-        verbosity,
-    )
-
-    # The allocation worker sees the concrete state types selected by the requested quantities.
-    _allocate_engine(order, model;
-        els_k,
-        els_kq,
-        phs,
-        kpts,
-        kqpts,
-        qpts,
-        sel_k,
-        sel_kq,
-        el_qty,
-        ph_qty,
-        calculators,
-        backend,
-        precompute_el_kq,
-        energy_conservation,
-        covariant_derivative_of_g,
-        eph_phonon_basis,
-        n_outer_batch,
-        n_inner_tile,
-        nchunks_threads,
-        window_kq,
-        verbosity,
-    )
+    (; inner_loop_kq, calculators, el_qty, ph_qty, backend, window_k, window_kq, symmetry,
+       precompute_el_kq, keep_all_qpts, energy_conservation, covariant_derivative_of_g,
+       eph_phonon_basis, fourier_mode, screening_params, mpi_comm_k, n_outer_batch, n_inner_tile,
+       nchunks_threads, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, verbosity)
 end
 
-# Allocate the prepared engine from resident states; k+q is nothing for per-tile solves.
-function _allocate_engine(order, model; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, el_qty,
-        ph_qty, calculators, backend, precompute_el_kq, energy_conservation,
-        covariant_derivative_of_g, eph_phonon_basis, n_outer_batch, n_inner_tile, nchunks_threads,
-        window_kq, verbosity)
+# Plan the buffer widths and allocate the engine on the resident `states` of `_setup_states`
+# (`els_kq` is nothing for per-tile k+q solves).
+function _allocate_engine(order, model, states, options)
     # function barrier for allocation from concrete resident state containers.
-    (; nw, nmodes) = model
+    (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq) = states
+    (; el_qty, ph_qty, calculators, backend, precompute_el_kq, energy_conservation,
+       covariant_derivative_of_g, eph_phonon_basis, n_outer_batch, n_inner_tile, nchunks_threads,
+       window_kq, verbosity) = options
+    (; nw) = model
 
     nchunks = backend isa CPUBackend ? nchunks_threads : 1
     drop_pairs = _can_drop_pairs(order, energy_conservation, precompute_el_kq)
@@ -255,7 +210,10 @@ can differ from the input point sets after window/symmetry filtering.
 """
 function OuterKEngine(model::Model, kpts, second_pts; inner_loop_kq = false,
         symmetry = nothing, nchunks_threads = 1, kwargs...)
-    _prepare_engine(OuterKLoop(), model, kpts, second_pts; inner_loop_kq, symmetry, nchunks_threads, kwargs...)
+    options = _run_options(model; inner_loop_kq, symmetry, nchunks_threads, kwargs...)
+    _check_run(OuterKLoop(), model, kpts, second_pts, options)
+    states = _setup_states(OuterKLoop(), model, kpts, second_pts, options)
+    _allocate_engine(OuterKLoop(), model, states, options)
 end
 
 """
@@ -266,24 +224,32 @@ Prepare an outer-q engine without running calculators, for a model loaded with
 [`OuterKEngine`](@ref); `stage2!(eng, iq, k_indices)` returns a complete block.
 """
 function OuterQEngine(model::Model, kpts, qpts; symmetry = nothing, nchunks_threads = 1, kwargs...)
-    _prepare_engine(OuterQLoop(), model, kpts, qpts; inner_loop_kq = false, symmetry, nchunks_threads,
-        kwargs...)
+    options = _run_options(model; inner_loop_kq = false, symmetry, nchunks_threads, kwargs...)
+    _check_run(OuterQLoop(), model, kpts, qpts, options)
+    states = _setup_states(OuterQLoop(), model, kpts, qpts, options)
+    _allocate_engine(OuterQLoop(), model, states, options)
 end
 
-# Production drivers share the engine constructors' preparation and calculator-ready stages.
 function _run_eph(order::LoopTag, model::Model, kpts_input, second_input; calculators = [],
-        symmetry = model.symmetry, progress_print_step = 20, verbosity::Int = 1, kwargs...)
+        progress_print_step = 20, kwargs...)
     isempty(calculators) && throw(ArgumentError("the e-ph loop requires at least one calculator."))
     progress_print_step > 0 || throw(ArgumentError("progress_print_step must be positive"))
-    eng = _prepare_engine(order, model, kpts_input, second_input;
-        calculators, symmetry, verbosity, kwargs...)
-    _run_eph_loop(eng, order, calculators; symmetry, progress_print_step, verbosity)
+    options = _run_options(model; calculators, kwargs...)
+
+    # Validate the request, then build the resident electron/phonon states and the point sets.
+    _check_run(order, model, kpts_input, second_input, options)
+    states = _setup_states(order, model, kpts_input, second_input, options)
+
+    # Allocate the engine on those states, and run the calculators over every block.
+    eng = _allocate_engine(order, model, states, options)
+    _run_eph_loop(eng, order, calculators; options.symmetry, progress_print_step, options.verbosity)
 end
 
 function _run_eph_loop(eng, order, calculators; symmetry, progress_print_step, verbosity)
-    # Set up calculator storage against the same states and capacities used for direct calls.
     for calculator in calculators
-        setup_calculator!(calculator, eng; verbosity)
+        setup_calculator!(calculator, eng.backend, eng.els_k, eng.els_kq, eng.phs;
+            eng.sel_k, eng.sel_kq, eng.model.nw, eng.model.nmodes,
+            nchunks_threads = length(eng.tiles), eng.n_outer_batch, eng.n_inner_tile, verbosity)
     end
 
     # Explicitly bracket each outer batch; each chunk consumes its blocks before buffers are reused.
@@ -383,12 +349,11 @@ function plan_batch(backend::AbstractBackend, per_point::Integer, committed::Int
 end
 
 
-# Every refusal of the loop, before any state is built. `el_qty` is the union of the electron
-# quantities of the loop and the calculators.
-function _check_run(order, model, backend, calculators, kpts_input, second_input, el_qty;
-        energy_conservation, covariant_derivative_of_g, eph_phonon_basis, fourier_mode,
-        precompute_el_kq, screening_params, mpi_comm_k, el_kq_eigenpairs, symmetry,
-        inner_loop_kq, el_k_eigenpairs)
+# Every refusal of the loop, before any state is built.
+function _check_run(order, model, kpts_input, second_input, options)
+    (; backend, calculators, el_qty, energy_conservation, covariant_derivative_of_g,
+       eph_phonon_basis, fourier_mode, precompute_el_kq, screening_params, mpi_comm_k,
+       el_k_eigenpairs, el_kq_eigenpairs, symmetry, inner_loop_kq) = options
     Order = typeof(order)
     for calc in calculators
         supports(calc, Order) || throw(ArgumentError("$calc does not support the " *
@@ -476,14 +441,13 @@ _input_ngrid(x::AbstractKpoints) = x.ngrid
 # The state containers of a run: the k side from its selection, the k+q side (`nothing` when solved
 # per tile: under `OuterQLoop`, or under `OuterKLoop` with `inner_loop_kq = false`), the q set and its
 # phonons, all on `backend`.
-function _setup_states(order, model::Model{FT}, kpts_input, second_input, el_qty, ph_qty;
-        inner_loop_kq, backend,
-        window_k, window_kq, symmetry, precompute_el_kq, keep_all_qpts, eph_phonon_basis,
-        fourier_mode, mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs,
-        verbosity) where {FT}
-    (; nw, nmodes) = model
+function _setup_states(order, model::Model, kpts_input, second_input, options)
+    (; el_qty, ph_qty, inner_loop_kq, backend, window_k, window_kq, symmetry, precompute_el_kq,
+       keep_all_qpts, eph_phonon_basis, mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs,
+       ph_eigenpairs, verbosity) = options
+    (; nw) = model
     # The host solves of a GPU run (q filter, polar phonons) keep the default interpolation.
-    backend isa CPUBackend || (fourier_mode = "gridopt")
+    fourier_mode = backend isa CPUBackend ? options.fourier_mode : "gridopt"
     # Reuse a supplied k selection, or select its bands within the requested energy window.
     if kpts_input isa FilteredBandStates
         sel_k = kpts_input
@@ -554,18 +518,9 @@ function _setup_states(order, model::Model{FT}, kpts_input, second_input, el_qty
         end
     end
 
-    # The phonons on `backend`. The device builder fills `e` and `u` of a non-polar model; the
-    # other quantities are built on the host and copied over.
     phs = maybe_time(verbosity) do
-        if backend isa CPUBackend || (issubset(ph_qty, (:e, :u)) && !model.polar_phonon.use)
-            compute_phonon_states_batched(model, qpts, ph_qty; fourier_mode, eph_phonon_basis, backend,
-                                          eigenpairs = ph_eigenpairs)
-        else
-            ph_host = compute_phonon_states_batched(model, qpts, ph_qty; fourier_mode, eph_phonon_basis,
-                                                    eigenpairs = ph_eigenpairs)
-            copy_batched_phonon_states!(BatchedPhononState(backend, nmodes, qpts.n, ph_qty; qpts, FT),
-                                        ph_host, 1:qpts.n)
-        end
+        compute_phonon_states_batched(model, qpts, ph_qty; fourier_mode, eph_phonon_basis, backend,
+                                      eigenpairs = ph_eigenpairs)
     end
 
     if verbosity > 0 && mpi_isroot()

@@ -44,8 +44,8 @@ Optionally:
 
 See `docs/writing_a_calculator.md` for a worked example. The public (unexported) calculator API is
 the `public` declaration at the bottom of this file.
-For manual execution, construct an `OuterKEngine` / `OuterQEngine`, use
-`setup_calculator!(calc, eng)`, `stage1!`, `stage2!` and `LoopContext(eng)`, then invoke the same hooks.
+For manual execution, construct an `OuterKEngine` / `OuterQEngine`, call `setup_calculator!` on
+its states, use `stage1!`, `stage2!` and `LoopContext(eng)`, then invoke the same hooks.
 """
 abstract type AbstractCalculator end
 

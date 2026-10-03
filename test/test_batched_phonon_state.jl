@@ -154,13 +154,16 @@ end
                 @test Array(tile.u)[:, :, 1:4] == Array(src.u)[:, :, inds]
             end
 
-            # What the device does not compute is refused, not silently left zero.
-            @test_throws "[:vdiag] are not supported" compute_phonon_states_batched(
-                model_pb, kpts, [:e, :u, :vdiag]; backend)
-            @test_throws "[:eph_dipole_coeff] are not supported" compute_phonon_states_batched(
-                model_pb, kpts, [:u, :eph_dipole_coeff]; backend)
-            @test_throws "does not support polar" compute_phonon_states_batched(model_bn, kpts,
-                full; backend)
+            # What the device does not compute is built on the host and copied over.
+            for (model, quantities) in ((model_pb, [:e, :u, :vdiag]), (model_bn, [:u, :eph_dipole_coeff]),
+                                        (model_bn, full))
+                phs = compute_phonon_states_batched(model, kpts, quantities; backend)
+                host = compute_phonon_states_batched(model, kpts, quantities)
+                for quantity in quantities
+                    @test on_backend(backend, getproperty(phs, quantity))
+                    @test Array(getproperty(phs, quantity)) == getproperty(host, quantity)
+                end
+            end
         end
     end
 end

@@ -14,9 +14,10 @@ catch
     false
 end
 
-struct _EngineNeedsVelocity <: ElectronPhonon.AbstractCalculator end
-ElectronPhonon.supports(::_EngineNeedsVelocity, ::Type{OuterKLoop}) = true
-ElectronPhonon.required_el_quantities(::_EngineNeedsVelocity) = [:vdiag]
+# The calculator setup of the drivers, on a prepared engine.
+_setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, eng.els_kq, eng.phs;
+    eng.sel_k, eng.sel_kq, eng.model.nw, eng.model.nmodes, nchunks_threads = length(eng.tiles),
+    eng.n_outer_batch, eng.n_inner_tile, verbosity = 0)
 
 @testset "direct e-ph engine and calculator API" begin
     keygrid = (10^6, 10^6, 10^6)
@@ -41,7 +42,7 @@ ElectronPhonon.required_el_quantities(::_EngineNeedsVelocity) = [:vdiag]
         @test isempty(calc.g2abs) && calc.nw == 0  # construction runs no calculator hooks
         @test_throws ArgumentError stage2!(eng, 1, 1:1)
         @test_throws ArgumentError LoopContext(eng)
-        setup_calculator!(calc, eng)
+        _setup_on_engine!(calc, eng)
         @test calc.nw == model.nw && eng.sel_k !== nothing
         @test stage1!(eng, 1:1) === eng
         ctx = LoopContext(eng)
@@ -74,7 +75,6 @@ ElectronPhonon.required_el_quantities(::_EngineNeedsVelocity) = [:vdiag]
         energy_conservation = (:Fixed, 0.0), verbosity = 0)
     stage1!(eng, 1:1)
     @test stage2!(eng, 1, 1:1) === nothing
-    @test_throws ArgumentError setup_calculator!(_EngineNeedsVelocity(), eng)
     @test_throws ArgumentError OuterKEngine(model_el, kpts, qpts; n_outer_batch = 0)
     @test_throws ArgumentError OuterKEngine(model_el, kpts, qpts; n_inner_tile = 0)
     @test_throws ArgumentError OuterKEngine(model_el, kpts, qpts; nchunks_threads = 0)
@@ -97,9 +97,6 @@ end
         @test size(bk.dg) == (model_el.nw, model_el.nw, model_el.nmodes, 3, 1)
         @test all(isfinite, Array(bk.dg)) && sum(abs2, Array(bk.dg)) > 0
         @test bq.dg === nothing
-        if basis === :cartesian
-            @test_throws ArgumentError setup_calculator!(_PairRecorder(), ek)
-        end
     end
 end
 
@@ -113,7 +110,7 @@ end
         eng = Engine(model, grid, grid; backend, calculators = [calc], verbosity = 0,
             n_outer_batch = 3, n_inner_tile = 2, nchunks_threads = 2,
             (Order === OuterKLoop ? (; inner_loop_kq = true) : (; precompute_el_kq = true))...)
-        setup_calculator!(calc, eng)
+        _setup_on_engine!(calc, eng)
         @test_throws ArgumentError stage1!(eng, 1:4)
         stage1!(eng, 3:4)  # nonzero offset, shorter than allocated stage-1 capacity
         ctx = LoopContext(eng)

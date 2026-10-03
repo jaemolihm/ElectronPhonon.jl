@@ -119,7 +119,9 @@ calc = EphG2SumCalculator()
 kpts = Kpoints(Vec3(0.2513, 0.2487, 0.0129))
 qpts = Kpoints(Vec3(0.071, 0.023, 0.019))
 eng = OuterKEngine(model, kpts, qpts; calculators = [calc], verbosity = 0)
-setup_calculator!(calc, eng)
+setup_calculator!(calc, eng.backend, eng.els_k, eng.els_kq, eng.phs;
+    eng.sel_k, eng.sel_kq, model.nw, model.nmodes, nchunks_threads = length(eng.tiles),
+    eng.n_outer_batch, eng.n_inner_tile, verbosity = 0)
 
 stage1!(eng, 1:1)
 ctx = LoopContext(eng)

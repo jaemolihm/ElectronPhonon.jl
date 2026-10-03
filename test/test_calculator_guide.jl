@@ -71,10 +71,12 @@ end
     @test calc_q.per_k ≈ calc.per_k rtol = 1e-10
 
     # The direct-call example uses exactly the same calculator implementation and lifecycle.
+    # The example reads the global `model` and defines `calc`, `kpts` and `qpts`; they are read back
+    # at the latest world age, like the calculator type above.
     direct_code = _extract_doc_example(guide; tag = "doc-single-pair")
+    Core.eval(@__MODULE__, :(model = $model))
+    include_string(@__MODULE__, direct_code)
     Base.invokelatest() do
-        global model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
-        include_string(@__MODULE__, direct_code)
         c = getfield(@__MODULE__, :calc)
         @test length(c.per_k) == 1
         @test all(isfinite, c.per_k) && maximum(abs, c.per_k) > 0

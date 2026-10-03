@@ -351,30 +351,29 @@ The eigenvalue-only solve runs when none of them needs the eigenmodes; `eph_phon
 copied from it instead of diagonalizing, so it must cover every q point of `qpts` and be resident on
 `backend`.
 
-On a GPU backend only `:e` and `:u` are supported, polar phonons are refused and `fourier_mode` is
-unused. The q set is solved in chunks of the batched dynamical-matrix interpolator's block width,
-so the device `D(q)` transient is bounded whatever `qpts.n`. As in [`electron_eigenpairs`](@ref),
-the batched eigensolve picks its own basis inside a degenerate mode multiplet, so device and host
-`u` differ there. A GPU e-ph run therefore takes its phonon gauge from the device solve when it needs
-`e` and `u` only, and from host LAPACK (built here, then copied over) for a polar model or other
-quantities.
+On a GPU backend the device solve fills `:e` and `:u` of a non-polar model, with `fourier_mode`
+unused; a polar model or any other quantity is built on the host and copied to `backend`. The
+device solve runs in chunks of the batched dynamical-matrix interpolator's block width, so the
+device `D(q)` transient is bounded whatever `qpts.n`. As in [`electron_eigenpairs`](@ref), the
+batched eigensolve picks its own basis inside a degenerate mode multiplet, so device and host `u`
+differ there: a GPU run takes its phonon gauge from the device solve in the first case and from
+host LAPACK in the second.
 """
 function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fourier_mode = "gridopt",
         eph_phonon_basis::Symbol = :eigenmode, backend = CPUBackend(),
         eigenpairs::Union{Nothing, Eigenpairs} = nothing) where FT
     (; nmodes, mass) = model
     nq = qpts.n
+    if !(backend isa CPUBackend) && (model.polar_phonon.use || !issubset(quantities, (:e, :u)))
+        phs_host = compute_phonon_states_batched(model, qpts, quantities; fourier_mode,
+                                                 eph_phonon_basis, eigenpairs)
+        phs = BatchedPhononState(backend, nmodes, nq, quantities; qpts, FT)
+        return copy_batched_phonon_states!(phs, phs_host, 1:nq)
+    end
     phs = BatchedPhononState(backend, nmodes, nq, quantities; qpts, FT)
     _check_eigenpairs(eigenpairs, nmodes, backend)
     need_dipole = :eph_dipole_coeff ∈ quantities || :eph_r_coeff ∈ quantities
     valueonly = !(:u ∈ quantities || :vdiag ∈ quantities || need_dipole)
-    if !(backend isa CPUBackend)
-        unsupported = setdiff(quantities, (:e, :u))
-        isempty(unsupported) || throw(ArgumentError("quantities $unsupported are not supported " *
-            "by compute_phonon_states_batched on $(nameof(typeof(backend)))"))
-        model.polar_phonon.use && throw(ArgumentError(
-            "compute_phonon_states_batched on a non-CPU backend does not support polar phonons"))
-    end
     (nq == 0 || isempty(quantities)) && return phs
 
     if backend isa CPUBackend

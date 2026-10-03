@@ -99,9 +99,21 @@ function _fourier_batched!(out, core::BatchedFourierCore, xkmat::AbstractMatrix)
     @assert size(out) == (ndata, nk)
     @assert nk <= core.batch_size
 
-    @views build_fourier_phase!(phase[:, 1:nk], core.irvec_mat, xkmat)
+    @views _fourier_batched!(out, parent.op_r[1:ndata, :], phase[:, 1:nk], core.irvec_mat, xkmat)
+end
+
+"""
+    _fourier_batched!(out, op_r, phase, irvec_mat, xkmat::AbstractMatrix)
+
+The transform on explicit data: `out[:, j] = Σ_R op_r[:, R] exp(2πi R · x_j)` for the R vectors
+`irvec_mat` `(nr × 3)` and the points `xkmat` `(3 × nk)`, with `phase` `(nr, nk)` as scratch. All
+arrays live on one backend. For a caller whose `op_r` changes between calls on fixed R vectors
+(the outer-q e-ph engine reads one stage-1 slice per q).
+"""
+function _fourier_batched!(out, op_r, phase, irvec_mat, xkmat::AbstractMatrix)
+    build_fourier_phase!(phase, irvec_mat, xkmat)
     # BLAS3 gemm: much faster than multiple BLAS2 gemv calls
-    @views mul!(out, parent.op_r[1:ndata, :], phase[:, 1:nk])
+    mul!(out, op_r, phase)
     out
 end
 
