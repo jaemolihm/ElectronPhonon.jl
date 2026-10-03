@@ -78,29 +78,73 @@ function BatchedElectronState(backend, nw, nband_max, nk, quantities; kpts = not
         alloc_if_required(:rbar, Complex{FT}, 3, nband_max, nband_max, nk))
 end
 
-function Base.show(io::IO, el_states::BatchedElectronState{T}) where {T}
-    print(io, "BatchedElectronState{$T}(nw = $(el_states.nw), nband_max = $(el_states.nband_max), nk = $(el_states.nk), " *
-              "$(typeof(el_states.nband)))")
+function Base.show(io::IO, els::BatchedElectronState{T}) where {T}
+    print(io, "BatchedElectronState{$T}(nw = $(els.nw), nband_max = $(els.nband_max), " *
+              "nk = $(els.nk), $(typeof(els.nband)))")
 end
 
 """
-    copy_batched_electron_states!(dst, src, inds)
+    copy_batched_electron_states!(els_dst, els_src, inds)
 
-Copy the k points `inds` of `src` into the first `length(inds)` points of `dst`, field by field (a
+Copy the k points `inds` of `els_src` into the first `length(inds)` points of `els_dst`, field by field (a
 `nothing` field is skipped), `iband_offset` and `nband` included. `inds` is a range or a host vector,
-checked here, or an index array already on `src`'s device, used as it is: its caller has checked
-it. A host index vector for a device `src` is uploaded once per call.
+checked here, or an index array already on `els_src`'s device, used as it is: its caller has checked
+it. A host index vector for a device `els_src` is uploaded once per call.
 """
-function copy_batched_electron_states!(dst::BatchedElectronState, src::BatchedElectronState, inds)
-    dst.nw == src.nw && dst.nband_max == src.nband_max && length(inds) <= dst.nk ||
-        throw(ArgumentError("cannot copy $(length(inds)) points of $src into $dst"))
-    inds = _copy_indices_on_backend(src.nband, inds, src.nk)
-    _copy_last_axis!(dst.iband_offset, src.iband_offset, inds)
-    _copy_last_axis!(dst.nband, src.nband, inds)
-    _copy_last_axis!(dst.e, src.e, inds)
-    _copy_last_axis!(dst.u, src.u, inds)
-    _copy_last_axis!(dst.vdiag, src.vdiag, inds)
-    _copy_last_axis!(dst.v, src.v, inds)
-    _copy_last_axis!(dst.rbar, src.rbar, inds)
-    dst
+function copy_batched_electron_states!(els_dst::BatchedElectronState, els_src::BatchedElectronState,
+        inds)
+    els_dst.nw == els_src.nw && els_dst.nband_max == els_src.nband_max &&
+        length(inds) <= els_dst.nk ||
+        throw(ArgumentError("cannot copy $(length(inds)) points of $els_src into $els_dst"))
+    inds = _copy_indices_on_backend(els_src.nband, inds, els_src.nk)
+    _copy_last_axis!(els_dst.iband_offset, els_src.iband_offset, inds)
+    _copy_last_axis!(els_dst.nband, els_src.nband, inds)
+    _copy_last_axis!(els_dst.e, els_src.e, inds)
+    _copy_last_axis!(els_dst.u, els_src.u, inds)
+    _copy_last_axis!(els_dst.vdiag, els_src.vdiag, inds)
+    _copy_last_axis!(els_dst.v, els_src.v, inds)
+    _copy_last_axis!(els_dst.rbar, els_src.rbar, inds)
+    els_dst
+end
+
+"""
+    view(els::BatchedElectronState, inds::AbstractUnitRange)
+
+The points `inds` of `els` as a `BatchedElectronState` of views (no copy), with `kpts = nothing`.
+"""
+@views function Base.view(els::BatchedElectronState{T}, inds::AbstractUnitRange) where {T}
+    # Colons rather than `selectdim`, so a device view stays a device array.
+    view_points(x) = x === nothing ? nothing : x[ntuple(_ -> Colon(), ndims(x) - 1)..., inds]
+    BatchedElectronState{T}(els.nw, els.nband_max, length(inds), nothing,
+        els.iband_offset[inds],
+        els.nband[inds],
+        view_points(els.e),
+        view_points(els.u),
+        view_points(els.vdiag),
+        view_points(els.v),
+        view_points(els.rbar))
+end
+
+"""
+    reshape_view_batched_electron_states(els, nband_max, nk) -> BatchedElectronState
+
+A container of box width `nband_max ≤ els.nband_max` and `nk ≤ els.nk` points on the memory of
+`els`, as `Base.reshape` is for an array: each quantity is the dense leading elements of `els`'s
+array taken at the new dimensions (`reshape_buffer_view`), so the contents are reinterpreted, not moved.
+When `nband_max` shrinks, point `k` of the result is not point `k` of `els`: write the contents
+through the result before reading them. `iband_offset` and `nband` are views of the first `nk`
+points of `els`'s, and `kpts = nothing`.
+"""
+function reshape_view_batched_electron_states(els::BatchedElectronState{T}, nband_max, nk) where {T}
+    nband_max <= els.nband_max && nk <= els.nk || throw(ArgumentError(
+        "a box of $nband_max bands and $nk points does not fit $els"))
+    prefix(x, dims...) = x === nothing ? nothing : reshape_buffer_view(x, dims...)
+    BatchedElectronState{T}(els.nw, nband_max, nk, nothing,
+        view(els.iband_offset, 1:nk),
+        view(els.nband, 1:nk),
+        prefix(els.e, nband_max, nk),
+        prefix(els.u, els.nw, nband_max, nk),
+        prefix(els.vdiag, 3, nband_max, nk),
+        prefix(els.v, 3, nband_max, nband_max, nk),
+        prefix(els.rbar, 3, nband_max, nband_max, nk))
 end

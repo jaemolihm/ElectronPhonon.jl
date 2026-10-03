@@ -9,10 +9,10 @@ using ElectronPhonon
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
 
 # Extract the fenced Julia code between the doc-example sentinels.
-function _extract_doc_example(md_path)
+function _extract_doc_example(md_path; tag = "doc-example")
     text = read(md_path, String)
-    b = findfirst("<!-- doc-example:begin -->", text)
-    e = findfirst("<!-- doc-example:end -->", text)
+    b = findfirst("<!-- $tag:begin -->", text)
+    e = findfirst("<!-- $tag:end -->", text)
     (b === nothing || e === nothing) && error("doc-example sentinels not found in $md_path")
     block = text[last(b)+1 : first(e)-1]
     # Drop the ```julia … ``` fences, keep the code between them.
@@ -39,8 +39,8 @@ end
     # Evaluate the guide's example verbatim (defines the struct + interface methods).
     include_string(@__MODULE__, code)
 
-    # Run it on the Pb artifact model (outer-k driver). This is threaded (@threads over k+q chunks),
-    # so it also exercises the per-chunk (id_chunk) thread-safety pattern the guide documents.
+    # Run it on the Pb artifact model (outer-k driver), with several outer batches and inner tiles,
+    # so the per-chunk partials and their reduction over `ctx.batch` are exercised.
     # `invokelatest`: the calculator type + its interface methods were just defined by
     # `include_string`, so construct-and-run must execute at the latest world age to see them.
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
@@ -49,7 +49,8 @@ end
         T = getfield(@__MODULE__, :EphG2SumCalculator)
         c = T()
         ElectronPhonon.run_eph_over_k_and_kq(model, (nk, nk, nk), (nk, nk, nk);
-            calculators = [c], symmetry = nothing, progress_print_step = 10^9)
+            calculators = [c], symmetry = nothing, progress_print_step = 10^9,
+            n_outer_batch = 5, n_inner_tile = 7)
         c
     end
 
@@ -58,4 +59,28 @@ end
     # g2 = |ep|²/(2ω) can be negative where ω < 0 (Pb's soft acoustic modes on a coarse grid), so
     # only assert the result is finite and non-trivial (nonzero e-ph coupling recorded).
     @test maximum(abs, calc.per_k) > 0
+
+    # `run_eph_over_k_and_q` on the same commensurate grids hands the calculator the same pairs,
+    # with k + q solved per tile, so it gives the same sums. Measured 1e-15 relative.
+    calc_q = Base.invokelatest() do
+        c = getfield(@__MODULE__, :EphG2SumCalculator)()
+        ElectronPhonon.run_eph_over_k_and_q(model, (nk, nk, nk), (nk, nk, nk);
+            calculators = [c], progress_print_step = 10^9, n_outer_batch = 5, n_inner_tile = 7)
+        c
+    end
+    @test calc_q.per_k ≈ calc.per_k rtol = 1e-10
+
+    # The direct-call example uses exactly the same calculator implementation and lifecycle.
+    direct_code = _extract_doc_example(guide; tag = "doc-single-pair")
+    Base.invokelatest() do
+        global model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
+        include_string(@__MODULE__, direct_code)
+        c = getfield(@__MODULE__, :calc)
+        @test length(c.per_k) == 1
+        @test all(isfinite, c.per_k) && maximum(abs, c.per_k) > 0
+        driver = getfield(@__MODULE__, :EphG2SumCalculator)()
+        ElectronPhonon.run_eph_over_k_and_q(model, getfield(@__MODULE__, :kpts), getfield(@__MODULE__, :qpts);
+            calculators = [driver], verbosity = 0)
+        @test driver.per_k ≈ c.per_k rtol = 1e-10
+    end
 end

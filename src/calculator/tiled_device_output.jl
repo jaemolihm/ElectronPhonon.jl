@@ -27,14 +27,16 @@
 
 # `narr` arrays of identical tiling. `dims` is the FULL output shape (`dims[i_axis] == n_full`);
 # `i_axis` is the axis tiled over outer-k states. `el_i` supplies the outer-k → state-index tile
-# ranges. `force_block` overrides the residency decision (`true` = always block, `false` = always
-# full, `nothing` = decide from free device memory with `headroom` × the full-resident byte size).
+# ranges, and `n_outer_batch` the outer-k batch width the loop chose (for the block size).
+# `force_block` overrides the residency decision (`true` = always block, `false` = always full,
+# `nothing` = decide from free device memory with `headroom` × the full-resident byte size).
 mutable struct TiledDeviceOutput{FT}
     dims        :: Vector{Int}
     i_axis      :: Int
     n_full      :: Int
     narr        :: Int
     el_i        :: BandStates
+    n_outer_batch :: Int
     force_block :: Union{Nothing, Bool}
     headroom    :: Float64
     # Lazily filled on the first `tile_begin!` (device-array type unknown until then).
@@ -60,13 +62,13 @@ calculator that hand-rolls its buffers can make the same choice without a `Tiled
 residency_use_block(backend::AbstractBackend, full_bytes::Integer; headroom::Real = 1.2) =
     headroom * full_bytes > free_bytes(backend)
 
-function TiledDeviceOutput{FT}(dims, i_axis::Integer, el_i::BandStates;
+function TiledDeviceOutput{FT}(dims, i_axis::Integer, el_i::BandStates, n_outer_batch::Integer;
         narr::Integer = 1, force_block::Union{Nothing, Bool} = nothing,
         headroom::Real = 1.2) where {FT}
     d = collect(Int, dims)
     1 <= i_axis <= length(d) || throw(ArgumentError("i_axis $i_axis out of range for dims $d"))
-    TiledDeviceOutput{FT}(d, Int(i_axis), d[i_axis], Int(narr), el_i, force_block, Float64(headroom),
-        Any[], Any[], false, false, 0, 0, 0)
+    TiledDeviceOutput{FT}(d, Int(i_axis), d[i_axis], Int(narr), el_i, Int(n_outer_batch), force_block,
+        Float64(headroom), Any[], Any[], false, false, 0, 0, 0)
 end
 
 # True once the device buffers exist (i.e. at least one batch ran on this rank/window).
@@ -75,8 +77,10 @@ is_block(t::TiledDeviceOutput) = t.block
 
 # The k-th device output buffer (the scatter target); `1:narr`.
 device_array(t::TiledDeviceOutput, k::Integer = 1) = t.dev[k]
-# The k-th contiguous host mirror (block mode; valid after `tile_download!`).
-host_array(t::TiledDeviceOutput, k::Integer = 1) = t.host[k]
+# The current tile of the k-th host mirror (block mode; valid after `tile_download!`): its leading
+# `tile_length` entries along the tiled axis, so the rows a previous, larger tile left are out of
+# bounds.
+host_array(t::TiledDeviceOutput, k::Integer = 1) = selectdim(t.host[k], t.i_axis, 1:t.tile_ni)
 # Global-i offset of the current tile (0 in full mode).
 tile_offset(t::TiledDeviceOutput) = t.tile_i0
 # Number of outer states in the current tile.
@@ -87,8 +91,7 @@ tile_stride(t::TiledDeviceOutput) = size(t.dev[1], t.i_axis)
 
 # Begin a batch: on the first batch, decide residency and allocate the device (and, for block mode,
 # host-mirror) buffers from `ctx.backend`; every block-mode batch records this batch's outer-k tile
-# range and zeros the tile's active region. `ctx` supplies `backend`, `batch` (the outer-k range) and
-# `n_batch_max` (for the ni-cap pre-scan).
+# range and zeros the tile's active region. `ctx` supplies `backend` and `batch` (the outer-k range).
 function tile_begin!(t::TiledDeviceOutput{FT}, ctx) where {FT}
     backend = ctx.backend
     if !t.decided
@@ -107,7 +110,7 @@ function tile_begin!(t::TiledDeviceOutput{FT}, ctx) where {FT}
         t.decided = true
         if t.block
             nk = t.el_i.kpts.n
-            nb = ctx.n_batch_max
+            nb = t.n_outer_batch
             t.ni_cap = maximum(length(ind_range_for_k_range(t.el_i, ks, min(ks + nb - 1, nk)))
                                for ks in 1:nb:nk)
             tdims = copy(t.dims); tdims[t.i_axis] = t.ni_cap
@@ -129,7 +132,7 @@ function tile_begin!(t::TiledDeviceOutput{FT}, ctx) where {FT}
 end
 
 # Download the current tile (block mode): a single contiguous device→host copy per buffer into the
-# host mirrors. The calculator then copies the mirror's leading `tile_length` slice into its output.
+# host mirrors. The calculator then copies `host_array(t, k)` into its output.
 function tile_download!(t::TiledDeviceOutput)
     for k in 1:t.narr
         copyto!(t.host[k], t.dev[k])

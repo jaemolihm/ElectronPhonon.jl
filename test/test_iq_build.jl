@@ -3,14 +3,12 @@ using ElectronPhonon
 using Random
 using ElectronPhonon: Vec3, _grid_coords_reduced, _wrap_reduced, _fill_iqs!
 
-# The per-(k, q-tile) `iq` index build of the batched outer-k loop (`_loop_eph_over_k_and_kq_batched`). The
-# loop hashes integer grid coordinates instead of calling `xk_to_ik` per pair, so the whole
-# correctness story is "the fast hash agrees with `xk_to_ik`".
-# CPU-only because the build is pure host arithmetic — not because the loop it feeds is GPU-only: that
-# loop also runs on a `CPUBackend` (`batched = true`, the validation configuration), which is exercised
-# end-to-end elsewhere. This file tests the hash in isolation and needs no backend at all.
+# The per-(k, k+q tile) `iq` index build of the outer-k loop (`_tiles_outer_k!`). The loop hashes
+# integer grid coordinates instead of calling `xk_to_ik` per pair, so the whole correctness story is
+# "the fast hash agrees with `xk_to_ik`". The build is pure host arithmetic, so this file tests the
+# hash in isolation and needs no backend at all; the loop runs end-to-end elsewhere.
 
-# Everything the build needs, assembled the way the loop's prologue assembles it. The outer k mesh
+# Everything the build needs, assembled the way the `OuterKEngine` constructor assembles it. The outer k mesh
 # is always unshifted — the loop's `xks_int` does not subtract a shift, so a shifted k would not
 # land on integer grid coordinates at all. `shift` shifts the k+q mesh, which is what gives `qpts`
 # a nonzero shift for the k+q side to subtract.
@@ -85,7 +83,7 @@ end
     end
 
     @testset "partial final tile" begin
-        # The loop stages into an `nq_batch_max`-long buffer and a partial final q-tile writes only
+        # The loop stages into an `n_inner_tile`-long buffer and a partial final q-tile writes only
         # the leading `nq` entries; the tail must be left alone (the H2D copies only `1:nq`).
         f = _iq_build_fixture((4, 4, 4))
         nq_max = f.kqpts.n

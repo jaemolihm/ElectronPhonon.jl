@@ -1,8 +1,5 @@
 # Phonon quantities over a q-point set, one array per quantity with q on the last axis
 
-using ChunkSplitters
-using Base.Threads: nthreads, @threads
-
 export BatchedPhononState
 
 """
@@ -12,8 +9,8 @@ The phonons of a q-point set as dense stacks, the struct-of-arrays counterpart o
 `Vector{PhononState}`. Build one with [`compute_phonon_states_batched`](@ref).
 
 One field per quantity, named as the `PhononState` field it holds, `nothing` when not requested.
-The q point is the last axis, so `ph_states.x[..., iq]` is `PhononState.x` at
-`ph_states.qpts.vectors[iq]`. Index legend: `ν` mode, `a` displacement (atom × Cartesian), `d`
+The q point is the last axis, so `phs.x[..., iq]` is `PhononState.x` at
+`phs.qpts.vectors[iq]`. Index legend: `ν` mode, `a` displacement (atom × Cartesian), `d`
 Cartesian direction, `q` q point.
 
 | field | shape | |
@@ -67,54 +64,43 @@ function BatchedPhononState(backend, nmodes, nq, quantities; qpts = nothing, FT 
         alloc_if_required(:eph_r_coeff, Complex{FT}, nmodes, 3, nq))
 end
 
-function Base.show(io::IO, ph_states::BatchedPhononState{T}) where {T}
-    print(io, "BatchedPhononState{$T}(nmodes = $(ph_states.nmodes), nq = $(ph_states.nq))")
+function Base.show(io::IO, phs::BatchedPhononState{T}) where {T}
+    print(io, "BatchedPhononState{$T}(nmodes = $(phs.nmodes), nq = $(phs.nq))")
 end
 
 """
-    copy_batched_phonon_states!(dst, src, iqs)
+    copy_batched_phonon_states!(phs_dst, phs_src, iqs)
 
-Copy the q points `iqs` of `src` into the first `length(iqs)` points of `dst`, field by field (a
+Copy the q points `iqs` of `phs_src` into the first `length(iqs)` points of `phs_dst`, field by field (a
 `nothing` field is skipped). `iqs` is a range or a host vector, checked here, or an index array
-already on `src`'s device, used as it is: its caller has checked it. A host index vector for a
-device `src` is uploaded once per call, so a hot loop keeps its own device index buffer instead.
+already on `phs_src`'s device, used as it is: its caller has checked it. A host index vector for a
+device `phs_src` is uploaded once per call, so a hot loop keeps its own device index buffer instead.
 """
-function copy_batched_phonon_states!(dst::BatchedPhononState, src::BatchedPhononState, iqs)
-    dst.nmodes == src.nmodes && length(iqs) <= dst.nq || throw(ArgumentError(
-        "cannot copy $(length(iqs)) q points of nmodes = $(src.nmodes) into $dst"))
-    iqs = _copy_indices_on_backend(something(src.e, src.u, src.vdiag, src.eph_dipole_coeff, src.eph_r_coeff), iqs, src.nq)
-    _copy_last_axis!(dst.e, src.e, iqs)
-    _copy_last_axis!(dst.u, src.u, iqs)
-    _copy_last_axis!(dst.vdiag, src.vdiag, iqs)
-    _copy_last_axis!(dst.eph_dipole_coeff, src.eph_dipole_coeff, iqs)
-    _copy_last_axis!(dst.eph_r_coeff, src.eph_r_coeff, iqs)
-    dst
+function copy_batched_phonon_states!(phs_dst::BatchedPhononState, phs_src::BatchedPhononState, iqs)
+    phs_dst.nmodes == phs_src.nmodes && length(iqs) <= phs_dst.nq || throw(ArgumentError(
+        "cannot copy $(length(iqs)) q points of nmodes = $(phs_src.nmodes) into $phs_dst"))
+    iqs = _copy_indices_on_backend(something(phs_src.e, phs_src.u, phs_src.vdiag,
+        phs_src.eph_dipole_coeff, phs_src.eph_r_coeff), iqs, phs_src.nq)
+    _copy_last_axis!(phs_dst.e, phs_src.e, iqs)
+    _copy_last_axis!(phs_dst.u, phs_src.u, iqs)
+    _copy_last_axis!(phs_dst.vdiag, phs_src.vdiag, iqs)
+    _copy_last_axis!(phs_dst.eph_dipole_coeff, phs_src.eph_dipole_coeff, iqs)
+    _copy_last_axis!(phs_dst.eph_r_coeff, phs_src.eph_r_coeff, iqs)
+    phs_dst
 end
 
 """
-    Vector{PhononState{T}}(ph_states::BatchedPhononState{T})
+    view(phs::BatchedPhononState, inds::AbstractUnitRange)
 
-One `PhononState` per q point of `ph_states`, on the host: `xq` from `ph_states.qpts` and every
-quantity `ph_states` holds; a quantity it does not hold is left at `PhononState`'s zero.
+The points `inds` of `phs` as a `BatchedPhononState` of views (no copy), with `qpts = nothing`.
 """
-function Base.Vector{PhononState{T}}(ph_states::BatchedPhononState{T}) where {T}
-    ph_states.qpts === nothing && throw(ArgumentError("a per-batch buffer has no q points"))
-    host(x) = x === nothing ? nothing : Array(x)
-    e, u, vdiag, dip, rco = host(ph_states.e), host(ph_states.u), host(ph_states.vdiag), host(ph_states.eph_dipole_coeff),
-        host(ph_states.eph_r_coeff)
-    states = [PhononState(ph_states.nmodes, T) for _ in 1:ph_states.nq]
-    @threads for iqs in chunks(1:ph_states.nq; n = nthreads())
-        for iq in iqs
-            ph = states[iq]
-            ph.xq = ph_states.qpts.vectors[iq]
-            e === nothing || (@views ph.e .= e[:, iq])
-            u === nothing || (@views ph.u .= u[:, :, iq])
-            vdiag === nothing || for i in 1:ph_states.nmodes
-                ph.vdiag[i] = Vec3{T}(vdiag[1, i, iq], vdiag[2, i, iq], vdiag[3, i, iq])
-            end
-            dip === nothing || (@views ph.eph_dipole_coeff .= dip[:, iq])
-            rco === nothing || (@views ph.eph_r_coeff .= rco[:, :, iq])
-        end
-    end
-    states
+@views function Base.view(phs::BatchedPhononState{T}, inds::AbstractUnitRange) where {T}
+    # Colons rather than `selectdim`, so a device view stays a device array.
+    view_points(x) = x === nothing ? nothing : x[ntuple(_ -> Colon(), ndims(x) - 1)..., inds]
+    BatchedPhononState{T}(phs.nmodes, length(inds), nothing,
+        view_points(phs.e),
+        view_points(phs.u),
+        view_points(phs.vdiag),
+        view_points(phs.eph_dipole_coeff),
+        view_points(phs.eph_r_coeff))
 end
