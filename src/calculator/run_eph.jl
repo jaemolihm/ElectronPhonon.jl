@@ -194,9 +194,7 @@ function _allocate_engine(order, model; els_k, els_kq, phs, kpts, kqpts, qpts, s
     (; nw, nmodes) = model
 
     nchunks = backend isa CPUBackend ? nchunks_threads : 1
-    # Allocate compaction buffers only when a point pair can be dropped: energy conservation,
-    # or an absent k+q point in the outer-q driver's precomputed state container.
-    drop_pairs = energy_conservation[1] !== :None || (order isa OuterQLoop && precompute_el_kq)
+    drop_pairs = _can_drop_pairs(order, energy_conservation, precompute_el_kq)
 
     if order isa OuterKLoop
         # Outer k: the inner set is either resident k+q points or q points with a per-tile solve.
@@ -226,11 +224,11 @@ function _allocate_engine(order, model; els_k, els_kq, phs, kpts, kqpts, qpts, s
     # Allocate the engine for the requested outer momentum.
     if order isa OuterKLoop
         eng = OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
-            n_outer_batch = nbatch_outer, n_inner_tile = nbatch_inner, nchunks, drop_pairs,
+            n_outer_batch = nbatch_outer, n_inner_tile = nbatch_inner, nchunks,
             covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation)
     else
         eng = OuterQEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
-            n_outer_batch = nbatch_outer, n_inner_tile = nbatch_inner, nchunks, drop_pairs, eph_phonon_basis,
+            n_outer_batch = nbatch_outer, n_inner_tile = nbatch_inner, nchunks, eph_phonon_basis,
             kqpts, sel_k, sel_kq, window_kq, energy_conservation)
     end
     eng
@@ -273,25 +271,23 @@ end
 
 # Production drivers share the engine constructors' preparation and calculator-ready stages.
 function _run_eph(order::LoopTag, model::Model, kpts_input, second_input; calculators = [],
-        symmetry = model.symmetry, progress_print_step = 20, verbosity::Int = 1,
-        nchunks_threads = nthreads(), kwargs...)
+        symmetry = model.symmetry, progress_print_step = 20, verbosity::Int = 1, kwargs...)
     isempty(calculators) && throw(ArgumentError("the e-ph loop requires at least one calculator."))
     progress_print_step > 0 || throw(ArgumentError("progress_print_step must be positive"))
     eng = _prepare_engine(order, model, kpts_input, second_input;
-        calculators, symmetry, verbosity, nchunks_threads, kwargs...)
+        calculators, symmetry, verbosity, kwargs...)
     _run_eph_loop(eng, order, calculators; symmetry, progress_print_step, verbosity)
 end
 
 function _run_eph_loop(eng, order, calculators; symmetry, progress_print_step, verbosity)
     # Set up calculator storage against the same states and capacities used for direct calls.
-    nbatch_outer = order isa OuterKLoop ? size(eng.xk_host, 2) : size(eng.xq_host, 2)
     for calculator in calculators
         setup_calculator!(calculator, eng; verbosity)
     end
 
     # Explicitly bracket each outer batch; each chunk consumes its blocks before buffers are reused.
     n_outer = order isa OuterKLoop ? eng.kpts.n : eng.qpts.n
-    for batch in Iterators.partition(1:n_outer, nbatch_outer)
+    for batch in Iterators.partition(1:n_outer, eng.n_outer_batch)
         if mpi_isroot() && div(last(batch), progress_print_step) > div(first(batch) - 1, progress_print_step)
             @info "$(now()) $(order isa OuterKLoop ? "ik" : "iq") = $batch / $n_outer"
             flush(stdout); flush(stderr)

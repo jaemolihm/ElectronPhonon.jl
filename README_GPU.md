@@ -175,18 +175,19 @@ inner points are split into `nchunks_threads` thread chunks, each with its own t
 the CUDA kernels (`_bte_window_accumulate_kernel!`, `_window_scatter_kernel!`, the fused rotation
 kernels, `CUBLAS.gemm_strided_batched!`, the cuSOLVER batched eigensolve): those need the GPU box.
 
-Each order is two stages. **Outer k:** stage 1 is one list-batched `get_eph_RR_to_kR_batched!` over
-the outer batch, which stores the kR intermediate in the **k+q convention**
+Each order is two stages. **Outer k:** stage 1 is one batched Fourier transform over R_e
+and one `eph_rotate_kR_batched!` over the outer batch, which stores the kR intermediate in the
+**k+q convention**
 (`g̃(k, R_p) = conj(exp(2πi R_p·x_k)) · g(k, R_p)`, folded in via `additional_phase`), so the
 stage-2 Fourier phase `exp(2πi R_p·x_{k+q})` of a k+q tile is the same for every k of the batch:
 the loop is `k-batch -> k+q tile (phase built once) -> k -> block`, and stage 2 is one
 `get_eph_kR_to_kq_batched!` per block with the phonon basis fused into its right rotation.
 **Outer q:** stage 1 is `g(R_e, q)` for the outer batch on the device (one GEMM over the q batch,
-then the phonon-basis rotation as a batched GEMM), stage 2 one `get_eph_Rq_to_kq_batched!` per
-`(q, k tile)` after the k+q states of the tile are solved (`compute_electron_states_batched!`, into
-the leading `maximum(nband)` columns of the tile buffers, so the block's k+q box is its widest
-window). A model whose `epmat` has its columns over the other R (`epmat_outer_momentum`)
-contracts the row-block R in stage 1 with one strided-batched GEMM against a shared phase. The polar
+then the phonon-basis rotation as a batched GEMM), stage 2 one Fourier transform over R_e and one
+`eph_apply_rotations_rqkq!` per `(q, k tile)` after the k+q states of the tile are solved
+(`compute_electron_states_batched!`, into the leading `maximum(nband)` columns of the tile buffers, so the block's k+q box is its widest
+window). The model's `epmat_outer_momentum` must match the order (`"el"` for outer k, `"ph"` for
+outer q), so stage 1 always contracts the column R of `epmat`. The polar
 dipole term is added on the block for both orders (`finish_ep!`).
 
 A block is `ep` `(nband_max_kq, nband_max_k, nmodes, nb)` with the states, phonons, weights and

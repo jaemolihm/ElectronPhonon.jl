@@ -23,6 +23,11 @@ function _require_epmat_layout(order::LoopTag, model)
     nothing
 end
 
+# A point pair can be dropped by energy conservation, or under outer q when its k+q is absent from
+# the precomputed k+q states. Only then do the tiles hold the buffers for compacting the kept pairs.
+_can_drop_pairs(order::LoopTag, energy_conservation, precompute_el_kq) =
+    energy_conservation[1] !== :None || (order isa OuterQLoop && precompute_el_kq)
+
 # Storage structs deliberately have no array-type parameters. At each batch/chunk boundary,
 # _workspace_fields exposes concrete fields to explicitly named stage and chunk workers. The
 # kernels then see concrete CPU/GPU arrays without encoding every buffer type in the engine.
@@ -31,11 +36,6 @@ abstract type AbstractEphWorkspace end
 function _workspace_fields(workspace::AbstractEphWorkspace)
     # function barrier for exposing concrete buffer types to specialized workers.
     NamedTuple{fieldnames(typeof(workspace))}(ntuple(i -> getfield(workspace, i), Val(fieldcount(typeof(workspace)))))
-end
-
-function _workspace_fields(workspace::NamedTuple)
-    # Already-concrete workspace fields need no conversion.
-    workspace
 end
 
 """
@@ -130,6 +130,7 @@ mutable struct OuterKEngine <: AbstractEphWorkspace
     xk_host      :: Matrix{Float64} # (3, n_outer_batch) the batch's x_k, staged for `xk`
     xk                            # (3, n_outer_batch) the batch's x_k on the backend
     g_fourier                     # stage-1 Fourier output, `reshape_buffer_view` per use
+    n_outer_batch :: Int
     n_inner_tile :: Int
     tiles        :: Vector{OuterKTileWorkspace}
 end
@@ -165,6 +166,7 @@ mutable struct OuterQEngine <: AbstractEphWorkspace
     wtk                           # (nk,) k weights
     xq_host      :: Matrix{Float64} # (3, n_outer_batch) the batch's x_q, staged for `xq`
     xq                            # (3, n_outer_batch) the batch's x_q on the backend
+    n_outer_batch :: Int
     n_inner_tile :: Int
     tiles        :: Vector{OuterQTileWorkspace}
 end
@@ -249,21 +251,21 @@ provided (inner_loop_kq = true, run_eph_over_k_and_kq), or q when it is nothing
 (inner_loop_kq = false, run_eph_over_k_and_q), with k+q states solved per tile.
 
 n_outer_batch and n_inner_tile set the buffer capacities; nchunks sets the number of independent
-thread workspaces. el_qty/ph_qty select stored state fields. drop_pairs allocates extra buffers
-for compacting the surviving point pairs: it is enabled for energy-conservation filtering, or
-for precomputed k+q states in the outer-q driver where a requested k+q point may be absent.
-It does not change any band window or phonon-mode selection. covariant_derivative_of_g allocates
-the three derivative components; eph_phonon_basis selects eigenmode or cartesian phonons.
+thread workspaces. el_qty/ph_qty select stored state fields. Energy-conservation filtering
+allocates extra buffers for compacting the surviving point pairs; it does not change any band
+window or phonon-mode selection. covariant_derivative_of_g allocates the three derivative
+components; eph_phonon_basis selects eigenmode or cartesian phonons.
 """
 function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
-        n_outer_batch, n_inner_tile, nchunks, drop_pairs, covariant_derivative_of_g,
+        n_outer_batch, n_inner_tile, nchunks, covariant_derivative_of_g,
         eph_phonon_basis, sel_k = nothing, sel_kq = nothing, window_kq = (-Inf, Inf),
         energy_conservation = (:None, 0.0)) where {FT}
     # Validate the model layout and prepare the stage-1 interpolators for the selected inner loop.
     (; nw, nmodes) = model
+    _require_epmat_layout(OuterKLoop(), model)
+    drop_pairs = _can_drop_pairs(OuterKLoop(), energy_conservation, false)
     # run_eph_over_k_and_q has no resident k+q container: solve k+q per inner q tile,
     # at box width nw. run_eph_over_k_and_kq instead gathers phonons for resident k+q states.
-    _require_epmat_layout(OuterKLoop(), model)
     inner_loop_kq = els_kq !== nothing
     nbk, nbkq = els_k.nband_max, inner_loop_kq ? els_kq.nband_max : nw
     inner_pts = inner_loop_kq ? kqpts : qpts
@@ -272,8 +274,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     nr_p = length(irvec_p)
     itp_epmat = BatchedWannierInterpolator(epmat; backend, batch_size = n_outer_batch)
     itp_epmat_R = if covariant_derivative_of_g
-        # The position-weighted e-ph matrix, `im R_e g(R_e, R_p)` plus the tight-binding term
-        # `im (r_j - r_i) g`, rows `(i, j, ν, R_p, d)`.
+        # The position-weighted e-ph matrix `im R_e g(R_e, R_p)`.
         epmat_R = wannier_object_multiply_R(model.epmat, model.lattice)
         # Tight-binding approximation: dgᵃ_{ijν}(Rₑ, Rₚ) += im * (rᵃ_j - rᵃ_i) g_{ijν}(Rₑ, Rₚ)
         # epmat   : (i, j, nmodes, Rₚ, Rₑ)
@@ -313,7 +314,6 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
 
     # Allocate independent inner-tile scratch and optional filtering buffers for each thread chunk.
     tiles = map(1:nchunks) do _
-        # The phonons and q indices of a k+q tile (k+q grid), or the per-tile k+q solve (q points).
         if inner_loop_kq
             # Resident k+q states; gather each (k, k+q tile)'s phonons by q index.
             phs_tile = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT)
@@ -365,7 +365,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
         covariant_derivative_of_g ? alloc(backend, Complex{FT}, ndata, nr_p, 3, n_outer_batch) : nothing,
         BatchedElectronState(backend, nw, nbk, n_outer_batch, el_qty; FT),
         zeros(FT, 3, n_outer_batch), alloc(backend, FT, 3, n_outer_batch), alloc(backend, Complex{FT}, nrows_max * n_outer_batch),
-        n_inner_tile, tiles)
+        n_outer_batch, n_inner_tile, tiles)
 end
 
 """
@@ -378,20 +378,20 @@ into the first `length(iks_batch)` points of `eng.ep_kR` (and `eng.dg_kR`).
 - `iks_batch`: Indices of the active outer k points, up to the engine's batch capacity.
 """
 function stage1!(eng::OuterKEngine, iks_batch::UnitRange{Int})
-    _check_stage1(eng, iks_batch, eng.kpts.n, size(eng.ep_kR, 3))
+    _check_stage1(eng, iks_batch, eng.kpts.n)
     eng.batch = 1:0  # a failed transform must not leave the previous batch usable
     # function barrier for the outer-k stage-1 buffers.
-    _stage1!(OuterKLoop(), _workspace_fields(eng), eng.els_k, eng.kpts, iks_batch)
+    _stage1!(OuterKLoop(), _workspace_fields(eng), iks_batch)
     eng.batch = iks_batch
     eng
 end
 
-function _stage1!(::OuterKLoop, eng, els_k, kpts, iks_batch)
+function _stage1!(::OuterKLoop, eng, iks_batch)
     # Gather the active electron states and stage their k coordinates on the backend.
     nk_batch = length(iks_batch)
-    copy_batched_electron_states!(eng.els_k_batch, els_k, iks_batch)
+    copy_batched_electron_states!(eng.els_k_batch, eng.els_k, iks_batch)
     for (j, ik) in enumerate(iks_batch)
-        eng.xk_host[:, j] .= kpts.vectors[ik]
+        eng.xk_host[:, j] .= eng.kpts.vectors[ik]
     end
     xk = view(eng.xk, :, 1:nk_batch)
     copyto!(eng.xk, 1, eng.xk_host, 1, 3nk_batch)
@@ -522,18 +522,19 @@ end
     OuterQEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kwargs...)
 
 Build the outer-q run's buffers for a model with epmat_outer_momentum = "ph".
-The capacity, quantity, phonon-basis, and drop_pairs arguments have the meanings documented for
-OuterKEngine. Here els_kq = nothing selects a per-tile k+q solve; otherwise k+q states are copied
-from the resident container. drop_pairs also handles requested k+q points absent from it.
+The capacity, quantity, phonon-basis, and energy-conservation arguments have the meanings
+documented for OuterKEngine. Here els_kq = nothing selects a per-tile k+q solve; otherwise k+q
+states are copied from the resident container, and a pair whose k+q is absent from it is dropped.
 """
 function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
-        n_outer_batch, n_inner_tile, nchunks, drop_pairs, eph_phonon_basis, kqpts = nothing,
+        n_outer_batch, n_inner_tile, nchunks, eph_phonon_basis, kqpts = nothing,
         sel_k = nothing, sel_kq = nothing, window_kq = (-Inf, Inf),
         energy_conservation = (:None, 0.0)) where {FT}
     # Validate the model layout and determine the electron band-box dimensions.
     (; nw, nmodes) = model
-    nbk = els_k.nband_max
     _require_epmat_layout(OuterQLoop(), model)
+    drop_pairs = _can_drop_pairs(OuterQLoop(), energy_conservation, els_kq !== nothing)
+    nbk = els_k.nband_max
     nbkq = els_kq === nothing ? nw : els_kq.nband_max
 
     # Prepare the stage-1 Fourier interpolator and its read-only stage-2 outputs g(R_e, q).
@@ -584,7 +585,7 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
         eph_phonon_basis == :cartesian ? nothing : alloc(backend, Complex{FT}, nw^2, nr_e, nmodes, n_outer_batch),
         ep_Rq,
         to_device_copy(backend, collect(FT, kpts.weights)), zeros(FT, 3, n_outer_batch),
-        alloc(backend, FT, 3, n_outer_batch), n_inner_tile, tiles)
+        alloc(backend, FT, 3, n_outer_batch), n_outer_batch, n_inner_tile, tiles)
 end
 
 """
@@ -601,19 +602,19 @@ phase, and optionally repeats the contraction and rotation for the three derivat
 - `iqs_batch`: Indices of the active outer q points, up to the engine's batch capacity.
 """
 function stage1!(eng::OuterQEngine, iqs_batch::UnitRange{Int})
-    _check_stage1(eng, iqs_batch, eng.qpts.n, size(eng.ep_Rq, 3))
+    _check_stage1(eng, iqs_batch, eng.qpts.n)
     eng.batch = 1:0
     # function barrier for the outer-q stage-1 buffers.
-    _stage1!(OuterQLoop(), _workspace_fields(eng), eng.phs, eng.qpts, iqs_batch, eng.eph_phonon_basis)
+    _stage1!(OuterQLoop(), _workspace_fields(eng), iqs_batch)
     eng.batch = iqs_batch
     eng
 end
 
-function _stage1!(::OuterQLoop, eng, phs, qpts, iqs_batch, eph_phonon_basis)
+function _stage1!(::OuterQLoop, eng, iqs_batch)
     # Stage the active q coordinates on the backend.
     nq_batch = length(iqs_batch)
     for (j, iq) in enumerate(iqs_batch)
-        eng.xq_host[:, j] .= qpts.vectors[iq]
+        eng.xq_host[:, j] .= eng.qpts.vectors[iq]
     end
     xq = view(eng.xq, :, 1:nq_batch)
     copyto!(eng.xq, 1, eng.xq_host, 1, 3nq_batch)
@@ -625,7 +626,7 @@ function _stage1!(::OuterQLoop, eng, phs, qpts, iqs_batch, eph_phonon_basis)
 
     # Apply the phonon eigenmode rotation, or retain the cartesian components.
     ep = view(eng.ep_Rq, :, :, 1:nq_batch)
-    if eph_phonon_basis == :cartesian
+    if eng.eph_phonon_basis == :cartesian
         ep .= g
     else
         # ep[(a, ν'), r, q] = Σ_ν g[(a, ν), r, q] u_ph[ν, ν', q], as one batched GEMM over q on the
@@ -635,7 +636,7 @@ function _stage1!(::OuterQLoop, eng, phs, qpts, iqs_batch, eph_phonon_basis)
         g_rot = view(eng.g_rot, :, :, :, 1:nq_batch)
         permutedims!(g_rot, reshape(g, nw², nmodes, nr_e, nq_batch), (1, 3, 2, 4))
         ep_rot = reshape(view(eng.g_q, :, :, 1:nq_batch), nw² * nr_e, nmodes, nq_batch)   # g is consumed
-        batched_gemm!('N', 'N', reshape(g_rot, nw² * nr_e, nmodes, nq_batch), view(phs.u, :, :, iqs_batch), ep_rot)
+        batched_gemm!('N', 'N', reshape(g_rot, nw² * nr_e, nmodes, nq_batch), view(eng.phs.u, :, :, iqs_batch), ep_rot)
         permutedims!(reshape(ep, nw², nmodes, nr_e, nq_batch), reshape(ep_rot, nw², nr_e, nmodes, nq_batch), (1, 3, 2, 4))
     end
     eng
@@ -694,10 +695,11 @@ end
 
 # ---- Both orders -----------------------------------------------------------------------------
 
-function _check_stage1(eng, batch, npoints, capacity)
+function _check_stage1(eng, batch, npoints)
     isempty(batch) && throw(ArgumentError("stage1! needs a nonempty outer batch"))
     (first(batch) >= 1 && last(batch) <= npoints) || throw(BoundsError(1:npoints, batch))
-    length(batch) <= capacity || throw(ArgumentError("outer batch exceeds the engine's capacity $capacity"))
+    length(batch) <= eng.n_outer_batch ||
+        throw(ArgumentError("outer batch exceeds the engine's capacity $(eng.n_outer_batch)"))
     nothing
 end
 
@@ -755,10 +757,9 @@ function setup_calculator!(calculator::AbstractCalculator, eng::Union{OuterKEngi
         getproperty(eng.phs, quantity) === nothing && throw(ArgumentError(
             "engine is missing phonon quantity :$quantity; pass the calculator to the engine constructor"))
     end
-    n_outer_batch = eng isa OuterKEngine ? size(eng.xk_host, 2) : size(eng.xq_host, 2)
     setup_calculator!(calculator, eng.backend, eng.els_k, eng.els_kq, eng.phs;
-        eng.sel_k, eng.sel_kq, nw = eng.model.nw, nmodes = eng.model.nmodes,
-        nchunks_threads = length(eng.tiles), n_outer_batch, n_inner_tile = eng.n_inner_tile, verbosity)
+        eng.sel_k, eng.sel_kq, eng.model.nw, eng.model.nmodes,
+        nchunks_threads = length(eng.tiles), eng.n_outer_batch, eng.n_inner_tile, verbosity)
 end
 
 """

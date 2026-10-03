@@ -51,7 +51,7 @@ end
                 verbosity = 0)
             nbk = st.els_k.nband_max
             nbkq = st.els_kq === nothing ? model.nw : st.els_kq.nband_max
-            common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1, drop_pairs = false,
+            common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1,
                       eph_phonon_basis = :eigenmode)
             if order isa OuterKLoop
                 bytes = engine_bytes(OuterKEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
@@ -102,7 +102,7 @@ end
             window_kq = window, symmetry = nothing, precompute_el_kq = false, keep_all_qpts = true,
             eph_phonon_basis = :eigenmode, fourier_mode = "gridopt", mpi_comm_k = nothing,
             el_k_eigenpairs = nothing, el_kq_eigenpairs = nothing, ph_eigenpairs = nothing, verbosity = 0)
-        common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1, drop_pairs = false,
+        common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1,
                   eph_phonon_basis = :eigenmode)
         if order isa OuterKLoop
             eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;

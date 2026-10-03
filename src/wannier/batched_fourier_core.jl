@@ -110,8 +110,8 @@ end
 
 
 # Device byte budget for one interpolator's Fourier scratch. Fixed rather than `free_bytes`-derived,
-# so the default stays deterministic and the device-byte formulas in `calculator/eph_device_staging.jl`
-# stay static. 1 GiB is the smallest power of two that clears the measured launch/efficiency knee at
+# so the default stays deterministic and the device-byte formulas (`engine_bytes` in
+# `calculator/eph_engine.jl`) stay static. 1 GiB is the smallest power of two that clears the measured launch/efficiency knee at
 # both ends of the range of objects in use: at 512 MB a Cu-sized `el_ham` (nr = 2000, ndata = 49)
 # gets 16 376 columns and runs 24% slower than at 65 536, while 1 GiB gives it 32 752 (+6%) and puts
 # every Pb object past 10^5. `filter.jl` keeps its own 1 GiB constant; the two bound different
