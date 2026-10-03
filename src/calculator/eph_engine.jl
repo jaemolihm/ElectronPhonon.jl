@@ -25,7 +25,7 @@ function _require_epmat_layout(order::LoopTag, model)
 end
 
 # Storage structs deliberately have no array-type parameters. At each batch/chunk boundary,
-# _with_workspace passes a concrete NamedTuple of their fields to a specialized worker. The
+# _workspace_fields exposes concrete fields to explicitly named stage and chunk workers. The
 # kernels then see concrete CPU/GPU arrays without encoding every buffer type in the engine.
 abstract type AbstractEphWorkspace end
 
@@ -37,11 +37,6 @@ end
 function _workspace_fields(workspace::NamedTuple)
     # Already-concrete workspace fields need no conversion.
     workspace
-end
-
-function _with_workspace(f::F, workspace) where {F}
-    # function barrier for a thread chunk's concrete tile buffers.
-    f(_workspace_fields(workspace))
 end
 
 """
@@ -149,6 +144,26 @@ struct OuterQEngine <: AbstractEphWorkspace
     tiles        :: Vector{OuterQTileWorkspace}
 end
 
+
+# Fill `iqs[1:nq]` with the index into `qpts` of `x_{k+q} - x_k` for outer k `ik` and every k+q of
+# the tile `qstart .+ (0:nq-1)`, by integer grid hash on the coordinates the engine reduced once.
+function _fill_iqs!(iqs, qpts, xkqs_int, xks_int, ik, qstart, nq)
+    ng1, ng2, ng3 = qpts.ngrid
+    k1, k2, k3 = xks_int[1, ik], xks_int[2, ik], xks_int[3, ik]
+    for j in 1:nq
+        ikq = qstart + j - 1
+        # Both operands are pre-reduced into 0:ng-1, so the fold is a compare-and-add.
+        h1 = _wrap_reduced(xkqs_int[1, ikq] - k1, ng1)
+        h2 = _wrap_reduced(xkqs_int[2, ikq] - k2, ng2)
+        h3 = _wrap_reduced(xkqs_int[3, ikq] - k3, ng3)
+        hash = (h1 * ng2 + h2) * ng3 + h3
+        iq = _ik_from_hash(qpts, hash)
+        # 0 = miss on either index.
+        (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
+        iqs[j] = iq
+    end
+    iqs
+end
 
 # ---- OuterKEngine ----------------------------------------------------------------------------
 
