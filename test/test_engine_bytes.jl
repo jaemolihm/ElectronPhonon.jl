@@ -59,19 +59,21 @@ end
                     covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
                 eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = dg, common...)
-                run1 = () -> stage1!(eng, st.els_k, st.kpts, 1:nb)
+                run1 = () -> stage1!(eng, 1:nb)
             else
                 bytes = engine_bytes(OuterQEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, n_outer_batch = nb, el_qty, ph_qty, drop_pairs = false,
                     precompute_el_kq = false, eph_phonon_basis = :eigenmode)
                 eng = OuterQEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.qpts, common...)
-                run1 = () -> stage1!(eng, st.phs, st.qpts, 1:nb, :eigenmode)
+                run1 = () -> stage1!(eng, 1:nb)
             end
             run1()
             CUDA.synchronize()
             transient = _device_allocated(run1)
-            held = _device_bytes(eng)
+            # The planner runs after resident states are built: their bytes are already unavailable
+            # in free_bytes, so the engine budget counts newly allocated scratch, not those aliases.
+            held = _device_bytes(eng) - _device_bytes((eng.els_k, eng.els_kq, eng.phs))
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
             @info "engine_bytes" order mom dg held transient counted ratio = (held + transient) / counted
             # Everything the engine holds and its stage 1 allocates is counted (0.992-1.000 measured,
@@ -83,11 +85,10 @@ end
     end
 end
 
-# `stage2!` runs once per block, on the tile's preallocated scratch: it allocates no array of the
-# block's size, on the CPU or on a device (the k list of an outer-q block is staged per call, 24
-# bytes per point).
-@testset "stage2! allocates no scratch" begin
-    using ElectronPhonon: stage2!, reshape_view_batched_electron_states
+# The stage-2 contraction reuses tile scratch; state preparation/eigensolves are measured
+# separately. On a device the outer-q k list is staged per call (24 bytes per point).
+@testset "stage2! contraction allocates no scratch" begin
+    using ElectronPhonon: stage2!
     eV = unit_to_aru(:eV); e_F = 11.68eV
     window = (e_F - 0.5eV, e_F + 3eV)
     grid = (6, 6, 6)
@@ -106,30 +107,27 @@ end
         if order isa OuterKLoop
             eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                 st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = false, common...)
-            stage1!(eng, st.els_k, st.kpts, 1:nb)
-            t = eng.tiles[1]
-            pairs = (; n = ntile, iouter = 1, phase = view(t.P_kq, :, 1:ntile),
-                     phs = view(t.phs, 1:ntile),
-                     els_kq = view(st.els_kq, 1:ntile))
+            stage1!(eng, 1:nb)
         else
             eng = OuterQEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                 st.kpts, st.qpts, common...)
-            stage1!(eng, st.phs, st.qpts, 1:nb, :eigenmode)
-            t = eng.tiles[1]
-            pairs = (; n = ntile, els_k = view(t.els_k, 1:ntile),
-                     els_kq = reshape_view_batched_electron_states(t.els_kq, model.nw, ntile),
-                     phs = view(st.phs, 1:1), xk = view(st.kpts.vectors, 1:ntile))
+            stage1!(eng, 1:nb)
         end
-        stage2!(eng, t, pairs)
+        block = stage2!(eng, 1, 1:ntile)
+        t = ElectronPhonon._workspace_fields(eng.tiles[1])
+        fields = ElectronPhonon._workspace_fields(eng)
+        contract = order isa OuterKLoop ?
+            () -> ElectronPhonon._contract!(order, fields, t, block, 1, view(t.P_kq, :, 1:ntile)) :
+            () -> ElectronPhonon._contract!(order, fields, t, block, 1)
+        contract()
         nbytes = if backend isa ElectronPhonon.CPUBackend
-            @allocated stage2!(eng, t, pairs)
+            @allocated contract()
         else
-            CUDA.synchronize(); _device_allocated(() -> stage2!(eng, t, pairs))
+            CUDA.synchronize(); _device_allocated(contract)
         end
         @info "stage2! allocations" order backend = nameof(typeof(backend)) nbytes
-        # Measured (Pb): 80 and 112 bytes on the CPU with Julia 1.11, 0 and 32 with 1.13 (ccqlin059);
-        # 32 and 992 bytes (the k list) on the GPU (A100). The outer-q stage-2 scratch (g, tmp,
-        # uk_rep) alone is of order 1e5 bytes here.
+        # Only small view/dispatch wrappers and the staged k list may be allocated; the rotation
+        # scratch alone would be O(1e5) bytes for this fixture.
         @test nbytes <= 24 * ntile + 2048
     end
 end

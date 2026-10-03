@@ -103,6 +103,54 @@ run_eph_over_k_and_kq(model, (nk, nk, nk), (nk, nk, nk); calculators = [calc])
 calc.per_k   # one number per outer k-point
 ```
 
+## Run one k, q pair yourself
+
+The engine stages used by the drivers are also public (unexported) API. An engine prepares the
+states and reusable buffers; `stage2!` returns a complete `EPBlock`, including polar corrections.
+There is no separate single-point calculation path or block-getter function. With the calculator
+defined above and a model loaded with `epmat_outer_momentum = "el"`:
+
+<!-- doc-single-pair:begin -->
+```julia
+using ElectronPhonon: OuterKEngine, stage1!, stage2!, LoopContext,
+    setup_calculator!, calculator_begin!, run_calculator!, calculator_end!, postprocess_calculator!
+
+calc = EphG2SumCalculator()
+kpts = Kpoints(Vec3(0.2513, 0.2487, 0.0129))
+qpts = Kpoints(Vec3(0.071, 0.023, 0.019))
+eng = OuterKEngine(model, kpts, qpts; calculators = [calc], verbosity = 0)
+setup_calculator!(calc, eng)
+
+stage1!(eng, 1:1)
+ctx = LoopContext(eng)
+calculator_begin!(calc, ctx)
+block = stage2!(eng, 1, 1:1)
+if block !== nothing
+    run_calculator!(calc, block, ctx)
+end
+calculator_end!(calc, ctx)
+postprocess_calculator!(calc; qpts = eng.qpts, symmetry = nothing)
+calc.per_k
+```
+<!-- doc-single-pair:end -->
+
+`OuterKEngine` defaults to inner q points, solving k+q within each tile. For a resident k+q grid,
+pass `inner_loop_kq = true` and that grid as the third argument. A model loaded with
+`epmat_outer_momentum = "ph"` instead uses `OuterQEngine(model, kpts, qpts; ...)`, with q as
+the outer index and k as the inner range. The same stage calls and `LoopContext(eng)` work.
+
+Pass your calculator to the engine constructor so its requested quantities and memory budget are
+included; construction does **not** call setup or any lifecycle hook. You can also inspect matrix
+elements without a calculator and request extra fields with `el_quantities` / `ph_quantities`.
+Use `backend = gpu_backend()` for device buffers and `synchronize(eng.backend)` before timing.
+
+Point indices are into the engine's selected `eng.kpts`, `eng.kqpts` and `eng.qpts`, not necessarily
+the original lists: energy windows and symmetry can change the selection. `stage1!` records the
+current outer range; `stage2!` requires its outer index to belong to it, and returns `nothing`
+when every pair is filtered out. Each returned block borrows reusable storage: consume it before
+the next stage call on that chunk, or copy the arrays to retain them. Different CPU chunks have
+independent writable storage; use matching `chunk` in `stage2!` and `LoopContext(eng; chunk)`.
+
 ## The block
 
 Each array of an `EPBlock` has the pairs of the block on its last axis; the side shared by the whole

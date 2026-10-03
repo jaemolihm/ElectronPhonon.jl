@@ -44,6 +44,8 @@ Optionally:
 
 See `docs/writing_a_calculator.md` for a worked example. The public (unexported) calculator API is
 the `public` declaration at the bottom of this file.
+For manual execution, construct an `OuterKEngine` / `OuterQEngine`, use
+`setup_calculator!(calc, eng)`, `stage1!`, `stage2!` and `LoopContext(eng)`, then invoke the same hooks.
 """
 abstract type AbstractCalculator end
 
@@ -79,6 +81,8 @@ end
 The e-ph matrix of one block: one outer point with a tile of inner points, on the run's backend.
 Order-agnostic code broadcasts over the pair axis (the last axis of `ep` and of the tile-shaped
 fields); the side shared by the whole block has extent 1 along it and a scalar index.
+An engine's `stage2!` returns a fully computed block, with states and output arrays borrowing
+that chunk's reusable storage. Consume it before the next stage call, or copy arrays to retain them.
 
 Fields (pair axis `j`):
 - `ep` :: `(nband_max_kq, nband_max_k, nmodes, nb)` eigenbasis e-ph matrix, before `1/(2ω)`, in the
@@ -101,7 +105,8 @@ Fields (pair axis `j`):
   `UnitRange`, or a host vector when pairs were dropped); under `OuterQLoop` `iq::Int`, `ik` into the k set (a `UnitRange` or a host
   vector) and `ikq` into the precomputed k+q container, or `nothing` when k+q is solved per tile.
 """
-struct EPBlock{Order <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}
+struct EPBlock{Order <: LoopTag, AT, DGT, EK <: BatchedElectronState, EKQ <: BatchedElectronState,
+               PH <: BatchedPhononState, WK, WQ, XK, XQ, IK, IKQ, IQ}
     ep    :: AT
     dg    :: DGT
     els_k  :: EK
@@ -114,6 +119,17 @@ struct EPBlock{Order <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, 
     ik    :: IK
     ikq   :: IKQ
     iq    :: IQ
+end
+
+# Borrow output storage with exactly the same point and band extents as the states.
+function EPBlock{O}(workspace, els_k::BatchedElectronState, els_kq::BatchedElectronState,
+        phs::BatchedPhononState; kwargs...) where {O <: LoopTag}
+    n = O === OuterKLoop ? els_kq.nk : els_k.nk
+    dims = (els_kq.nband_max, els_k.nband_max, phs.nmodes, n)
+    ep = reshape_buffer_view(workspace.ep, dims...)
+    dg = O === OuterKLoop && workspace.dg !== nothing ?
+        reshape_buffer_view(workspace.dg, dims[1:3]..., 3, n) : nothing
+    EPBlock{O}(; ep, dg, els_k, els_kq, phs, kwargs...)
 end
 function EPBlock{O}(; ep::AT, dg::DGT, els_k::EK, els_kq::EKQ, phs::PH, wtk::WK, wtq::WQ, xk::XK,
         xq::XQ, ik::IK, ikq::IKQ, iq::IQ) where {O <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}
@@ -214,4 +230,3 @@ public AbstractCalculator, supports, setup_calculator!, run_calculator!, postpro
     TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array,
     tile_offset, tile_length, tile_stride, is_block, is_allocated, residency_use_block, to_device,
     plan_batch, estimate_device_memory
-

@@ -9,10 +9,10 @@ using ElectronPhonon
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
 
 # Extract the fenced Julia code between the doc-example sentinels.
-function _extract_doc_example(md_path)
+function _extract_doc_example(md_path; tag = "doc-example")
     text = read(md_path, String)
-    b = findfirst("<!-- doc-example:begin -->", text)
-    e = findfirst("<!-- doc-example:end -->", text)
+    b = findfirst("<!-- $tag:begin -->", text)
+    e = findfirst("<!-- $tag:end -->", text)
     (b === nothing || e === nothing) && error("doc-example sentinels not found in $md_path")
     block = text[last(b)+1 : first(e)-1]
     # Drop the ```julia … ``` fences, keep the code between them.
@@ -69,4 +69,18 @@ end
         c
     end
     @test calc_q.per_k ≈ calc.per_k rtol = 1e-10
+
+    # The direct-call example uses exactly the same calculator implementation and lifecycle.
+    direct_code = _extract_doc_example(guide; tag = "doc-single-pair")
+    Base.invokelatest() do
+        global model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
+        include_string(@__MODULE__, direct_code)
+        c = getfield(@__MODULE__, :calc)
+        @test length(c.per_k) == 1
+        @test all(isfinite, c.per_k) && maximum(abs, c.per_k) > 0
+        driver = getfield(@__MODULE__, :EphG2SumCalculator)()
+        ElectronPhonon.run_eph_over_k_and_q(model, getfield(@__MODULE__, :kpts), getfield(@__MODULE__, :qpts);
+            calculators = [driver], verbosity = 0)
+        @test driver.per_k ≈ c.per_k rtol = 1e-10
+    end
 end
