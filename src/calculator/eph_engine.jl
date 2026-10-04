@@ -9,8 +9,14 @@
 #            (`eph_engine_add_longrange!`); return a calculator-ready EPBlock.
 #
 # The resident containers (`eng.els_k`, `eng.els_kq`, `eng.phs`) are read-only. Stage 2 skips the
-# pairs that need no e-ph matrix (`_select_pairs!`) and gathers the others' states once, into the
-# tile's buffers; a side whose whole tile is selected and resident is a view, with no copy.
+# pairs that need no e-ph matrix and gathers the others' states once, into the tile's buffers; a
+# side whose whole tile is kept and resident is a view, with no copy. A pair is skipped when
+# (i) its k+q has no state in the window (`_kqpairs_in_window!`), or (ii) it has no process inside
+# `energy_conservation_tol` (`_kqpairs_conserving_energy!`, `CPUBackend` only). (i) by route:
+#   outer k, inner k+q            never: the resident k+q set holds only points with a state;
+#   outer k, inner q              no window band after the tile's k+q solve;
+#   outer q, k+q solved per tile  no window band after the tile's k+q solve;
+#   outer q, k+q precomputed      the k+q point is absent from the resident set.
 #
 # `engine_bytes` counts the buffers the constructors allocate, term for term, so `plan_batch` can
 # choose the widths before the engine is built. Both engines are backend-generic: host arrays on
@@ -41,22 +47,23 @@ end
 """
     OuterKTileWorkspace
 
-Scratch for one thread chunk's inner tiles. `keep` lists the selected pairs of a tile, `ikq` and
-`iq` their indices (`iq_dev` on the backend), and `els_kq`, `phs`, `wtq`, `xkq` and `P_kq` hold
-their gathered k+q states, phonons, weights, k+q coordinates and Fourier phase. `itp_el_ham`, `hk`
-and `kqs` solve k+q per tile for an inner q grid, and are `nothing` for an inner k+q grid.
+Scratch for one thread chunk's inner tiles. `ind_kept_kqpairs` lists the kept pairs of a tile,
+`ikqs` and `iqs` their indices (`iqs_dev` on the backend), and `els_kq`, `phs`, `wtqs`, `xkq` and
+`P_kq` hold their gathered k+q states, phonons, weights, k+q coordinates and Fourier phase.
+`itp_el_ham`, `hk` and `kqs` solve k+q per tile for an inner q grid, and are `nothing` for an inner
+k+q grid.
 `u_ph_id` holds the cartesian phonon basis, `dg` and `dg_d` serve covariant derivatives, and
 `uk_polar` and `mmat_buffer` are scratch of the polar term. Those features allocate buffers only
 when requested.
 """
 Base.@kwdef struct OuterKTileWorkspace <: AbstractEphWorkspace
-    keep
-    ikq
-    iq
-    iq_dev
+    ind_kept_kqpairs
+    ikqs
+    iqs
+    iqs_dev
     els_kq
     phs
-    wtq
+    wtqs
     itp_el_ham
     hk
     kqs
@@ -73,18 +80,19 @@ Base.@kwdef struct OuterKTileWorkspace <: AbstractEphWorkspace
 end
 
 """
-Scratch for one thread chunk's k tiles in the outer-q loop. `keep` lists the selected pairs of a
-tile, `ik` and `ikq` their indices, and `els_k`, `els_kq`, `wtk` and `xk` hold their gathered
-states, weights and coordinates. `P_k` is their stage-2 Fourier phase `exp(2πi R_e · x_k)`.
+Scratch for one thread chunk's k tiles in the outer-q loop. `ind_kept_kqpairs` lists the kept
+pairs of a tile, `iks` and `ikqs` their indices, and `els_k`, `els_kq`, `wtks` and `xks` hold their
+gathered states, weights and coordinates. `P_k` is their stage-2 Fourier phase
+`exp(2πi R_e · x_k)`.
 """
 Base.@kwdef struct OuterQTileWorkspace <: AbstractEphWorkspace
-    keep
-    ik
-    ikq
+    ind_kept_kqpairs
+    iks
+    ikqs
     els_k
     els_kq
-    wtk
-    xk
+    wtks
+    xks
     P_k
     itp_el_ham
     hk
@@ -109,7 +117,7 @@ position-weighted `epmat_R` (`wannier_object_multiply_R` plus the tight-binding 
 q points, the k+q states are solved per (k, tile) into the tile's buffers and the phase is built at
 x_k + x_q for each k.
 """
-mutable struct OuterKEngine <: AbstractEphWorkspace
+Base.@kwdef mutable struct OuterKEngine <: AbstractEphWorkspace
     model        :: Model
     els_k        :: BatchedElectronState
     els_kq       :: Union{Nothing, BatchedElectronState}
@@ -155,7 +163,7 @@ then g(k, k+q) for one q and a tile of k (stage 2), the k+q states solved per ti
 buffers' leading `maximum(nband)` columns when they are not precomputed. Each chunk contracts
 a read-only slice of the stage-1 output with its own Fourier phase.
 """
-mutable struct OuterQEngine <: AbstractEphWorkspace
+Base.@kwdef mutable struct OuterQEngine <: AbstractEphWorkspace
     model        :: Model
     els_k        :: BatchedElectronState
     els_kq       :: Union{Nothing, BatchedElectronState}
@@ -251,7 +259,7 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
         cx * nr_p +                                             # P_kq
         _electron_state_bytes(FT, nw, nband_max_kq, el_qty) +   # k+q tile
         _phonon_state_bytes(FT, nmodes, ph_qty) +               # phs tile
-        4iz + rl + 3rl +                                        # keep, ikq, iq, iq_dev, wtq, x_{k+q}
+        4iz + rl + 3rl +                                        # kept pairs, ikqs, iqs, iqs_dev, wtqs, x_{k+q}
         (inner_loop_kq ? 0 :
             cx * length(model.el_ham.irvec) + cx * nw^2 * 3) +  # k+q Fourier phase, H and eigensolve
         (eph_phonon_basis == :cartesian ? cx * nmodes^2 : 0) +  # identity basis
@@ -275,7 +283,7 @@ provided (inner_loop_kq = true, run_eph_over_k_and_kq), or q when it is nothing
 
 n_outer_batch and n_inner_tile set the buffer capacities; nchunks sets the number of independent
 thread workspaces. el_qty/ph_qty select stored state fields. energy_conservation_tol skips point
-pairs (`_select_pairs!`); it does not change any band window or phonon-mode selection.
+pairs (`_kqpairs_conserving_energy!`); it does not change any band window or phonon-mode selection.
 covariant_derivative_of_g allocates the three derivative components; eph_phonon_basis selects
 eigenmode or cartesian phonons.
 """
@@ -345,13 +353,13 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
             kqs = Vector{Vec3{FT}}(undef, n_inner_tile)
         end
         OuterKTileWorkspace(;
-            keep = Vector{Int}(undef, n_inner_tile),
-            ikq = Vector{Int}(undef, n_inner_tile),
-            iq = Vector{Int}(undef, n_inner_tile),
-            iq_dev = alloc(backend, Int, n_inner_tile),
+            ind_kept_kqpairs = Vector{Int}(undef, n_inner_tile),
+            ikqs = Vector{Int}(undef, n_inner_tile),
+            iqs = Vector{Int}(undef, n_inner_tile),
+            iqs_dev = alloc(backend, Int, n_inner_tile),
             els_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
             phs = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT),
-            wtq = alloc(backend, FT, n_inner_tile),
+            wtqs = alloc(backend, FT, n_inner_tile),
             itp_el_ham, hk, kqs,
             xkq = alloc(backend, FT, 3, n_inner_tile),
             P_kq = alloc(backend, Complex{FT}, nr_p, n_inner_tile),
@@ -369,15 +377,16 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
 
     # Assemble the engine with maximum-capacity stage-1 outputs and the thread workspaces.
     nrows_max = nw^2 * nmodes * nr_p * (covariant_derivative_of_g ? 3 : 1)
-    OuterKEngine(model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
-        energy_conservation_tol, eph_phonon_basis, inner_loop_kq, kpts.n, 1:0, backend, epmat, itp_epmat,
-        itp_epmat_R,
-        _irvec_to_device_matrix(backend, irvec_p, FT), mxk, xkq,
-        to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int, P_mk,
-        alloc(backend, Complex{FT}, ndata, nr_p, n_outer_batch),
-        covariant_derivative_of_g ? alloc(backend, Complex{FT}, ndata, nr_p, 3, n_outer_batch) : nothing,
-        BatchedElectronState(backend, nw, nbk, n_outer_batch, el_qty; FT),
-        zeros(FT, 3, n_outer_batch), alloc(backend, FT, 3, n_outer_batch), alloc(backend, Complex{FT}, nrows_max * n_outer_batch),
+    OuterKEngine(; model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
+        energy_conservation_tol, eph_phonon_basis, inner_loop_kq, n_outer = kpts.n, batch = 1:0,
+        backend, epmat, itp_epmat, itp_epmat_R,
+        irvecp_mat = _irvec_to_device_matrix(backend, irvec_p, FT), mxk, xkq,
+        wtkq = to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int, P_mk,
+        ep_kR = alloc(backend, Complex{FT}, ndata, nr_p, n_outer_batch),
+        dg_kR = covariant_derivative_of_g ? alloc(backend, Complex{FT}, ndata, nr_p, 3, n_outer_batch) : nothing,
+        els_k_batch = BatchedElectronState(backend, nw, nbk, n_outer_batch, el_qty; FT),
+        xk_host = zeros(FT, 3, n_outer_batch), xk = alloc(backend, FT, 3, n_outer_batch),
+        g_fourier = alloc(backend, Complex{FT}, nrows_max * n_outer_batch),
         n_outer_batch, n_inner_tile, tiles)
 end
 
@@ -435,9 +444,9 @@ end
 
 Return the calculator-ready `EPBlock` of outer k point `ik` and a tile of inner points: gather the
 resident k+q states and their phonons (inner k+q points) or solve the k+q states (inner q points)
-for the pairs to compute (`_select_pairs!`), compute their e-ph matrix (and requested
-derivatives), and add polar corrections. Return `nothing` if no pair is selected. Call `stage1!`
-first; `ik` must be in its current batch.
+for the pairs to compute, compute their e-ph matrix (and requested derivatives), and add polar
+corrections. Return `nothing` if no pair is kept. Call `stage1!` first; `ik` must be in its
+current batch.
 
 The block borrows this chunk's buffers: its arrays are valid until that chunk's next `stage2!`
 or the next `stage1!`. Consume it immediately or copy the arrays you need to retain. Calls on
@@ -445,120 +454,138 @@ different CPU chunks may run concurrently, but `stage1!` must wait for all of th
 
 - `ik`: Index into `eng.kpts`, not a batch-local index.
 - `inner_indices`: Nonempty contiguous range into `eng.kqpts` (inner k+q) or `eng.qpts` (inner q).
-- `chunk`: Independent workspace slot; use 1 for serial calls and GPU calls.
+- `chunk`: Independent workspace slot for CPU threading; use 1 for serial calls and GPU calls.
 """
-function stage2!(eng::OuterKEngine, ik::Int, tile::UnitRange{Int}; chunk::Int = 1)
+function stage2!(eng::OuterKEngine, ik::Int, inner_indices::UnitRange{Int}; chunk::Int = 1)
     n_inner = eng.inner_loop_kq ? eng.kqpts.n : eng.qpts.n
-    _check_stage2(eng, ik, tile, chunk, n_inner)
+    _check_stage2(eng, ik, inner_indices, chunk, n_inner)
     # function barrier for the concrete resident states, engine buffers, and chunk scratch.
-    _stage2!(OuterKLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), ik, tile)
+    _stage2!(OuterKLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), ik, inner_indices)
 end
 
 # `phase` is the Fourier phase of the whole tile, shared by the outer k points of a batch, or
-# `nothing` to build it here for the selected pairs (always so when pairs can be skipped).
-function _stage2!(::OuterKLoop, eng_fields, tile_workspace, ik, tile; phase = nothing)
-    n = length(tile)
+# `nothing` to build it here for the kept pairs (always so when pairs can be skipped).
+function _stage2!(::OuterKLoop, eng_fields, tile_workspace, ik, inner_indices; phase = nothing)
+    n_tile = length(inner_indices)
     iouter = ik - first(eng_fields.batch) + 1
     els_k = view(eng_fields.els_k_batch, iouter:iouter)
     tol = eng_fields.energy_conservation_tol
-    (; keep) = tile_workspace
+    (; ind_kept_kqpairs) = tile_workspace
     (; phs) = eng_fields
 
     if eng_fields.inner_loop_kq
         # Inner k+q points (run_eph_over_k_and_kq): the k+q states are resident, and each has a
-        # state in the window. Find q = (k+q) - k of each pair and select the pairs to compute.
+        # state in the window. Find q = (k+q) - k of each pair.
+        ikqs_tile = inner_indices
         (; els_kq) = eng_fields
-        iq_host = tile_workspace.iq
-        _fill_iqs!(iq_host, eng_fields.qpts, eng_fields.xkqs_int, eng_fields.xks_int, ik, first(tile), n)
-        nkeep = isinf(tol) ? n : _select_pairs!(keep, n, Returns(true), j -> _conserves_energy(
-            view(els_k.e, 1:els_k.nband[1], 1), view(els_kq.e, 1:els_kq.nband[tile[j]], tile[j]),
-            view(phs.e, :, iq_host[j]), tol))
-        nkeep == 0 && return nothing
+        iqs_host = tile_workspace.iqs
+        _fill_iqs!(iqs_host, eng_fields.qpts, eng_fields.xkqs_int, eng_fields.xks_int, ik, first(ikqs_tile), n_tile)
+        n_kept = if isinf(tol)
+            # Every pair of the tile is kept.
+            n_tile
+        else
+            # Keep the pairs with a process inside the energy-conservation tolerance.
+            view(ind_kept_kqpairs, 1:n_tile) .= 1:n_tile
+            _kqpairs_conserving_energy!(ind_kept_kqpairs, n_tile, tol, j -> (
+                view(els_k.e, 1:els_k.nband[1], 1),
+                view(els_kq.e, 1:els_kq.nband[ikqs_tile[j]], ikqs_tile[j]),
+                view(phs.e, :, iqs_host[j])))
+        end
+        n_kept == 0 && return nothing
 
-        if nkeep == n
-            # The whole tile: the resident k+q states as they are.
-            ikq = tile
-            els_kq_block = view(els_kq, tile)
-            wtq = view(eng_fields.wtkq, tile)
+        if n_kept == n_tile
+            # Every pair is kept: the resident k+q states as they are.
+            ikqs = ikqs_tile
+            els_kq_block = view(els_kq, ikqs_tile)
+            wtqs = view(eng_fields.wtkq, ikqs_tile)
             if phase === nothing
-                phase = view(tile_workspace.P_kq, :, 1:n)
-                @views build_fourier_phase!(phase, eng_fields.irvecp_mat, eng_fields.xkq[:, tile])
+                phase = view(tile_workspace.P_kq, :, 1:n_tile)
+                @views build_fourier_phase!(phase, eng_fields.irvecp_mat, eng_fields.xkq[:, ikqs_tile])
             end
         else
-            # Gather the selected pairs' k+q states, weights and coordinates.
+            # Some pairs are skipped: gather the kept pairs' k+q states, weights and coordinates.
             phase === nothing || throw(ArgumentError("a shared tile phase needs every pair of the tile"))
-            for (i, j) in enumerate(view(keep, 1:nkeep))
-                tile_workspace.ikq[i] = tile[j]
-                iq_host[i] = iq_host[j]
+            for (i, j) in enumerate(view(ind_kept_kqpairs, 1:n_kept))
+                tile_workspace.ikqs[i] = ikqs_tile[j]
+                iqs_host[i] = iqs_host[j]
             end
-            ikq = view(tile_workspace.ikq, 1:nkeep)
-            ikq_on_backend = _copy_indices_on_backend(eng_fields.xkq, ikq, els_kq.nk)
-            els_kq_block = view(copy_batched_electron_states!(tile_workspace.els_kq, els_kq, ikq_on_backend), 1:nkeep)
-            wtq = view(_copy_last_axis!(tile_workspace.wtq, eng_fields.wtkq, ikq_on_backend), 1:nkeep)
-            xkq = view(_copy_last_axis!(tile_workspace.xkq, eng_fields.xkq, ikq_on_backend), :, 1:nkeep)
-            phase = view(tile_workspace.P_kq, :, 1:nkeep)
+            ikqs = view(tile_workspace.ikqs, 1:n_kept)
+            ikqs_on_backend = _copy_indices_on_backend(eng_fields.xkq, ikqs, els_kq.nk)
+            els_kq_block = view(copy_batched_electron_states!(tile_workspace.els_kq, els_kq, ikqs_on_backend), 1:n_kept)
+            wtqs = view(_copy_last_axis!(tile_workspace.wtqs, eng_fields.wtkq, ikqs_on_backend), 1:n_kept)
+            xkq = view(_copy_last_axis!(tile_workspace.xkq, eng_fields.xkq, ikqs_on_backend), :, 1:n_kept)
+            phase = view(tile_workspace.P_kq, :, 1:n_kept)
             build_fourier_phase!(phase, eng_fields.irvecp_mat, xkq)
         end
 
-        # Gather the selected pairs' phonons.
-        copyto!(tile_workspace.iq_dev, 1, iq_host, 1, nkeep)
-        iq = view(tile_workspace.iq_dev, 1:nkeep)
-        phs_block = view(copy_batched_phonon_states!(tile_workspace.phs, phs, iq), 1:nkeep)
-        xq = view(eng_fields.qpts.vectors, view(iq_host, 1:nkeep))
+        # Gather the kept pairs' phonons.
+        copyto!(tile_workspace.iqs_dev, 1, iqs_host, 1, n_kept)
+        iqs = view(tile_workspace.iqs_dev, 1:n_kept)
+        phs_block = view(copy_batched_phonon_states!(tile_workspace.phs, phs, iqs), 1:n_kept)
+        xqs = view(eng_fields.qpts.vectors, view(iqs_host, 1:n_kept))
     else
         # Inner q points (run_eph_over_k_and_q): the phonons are resident. Solve the electron
-        # bands at k+q for this tile and select the pairs to compute.
-        for (j, iq_tile) in enumerate(tile)
-            tile_workspace.kqs[j] = eng_fields.kpts.vectors[ik] + eng_fields.qpts.vectors[iq_tile]
+        # bands at k+q for this tile.
+        iqs_tile = inner_indices
+        for (j, iq) in enumerate(iqs_tile)
+            tile_workspace.kqs[j] = eng_fields.kpts.vectors[ik] + eng_fields.qpts.vectors[iq]
         end
         bands_kq = solve_electron_bands_batched(tile_workspace.itp_el_ham, tile_workspace.hk,
-            eng_fields.model, view(tile_workspace.kqs, 1:n), eng_fields.window_kq;
+            eng_fields.model, view(tile_workspace.kqs, 1:n_tile), eng_fields.window_kq;
             eigenvectors = tile_workspace.els_kq.u !== nothing)
-        nband_kq = Array(bands_kq.nband)
-        nkeep = _select_pairs!(keep, n, j -> nband_kq[j] > 0, j -> isinf(tol) || _conserves_energy(
-            view(els_k.e, 1:els_k.nband[1], 1),
-            view(bands_kq.E, bands_kq.offset[j] .+ (1:nband_kq[j]), j), view(phs.e, :, tile[j]), tol))
-        nkeep == 0 && return nothing
-        ikq = nothing
 
-        if nkeep == n
-            # The whole tile: the resident phonons as they are.
-            els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq, 1:n)
-            iq = tile
-            phs_block = view(phs, tile)
-            wtq = view(eng_fields.wtkq, tile)
-            xkq = view(tile_workspace.xkq, :, 1:n)
-            @views xkq .= eng_fields.xkq[:, tile]
-        else
-            # Gather the selected pairs' k+q states, phonons, weights and coordinates.
-            els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq, view(keep, 1:nkeep))
-            for (i, j) in enumerate(view(keep, 1:nkeep))
-                tile_workspace.iq[i] = tile[j]
-            end
-            iq = view(tile_workspace.iq, 1:nkeep)
-            iq_on_backend = _copy_indices_on_backend(eng_fields.xkq, iq, phs.nq)
-            phs_block = view(copy_batched_phonon_states!(tile_workspace.phs, phs, iq_on_backend), 1:nkeep)
-            wtq = view(_copy_last_axis!(tile_workspace.wtq, eng_fields.wtkq, iq_on_backend), 1:nkeep)
-            xkq = view(_copy_last_axis!(tile_workspace.xkq, eng_fields.xkq, iq_on_backend), :, 1:nkeep)
+        # Keep the pairs whose k+q has a state in the window, and of those the pairs with a process
+        # inside the energy-conservation tolerance.
+        nbands_kq = Array(bands_kq.nband)
+        n_kept = _kqpairs_in_window!(ind_kept_kqpairs, nbands_kq)
+        if isfinite(tol)
+            n_kept = _kqpairs_conserving_energy!(ind_kept_kqpairs, n_kept, tol, j -> (
+                view(els_k.e, 1:els_k.nband[1], 1),
+                view(bands_kq.E, bands_kq.offset[j] .+ (1:nbands_kq[j]), j),
+                view(phs.e, :, iqs_tile[j])))
         end
-        xq = view(eng_fields.qpts.vectors, iq)
+        n_kept == 0 && return nothing
+        ikqs = nothing
+
+        if n_kept == n_tile
+            # Every pair is kept: the resident phonons as they are.
+            els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq, 1:n_tile)
+            iqs = iqs_tile
+            phs_block = view(phs, iqs_tile)
+            wtqs = view(eng_fields.wtkq, iqs_tile)
+            xkq = view(tile_workspace.xkq, :, 1:n_tile)
+            @views xkq .= eng_fields.xkq[:, iqs_tile]
+        else
+            # Some pairs are skipped: gather the kept pairs' k+q states, phonons, weights and
+            # coordinates.
+            els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq, view(ind_kept_kqpairs, 1:n_kept))
+            for (i, j) in enumerate(view(ind_kept_kqpairs, 1:n_kept))
+                tile_workspace.iqs[i] = iqs_tile[j]
+            end
+            iqs = view(tile_workspace.iqs, 1:n_kept)
+            iqs_on_backend = _copy_indices_on_backend(eng_fields.xkq, iqs, phs.nq)
+            phs_block = view(copy_batched_phonon_states!(tile_workspace.phs, phs, iqs_on_backend), 1:n_kept)
+            wtqs = view(_copy_last_axis!(tile_workspace.wtqs, eng_fields.wtkq, iqs_on_backend), 1:n_kept)
+            xkq = view(_copy_last_axis!(tile_workspace.xkq, eng_fields.xkq, iqs_on_backend), :, 1:n_kept)
+        end
+        xqs = view(eng_fields.qpts.vectors, iqs)
 
         # Stage 1 includes exp(-2πi R_p·k), so stage 2 needs the phase at k+q, not q.
         xkq .+= view(eng_fields.xk, :, iouter)
-        phase = view(tile_workspace.P_kq, :, 1:nkeep)
+        phase = view(tile_workspace.P_kq, :, 1:n_kept)
         build_fourier_phase!(phase, eng_fields.irvecp_mat, xkq)
     end
 
-    # function barrier for the concrete types of the selected pairs' states and indices.
-    _contract_pairs!(OuterKLoop(), eng_fields, tile_workspace, iouter, phase, els_k, els_kq_block,
-        phs_block, ik, ikq, iq, wtq, xq)
+    # function barrier for the concrete types of the kept pairs' states and indices.
+    _compute_eph_for_pairs!(OuterKLoop(), eng_fields, tile_workspace, iouter, phase, els_k, els_kq_block,
+        phs_block, ik, ikqs, iqs, wtqs, xqs)
 end
 
-function _contract_pairs!(::OuterKLoop, eng_fields, tile_workspace, iouter, phase, els_k, els_kq, phs,
-        ik, ikq, iq, wtq, xq)
+function _compute_eph_for_pairs!(::OuterKLoop, eng_fields, tile_workspace, iouter, phase, els_k, els_kq, phs,
+        ik, ikqs, iqs, wtqs, xqs)
     # Borrow the tile's output storage for the block.
-    block = EPBlock{OuterKLoop}(tile_workspace, els_k, els_kq, phs;
-        ik, ikq, iq, wtk = eng_fields.kpts.weights[ik], wtq, xk = eng_fields.kpts.vectors[ik], xq)
+    block = EPBlock{OuterKLoop}(tile_workspace, els_k, els_kq, phs; ik, ikq = ikqs, iq = iqs,
+        wtk = eng_fields.kpts.weights[ik], wtq = wtqs, xk = eng_fields.kpts.vectors[ik], xq = xqs)
 
     # Fourier-transform R_p and rotate by u_{k+q} and the phonon basis:
     # g_ina(k, R_p) -> g_mnν(k, q), with m the band of k+q and ν the phonon mode
@@ -614,7 +641,7 @@ function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband
         _electron_state_bytes(FT, nw, nband_max_k, el_qty) +    # k tile
         _electron_state_bytes(FT, nw, nbkq, el_qty) +           # k+q tile
         cx * nr_e +                                             # stage-2 Fourier phase
-        3iz + rl + 3rl +                                        # keep, ik, ikq, wtk, x_k
+        3iz + rl + 3rl +                                        # kept pairs, iks, ikqs, wtks, xks
         (precompute_el_kq ? 0 : cx * length(model.el_ham.irvec)) +   # k+q Fourier phase
         (precompute_el_kq ? 0 : cx * nw^2 * 3) +                # k+q Hamiltonian and its eigensolve
         (model.polar_eph.use ? cx * (nw * nband_max_k + nbkq * nband_max_k) : 0)   # polar scratch
@@ -651,13 +678,13 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     tiles = map(1:nchunks) do _
         # Each chunk owns its Fourier phase; the stage-1 output is read-only in stage 2.
         OuterQTileWorkspace(;
-            keep = Vector{Int}(undef, n_inner_tile),
-            ik = Vector{Int}(undef, n_inner_tile),
-            ikq = Vector{Int}(undef, n_inner_tile),     # 0: k+q absent from the precomputed states
+            ind_kept_kqpairs = Vector{Int}(undef, n_inner_tile),
+            iks = Vector{Int}(undef, n_inner_tile),
+            ikqs = Vector{Int}(undef, n_inner_tile),    # 0: k+q absent from the precomputed states
             els_k = BatchedElectronState(backend, nw, nbk, n_inner_tile, el_qty; FT),
             els_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
-            wtk = alloc(backend, FT, n_inner_tile),
-            xk = Vector{Vec3{FT}}(undef, n_inner_tile),
+            wtks = alloc(backend, FT, n_inner_tile),
+            xks = Vector{Vec3{FT}}(undef, n_inner_tile),
             P_k = alloc(backend, Complex{FT}, nr_e, n_inner_tile),
             itp_el_ham = el_ham === nothing ? nothing :
                 BatchedWannierInterpolator(el_ham; backend, batch_size = n_inner_tile),
@@ -673,14 +700,15 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     end
 
     # Assemble the engine with maximum-capacity stage-1 outputs and coordinate buffers.
-    OuterQEngine(model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
-        energy_conservation_tol, eph_phonon_basis, qpts.n, 1:0, backend, epmat, itp_epmat,
-        _irvec_to_device_matrix(backend, irvec_e, FT),
-        alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch),
-        eph_phonon_basis == :cartesian ? nothing : alloc(backend, Complex{FT}, nw^2, nr_e, nmodes, n_outer_batch),
-        alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch),
-        to_device_copy(backend, collect(FT, kpts.weights)), zeros(FT, 3, n_outer_batch),
-        alloc(backend, FT, 3, n_outer_batch), n_outer_batch, n_inner_tile, tiles)
+    OuterQEngine(; model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
+        energy_conservation_tol, eph_phonon_basis, n_outer = qpts.n, batch = 1:0, backend, epmat,
+        itp_epmat, irvece_mat = _irvec_to_device_matrix(backend, irvec_e, FT),
+        g_q = alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch),
+        g_rot = eph_phonon_basis == :cartesian ? nothing : alloc(backend, Complex{FT}, nw^2, nr_e, nmodes, n_outer_batch),
+        ep_Rq = alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch),
+        wtk = to_device_copy(backend, collect(FT, kpts.weights)),
+        xq_host = zeros(FT, 3, n_outer_batch), xq = alloc(backend, FT, 3, n_outer_batch),
+        n_outer_batch, n_inner_tile, tiles)
 end
 
 """
@@ -739,12 +767,11 @@ function _stage1!(::OuterQLoop, eng_fields, iqs_batch)
 end
 
 """
-    stage2!(eng::OuterQEngine, iq, k_indices; chunk=1)
+    stage2!(eng::OuterQEngine, iq, iks_tile; chunk=1)
 
 Return the calculator-ready `EPBlock` of outer q point `iq` and a tile of k points: solve the k+q
-states or look them up in the precomputed container, gather the states of the pairs to compute
-(`_select_pairs!`), compute their e-ph matrix, and add polar corrections. Return `nothing` if no
-pair is selected.
+states or look them up in the precomputed container, gather the states of the pairs to compute,
+compute their e-ph matrix, and add polar corrections. Return `nothing` if no pair is kept.
 Call `stage1!` first; `iq` must be in its current batch.
 
 The block borrows this chunk's buffers: its arrays are valid until that chunk's next `stage2!`
@@ -752,81 +779,104 @@ or the next `stage1!`. Consume it immediately or copy the arrays you need to ret
 different CPU chunks may run concurrently, but `stage1!` must wait for all of them to finish.
 
 - `iq`: Index into `eng.qpts`, not a batch-local index.
-- `k_indices`: Nonempty contiguous range into `eng.kpts`.
-- `chunk`: Independent workspace slot; use 1 for serial calls and GPU calls.
+- `iks_tile`: Nonempty contiguous range into `eng.kpts`.
+- `chunk`: Independent workspace slot for CPU threading; use 1 for serial calls and GPU calls.
 """
-function stage2!(eng::OuterQEngine, iq::Int, tile::UnitRange{Int}; chunk::Int = 1)
-    _check_stage2(eng, iq, tile, chunk, eng.kpts.n)
+function stage2!(eng::OuterQEngine, iq::Int, iks_tile::UnitRange{Int}; chunk::Int = 1)
+    _check_stage2(eng, iq, iks_tile, chunk, eng.kpts.n)
     # function barrier for the concrete resident states, engine buffers, and chunk scratch.
-    _stage2!(OuterQLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), iq, tile)
+    _stage2!(OuterQLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), iq, iks_tile)
 end
 
-function _stage2!(::OuterQLoop, eng_fields, tile_workspace, iq, tile)
-    n = length(tile)
+function _stage2!(::OuterQLoop, eng_fields, tile_workspace, iq, iks_tile)
+    n_tile = length(iks_tile)
     tol = eng_fields.energy_conservation_tol
-    (; keep) = tile_workspace
+    (; ind_kept_kqpairs) = tile_workspace
     (; els_k, phs) = eng_fields
-    for (j, ik) in enumerate(tile)
+    for (j, ik) in enumerate(iks_tile)
         tile_workspace.kqs[j] = eng_fields.kpts.vectors[ik] + eng_fields.qpts.vectors[iq]
     end
 
-    # Solve or look up k+q for this q and k tile, select the pairs to compute and gather their
-    # k+q states.
     if eng_fields.els_kq === nothing
+        # k+q solved per tile: solve the electron bands at k+q for this q and k tile.
         bands_kq = solve_electron_bands_batched(tile_workspace.itp_el_ham, tile_workspace.hk,
-            eng_fields.model, view(tile_workspace.kqs, 1:n), eng_fields.window_kq;
+            eng_fields.model, view(tile_workspace.kqs, 1:n_tile), eng_fields.window_kq;
             eigenvectors = tile_workspace.els_kq.u !== nothing)
-        nband_kq = Array(bands_kq.nband)
-        nkeep = _select_pairs!(keep, n, j -> nband_kq[j] > 0, j -> isinf(tol) || _conserves_energy(
-            view(els_k.e, 1:els_k.nband[tile[j]], tile[j]),
-            view(bands_kq.E, bands_kq.offset[j] .+ (1:nband_kq[j]), j), view(phs.e, :, iq), tol))
-        nkeep == 0 && return nothing
-        els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq, nkeep == n ? (1:n) : view(keep, 1:nkeep))
-        ikq = nothing
+
+        # Keep the pairs whose k+q has a state in the window, and of those the pairs with a process
+        # inside the energy-conservation tolerance.
+        nbands_kq = Array(bands_kq.nband)
+        n_kept = _kqpairs_in_window!(ind_kept_kqpairs, nbands_kq)
+        if isfinite(tol)
+            n_kept = _kqpairs_conserving_energy!(ind_kept_kqpairs, n_kept, tol, j -> (
+                view(els_k.e, 1:els_k.nband[iks_tile[j]], iks_tile[j]),
+                view(bands_kq.E, bands_kq.offset[j] .+ (1:nbands_kq[j]), j),
+                view(phs.e, :, iq)))
+        end
+        n_kept == 0 && return nothing
+
+        # Move the kept pairs' window bands at k+q into the tile.
+        els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq,
+            n_kept == n_tile ? (1:n_tile) : view(ind_kept_kqpairs, 1:n_kept))
+        ikqs = nothing
     else
-        # A k+q with no state in the window is absent from the precomputed states.
+        # k+q precomputed: look up each k+q in the resident states. One with no state in the window
+        # is absent from them (index 0).
         els_kq = eng_fields.els_kq
-        ikq_host = tile_workspace.ikq
-        for j in 1:n
-            ikq_host[j] = something(xk_to_ik_unsafe(tile_workspace.kqs[j], eng_fields.kqpts), 0)
+        ikqs_host = tile_workspace.ikqs
+        for j in 1:n_tile
+            ikqs_host[j] = something(xk_to_ik_unsafe(tile_workspace.kqs[j], eng_fields.kqpts), 0)
         end
-        nkeep = _select_pairs!(keep, n, j -> ikq_host[j] != 0, j -> isinf(tol) || _conserves_energy(
-            view(els_k.e, 1:els_k.nband[tile[j]], tile[j]),
-            view(els_kq.e, 1:els_kq.nband[ikq_host[j]], ikq_host[j]), view(phs.e, :, iq), tol))
-        nkeep == 0 && return nothing
-        for (i, j) in enumerate(view(keep, 1:nkeep))
-            ikq_host[i] = ikq_host[j]
+
+        # Keep the pairs whose k+q has a state in the window, and of those the pairs with a process
+        # inside the energy-conservation tolerance.
+        n_kept = _kqpairs_in_window!(ind_kept_kqpairs, view(ikqs_host, 1:n_tile))
+        if isfinite(tol)
+            n_kept = _kqpairs_conserving_energy!(ind_kept_kqpairs, n_kept, tol, j -> (
+                view(els_k.e, 1:els_k.nband[iks_tile[j]], iks_tile[j]),
+                view(els_kq.e, 1:els_kq.nband[ikqs_host[j]], ikqs_host[j]),
+                view(phs.e, :, iq)))
         end
-        ikq = view(ikq_host, 1:nkeep)
-        els_kq_block = view(copy_batched_electron_states!(tile_workspace.els_kq, els_kq, ikq), 1:nkeep)
+        n_kept == 0 && return nothing
+
+        # Gather the kept pairs' k+q states.
+        for (i, j) in enumerate(view(ind_kept_kqpairs, 1:n_kept))
+            ikqs_host[i] = ikqs_host[j]
+        end
+        ikqs = view(ikqs_host, 1:n_kept)
+        els_kq_block = view(copy_batched_electron_states!(tile_workspace.els_kq, els_kq, ikqs), 1:n_kept)
     end
 
-    # Gather the selected pairs' k states, weights and coordinates.
-    if nkeep == n
-        ik = tile
-        els_k_block = view(copy_batched_electron_states!(tile_workspace.els_k, els_k, tile), 1:n)
-        wtk = view(eng_fields.wtk, tile)
-        xk = view(eng_fields.kpts.vectors, tile)
+    if n_kept == n_tile
+        # Every pair is kept: copy the tile's k states, with its weights and coordinates as they are.
+        iks = iks_tile
+        els_k_block = view(copy_batched_electron_states!(tile_workspace.els_k, els_k, iks_tile), 1:n_tile)
+        wtks = view(eng_fields.wtk, iks_tile)
+        xks = view(eng_fields.kpts.vectors, iks_tile)
     else
-        for (i, j) in enumerate(view(keep, 1:nkeep))
-            tile_workspace.ik[i] = tile[j]
-            tile_workspace.xk[i] = eng_fields.kpts.vectors[tile[j]]
+        # Some pairs are skipped: gather the kept pairs' k states, weights and coordinates.
+        for (i, j) in enumerate(view(ind_kept_kqpairs, 1:n_kept))
+            tile_workspace.iks[i] = iks_tile[j]
+            tile_workspace.xks[i] = eng_fields.kpts.vectors[iks_tile[j]]
         end
-        ik = view(tile_workspace.ik, 1:nkeep)
-        ik_on_backend = _copy_indices_on_backend(eng_fields.wtk, ik, els_k.nk)
-        els_k_block = view(copy_batched_electron_states!(tile_workspace.els_k, els_k, ik_on_backend), 1:nkeep)
-        wtk = view(_copy_last_axis!(tile_workspace.wtk, eng_fields.wtk, ik_on_backend), 1:nkeep)
-        xk = view(tile_workspace.xk, 1:nkeep)
+        iks = view(tile_workspace.iks, 1:n_kept)
+        iks_on_backend = _copy_indices_on_backend(eng_fields.wtk, iks, els_k.nk)
+        els_k_block = view(copy_batched_electron_states!(tile_workspace.els_k, els_k, iks_on_backend), 1:n_kept)
+        wtks = view(_copy_last_axis!(tile_workspace.wtks, eng_fields.wtk, iks_on_backend), 1:n_kept)
+        xks = view(tile_workspace.xks, 1:n_kept)
     end
 
-    # function barrier for the concrete types of the selected pairs' states and indices.
-    _contract_pairs!(OuterQLoop(), eng_fields, tile_workspace, els_k_block, els_kq_block, ik, ikq, iq, wtk, xk)
+    # function barrier for the concrete types of the kept pairs' states and indices.
+    _compute_eph_for_pairs!(OuterQLoop(), eng_fields, tile_workspace, els_k_block, els_kq_block,
+        iks, ikqs, iq, wtks, xks)
 end
 
-function _contract_pairs!(::OuterQLoop, eng_fields, tile_workspace, els_k, els_kq, ik, ikq, iq, wtk, xk)
+function _compute_eph_for_pairs!(::OuterQLoop, eng_fields, tile_workspace, els_k, els_kq, iks, ikqs, iq,
+        wtks, xks)
     # Borrow the tile's output storage for the block.
     block = EPBlock{OuterQLoop}(tile_workspace, els_k, els_kq, view(eng_fields.phs, iq:iq);
-        ik, ikq, iq, wtk, wtq = eng_fields.qpts.weights[iq], xk, xq = eng_fields.qpts.vectors[iq])
+        ik = iks, ikq = ikqs, iq, wtk = wtks, wtq = eng_fields.qpts.weights[iq], xk = xks,
+        xq = eng_fields.qpts.vectors[iq])
 
     # Fourier-transform R_e of this q's stage-1 output at the tile's k points:
     # g_ijν(R_e, q) -> g_ijν(k, q).
@@ -860,13 +910,13 @@ function _check_stage1(eng, batch)
     nothing
 end
 
-function _check_stage2(eng, outer_index, tile, chunk, n_inner)
+function _check_stage2(eng, outer_index, inner_indices, chunk, n_inner)
     outer_index ∈ eng.batch || throw(ArgumentError(
         "outer point $outer_index is not in the current stage1! batch $(eng.batch)"))
     1 <= chunk <= length(eng.tiles) || throw(BoundsError(eng.tiles, chunk))
-    isempty(tile) && throw(ArgumentError("stage2! needs a nonempty inner tile"))
-    (first(tile) >= 1 && last(tile) <= n_inner) || throw(BoundsError(1:n_inner, tile))
-    length(tile) <= eng.n_inner_tile || throw(ArgumentError(
+    isempty(inner_indices) && throw(ArgumentError("stage2! needs a nonempty inner tile"))
+    (first(inner_indices) >= 1 && last(inner_indices) <= n_inner) || throw(BoundsError(1:n_inner, inner_indices))
+    length(inner_indices) <= eng.n_inner_tile || throw(ArgumentError(
         "inner tile exceeds the engine's capacity $(eng.n_inner_tile)"))
     nothing
 end
@@ -886,25 +936,31 @@ function LoopContext(eng::Union{OuterKEngine, OuterQEngine}; chunk::Int = 1)
     LoopContext(eng.backend, order, eng.batch, chunk)
 end
 
-# Select the pairs of a tile to compute, before any of their states is gathered: `keep[1:nkeep]`
-# lists, in order, the pairs `j` of `1:n` (i) whose k+q has a state in the window
-# (`has_kq_state(j)`), and (ii) that have a process inside the energy-conservation tolerance
-# (`conserves(j)`). The other pairs need no e-ph matrix. Returns `nkeep`.
-function _select_pairs!(keep, n, has_kq_state, conserves)
-    nkeep = 0
-    for j in 1:n
-        has_kq_state(j) && conserves(j) || continue
-        keep[nkeep += 1] = j
+# The pairs of a tile whose k+q has a state in the window: writes their positions in the tile to
+# the front of `ind_kept_kqpairs`, in order, and returns their number. `in_window[j]` is nonzero
+# for such a pair: its number of window bands at k+q, or its index in the precomputed k+q states.
+function _kqpairs_in_window!(ind_kept_kqpairs, in_window)
+    n_kept = 0
+    for (j, x) in enumerate(in_window)
+        x == 0 && continue
+        ind_kept_kqpairs[n_kept += 1] = j
     end
-    nkeep
+    n_kept
 end
 
-# Whether a pair has a process inside the energy-conservation tolerance,
-# |e_k - e_{k+q} ± ω_q| <= energy_conservation_tol for some bands and mode, given the window
-# energies `e_k` and `e_kq` of its two electron states and its phonon energies `ω_q`.
-function _conserves_energy(e_k, e_kq, ω_q, energy_conservation_tol)
-    any(abs(e_nk - e_mkq - sign_ph * ω) <= energy_conservation_tol
-        for ω in ω_q, e_mkq in e_kq, e_nk in e_k, sign_ph in (-1, 1))
+# Of the pairs `ind_kept_kqpairs[1:n_kept]`, keep those with a process inside the
+# energy-conservation tolerance, |e_k - e_{k+q} ± ω_q| <= energy_conservation_tol for some bands
+# and mode: compacts the list in place and returns the new number. `pair_energies(j)` gives the
+# window energies `(e_k, e_kq, ω_q)` of pair `j` of the tile.
+function _kqpairs_conserving_energy!(ind_kept_kqpairs, n_kept, energy_conservation_tol, pair_energies)
+    n_conserving = 0
+    for j in view(ind_kept_kqpairs, 1:n_kept)
+        e_k, e_kq, ω_q = pair_energies(j)
+        any(abs(e_nk - e_mkq - sign_ph * ω) <= energy_conservation_tol
+            for ω in ω_q, e_mkq in e_kq, e_nk in e_k, sign_ph in (-1, 1)) || continue
+        ind_kept_kqpairs[n_conserving += 1] = j
+    end
+    n_conserving
 end
 
 """

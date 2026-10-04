@@ -554,18 +554,18 @@ function _loop_outer_k_chunk!(eng_fields, tile_workspace, calculators; chunk, in
     # function barrier for one CPU/GPU chunk's concrete states and reusable buffers.
     ctx = LoopContext(eng_fields.backend, OuterKLoop(), eng_fields.batch, chunk)
 
-    for tile in Iterators.partition(inner_indices, eng_fields.n_inner_tile)
+    for inner_indices_tile in Iterators.partition(inner_indices, eng_fields.n_inner_tile)
         # A resident k+q tile shares its Fourier phase across all outer k points, unless the
-        # energy-conservation tolerance selects different pairs for each k.
+        # energy-conservation tolerance keeps different pairs for each k.
         phase = nothing
         if eng_fields.inner_loop_kq && isinf(eng_fields.energy_conservation_tol)
-            phase = view(tile_workspace.P_kq, :, 1:length(tile))
-            @views build_fourier_phase!(phase, eng_fields.irvecp_mat, eng_fields.xkq[:, tile])
+            phase = view(tile_workspace.P_kq, :, 1:length(inner_indices_tile))
+            @views build_fourier_phase!(phase, eng_fields.irvecp_mat, eng_fields.xkq[:, inner_indices_tile])
         end
 
         for ik in eng_fields.batch
-            # The same stage-2 worker also serves standalone stage2!(eng_fields, ik, tile).
-            block = _stage2!(OuterKLoop(), eng_fields, tile_workspace, ik, tile; phase)
+            # The same stage-2 worker also serves standalone stage2!(eng, ik, inner_indices).
+            block = _stage2!(OuterKLoop(), eng_fields, tile_workspace, ik, inner_indices_tile; phase)
             block === nothing && continue
 
             for calculator in calculators
@@ -603,9 +603,9 @@ function _loop_outer_q_chunk!(eng_fields, tile_workspace, calculators; chunk, ik
     # function barrier for one chunk's concrete state containers and Fourier/rotation scratch.
     ctx = LoopContext(eng_fields.backend, OuterQLoop(), eng_fields.batch, chunk)
 
-    for tile in Iterators.partition(iks, eng_fields.n_inner_tile)
+    for iks_tile in Iterators.partition(iks, eng_fields.n_inner_tile)
         # The same stage-2 worker gathers/solves states and returns a complete block for direct calls.
-        block = _stage2!(OuterQLoop(), eng_fields, tile_workspace, iq, tile)
+        block = _stage2!(OuterQLoop(), eng_fields, tile_workspace, iq, iks_tile)
         block === nothing && continue
 
         for calculator in calculators
