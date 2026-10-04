@@ -48,7 +48,7 @@ end
         total(rec) = sum(sum, values(rec.g2abs))
         rec_q = _PairRecorder()
         run_eph_over_q_and_k(_load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph"),
-            grid, grid; calculators = [rec_q], use_symmetry = false, keep_all_qpts = true,
+            grid, grid; calculators = [rec_q], symmetry = nothing, 
             progress_print_step = 10^9, verbosity = 0)
         model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "el")
         @test model.polar_eph.use && length(rec_q.g2abs) == prod(grid)^2
@@ -106,7 +106,7 @@ end
             rec = _PairRecorder()
             order == "outer k" ?
                 run_eph_over_k_and_kq(model_el, grid, grid; calculators = [rec], symmetry = nothing, common...) :
-                run_eph_over_q_and_k(model_ph, grid, grid; calculators = [rec], use_symmetry = false, common...)
+                run_eph_over_q_and_k(model_ph, grid, grid; calculators = [rec], symmetry = nothing, common...)
             dev = compare_with_reference(ref_cut, rec)
             @test keys(rec.g2abs) == keys(ref_cut.g2abs)
             @test dev.g2_reldev < 1e-11
@@ -140,11 +140,41 @@ end
     eV = unit_to_aru(:eV)
     # No k state in the window: the inner set is empty, on 16 thread chunks.
     rec = _PairRecorder()
-    out = run_eph_over_q_and_k(model, (4, 4, 4), (2, 2, 2); calculators = [rec], use_symmetry = false,
-        keep_all_qpts = true, window_k = (100eV, 101eV), window_kq = (100eV, 101eV),
+    out = run_eph_over_q_and_k(model, (4, 4, 4), (2, 2, 2); calculators = [rec], symmetry = nothing,
+        window_k = (100eV, 101eV), window_kq = (100eV, 101eV),
         nchunks_threads = 16, verbosity = 0)
     @test out.kpts.n == 0 && isempty(rec.g2abs)
     # k + q of a 6³ k grid is off a 3³ q grid, where the precomputed k+q states live.
     @test_throws "multiple of the k grid" run_eph_over_q_and_k(model, (6, 6, 6), (3, 3, 3);
-        calculators = [_PairRecorder()], use_symmetry = false, precompute_el_kq = true, verbosity = 0)
+        calculators = [_PairRecorder()], symmetry = nothing, precompute_el_kq = true, verbosity = 0)
+end
+
+# Symmetry reduces the outer point set given as a grid size (k under outer k, q under outer q) and
+# nothing else; every q point is kept, also one with no k+q state in the window.
+@testset "symmetry reduces the outer grid, q points are never filtered" begin
+    model_el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
+    model_ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
+    eV = unit_to_aru(:eV)
+    grid = (4, 4, 4)
+    nirr = kpoints_grid(grid; symmetry = model_el.symmetry).n
+    @test nirr < prod(grid)
+    common = (; verbosity = 0, progress_print_step = 10^9)
+
+    out = run_eph_over_k_and_q(model_el, grid, grid; calculators = [_PairRecorder()], common...)
+    @test out.kpts.n == nirr && out.qpts.n == prod(grid)
+
+    out = run_eph_over_q_and_k(model_ph, grid, grid; calculators = [_PairRecorder()], common...)
+    @test out.qpts.n == nirr && out.kpts.n == prod(grid)
+    @test sum(out.qpts.weights) ≈ 1
+
+    # A q set is kept as given, with or without symmetry, and with a window that holds no k+q state.
+    qpts = kpoints_grid(grid)
+    out = run_eph_over_q_and_k(model_ph, grid, qpts; calculators = [_PairRecorder()], common...)
+    @test out.qpts.n == prod(grid)
+    # (Pb 6³, ±0.1 eV: 24 k points in the window, and 114 of the 216 q points connect none of them.)
+    grid6 = (6, 6, 6)
+    window = (11.68eV - 0.1eV, 11.68eV + 0.1eV)
+    out = run_eph_over_q_and_k(model_ph, grid6, kpoints_grid(grid6); calculators = [_PairRecorder()],
+        symmetry = nothing, window_k = window, window_kq = window, common...)
+    @test out.qpts.n == prod(grid6) && 0 < out.kpts.n < prod(grid6)
 end

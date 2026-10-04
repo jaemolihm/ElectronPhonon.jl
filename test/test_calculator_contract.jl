@@ -51,7 +51,7 @@ end
     @test_throws "epmat_outer_momentum = \"el\"" ElectronPhonon.run_eph_over_k_and_q(
         model_ph, grid, grid; calculators = [_CountCalc()], symmetry = nothing)
     @test_throws "epmat_outer_momentum = \"ph\"" ElectronPhonon.run_eph_over_q_and_k(
-        model, grid, grid; calculators = [_QCountCalc()], use_symmetry = false)
+        model, grid, grid; calculators = [_QCountCalc()], symmetry = nothing)
 
     # (d) Screening is disabled: any nontrivial screening_params errors at the driver entry.
     @test_throws ErrorException ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
@@ -61,13 +61,10 @@ end
     # (b) `calculators` is a keyword argument (hard change): the positional form is gone.
     @test_throws MethodError ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid, [_CountCalc()])
 
-    # `run_eph_over_k_and_q` refuses a reduced outer k set, a k eigenpair cache for an outer k list on
-    # no grid, and what needs the k+q points on a grid: velocities at k+q, adaptive energy
-    # conservation and a k+q eigenpair cache.
+    # `run_eph_over_k_and_q` refuses a k eigenpair cache for an outer k list on no grid, and what
+    # needs the k+q points on a grid: velocities at k+q and a k+q eigenpair cache.
     kq_run(; kw...) = ElectronPhonon.run_eph_over_k_and_q(model, grid, grid;
         calculators = [_CountCalc()], progress_print_step = 10^9, kw...)
-    @test model.symmetry !== nothing
-    @test_throws ArgumentError kq_run(symmetry = model.symmetry)
     @test_throws ArgumentError ElectronPhonon.run_eph_over_k_and_q(model,
         Kpoints([Vec3(0.1, 0.2, 0.3)]), grid; calculators = [_CountCalc()],
         el_k_eigenpairs = ElectronPhonon.electron_eigenpairs(model, kpoints_grid(grid)))

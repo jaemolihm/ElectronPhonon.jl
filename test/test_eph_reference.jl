@@ -64,10 +64,11 @@ include("eph_reference_loop.jl")
                 run_eph_over_k_and_kq(model, grid, grid; calculators = [rec],
                                       symmetry = nothing, common..., kw...)
             elseif order == "outer k, inner q"
-                run_eph_over_k_and_q(model, grid, grid; calculators = [rec], common..., kw...)
+                run_eph_over_k_and_q(model, grid, grid; calculators = [rec],
+                                     symmetry = nothing, common..., kw...)
             else
                 run_eph_over_q_and_k(model, grid, grid; calculators = [rec],
-                                     use_symmetry = false, common..., kw...)
+                                     symmetry = nothing, common..., kw...)
             end
             dev = compare_with_reference(ref, rec)
             @info "e-ph loop vs reference" fixture order name dev
@@ -100,7 +101,7 @@ end
         EPH_REFERENCE_GPU_AVAILABLE && push!(arms, ("GPU", (; backend = gpu_backend())))
         for (arm, kw) in arms
             rec = _PairRecorder(keygrid)
-            run_eph_over_k_and_q(model, kpts, qpts; calculators = [rec], common..., kw...)
+            run_eph_over_k_and_q(model, kpts, qpts; calculators = [rec], symmetry = nothing, common..., kw...)
             dev = compare_with_reference(ref, rec)
             @info "run_eph_over_k_and_q vs reference" name arm dev
             @test dev.nmissing == 0 && dev.nextra == 0

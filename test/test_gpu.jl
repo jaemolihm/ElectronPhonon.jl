@@ -637,12 +637,12 @@ end
 
         calc_cpu = _RecordCalcOuterQ()
         ElectronPhonon.run_eph_over_q_and_k(model, grid, grid;
-            calculators=[calc_cpu], use_symmetry=false, keep_all_qpts=true,
+            calculators=[calc_cpu], symmetry = nothing, 
             progress_print_step=10^9)
 
         calc_gpu = _RecordCalcOuterQ()
         ElectronPhonon.run_eph_over_q_and_k(model, grid, grid;
-            calculators=[calc_gpu], use_symmetry=false, keep_all_qpts=true,
+            calculators=[calc_gpu], symmetry = nothing, 
             backend=ElectronPhonon.gpu_backend(), progress_print_step=10^9)
 
         rdiff = maximum(abs, calc_cpu.A .- calc_gpu.A) / maximum(abs, calc_cpu.A)
@@ -659,13 +659,13 @@ end
 
     calc_pt = _RecordCalcOuterQ()
     ElectronPhonon.run_eph_over_q_and_k(model, grid, grid;
-        calculators=[calc_pt], use_symmetry=false, keep_all_qpts=true,
+        calculators=[calc_pt], symmetry = nothing, 
         progress_print_step=10^9, verbosity=0)
 
     # n_inner_tile below nk forces a partial final k-batch, so the block's width-nk trim is real.
     calc_ba = _RecordCalcOuterQ()
     ElectronPhonon.run_eph_over_q_and_k(model, grid, grid;
-        calculators=[calc_ba], use_symmetry=false, keep_all_qpts=true,
+        calculators=[calc_ba], symmetry = nothing, 
         backend=ElectronPhonon.CPUBackend(), n_inner_tile=10,
         progress_print_step=10^9, verbosity=0)
 
@@ -687,12 +687,12 @@ end
 
         calc_cpu = _RecordCalcOuterQ()
         ElectronPhonon.run_eph_over_q_and_k(model, grid, grid;
-            calculators=[calc_cpu], use_symmetry=false, keep_all_qpts=true,
+            calculators=[calc_cpu], symmetry = nothing, 
             progress_print_step=10^9)
 
         calc_gpu = _RecordCalcOuterQ()
         ElectronPhonon.run_eph_over_q_and_k(model, grid, grid;
-            calculators=[calc_gpu], use_symmetry=false, keep_all_qpts=true,
+            calculators=[calc_gpu], symmetry = nothing, 
             backend=ElectronPhonon.gpu_backend(), n_inner_tile=10, progress_print_step=10^9)
 
         rdiff = maximum(abs, calc_cpu.A .- calc_gpu.A) / maximum(abs, calc_cpu.A)

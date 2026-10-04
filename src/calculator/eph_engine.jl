@@ -403,9 +403,9 @@ into the first `length(iks_batch)` points of `eng.ep_kR` (and `eng.dg_kR`).
 """
 function stage1!(eng::OuterKEngine, iks_batch::UnitRange{Int})
     _check_stage1(eng, iks_batch)
+    eng.batch = iks_batch
     # function barrier for the outer-k stage-1 buffers.
     _stage1!(OuterKLoop(), _workspace_fields(eng), iks_batch)
-    eng.batch = iks_batch
     eng
 end
 
@@ -658,9 +658,9 @@ phase, and optionally repeats the contraction and rotation for the three derivat
 """
 function stage1!(eng::OuterQEngine, iqs_batch::UnitRange{Int})
     _check_stage1(eng, iqs_batch)
+    eng.batch = iqs_batch
     # function barrier for the outer-q stage-1 buffers.
     _stage1!(OuterQLoop(), _workspace_fields(eng), iqs_batch)
-    eng.batch = iqs_batch
     eng
 end
 

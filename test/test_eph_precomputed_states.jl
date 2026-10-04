@@ -217,7 +217,7 @@ end
         # The k+q grid path here must not reduce by symmetry.
         _run(; kwargs...) = ElectronPhonon.run_eph_over_q_and_k(model, sub_a, grid;
             calculators = [_PrecomputedStatesProbe()],
-            progress_print_step = 10^9, verbosity = 0, use_symmetry = false, keep_all_qpts = true,
+            progress_print_step = 10^9, verbosity = 0, symmetry = nothing, 
             kwargs...)
         run_plain = _run()
         cache = electron_eigenpairs(model, kgrid; fourier_mode = "gridopt")

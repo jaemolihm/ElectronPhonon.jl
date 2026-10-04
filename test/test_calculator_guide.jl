@@ -65,7 +65,7 @@ end
     calc_q = Base.invokelatest() do
         c = getfield(@__MODULE__, :EphG2SumCalculator)()
         ElectronPhonon.run_eph_over_k_and_q(model, (nk, nk, nk), (nk, nk, nk);
-            calculators = [c], progress_print_step = 10^9, n_outer_batch = 5, n_inner_tile = 7)
+            calculators = [c], symmetry = nothing, progress_print_step = 10^9, n_outer_batch = 5, n_inner_tile = 7)
         c
     end
     @test calc_q.per_k ≈ calc.per_k rtol = 1e-10

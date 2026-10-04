@@ -50,7 +50,7 @@ function run_contract(entry, order, models, fixture, setting)
         run_eph_over_k_and_kq(models.el, fixture.grid, fixture.grid; symmetry = nothing, common...,
                               setting...)
     else
-        run_eph_over_q_and_k(models.ph, fixture.grid, fixture.grid; use_symmetry = false,
+        run_eph_over_q_and_k(models.ph, fixture.grid, fixture.grid; symmetry = nothing,
                              common..., setting...)
     end
     calc

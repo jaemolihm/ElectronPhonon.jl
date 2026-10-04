@@ -45,7 +45,7 @@ end
                                  (OuterQLoop(), "ph", false))
             model = _load_model_from_artifacts("pb"; epmat_outer_momentum = mom)
             options = _run_options(model; inner_loop_kq = order isa OuterKLoop, backend,
-                window_k = window, window_kq = window, symmetry = nothing, keep_all_qpts = true,
+                window_k = window, window_kq = window, symmetry = nothing, 
                 verbosity = 0)
             st = _setup_states(order, model, grid, grid, options)
             nbk = st.els_k.nband_max
@@ -100,7 +100,7 @@ end
     for backend in backends, order in (OuterKLoop(), OuterQLoop())
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum = order isa OuterKLoop ? "el" : "ph")
         options = _run_options(model; inner_loop_kq = order isa OuterKLoop, backend,
-            window_k = window, window_kq = window, symmetry = nothing, keep_all_qpts = true,
+            window_k = window, window_kq = window, symmetry = nothing, 
             precompute_el_kq = order isa OuterQLoop, verbosity = 0)
         st = _setup_states(order, model, grid, grid, options)
         common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1,

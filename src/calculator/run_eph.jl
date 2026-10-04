@@ -18,7 +18,8 @@ Keywords:
 * `backend = CPUBackend()` — `ElectronPhonon.gpu_backend()` for a GPU run.
 * `window_k`, `window_kq` — energy windows of the two sides (ignored for a `FilteredBandStates`).
 * `symmetry = model.symmetry` — reduces the outer k to the irreducible wedge and builds the k+q
-  set by unfolding its selection; `nothing` for full grids.
+  set by unfolding its selection; `nothing` for full grids. Symmetry reduces only a point set given
+  as a grid size: a k-point set (`AbstractKpoints`, `FilteredBandStates`) is never reduced.
 * `energy_conservation_tol = Inf` — a finite tolerance drops the point pairs with no process inside
   it (`|e_k - e_{k+q} ± ω_q| <= energy_conservation_tol` for some bands and mode) before the e-ph
   matrix is computed (`CPUBackend` only).
@@ -52,38 +53,38 @@ tile of q points, whose index is `iq` (`ikq === nothing`). The k+q states are so
 
 Keywords as in [`run_eph_over_k_and_kq`](@ref), except: `kpts` is any k list (e.g. a band path,
 not necessarily on a grid), a grid size or a prebuilt `FilteredBandStates`; `el_k_eigenpairs` only
-for k points on a grid (the cache is looked up on one); `symmetry = nothing`, the only value
-accepted (the outer k points are not reduced); `n_inner_tile` q points per block; no `vdiag` (for a
+for k points on a grid (the cache is looked up on one); `symmetry` reduces the outer k points
+(given as a grid size) and never the q points; `n_inner_tile` q points per block; no `vdiag` (for a
 calculator) and no `el_kq_eigenpairs`, which need the k+q points on a grid. Calculators that read the k+q selection (`sel_kq`) are not supported.
 The model must use `epmat_outer_momentum = "el"`.
 """
-function run_eph_over_k_and_q(model::Model, kpts_input, qpts_input; symmetry = nothing, kwargs...)
+function run_eph_over_k_and_q(model::Model, kpts_input, qpts_input; kwargs...)
     # The inner points are q, not k+q; solve the k+q electron states within each tile.
-    _run_eph(OuterKLoop(), model, kpts_input, qpts_input; inner_loop_kq = false, symmetry, kwargs...)
+    _run_eph(OuterKLoop(), model, kpts_input, qpts_input; inner_loop_kq = false, kwargs...)
 end
 
 """
     run_eph_over_q_and_k(model, kpts, qpts; calculators, backend, kwargs...)
 
-Sweep the outer q points (any q list, e.g. a path) and, for each, the inner k points, handing each
+Sweep the outer q points (any q list, e.g. a path, or a q grid) and, for each, the inner k points
+(a grid), handing each
 calculator the e-ph coupling as an [`EPBlock`](@ref)`{OuterQLoop}`: one q with a tile of k points.
 The k+q states are solved per tile, with `e` and `u` only, unless `precompute_el_kq = true` (a grid
 q set), which builds them once on the k+q grid; a pair whose k+q has no state in `window_kq` is
 then dropped. Returns `(; kpts, qpts, els_k, els_kq, phs)`, `els_kq = nothing` when solved per tile.
 Requires a model loaded with `epmat_outer_momentum = "ph"` so stage 1 contracts R_p.
 
-Keywords as in [`run_eph_over_k_and_kq`](@ref), except: `use_symmetry = true` reduces the k points
-with `model.symmetry`; `keep_all_qpts = false` (outer q only) drops the q points with no k+q state
-in `window_kq`; `precompute_el_kq` needs a q grid that is a multiple of the k grid; `mpi_comm_k` is
+Keywords as in [`run_eph_over_k_and_kq`](@ref), except: `symmetry` reduces the outer q points
+(given as a grid size) to the irreducible wedge, and the inner k points are never reduced; every q
+point is kept, also one with no k+q state in `window_kq`; `precompute_el_kq` needs a q grid that is a multiple of the k grid; `mpi_comm_k` is
 refused;
 `n_outer_batch` q points per stage-1 batch and per bracket, 16 on a GPU and 1 on the CPU (stage 1
 gains nothing from a wider batch there, while a calculator's per-q buffers are held per thread
 chunk); `n_inner_tile` k points per block, at most `2^15` on a GPU; no `covariant_derivative_of_g`;
 `el_kq_eigenpairs` only with `precompute_el_kq`.
 """
-run_eph_over_q_and_k(model::Model, kpts_input, qpts_input; use_symmetry::Bool = true, kwargs...) =
-    _run_eph(OuterQLoop(), model, kpts_input, qpts_input; inner_loop_kq = false,
-             symmetry = use_symmetry ? model.symmetry : nothing, kwargs...)
+run_eph_over_q_and_k(model::Model, kpts_input, qpts_input; kwargs...) =
+    _run_eph(OuterQLoop(), model, kpts_input, qpts_input; inner_loop_kq = false, kwargs...)
 
 
 # The quantities the loop provides itself, on both electron sides and on the phonons: always the
@@ -110,7 +111,6 @@ function _run_options(model::Model;
         window_kq = (-Inf, Inf),
         symmetry = model.symmetry,
         precompute_el_kq = false,
-        keep_all_qpts = false,
         energy_conservation_tol = Inf,
         covariant_derivative_of_g = false,
         eph_phonon_basis::Symbol = :eigenmode,
@@ -131,7 +131,7 @@ function _run_options(model::Model;
     el_qty = union(loop_el_quantities(), el_quantities, required_el_quantities.(calculators)...)
     ph_qty = union(loop_ph_quantities(model), ph_quantities, required_ph_quantities.(calculators)...)
     (; inner_loop_kq, calculators, el_qty, ph_qty, backend, window_k, window_kq, symmetry,
-       precompute_el_kq, keep_all_qpts, energy_conservation_tol, covariant_derivative_of_g,
+       precompute_el_kq, energy_conservation_tol, covariant_derivative_of_g,
        eph_phonon_basis, fourier_mode, screening_params, mpi_comm_k, n_outer_batch, n_inner_tile,
        nchunks_threads, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, verbosity)
 end
@@ -380,8 +380,6 @@ function _check_run(order, model, kpts_input, second_input, options)
     if order isa OuterKLoop
         precompute_el_kq && throw(ArgumentError("precompute_el_kq is an outer-q option"))
         if !inner_loop_kq
-            symmetry === nothing || throw(ArgumentError(
-                "run_eph_over_k_and_q does not reduce the outer k points: pass symmetry = nothing"))
             (el_k_eigenpairs === nothing || all(_input_ngrid(kpts_input) .> 0)) || throw(ArgumentError(
                 "el_k_eigenpairs needs the outer k points on a grid: the cache is looked up on one"))
             issubset(el_qty, (:e, :u)) || throw(ArgumentError(
@@ -436,18 +434,20 @@ _input_ngrid(x::AbstractKpoints) = x.ngrid
 # phonons, all on `backend`.
 function _setup_states(order, model::Model, kpts_input, second_input, options)
     (; el_qty, ph_qty, inner_loop_kq, backend, window_k, window_kq, symmetry, precompute_el_kq,
-       keep_all_qpts, eph_phonon_basis, mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs,
-       ph_eigenpairs, verbosity) = options
+       eph_phonon_basis, mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs,
+       verbosity) = options
     (; nw) = model
     # The host solves of a GPU run (q filter, polar phonons) keep the default interpolation.
     fourier_mode = backend isa CPUBackend ? options.fourier_mode : "gridopt"
     # Reuse a supplied k selection, or select its bands within the requested energy window.
+    # Symmetry reduces the outer points, given as a grid size: k under outer k, q under outer q.
     if kpts_input isa FilteredBandStates
         sel_k = kpts_input
     else
+        symmetry_k = order isa OuterKLoop ? symmetry : nothing
         sel_k = maybe_time(verbosity) do
-            filter_electron_states(kpts_input, nw, model.el_ham, window_k; symmetry, fourier_mode, backend,
-                                   mpi_comm = mpi_comm_k)
+            filter_electron_states(kpts_input, nw, model.el_ham, window_k; symmetry = symmetry_k,
+                                   fourier_mode, backend, mpi_comm = mpi_comm_k)
         end
     end
 
@@ -491,11 +491,9 @@ function _setup_states(order, model::Model, kpts_input, second_input, options)
             combine_kpoint_grids(kqpts, kpts, -, ngrid_q)
         end
     else
-        # Outer q: filter the q set, then optionally precompute the k+q grid's states.
-        qpts_all = second_input isa NTuple{3, Int} ? kpoints_grid(second_input) : second_input
-        qpts = keep_all_qpts ? qpts_all : maybe_time(verbosity) do
-            filter_qpoints(qpts_all, kpts, nw, model.el_ham, window_kq; fourier_mode)
-        end
+        # Outer q: every q point is kept, also one with no k+q state in the window. Optionally
+        # precompute the k+q grid's states.
+        qpts = second_input isa NTuple{3, Int} ? kpoints_grid(second_input; symmetry) : second_input
         if precompute_el_kq
             sel_kq = maybe_time(verbosity) do
                 filter_electron_states(qpts.ngrid, nw, model.el_ham, window_kq;
