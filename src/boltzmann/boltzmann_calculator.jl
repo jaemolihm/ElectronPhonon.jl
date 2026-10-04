@@ -108,8 +108,9 @@ function eph_batched_bytes_per_point(calc::BoltzmannCalculator{FT}, ::Type{<:EPB
 end
 
 function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBackend, els_k, els_kq, phs;
-        sel_k, sel_kq, nmodes, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...) where {FT}
+        sel_k, sel_kq, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...) where {FT}
     mpi_isroot() && println("Setting up BoltzmannCalculator")
+    (; nmodes) = phs
     calc.done &&
         throw(ArgumentError("this BoltzmannCalculator has already been run; reconstruct the " *
                             "calculator, reuse is not supported"))

@@ -200,9 +200,8 @@ ElectronPhonon.supports(::_PairRecorder, ::Type{OuterQLoop}) = true
 ElectronPhonon.calculator_begin!(::_PairRecorder, ctx) = nothing
 ElectronPhonon.calculator_end!(::_PairRecorder, ctx) = nothing
 ElectronPhonon.postprocess_calculator!(c::_PairRecorder; kwargs...) = c
-function ElectronPhonon.setup_calculator!(c::_PairRecorder, backend, els_k, els_kq, phs; nw, nmodes,
-        kwargs...)
-    c.nw, c.nmodes = nw, nmodes
+function ElectronPhonon.setup_calculator!(c::_PairRecorder, backend, els_k, els_kq, phs; kwargs...)
+    c.nw, c.nmodes = els_k.nw, phs.nmodes
     all(iszero, c.ngrid) && (c.ngrid = els_k.kpts.ngrid)
     c
 end

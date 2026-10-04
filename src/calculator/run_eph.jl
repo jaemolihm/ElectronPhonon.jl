@@ -247,8 +247,7 @@ end
 function _run_eph_loop(eng, order, calculators; symmetry, progress_print_step, verbosity)
     for calculator in calculators
         setup_calculator!(calculator, eng.backend, eng.els_k, eng.els_kq, eng.phs;
-            eng.sel_k, eng.sel_kq, eng.model.nw, eng.model.nmodes,
-            nchunks_threads = length(eng.tiles), eng.n_outer_batch, eng.n_inner_tile, verbosity)
+            eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles), eng.n_outer_batch, eng.n_inner_tile, verbosity)
     end
 
     # Explicitly bracket each outer batch; each chunk consumes its blocks before buffers are reused.

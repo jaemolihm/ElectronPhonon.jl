@@ -474,8 +474,9 @@ ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.OuterKLoop}) = true
 # reads, so it defines no `required_el_quantities` / `required_ph_quantities`.
 ElectronPhonon.calculator_begin!(::_RecordCalc, ctx) = nothing
 ElectronPhonon.calculator_end!(::_RecordCalc, ctx) = nothing
-function ElectronPhonon.setup_calculator!(c::_RecordCalc, backend, els_k, els_kq, phs; nw, nmodes,
-        kwargs...)
+function ElectronPhonon.setup_calculator!(c::_RecordCalc, backend, els_k, els_kq, phs; kwargs...)
+    (; nw) = els_k
+    (; nmodes) = phs
     c.g2 = zeros(nw, nw, nmodes, els_k.nk, els_kq.nk)
     c.ωq = zeros(nw, nw, nmodes, els_k.nk, els_kq.nk)
     c
