@@ -167,6 +167,14 @@ end
     @test out.qpts.n == nirr && out.kpts.n == prod(grid)
     @test sum(out.qpts.weights) ≈ 1
 
+    # A k+q set is used as given, also an irreducible one under symmetry; a k+q grid size gives the
+    # full-BZ selection.
+    out = run_eph_over_k_and_kq(model_el, grid, grid; calculators = [_PairRecorder()], common...)
+    @test out.kpts.n == nirr && out.els_kq.nk == prod(grid)
+    kq_irr = GridKpoints(kpoints_grid(grid; symmetry = model_el.symmetry))
+    out = run_eph_over_k_and_kq(model_el, grid, kq_irr; calculators = [_PairRecorder()], common...)
+    @test out.els_kq.nk == nirr
+
     # A q set is kept as given, with or without symmetry, and with a window that holds no k+q state.
     qpts = kpoints_grid(grid)
     out = run_eph_over_q_and_k(model_ph, grid, qpts; calculators = [_PairRecorder()], common...)

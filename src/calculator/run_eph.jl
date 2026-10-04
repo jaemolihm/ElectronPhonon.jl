@@ -17,9 +17,10 @@ Keywords:
 * `calculators` — at least one; each must `supports(calc, OuterKLoop)`.
 * `backend = CPUBackend()` — `ElectronPhonon.gpu_backend()` for a GPU run.
 * `window_k`, `window_kq` — energy windows of the two sides (ignored for a `FilteredBandStates`).
-* `symmetry = model.symmetry` — reduces the outer k to the irreducible wedge and builds the k+q
-  set by unfolding its selection; `nothing` for full grids. Symmetry reduces only a point set given
-  as a grid size: a k-point set (`AbstractKpoints`, `FilteredBandStates`) is never reduced.
+* `symmetry = model.symmetry` — reduces the outer k to the irreducible wedge; `nothing` for the
+  full grid. Symmetry reduces only a point set given as a grid size: a k-point set
+  (`AbstractKpoints`, `FilteredBandStates`) is never reduced. A k+q grid size gives the full-BZ
+  selection whatever `symmetry` is, and a k+q set is used as given.
 * `energy_conservation_tol = Inf` — a finite tolerance drops the point pairs with no process inside
   it (`|e_k - e_{k+q} ± ω_q| <= energy_conservation_tol` for some bands and mode) before the e-ph
   matrix is computed (`CPUBackend` only).
@@ -474,11 +475,15 @@ function _setup_states(order, model::Model, kpts_input, second_input, options)
                     eigenpairs = el_kq_eigenpairs)
             end
         else
-            # A grid, filtered to the window; under symmetry IBZ-filtered, then unfolded.
+            # The k+q set is always the full-BZ selection. A grid size is filtered to the window on
+            # the irreducible wedge and unfolded, which only makes the filter cheaper; a k-point
+            # set is filtered and used as given.
+            symmetry_kq = second_input isa NTuple{3, Int} ? symmetry : nothing
             sel_kqf = maybe_time(verbosity) do
-                filter_electron_states(second_input, nw, model.el_ham, window_kq; symmetry, fourier_mode, backend)
+                filter_electron_states(second_input, nw, model.el_ham, window_kq; symmetry = symmetry_kq,
+                                       fourier_mode, backend)
             end
-            kqpts = symmetry === nothing ? sel_kqf.kpts : unfold_kpoints(sel_kqf.kpts, symmetry)[1]
+            kqpts = symmetry_kq === nothing ? sel_kqf.kpts : unfold_kpoints(sel_kqf.kpts, symmetry_kq)[1]
             els_kq = maybe_time(verbosity) do
                 compute_electron_states_batched(model, kqpts, el_qty, window_kq; fourier_mode, backend,
                     eigenpairs = el_kq_eigenpairs)
