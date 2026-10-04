@@ -61,7 +61,7 @@ end
         end
     end
 
-    # Energy conservation: a `(:Fixed, 10σ)` cut drops only pairs whose Gaussian-smeared BTE
+    # Energy conservation: an `energy_conservation_tol = 10σ` cut drops only pairs whose Gaussian-smeared BTE
     # contribution is below exp(-100), so Sₒ and Sᵢ match the uncut run, and it does drop pairs: the
     # pair recorder running alongside sees fewer of them. Measured 0.0 and 1.1e-45 relative on the
     # per-point loop (Pb 6³, ±0.5 eV, σ = 20 meV).
@@ -79,14 +79,14 @@ end
                 progress_print_step = 10^9, verbosity = 0, kwargs...); (c, rec))
         c_all, rec_all = runbte()
         @test maximum(stack(c_all.Sₒ)) > 0 && length(rec_all.g2abs) > 0
-        @test ((c_cut, rec_cut) = runbte(; energy_conservation = (:Fixed, 10σ));
+        @test ((c_cut, rec_cut) = runbte(; energy_conservation_tol = 10σ);
             length(rec_cut.g2abs) < length(rec_all.g2abs) &&
             isapprox(stack(c_cut.Sₒ), stack(c_all.Sₒ); rtol = 1e-12) &&
             isapprox(stack(c_cut.Sᵢ), stack(c_all.Sᵢ); rtol = 1e-12))
     end
 
     # Energy conservation on both orders, outer batch > 1, against the reference double loop with
-    # the same `(:Fixed, tol)` filter applied to its pairs: the kept pairs and their |g|^2.
+    # the same tolerance filter applied to its pairs: the kept pairs and their |g|^2.
     @testset "energy conservation, both orders" begin
         model_el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
         model_ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
@@ -100,7 +100,7 @@ end
                 ω in ref.ωq[key], s in (-1, 1)))
         ref_cut = (; g2abs = filter(kv -> conserves(kv[1]), ref.g2abs), ref.ωq, ref.el_k, ref.el_kq)
         @test 0 < length(ref_cut.g2abs) < length(ref.g2abs)
-        common = (; window_k = window, window_kq = window, energy_conservation = (:Fixed, tol),
+        common = (; window_k = window, window_kq = window, energy_conservation_tol = tol,
                   n_outer_batch = 7, n_inner_tile = 30, nchunks_threads = 4, verbosity = 0)
         for order in ("outer k", "outer q")
             rec = _PairRecorder()

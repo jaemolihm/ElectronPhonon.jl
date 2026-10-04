@@ -76,7 +76,6 @@ end
         _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph"), Kpoints([Vec3(0.1, 0.2, 0.3)]),
         grid; calculators = [_QCountCalc()])
     @test_throws ArgumentError kq_run(calculators = [_VdiagCountCalc()])
-    @test_throws ArgumentError kq_run(energy_conservation = (:Linear, 1.0))
     @test_throws ArgumentError kq_run(el_kq_eigenpairs =
         ElectronPhonon.electron_eigenpairs(model, kpoints_grid(grid)))
 end

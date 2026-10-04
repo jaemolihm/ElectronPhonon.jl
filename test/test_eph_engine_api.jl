@@ -72,7 +72,7 @@ _setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, e
 
     # Direct callers get the same filtering result as the production loop, not an unfinished matrix.
     eng = OuterKEngine(model_el, kpts, qpts; window_k = window, window_kq = window,
-        energy_conservation = (:Fixed, 0.0), verbosity = 0)
+        energy_conservation_tol = 0.0, verbosity = 0)
     stage1!(eng, 1:1)
     @test stage2!(eng, 1, 1:1) === nothing
     @test_throws ArgumentError OuterKEngine(model_el, kpts, qpts; n_outer_batch = 0)

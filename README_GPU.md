@@ -188,7 +188,7 @@ then the phonon-basis rotation as a batched GEMM), stage 2 one Fourier transform
 (`compute_electron_states_batched!`, into the leading `maximum(nband)` columns of the tile buffers, so the block's k+q box is its widest
 window). The model's `epmat_outer_momentum` must match the order (`"el"` for outer k, `"ph"` for
 outer q), so stage 1 always contracts the column R of `epmat`. The polar
-dipole term is added on the block for both orders (stage 3, `_stage3!`).
+dipole term is added on the block for both orders (`eph_engine_add_longrange!`).
 
 A block is `ep` `(nband_max_kq, nband_max_k, nmodes, nb)` with the states, phonons, weights and
 indices of its pairs; the side shared by the block has extent 1 (see `EPBlock`). Under outer k a

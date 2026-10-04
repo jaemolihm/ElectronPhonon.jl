@@ -5,8 +5,8 @@
 #
 #   stage1!  contract the outer R of `epmat` for an outer batch, apply the outer rotation;
 #   stage2!  gather/solve the inner states, filter pairs, contract the other R, apply the remaining
-#            rotations, and run stage 3; return a calculator-ready EPBlock;
-#   stage 3  (`_stage3!`, internal) add the polar correction on the block.
+#            rotations, and add the long-range (polar) term (`eph_engine_add_longrange!`); return
+#            a calculator-ready EPBlock.
 #
 # `engine_bytes` counts the buffers the constructors allocate, term for term, so `plan_batch` can
 # choose the widths before the engine is built. Both engines are backend-generic: host arrays on
@@ -24,10 +24,13 @@ function _require_epmat_layout(order::LoopTag, model)
     nothing
 end
 
-# A point pair can be dropped by energy conservation, or under outer q when its k+q is absent from
-# the precomputed k+q states. Only then do the tiles hold the buffers for compacting the kept pairs.
-_can_drop_pairs(order::LoopTag, energy_conservation, precompute_el_kq) =
-    energy_conservation[1] !== :None || (order isa OuterQLoop && precompute_el_kq)
+# A point pair is dropped (i) under outer q, when its k+q has no state in the window and so is
+# absent from the precomputed k+q states, or (ii) when it does not satisfy the energy-conservation
+# tolerance. Only when one of these can happen do the tiles hold the buffers for compacting the
+# kept pairs.
+function _can_drop_pairs(order::LoopTag, energy_conservation_tol, precompute_el_kq)
+    isfinite(energy_conservation_tol) || (order isa OuterQLoop && precompute_el_kq)
+end
 
 # Storage structs deliberately have no array-type parameters. At each batch/chunk boundary,
 # _workspace_fields exposes concrete fields to explicitly named stage and chunk workers. The
@@ -45,7 +48,7 @@ end
 Scratch for one thread chunk's inner tiles. For an inner k+q grid, `phs` and `iq` gather the
 phonons; for an inner q grid, `els_kq`, `itp_el_ham`, `hk`, `kqs`, and `xkq` solve k+q per tile.
 The unused route's fields are `nothing`. `u_ph_id` holds the cartesian phonon basis, `dg` and
-`dg_d` serve covariant derivatives, `uk_polar` and `mmat` serve polar coupling, and `kept`
+`dg_d` serve covariant derivatives, `uk_polar` and `mmat_buffer` are scratch of the polar term, and `kept`
 holds buffers for filtering pairs. Those features allocate buffers only when requested.
 """
 Base.@kwdef struct OuterKTileWorkspace <: AbstractEphWorkspace
@@ -65,7 +68,7 @@ Base.@kwdef struct OuterKTileWorkspace <: AbstractEphWorkspace
     dg
     dg_d
     uk_polar
-    mmat
+    mmat_buffer
     kept
 end
 
@@ -87,7 +90,7 @@ Base.@kwdef struct OuterQTileWorkspace <: AbstractEphWorkspace
     tmp
     uk_rep
     uk_polar
-    mmat
+    mmat_buffer
     kept
 end
 
@@ -114,8 +117,10 @@ mutable struct OuterKEngine <: AbstractEphWorkspace
     sel_k        :: Union{Nothing, FilteredBandStates}
     sel_kq       :: Union{Nothing, FilteredBandStates}
     window_kq
-    energy_conservation
+    energy_conservation_tol :: Float64
     eph_phonon_basis :: Symbol
+    inner_loop_kq :: Bool         # inner points are k+q (resident states); false: q, k+q solved per tile
+    n_outer      :: Int           # number of outer k points
     batch        :: UnitRange{Int}
     backend      :: AbstractBackend
     epmat        :: WannierObject  # model.epmat on the backend
@@ -158,8 +163,9 @@ mutable struct OuterQEngine <: AbstractEphWorkspace
     sel_k        :: Union{Nothing, FilteredBandStates}
     sel_kq       :: Union{Nothing, FilteredBandStates}
     window_kq
-    energy_conservation
+    energy_conservation_tol :: Float64
     eph_phonon_basis :: Symbol
+    n_outer      :: Int           # number of outer q points
     batch        :: UnitRange{Int}
     backend      :: AbstractBackend
     epmat        :: WannierObject  # model.epmat on the backend
@@ -275,11 +281,11 @@ components; eph_phonon_basis selects eigenmode or cartesian phonons.
 function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
         n_outer_batch, n_inner_tile, nchunks, covariant_derivative_of_g,
         eph_phonon_basis, sel_k = nothing, sel_kq = nothing, window_kq = (-Inf, Inf),
-        energy_conservation = (:None, 0.0)) where {FT}
+        energy_conservation_tol = Inf) where {FT}
     # Validate the model layout and prepare the stage-1 interpolators for the selected inner loop.
     (; nw, nmodes) = model
     _require_epmat_layout(OuterKLoop(), model)
-    drop_pairs = _can_drop_pairs(OuterKLoop(), energy_conservation, false)
+    drop_pairs = _can_drop_pairs(OuterKLoop(), energy_conservation_tol, false)
     # run_eph_over_k_and_q has no resident k+q container: solve k+q per inner q tile,
     # at box width nw. run_eph_over_k_and_kq instead gathers phonons for resident k+q states.
     inner_loop_kq = els_kq !== nothing
@@ -356,7 +362,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
             dg = covariant_derivative_of_g ? alloc(backend, Complex{FT}, nbkq, nbk, nmodes, 3, n_inner_tile) : nothing,
             dg_d = covariant_derivative_of_g ? alloc(backend, Complex{FT}, nbkq, nbk, nmodes, n_inner_tile) : nothing,
             uk_polar = model.polar_eph.use ? alloc(backend, Complex{FT}, nw * nbk * n_inner_tile) : nothing,
-            mmat = model.polar_eph.use ? alloc(backend, Complex{FT}, nbkq * nbk * n_inner_tile) : nothing,
+            mmat_buffer = model.polar_eph.use ? alloc(backend, Complex{FT}, nbkq * nbk * n_inner_tile) : nothing,
             # Destinations for the pairs that survive `filter_pairs!`, compacted to the front.
             kept = drop_pairs ? (;
                 keep = Vector{Int}(undef, n_inner_tile),
@@ -375,7 +381,8 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     # Assemble the engine with maximum-capacity stage-1 outputs and the thread workspaces.
     nrows_max = nw^2 * nmodes * nr_p * (covariant_derivative_of_g ? 3 : 1)
     OuterKEngine(model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
-        energy_conservation, eph_phonon_basis, 1:0, backend, epmat, itp_epmat, itp_epmat_R,
+        energy_conservation_tol, eph_phonon_basis, inner_loop_kq, kpts.n, 1:0, backend, epmat, itp_epmat,
+        itp_epmat_R,
         _irvec_to_device_matrix(backend, irvec_p, FT), mxk, xkq,
         to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int, P_mk,
         alloc(backend, Complex{FT}, ndata, nr_p, n_outer_batch),
@@ -395,10 +402,7 @@ into the first `length(iks_batch)` points of `eng.ep_kR` (and `eng.dg_kR`).
 - `iks_batch`: Indices of the active outer k points, up to the engine's batch capacity.
 """
 function stage1!(eng::OuterKEngine, iks_batch::UnitRange{Int})
-    _check_stage1(eng, iks_batch, eng.kpts.n)
-    # No batch is ready until stage 1 completes: if it throws midway, `ep_kR` mixes the previous
-    # and the new batch, and `stage2!` must refuse it.
-    eng.batch = 1:0
+    _check_stage1(eng, iks_batch)
     # function barrier for the outer-k stage-1 buffers.
     _stage1!(OuterKLoop(), _workspace_fields(eng), iks_batch)
     eng.batch = iks_batch
@@ -455,7 +459,7 @@ different CPU chunks may run concurrently, but `stage1!` must wait for all of th
 - `chunk`: Independent workspace slot; use 1 for serial calls and GPU calls.
 """
 function stage2!(eng::OuterKEngine, ik::Int, tile::UnitRange{Int}; chunk::Int = 1)
-    n_inner = eng.els_kq === nothing ? eng.qpts.n : eng.kqpts.n
+    n_inner = eng.inner_loop_kq ? eng.kqpts.n : eng.qpts.n
     _check_stage2(eng, ik, tile, chunk, n_inner)
     # function barrier for the concrete resident states, engine buffers, and chunk scratch.
     _stage2!(OuterKLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), ik, tile)
@@ -466,7 +470,7 @@ function _stage2!(::OuterKLoop, eng_fields, tile_workspace, ik, tile; phase = no
     iouter = ik - first(eng_fields.batch) + 1
     els_k = view(eng_fields.els_k_batch, iouter:iouter)
 
-    if eng_fields.els_kq !== nothing
+    if eng_fields.inner_loop_kq
         # Inner k+q points (run_eph_over_k_and_kq): the k+q states are resident. Find
         # q = (k+q) - k of each pair and gather its phonons.
         els_kq = view(eng_fields.els_kq, tile)
@@ -497,13 +501,14 @@ function _stage2!(::OuterKLoop, eng_fields, tile_workspace, ik, tile; phase = no
         ikq, iq, xq = nothing, tile, view(eng_fields.qpts.vectors, tile)
     end
 
-    # Borrow the tile's output storage and compact rejected pairs before the expensive contraction.
+    # Borrow the tile's output storage for the block.
     block = EPBlock{OuterKLoop}(tile_workspace, els_k, els_kq, phs;
         ik, ikq, iq, wtk = eng_fields.kpts.weights[ik], wtq = view(eng_fields.wtkq, tile),
         xk = eng_fields.kpts.vectors[ik], xq)
-    ngrid_econv = eng_fields.els_kq === nothing ? eng_fields.qpts.ngrid : eng_fields.kqpts.ngrid
-    block, phase = filter_pairs!(tile_workspace, block, eng_fields.model, eng_fields.energy_conservation,
-                                 ngrid_econv; phase)
+
+    # Drop the (k, q) pairs that do not satisfy the energy-conservation tolerance, before the
+    # expensive contraction. (Under outer k every k+q of the tile has a state in the window.)
+    block, phase = filter_pairs!(tile_workspace, block, eng_fields.energy_conservation_tol; phase)
     block === nothing && return nothing
 
     # Fourier-transform R_p and rotate by u_{k+q} and the phonon basis:
@@ -526,7 +531,10 @@ function _stage2!(::OuterKLoop, eng_fields, tile_workspace, ik, tile; phase = no
         end
     end
 
-    _stage3!(block, tile_workspace, eng_fields.model)
+    if eng_fields.model.polar_eph.use
+        eph_engine_add_longrange!(block, tile_workspace, eng_fields.model)
+    end
+    block
 end
 
 
@@ -576,11 +584,11 @@ states are copied from the resident container, and a pair whose k+q is absent fr
 function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
         n_outer_batch, n_inner_tile, nchunks, eph_phonon_basis, kqpts = nothing,
         sel_k = nothing, sel_kq = nothing, window_kq = (-Inf, Inf),
-        energy_conservation = (:None, 0.0)) where {FT}
+        energy_conservation_tol = Inf) where {FT}
     # Validate the model layout and determine the electron band-box dimensions.
     (; nw, nmodes) = model
     _require_epmat_layout(OuterQLoop(), model)
-    drop_pairs = _can_drop_pairs(OuterQLoop(), energy_conservation, els_kq !== nothing)
+    drop_pairs = _can_drop_pairs(OuterQLoop(), energy_conservation_tol, els_kq !== nothing)
     nbk = els_k.nband_max
     nbkq = els_kq === nothing ? nw : els_kq.nband_max
 
@@ -610,7 +618,7 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
             tmp = alloc(backend, Complex{FT}, nbkq * nw * nmodes * n_inner_tile),
             uk_rep = alloc(backend, Complex{FT}, nw, nbk, nmodes * n_inner_tile),
             uk_polar = model.polar_eph.use ? alloc(backend, Complex{FT}, nw * nbk * n_inner_tile) : nothing,
-            mmat = model.polar_eph.use ? alloc(backend, Complex{FT}, nbkq * nbk * n_inner_tile) : nothing,
+            mmat_buffer = model.polar_eph.use ? alloc(backend, Complex{FT}, nbkq * nbk * n_inner_tile) : nothing,
             # Destinations for the pairs that survive `filter_pairs!`, compacted to the front.
             kept = drop_pairs ? (;
                 keep = Vector{Int}(undef, n_inner_tile),
@@ -626,7 +634,7 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
 
     # Assemble the engine with maximum-capacity stage-1 outputs and coordinate buffers.
     OuterQEngine(model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
-        energy_conservation, eph_phonon_basis, 1:0, backend, epmat, itp_epmat,
+        energy_conservation_tol, eph_phonon_basis, qpts.n, 1:0, backend, epmat, itp_epmat,
         _irvec_to_device_matrix(backend, irvec_e, FT),
         alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch),
         eph_phonon_basis == :cartesian ? nothing : alloc(backend, Complex{FT}, nw^2, nr_e, nmodes, n_outer_batch),
@@ -649,8 +657,7 @@ phase, and optionally repeats the contraction and rotation for the three derivat
 - `iqs_batch`: Indices of the active outer q points, up to the engine's batch capacity.
 """
 function stage1!(eng::OuterQEngine, iqs_batch::UnitRange{Int})
-    _check_stage1(eng, iqs_batch, eng.qpts.n)
-    eng.batch = 1:0
+    _check_stage1(eng, iqs_batch)
     # function barrier for the outer-q stage-1 buffers.
     _stage1!(OuterQLoop(), _workspace_fields(eng), iqs_batch)
     eng.batch = iqs_batch
@@ -733,12 +740,15 @@ function _stage2!(::OuterQLoop, eng_fields, tile_workspace, iq, tile)
         els_kq, ikq = view(tile_workspace.els_kq, 1:n), view(tile_workspace.ikq, 1:n)
     end
 
-    # The block owns state views; filter absent or nonconserving pairs before Fourier interpolation.
+    # Borrow the tile's output storage for the block.
     block = EPBlock{OuterQLoop}(tile_workspace, els_k, els_kq, view(eng_fields.phs, iq:iq);
         ik = tile, ikq, iq, wtk = view(eng_fields.wtk, tile), wtq = eng_fields.qpts.weights[iq],
         xk = view(eng_fields.kpts.vectors, tile), xq = eng_fields.qpts.vectors[iq])
-    block, _ = filter_pairs!(tile_workspace, block, eng_fields.model, eng_fields.energy_conservation,
-                             eng_fields.qpts.ngrid)
+
+    # Drop the pairs (i) whose k+q has no state in the window (absent from the precomputed k+q
+    # states, `ikq == 0`), or (ii) that do not satisfy the energy-conservation tolerance, before
+    # the Fourier transform.
+    block, _ = filter_pairs!(tile_workspace, block, eng_fields.energy_conservation_tol)
     block === nothing && return nothing
 
     # Fourier-transform R_e of this q's stage-1 output at the tile's k points:
@@ -756,15 +766,18 @@ function _stage2!(::OuterQLoop, eng_fields, tile_workspace, iq, tile)
     uk_rep = reshape_buffer_view(tile_workspace.uk_rep, nw, nbk, nmodes * npair)
     eph_apply_rotations_rqkq!(block.ep, g, block.els_k.u, block.els_kq.u, tmp, uk_rep)
 
-    _stage3!(block, tile_workspace, eng_fields.model)
+    if eng_fields.model.polar_eph.use
+        eph_engine_add_longrange!(block, tile_workspace, eng_fields.model)
+    end
+    block
 end
 
 
 # ---- Both orders -----------------------------------------------------------------------------
 
-function _check_stage1(eng, batch, npoints)
+function _check_stage1(eng, batch)
     isempty(batch) && throw(ArgumentError("stage1! needs a nonempty outer batch"))
-    (first(batch) >= 1 && last(batch) <= npoints) || throw(BoundsError(1:npoints, batch))
+    (first(batch) >= 1 && last(batch) <= eng.n_outer) || throw(BoundsError(1:eng.n_outer, batch))
     length(batch) <= eng.n_outer_batch ||
         throw(ArgumentError("outer batch exceeds the engine's capacity $(eng.n_outer_batch)"))
     nothing
@@ -796,20 +809,19 @@ function LoopContext(eng::Union{OuterKEngine, OuterQEngine}; chunk::Int = 1)
     LoopContext(eng.backend, order, eng.batch, chunk)
 end
 
-# Reject pairs before computing ep, keeping state views, metadata and Fourier phases aligned.
-function filter_pairs!(tile_workspace, block::EPBlock{O}, model, energy_conservation, ngrid_econv;
-        phase = nothing) where {O}
+# Drop the point pairs of a block that need no e-ph matrix, before it is computed:
+# (i) pairs whose k+q has no state in the window (`ikq == 0`: absent from the precomputed k+q
+#     states of the outer-q loop), and
+# (ii) (k, q) pairs with no process inside the energy-conservation tolerance,
+#      |e_k - e_{k+q} ± ω_q| <= energy_conservation_tol for some bands and mode.
+# Returns the block (and the matching Fourier phase) of the kept pairs, or `nothing` if none is.
+function filter_pairs!(tile_workspace, block::EPBlock{O}, energy_conservation_tol; phase = nothing) where {O}
     kept_bufs = tile_workspace.kept
     kept_bufs === nothing && return block, phase
-    mode, tol = energy_conservation
-    vec3(v, i) = v === nothing ? nothing : reinterpret(reshape, Vec3{eltype(v)}, view(v, :, :, i))
     function conserves(j)
         jk, jq = min(j, block.els_k.nk), min(j, block.phs.nq)
-        states_k = (; e = view(block.els_k.e, :, jk))
-        states_kq = (; e = view(block.els_kq.e, :, j), vdiag = vec3(block.els_kq.vdiag, j))
-        states_ph = (; e = view(block.phs.e, :, jq), vdiag = vec3(block.phs.vdiag, jq))
-        any(check_energy_conservation(states_k, states_kq, states_ph, ib, jb, imode, sign_ph, ngrid_econv,
-                                      model.recip_lattice, mode, tol)
+        any(abs(block.els_k.e[ib, jk] - block.els_kq.e[jb, j] - sign_ph * block.phs.e[imode, jq]) <=
+                energy_conservation_tol
             for imode in 1:block.phs.nmodes, jb in 1:block.els_kq.nband[j], ib in 1:block.els_k.nband[jk],
                 sign_ph in (-1, 1))
     end
@@ -817,7 +829,7 @@ function filter_pairs!(tile_workspace, block::EPBlock{O}, model, energy_conserva
     nkeep = 0
     for j in 1:n
         block.ikq === nothing || block.ikq[j] != 0 || continue
-        mode === :None || conserves(j) || continue
+        isinf(energy_conservation_tol) || conserves(j) || continue
         kept_bufs.keep[nkeep += 1] = j
     end
     nkeep == n && return block, phase
@@ -826,8 +838,12 @@ function filter_pairs!(tile_workspace, block::EPBlock{O}, model, energy_conserva
     _copy_kept_pairs(O(), tile_workspace, block, nkeep, phase)
 end
 
+# The block of the `n` pairs kept by `filter_pairs!` (`kept.keep[1:n]`): the other pairs are dropped
+# because (i) their k+q has no state in the window, or (ii) they do not satisfy the
+# energy-conservation tolerance. The kept pairs' states, phase, indices and weights are copied to
+# the front of the tile's `kept` buffers, so the e-ph matrix is computed for those pairs only.
 function _copy_kept_pairs(::OuterKLoop, tile_workspace, block, n, phase)
-    # Compact the pair-dependent states and phase without modifying the shared resident tile.
+    # Outer k: compact the k+q states, phonons and phase; the resident tile is left unmodified.
     kept_bufs = tile_workspace.kept
     keep, keep_dev, kept = view(kept_bufs.keep, 1:n), view(kept_bufs.keep_dev, 1:n), 1:n
     els_kq = view(copy_batched_electron_states!(reshape_view_batched_electron_states(
@@ -846,7 +862,7 @@ function _copy_kept_pairs(::OuterKLoop, tile_workspace, block, n, phase)
 end
 
 function _copy_kept_pairs(::OuterQLoop, tile_workspace, block, n, phase)
-    # Compact k and k+q together; the fixed q's phonon state is shared by the whole block.
+    # Outer q: compact k and k+q together; the fixed q's phonon state is shared by the whole block.
     kept_bufs = tile_workspace.kept
     keep, keep_dev, kept = view(kept_bufs.keep, 1:n), view(kept_bufs.keep_dev, 1:n), 1:n
     copy_els(els_dst, els_src) = view(copy_batched_electron_states!(reshape_view_batched_electron_states(
@@ -865,21 +881,22 @@ function _copy_kept_pairs(::OuterQLoop, tile_workspace, block, n, phase)
 end
 
 """
-    _stage3!(block, tile_workspace, model)
+    eph_engine_add_longrange!(block, tile_workspace, model)
 
-Stage 3, run at the end of `stage2!` for either loop order: the terms added on a block's `ep`
-after the two Fourier transforms. The polar dipole
-term `coeff[ν] · u_{k+q}' u_k` of a polar model (unscreened, as `epstate_compute_eph_dipole!`),
-with the coefficients in the block's phonon basis. `tile_workspace` is the block's tile, for the scratch.
+Add the long-range term on a block's `ep` after the two Fourier transforms, for either loop order:
+the polar dipole term `coeff[ν] · u_{k+q}' u_k` of a polar model (unscreened, as
+`epstate_compute_eph_dipole!`), with the coefficients in the block's phonon basis.
+`tile_workspace` is the block's tile, for the scratch. A no-op for a non-polar model.
 """
-function _stage3!(block, tile_workspace, model)
+function eph_engine_add_longrange!(block, tile_workspace, model)
     model.polar_eph.use || return block
     nbkq, nbk, _, n = size(block.ep)
     nw = model.nw
     # u_k at the block's pair extent: the shared side of `OuterKLoop` has extent 1.
     uk = reshape_buffer_view(tile_workspace.uk_polar, nw, nbk, n)
     uk .= block.els_k.u
-    add_eph_dipole_batched!(block.ep, block.phs.eph_dipole_coeff, block.els_kq.u, uk,
-                            reshape_buffer_view(tile_workspace.mmat, nbkq, nbk, n))
+    ukq = block.els_kq.u
+    mmat_buffer = reshape_buffer_view(tile_workspace.mmat_buffer, nbkq, nbk, n)
+    add_eph_dipole_batched!(block.ep, block.phs.eph_dipole_coeff, ukq, uk, mmat_buffer)
     block
 end

@@ -19,8 +19,9 @@ Keywords:
 * `window_k`, `window_kq` — energy windows of the two sides (ignored for a `FilteredBandStates`).
 * `symmetry = model.symmetry` — reduces the outer k to the irreducible wedge and builds the k+q
   set by unfolding its selection; `nothing` for full grids.
-* `energy_conservation = (:None, 0.0)` — `(:Fixed, tol)` or `(:Linear, curvature)` drops the point pairs
-  with no energy-conserving process before the e-ph matrix is computed (`CPUBackend` only).
+* `energy_conservation_tol = Inf` — a finite tolerance drops the point pairs with no process inside
+  it (`|e_k - e_{k+q} ± ω_q| <= energy_conservation_tol` for some bands and mode) before the e-ph
+  matrix is computed (`CPUBackend` only).
 * `covariant_derivative_of_g = false` — also compute the covariant derivative `block.dg`.
 * `eph_phonon_basis = :eigenmode` — or `:cartesian` (identity phonon rotation).
 * `fourier_mode = "gridopt"` — or `"normal"`: the interpolation of the setup-time state solves on a
@@ -53,8 +54,7 @@ Keywords as in [`run_eph_over_k_and_kq`](@ref), except: `kpts` is any k list (e.
 not necessarily on a grid), a grid size or a prebuilt `FilteredBandStates`; `el_k_eigenpairs` only
 for k points on a grid (the cache is looked up on one); `symmetry = nothing`, the only value
 accepted (the outer k points are not reduced); `n_inner_tile` q points per block; no `vdiag` (for a
-calculator or `:Linear` energy conservation) and no `el_kq_eigenpairs`, which need the k+q points
-on a grid. Calculators that read the k+q selection (`sel_kq`) are not supported.
+calculator) and no `el_kq_eigenpairs`, which need the k+q points on a grid. Calculators that read the k+q selection (`sel_kq`) are not supported.
 The model must use `epmat_outer_momentum = "el"`.
 """
 function run_eph_over_k_and_q(model::Model, kpts_input, qpts_input; symmetry = nothing, kwargs...)
@@ -87,13 +87,12 @@ run_eph_over_q_and_k(model::Model, kpts_input, qpts_input; use_symmetry::Bool = 
 
 
 # The quantities the loop provides itself, on both electron sides and on the phonons: always the
-# energies and eigenvectors, the dipole coefficients of a polar model, and for the `:Linear` energy
-# conservation the velocities of the k+q side and the phonons.
-loop_el_quantities((energy_conservation_mode, _)) =
-    [:e; :u; energy_conservation_mode === :Linear ? [:vdiag] : Symbol[]]
-function loop_ph_quantities(model, (energy_conservation_mode, _))
-    [:e; :u; model.polar_eph.use ? [:eph_dipole_coeff] : Symbol[];
-     energy_conservation_mode === :Linear ? [:vdiag] : Symbol[]]
+# energies and eigenvectors, and the dipole coefficients of a polar model.
+function loop_el_quantities()
+    [:e, :u]
+end
+function loop_ph_quantities(model)
+    model.polar_eph.use ? [:e, :u, :eph_dipole_coeff] : [:e, :u]
 end
 
 # The options of an e-ph run with their defaults, shared by the drivers and the engine constructors.
@@ -112,7 +111,7 @@ function _run_options(model::Model;
         symmetry = model.symmetry,
         precompute_el_kq = false,
         keep_all_qpts = false,
-        energy_conservation = (:None, 0.0),
+        energy_conservation_tol = Inf,
         covariant_derivative_of_g = false,
         eph_phonon_basis::Symbol = :eigenmode,
         fourier_mode = "gridopt",
@@ -129,11 +128,10 @@ function _run_options(model::Model;
     nchunks_threads > 0 || throw(ArgumentError("nchunks_threads must be positive"))
     (n_outer_batch === nothing || n_outer_batch > 0) || throw(ArgumentError("n_outer_batch must be positive"))
     (n_inner_tile === nothing || n_inner_tile > 0) || throw(ArgumentError("n_inner_tile must be positive"))
-    el_qty = union(loop_el_quantities(energy_conservation), el_quantities, required_el_quantities.(calculators)...)
-    ph_qty = union(loop_ph_quantities(model, energy_conservation), ph_quantities,
-                   required_ph_quantities.(calculators)...)
+    el_qty = union(loop_el_quantities(), el_quantities, required_el_quantities.(calculators)...)
+    ph_qty = union(loop_ph_quantities(model), ph_quantities, required_ph_quantities.(calculators)...)
     (; inner_loop_kq, calculators, el_qty, ph_qty, backend, window_k, window_kq, symmetry,
-       precompute_el_kq, keep_all_qpts, energy_conservation, covariant_derivative_of_g,
+       precompute_el_kq, keep_all_qpts, energy_conservation_tol, covariant_derivative_of_g,
        eph_phonon_basis, fourier_mode, screening_params, mpi_comm_k, n_outer_batch, n_inner_tile,
        nchunks_threads, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, verbosity)
 end
@@ -143,13 +141,13 @@ end
 function _allocate_engine(order, model, states, options)
     # function barrier for allocation from concrete resident state containers.
     (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq) = states
-    (; el_qty, ph_qty, calculators, backend, precompute_el_kq, energy_conservation,
+    (; el_qty, ph_qty, calculators, backend, precompute_el_kq, energy_conservation_tol,
        covariant_derivative_of_g, eph_phonon_basis, n_outer_batch, n_inner_tile, nchunks_threads,
        window_kq, verbosity) = options
     (; nw) = model
 
     nchunks = backend isa CPUBackend ? nchunks_threads : 1
-    drop_pairs = _can_drop_pairs(order, energy_conservation, precompute_el_kq)
+    drop_pairs = _can_drop_pairs(order, energy_conservation_tol, precompute_el_kq)
 
     if order isa OuterKLoop
         # Outer k: the inner set is either resident k+q points or q points with a per-tile solve.
@@ -180,11 +178,11 @@ function _allocate_engine(order, model, states, options)
     if order isa OuterKLoop
         eng = OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
             n_outer_batch = nbatch_outer, n_inner_tile = nbatch_inner, nchunks,
-            covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation)
+            covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation_tol)
     else
         eng = OuterQEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
             n_outer_batch = nbatch_outer, n_inner_tile = nbatch_inner, nchunks, eph_phonon_basis,
-            kqpts, sel_k, sel_kq, window_kq, energy_conservation)
+            kqpts, sel_k, sel_kq, window_kq, energy_conservation_tol)
     end
     eng
 end
@@ -253,10 +251,9 @@ function _run_eph_loop(eng, order, calculators; symmetry, progress_print_step, v
     end
 
     # Explicitly bracket each outer batch; each chunk consumes its blocks before buffers are reused.
-    n_outer = order isa OuterKLoop ? eng.kpts.n : eng.qpts.n
-    for batch in Iterators.partition(1:n_outer, eng.n_outer_batch)
+    for batch in Iterators.partition(1:eng.n_outer, eng.n_outer_batch)
         if mpi_isroot() && div(last(batch), progress_print_step) > div(first(batch) - 1, progress_print_step)
-            @info "$(now()) $(order isa OuterKLoop ? "ik" : "iq") = $batch / $n_outer"
+            @info "$(now()) $(order isa OuterKLoop ? "ik" : "iq") = $batch / $(eng.n_outer)"
             flush(stdout); flush(stderr)
         end
         ctx = LoopContext(eng.backend, order, batch, 1)
@@ -351,7 +348,7 @@ end
 
 # Every refusal of the loop, before any state is built.
 function _check_run(order, model, kpts_input, second_input, options)
-    (; backend, calculators, el_qty, energy_conservation, covariant_derivative_of_g,
+    (; backend, calculators, el_qty, energy_conservation_tol, covariant_derivative_of_g,
        eph_phonon_basis, fourier_mode, precompute_el_kq, screening_params, mpi_comm_k,
        el_k_eigenpairs, el_kq_eigenpairs, symmetry, inner_loop_kq) = options
     Order = typeof(order)
@@ -375,12 +372,11 @@ function _check_run(order, model, kpts_input, second_input, options)
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
         "Pass screening_params = nothing.")
-    mode = energy_conservation[1]
-    mode ∈ (:None, :Fixed, :Linear) ||
-        throw(ArgumentError("energy_conservation mode must be :None, :Fixed or :Linear, got :$mode"))
-    (mode === :None || backend isa CPUBackend) || throw(ArgumentError(
-        "energy_conservation is a CPUBackend feature: on a GPU computing every pair and letting " *
-        "the calculators' delta functions discard is cheaper. Pass energy_conservation = (:None, 0.0)."))
+    energy_conservation_tol >= 0 ||
+        throw(ArgumentError("energy_conservation_tol must be nonnegative, got $energy_conservation_tol"))
+    (isinf(energy_conservation_tol) || backend isa CPUBackend) || throw(ArgumentError(
+        "energy_conservation_tol is a CPUBackend feature: on a GPU computing every pair and letting " *
+        "the calculators' delta functions discard is cheaper. Pass energy_conservation_tol = Inf."))
     if order isa OuterKLoop
         precompute_el_kq && throw(ArgumentError("precompute_el_kq is an outer-q option"))
         if !inner_loop_kq
@@ -388,9 +384,6 @@ function _check_run(order, model, kpts_input, second_input, options)
                 "run_eph_over_k_and_q does not reduce the outer k points: pass symmetry = nothing"))
             (el_k_eigenpairs === nothing || all(_input_ngrid(kpts_input) .> 0)) || throw(ArgumentError(
                 "el_k_eigenpairs needs the outer k points on a grid: the cache is looked up on one"))
-            mode === :Linear && throw(ArgumentError(
-                "run_eph_over_k_and_q solves the k+q states per tile, which adaptive energy " *
-                "conservation (:Linear) cannot use: it needs the k+q velocities on a grid"))
             issubset(el_qty, (:e, :u)) || throw(ArgumentError(
                 "run_eph_over_k_and_q solves the k+q states per tile, with `e` and `u` only; the " *
                 "loop and the calculators request $(setdiff(el_qty, (:e, :u)))"))
@@ -412,8 +405,8 @@ function _check_run(order, model, kpts_input, second_input, options)
             "grid or a FilteredBandStates of one"))
         mpi_comm_k === nothing || throw(ArgumentError("mpi_comm_k is not implemented for run_eph_over_q_and_k"))
         q_on_grid = second_input isa NTuple{3, Int} || (second_input isa AbstractKpoints && all(second_input.ngrid .> 0))
-        (precompute_el_kq || mode === :Linear) && !q_on_grid && throw(ArgumentError(
-            "precompute_el_kq and adaptive energy conservation need a q grid, not a q list"))
+        precompute_el_kq && !q_on_grid && throw(ArgumentError(
+            "precompute_el_kq needs a q grid, not a q list"))
         # The precomputed k+q states live on the q grid, which holds every k + q only when it is a
         # multiple of the k grid.
         if precompute_el_kq
@@ -537,7 +530,7 @@ end
 function _loop_outer_k!(eng::OuterKEngine, batch, calculators)
     # Compute the outer batch once, then partition inner k+q or q points into independent chunks.
     stage1!(eng, batch)
-    inner_pts = eng.els_kq === nothing ? eng.qpts : eng.kqpts
+    inner_pts = eng.inner_loop_kq ? eng.kqpts : eng.qpts
     inner_pts.n == 0 && return nothing
     eng_fields = _workspace_fields(eng)
 
@@ -561,7 +554,7 @@ function _loop_outer_k_chunk!(eng_fields, tile_workspace, calculators; chunk, in
     for tile in Iterators.partition(inner_indices, eng_fields.n_inner_tile)
         # A resident k+q tile shares its Fourier phase across all outer k points.
         phase = nothing
-        if eng_fields.els_kq !== nothing
+        if eng_fields.inner_loop_kq
             phase = view(tile_workspace.P_kq, :, 1:length(tile))
             @views build_fourier_phase!(phase, eng_fields.irvecp_mat, eng_fields.xkq[:, tile])
         end
@@ -637,8 +630,8 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer, n_o
         nchunks_threads = nthreads()) where {FT}
     outer_k = model.epmat_outer_momentum == "el"
     order = outer_k ? OuterKLoop() : OuterQLoop()
-    el_qty = union(loop_el_quantities((:None, 0.0)), required_el_quantities.(calculators)...)
-    ph_qty = union(loop_ph_quantities(model, (:None, 0.0)), required_ph_quantities.(calculators)...)
+    el_qty = union(loop_el_quantities(), required_el_quantities.(calculators)...)
+    ph_qty = union(loop_ph_quantities(model), required_ph_quantities.(calculators)...)
     (; nbatch_inner, committed, bytes) = _plan_widths(order, model, backend, calculators;
         n_outer = outer_k ? Int(nk) : Int(nkq), n_inner = outer_k ? Int(nkq) : Int(nk), nk, nkq,
         nchunks = backend isa CPUBackend ? nchunks_threads : 1, n_outer_batch, n_inner_tile,

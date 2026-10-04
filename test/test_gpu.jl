@@ -559,7 +559,7 @@ ElectronPhonon.supports(::_QOnlyCalc, ::Type{ElectronPhonon.OuterQLoop}) = true
         # Energy conservation is a CPU feature, refused on the GPU.
         @test_throws "CPUBackend feature" ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
             calculators=[_RecordCalc()], symmetry=nothing, backend=ElectronPhonon.gpu_backend(),
-            energy_conservation=(:Fixed, 0.1), progress_print_step=10^9)
+            energy_conservation_tol=0.1, progress_print_step=10^9)
     end
 end
 
