@@ -1,6 +1,7 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: unit_to_aru, run_eph_over_k_and_kq, run_eph_over_q_and_k, CPUBackend, gpu_backend
+using ElectronPhonon: unit_to_aru, run_eph_over_k_and_kq, run_eph_over_k_and_q, run_eph_over_q_and_k,
+    CPUBackend, gpu_backend
 
 # Features the per-point loops of the previous release had, on the e-ph loop (ElectronPhonon.jl
 # issue #72): the outer-k polar term, energy conservation and the covariant derivative. Each
@@ -132,6 +133,36 @@ end
                 keys(rec.sums) == keys(ref) && maximum(maximum(abs, rec.sums[key] - ref[key])
                     for key in keys(ref)) < 1e-10 * maximum(maximum, values(ref)))
         end
+    end
+end
+
+# A pair whose k+q has no state in the window is skipped by every driver, on both backends, whether
+# the k+q states are resident or solved per tile. Pb 6³, E_F ± 0.1 eV: 24 of the 216 points have a
+# state in the window, so most tiles of 30 lose pairs and some lose all of them.
+@testset "k+q without a state in the window is skipped" begin
+    model_el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
+    model_ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
+    eV = unit_to_aru(:eV)
+    window = (11.68eV - 0.1eV, 11.68eV + 0.1eV)
+    grid = (6, 6, 6)
+    kpts = GridKpoints(kpoints_grid(grid))
+    ref = eph_reference(model_el, kpts, kpts, window, window)
+    @test 0 < length(ref.g2abs) < prod(grid)^2
+    common = (; symmetry = nothing, window_k = window, window_kq = window, n_inner_tile = 30,
+              verbosity = 0, progress_print_step = 10^9)
+    drivers = (
+        "outer k, inner k+q" => (; kwargs...) -> run_eph_over_k_and_kq(model_el, grid, grid; kwargs...),
+        "outer k, inner q" => (; kwargs...) -> run_eph_over_k_and_q(model_el, grid, grid; kwargs...),
+        "outer q, k+q per tile" => (; kwargs...) -> run_eph_over_q_and_k(model_ph, grid, grid; kwargs...),
+        "outer q, k+q precomputed" => (; kwargs...) ->
+            run_eph_over_q_and_k(model_ph, grid, grid; precompute_el_kq = true, kwargs...))
+    backends = EPH_FEATURES_GPU_AVAILABLE ? Any[CPUBackend(), gpu_backend()] : Any[CPUBackend()]
+    @testset "$name, $(nameof(typeof(backend)))" for (name, run) in drivers, backend in backends
+        rec = _PairRecorder()
+        run(; calculators = [rec], backend, common...)
+        dev = compare_with_reference(ref, rec)
+        @test keys(rec.g2abs) == keys(ref.g2abs)
+        @test dev.g2_reldev < 1e-11
     end
 end
 

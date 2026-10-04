@@ -175,9 +175,8 @@ function compare_with_reference(ref, rec; tol_degen = 1e-6)
             g2dev = max(g2dev, abs(sum(a[mm, nn, gν]) - sum(b[mm, nn, gν])))
         end
     end
-    # A loop may hand a calculator pairs with an empty window on one side (the outer-q loop solves
-    # k+q per tile and does not skip them); they must carry no coupling.
-    nextra = count(key -> !haskey(ref.g2abs, key) && !iszero(rec.g2abs[key]), keys(rec.g2abs))
+    # A loop hands a calculator no pair with an empty window on either side.
+    nextra = count(key -> !haskey(ref.g2abs, key), keys(rec.g2abs))
     (; g2_reldev = g2dev / scale, ω_dev = ωdev, npairs = length(ref.g2abs), nmissing, nextra)
 end
 

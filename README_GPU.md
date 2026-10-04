@@ -185,7 +185,7 @@ the loop is `k-batch -> k+q tile (phase built once) -> k -> block`, and stage 2 
 **Outer q:** stage 1 is `g(R_e, q)` for the outer batch on the device (one GEMM over the q batch,
 then the phonon-basis rotation as a batched GEMM), stage 2 one Fourier transform over R_e and one
 `eph_apply_rotations_rqkq!` per `(q, k tile)` after the k+q states of the tile are solved
-(`compute_electron_states_batched!`, into the leading `maximum(nband)` columns of the tile buffers, so the block's k+q box is its widest
+(`solve_electron_bands_batched` and `copy_window_bands!`, into the leading `maximum(nband)` columns of the tile buffers, so the block's k+q box is its widest
 window). The model's `epmat_outer_momentum` must match the order (`"el"` for outer k, `"ph"` for
 outer q), so stage 1 always contracts the column R of `epmat`. The polar
 dipole term is added on the block for both orders (`eph_engine_add_longrange!`).

@@ -54,7 +54,7 @@ end
                       eph_phonon_basis = :eigenmode)
             if order isa OuterKLoop
                 bytes = engine_bytes(OuterKEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
-                    nk = st.kpts.n, nkq = st.kqpts.n, el_qty, ph_qty, drop_pairs = false,
+                    nk = st.kpts.n, nkq = st.kqpts.n, el_qty, ph_qty,
                     inner_loop_kq = true,
                     covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
                 eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
@@ -62,7 +62,7 @@ end
                 run1 = () -> stage1!(eng, 1:nb)
             else
                 bytes = engine_bytes(OuterQEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
-                    nk = st.kpts.n, n_outer_batch = nb, el_qty, ph_qty, drop_pairs = false,
+                    nk = st.kpts.n, n_outer_batch = nb, el_qty, ph_qty,
                     precompute_el_kq = false, eph_phonon_basis = :eigenmode)
                 eng = OuterQEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.qpts, common...)

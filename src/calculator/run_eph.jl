@@ -49,7 +49,8 @@ run_eph_over_k_and_kq(model::Model, kpts_input, kqpts_input; kwargs...) =
 Sweep the outer k points and, for each, the inner q points (any q list, e.g. a path, or a q grid),
 handing each calculator the e-ph coupling as an [`EPBlock`](@ref)`{OuterKLoop}`: one outer k with a
 tile of q points, whose index is `iq` (`ikq === nothing`). The k+q states are solved per tile, with
-`e` and `u` only, and the phonons are built once on `qpts`. Returns
+`e` and `u` only, and the phonons are built once on `qpts`. A pair whose k+q has no state in
+`window_kq` is skipped. Returns
 `(; kpts, qpts, els_k, els_kq = nothing, phs)`.
 
 Keywords as in [`run_eph_over_k_and_kq`](@ref), except: `kpts` is any k list (e.g. a band path,
@@ -71,8 +72,8 @@ Sweep the outer q points (any q list, e.g. a path, or a q grid) and, for each, t
 (a grid), handing each
 calculator the e-ph coupling as an [`EPBlock`](@ref)`{OuterQLoop}`: one q with a tile of k points.
 The k+q states are solved per tile, with `e` and `u` only, unless `precompute_el_kq = true` (a grid
-q set), which builds them once on the k+q grid; a pair whose k+q has no state in `window_kq` is
-then dropped. Returns `(; kpts, qpts, els_k, els_kq, phs)`, `els_kq = nothing` when solved per tile.
+q set), which builds them once on the k+q grid. A pair whose k+q has no state in `window_kq` is
+skipped. Returns `(; kpts, qpts, els_k, els_kq, phs)`, `els_kq = nothing` when solved per tile.
 Requires a model loaded with `epmat_outer_momentum = "ph"` so stage 1 contracts R_p.
 
 Keywords as in [`run_eph_over_k_and_kq`](@ref), except: `symmetry` reduces the outer q points
@@ -148,7 +149,6 @@ function _allocate_engine(order, model, states, options)
     (; nw) = model
 
     nchunks = backend isa CPUBackend ? nchunks_threads : 1
-    drop_pairs = _can_drop_pairs(order, energy_conservation_tol, precompute_el_kq)
 
     if order isa OuterKLoop
         # Outer k: the inner set is either resident k+q points or q points with a per-tile solve.
@@ -168,7 +168,7 @@ function _allocate_engine(order, model, states, options)
         inner_loop_kq,
         n_outer_batch, n_inner_tile, nband_max_k = els_k.nband_max,
         nband_max_kq = els_kq === nothing ? nw : els_kq.nband_max, els_k, els_kq, phs, el_qty, ph_qty,
-        drop_pairs, precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis)
+        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis)
     if verbosity > 0 && mpi_isroot()
         @info "e-ph loop: committed = $(round(committed / 1e9, digits = 2)) GB, " *
               "$(round(bytes.per_pair / 1e3, digits = 1)) kB per pair; outer batch = $nbatch_outer, " *
@@ -288,7 +288,7 @@ end
 # cache-sized 1024 per chunk on the CPU.
 function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, nkq, nchunks,
         n_outer_batch, n_inner_tile, nband_max_k, nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
-        drop_pairs, precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq)
+        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq)
     (; nw, nmodes) = model
     outer_default = order isa OuterKLoop ? 256 : backend isa CPUBackend ? 1 : 16
     nbatch_outer = max(1, min(something(n_outer_batch, outer_default), n_outer))
@@ -296,9 +296,9 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
     inner_cap = max(1, min(cld(n_inner, nchunks), something(n_inner_tile, inner_default)))
     bytes = order isa OuterKLoop ?
         engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk, nkq, el_qty, ph_qty,
-            drop_pairs, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq) :
+            covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq) :
         engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk, n_outer_batch = nbatch_outer,
-            el_qty, ph_qty, drop_pairs, precompute_el_kq, eph_phonon_basis)
+            el_qty, ph_qty, precompute_el_kq, eph_phonon_basis)
     for c in calculators
         b = eph_batched_bytes_per_point(c, EPBlock{typeof(order)}; nw, nmodes, nband_max_k,
                                         nband_max_kq, els_k, els_kq, phs, nchunks_threads = nchunks)
@@ -555,9 +555,10 @@ function _loop_outer_k_chunk!(eng_fields, tile_workspace, calculators; chunk, in
     ctx = LoopContext(eng_fields.backend, OuterKLoop(), eng_fields.batch, chunk)
 
     for tile in Iterators.partition(inner_indices, eng_fields.n_inner_tile)
-        # A resident k+q tile shares its Fourier phase across all outer k points.
+        # A resident k+q tile shares its Fourier phase across all outer k points, unless the
+        # energy-conservation tolerance selects different pairs for each k.
         phase = nothing
-        if eng_fields.inner_loop_kq
+        if eng_fields.inner_loop_kq && isinf(eng_fields.energy_conservation_tol)
             phase = view(tile_workspace.P_kq, :, 1:length(tile))
             @views build_fourier_phase!(phase, eng_fields.irvecp_mat, eng_fields.xkq[:, tile])
         end
@@ -639,7 +640,7 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer, n_o
         n_outer = outer_k ? Int(nk) : Int(nkq), n_inner = outer_k ? Int(nkq) : Int(nk), nk, nkq,
         nchunks = backend isa CPUBackend ? nchunks_threads : 1, n_outer_batch, n_inner_tile,
         nband_max_k = model.nw, nband_max_kq = model.nw, els_k = nothing, els_kq = nothing, phs = nothing,
-        el_qty, ph_qty, drop_pairs = false, precompute_el_kq = false, covariant_derivative_of_g = false,
+        el_qty, ph_qty, precompute_el_kq = false, covariant_derivative_of_g = false,
         eph_phonon_basis = :eigenmode, inner_loop_kq = outer_k)
     (; loop = outer_k ? :outer_k : :outer_q, committed, bytes.per_pair, batch = nbatch_inner,
        free = free_bytes(backend))

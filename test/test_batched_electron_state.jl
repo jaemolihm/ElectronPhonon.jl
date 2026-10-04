@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: gpu_backend, on_backend, Vec3, CPUBackend, copy_batched_electron_states!,
-    compute_electron_states_batched!, unit_to_aru, BatchedWannierInterpolator,
+    solve_electron_bands_batched, copy_window_bands!, unit_to_aru, BatchedWannierInterpolator,
     get_fourier_batched!, eigen_batched, inside_window
 using OffsetArrays: no_offset_view
 
@@ -133,8 +133,9 @@ end
             tile = BatchedElectronState(backend, nw, nw, 53, [:e, :u])
             itp = BatchedWannierInterpolator(ElectronPhonon.to_device(backend, model_pb.el_ham);
                                              backend, batch_size = tile.nk)
-            out = compute_electron_states_batched!(tile, itp, ElectronPhonon.alloc(backend, ComplexF64,
-                nw^2, tile.nk), model_pb, xks, window)
+            bands = solve_electron_bands_batched(itp, ElectronPhonon.alloc(backend, ComplexF64,
+                nw^2, tile.nk), model_pb, xks, window; eigenvectors = true)
+            out = copy_window_bands!(tile, bands, eachindex(xks))
             hk = ElectronPhonon.alloc(backend, ComplexF64, nw^2, length(xks))
             get_fourier_batched!(hk, itp, xks)
             E, U = Array.(eigen_batched(reshape(hk, nw, nw, :)))
@@ -148,11 +149,24 @@ end
                 issorted(E[:, j]) && nband[j] == length(r) && (isempty(r) || off[j] == first(r) - 1) &&
                     e[1:nband[j], j] == E[r, j] && u[:, 1:nband[j], j] == U[:, r, j]
             end
+            # A chosen subset of the solved points, in the given order.
+            points = [7, 3, 50, 21]
+            sub = copy_window_bands!(tile, bands, points)
+            nband_sub = Array(sub.nband)
+            @test sub.nk == length(points) && sub.nband_max == max(maximum(nband_sub), 1)
+            @test nband_sub == nband[points] && Array(sub.iband_offset) == off[points]
+            @test all(eachindex(points)) do i
+                r = inside_window(E[:, points[i]], window...)
+                Array(sub.e)[1:nband_sub[i], i] == E[r, points[i]] &&
+                    Array(sub.u)[:, 1:nband_sub[i], i] == U[:, r, points[i]]
+            end
+            @test copy_window_bands!(tile, bands, 1:0).nk == 0
         end
         itp = BatchedWannierInterpolator(model_pb.el_ham; batch_size = 6)
-        @test_throws "nband_max = nw = 4" compute_electron_states_batched!(
-            BatchedElectronState(CPUBackend(), 4, 2, 6, [:e, :u]), itp, zeros(ComplexF64, 16, 6),
-            model_pb, xks[1:2], window_wide)
+        bands = solve_electron_bands_batched(itp, zeros(ComplexF64, 16, 6), model_pb, xks[1:2],
+            window_wide; eigenvectors = true)
+        @test_throws "nband_max = nw = 4" copy_window_bands!(
+            BatchedElectronState(CPUBackend(), 4, 2, 6, [:e, :u]), bands, 1:2)
     end
 
     @testset "GPU" begin
