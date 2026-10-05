@@ -546,6 +546,13 @@ function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=f
     L = lcm(ngrid...)
     stride = Vec3{Int}(L .÷ ngrid)
 
+    # The grid is invariant under S iff S maps each grid basis vector e_b / n_b onto the grid,
+    # i.e. S[a, b] * stride[b] is divisible by stride[a] for all a, b.
+    for symop in symmetry
+        ignore_time_reversal && symop.is_tr && continue
+        all(iszero, (symop.S .* stride') .% stride) || error("The k-point grid breaks the symmetry")
+    end
+
     # kz = i3 / ngrid[3] is the fastest index
     for (i3, i2, i1) in Iterators.product((0:n-1 for n in reverse(ngrid))...)
         # check if this k-point has already been found equivalent to another. If so, skip.
@@ -556,19 +563,19 @@ function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=f
         # Check if there are equivalent k-point to the remaining k points
         # Also, count the number of symops that map k to itself.
         nsym_star = 0
-        for (S, is_tr) in zip(symmetry.S, symmetry.is_tr)
-            if ignore_time_reversal && is_tr
-                continue
-            end
-            Sm = is_tr ? mod.(-S * m, L) : mod.(S * m, L)
-            # Sk is off the grid if Sm is not a multiple of stride.
-            all(iszero, Sm .% stride) || error("The k-point grid breaks the symmetry")
+        for symop in symmetry
+            ignore_time_reversal && symop.is_tr && continue
+            Sm = mod.(apply_symop(symop, m, :momentum), L)
             if Sm > m
-                found[(Sm .÷ stride .+ 1)...] = true
+                # Sk is a later k point: mark it as equivalent to k.
+                j = Sm .÷ stride
+                j .* stride == Sm || error("Sk is off the grid although the grid passed the symmetry check")
+                found[(j .+ 1)...] = true
             elseif Sm == m
+                # symop leaves k invariant: count it for the weight of k.
                 nsym_star += 1
             else
-                # Sk is on the grid but already visited and not k itself: the symmetry
+                # Sk is an earlier k point, whose star should have contained k: the symmetry
                 # operations do not form a group.
                 error("Problem in symmetry of the irreducible k points")
             end
