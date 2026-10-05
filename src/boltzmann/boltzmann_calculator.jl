@@ -78,9 +78,9 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     dev::Union{Nothing, BoltzmannDeviceBuffers} = nothing
 
     # --- Tiled Sᵢ device output ---
-    # Sᵢ is never held whole on the device: `TiledDeviceOutput` (always block mode) keeps one outer-k
-    # tile (i-extent = the largest k-batch) resident and streams it to `calc.Sᵢ` per batch. Built at
-    # setup; device buffers allocated lazily on the first batch.
+    # Sᵢ is never held whole on the device: `TiledDeviceOutput` (always streamed per batch) keeps one
+    # outer-k tile (i-extent = the largest k-batch) resident and streams it to `calc.Sᵢ` per batch.
+    # Built at setup; device buffers allocated lazily on the first batch.
     tiled::Union{Nothing, TiledDeviceOutput{FT}} = nothing
 
     # Set by `postprocess_calculator!`; `setup_calculator!` errors if already `true`. A calculator
@@ -149,10 +149,10 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
     calc.Sₒ = [zeros(FT, n_i) for _ in 1:nT]
     calc.Sᵢ = [zeros(FT, n_i, n_f) for _ in 1:nT]
     # Tiled Sᵢ device output: shape (n_i, n_f, nT), tiled over the outer-k state axis (axis 1), always
-    # block mode (there is deliberately no full-device-resident Sᵢ path). Metadata only at setup; the
+    # streamed mode (there is deliberately no full-device-resident Sᵢ path). Metadata only at setup; the
     # device/host tile buffers are lazy in `tile_begin!` (first batch).
     calc.tiled = TiledDeviceOutput{FT}((n_i, n_f, nT), 1, calc.el_i, n_outer_batch; narr = 1,
-                                       force_block = true)
+                                       force_stream_per_batch = true)
 
     # The whole-run device buffers: the band energies/weights/index maps are intrinsic to the state
     # sets and temperatures, so they are set up once here. `alloc`/`to_device` are backend-generic, so
@@ -177,7 +177,7 @@ end
 # Once per outer-k batch, before its blocks: record this batch's Sᵢ tile range and zero the tile's
 # active region (via `calc.tiled`).
 function calculator_begin_batch!(calc::BoltzmannCalculator{FT}, ctx::OuterKContext) where {FT}
-    # Sᵢ tile for this batch (block mode: zeroed and its range recorded by the helper).
+    # Sᵢ tile for this batch (streamed mode: zeroed and its range recorded by the helper).
     tile_begin!(calc.tiled, ctx)
     calc
 end

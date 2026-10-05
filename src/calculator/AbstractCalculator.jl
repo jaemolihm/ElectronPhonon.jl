@@ -239,5 +239,6 @@ public run_eph_over_k_and_kq, run_eph_over_k_and_q, run_eph_over_q_and_k,
     bte_window_accumulate!, calculator_bytes, allowed_eph_phonon_basis,
     required_el_quantities, required_ph_quantities, _indmap_to_device,
     TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array,
-    tile_offset, tile_length, tile_stride, is_block, is_allocated, residency_use_block, to_device,
+    tile_offset, tile_length, tile_stride, streamed_per_batch, is_allocated,
+    residency_stream_per_batch, to_device,
     plan_batch, estimate_device_memory
