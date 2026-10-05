@@ -21,8 +21,8 @@ On the GPU:
 
 **Not** on the GPU:
 
-- `gridopt` / `batched-gridopt` interpolation and `DiskWannierObject`: a device run interpolates
-  with the batched interpolator, and the e-ph loop refuses a disk-backed `epmat`.
+- `gridopt` / `batched-gridopt` interpolation: a device run interpolates with the batched
+  interpolator.
 - The phonons of a polar model and the phonon quantities beyond `e` and `u` (`vdiag`, the dipole
   coefficients): built on the host and copied to the device.
 - `energy_conservation_tol`: a `CPUBackend` option, refused on a GPU.
@@ -35,7 +35,8 @@ On the GPU:
 - **Package extension.** CUDA is a `[weakdeps]` dependency; all GPU code is in
   `ext/ElectronPhononCUDAExt.jl`. The base package loads and runs on CPU-only machines and in
   CI without CUDA installed.
-- **`op_r` fits in GPU memory.** No streaming/chunking of the Wannier operator itself.
+- **`op_r` fits in GPU memory.** No streaming/chunking of the Wannier operator itself. A disk
+  (`epmat_on_disk`) epmat is memory-mapped and uploaded whole like an in-memory one.
 - **Energy windows as box storage.** The state containers hold each point's in-window bands in its
   first columns (a box of the largest window's width), so every batched GEMM keeps one uniform shape
   and the calculators skip the box padding through their index maps. See the design note.
@@ -85,9 +86,7 @@ only public constructor: the `BatchedFourierCore` engine it composes is internal
   itp = get_interpolator(ham; fourier_mode="batched", backend, nk_hint = kpts.n)
   ```
 
-- **The batched modes need an in-memory `op_r`**, so a `DiskWannierObject` is served by the per-k
-  `"normal"` / `"gridopt"` modes only; `"batched"` / `"batched-gridopt"` with one raise an
-  `ArgumentError` naming those two. `"batched-gridopt"` is host-only and rejects a `GPUBackend`.
+- **`"batched-gridopt"` is host-only** and rejects a `GPUBackend`.
 
 - **`batch_size` is the block width**, and its default is keyed on the backend: a fixed 32 on
   `CPUBackend` (the balance for the sequential per-k query API), and on a `GPUBackend` a byte
