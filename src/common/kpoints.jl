@@ -705,7 +705,17 @@ function xk_to_ik_unsafe(xk, kpts)
     ik == 0 ? nothing : ik
 end
 
-Base.sortperm(k::GridKpoints) = sortperm(map(xk -> round.(Int, (xk - k.shift).data .* k.ngrid), k.vectors))
+# The points in lexicographic order of their integer grid coordinates, ties in index order: a
+# stable sort on the coordinates packed into one `Int` (offset by their per-axis minimum, since a
+# GridKpoints need not be folded). A bounding box too large for an `Int` key sorts the tuples.
+function Base.sortperm(k::GridKpoints)
+    coords = map(xk -> round.(Int, (xk - k.shift).data .* k.ngrid), k.vectors)
+    isempty(coords) && return Int[]
+    lo = reduce((a, b) -> min.(a, b), coords)
+    w = reduce((a, b) -> max.(a, b), coords) .- lo .+ 1
+    prod(Int128.(w)) <= typemax(Int) || return sortperm(coords)
+    sortperm(map(c -> ((c[1] - lo[1]) * w[2] + (c[2] - lo[2])) * w[3] + (c[3] - lo[3]), coords))
+end
 
 function Base.sort!(k::GridKpoints)
     inds = sortperm(k)
