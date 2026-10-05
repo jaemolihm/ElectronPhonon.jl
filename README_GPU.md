@@ -22,7 +22,8 @@ On the GPU:
 **Not** on the GPU:
 
 - `gridopt` / `batched-gridopt` interpolation and `DiskWannierObject`: a device run interpolates
-  with the batched interpolator, and the e-ph loop refuses a disk-backed `epmat`.
+  with the batched interpolator. The e-ph loop streams a disk-backed `epmat` through stage 1 in
+  column chunks instead.
 - The phonons of a polar model and the phonon quantities beyond `e` and `u` (`vdiag`, the dipole
   coefficients): built on the host and copied to the device.
 - `energy_conservation_tol`: a `CPUBackend` option, refused on a GPU.
@@ -191,7 +192,9 @@ then the phonon-basis rotation as a batched GEMM), stage 2 one Fourier transform
 `eph_apply_rotations_rqkq!` per `(q, k tile)` after the k+q states of the tile are solved
 (`solve_electron_bands_batched` and `copy_window_bands!`, into the leading `maximum(nband)` columns of the tile buffers, so the block's k+q box is its widest
 window). The model's `epmat_outer_momentum` must match the order (`"el"` for outer k, `"ph"` for
-outer q), so stage 1 always contracts the column R of `epmat`. The polar
+outer q), so stage 1 always contracts the column R of `epmat`. A disk-backed `epmat` streams
+through stage 1 in column chunks of `epmat_chunk_bytes` (one read, one upload and one GEMM per
+chunk, once per outer batch), and the engine holds one chunk on the device. The polar
 dipole term is added on the block for both orders (`eph_engine_add_longrange!`).
 
 A block is `ep` `(nband_max_kq, nband_max_k, nmodes, nb)` with the states, phonons, weights and

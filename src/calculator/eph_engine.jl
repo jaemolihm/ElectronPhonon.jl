@@ -1,6 +1,6 @@
 # The two e-ph engines serve three drivers: outer k with inner k+q or q, and outer q with inner k.
-# Each engine holds one run's device copy of `model.epmat`, its stage-1 output for one outer batch, and one tile of
-# buffers per CPU thread chunk (`eng.tiles[chunk]`), and wraps the batched kernels of
+# Each engine holds one run's device copy of `model.epmat` (or one column chunk of a disk-backed
+# epmat), its stage-1 output for one outer batch, and one tile of buffers per CPU thread chunk (`eng.tiles[chunk]`), and wraps the batched kernels of
 # `wannier_to_bloch_batched.jl`:
 #
 #   stage1!  contract the outer R of `epmat` for an outer batch, apply the outer rotation;
@@ -23,8 +23,54 @@
 # `CPUBackend`, device arrays otherwise; the CUDA extension overrides only the fused rotation kernels.
 #
 # Model storage must match the loop order: outer k requires epmat_outer_momentum = "el"
-# (column R_e), and outer q requires "ph" (column R_p). Both stage-1 Fourier transforms then
-# use the batched interpolator directly.
+# (column R_e), and outer q requires "ph" (column R_p). Stage 1 then contracts the column R of
+# `op_r`, as a GEMM against a Fourier phase (`_fourier_epmat_columns!`) over chunks of columns: the
+# whole in-memory `op_r` as one chunk, or a disk-backed epmat (`DiskWannierObject`) read in chunks of
+# the driver's `epmat_chunk_bytes`.
+
+# `model.epmat` for stage 1: its `op_r` on the backend, or for a disk-backed epmat the object and a
+# column-chunk buffer of `chunk_bytes` on the host and on the backend (the same array on `CPUBackend`).
+function _epmat_source(model::Model{FT}, backend, chunk_bytes) where {FT}
+    epmat = model.epmat
+    epmat isa DiskWannierObject || return (; op_r = to_device(backend, epmat).op_r, disk = nothing)
+    ncol = _epmat_chunk_ncol(epmat, FT, chunk_bytes)
+    host = Matrix{Complex{FT}}(undef, epmat.ndata, ncol)
+    dev = backend isa CPUBackend ? host : alloc(backend, Complex{FT}, epmat.ndata, ncol)
+    (; op_r = nothing, disk = (; obj = epmat, host, dev))
+end
+_epmat_chunk_ncol(epmat, FT, chunk_bytes) =
+    clamp(fld(chunk_bytes, sizeof(Complex{FT}) * epmat.ndata), 1, epmat.nr)
+
+# The elements of `model.epmat` stage 1 holds on the backend: all of `op_r`, or one chunk.
+_epmat_device_size(model, FT, chunk_bytes) = model.epmat isa DiskWannierObject ?
+    model.epmat.ndata * _epmat_chunk_ncol(model.epmat, FT, chunk_bytes) : length(model.epmat.op_r)
+
+# `f(cols, A)` for the column chunks `A = op_r[:, cols]` of `src` in order: the in-memory `op_r` as
+# one chunk; a disk-backed epmat read chunk by chunk (one contiguous read, then one upload).
+function _foreach_epmat_chunk(f, src)
+    src.disk === nothing && return f(axes(src.op_r, 2), src.op_r)
+    (; obj, host, dev) = src.disk
+    open(joinpath(obj.dir, obj.filename), "r") do io
+        for cols in Iterators.partition(1:obj.nr, size(host, 2))
+            n = obj.ndata * length(cols)
+            seek(io, sizeof(eltype(host)) * obj.ndata * (first(cols) - 1))
+            GC.@preserve host unsafe_read(io, pointer(host), sizeof(eltype(host)) * n)
+            dev === host || copyto!(dev, 1, host, 1, n)    # one contiguous upload
+            f(cols, reshape_buffer_view(dev, obj.ndata, length(cols)))
+        end
+    end
+    nothing
+end
+
+# `g[:, j] = Σ_ic op_r[:, ic] · phase[ic, j]`: the Fourier transform over the column R, accumulated
+# over the column chunks.
+function _fourier_epmat_columns!(g, src, phase)
+    _foreach_epmat_chunk(src) do cols, A
+        P = length(cols) == size(phase, 1) ? phase : view(phase, cols, :)
+        mul!(g, A, P, true, first(cols) == 1 ? false : true)
+    end
+    g
+end
 
 function _require_epmat_layout(order::LoopTag, model)
     required = order isa OuterKLoop ? "el" : "ph"
@@ -139,8 +185,9 @@ Base.@kwdef mutable struct OuterKEngine
     inner_loop_kq :: Bool         # inner points are k+q (resident states); false: q, k+q solved per tile
     iks_batch    :: UnitRange{Int} # the outer k points of the current stage 1
     backend      :: AbstractBackend
-    epmat        :: WannierObject  # model.epmat on the backend
-    itp_epmat                     # its batched R_e interpolator
+    epmat_src                     # model.epmat for stage 1 (`_epmat_source`)
+    irvece_mat                    # (nr_e, 3) R_e
+    P_e                           # (nr_e, n_outer_batch) the stage-1 Fourier phase
     itp_epmat_R                   # interpolator of epmat_R (dg), or `nothing`
     irvecp_mat                    # (nr_p, 3) R_p
     mxks                          # (3, nk) -x_k
@@ -184,8 +231,9 @@ Base.@kwdef mutable struct OuterQEngine
     precompute_el_kq :: Bool      # the k+q states are resident (`els_kq`); false: solved per tile
     iqs_batch    :: UnitRange{Int} # the outer q points of the current stage 1
     backend      :: AbstractBackend
-    epmat        :: WannierObject  # model.epmat on the backend
-    itp_epmat                     # its batched R_p interpolator
+    epmat_src                     # model.epmat for stage 1 (`_epmat_source`)
+    irvecp_mat                    # (nr_p, 3) R_p
+    P_p                           # (nr_p, n_outer_batch) the stage-1 Fourier phase
     irvece_mat                    # (nr_e, 3) R_e
     g_q                           # (nw² nmodes, nr_e, n_outer_batch) stage-1 Fourier output
     g_rot                         # (nw², nr_e, nmodes, n_outer_batch) basis scratch, or `nothing`
@@ -233,20 +281,21 @@ end
 # ---- OuterKEngine ----------------------------------------------------------------------------
 
 function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband_max_kq, nk, nkq,
-        el_qty, ph_qty, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq) where {FT}
+        el_qty, ph_qty, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
+        epmat_chunk_bytes) where {FT}
     (; nw, nmodes) = model
     cx, rl, iz = sizeof(Complex{FT}), sizeof(FT), sizeof(Int)
     nr_p = length(model.epmat.irvec_next)
     nr_e = length(model.epmat.irvec)
-    nepmat = length(model.epmat.op_r)
+    nepmat = _epmat_device_size(model, FT, epmat_chunk_bytes)
     ndata = nw * nband_max_k * nmodes
     nd = covariant_derivative_of_g ? 4 : 1                      # ep, plus three dg directions
     nrows = nw^2 * nmodes * nr_p                                # the epmat rows that stage 1 keeps
     nrows_max = nrows * (covariant_derivative_of_g ? 3 : 1)     # those of epmat_R with dg
     persistent =
-        cx * nepmat * (covariant_derivative_of_g ? 4 : 1) +    # epmat (+ epmat_R)
+        cx * nepmat + (covariant_derivative_of_g ? cx * 3nepmat : 0) +  # epmat (or one chunk), epmat_R
         rl * 3 * (nr_p + nr_e) * (covariant_derivative_of_g ? 2 : 1) +  # R-vector matrices
-        cx * nrows + (covariant_derivative_of_g ? cx * 3nrows : 0) +  # interpolator outputs
+        (covariant_derivative_of_g ? cx * 3nrows : 0) +         # epmat_R interpolator output
         rl * 3 * (nk + nkq) + rl * nkq +                        # mxks, xkqs, wtkqs
         (inner_loop_kq ? 0 : cx * length(model.el_ham.op_r))      # el_ham
     per_outer =
@@ -296,7 +345,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
         inner_loop_kq = els_kq !== nothing, n_outer_batch, n_inner_tile, nchunks,
         covariant_derivative_of_g,
         eph_phonon_basis, sel_k = nothing, sel_kq = nothing, window_kq = (-Inf, Inf),
-        energy_conservation_tol = Inf) where {FT}
+        energy_conservation_tol = Inf, epmat_chunk_bytes) where {FT}
     # Validate the model layout and prepare the stage-1 interpolators for the selected inner loop.
     (; nw, nmodes) = model
     _require_epmat_layout(OuterKLoop(), model)
@@ -306,10 +355,11 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
         "inner_loop_kq = true takes the resident k+q states els_kq, and false takes els_kq = nothing"))
     nbk, nbkq = els_k.nband_max, inner_loop_kq ? els_kq.nband_max : nw
     inner_pts = inner_loop_kq ? kqpts : qpts
-    epmat = to_device(backend, model.epmat)
+    epmat_src = _epmat_source(model, backend, epmat_chunk_bytes)
     irvec_p = model.epmat.irvec_next
     nr_p = length(irvec_p)
-    itp_epmat = BatchedWannierInterpolator(epmat; backend, batch_size = n_outer_batch)
+    irvec_e = model.epmat.irvec
+    P_e = alloc(backend, Complex{FT}, length(irvec_e), n_outer_batch)
     itp_epmat_R = if covariant_derivative_of_g
         # The position-weighted e-ph matrix `im R_e g(R_e, R_p)`.
         epmat_R = wannier_object_multiply_R(model.epmat, model.lattice)
@@ -386,7 +436,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     nrows_max = nw^2 * nmodes * nr_p * (covariant_derivative_of_g ? 3 : 1)
     OuterKEngine(; model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
         energy_conservation_tol, eph_phonon_basis, inner_loop_kq, iks_batch = 1:0,
-        backend, epmat, itp_epmat, itp_epmat_R,
+        backend, epmat_src, irvece_mat = _irvec_to_device_matrix(backend, irvec_e, FT), P_e, itp_epmat_R,
         irvecp_mat = _irvec_to_device_matrix(backend, irvec_p, FT), mxks, xkqs,
         wtkqs = to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int, P_mk,
         ep_kR = alloc(backend, Complex{FT}, ndata, nr_p, n_outer_batch),
@@ -432,8 +482,11 @@ end
 
     # Fourier-transform R_e and rotate by u_k: g_ija(R_e, R_p) -> g_ina(k, R_p), with i, j Wannier
     # indices, a the atomic displacement and n the band of k.
-    g = reshape_buffer_view(eng_fields.g_fourier, eng_fields.itp_epmat.parent.ndata, nk_batch)
-    get_fourier_batched!(g, eng_fields.itp_epmat, xks)
+    (; nw, nmodes) = eng_fields.model
+    g = reshape_buffer_view(eng_fields.g_fourier, nw^2 * nmodes * size(eng_fields.irvecp_mat, 1), nk_batch)
+    P_e = eng_fields.P_e[:, 1:nk_batch]
+    build_fourier_phase!(P_e, eng_fields.irvece_mat, xks)
+    _fourier_epmat_columns!(g, eng_fields.epmat_src, P_e)
     ep_kR = eng_fields.ep_kR[:, :, 1:nk_batch]
     eph_rotate_kR_batched!(ep_kR, g, uks; additional_phase = P_mk)
 
@@ -626,7 +679,7 @@ end
 # ---- OuterQEngine ----------------------------------------------------------------------------
 
 function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband_max_kq, nk,
-        el_qty, ph_qty, precompute_el_kq, eph_phonon_basis) where {FT}
+        el_qty, ph_qty, precompute_el_kq, eph_phonon_basis, epmat_chunk_bytes) where {FT}
     (; nw, nmodes) = model
     cx, rl, iz = sizeof(Complex{FT}), sizeof(FT), sizeof(Int)
     nr_e = length(model.epmat.irvec_next)
@@ -634,9 +687,8 @@ function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband
     ndata = nw^2 * nmodes
     nbkq = precompute_el_kq ? nband_max_kq : nw
     persistent =
-        cx * length(model.epmat.op_r) +                         # epmat
+        cx * _epmat_device_size(model, FT, epmat_chunk_bytes) +  # epmat (or one chunk of it)
         rl * 3 * (nr_e + nr_p) +                              # R-vector matrices
-        cx * ndata * nr_e +                                     # interpolator output
         (precompute_el_kq ? 0 : cx * length(model.el_ham.op_r)) +  # el_ham
         rl * nk                                                 # wtks
     per_outer =
@@ -669,7 +721,7 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
         precompute_el_kq = els_kq !== nothing, n_outer_batch, n_inner_tile, nchunks, eph_phonon_basis,
         kqpts = nothing,
         sel_k = nothing, sel_kq = nothing, window_kq = (-Inf, Inf),
-        energy_conservation_tol = Inf) where {FT}
+        energy_conservation_tol = Inf, epmat_chunk_bytes) where {FT}
     # Validate the model layout and determine the electron band-box dimensions.
     (; nw, nmodes) = model
     _require_epmat_layout(OuterQLoop(), model)
@@ -678,12 +730,12 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     nbk = els_k.nband_max
     nbkq = precompute_el_kq ? els_kq.nband_max : nw
 
-    # Prepare the stage-1 Fourier interpolator and its read-only stage-2 outputs g(R_e, q).
-    epmat = to_device(backend, model.epmat)
+    # Prepare the stage-1 epmat and phase, and the read-only stage-2 outputs g(R_e, q).
+    epmat_src = _epmat_source(model, backend, epmat_chunk_bytes)
     irvec_e = model.epmat.irvec_next
+    irvec_p = model.epmat.irvec
     nr_e = length(irvec_e)
     ndata = nw^2 * nmodes
-    itp_epmat = BatchedWannierInterpolator(epmat; backend, batch_size = n_outer_batch)
     el_ham = precompute_el_kq ? nothing : to_device(backend, model.el_ham)
 
     # Allocate independent k-tile states, interpolators, and scratch for each thread chunk.
@@ -715,8 +767,9 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
 
     # Assemble the engine with maximum-capacity stage-1 outputs and coordinate buffers.
     OuterQEngine(; model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
-        energy_conservation_tol, eph_phonon_basis, precompute_el_kq, iqs_batch = 1:0, backend, epmat,
-        itp_epmat, irvece_mat = _irvec_to_device_matrix(backend, irvec_e, FT),
+        energy_conservation_tol, eph_phonon_basis, precompute_el_kq, iqs_batch = 1:0, backend, epmat_src,
+        irvecp_mat = _irvec_to_device_matrix(backend, irvec_p, FT),
+        P_p = alloc(backend, Complex{FT}, length(irvec_p), n_outer_batch), irvece_mat = _irvec_to_device_matrix(backend, irvec_e, FT),
         g_q = alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch),
         g_rot = eph_phonon_basis == :cartesian ? nothing : alloc(backend, Complex{FT}, nw^2, nr_e, nmodes, n_outer_batch),
         ep_Rq = alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch),
@@ -759,7 +812,9 @@ end
     # Fourier-transform R_p for the active outer batch: g_ija(R_e, R_p) -> g_ija(R_e, q).
     ndata, nr_e = size(eng_fields.ep_Rq, 1), size(eng_fields.ep_Rq, 2)
     g = eng_fields.g_q[:, :, 1:nq_batch]
-    get_fourier_batched!(reshape(g, ndata * nr_e, nq_batch), eng_fields.itp_epmat, xqs)
+    P_p = eng_fields.P_p[:, 1:nq_batch]
+    build_fourier_phase!(P_p, eng_fields.irvecp_mat, xqs)
+    _fourier_epmat_columns!(reshape(g, ndata * nr_e, nq_batch), eng_fields.epmat_src, P_p)
 
     # Rotate into the phonon eigenmodes, g_ija(R_e, q) -> g_ijν(R_e, q), or keep the cartesian
     # components.

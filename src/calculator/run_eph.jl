@@ -39,6 +39,10 @@ Keywords:
   visits on its side (the q points are `combine_kpoint_grids(kpts, kqpts)`) and be resident on
   `backend`.
 * `mpi_comm_k` — splits the outer k points across ranks.
+* `epmat_chunk_bytes = 2^30` — the column-chunk buffer, on the host and on `backend`, through
+  which a disk-backed `model.epmat` (`DiskWannierObject`) is read (no `covariant_derivative_of_g`).
+  Stage 1 reads the whole file sequentially once per outer batch, not overlapped with compute, so a
+  disk-backed run should use a wide `n_outer_batch`.
 """
 run_eph_over_k_and_kq(model::Model, kpts_input, kqpts_input; kwargs...) =
     _run_eph(OuterKLoop(), model, kpts_input, kqpts_input; inner_loop_kq = true, kwargs...)
@@ -82,7 +86,8 @@ point is kept, also one with no k+q state in `window_kq`; `precompute_el_kq` nee
 refused;
 `n_outer_batch` q points per stage-1 batch and per bracket, 16 on a GPU and 1 on the CPU (stage 1
 gains nothing from a wider batch there, while a calculator's per-q buffers are held per thread
-chunk); `n_inner_tile` k points per block, at most `2^15` on a GPU; no `covariant_derivative_of_g`;
+chunk; a disk-backed epmat is read once per batch, so once per q at 1: widen it for one);
+`n_inner_tile` k points per block, at most `2^15` on a GPU; no `covariant_derivative_of_g`;
 `el_kq_eigenpairs` only with `precompute_el_kq`.
 """
 run_eph_over_q_and_k(model::Model, kpts_input, qpts_input; kwargs...) =
@@ -122,6 +127,7 @@ function _run_options(model::Model;
         n_outer_batch = nothing,
         n_inner_tile = nothing,
         nchunks_threads = nthreads(),
+        epmat_chunk_bytes::Integer = 2^30,
         el_k_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         el_kq_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         ph_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
@@ -135,7 +141,7 @@ function _run_options(model::Model;
     (; inner_loop_kq, calculators, el_qty, ph_qty, backend, window_k, window_kq, symmetry,
        precompute_el_kq, energy_conservation_tol, covariant_derivative_of_g,
        eph_phonon_basis, fourier_mode, screening_params, mpi_comm_k, n_outer_batch, n_inner_tile,
-       nchunks_threads, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, verbosity)
+       nchunks_threads, epmat_chunk_bytes, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, verbosity)
 end
 
 # Plan the buffer widths and allocate the engine on the resident `states` of `_setup_states`
@@ -144,7 +150,8 @@ function _allocate_engine(order, model, states, options)
     # function barrier for allocation from concrete resident state containers.
     (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq) = states
     (; el_qty, ph_qty, calculators, backend, inner_loop_kq, precompute_el_kq, energy_conservation_tol,
-       covariant_derivative_of_g, eph_phonon_basis, nchunks_threads, window_kq, verbosity) = options
+       covariant_derivative_of_g, eph_phonon_basis, nchunks_threads, epmat_chunk_bytes, window_kq,
+       verbosity) = options
     (; nw) = model
 
     nchunks = backend isa CPUBackend ? nchunks_threads : 1
@@ -165,7 +172,7 @@ function _allocate_engine(order, model, states, options)
         n_outer, n_inner, nk = kpts.n, nkq = order isa OuterKLoop ? inner_pts.n : 0, nchunks,
         inner_loop_kq, options.n_outer_batch, options.n_inner_tile, nband_max_k = els_k.nband_max,
         nband_max_kq = els_kq === nothing ? nw : els_kq.nband_max, els_k, els_kq, phs, el_qty, ph_qty,
-        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis)
+        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, epmat_chunk_bytes)
     if verbosity > 0 && mpi_isroot()
         @info "e-ph loop: committed = $(round(committed / 1e9, digits = 2)) GB, " *
               "$(round(bytes.per_pair / 1e3, digits = 1)) kB per pair; outer batch = $n_outer_batch, " *
@@ -176,11 +183,12 @@ function _allocate_engine(order, model, states, options)
     if order isa OuterKLoop
         eng = OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
             n_outer_batch, n_inner_tile, nchunks,
-            covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation_tol)
+            covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation_tol,
+            epmat_chunk_bytes)
     else
         eng = OuterQEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
             n_outer_batch, n_inner_tile, nchunks, eph_phonon_basis,
-            kqpts, sel_k, sel_kq, window_kq, energy_conservation_tol)
+            kqpts, sel_k, sel_kq, window_kq, energy_conservation_tol, epmat_chunk_bytes)
     end
     eng
 end
@@ -288,7 +296,7 @@ end
 # cache-sized 1024 per chunk on the CPU.
 function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, nkq, nchunks,
         n_outer_batch, n_inner_tile, nband_max_k, nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
-        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq)
+        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq, epmat_chunk_bytes)
     (; nw, nmodes) = model
     outer_default = order isa OuterKLoop ? 256 : backend isa CPUBackend ? 1 : 16
     n_outer_batch = max(1, min(something(n_outer_batch, outer_default), n_outer))
@@ -296,9 +304,9 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
     inner_cap = max(1, min(cld(n_inner, nchunks), something(n_inner_tile, inner_default)))
     bytes = order isa OuterKLoop ?
         engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk, nkq, el_qty, ph_qty,
-            covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq) :
+            covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq, epmat_chunk_bytes) :
         engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk, el_qty, ph_qty,
-            precompute_el_kq, eph_phonon_basis)
+            precompute_el_kq, eph_phonon_basis, epmat_chunk_bytes)
     for c in calculators
         b = calculator_bytes(c, EPBlock{typeof(order)}; nw, nmodes, nband_max_k, nband_max_kq,
                              els_k, els_kq, phs, nchunks_threads = nchunks)
@@ -366,9 +374,8 @@ function _check_run(order, model, kpts_input, second_input, options)
     (backend isa CPUBackend && fourier_mode ∉ ("gridopt", "normal")) && throw(ArgumentError(
         "fourier_mode = \"$fourier_mode\" is not supported on a CPU backend. Use \"gridopt\" " *
         "(the default) or \"normal\"."))
-    model.epmat isa WannierObject || throw(ArgumentError(
-        "a disk-backed epmat ($(typeof(model.epmat))) is not supported by the e-ph loop; load the " *
-        "model into memory"))
+    model.epmat isa Union{WannierObject, DiskWannierObject} || throw(ArgumentError(
+        "the e-ph loop needs model.epmat in memory or on disk, got $(typeof(model.epmat))"))
     _require_epmat_layout(order, model)
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *
@@ -381,6 +388,9 @@ function _check_run(order, model, kpts_input, second_input, options)
     if order isa OuterKLoop
         # Outer k: no precomputed k+q option; the inner set decides the rest.
         precompute_el_kq && throw(ArgumentError("precompute_el_kq is an outer-q option"))
+        covariant_derivative_of_g && model.epmat isa DiskWannierObject && throw(ArgumentError(
+            "covariant_derivative_of_g needs model.epmat in memory: the position-weighted epmat " *
+            "is built from it"))
         if !inner_loop_kq
             # Inner q points: k+q is solved per tile, with `e` and `u` only and no cache.
             (el_k_eigenpairs === nothing || all(_input_ngrid(kpts_input) .> 0)) || throw(ArgumentError(
@@ -625,7 +635,8 @@ end
 
 """
     estimate_device_memory(model; nk, nkq, n_outer_batch = nothing, n_inner_tile = nothing,
-                           calculators = [], backend = CPUBackend(), nchunks_threads = nthreads())
+                           calculators = [], backend = CPUBackend(), nchunks_threads = nthreads(),
+                           epmat_chunk_bytes = 2^30)
         -> NamedTuple
 
 Estimate the device memory of an e-ph run without running it, from the byte counts the loop plans
@@ -640,7 +651,7 @@ etc.) are allocated lazily on the first kernel launch and are not a per-run buff
 """
 function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer, n_outer_batch = nothing,
         n_inner_tile = nothing, calculators = [], backend::AbstractBackend = CPUBackend(),
-        nchunks_threads = nthreads()) where {FT}
+        nchunks_threads = nthreads(), epmat_chunk_bytes::Integer = 2^30) where {FT}
     outer_k = model.epmat_outer_momentum == "el"
     order = outer_k ? OuterKLoop() : OuterQLoop()
     el_qty = union(loop_el_quantities(), required_el_quantities.(calculators)...)
@@ -650,7 +661,7 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer, n_o
         nchunks = backend isa CPUBackend ? nchunks_threads : 1, n_outer_batch, n_inner_tile,
         nband_max_k = model.nw, nband_max_kq = model.nw, els_k = nothing, els_kq = nothing, phs = nothing,
         el_qty, ph_qty, precompute_el_kq = false, covariant_derivative_of_g = false,
-        eph_phonon_basis = :eigenmode, inner_loop_kq = outer_k)
+        eph_phonon_basis = :eigenmode, inner_loop_kq = outer_k, epmat_chunk_bytes)
     (; loop = outer_k ? :outer_k : :outer_q, plan.committed, plan.bytes.per_pair,
        batch = plan.n_inner_tile, free = free_bytes(backend))
 end

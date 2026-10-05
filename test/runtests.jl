@@ -43,6 +43,7 @@ include("common_models_from_artifacts.jl")
         include("test_eph_engine_api.jl")  # direct engine stages and single-pair calculator calls
         include("test_eph_incommensurate_grids.jl")  # outer-k refuses incommensurate grids at entry
         include("test_eph_loop_features.jl")  # outer-k polar, energy conservation, dg (#72)
+        include("test_eph_disk_epmat.jl")  # disk-backed epmat streamed through stage 1
         include("test_eph_window_scatter.jl")  # calculator-facing scatter; GPU part skips w/o CUDA
         include("test_high_symmetry_kpath.jl")
         include("test_postprocess_compute.jl")

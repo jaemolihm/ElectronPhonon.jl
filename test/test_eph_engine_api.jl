@@ -85,7 +85,8 @@ _outer_batch(ctx::OuterQContext) = ctx.iqs_batch
     @test_throws ArgumentError OuterKEngine(model_el, kpts, qpts; nchunks_threads = 0)
 
     # The positional constructors derive the loop flag from `els_kq` and refuse a contradicting one.
-    caps = (; n_outer_batch = 1, n_inner_tile = 1, nchunks = 1, eph_phonon_basis = :eigenmode)
+    caps = (; n_outer_batch = 1, n_inner_tile = 1, nchunks = 1, eph_phonon_basis = :eigenmode,
+            epmat_chunk_bytes = 2^30)
     @test eng.els_kq === nothing && !eng.inner_loop_kq
     @test_throws ArgumentError OuterKEngine(model_el, CPUBackend(), eng.els_k, nothing, eng.phs,
         [:e, :u], [:e, :u]; eng.kpts, eng.kqpts, eng.qpts, inner_loop_kq = true,

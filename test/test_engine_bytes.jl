@@ -41,9 +41,16 @@ end
         grid = (6, 6, 6)
         el_qty, ph_qty = [:u, :e], [:u, :e]
         nb, ntile = 7, 40
-        for (order, mom, dg) in ((OuterKLoop(), "el", false), (OuterKLoop(), "el", true),
-                                 (OuterQLoop(), "ph", false))
+        diskdir = mktempdir()
+        # The disk arms stream the epmat in chunks of 3 columns, of which the engine holds one.
+        for (order, mom, dg, disk) in ((OuterKLoop(), "el", false, false), (OuterKLoop(), "el", true, false),
+                                       (OuterQLoop(), "ph", false, false), (OuterKLoop(), "el", false, true),
+                                       (OuterQLoop(), "ph", false, true))
             model = _load_model_from_artifacts("pb"; epmat_outer_momentum = mom)
+            epmat_chunk_bytes = disk ? 3 * sizeof(ComplexF64) * size(model.epmat.op_r, 1) : 2^30
+            if disk
+                model = _disk_epmat_model(model, mkpath(joinpath(diskdir, mom)))
+            end
             options = _run_options(model; inner_loop_kq = order isa OuterKLoop, backend,
                 window_k = window, window_kq = window, symmetry = nothing, 
                 verbosity = 0)
@@ -51,19 +58,19 @@ end
             nbk = st.els_k.nband_max
             nbkq = st.els_kq === nothing ? model.nw : st.els_kq.nband_max
             common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1,
-                      eph_phonon_basis = :eigenmode)
+                      eph_phonon_basis = :eigenmode, epmat_chunk_bytes)
             if order isa OuterKLoop
                 bytes = engine_bytes(OuterKEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, nkq = st.kqpts.n, el_qty, ph_qty,
                     inner_loop_kq = true,
-                    covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
+                    covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode, epmat_chunk_bytes)
                 eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = dg, common...)
                 run1 = () -> stage1!(eng, 1:nb)
             else
                 bytes = engine_bytes(OuterQEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, el_qty, ph_qty,
-                    precompute_el_kq = false, eph_phonon_basis = :eigenmode)
+                    precompute_el_kq = false, eph_phonon_basis = :eigenmode, epmat_chunk_bytes)
                 eng = OuterQEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.qpts, common...)
                 run1 = () -> stage1!(eng, 1:nb)
@@ -75,7 +82,7 @@ end
             # in free_bytes, so the engine budget counts newly allocated scratch, not those aliases.
             held = _device_bytes(eng) - _device_bytes((eng.els_k, eng.els_kq, eng.phs))
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
-            @info "engine_bytes" order mom dg held transient counted ratio = (held + transient) / counted
+            @info "engine_bytes" order mom dg disk held transient counted ratio = (held + transient) / counted
             # Everything the engine holds and its stage 1 allocates is counted (0.991-1.000 measured,
             # Pb, A100)...
             @test held + transient <= 1.02 * counted
@@ -104,7 +111,7 @@ end
             precompute_el_kq = order isa OuterQLoop, verbosity = 0)
         st = _setup_states(order, model, grid, grid, options)
         common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1,
-                  eph_phonon_basis = :eigenmode)
+                  eph_phonon_basis = :eigenmode, epmat_chunk_bytes = 2^30)
         if order isa OuterKLoop
             eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                 st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = false, common...)
