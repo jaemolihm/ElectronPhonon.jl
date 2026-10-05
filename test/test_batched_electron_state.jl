@@ -160,6 +160,22 @@ end
                 Array(sub.e)[1:nband_sub[i], i] == E[r, points[i]] &&
                     Array(sub.u)[:, 1:nband_sub[i], i] == U[:, r, points[i]]
             end
+            # The box width read from a host copy of `nband` gives the same container. `sub` shares
+            # the tile's buffers, so its values are copied first.
+            e_sub, u_sub = Array(sub.e), Array(sub.u)
+            sub_host = copy_window_bands!(tile, bands, points; nband_host = Array(bands.nband))
+            @test sub_host.nband_max == sub.nband_max && Array(sub_host.e) == e_sub &&
+                Array(sub_host.u) == u_sub && Array(sub_host.nband) == nband_sub
+            # A window ending inside band 2 holds 1 or more bands per point. The box of the points
+            # with the fewest bands, read from the host copy, is narrower than the widest point's.
+            window_2 = (-Inf, (minimum(E[2, :]) + maximum(E[2, :])) / 2)
+            bands_2 = solve_electron_bands_batched(itp, ElectronPhonon.alloc(backend, ComplexF64,
+                nw^2, tile.nk), model_pb, xks, window_2; eigenvectors = true)
+            nband_2 = Array(bands_2.nband)
+            points_narrow = findall(==(minimum(nband_2)), nband_2)
+            @test 1 <= minimum(nband_2) < maximum(nband_2)
+            @test copy_window_bands!(tile, bands_2, points_narrow; nband_host = nband_2).nband_max ==
+                minimum(nband_2)
             @test copy_window_bands!(tile, bands, 1:0).nk == 0
         end
         itp = BatchedWannierInterpolator(model_pb.el_ham; batch_size = 6)

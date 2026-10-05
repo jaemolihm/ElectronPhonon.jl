@@ -114,6 +114,8 @@ Fields (pair axis `j`):
 - `phs` :: `BatchedPhononState` view; extent 1 under `OuterQLoop`.
 - `wtk`, `wtq` :: the weights; the shared side's is a scalar, the pair side's a device vector.
 - `xk`, `xq` :: the momenta, `Vec3` on the shared side and a host vector on the pair side.
+- `xkmat` :: under `OuterQLoop`, `xk` as a `(3, nb)` matrix on the run's backend (a view of `xk` on
+  the CPU); `nothing` under `OuterKLoop`.
 - `ik`, `ikq`, `iq` :: indices into the run's point sets: under `OuterKLoop` `ik::Int`, `ikq` into
   the k+q container (a `UnitRange`, or a host vector when pairs were dropped) and `iq` a device
   vector into the q set, or under `run_eph_over_k_and_q` `ikq === nothing` and `iq` the q tile (a
@@ -121,7 +123,7 @@ Fields (pair axis `j`):
   vector) and `ikq` into the precomputed k+q container, or `nothing` when k+q is solved per tile.
 """
 struct EPBlock{Loop <: LoopTag, AT, DGT, EK <: BatchedElectronState, EKQ <: BatchedElectronState,
-               PH <: BatchedPhononState, WK, WQ, XK, XQ, IK, IKQ, IQ}
+               PH <: BatchedPhononState, WK, WQ, XK, XKM, XQ, IK, IKQ, IQ}
     ep    :: AT
     dg    :: DGT
     els_k  :: EK
@@ -130,6 +132,7 @@ struct EPBlock{Loop <: LoopTag, AT, DGT, EK <: BatchedElectronState, EKQ <: Batc
     wtk   :: WK
     wtq   :: WQ
     xk    :: XK
+    xkmat :: XKM
     xq    :: XQ
     ik    :: IK
     ikq   :: IKQ
@@ -137,9 +140,10 @@ struct EPBlock{Loop <: LoopTag, AT, DGT, EK <: BatchedElectronState, EKQ <: Batc
 end
 
 function EPBlock{Loop}(; ep::AT, dg::DGT, els_k::EK, els_kq::EKQ, phs::PH, wtk::WK, wtq::WQ, xk::XK,
-        xq::XQ, ik::IK, ikq::IKQ, iq::IQ) where {Loop <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}
-    EPBlock{Loop, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}(ep, dg, els_k, els_kq, phs, wtk, wtq,
-                                                                 xk, xq, ik, ikq, iq)
+        xkmat::XKM = nothing, xq::XQ, ik::IK, ikq::IKQ,
+        iq::IQ) where {Loop <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XKM, XQ, IK, IKQ, IQ}
+    EPBlock{Loop, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XKM, XQ, IK, IKQ, IQ}(ep, dg, els_k, els_kq, phs, wtk, wtq,
+                                                                      xk, xkmat, xq, ik, ikq, iq)
 end
 
 

@@ -60,6 +60,9 @@ _outer_batch(ctx::OuterQContext) = ctx.iqs_batch
         @test block.els_k.nk == block.els_kq.nk == block.phs.nq == size(block.ep, 4) == 1
         @test size(block.ep) == (block.els_kq.nband_max, block.els_k.nband_max, model.nmodes, 1)
         @test block.dg === nothing
+        # Outer q: the tile's k points also as a (3, nb) matrix on the run's backend.
+        @test Order === OuterKLoop ? block.xkmat === nothing :
+            Array(block.xkmat) == reduce(hcat, block.xk) && ElectronPhonon.on_backend(backend, block.xkmat)
         run_calculator!(calc, block, ctx)
         calculator_end_batch!(calc, ctx)
         postprocess_calculator!(calc; qpts = eng.qpts, symmetry = nothing)
