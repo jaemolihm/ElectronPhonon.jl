@@ -532,15 +532,16 @@ whole thing on the device. `ElectronPhonon.TiledDeviceOutput` owns that bookkeep
 
 - Construct it once in `setup_calculator!` from the full output shape, the axis tiled over outer-k
   states and the outer batch width: `TiledDeviceOutput{FT}((nmodes, n_i, n_f), 2, calc.el_i,
-  n_outer_batch; narr = 2, force_block)`.
-- It decides full-device-resident vs per-tile block residency from `free_bytes(ctx.backend)`
-  (override with `force_block`), allocates lazily on the first batch, computes the outer-k tile
-  ranges, zeros the active tile per batch, and does the contiguous device→host download.
+  n_outer_batch; narr = 2, force_stream_per_batch)`.
+- It decides full-device-resident vs streaming one outer-k tile per batch from
+  `free_bytes(ctx.backend)` (override with `force_stream_per_batch`), allocates lazily on the first
+  batch, computes the outer-k tile ranges, zeros the active tile per batch, and does the contiguous
+  device→host download.
 - In `calculator_begin_batch!(calc, ctx)` call `tile_begin!(t, ctx)`; scatter into `device_array(t, k)`
   using `tile_offset(t)` / `tile_stride(t)` (`eph_window_scatter!`, `eph_window_scatter_reim!`, or
-  your own); in `calculator_end_batch!(calc, ctx)` flush a block tile with `tile_download!(t)` and a small
-  view-copy into your host output; in `postprocess_calculator!` copy a full-resident buffer back and
-  `tile_free!(t)`.
+  your own); in `calculator_end_batch!(calc, ctx)` flush a streamed tile with `tile_download!(t)` and
+  a small view-copy into your host output; in `postprocess_calculator!` copy a full-resident buffer
+  back and `tile_free!(t)`.
 
 `BoltzmannCalculator` (`src/boltzmann/boltzmann_calculator.jl`) and `G2Calculator` /
 `EPElementCalculator` (MigdalEliashberg.jl) are worked references. See `README_GPU.md` for the

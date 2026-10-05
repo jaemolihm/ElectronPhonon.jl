@@ -838,7 +838,7 @@ end
 # index is unique across the run) is what makes the atomic-free device writes correct — and (2) agree
 # bit-for-bit between the generic (CPU) method and the CUDA kernel. Builds window-aware imaps (some
 # out-of-window entries == 0) mimicking a small run and checks both the full-buffer (i0=0,
-# ni_stride=n_i) and per-tile block-buffer (i0≠0, ni_stride=tile extent) addressings.
+# ni_stride=n_i) and per-tile buffer (i0≠0, ni_stride=tile extent) addressings.
 @testset "eph_window_scatter! round-trip (collision-free + CPU==CUDA)" begin
     using Random
     Random.seed!(20260717)
@@ -866,7 +866,7 @@ end
     ωq = 0.01 .+ abs.(randn(nm, nqc))
 
     if GPU_AVAILABLE
-        for (ni_stride, i0) in ((n_i, 0), (5, 1))       # full buffer, then a per-tile block buffer
+        for (ni_stride, i0) in ((n_i, 0), (5, 1))       # full buffer, then a per-tile buffer
             len = nm * ni_stride * n_f
             g2c = zeros(FT, len); ωc = zeros(FT, len)
             ElectronPhonon.eph_window_scatter!(g2c, ωc, g2vals, imap_i_col, imap_f, ikqs, ωq,

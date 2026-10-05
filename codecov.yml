@@ -1,0 +1,6 @@
+codecov:
+  notify:
+    # CI uploads two reports per commit (flags `core` and `plotting`); post nothing until both have arrived.
+    after_n_builds: 2
+comment:
+  after_n_builds: 2
