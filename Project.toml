@@ -46,8 +46,8 @@ ElectronPhononPyPlotExt = "PyPlot"
 
 [compat]
 CUDA = "6"
-ChunkSplitters = "2"
-OhMyThreads = "0.6, 0.7"
+ChunkSplitters = "3.1"
+OhMyThreads = "0.7, 0.8"
 PrecompileTools = "1"
 PyPlot = "2"
 Spglib = "0.8"

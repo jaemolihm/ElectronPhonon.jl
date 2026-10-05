@@ -99,7 +99,7 @@ function _compute_electron_states_cpu!(states, model::Model{FT}, kpts, quantitie
                                        eigenpairs; fourier_mode) where FT
     (; el_velocity_mode) = model
     (; need_vfull, need_vdiag, need_position, need_velocity) = _electron_state_needs(model, quantities)
-    @threads for iks in chunks(kpts.vectors; n=2nthreads())
+    @threads for iks in index_chunks(kpts.vectors; n=2nthreads())
         # Setup thread-local WannierInterpolators. With supplied eigenpairs there is no H(k) to
         # interpolate, and nothing else uses `ham`.
         ham = if eigenpairs === nothing
@@ -226,7 +226,7 @@ end
 # must arrive as typed arguments for the reads below to be static.
 function _scatter_electron_states!(states::Vector{ElectronState{FT}}, xks, window, E, U, rbar, vel,
                                    need_vfull, need_vdiag) where FT
-    @threads for iks in chunks(xks; n=2nthreads())
+    @threads for iks in index_chunks(xks; n=2nthreads())
         for ik in iks
             el = states[ik]
             el.xk = xks[ik]
@@ -295,7 +295,7 @@ function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode=
     need_vdiag = "velocity_diagonal" ∈ quantities
     need_dipole = "eph_dipole_coeff" ∈ quantities
     polar = model.polar_phonon
-    @threads for iks in chunks(kpts.vectors; n = nthreads())
+    @threads for iks in index_chunks(kpts.vectors; n = nthreads())
         # Setup thread-local WannierInterpolators. With supplied eigenpairs there is no dynamical
         # matrix to interpolate, and nothing else uses `dyn`.
         dyn = if eigenpairs === nothing
@@ -406,7 +406,7 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
         # Gather from the cache. Its columns for this q list are resolved on the host: a miss
         # inside the device gather would surface as a bare `KernelException` naming only the device.
         iqs = Vector{Int}(undef, nq)
-        @threads for iqs_chunk in chunks(1:nq; n = nthreads())
+        @threads for iqs_chunk in index_chunks(1:nq; n = nthreads())
             for iq in iqs_chunk
                 iqs[iq] = _eigenpairs_ik(eigenpairs, qpts.vectors[iq])
             end
@@ -425,7 +425,7 @@ function _compute_phonon_states_batched_cpu!(phs, model::Model{FT}, eigenpairs, 
     (; mass, nmodes) = model
     (; qpts) = phs
     polar = model.polar_phonon
-    @threads for iqs in chunks(qpts.vectors; n = nthreads())
+    @threads for iqs in index_chunks(qpts.vectors; n = nthreads())
         # Thread-local interpolators; with supplied eigenpairs there is no D(q) to interpolate.
         dyn = if eigenpairs === nothing
             itp_dyn = get_interpolator(model.ph_dyn; fourier_mode)
@@ -550,7 +550,7 @@ function _electron_eigenpairs_cpu(model::Model{FT}, kpts, eigenpairs, need_u; fo
     (; nw) = model
     E = zeros(FT, nw, kpts.n)
     U = need_u ? zeros(Complex{FT}, nw, nw, kpts.n) : nothing
-    @threads for iks in chunks(kpts.vectors; n = 2nthreads())
+    @threads for iks in index_chunks(kpts.vectors; n = 2nthreads())
         ham = if eigenpairs === nothing
             itp_ham = get_interpolator(model.el_ham; fourier_mode)
             register_kpoints!(itp_ham, view(kpts.vectors, iks))
@@ -572,7 +572,7 @@ function _fill_electron_states_batched_cpu!(els, model::Model{FT}, E, U, rngs; f
     (; kpts) = els
     need_position = els.rbar !== nothing || (els.v !== nothing && el_velocity_mode === :BerryConnection)
     need_velocity = els.vdiag !== nothing || els.v !== nothing
-    @threads for iks in chunks(kpts.vectors; n = 2nthreads())
+    @threads for iks in index_chunks(kpts.vectors; n = 2nthreads())
         if need_velocity
             vel = get_interpolator(el_velocity_mode === :Direct ? model.el_vel : model.el_ham_R; fourier_mode)
             register_kpoints!(vel, view(kpts.vectors, iks))

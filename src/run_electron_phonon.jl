@@ -137,7 +137,7 @@ function run_eph_outer_loop_q(
 
         compute_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
 
-        @threads for (id_chunk, iks) in enumerate(chunks(1:nk; n = Threads.nthreads()))
+        @threads for (id_chunk, iks) in enumerate(index_chunks(1:nk; n = Threads.nthreads()))
             epstate = epstates[id_chunk]
 
             ham = ham_threads[id_chunk]

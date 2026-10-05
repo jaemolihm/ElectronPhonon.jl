@@ -79,7 +79,7 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", bac
                 nelec_below_window, band_min_per_k = band_min_, band_max_per_k = band_max_)
     end
 
-    @threads for iks in chunks(kpoints.vectors; n=2*nthreads())
+    @threads for iks in index_chunks(kpoints.vectors; n=2*nthreads())
         # With supplied eigenpairs there is no H(k) to interpolate, and nothing else uses `ham`.
         ham = if eigenpairs === nothing
             itp_ham = get_interpolator(el_ham; fourier_mode)
@@ -121,7 +121,7 @@ the window.
 function filter_qpoints(qpoints, kpoints, nw, el_ham, window; fourier_mode="gridopt")
     iq_keep = zeros(Bool, qpoints.n)
 
-    @threads for iqs in chunks(qpoints.vectors; n=2*nthreads())
+    @threads for iqs in index_chunks(qpoints.vectors; n=2*nthreads())
         ham = get_interpolator(el_ham; fourier_mode)
         eigenvalues = zeros(real(eltype(el_ham)), nw)
 
