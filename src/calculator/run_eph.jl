@@ -243,8 +243,9 @@ function _run_eph(order::LoopTag, model::Model, kpts_input, second_input; calcul
 end
 
 function _run_eph_loop(eng, calculators; symmetry, progress_print_step, verbosity)
+    order = eng isa OuterKEngine ? OuterKLoop() : OuterQLoop()
     for calculator in calculators
-        setup_calculator!(calculator, eng.backend, eng.els_k, eng.els_kq, eng.phs;
+        setup_calculator!(calculator, eng.backend, eng.els_k, eng.els_kq, eng.phs; order,
             eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles), eng.n_outer_batch, eng.n_inner_tile, verbosity)
     end
 

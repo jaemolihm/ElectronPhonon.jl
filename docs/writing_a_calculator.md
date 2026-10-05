@@ -22,8 +22,9 @@ cannot rot.
   beyond the energies `e` and eigenvectors `u`, which the loop always provides on both electron sides
   and on the phonons, as field names of `BatchedElectronState` (`:vdiag`, `:v`, `:rbar`) and
   `BatchedPhononState` (`:vdiag`, …). Default: none.
-- `setup_calculator!(calc, backend, els_k, els_kq, phs; sel_k, sel_kq, nchunks_threads,
-  n_outer_batch, n_inner_tile, verbosity)` — once, before the loop (see below).
+- `setup_calculator!(calc, backend, els_k, els_kq, phs; order, sel_k, sel_kq, nchunks_threads,
+  n_outer_batch, n_inner_tile, verbosity)` — once, before the loop (see below). `order` is
+  `OuterKLoop()` or `OuterQLoop()`.
 - `run_calculator!(calc, block::EPBlock{OuterKLoop}, ctx)` (or `{OuterQLoop}`) — once per block.
 - `calculator_begin_batch!(calc, ctx)` / `calculator_end_batch!(calc, ctx)` — around every outer batch
   (`ctx.iks_batch` of an `OuterKContext` or `ctx.iqs_batch` of an `OuterQContext`, the outer indices
@@ -55,7 +56,7 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, Outer
 # calculators: at Γ the acoustic ω is ~0, where 1/(2ω) only amplifies roundoff.
 mutable struct EphG2SumCalculator <: AbstractCalculator
     g2_per_k        :: Vector{Float64}   # the result, indexed by k point
-    g2_per_k_buffer :: Matrix{Float64}   # (chunk, outer k of the batch), for the outer-k loop
+    g2_per_k_buffer :: Matrix{Float64}   # (chunk, outer k of the batch); outer-k runs only
 
     # Σ_k wtk g2_per_k[k], and its partial sum of each chunk.
     g2_avg          :: Float64
@@ -76,13 +77,16 @@ ElectronPhonon.supports(::EphG2SumCalculator, ::Type{OuterQLoop}) = true
 
 # Buffers are sized here, from the widths the loop chose; `run_calculator!` allocates none.
 function ElectronPhonon.setup_calculator!(c::EphG2SumCalculator, backend, els_k, els_kq, phs;
-        nchunks_threads, n_outer_batch, n_inner_tile, kwargs...)
+        order, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...)
     # The result: one sum per k point of the run.
     c.g2_per_k = zeros(els_k.nk)
 
-    # Outer k: the CPU thread chunks add to the sum of the same outer k concurrently, so each chunk
-    # has its own row, one column per outer k of a batch. `calculator_end_batch!` sums the rows.
-    c.g2_per_k_buffer = zeros(nchunks_threads, n_outer_batch)
+    if order isa OuterKLoop
+        # Outer k: the CPU thread chunks add to the sum of the same outer k concurrently, so each
+        # chunk has its own row, one column per outer k of a batch. `calculator_end_batch!` sums
+        # the rows. Outer q adds straight into `g2_per_k` and needs no buffer.
+        c.g2_per_k_buffer = zeros(nchunks_threads, n_outer_batch)
+    end
 
     # The reductions of `g2_avg`. The sum over q happens inside each block, and across the tiles
     # of an outer k, giving one number per k. The sum over k is weighted by `wtk`: the outer k's
@@ -105,11 +109,14 @@ function ElectronPhonon.setup_calculator!(c::EphG2SumCalculator, backend, els_k,
     c
 end
 
-# Before each outer batch: clear the outer-k buffer, which holds the sums of the current batch only.
-function ElectronPhonon.calculator_begin_batch!(c::EphG2SumCalculator, ctx)
+# Before each outer-k batch: clear the outer-k buffer, which holds the sums of the current batch only.
+function ElectronPhonon.calculator_begin_batch!(c::EphG2SumCalculator, ::OuterKContext)
     fill!(c.g2_per_k_buffer, 0)
     c
 end
+
+# Outer q has no per-batch buffer.
+ElectronPhonon.calculator_begin_batch!(c::EphG2SumCalculator, ::OuterQContext) = c
 
 # `run_calculator!` receives one block: one outer point with a tile of inner points. Pair `j` of the
 # block is entry `[:, :, :, j]` of `ep`. Each array of the block has the pairs on its last axis,
@@ -336,7 +343,7 @@ qpts = Kpoints(Vec3(0.1, 0.1, 0.1))      # one q point
 eng = OuterKEngine(model, kpts, qpts; calculators = [calc], verbosity = 0)
 
 # Size the calculator's buffers to the engine's states and widths, as a driver does.
-setup_calculator!(calc, eng.backend, eng.els_k, eng.els_kq, eng.phs;
+setup_calculator!(calc, eng.backend, eng.els_k, eng.els_kq, eng.phs; order = OuterKLoop(),
     eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles),
     eng.n_outer_batch, eng.n_inner_tile, verbosity = 0)
 

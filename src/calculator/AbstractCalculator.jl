@@ -11,8 +11,9 @@ Users subtype `AbstractCalculator` and implement:
 * `required_el_quantities(calc)`, `required_ph_quantities(calc)` — the electron and phonon
   quantities it reads beyond `e` and `u`, as `Symbol` field names of `BatchedElectronState` /
   `BatchedPhononState`.
-* `setup_calculator!(calc, backend, els_k, els_kq, phs; sel_k, sel_kq, nchunks_threads,
-  n_outer_batch, n_inner_tile, verbosity)` — run once, before the loop. `els_k`, `els_kq`, `phs` are
+* `setup_calculator!(calc, backend, els_k, els_kq, phs; order, sel_k, sel_kq, nchunks_threads,
+  n_outer_batch, n_inner_tile, verbosity)` — run once, before the loop. `order` is the loop order
+  of the run, `OuterKLoop()` or `OuterQLoop()`, for buffers only one order needs. `els_k`, `els_kq`, `phs` are
   the run's state containers (`els_k.nw` Wannier functions, `phs.nmodes` modes) and `sel_k`, `sel_kq` the `FilteredBandStates` they were built from
   (the selected states and their weights: `BandStates(els_k, sel_k)`); `els_kq` and `sel_kq` are
   `nothing` when k+q is solved per tile. `n_outer_batch` and `n_inner_tile` are the widths the

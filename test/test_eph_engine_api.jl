@@ -16,7 +16,7 @@ end
 
 # The calculator setup of the drivers, on a prepared engine.
 _setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, eng.els_kq, eng.phs;
-    eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles),
+    order = eng isa OuterKEngine ? OuterKLoop() : OuterQLoop(), eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles),
     eng.n_outer_batch, eng.n_inner_tile, verbosity = 0)
 
 # The outer batch of either context.
