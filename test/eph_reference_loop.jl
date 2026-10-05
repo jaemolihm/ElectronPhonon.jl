@@ -1,12 +1,12 @@
 # The test-only reference for the e-ph loops: a plain double loop over (k, k+q) on per-point
-# `ElectronState`s and the per-point kernels `get_eph_RR_to_kR!` / `get_eph_kR_to_kq!`, with the
-# phonons solved at each q. Its own loop structure, so it is independent of every driver's batching,
+# `ElectronState`s and the per-point kernels `compute_eph_RR_to_kR!` / `compute_eph_kR_to_kq!`, with
+# the phonons solved at each q. Its own loop structure, so it is independent of every driver's batching,
 # tiling, threading and staging; and a recorder calculator that reads the same `|g|^2` out of each
 # block of the current drivers. Compared on gauge-invariant quantities: |g|^2 summed over
 # degenerate multiplets of the k band, the k+q band and the phonon mode, and the phonon frequencies.
 
-using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, get_eph_RR_to_kR!,
-    get_eph_kR_to_kq!, get_next_wannier_object, get_interpolator, Vec3
+using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, compute_eph_RR_to_kR!,
+    compute_eph_kR_to_kq!, get_next_wannier_object, get_interpolator, Vec3
 using OffsetArrays: no_offset_view
 
 # Indices of `x` grouped into runs of values within `tol` of the previous one (degenerate
@@ -57,7 +57,7 @@ function eph_reference(model, kpts, kqpts, window_k, window_kq; ngrid = kqpts.ng
     for (ik, xk) in enumerate(kpts.vectors)
         elk = el_k[ik]
         elk.nband == 0 && continue
-        get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(elk.u))
+        compute_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(elk.u))
         for ikq in kq_indices(ik)
             xkq = kqpts.vectors[ikq]
             elkq = el_kq[ikq]
@@ -65,7 +65,7 @@ function eph_reference(model, kpts, kqpts, window_k, window_kq; ngrid = kqpts.ng
             xq = xkq - xk
             set_eigen!(ph, dyn, model.mass, model.polar_phonon, xq)
             ep = zeros(ComplexF64, elkq.nband, elk.nband, nmodes)
-            get_eph_kR_to_kq!(ep, ep_ekpR, xq, ph.u, no_offset_view(elkq.u))
+            compute_eph_kR_to_kq!(ep, ep_ekpR, xq, ph.u, no_offset_view(elkq.u))
             a = zeros(ComplexF64, nw, nw, nmodes)
             a[elkq.rng, elk.rng, :] .= ep
             key = _pair_key(xk, xkq, ngrid)

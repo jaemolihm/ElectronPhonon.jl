@@ -154,7 +154,7 @@ function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_pref
             epstate.ph = ph
         end
 
-        get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
+        compute_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
 
         empty!(bt_scat)
 
@@ -183,7 +183,7 @@ function compute_electron_phonon_bte_data_outer_q(model::Model{FT}, btedata_pref
             check_energy_conservation_all(epstate, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
+            compute_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epstate_set_mmat!(epstate)
                 model.polar_eph.use && epstate_compute_eph_dipole!(epstate)
@@ -290,7 +290,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
         for epstate in epstates
             epstate.el_k = el_k
         end
-        get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
+        compute_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
 
         empty!(bt_scat)
 
@@ -319,7 +319,7 @@ function compute_electron_phonon_bte_data_outer_k(model, btedata_prefix, window_
             check_energy_conservation_all(epstate, qpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
+            compute_eph_kR_to_kq!(epstate, ep_ekpR, xq)
             if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epstate_set_mmat!(epstate)
                 model.polar_eph.use && epstate_compute_eph_dipole!(epstate)

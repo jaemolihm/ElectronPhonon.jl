@@ -115,8 +115,8 @@ function compute_debye_waller_active_space(model, kpts, el_mom, window; fourier_
         epstate.el_kq = el_k_save[ik]
         uk = epstate.el_k.u
 
-        get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(uk))
-        get_eph_kR_to_kq!(no_offset_view(epstate.ep), ep_ekpR, xq, I(model.nmodes), no_offset_view(uk))
+        compute_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(uk))
+        compute_eph_kR_to_kq!(no_offset_view(epstate.ep), ep_ekpR, xq, I(model.nmodes), no_offset_view(uk))
 
         ElectronPhonon.set_velocity!(epstate.el_k, itp_mom, xk, :Direct)
 
@@ -185,7 +185,7 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
         el_k = el_k_save[ik]
         uk = el_k.u
 
-        get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(uk))
+        compute_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(uk))
 
         for (id_chunk, iqs) in enumerate(chunks(1:qpts_coarse.n; n = nchunks_threads))
         # @threads for (id_chunk, iqs) in enumerate(chunks(1:qpts_coarse.n; n = nchunks_threads))
@@ -246,7 +246,7 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
                 end
 
                 # Add g*g contribution to the Sternheimer matrix
-                get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
+                compute_eph_kR_to_kq!(epstate, ep_ekpR, xq)
                 epstate_set_mmat!(epstate)
                 epstate_compute_eph_dipole!(epstate; model)
 

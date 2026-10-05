@@ -154,7 +154,7 @@ function gamma_adaptive_compute_g_gamma(model, kpts, el_k_save, nband; fourier_m
     ph_gamma = compute_phonon_states(model, Kpoints(xq_gamma), ["eigenvalue", "eigenvector"], "gridopt")[1]
 
     epobj_eRpq = get_next_wannier_object(model.epmat)
-    get_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq_gamma, ph_gamma.u; fourier_mode)
+    compute_eph_RR_to_Rq!(epobj_eRpq, model.epmat, xq_gamma, ph_gamma.u; fourier_mode)
 
     epstate = EPState{Float64}(nw, nmodes, nband)
     epstate.ph = ph_gamma
@@ -166,7 +166,7 @@ function gamma_adaptive_compute_g_gamma(model, kpts, el_k_save, nband; fourier_m
         epstate.el_k = el_k
         epstate.el_kq = el_k
         xk = kpts.vectors[ik]
-        get_eph_Rq_to_kq!(epstate, epobj_eRpq, xk; fourier_mode)
+        compute_eph_Rq_to_kq!(epstate, epobj_eRpq, xk; fourier_mode)
         g_gamma_save[:, :, :, ik] .= epstate.ep
     end
     g_gamma_save

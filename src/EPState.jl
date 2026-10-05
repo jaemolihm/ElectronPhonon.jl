@@ -88,21 +88,21 @@ end
 # Define wrappers of wannier_to_bloch functions
 
 """
-    get_eph_Rq_to_kq!(epstate::EPState, epobj_eRpq, xk)
+    compute_eph_Rq_to_kq!(epstate::EPState, epobj_eRpq, xk)
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
-function get_eph_Rq_to_kq!(epstate::EPState, epobj_eRpq, xk)
+function compute_eph_Rq_to_kq!(epstate::EPState, epobj_eRpq, xk)
     ep_kq = no_offset_view(epstate.ep)
-    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, no_offset_view(epstate.el_k.u), no_offset_view(epstate.el_kq.u))
+    compute_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, no_offset_view(epstate.el_k.u), no_offset_view(epstate.el_kq.u))
 end
 
 """
-    get_eph_kR_to_kq!(epstate::EPState, epobj_ekpR, xq)
+    compute_eph_kR_to_kq!(epstate::EPState, epobj_ekpR, xq)
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 """
-function get_eph_kR_to_kq!(epstate::EPState, epobj_ekpR, xq)
+function compute_eph_kR_to_kq!(epstate::EPState, epobj_ekpR, xq)
     ep_kq = no_offset_view(epstate.ep)
-    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epstate.ph.u, no_offset_view(epstate.el_kq.u))
+    compute_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, epstate.ph.u, no_offset_view(epstate.el_kq.u))
 end
 
 """

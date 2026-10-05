@@ -4,7 +4,7 @@ module ElectronPhononCUDAExt
 #
 # Design: `WannierObject` is parameterized over its `op_r` array type, so a device
 # `WannierObject` (op_r on the GPU) flows through the *generic* batched routines
-# `get_fourier_batched!` / `get_el_eigen[_valueonly]_batched` defined in the base package —
+# `get_fourier_batched!` / `compute_el_eigen[_valueonly]_batched` defined in the base package —
 # those use only `mul!`, broadcasting, `similar`, and `copyto!`, which CUDA.jl implements for
 # `CuArray`. This extension only needs to provide:
 #   1. `to_device`                       — move op_r to the GPU.
@@ -63,7 +63,7 @@ Return a copy of a host `obj` with `op_r` moved to the GPU (`irvec` stays on the
 source's `ndata` (partial-transform width) is preserved, so partial-transform objects keep their
 semantics; the partial-transform entry point is `get_next_wannier_object`, which validates `ndata`
 and hands back an already-partial object. The returned object works with the generic
-`get_fourier_batched!` / `get_el_eigen[_valueonly]_batched`.
+`get_fourier_batched!` / `compute_el_eigen[_valueonly]_batched`.
 
 Restricted to host (`Array`-backed) objects — moving an already-device object is a no-op
 that this method intentionally does not provide.

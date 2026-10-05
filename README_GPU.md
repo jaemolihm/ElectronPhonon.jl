@@ -12,7 +12,7 @@ On the GPU:
 - `get_fourier!` (normal and batched) — `src/wannier/WannierInterpolator.jl`,
   `src/wannier/batched_interpolator.jl`.
 - Batched band eigenvalues/eigenvectors — `src/wannier_to_bloch_batched.jl`.
-- e-ph interpolation `get_eph_RR_to_kR!` / `get_eph_kR_to_kq!` (per-k/q and list-batched
+- e-ph interpolation `compute_eph_RR_to_kR!` / `compute_eph_kR_to_kq!` (per-k/q and list-batched
   forms) — `src/wannier_to_bloch_batched.jl`.
 - The e-ph calculator loop of the three drivers (`run_eph_over_k_and_kq`, `run_eph_over_k_and_q`,
   `run_eph_over_q_and_k`): the same engines run on host or device arrays, with energy windows (box
@@ -135,23 +135,23 @@ per matrix and is cached on the cuSOLVER handle for the lifetime of the process 
 `CUDA.reclaim()` returns it, so an oversized chunk permanently parks memory the device-resident
 e-ph tiles need. Chunking is exact (results are batch-position independent).
 
-Drivers `get_el_eigen_valueonly_batched` / `get_el_eigen_batched` mirror the per-k API names:
-each interpolates `H(k)` for all k with `get_fourier_batched!`, then calls the matching
+Drivers `compute_el_eigen_valueonly_batched` / `compute_el_eigen_batched` mirror the per-k API
+names: each interpolates `H(k)` for all k with `get_fourier_batched!`, then calls the matching
 eigensolve. The batched eigenvectors carry no EPW degeneracy gauge-fixing, so for degenerate
-bands they may differ from `get_el_eigen!` by a gauge.
+bands they may differ from `compute_el_eigen!` by a gauge.
 
 ### e-ph rotations
 
-`get_eph_RR_to_kR!`'s loop of small `(nw×nw)·(nw×nband)` GEMMs is recast as a single generic
+`compute_eph_RR_to_kR!`'s loop of small `(nw×nw)·(nw×nband)` GEMMs is recast as a single generic
 GEMM (`permutedims` → `transpose(uk) * g` → `permutedims` back), needing no extension code.
-`get_eph_kR_to_kq!` is already two reshaped `mul!` calls and is reused verbatim.
+`compute_eph_kR_to_kq!` is already two reshaped `mul!` calls and is reused verbatim.
 
 The **list-batched** drivers (many k or many q at once — the form that wins on the GPU) give
 each k/q its own rotation matrix, which is a stack of independent GEMMs with distinct operands.
 This uses `batched_gemm!(transA, transB, A, B, C)` — a `mul!` loop on the CPU and
 `CUBLAS.gemm_strided_batched!` in the extension. This is the only e-ph-related extension code.
 
-The list-batched kernels (`eph_rotate_kR_batched!`, `get_eph_kR_to_kq_batched!`,
+The list-batched kernels (`eph_rotate_kR_batched!`, `compute_eph_kR_to_kq_batched!`,
 `eph_apply_rotations_rqkq!`) live in `wannier_to_bloch_batched.jl` and run on the backend of their
 arrays.
 
@@ -184,7 +184,7 @@ and one `eph_rotate_kR_batched!` over the outer batch, which stores the kR inter
 (`g̃(k, R_p) = conj(exp(2πi R_p·x_k)) · g(k, R_p)`, folded in via `additional_phase`), so the
 stage-2 Fourier phase `exp(2πi R_p·x_{k+q})` of a k+q tile is the same for every k of the batch:
 the loop is `k-batch -> k+q tile (phase built once) -> k -> block`, and stage 2 is one
-`get_eph_kR_to_kq_batched!` per block with the phonon basis fused into its right rotation.
+`compute_eph_kR_to_kq_batched!` per block with the phonon basis fused into its right rotation.
 **Outer q:** stage 1 is `g(R_e, q)` for the outer batch on the device (one GEMM over the q batch,
 then the phonon-basis rotation as a batched GEMM), stage 2 one Fourier transform over R_e and one
 `eph_apply_rotations_rqkq!` per `(q, k tile)` after the k+q states of the tile are solved
@@ -278,7 +278,7 @@ Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
 - `src/wannier/batched_interpolator.jl` — backend-generic buffers + GEMM phase; new
   `get_fourier_batched!`. Per-k API unchanged. Pure Fourier only.
 - `src/wannier_to_bloch_batched.jl` — `eigvals_batched`/`eigen_batched` (CPU), the
-  `get_el_eigen[_valueonly]_batched` and e-ph drivers (per-k/q and list-batched). Included after
+  `compute_el_eigen[_valueonly]_batched` and e-ph drivers (per-k/q and list-batched). Included after
   `wannier_to_bloch.jl`. All backend-generic.
 - `src/common/gpu_utils.jl` — the backend primitives (`alloc`, `to_device`, `free_bytes`,
   `synchronize`, `batched_gemm!`).

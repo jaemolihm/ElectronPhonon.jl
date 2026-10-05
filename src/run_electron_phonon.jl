@@ -135,7 +135,7 @@ function run_eph_outer_loop_q(
             epstate.ph = ph
         end
 
-        get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
+        compute_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
 
         @threads for (id_chunk, iks) in enumerate(chunks(1:nk; n = Threads.nthreads()))
             epstate = epstates[id_chunk]
@@ -173,7 +173,7 @@ function run_eph_outer_loop_q(
                 end
 
                 set_velocity_diag!(epstate.el_kq, vel, xkq, model.el_velocity_mode)
-                get_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
+                compute_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
                 if any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                     epstate_set_mmat!(epstate)
                     model.polar_eph.use && epstate_compute_eph_dipole!(epstate)

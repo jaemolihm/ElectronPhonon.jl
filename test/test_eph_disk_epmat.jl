@@ -57,7 +57,7 @@ isdefined(@__MODULE__, :_PairRecorder) || include("eph_reference_loop.jl")
         @test all(disk.sums[key] == ref.sums[key] for key in keys(ref.sums))
     end
 
-    # The per-k interpolators, among them "gridopt" of `run_coherence` and `get_eph_RR_to_Rq!`.
+    # The per-k interpolators, among them "gridopt" of `run_coherence` and `compute_eph_RR_to_Rq!`.
     @testset "per-k fourier_mode = $fourier_mode" for fourier_mode in ("normal", "gridopt", "batched")
         xks = [Vec3(0.1, 0.2, 0.3), Vec3(0.1, 0.2, -0.25), Vec3(0.5, 0.0, 0.125)]
         ops = map((models["ph"].epmat, disk_models["ph"].epmat)) do epmat

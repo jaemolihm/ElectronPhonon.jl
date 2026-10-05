@@ -42,16 +42,16 @@ using ElectronPhonon: holstein_model, Structure, restrict_symmetry_to_dimension
         obj = ElectronPhonon.get_next_wannier_object(model.epmat)
         itp = ElectronPhonon.get_interpolator(obj)
         if outer == "el"
-            ElectronPhonon.get_eph_RR_to_kR!(obj, epmat, xks[1], ElectronPhonon.no_offset_view(epstate.el_k.u))
+            ElectronPhonon.compute_eph_RR_to_kR!(obj, epmat, xks[1], ElectronPhonon.no_offset_view(epstate.el_k.u))
         end
         for iq in eachindex(xqs)
             epstate.el_kq = el_kq[iq]
             epstate.ph = ph[iq]
             if outer == "el"
-                ElectronPhonon.get_eph_kR_to_kq!(epstate, itp, xqs[iq])
+                ElectronPhonon.compute_eph_kR_to_kq!(epstate, itp, xqs[iq])
             else
-                ElectronPhonon.get_eph_RR_to_Rq!(obj, epmat, xqs[iq], epstate.ph.u)
-                ElectronPhonon.get_eph_Rq_to_kq!(epstate, itp, xks[1])
+                ElectronPhonon.compute_eph_RR_to_Rq!(obj, epmat, xqs[iq], epstate.ph.u)
+                ElectronPhonon.compute_eph_Rq_to_kq!(epstate, itp, xks[1])
             end
             ElectronPhonon.epstate_set_g2!(epstate)
             @test epstate.g2[1, 1, 1] ≈ g^2
@@ -208,9 +208,9 @@ using ElectronPhonon: holstein_model, Structure, restrict_symmetry_to_dimension
             epstate = EPState(model.nw, model.nmodes)
             epstate.el_k, epstate.el_kq, epstate.ph = el_k, el_kq, ph
             obj = ElectronPhonon.get_next_wannier_object(model.epmat)
-            ElectronPhonon.get_eph_RR_to_kR!(obj, ElectronPhonon.get_interpolator(model.epmat),
+            ElectronPhonon.compute_eph_RR_to_kR!(obj, ElectronPhonon.get_interpolator(model.epmat),
                 xk, ElectronPhonon.no_offset_view(el_k.u))
-            ElectronPhonon.get_eph_kR_to_kq!(epstate, ElectronPhonon.get_interpolator(obj), xq)
+            ElectronPhonon.compute_eph_kR_to_kq!(epstate, ElectronPhonon.get_interpolator(obj), xq)
             ElectronPhonon.epstate_set_g2!(epstate)
             epstate.g2[1, 1, 1]
         end

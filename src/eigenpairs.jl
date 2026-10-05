@@ -119,7 +119,7 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
                 ham = get_interpolator(model.el_ham; fourier_mode)
                 register_kpoints!(ham, gkpts.vectors[iks])
                 for ik in iks
-                    get_el_eigen!(e_full[:, ik], u_full[:, :, ik], nw, ham, gkpts.vectors[ik])
+                    compute_el_eigen!(e_full[:, ik], u_full[:, :, ik], nw, ham, gkpts.vectors[ik])
                 end
             end
         end
@@ -127,7 +127,7 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
     else
         itp_elham = get_interpolator(to_device(backend, model.el_ham);
                                      fourier_mode="batched", backend, nk_hint=gkpts.n)
-        E_dev, U_dev = get_el_eigen_batched(itp_elham, gkpts.vectors)
+        E_dev, U_dev = compute_el_eigen_batched(itp_elham, gkpts.vectors)
         Eigenpairs(nw, gkpts, E_dev, U_dev)
     end
 end
@@ -214,7 +214,7 @@ end
 
 # The full-band eigenvalues of one k point, into `eigenvalues`.
 _set_eigenvalues_from!(eigenvalues, nw, ::Nothing, ham, xk) =
-    get_el_eigen_valueonly!(eigenvalues, nw, ham, xk)
+    compute_el_eigen_valueonly!(eigenvalues, nw, ham, xk)
 
 function _set_eigenvalues_from!(eigenvalues, nw, eigenpairs::Eigenpairs, ham, xk)
     ik = _eigenpairs_ik(eigenpairs, xk)
@@ -224,7 +224,7 @@ end
 # The same, batched over a chunk of k points and returned on the host for the window test. The
 # device arm gathers off a cache that is resident on that same device.
 _eigenvalues_on_host(::Nothing, itp_elham, xks) =
-    Array(get_el_eigen_valueonly_batched(itp_elham, xks))
+    Array(compute_el_eigen_valueonly_batched(itp_elham, xks))
 
 function _eigenvalues_on_host(eigenpairs::Eigenpairs, itp_elham, xks)
     iks = map(xk -> _eigenpairs_ik(eigenpairs, xk), xks)
@@ -232,7 +232,7 @@ function _eigenvalues_on_host(eigenpairs::Eigenpairs, itp_elham, xks)
 end
 
 # The full eigenpair of one q point, into a `PhononState`. `e` is the frequency ω and `u` the
-# mass-scaled eigenmode, i.e. what `get_ph_eigen!` leaves in a `PhononState` and what
+# mass-scaled eigenmode, i.e. what `compute_ph_eigen!` leaves in a `PhononState` and what
 # `phonon_eigenpairs` stores, so neither the sign(ω²)√|ω²| nor the 1/√mass step is redone here.
 # Argument order follows the electron pair above, `(state, cache, what it takes to solve,
 # momentum)`; the solver arguments differ because `D(q)` needs the masses and the dipole term

@@ -49,7 +49,7 @@ function compute_deformation_potential(model, xk=Vec3(0., 0., 0.);
         ep_ekpR_obj = get_next_wannier_object(model.epmat)
         ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
 
-        get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epstate.el_k.u))
+        compute_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epstate.el_k.u))
 
         # Calculate electron-phonon coupling matrix elements
         for iq in 1:nq
@@ -61,7 +61,7 @@ function compute_deformation_potential(model, xk=Vec3(0., 0., 0.);
             epstate.ph = ph_save[iq]
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
+            compute_eph_kR_to_kq!(epstate, ep_ekpR, xq)
             if include_polar && any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epstate_set_mmat!(epstate)
                 model.polar_eph.use && epstate_compute_eph_dipole!(epstate; model)
@@ -77,7 +77,7 @@ function compute_deformation_potential(model, xk=Vec3(0., 0., 0.);
 
     elseif model.epmat_outer_momentum == "ph"
         # (Re, Rp) -> (Re, q) -> (k, q)
-        # For a single k and many q, this is inefficient because get_eph_RR_to_Rq! is
+        # For a single k and many q, this is inefficient because compute_eph_RR_to_Rq! is
         # called inside the loop.
 
         ep_eRpq_obj = get_next_wannier_object(model.epmat)
@@ -93,8 +93,8 @@ function compute_deformation_potential(model, xk=Vec3(0., 0., 0.);
             epstate.ph = ph_save[iq]
 
             # Compute electron-phonon coupling
-            get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, epstate.ph.u)
-            get_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
+            compute_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, epstate.ph.u)
+            compute_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
 
             if include_polar && any(abs.(xq) .> 1.0e-8) && model.use_polar_dipole
                 epstate_set_mmat!(epstate)

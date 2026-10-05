@@ -5,7 +5,7 @@
 #
 # Compares one call per point (a batch of ONE — the batched kernels are list-only, there is no
 # single-point entry point) against one call for the whole list
-# (get_fourier_batched! + eph_rotate_kR_batched! / get_eph_kR_to_kq_batched!).
+# (get_fourier_batched! + eph_rotate_kR_batched! / compute_eph_kR_to_kq_batched!).
 #
 # Run with both ElectronPhonon (this gpu branch) and CUDA in the environment:
 #   julia --project=<env> benchmark/bench_eph_gpu.jl
@@ -14,7 +14,7 @@ using ElectronPhonon
 using CUDA
 using LinearAlgebra
 using ElectronPhonon: WannierObject, Vec3, to_device, alloc, build_fourier_phase!,
-    get_fourier_batched!, eph_rotate_kR_batched!, get_eph_kR_to_kq_batched!
+    get_fourier_batched!, eph_rotate_kR_batched!, compute_eph_kR_to_kq_batched!
 using Printf
 
 # The two steps as the outer-k engine runs them, with their scratch allocated per call.
@@ -27,7 +27,7 @@ function kr_to_kq!(ep, backend, obj_kR, qs, u_phs, ukqs)
     irvec_mat = ElectronPhonon._irvec_to_device_matrix(backend, obj_kR.irvec, Float64)
     phase = alloc(backend, ComplexF64, length(obj_kR.irvec), length(qs))
     build_fourier_phase!(phase, irvec_mat, to_device(backend, [q[d] for d in 1:3, q in qs]))
-    get_eph_kR_to_kq_batched!(ep, obj_kR.op_r, phase, u_phs, ukqs)
+    compute_eph_kR_to_kq_batched!(ep, obj_kR.op_r, phase, u_phs, ukqs)
 end
 
 const PB_FOLDER = "/mnt/home/jlihm/ceph/superconductivity/Pb/tutorial/1_epw/"

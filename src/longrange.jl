@@ -288,11 +288,11 @@ end
 end
 
 """
-    get_eph_dipole_coeffs!(coeff, xq, polar::Polar, u_ph)
+    compute_eph_dipole_coeffs!(coeff, xq, polar::Polar, u_ph)
 Compute coefficients for dipole e-ph coupling. The coefficients depend only on the phonon properties.
 - `xq` : q point in crystal coordinates
 """
-function get_eph_dipole_coeffs!(coeff_δ, coeff_r, xq, polar::Polar{Polar3D}, u_ph)
+function compute_eph_dipole_coeffs!(coeff_δ, coeff_r, xq, polar::Polar{Polar3D}, u_ph)
     if ! polar.use
         coeff_δ .= 0
         coeff_r .= 0
@@ -421,7 +421,7 @@ end
 end
 
 
-function get_eph_dipole_coeffs!(coeff_δ, coeff_r, xq, polar::Polar{Polar2D}, u_ph)
+function compute_eph_dipole_coeffs!(coeff_δ, coeff_r, xq, polar::Polar{Polar2D}, u_ph)
     if ! polar.use
         coeff_δ .= 0
         coeff_r .= 0
