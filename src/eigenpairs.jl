@@ -8,6 +8,8 @@ using Base.Threads: nthreads, @threads
 export Eigenpairs
 export electron_eigenpairs
 export phonon_eigenpairs
+export set_el_eigen!
+export set_ph_eigen!
 
 """
     Eigenpairs{T, MT, AT}
@@ -178,12 +180,13 @@ function _eigenpairs_ik(eigenpairs::Eigenpairs, xk)
 end
 
 # The consumers. A caller takes the eigenpairs of a k point either by solving H(k) or D(q) itself
-# or from the cache, chosen by dispatch on the cache argument: `::Nothing` solves and
-# `::Eigenpairs` copies out. The cache therefore arrives as a typed argument, each call site
-# specializes on one of the two, and no loop gains a branch. The choice is made once per species,
-# in an array-level pair that every host consumer calls: the per-point state setters below, the
-# batched host builders and the window filter. The copy does not depend on the species, so the
-# lookup, the miss error and the copy are written once, here next to the type.
+# or from the cache, chosen by dispatch on the cache argument: `nothing` solves and an `Eigenpairs`
+# copies out. The cache therefore arrives as a typed argument, each call site specializes on one of
+# the two, and no loop gains a branch. The choice is made once per species, in the array-level
+# `set_el_eigen!` / `set_ph_eigen!` that every host consumer calls: the `set_eigen!` /
+# `set_eigen_valueonly!` state setters below, the batched host builders and the window filter. The
+# copy does not depend on the species, so the lookup, the miss error and the copy are written once,
+# here next to the type.
 
 # Copy the eigenvalues of `xk` into `e` and, unless `u === nothing`, its eigenvectors into `u`.
 @views function _copy_eigen_from!(e, u, eigenpairs::Eigenpairs, xk)
@@ -193,20 +196,28 @@ end
     nothing
 end
 
-# The full-band electron eigenpairs of one k point into `e` (nw) and `u` (nw, nw); `u === nothing`
-# fills the eigenvalues only.
-_get_el_eigen_from!(e, u, nw, ::Nothing, ham, xk) =
+"""
+    set_el_eigen!(e, u, nw, eigenpairs, ham, xk)
+The full-band electron eigenvalues of `xk` into `e` (nw) and, unless `u === nothing`, the
+eigenvectors into `u` (nw, nw). `eigenpairs === nothing` diagonalizes H(k) with `ham`
+([`compute_el_eigen!`](@ref) or [`compute_el_eigen_valueonly!`](@ref)); an [`Eigenpairs`](@ref) copies
+them out of the cache, which must cover `xk`, and `ham` is unused.
+"""
+set_el_eigen!(e, u, nw, ::Nothing, ham, xk) =
     u === nothing ? compute_el_eigen_valueonly!(e, nw, ham, xk) : compute_el_eigen!(e, u, nw, ham, xk)
 
-_get_el_eigen_from!(e, u, nw, eigenpairs::Eigenpairs, ham, xk) = _copy_eigen_from!(e, u, eigenpairs, xk)
+set_el_eigen!(e, u, nw, eigenpairs::Eigenpairs, ham, xk) = _copy_eigen_from!(e, u, eigenpairs, xk)
 
-# The phonon eigenpairs of one q point: `e` is the frequency ω and `u` the mass-scaled eigenmode,
-# i.e. what `compute_ph_eigen!` returns and what `phonon_eigenpairs` stores, so neither the
-# sign(ω²)√|ω²| nor the 1/√mass step is redone on a copy. `u === nothing` fills ω only. Argument
-# order follows the electron pair, `(arrays, cache, what it takes to solve, momentum)`; the solver
-# arguments differ because `D(q)` needs the masses and the dipole term where `H(k)` needs only its
-# interpolator.
-_get_ph_eigen_from!(e, u, ::Nothing, dyn, mass, polar, xq) =
+"""
+    set_ph_eigen!(e, u, eigenpairs, dyn, mass, polar, xq)
+The phonon frequencies ω of `xq` into `e` (nmodes) and, unless `u === nothing`, the mass-scaled
+eigenmodes into `u` (nmodes, nmodes), i.e. what [`compute_ph_eigen!`](@ref) returns and what
+[`phonon_eigenpairs`](@ref) stores. `eigenpairs === nothing` diagonalizes D(q); an
+[`Eigenpairs`](@ref) copies them out of the cache, which must cover `xq`, and the solver arguments
+are unused. Argument order follows [`set_el_eigen!`](@ref), `(arrays, cache, what it takes to
+solve, momentum)`; `D(q)` needs the masses and the dipole term where `H(k)` needs only `ham`.
+"""
+set_ph_eigen!(e, u, ::Nothing, dyn, mass, polar, xq) =
     u === nothing ? compute_ph_eigen_valueonly!(e, dyn, mass, polar, xq) :
                     compute_ph_eigen!(e, u, dyn, mass, polar, xq)
 
@@ -216,7 +227,7 @@ _get_ph_eigen_from!(e, u, ::Nothing, dyn, mass, polar, xq) =
 # whose ω² is far below the largest ω² of its own q point -- an acoustic mode at Γ of a cell that
 # also carries optical modes -- can differ in the leading digits. Modes away from ω = 0 agree to
 # round-off.
-_get_ph_eigen_from!(e, u, eigenpairs::Eigenpairs, dyn, mass, polar, xq) =
+set_ph_eigen!(e, u, eigenpairs::Eigenpairs, dyn, mass, polar, xq) =
     _copy_eigen_from!(e, u, eigenpairs, xq)
 
 # The full-band electron eigenvalues of a chunk of k points, batched and returned on the host for
@@ -229,32 +240,69 @@ function _eigenvalues_on_host(eigenpairs::Eigenpairs, itp_elham, xks)
     Array(eigenpairs.e_full[:, iks])
 end
 
-# The per-point state setters: `set_eigen!` / `set_eigen_valueonly!` with the eigenpairs taken from
-# the cache when one is given. The electron window is reset to a dummy value, as `set_eigen!` does.
-function _set_eigen_from!(el::ElectronState, eigenpairs, ham, xk)
+# The state setters. They live here rather than in electron_state.jl / phonon_state.jl because the
+# cache argument is annotated with `Eigenpairs`, so that a call in the cacheless argument order
+# cannot bind to it.
+
+"""
+    set_eigen!(el::ElectronState, [eigenpairs,] ham, xk)
+Compute electron eigenenergy and eigenvector and save them in `el`, or copy them from
+`eigenpairs` (see [`set_el_eigen!`](@ref)). Resets the window to a dummy value.
+"""
+function set_eigen!(el::ElectronState, eigenpairs::Union{Nothing, Eigenpairs}, ham, xk)
     el.xk = xk
-    _get_el_eigen_from!(el.e_full, el.u_full, el.nw, eigenpairs, ham, xk)
+    set_el_eigen!(el.e_full, el.u_full, el.nw, eigenpairs, ham, xk)
+
+    # Reset window to a dummy value
     el.nband = 0
     el.rng = 1:0
     el
 end
 
-function _set_eigen_valueonly_from!(el::ElectronState, eigenpairs, ham, xk)
+set_eigen!(el::ElectronState, ham, xk) = set_eigen!(el, nothing, ham, xk)
+
+"""
+    set_eigen_valueonly!(el::ElectronState, [eigenpairs,] ham, xk)
+Compute electron eigenenergy and save them in `el`, or copy them from `eigenpairs`. Resets the
+window to a dummy value.
+"""
+function set_eigen_valueonly!(el::ElectronState, eigenpairs::Union{Nothing, Eigenpairs}, ham, xk)
     el.xk = xk
-    _get_el_eigen_from!(el.e_full, nothing, el.nw, eigenpairs, ham, xk)
+    set_el_eigen!(el.e_full, nothing, el.nw, eigenpairs, ham, xk)
+
+    # Reset window to a dummy value
     el.nband = 0
     el.rng = 1:0
     el
 end
 
-function _set_eigen_from!(ph::PhononState, eigenpairs, dyn, mass, polar, xq)
+set_eigen_valueonly!(el::ElectronState, ham, xk) = set_eigen_valueonly!(el, nothing, ham, xk)
+
+# The momentum is annotated so that a call left in an older argument order is a `MethodError`
+# rather than a mis-binding.
+"""
+    set_eigen!(ph::PhononState, [eigenpairs,] dyn, mass, polar, xq)
+Compute phonon eigenenergy and eigenvector and save them in `ph`, or copy them from `eigenpairs`
+(see [`set_ph_eigen!`](@ref)).
+"""
+function set_eigen!(ph::PhononState, eigenpairs::Union{Nothing, Eigenpairs}, dyn, mass, polar, xq::Vec3)
     ph.xq = xq
-    _get_ph_eigen_from!(ph.e, ph.u, eigenpairs, dyn, mass, polar, xq)
+    set_ph_eigen!(ph.e, ph.u, eigenpairs, dyn, mass, polar, xq)
     ph
 end
 
-function _set_eigen_valueonly_from!(ph::PhononState, eigenpairs, dyn, mass, polar, xq)
+set_eigen!(ph::PhononState, dyn, mass, polar, xq::Vec3) = set_eigen!(ph, nothing, dyn, mass, polar, xq)
+
+"""
+    set_eigen_valueonly!(ph::PhononState, [eigenpairs,] dyn, mass, polar, xq)
+Compute phonon eigenenergy and save them in `ph`, or copy them from `eigenpairs`.
+"""
+function set_eigen_valueonly!(ph::PhononState, eigenpairs::Union{Nothing, Eigenpairs}, dyn, mass, polar,
+                              xq::Vec3)
     ph.xq = xq
-    _get_ph_eigen_from!(ph.e, nothing, eigenpairs, dyn, mass, polar, xq)
+    set_ph_eigen!(ph.e, nothing, eigenpairs, dyn, mass, polar, xq)
     ph
 end
+
+set_eigen_valueonly!(ph::PhononState, dyn, mass, polar, xq::Vec3) =
+    set_eigen_valueonly!(ph, nothing, dyn, mass, polar, xq)

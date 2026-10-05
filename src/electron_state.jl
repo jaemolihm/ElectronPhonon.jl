@@ -173,36 +173,6 @@ function get_occupation(el::ElectronState, μ, T; occ_type = :FermiDirac)
     occ_fermion.(el.e .- μ, T; occ_type)
 end
 
-
-# Define wrappers of wannier_to_bloch functions
-
-"""
-    set_eigen!(el::ElectronState, ham, xk)
-Compute electron eigenenergy and eigenvector and save them in el.
-"""
-function set_eigen!(el::ElectronState, ham, xk)
-    el.xk = xk
-    compute_el_eigen!(el.e_full, el.u_full, el.nw, ham, xk)
-
-    # Reset window to a dummy value
-    el.nband = 0
-    el.rng = 1:0
-end
-
-"""
-    set_eigen_valueonly!(el::ElectronState, ham, xk)
-Compute electron eigenenergy and save them in el.
-"""
-function set_eigen_valueonly!(el::ElectronState, ham, xk)
-    el.xk = xk
-    compute_el_eigen_valueonly!(el.e_full, el.nw, ham, xk)
-
-    # Reset window to a dummy value
-    el.nband = 0
-    el.rng = 1:0
-    el
-end
-
 """
     set_velocity_diag!(el::ElectronState, model, xk, mode)
 Compute electron band velocity, only the band-diagonal part.
