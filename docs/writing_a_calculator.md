@@ -56,9 +56,11 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, Outer
 mutable struct EphG2SumCalculator <: AbstractCalculator
     g2_per_k        :: Vector{Float64}   # the result, indexed by k point
     g2_per_k_buffer :: Matrix{Float64}   # (chunk, outer k of the batch), for the outer-k loop
+
     # Σ_k wtk g2_per_k[k], and its partial sum of each chunk.
     g2_avg          :: Float64
     g2_avg_buffer   :: Vector{Float64}
+
     # Scratch of the GPU methods, sized to one tile: the summand of a block, and the per-pair sums
     # of an outer-q block on the device and on the host. Empty on a CPU backend.
     g2_scratch    :: Vector{Any}
@@ -125,20 +127,32 @@ end
 # they form the summand of the whole block with one broadcast (`block_g2!`) and reduce it on the
 # device.
 
-# The summand of a block, w_j |ep[m, n, ν, j]|² / (2ω_ν), as an array shaped like `ep`. Every factor
-# is reshaped to broadcast along ep[m, n, ν, j]; the shared side's extent 1 broadcasts over the
-# pairs, so one function serves both orders. Entries past a pair's band windows and modes below
-# omega_acoustic are 0, selected with `ifelse`: the band padding is undefined, and a 0/1 mask times
-# an undefined entry could give NaN.
+# The summand of a block on the GPU: g2[m, n, ν, j] = w_j |ep[m, n, ν, j]|² / (2ω_ν), an array shaped
+# like `ep`, written into the scratch `g2_scratch`.
+#
+# Each factor is reshaped so that its axes line up with ep[m, n, ν, j], and one fused broadcast forms
+# the whole block in a single kernel. The shared side has extent 1 on the pair axis (the outer k's
+# `nband` under OuterKLoop, the outer q's `e` under OuterQLoop), so it broadcasts over the pairs, and
+# one function serves both orders.
+#
+# The reshapes copy no data: a reshaped array shares its parent's memory (on the host it costs only
+# a small array header, ~100 bytes), and a reshaped range stays lazy.
+#
+# Entries past a pair's band windows, and modes below omega_acoustic, are set to 0 with `ifelse`.
+# The band padding is undefined, and multiplying it by a 0/1 mask could give NaN.
 function block_g2!(c::EphG2SumCalculator, block, chunk)
     (; ep, els_k, els_kq, phs, wtq) = block
     nband_max_kq, nband_max_k, nmodes, npairs = size(ep)
-    m = reshape(1:nband_max_kq, :, 1, 1, 1)         # band of k+q
-    n = reshape(1:nband_max_k, 1, :, 1, 1)          # band of k
-    nband_kq = reshape(els_kq.nband, 1, 1, 1, :)
-    nband_k = reshape(els_k.nband, 1, 1, 1, :)
-    ω = reshape(phs.e, 1, 1, nmodes, :)
-    w = wtq isa Number ? wtq : reshape(wtq, 1, 1, 1, :)
+
+    # Factors indexed as ep[m, n, ν, j].
+    m = reshape(1:nband_max_kq, :, 1, 1, 1)                # band of k+q
+    n = reshape(1:nband_max_k, 1, :, 1, 1)                 # band of k
+    nband_kq = reshape(els_kq.nband, 1, 1, 1, :)           # window of k+q, per pair
+    nband_k = reshape(els_k.nband, 1, 1, 1, :)             # window of k, per pair or shared
+    ω = reshape(phs.e, 1, 1, nmodes, :)                    # ω_ν, per pair or shared
+    w = wtq isa Number ? wtq : reshape(wtq, 1, 1, 1, :)    # weight of each pair
+
+    # The summand, in the scratch viewed with the block's shape.
     g2 = reshape(view(c.g2_scratch[chunk], 1:length(ep)), size(ep))
     g2 .= ifelse.((m .<= nband_kq) .& (n .<= nband_k) .& (ω .>= omega_acoustic),
                   w .* abs2.(ep) ./ (2 .* ω), 0.0)
@@ -163,7 +177,7 @@ function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{Ou
             end
         end
     end
-    ik_batch = block.ik - first(ctx.iks_batch) + 1
+    ik_batch = block.ik - first(ctx.iks_batch) + 1   # position of the outer k in this batch
     c.g2_per_k_buffer[ctx.chunk, ik_batch] += s
     c.g2_avg_buffer[ctx.chunk] += block.wtk * s
     c
@@ -174,7 +188,7 @@ function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{Ou
                                         ctx::OuterKContext{<:GPUBackend})
     g2 = block_g2!(c, block, ctx.chunk)
     s = sum(g2)
-    ik_batch = block.ik - first(ctx.iks_batch) + 1
+    ik_batch = block.ik - first(ctx.iks_batch) + 1   # position of the outer k in this batch
     c.g2_per_k_buffer[ctx.chunk, ik_batch] += s
     c.g2_avg_buffer[ctx.chunk] += block.wtk * s
     c
@@ -201,17 +215,31 @@ function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{Ou
     c
 end
 
-# Outer q, GPU: sum the summand over (m, n, ν) of each pair on the device, copy the npairs sums to
-# the host, and add them to their k points. The k-weighted sum is a `dot` of the device sums with
-# the device k weights `block.wtk`, which returns a host number without scalar indexing.
+# Outer q, GPU. The same per-pair sums as the CPU method, without reading the device arrays one
+# element at a time:
+#
+# 1. `block_g2!` forms the summand g2[m, n, ν, ik_tile] of the whole block on the device.
+# 2. `sum!` reduces it over (m, n, ν), into one sum per pair (per k point of the tile), still on the
+#    device. `sum!` reduces over the axes where its output has extent 1.
+# 3. The npairs sums are copied to the host in one transfer and added to their k points
+#    `block.ik`, which is a host index list.
+# 4. The k-weighted sum for `g2_avg` is a `dot` of the device sums with the device k weights
+#    `block.wtk`. It runs on the device and returns one host number.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterQLoop},
                                         ctx::OuterQContext{<:GPUBackend})
     g2 = block_g2!(c, block, ctx.chunk)
     npairs = size(g2, 4)
+
+    # Sum over (m, n, ν) of each pair, on the device.
     pair_sums_dev = view(c.pair_sums_dev[ctx.chunk], 1:npairs)
     sum!(reshape(pair_sums_dev, 1, 1, 1, npairs), g2)
+
+    # Copy the sums to the host and add each to its k point.
+    pair_sums = view(c.pair_sums[ctx.chunk], 1:npairs)
     copyto!(c.pair_sums[ctx.chunk], 1, pair_sums_dev, 1, npairs)
-    view(c.g2_per_k, block.ik) .+= view(c.pair_sums[ctx.chunk], 1:npairs)
+    view(c.g2_per_k, block.ik) .+= pair_sums
+
+    # The k-weighted sum.
     c.g2_avg_buffer[ctx.chunk] += dot(pair_sums_dev, block.wtk)
     c
 end
@@ -276,7 +304,17 @@ calc.g2_avg ≈ calc_q.g2_avg
 ```
 <!-- doc-driver:end -->
 
-Pass `backend = ElectronPhonon.gpu_backend()` to a driver to run on a GPU.
+The same runs on a GPU take `backend = ElectronPhonon.gpu_backend()` (with CUDA.jl loaded); the
+calculator's GPU methods then run. For example, the outer-k grid run above:
+
+```julia
+using CUDA
+calc_gpu = EphG2SumCalculator()
+ElectronPhonon.run_eph_over_k_and_kq(model, (8, 8, 8), (8, 8, 8);
+    calculators = [calc_gpu], window_k = window, window_kq = window,
+    backend = ElectronPhonon.gpu_backend())
+calc_gpu.g2_avg ≈ calc.g2_avg
+```
 
 ## Run one k, q pair yourself
 
@@ -305,6 +343,8 @@ setup_calculator!(calc, eng.backend, eng.els_k, eng.els_kq, eng.phs;
 # Stage 1 for the outer k points 1:1, and the calculator context of that batch.
 stage1!(eng, 1:1)
 ctx = OuterKContext(eng)
+
+# Open the batch: the calculator clears its per-batch buffers.
 calculator_begin_batch!(calc, ctx)
 
 # Stage 2 for outer k 1 and inner q points 1:1: the block, or `nothing` if the pair is skipped.
@@ -313,8 +353,11 @@ if block !== nothing
     run_calculator!(calc, block, ctx)
 end
 
+# Close the batch: the calculator reduces its per-batch buffers into the result (here the
+# per-chunk sums of the outer k into `g2_per_k`).
 calculator_end_batch!(calc, ctx)
-postprocess_calculator!(calc; qpts = eng.qpts, symmetry = nothing)
+
+postprocess_calculator!(calc; eng.qpts, symmetry = nothing)
 calc.g2_per_k
 ```
 <!-- doc-single-pair:end -->
