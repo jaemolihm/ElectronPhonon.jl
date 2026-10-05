@@ -93,7 +93,7 @@ end
 
         # `BandStates` from the batched states equals the one from the per-point states.
         bs = BandStates(els, sel)
-        bs_ref, _ = electron_states_to_BandStates(
+        bs_ref = BandStates(
             compute_electron_states(model_pb, sel, ["eigenvalue", "velocity_diagonal"]), sel)
         @test bs.es == bs_ref.es && bs.vs == bs_ref.vs && bs.iks == bs_ref.iks
         @test isempty(BandStates(compute_electron_states_batched(model_pb, sel, [:e]), sel).vs)

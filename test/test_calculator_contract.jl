@@ -4,7 +4,7 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, suppo
     LoopContext, CPUBackend, calculator_begin!, calculator_end!, to_device
 
 # Calculator-contract checks (CPU-only): the `supports` trait, the fail-early checks the drivers do
-# at entry, the `calculators`-as-kwarg change, and the screening-disabled error.
+# at entry, `calculators` as a keyword, and the screening-disabled error.
 
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
 
@@ -29,12 +29,12 @@ ElectronPhonon.required_el_quantities(::_VdiagCountCalc) = [:vdiag]
 struct _QCountCalc <: AbstractCalculator end
 ElectronPhonon.supports(::_QCountCalc, ::Type{OuterQLoop}) = true
 
-@testset "supports contract (DECISION-1)" begin
+@testset "supports contract" begin
     c = _CountCalc()
     # Type arguments: declared true, undeclared default false.
     @test supports(c, OuterKLoop) == true
     @test supports(c, OuterQLoop) == false
-    # Anything but a loop-tag type (an instance, a payload type) must throw, not silently return false.
+    # Anything but a loop-tag type (an instance, a block type) must throw, not silently return false.
     @test_throws ErrorException supports(c, EPBlock)
     @test_throws ErrorException supports(c, OuterKLoop())
     @test_throws ErrorException supports(c, 5)
@@ -53,12 +53,12 @@ end
     @test_throws "epmat_outer_momentum = \"ph\"" ElectronPhonon.run_eph_over_q_and_k(
         model, grid, grid; calculators = [_QCountCalc()], symmetry = nothing)
 
-    # (d) Screening is disabled: any nontrivial screening_params errors at the driver entry.
+    # Screening is disabled: any nontrivial screening_params errors at the driver entry.
     @test_throws ErrorException ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
         calculators = [_CountCalc()], symmetry = nothing, screening_params = 1,
         progress_print_step = 10^9)
 
-    # (b) `calculators` is a keyword argument (hard change): the positional form is gone.
+    # `calculators` is a keyword argument: there is no positional form.
     @test_throws MethodError ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid, [_CountCalc()])
 
     # `run_eph_over_k_and_q` refuses a k eigenpair cache for an outer k list on no grid, and what
@@ -70,26 +70,20 @@ end
         el_k_eigenpairs = ElectronPhonon.electron_eigenpairs(model, kpoints_grid(grid)))
     # The other drivers keep their grid requirement on the k points.
     @test_throws ArgumentError ElectronPhonon.run_eph_over_q_and_k(
-        _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph"), Kpoints([Vec3(0.1, 0.2, 0.3)]),
-        grid; calculators = [_QCountCalc()])
+        model_ph, Kpoints([Vec3(0.1, 0.2, 0.3)]), grid; calculators = [_QCountCalc()])
+    # The q set of the outer-q loop is a point set, never a state selection.
+    @test_throws "takes q points, not a state selection" ElectronPhonon.run_eph_over_q_and_k(
+        model_ph, grid, filter_electron_states(grid, model.nw, model.el_ham, (-Inf, Inf));
+        calculators = [_QCountCalc()])
     @test_throws ArgumentError kq_run(calculators = [_VdiagCountCalc()])
     @test_throws ArgumentError kq_run(el_kq_eigenpairs =
         ElectronPhonon.electron_eigenpairs(model, kpoints_grid(grid)))
 end
 
-@testset "the loop-shape keywords are gone" begin
-    # `batched` and `eph_buffers` selected loop shapes that no longer exist.
+@testset "fourier_mode on a CPU backend" begin
     model_el = ElectronPhonon.holstein_model(; t = 0.1, ω₀ = 0.01, g = 0.02, alat = 5.0, ε₀ = 0.05,
         dimension = 3, epmat_outer_momentum = "el", verbose = false)
-    model_ph = ElectronPhonon.holstein_model(; t = 0.1, ω₀ = 0.01, g = 0.02, alat = 5.0, ε₀ = 0.05,
-        dimension = 3, epmat_outer_momentum = "ph", verbose = false)
     grid = (2, 2, 2)
-    for kw in ((; batched = true), (; eph_buffers = nothing))
-        @test_throws MethodError ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid;
-            calculators = [_CountCalc()], kw...)
-        @test_throws MethodError ElectronPhonon.run_eph_over_q_and_k(model_ph, grid, grid;
-            calculators = [_CountCalc()], kw...)
-    end
     # `fourier_mode` selects the setup interpolation (`_check_run`, shared by both orders); a
     # batched mode is refused on the CPU.
     @test_throws ArgumentError ElectronPhonon.run_eph_over_k_and_kq(model_el, grid, grid;

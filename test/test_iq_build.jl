@@ -3,7 +3,7 @@ using ElectronPhonon
 using Random
 using ElectronPhonon: Vec3, _grid_coords_reduced, _wrap_reduced, _fill_iqs!
 
-# The per-(k, k+q tile) `iq` index build of the outer-k loop (`_tiles_outer_k!`). The loop hashes
+# The per-(k, k+q tile) `iq` index build of the outer-k loop (`_fill_iqs!`). The loop hashes
 # integer grid coordinates instead of calling `xk_to_ik` per pair, so the whole correctness story is
 # "the fast hash agrees with `xk_to_ik`". The build is pure host arithmetic, so this file tests the
 # hash in isolation and needs no backend at all; the loop runs end-to-end elsewhere.

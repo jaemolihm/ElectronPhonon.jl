@@ -200,7 +200,7 @@ end
 
 """
     get_eph_kR_to_kq_batched!(ep_kq_all, ep_kR::AbstractMatrix, phase::AbstractMatrix, u_phs, ukqs;
-                              g=nothing, tmp=nothing, g2_out=nothing, ωq=nothing)
+                              g=nothing, tmp=nothing)
 
 Batched over a list of q-points (for a fixed k). `ukqs` is `(nw, nbandkq, nq)` and
 `u_phs` is `(nmodes, nmodes, nq)`. Writes `ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nq)`.
@@ -218,7 +218,7 @@ this `nq`, reused across calls; `nothing` allocates them.
 """
 function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
                                    ep_kR::AbstractMatrix, phase::AbstractMatrix, u_phs, ukqs;
-                                   g=nothing, tmp=nothing, g2_out=nothing, ωq=nothing) where {T}
+                                   g=nothing, tmp=nothing) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
     ndata = nw * nbandk * nmodes
@@ -233,8 +233,7 @@ function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
     @assert size(tmp) == (nbandkq, nbandk * nmodes, nq)
 
     mul!(g, ep_kR, phase)                                              # (nw*nbandk*nmodes, nq)
-    eph_apply_rotations!(ep_kq_all, reshape(g, nw, nbandk, nmodes, nq), ukqs, u_phs, tmp;
-                         g2_out, ωq)
+    eph_apply_rotations!(ep_kq_all, reshape(g, nw, nbandk, nmodes, nq), ukqs, u_phs, tmp)
     ep_kq_all
 end
 
@@ -297,8 +296,7 @@ end
 #
 # Measured, so it does not get removed as a "small-size optimization": at nw=7, nmodes=3 (Cu,
 # ndata=21) the fused kernel is **1.51x faster than cuBLAS** — 34% less wall on the whole outer-k
-# BTE loop, 31.07 s vs 47.00 s at nk=150 on an A100-80GB. Note the two paths are not bit-identical
-# (the fused one folds g2 = |ep|^2/(2w) from registers instead of in a second full-array pass), so
+# BTE loop, 31.07 s vs 47.00 s at nk=150 on an A100-80GB. The two paths sum in different orders, so
 # compare them with a tolerance, not bitwise.
 const _FUSED_ROT_MAX_NWNM = 24
 
@@ -321,23 +319,22 @@ function _is_dense(a::AbstractArray)
 end
 
 """
-    eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp; g2_out=nothing, ωq=nothing)
+    eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp)
 
 Apply the two e-ph gauge rotations to the Fourier-interpolated `g` `(nw, nbandk, nmodes, nq)`,
 writing the eigenbasis e-ph matrix `ep_kq_all`
-`(nbandkq, nbandk, nmodes, nq)` = `ukq(q)' * g(q) * u_ph(q)`. If `g2_out !== nothing`, also write
-`g2 = |ep_kq|² / (2 ωq)` (with `ωq` `(nmodes, nq)`) in the same pass.
+`(nbandkq, nbandk, nmodes, nq)` = `ukq(q)' * g(q) * u_ph(q)`.
 
 The two-GEMM paths merge `g`'s band and mode axes with a `reshape`, so they require a dense `g`
 (asserted); the CUDA extension's fused path indexes `g` elementwise and takes any strided view.
 
-Generic method: the two strided-batched GEMMs (`ukq'` on the left, `u_ph` on the right) plus an
-optional `g2` broadcast — identical to the previous inline code, so any backend works. The CUDA
-extension overrides this with a fused per-q kernel for small `nw*nmodes`, which avoids cuBLAS'
-tiny-matmul inefficiency (the 4×4 / nmodes×nmodes strided-batched GEMMs run at ~2% of FP64 peak).
+Generic method: the two strided-batched GEMMs (`ukq'` on the left, `u_ph` on the right), so any
+backend works. The CUDA extension overrides this with a fused kernel for small `nw*nmodes`, which
+avoids cuBLAS' tiny-matmul inefficiency (the 4×4 / nmodes×nmodes strided-batched GEMMs run at ~2%
+of FP64 peak).
 """
 function eph_apply_rotations!(ep_kq_all::AbstractArray{Complex{T},4}, g::AbstractArray{Complex{T},4},
-                              ukqs, u_phs, tmp; g2_out=nothing, ωq=nothing) where {T}
+                              ukqs, u_phs, tmp) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
     @assert size(g) == (nw, nbandk, nmodes, nq)
@@ -345,8 +342,5 @@ function eph_apply_rotations!(ep_kq_all::AbstractArray{Complex{T},4}, g::Abstrac
     batched_gemm!('C', 'N', ukqs, reshape(g, nw, nbandk * nmodes, nq), tmp)   # ukq(q)' * g(q)
     batched_gemm!('N', 'N', reshape(tmp, nbandkq * nbandk, nmodes, nq), u_phs,
                   reshape(ep_kq_all, nbandkq * nbandk, nmodes, nq))           # * u_ph(q)
-    if g2_out !== nothing
-        g2_out .= abs2.(ep_kq_all) ./ (2 .* reshape(ωq, 1, 1, nmodes, nq))
-    end
     ep_kq_all
 end

@@ -15,9 +15,9 @@ end
 # Independent reference for both scatters: the same window lookup written as a dense
 # (nm, n_i, n_f) write, without the linear-index arithmetic the implementations use.
 function _scatter_reference(ep, ωq, imap_i_col, imap_f, ikqs, n_i, n_f, i0)
-    nbandkq, nbandk, nm, nq_batch = size(ep)
+    nbandkq, nbandk, nm, npairs = size(ep)
     re = zeros(nm, n_i, n_f); im_out = zeros(nm, n_i, n_f); w = zeros(nm, n_i, n_f)
-    for j in 1:nq_batch, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
+    for j in 1:npairs, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_col[n]
         f = imap_f[m, ikqs[j]]
         (i > 0 && f > 0) || continue
@@ -30,7 +30,7 @@ end
 
 @testset "eph_window_scatter_reim!" begin
     Random.seed!(7)
-    nbandkq, nbandk, nm, nkq, nq_batch = 3, 2, 4, 7, 5
+    nbandkq, nbandk, nm, nkq, npairs = 3, 2, 4, 7, 5
     # One outer band in the window and one outside it, so the `i > 0` branch is exercised.
     imap_i_col, n_i = [3, 0], 3
     # Each (band, k+q point) that is in the window gets its own inner state index, which is the
@@ -45,9 +45,9 @@ end
             imap_f[j] = n_f
         end
     end
-    ikqs = randperm(nkq)[1:nq_batch]
-    ep = randn(ComplexF64, nbandkq, nbandk, nm, nq_batch)
-    ωq = rand(nm, nq_batch) .+ 0.5
+    ikqs = randperm(nkq)[1:npairs]
+    ep = randn(ComplexF64, nbandkq, nbandk, nm, npairs)
+    ωq = rand(nm, npairs) .+ 0.5
 
     N = nm * n_i * n_f
     re, im_out, w = (zeros(N), zeros(N), zeros(N))
@@ -66,7 +66,7 @@ end
     # and both sides divide by the same `2ω`. So a `Re/Im` sweep can reproduce a `g2` sweep bit for
     # bit, which is what lets a generic-vertex run be regression-tested against a TRS one.
     g2, w2 = (zeros(N), zeros(N))
-    eph_window_scatter!(g2, w2, abs2.(ep) ./ (2 .* reshape(ωq, 1, 1, nm, nq_batch)),
+    eph_window_scatter!(g2, w2, abs2.(ep) ./ (2 .* reshape(ωq, 1, 1, nm, npairs)),
                         imap_i_col, imap_f, ikqs, ωq,
                         n_i, 0)
     written = w .!= 0
@@ -122,12 +122,12 @@ end
             # the method below. (A genuinely strided output `SubArray` would not: it falls through
             # to the generic method and scalar-indexes device memory.) What this checks is the
             # offset: the helper writes inside its view and leaves the surrounding buffer alone.
-            ep_pad = CUDA.zeros(ComplexF64, nbandkq, nbandk, nm, nq_batch + 2)
-            copyto!(view(ep_pad, :, :, :, 1:nq_batch), ep)
+            ep_pad = CUDA.zeros(ComplexF64, nbandkq, nbandk, nm, npairs + 2)
+            copyto!(view(ep_pad, :, :, :, 1:npairs), ep)
             pads = [CUDA.zeros(Float64, 3N) for _ in 1:3]
             views = [view(pad, N+1:2N) for pad in pads]
             eph_window_scatter_reim!(views[1], views[2], views[3],
-                                     view(ep_pad, :, :, :, 1:nq_batch), to_dev(imap_i_col),
+                                     view(ep_pad, :, :, :, 1:npairs), to_dev(imap_i_col),
                                      to_dev(imap_f), to_dev(ikqs), to_dev(ωq),
                                      n_i, 0)
             @test Array(pads[1]) == vcat(zeros(N), re, zeros(N))
@@ -151,10 +151,10 @@ end
 # bounds checks in the device kernels). A block value buffer at its full width, handed over with
 # the k+q list and frequencies of fewer points, must be refused rather than read past the block.
 @testset "scatters refuse block arrays of mismatched extent" begin
-    nbandkq, nbandk, nm, nq_batch, nkq = 3, 2, 2, 4, 6
+    nbandkq, nbandk, nm, npairs, nkq = 3, 2, 2, 4, 6
     imap_i_col, imap_f = [1, 2], reshape(collect(1:nbandkq * nkq), nbandkq, nkq)
-    ikqs, ωq = collect(1:nq_batch), fill(0.01, nm, nq_batch)
-    full = rand(nbandkq, nbandk, nm, nq_batch + 2)
+    ikqs, ωq = collect(1:npairs), fill(0.01, nm, npairs)
+    full = rand(nbandkq, nbandk, nm, npairs + 2)
     N = nm * 2 * nbandkq * nkq
     @test_throws DimensionMismatch eph_window_scatter!(zeros(N), zeros(N), full, imap_i_col, imap_f,
                                                        ikqs, ωq, 2, 0)

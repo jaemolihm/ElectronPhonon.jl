@@ -2,9 +2,10 @@ using Test
 using ElectronPhonon
 
 # The "writing your own calculator" guide (docs/writing_a_calculator.md) contains a complete minimal
-# example calculator between the <!-- doc-example:begin --> / <!-- doc-example:end --> sentinels.
-# This test extracts that block VERBATIM, evaluates it, and runs it through the drivers on the Pb
-# artifact model, so the documented example cannot rot.
+# example calculator between the <!-- doc-example:begin --> / <!-- doc-example:end --> sentinels,
+# and a driver run and a single-pair run of it between the `doc-driver` and `doc-single-pair` ones.
+# This test extracts those blocks VERBATIM and evaluates them on the Pb artifact model, so the
+# documented examples cannot rot.
 
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
 
@@ -65,9 +66,9 @@ end
     @test all(isfinite, calc.g2_per_k) && all(>(0), calc.g2_per_k)
 
     # The other drivers on the same full grids hand the calculator the same pairs, so they give the
-    # same sums: `run_eph_over_k_and_q` (k + q solved per tile) and `run_eph_over_q_and_k` (outer q,
-    # the outer-q `run_calculator!`), on the CPU and, when available, on a GPU (the broadcast
-    # version of `pair_g2_sums!`).
+    # same sums: `run_eph_over_k_and_q` (k + q solved per tile) and `run_eph_over_q_and_k` (outer q),
+    # on the CPU (the loop methods of `run_calculator!`) and, when available, on a GPU (the
+    # broadcast methods).
     model_ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
     grid = (nk, nk, nk)
     common = (; symmetry = nothing, progress_print_step = 10^9, n_outer_batch = 5, n_inner_tile = 7,
@@ -91,6 +92,17 @@ end
         @test c.g2_per_k ≈ calc.g2_per_k rtol = 1e-10
     end
 
+    # The driver example, verbatim. It reads the global `epw_folder` and defines `calc` (outer k)
+    # and `calc_q` (outer q), which hold the same sums on the same full grids.
+    Core.eval(@__MODULE__, :(epw_folder = $(_artifact_folder("pb"))))
+    include_string(@__MODULE__, _extract_doc_example(guide; tag = "doc-driver"))
+    Base.invokelatest() do
+        c, c_q = getfield(@__MODULE__, :calc), getfield(@__MODULE__, :calc_q)
+        @test length(c.g2_per_k) == 8^3
+        @test all(isfinite, c.g2_per_k) && all(>(0), c.g2_per_k)
+        @test c_q.g2_per_k ≈ c.g2_per_k rtol = 1e-10
+    end
+
     # The direct-call example uses exactly the same calculator implementation and lifecycle.
     # The example reads the global `model` and defines `calc`, `kpts` and `qpts`; they are read back
     # at the latest world age, like the calculator type above.
@@ -106,12 +118,16 @@ end
             calculators = [driver], verbosity = 0)
         @test driver.g2_per_k ≈ c.g2_per_k rtol = 1e-10
 
-        # The broadcast version of `pair_g2_sums!` on the CPU gives the loop's sums.
-        pair_g2_sums! = getfield(@__MODULE__, :pair_g2_sums!)
+        # The broadcast (GPU) method of `run_calculator!`, run on the CPU, gives the loop's sum.
         eng = getfield(@__MODULE__, :eng)
         block = ElectronPhonon.stage2!(eng, 1, 1:1)
-        by_loop = copy(pair_g2_sums!(c, block, 1, eng.backend))
-        by_broadcast = invoke(pair_g2_sums!, Tuple{typeof(c), Any, Any, Any}, c, block, 1, eng.backend)
-        @test by_broadcast ≈ by_loop rtol = 1e-12
+        ctx = ElectronPhonon.LoopContext(eng)
+        sums = map((ElectronPhonon.LoopContext{ElectronPhonon.CPUBackend}, ElectronPhonon.LoopContext)) do C
+            fill!(c.partial_sums, 0.0)
+            invoke(ElectronPhonon.run_calculator!, Tuple{typeof(c), typeof(block), C}, c, block, ctx)
+            c.partial_sums[1, 1]
+        end
+        @test sums[1] > 0
+        @test sums[2] ≈ sums[1] rtol = 1e-12
     end
 end

@@ -28,7 +28,7 @@ export BoltzmannCalculator
 # (k) vs final/inner (k+q). The Latin `ᵢ` in `Sᵢ` looks like the `_i` suffix but means "in", not
 # "initial".
 
-# Device buffers for the batched path, built once in `setup_calculator!` (batched runs only) from
+# Buffers on the run's backend, built once in `setup_calculator!` from
 # `alloc(backend, …)` / `to_device(backend, …)`. Held behind `dev::Union{Nothing, …}` on the
 # calculator; touched only at hook granularity (one kernel launch per call), so the function boundary
 # keeps the hot code type-stable. The tiled Sᵢ output lives in `calc.tiled` (a `TiledDeviceOutput`).
@@ -77,7 +77,7 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # Built once in `setup_calculator!`. See `BoltzmannDeviceBuffers`.
     dev::Union{Nothing, BoltzmannDeviceBuffers} = nothing
 
-    # --- Tiled Sᵢ device output (batched path) ---
+    # --- Tiled Sᵢ device output ---
     # Sᵢ is never held whole on the device: `TiledDeviceOutput` (always block mode) keeps one outer-k
     # tile (i-extent = the largest k-batch) resident and streams it to `calc.Sᵢ` per batch. Built at
     # setup; device buffers allocated lazily on the first batch.
@@ -97,7 +97,7 @@ required_el_quantities(::BoltzmannCalculator) = [:vdiag]
 # arrays, the Sᵢ tile (rows of the outer states of one k, all inner states and temperatures, per
 # outer point), and the per-tile g2 scratch. The state counts are bounded by the containers' boxes;
 # without containers (`estimate_device_memory`) only the scratch is counted.
-function eph_batched_bytes_per_point(calc::BoltzmannCalculator{FT}, ::Type{<:EPBlock{OuterKLoop}};
+function calculator_bytes(calc::BoltzmannCalculator{FT}, ::Type{<:EPBlock{OuterKLoop}};
         nmodes, nband_max_k, nband_max_kq, els_k = nothing, els_kq = nothing, kwargs...) where {FT}
     per_pair = sizeof(FT) * nband_max_kq * nband_max_k * nmodes
     (els_k === nothing || els_kq === nothing) && return (; persistent = 0, per_outer = 0, per_pair)
@@ -221,14 +221,14 @@ device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPBlock{OuterK
 `imap_i_at_k` is `imap_i[:, ik]` — the outer-state indices of the box bands at the batch's fixed
 outer k `ik` — and `imap_f` is in the k+q container's box coordinates; both are 0 on the box padding,
 so its `g2vals` entries are never read. `i0` is the global-i offset of the current `Sᵢ` tile. The
-extents are those of `g2vals` `(nbandkq, nbandk, nmodes, nq_batch)`; `ωqmat`, `ikqs` and the index
+extents are those of `g2vals` `(nbandkq, nbandk, nmodes, npairs)`; `ωqmat`, `ikqs` and the index
 maps must agree with them, or a `DimensionMismatch` is thrown.
 
 The generic method below serves a run on a `CPUBackend`, where the whole loop runs on host arrays;
 the CUDA extension provides a `CuArray` kernel. Dispatch is on `Sₒ_out::CuArray, Sᵢ_out::CuArray`
 (and `CUDA.allowscalar(false)` turns any accidental host/device mixing into a hard error). The physics
-lives entirely in `bte_scattering_increments`, so both methods and the per-(k,q) host loop above
-compute the same scattering (validated in `test/boltzmann/test_gpu_boltzmann_calculator.jl`).
+lives entirely in `bte_scattering_increments`, so both methods compute the same scattering
+(validated in `test/boltzmann/test_gpu_boltzmann_calculator.jl`).
 `eph_window_scatter!` (src/calculator/calculator_utils.jl) ships the same generic + `CuArray` pair.
 
 The generic method adds into `Sₒ_out` with a plain `+=` where the device kernel needs an atomic:
@@ -237,12 +237,12 @@ concurrent writes.
 """
 function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
         e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff, i0::Int)
-    nbandkq, nbandk, nmodes, nq_batch = _scatter_extents(g2vals, ωqmat, ikqs, imap_i_at_k, imap_f)
+    nbandkq, nbandk, nmodes, npairs = _scatter_extents(g2vals, ωqmat, ikqs, imap_i_at_k, imap_f)
     nT = length(μs)
-    @inbounds for iq_batch in 1:nq_batch, n in 1:nbandk, m in 1:nbandkq
+    @inbounds for ipair in 1:npairs, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_at_k[n]         # outer (k) state index; 0 = out of window → skip
         i > 0 || continue
-        f = imap_f[m, ikqs[iq_batch]]   # inner (k+q) state index; 0 = out of window → skip
+        f = imap_f[m, ikqs[ipair]]   # inner (k+q) state index; 0 = out of window → skip
         f > 0 || continue
         ek = e_i[i]; ekq = e_f[f]; wtq = wf[f]   # per-final-state weight
         il = i - i0                # tile-local outer row (i0 = the current Sᵢ tile's global offset)
@@ -250,10 +250,10 @@ function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k,
             μ = μs[iT]; T = Ts[iT]; η = ηs[iT]
             sₒ = zero(eltype(Sₒ_out)); sᵢ = sₒ
             for ν in 1:nmodes
-                ωq = ωqmat[ν, iq_batch]
+                ωq = ωqmat[ν, ipair]
                 ωq < ω_cutoff && continue
                 sₒ_ν, sᵢ_ν = bte_scattering_increments(method, ek, ekq, ωq,
-                    g2vals[m, n, ν, iq_batch], wtq, μ, T, η)
+                    g2vals[m, n, ν, ipair], wtq, μ, T, η)
                 sₒ += sₒ_ν; sᵢ += sᵢ_ν
             end
             Sₒ_out[i, iT] += sₒ
@@ -269,9 +269,9 @@ end
 function run_calculator!(calc::BoltzmannCalculator{FT}, block::EPBlock{OuterKLoop}, ctx) where {FT}
     (; ep, phs, ik, ikq) = block
     dev = calc.dev
-    nmodes, nq_batch = size(ep, 3), size(ep, 4)
-    g2 = view(dev.g2, :, :, :, 1:nq_batch, ctx.chunk)
-    g2 .= abs2.(ep) .* inv.(2 .* reshape(phs.e, 1, 1, nmodes, nq_batch))   # as `epstate_set_g2!`
+    nmodes, npairs = size(ep, 3), size(ep, 4)
+    g2 = view(dev.g2, :, :, :, 1:npairs, ctx.chunk)
+    g2 .= abs2.(ep) .* inv.(2 .* reshape(phs.e, 1, 1, nmodes, npairs))   # as `epstate_set_g2!`
     t = calc.tiled
     bte_window_accumulate!(view(dev.Sₒ, :, :, ctx.chunk), device_array(t, 1), g2, phs.e,
         view(dev.imap_i, :, ik), dev.imap_f, ikq, dev.e_i, dev.e_f, dev.wf,

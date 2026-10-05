@@ -53,7 +53,7 @@ occ() = ElectronOccupationParams(; Tlist = [300.0 * K], nlist = 14.0, μlist = e
     volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac)
 
 newcalc() = BoltzmannCalculator{Float64}(; occ = occ(),
-    smearing = [(:Gaussian, 50.0 * meV)], occupation_method = 5)
+    smearing_list = [SmearingType(:Gaussian, 50.0 * meV)], occupation_method = 5)
 
 run_cpu(g, win) = (c = newcalc(); EP.run_eph_over_k_and_kq(model, (g,g,g), (g,g,g); calculators=[c],
     symmetry=nothing, window_k=win, window_kq=win,

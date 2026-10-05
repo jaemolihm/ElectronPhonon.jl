@@ -22,8 +22,7 @@ end
 # caller-owned destination, not the interpolator's internal scratch. It lives here rather than in
 # `src` because no `src` caller needs it.
 # Requires an in-memory parent (it reads `parent.op_r`), so no `DiskWannierObject`.
-function kR_to_kq_from_qs!(ep_kq_all, backend, itp_ep_ekpR, qs, u_phs, ukqs; ws = (;),
-                           g2_out = nothing, ωq = nothing)
+function kR_to_kq_from_qs!(ep_kq_all, backend, itp_ep_ekpR, qs, u_phs, ukqs; scratch = (;))
     parent = itp_ep_ekpR.parent
     irvec_mat = ElectronPhonon._irvec_to_device_matrix(backend, parent.irvec, Float64)
     xkmat = ElectronPhonon.to_device(backend, [q[d] for d in 1:3, q in qs])
@@ -31,7 +30,7 @@ function kR_to_kq_from_qs!(ep_kq_all, backend, itp_ep_ekpR, qs, u_phs, ukqs; ws 
         ElectronPhonon.alloc(backend, ComplexF64, length(parent.irvec), length(qs)),
         irvec_mat, xkmat)
     @views get_eph_kR_to_kq_batched!(ep_kq_all, parent.op_r[1:parent.ndata, :], phase, u_phs, ukqs;
-                                     ws..., g2_out, ωq)
+                                     scratch...)
 end
 
 # The RR→kR and Rq→kq steps as the engines run them: one batched Fourier transform over R_el at a
@@ -128,17 +127,6 @@ function check_eph_batched(backend; rtol)
     for ik in 1:nk2
         @test isapprox(ep_rqkq_h[:, :, :, ik], ep_rqkq_ref[:, :, :, ik]; rtol)
     end
-
-    # g2 fold: the driver can also write g2 = |ep|²/(2ω) in the same pass — the GPU fused kernel
-    # writes it from registers, the CPU / large-nw path uses the generic broadcast. Check against
-    # the independent per-q reference ep_ref. (Exercises both `eph_apply_rotations!` g2 paths.)
-    ωq_g2  = rand(nmodes, nq2) .+ 0.5
-    g2_out = arr_dev(zeros(nband, nband, nmodes, nq2))
-    ep_g2  = arr_dev(zeros(ComplexF64, nband, nband, nmodes, nq2))
-    kR_to_kq_from_qs!(ep_g2, backend, get_interpolator(obj_k1; fourier_mode="batched", backend, batch_size=nq2),
-        qs, arr_dev(uphs), arr_dev(ukqs); g2_out, ωq=arr_dev(ωq_g2))
-    g2_ref = abs2.(ep_ref) ./ (2 .* reshape(ωq_g2, 1, 1, nmodes, nq2))
-    @test isapprox(Array(g2_out), g2_ref; rtol)
 end
 
 @testset "batched e-ph drivers (CPU)" begin
@@ -394,7 +382,7 @@ end
 end
 
 # Partial final q-batch: the GPU loop runs a batch narrower than the preallocated `n_inner_tile`
-# by passing contiguous device VIEWS (`view(buf, :,:,:, 1:nq_batch)`) into
+# by passing contiguous device VIEWS (`view(buf, :,:,:, 1:npairs)`) into
 # `get_eph_kR_to_kq_batched!`, its scratch `g` / `tmp` as views of the max-width buffers. This checks that path directly:
 # the sliced-view result must match the full-width result, through BOTH `eph_apply_rotations!`
 # branches — the fused kernel (`nw*nmodes ≤ _FUSED_ROT_MAX_NWNM`) and the cuBLAS
@@ -406,19 +394,19 @@ function check_eph_partial_view(nw, nmodes; rtol)
     qs   = [Vec3(rand(3)...) for _ in 1:nq]
     uphs = CuArray(rand(ComplexF64, nmodes, nmodes, nq))
     ukqs = CuArray(rand(ComplexF64, nw, nband, nq))
-    ws   = (; g = CuArray{ComplexF64}(undef, nw*nband*nmodes, nq),
-              tmp = CuArray{ComplexF64}(undef, nband, nband*nmodes, nq))
+    scratch = (; g = CuArray{ComplexF64}(undef, nw*nband*nmodes, nq),
+                 tmp = CuArray{ComplexF64}(undef, nband, nband*nmodes, nq))
 
     full = CuArray(zeros(ComplexF64, nband, nband, nmodes, nq))
     kR_to_kq_from_qs!(full, ElectronPhonon.gpu_backend(),
         get_interpolator(obj; fourier_mode="batched", backend = ElectronPhonon.gpu_backend(), batch_size=nq),
-        qs, uphs, ukqs; ws)
-    # Same call restricted to the first m q-points via views into the max-width buffers and ws.
+        qs, uphs, ukqs; scratch)
+    # Same call restricted to the first m q-points via views into the max-width buffers and scratch.
     part = CuArray(zeros(ComplexF64, nband, nband, nmodes, nq))
     kR_to_kq_from_qs!(view(part, :, :, :, 1:m), ElectronPhonon.gpu_backend(),
         get_interpolator(obj; fourier_mode="batched", backend = ElectronPhonon.gpu_backend(), batch_size=nq),
         view(qs, 1:m), view(uphs, :, :, 1:m), view(ukqs, :, :, 1:m);
-        ws = (; g = view(ws.g, :, 1:m), tmp = view(ws.tmp, :, :, 1:m)))
+        scratch = (; g = view(scratch.g, :, 1:m), tmp = view(scratch.tmp, :, :, 1:m)))
     @test isapprox(Array(view(part, :, :, :, 1:m)), Array(view(full, :, :, :, 1:m)); rtol)
 end
 
@@ -654,7 +642,7 @@ end
 
 # The outer-q loop has no CUDA-only callee either, so it runs on a `CPUBackend` with any k-batch
 # width.
-@testset "run_eph_over_q_and_k CPU: default width == partial k-batch (D8)" begin
+@testset "run_eph_over_q_and_k CPU: default width == partial k-batch" begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
     grid = (4, 4, 4)
 
@@ -939,7 +927,7 @@ end
     end
 end
 
-@testset "plan_batch memory-adaptive sizing + fail-early (Stage 5)" begin
+@testset "plan_batch memory-adaptive sizing + fail-early" begin
     # CPU backend: free is unbounded ⇒ batch = cap.
     @test plan_batch(CPUBackend(), 1600, 1600, 42; what = "cpu") == 42
 

@@ -138,13 +138,13 @@ points of `els`'s, and `kpts = nothing`.
 function reshape_view_batched_electron_states(els::BatchedElectronState{T}, nband_max, nk) where {T}
     nband_max <= els.nband_max && nk <= els.nk || throw(ArgumentError(
         "a box of $nband_max bands and $nk points does not fit $els"))
-    prefix(x, dims...) = x === nothing ? nothing : reshape_buffer_view(x, dims...)
+    reshape_if_held(x, dims...) = x === nothing ? nothing : reshape_buffer_view(x, dims...)
     BatchedElectronState{T}(els.nw, nband_max, nk, nothing,
         view(els.iband_offset, 1:nk),
         view(els.nband, 1:nk),
-        prefix(els.e, nband_max, nk),
-        prefix(els.u, els.nw, nband_max, nk),
-        prefix(els.vdiag, 3, nband_max, nk),
-        prefix(els.v, 3, nband_max, nband_max, nk),
-        prefix(els.rbar, 3, nband_max, nband_max, nk))
+        reshape_if_held(els.e, nband_max, nk),
+        reshape_if_held(els.u, els.nw, nband_max, nk),
+        reshape_if_held(els.vdiag, 3, nband_max, nk),
+        reshape_if_held(els.v, 3, nband_max, nband_max, nk),
+        reshape_if_held(els.rbar, 3, nband_max, nband_max, nk))
 end

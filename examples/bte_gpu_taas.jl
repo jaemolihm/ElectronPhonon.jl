@@ -45,8 +45,8 @@ occupation-factor convention 1..6 (see `bte_scattering_increments`).
 """
 function run_bte_gpu(model, nk; η, window, occ, method = 5,
         backend = EP.gpu_backend(), symmetry = model.symmetry)
-    calc = BoltzmannCalculator{Float64}(; occ, smearing = [(:Gaussian, η) for _ in 1:length(occ)],
-        occupation_method = method)
+    calc = BoltzmannCalculator{Float64}(; occ,
+        smearing_list = [SmearingType(:Gaussian, η) for _ in 1:length(occ)], occupation_method = method)
     EP.run_eph_over_k_and_kq(model, (nk, nk, nk), (nk, nk, nk);
         calculators = [calc], symmetry,
         window_k = window, window_kq = window, backend,
@@ -59,7 +59,7 @@ end
 nk = 16
 η  = 10.0 * meV
 occ = occupation_params()
-out = run_bte_gpu(model, nk; η, window, occ, method = :Method5, backend = EP.gpu_backend())
+out = run_bte_gpu(model, nk; η, window, occ, method = 5, backend = EP.gpu_backend())
 
 println("\nTaAs σ (GPU BTE), trace/3, per temperature:")
 for (iT, T) in enumerate(occ.Tlist)

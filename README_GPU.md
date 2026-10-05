@@ -14,15 +14,19 @@ On the GPU:
 - Batched band eigenvalues/eigenvectors — `src/wannier_to_bloch_batched.jl`.
 - e-ph interpolation `get_eph_RR_to_kR!` / `get_eph_kR_to_kq!` (per-k/q and list-batched
   forms) — `src/wannier_to_bloch_batched.jl`.
-- The e-ph calculator loop `run_eph_over_k_and_kq` via a `batched` branch, including a
-  device-native calculator hook.
+- The e-ph calculator loop of the three drivers (`run_eph_over_k_and_kq`, `run_eph_over_k_and_q`,
+  `run_eph_over_q_and_k`): the same engines run on host or device arrays, with energy windows (box
+  storage, see the design note), the polar dipole term, the covariant derivative (outer k) and
+  symmetry-reduced outer points.
 
-Deliberately **not** on the GPU (stays on the CPU per-k path):
+**Not** on the GPU:
 
-- `gridopt` / `batched-gridopt` interpolation and `DiskWannierObject`.
-- Per-k energy windowing — the GPU path is full-band only (see below).
-- Long-range/polar (dipole) e-ph terms, screening, covariant derivatives, symmetry /
-  k+q-from-unfolding, and nontrivial energy conservation. The GPU loop asserts these off.
+- `gridopt` / `batched-gridopt` interpolation and `DiskWannierObject`: a device run interpolates
+  with the batched interpolator, and the e-ph loop refuses a disk-backed `epmat`.
+- The phonons of a polar model and the phonon quantities beyond `e` and `u` (`vdiag`, the dipole
+  coefficients): built on the host and copied to the device.
+- `energy_conservation_tol`: a `CPUBackend` option, refused on a GPU.
+- Screening (`screening_params`) is refused on every backend.
 
 ## Decisions
 
@@ -159,7 +163,7 @@ block::EPBlock{OuterKLoop|OuterQLoop}, ctx::LoopContext)`, one method per loop o
 backend. The full spec is in the docstrings of `src/calculator/AbstractCalculator.jl`, and
 `docs/writing_a_calculator.md` is the tutorial. This section covers the device side.
 
-`run_eph_over_k_and_kq` / `run_eph_over_q_and_k` are one loop, `_run_eph` in
+`run_eph_over_k_and_kq` / `run_eph_over_k_and_q` / `run_eph_over_q_and_k` are one loop, `_run_eph` in
 `src/calculator/run_eph.jl`, with an engine per order in `src/calculator/eph_engine.jl`
 (`OuterKEngine`, `OuterQEngine`). They take the backend and the two widths:
 
@@ -196,7 +200,7 @@ k's k+q tiles are not contiguous (the tile loop is outside the k loop), so a per
 done in the brackets around the outer batch (`ctx.batch`).
 
 Memory: `engine_bytes` counts the engine's buffers next to their `alloc` calls, each calculator
-adds its `eph_batched_bytes_per_point` triple `(; persistent, per_outer, per_pair)`, and
+adds its `calculator_bytes` triple `(; persistent, per_outer, per_pair)`, and
 `plan_batch(backend, per_point, committed, cap; …)` turns the sum into the inner-tile width
 (committed-vs-free check + 30% headroom) before the engine is built. `estimate_device_memory(model;
 nk, nkq, …)` reports the same counts ahead of a run. Actual device usage starts **~100-150 MB
@@ -231,16 +235,13 @@ Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
 
 ## Deferred (may do later)
 
-- **In-place workspace drivers** (workspace-backed scratch instead of per-call `similar()`) were
-  benchmarked and validated bit-identical, but the gain is small on the GPU (CUDA's pool already
-  recycles device buffers), so it is deferred. Best done together with the calculator loop, where
-  one workspace allocated at loop setup is reused across all (k, q).
-- **Long-range/polar in the outer-k loop** — refused there for now (the outer-q loop adds it).
+- **A device phonon builder for polar models.** The long-range dynamical-matrix term and the
+  velocity and dipole-coefficient kernels have no device version, so those phonons are built on the
+  host and copied (see `compute_phonon_states_batched`).
 - **MPI / multi-GPU** for the GPU loop — not in this foundation.
-- **Backend as a type parameter instead of a backend object (future).** The `use_gpu` keyword is
-  gone: the backend is now the user-facing `backend::AbstractBackend` argument, and the loop shape
-  is the separate `batched` keyword. Renaming `GPUBackend(proto)` to a DFTK-style `GPU{AT}` was
-  considered and **decided against**: `similar(proto, ...)` propagates CUDA.jl 6's memory-type
+- **Backend as a type parameter instead of a backend object (future).** The backend is the
+  user-facing `backend::AbstractBackend` argument. Renaming `GPUBackend(proto)` to a DFTK-style
+  `GPU{AT}` was considered and **decided against**: `similar(proto, ...)` propagates CUDA.jl 6's memory-type
   parameter where a bare type constructor would not, and nothing dispatches on `AT`. Note a
   `ModelGPU` that puts the whole `Model` on the device is *not* obviously right either: `Model` is
   large, and one may want it resident on the CPU while only the calculation runs on the GPU.
@@ -265,8 +266,10 @@ Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
 
 ## Conventions
 
-- **Device arrays use a `_dev` suffix** (e.g. `epmat_dev`, `wtkq_dev`), not a `gpu_` prefix.
-  Host copies of device results drop the suffix (e.g. `E = Array(E_dev)`).
+- **Variables holding arrays on the backend use a `_dev` suffix** (e.g. `iqs_dev`, `iks_dev`,
+  `ikqs_dev`), not a `gpu_` prefix, when a host twin exists; the host twin is unsuffixed or
+  `_host` (`iqs_host`, `xks_host`). `_on_backend` appears only in function and argument names
+  (`check_on_backend`, `_copy_indices_on_backend`).
 
 ## Files
 
@@ -275,13 +278,15 @@ Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
 - `src/wannier/WannierInterpolator.jl` — declare/export `to_device`.
 - `src/wannier/batched_interpolator.jl` — backend-generic buffers + GEMM phase; new
   `get_fourier_batched!`. Per-k API unchanged. Pure Fourier only.
-- `src/wannier_to_bloch_batched.jl` — **new**; `eigvals_batched`/`eigen_batched` (CPU), the
-  `get_el_eigen[_valueonly]_batched` and e-ph drivers (per-k/q and list-batched), and the
-  `batched_gemm!` primitive. Included after `wannier_to_bloch.jl`. All backend-generic.
+- `src/wannier_to_bloch_batched.jl` — `eigvals_batched`/`eigen_batched` (CPU), the
+  `get_el_eigen[_valueonly]_batched` and e-ph drivers (per-k/q and list-batched). Included after
+  `wannier_to_bloch.jl`. All backend-generic.
+- `src/common/gpu_utils.jl` — the backend primitives (`alloc`, `to_device`, `free_bytes`,
+  `synchronize`, `batched_gemm!`).
 - `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`, `eigvals_batched`/
   `eigen_batched` (`heevjBatched!`), `batched_gemm!` (`gemm_strided_batched!`), and the fused
   rotation / window-scatter kernels.
-- `src/calculator/run_eph.jl` — both drivers as one `_run_eph` (entry checks, state containers,
+- `src/calculator/run_eph.jl` — the three drivers as one `_run_eph` (entry checks, state containers,
   `plan_batch`, brackets) with the two loop bodies; `src/calculator/eph_engine.jl` — the
   `OuterKEngine` / `OuterQEngine` stages and `engine_bytes`. Backend-generic; `backend`,
   `n_outer_batch`, `n_inner_tile` and `nchunks_threads` select placement and widths.

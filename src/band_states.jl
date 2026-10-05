@@ -60,8 +60,8 @@ Pure k-properties (k-vector, weight) are derived through `ik` rather than cached
 `iks`/`ibands` are the authority. It is a range because its consumer is
 `set_window!(::ElectronState, ::UnitRange)`. Window-based selections are contiguous per k;
 `filter_states` on an arbitrary set need not be, and then `electron_states_to_BandStates(el_states,
-kpts, …)`, which emits one state per band in the extent, returns more states than the
-`FilteredBandStates` method, which emits the selection's own list (`{2, 5}` at a k: 4 states vs 2).
+kpts, …)`, which emits one state per band in the extent, returns more states than
+`BandStates(el_states, sel)`, which emits the selection's own list (`{2, 5}` at a k: 4 states vs 2).
 Match states across two sets with `state_index`, never by position.
 """
 struct BandStates{T, KT <: AbstractKpoints{T}} <: AbstractBandStates{T, KT}
@@ -90,7 +90,7 @@ end
 Lean selection of `(k-point, band)` states over a shared `kpts`, before eigenvectors/velocities are
 computed. Mirrors `BandStates` minus `es`/`vs`. Emitted by the k-point/band generators and consumed
 by `compute_electron_states(model, sel, …)`, which computes eigenvectors/velocities for exactly the
-per-k `band_extent` bands. `electron_states_to_BandStates(el_states, sel)` then attaches `es`/`vs`.
+per-k `band_extent` bands. `BandStates(el_states, sel)` then attaches `es`/`vs`.
 """
 struct FilteredBandStates{T, KT <: AbstractKpoints{T}} <: AbstractBandStates{T, KT}
     n::Int
@@ -184,10 +184,8 @@ end
 
 Flatten a per-k vector of `ElectronState` onto `kpts` into a `BandStates`, and return it together
 with `imap[iband, ik]` = state index — an `OffsetMatrix` over the physical band range, 0 outside
-the window, the form CPU calculator loops index directly. The
-`electron_states_to_BandStates(el_states, sel)` method returns the same pair, so the two are
-interchangeable at a call site. The model's full Wannier band count `nw` is read from the
-`ElectronState`s (they all carry it) and stored on the `BandStates`. The per-state
+the window, the form CPU calculator loops index directly. The model's full Wannier band count
+`nw` is read from the `ElectronState`s (they all carry it) and stored on the `BandStates`. The per-state
 k-index `ik` is stored directly (no deduplication: `kpts` already holds the distinct k-points).
 `kpts` must be a `GridKpoints` (its k-vector→index hash is needed for the e-ph loop and
 `state_index(xk, …)` queries); callers holding a plain `Kpoints` promote it first.
@@ -243,18 +241,16 @@ function electron_states_to_FilteredBandStates(kpts, el_states, nstates_base; nw
 end
 
 """
-    electron_states_to_BandStates(el_states, sel::FilteredBandStates) -> (BandStates, imap)
+    BandStates(el_states::Vector{ElectronState}, sel::FilteredBandStates) -> BandStates
 
 Attach per-state energies/velocities to a prebuilt `FilteredBandStates`, gathering `es[i]`/`vs[i]` from
 `el_states[sel.iks[i]]` at band `sel.ibands[i]`, and carrying over the selection's `kpts`, `iks`,
 `ibands`, per-state `weights`, `nstates_base`, `indmap`, and `band_extent`. `el_states` must have been
 computed with `compute_electron_states(model, sel, …)` so each `el.rng` covers the selected bands.
-This is the selection-path variant used by the driver to build `calc.el_i`/`el_f` (it bypasses the
-uniform per-k flatten, preserving the multigrid's per-`(k, band)` weights). It returns the same
-`(BandStates, imap)` pair as the `kpts` method, so the two are interchangeable at a call site.
+Unlike the uniform per-k flatten of `electron_states_to_BandStates(el_states, kpts)`, it keeps the
+multigrid's per-`(k, band)` weights. The `BatchedElectronState` method is its batched counterpart.
 """
-function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
-        sel::FilteredBandStates{T}) where {T}
+function BandStates(el_states::Vector{ElectronState{T}}, sel::FilteredBandStates{T}) where {T}
     n = sel.n
     es = zeros(T, n)
     vs = zeros(Vec3{T}, n)
@@ -267,10 +263,9 @@ function electron_states_to_BandStates(el_states::Vector{ElectronState{T}},
     # Carry over the selection's per-state weights (always materialized) so `es`/`vs`-side consumers
     # index `el.weights` directly, O(1) and non-allocating, in a hot loop (the BTE scatter's
     # per-final-state weight).
-    bs = BandStates{T, typeof(sel.kpts)}(n, sel.nband, sel.nband_ignore, sel.nw, sel.kpts,
+    BandStates{T, typeof(sel.kpts)}(n, sel.nband, sel.nband_ignore, sel.nw, sel.kpts,
         copy(sel.iks), copy(sel.ibands), es, vs, copy(sel.weights), sel.nstates_base,
         copy(sel.indmap), copy(sel.band_extent))
-    bs, OffsetArray(bs.indmap, band_range(bs), 1:sel.kpts.n)
 end
 
 """

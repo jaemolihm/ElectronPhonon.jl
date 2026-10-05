@@ -35,15 +35,15 @@ The contract:
   map that is 0 past it (`_indmap_to_device`); a reduction over the whole box selects with `ifelse`
   on `n ≤ nband[j]`, never by multiplying with a mask.
 * **No allocation in `run_calculator!`**: size buffers at setup from `n_outer_batch` /
-  `n_inner_tile`, and declare their bytes in `eph_batched_bytes_per_point`.
+  `n_inner_tile`, and declare their bytes in `calculator_bytes`.
 
 Optionally:
-* `eph_batched_bytes_per_point(calc, ::Type{<:EPBlock{O}}; kwargs...)` — device bytes the
+* `calculator_bytes(calc, ::Type{<:EPBlock{O}}; kwargs...)` — device bytes the
   calculator holds, `(; persistent, per_outer, per_pair)`, for the loops' memory planning.
 * `allowed_eph_phonon_basis(calc)` — phonon bases the calculator accepts.
 
-See `docs/writing_a_calculator.md` for a worked example. The public (unexported) calculator API is
-the `public` declaration at the bottom of this file.
+See `docs/writing_a_calculator.md` for a worked example. The public (unexported) API of the
+calculators, the drivers and the engines is the one `public` declaration at the bottom of this file.
 For manual execution, construct an `OuterKEngine` / `OuterQEngine`, call `setup_calculator!` on
 its states, use `stage1!`, `stage2!` and `LoopContext(eng)`, then invoke the same hooks.
 """
@@ -196,26 +196,31 @@ end
 function run_calculator! end
 
 """
-    eph_batched_bytes_per_point(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k, nband_max_kq,
-                                els_k, els_kq, phs) -> (; persistent, per_outer, per_pair)
+    calculator_bytes(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k, nband_max_kq,
+                     els_k, els_kq, phs, nchunks_threads) -> (; persistent, per_outer, per_pair)
 
-Device bytes the calculator allocates for a batched run of order `O`: whole-run buffers
+Device bytes the calculator allocates for a run of order `O`: whole-run buffers
 (`persistent`), per outer point of a batch (`per_outer`) and per inner pair of a tile (`per_pair`).
-The loops add them to their own counts to size the inner tile against `free_bytes`. Default zeros.
+The loops add them to their own counts to size the inner tile against `free_bytes`, counting
+`per_pair` once per thread chunk; a per-outer buffer held per chunk multiplies by `nchunks_threads`
+itself. `els_k`, `els_kq`, `phs` are `nothing` in `estimate_device_memory`. Default zeros.
 """
-eph_batched_bytes_per_point(::AbstractCalculator, ::Type{<:EPBlock}; kwargs...) =
+calculator_bytes(::AbstractCalculator, ::Type{<:EPBlock}; kwargs...) =
     (; persistent = 0, per_outer = 0, per_pair = 0)
 
 
 # =============================================================================
-#  Public (but unexported) calculator API. `public` (Julia ≥ 1.11) marks these names as the
-#  supported interface without exporting them (users still reach them as `ElectronPhonon.<name>`).
-#  `eph_window_scatter!` (calculator_utils.jl) and the backend primitives (gpu_utils.jl) are marked
-#  here too — `public`, like `export`, permits forward references to names defined later in the module.
-public AbstractCalculator, supports, setup_calculator!, run_calculator!, postprocess_calculator!,
+#  Public (but unexported) API. `public` (Julia ≥ 1.11) marks these names as the supported
+#  interface without exporting them (users still reach them as `ElectronPhonon.<name>`). The
+#  drivers (run_eph.jl), the engines (eph_engine.jl), `eph_window_scatter!` (calculator_utils.jl)
+#  and the backend primitives (gpu_utils.jl) are marked here too: `public`, like `export`, permits
+#  forward references to names defined later in the module.
+public run_eph_over_k_and_kq, run_eph_over_k_and_q, run_eph_over_q_and_k,
+    OuterKEngine, OuterQEngine, stage1!, stage2!,
+    AbstractCalculator, supports, setup_calculator!, run_calculator!, postprocess_calculator!,
     calculator_begin!, calculator_end!, OuterKLoop, OuterQLoop, EPBlock, LoopContext, AbstractBackend, CPUBackend, GPUBackend,
     gpu_backend, alloc, free_bytes, synchronize, batched_gemm!, eph_window_scatter!,
-    bte_window_accumulate!, eph_batched_bytes_per_point, allowed_eph_phonon_basis,
+    bte_window_accumulate!, calculator_bytes, allowed_eph_phonon_basis,
     required_el_quantities, required_ph_quantities, _indmap_to_device,
     TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array,
     tile_offset, tile_length, tile_stride, is_block, is_allocated, residency_use_block, to_device,

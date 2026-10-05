@@ -62,7 +62,7 @@ end
                 run1 = () -> stage1!(eng, 1:nb)
             else
                 bytes = engine_bytes(OuterQEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
-                    nk = st.kpts.n, n_outer_batch = nb, el_qty, ph_qty,
+                    nk = st.kpts.n, el_qty, ph_qty,
                     precompute_el_kq = false, eph_phonon_basis = :eigenmode)
                 eng = OuterQEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.qpts, common...)
@@ -76,8 +76,8 @@ end
             held = _device_bytes(eng) - _device_bytes((eng.els_k, eng.els_kq, eng.phs))
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
             @info "engine_bytes" order mom dg held transient counted ratio = (held + transient) / counted
-            # Everything the engine holds and its stage 1 allocates is counted (0.992-1.000 measured,
-            # Pb, matching-layout arms)...
+            # Everything the engine holds and its stage 1 allocates is counted (0.991-1.000 measured,
+            # Pb, A100)...
             @test held + transient <= 1.02 * counted
             # ...and the count is not a loose upper bound.
             @test held + transient >= 0.95 * counted

@@ -78,6 +78,22 @@ _setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, e
     @test_throws ArgumentError OuterKEngine(model_el, kpts, qpts; n_outer_batch = 0)
     @test_throws ArgumentError OuterKEngine(model_el, kpts, qpts; n_inner_tile = 0)
     @test_throws ArgumentError OuterKEngine(model_el, kpts, qpts; nchunks_threads = 0)
+
+    # The positional constructors derive the loop flag from `els_kq` and refuse a contradicting one.
+    caps = (; n_outer_batch = 1, n_inner_tile = 1, nchunks = 1, eph_phonon_basis = :eigenmode)
+    @test eng.els_kq === nothing && !eng.inner_loop_kq
+    @test_throws ArgumentError OuterKEngine(model_el, CPUBackend(), eng.els_k, nothing, eng.phs,
+        [:e, :u], [:e, :u]; eng.kpts, eng.kqpts, eng.qpts, inner_loop_kq = true,
+        covariant_derivative_of_g = false, caps...)
+    eng_q = OuterQEngine(model_ph, kpts, qpts; window_k = window, window_kq = window, verbosity = 0)
+    @test eng_q.els_kq === nothing && !eng_q.precompute_el_kq
+    @test_throws ArgumentError OuterQEngine(model_ph, CPUBackend(), eng_q.els_k, nothing, eng_q.phs,
+        [:e, :u], [:e, :u]; eng_q.kpts, eng_q.qpts, precompute_el_kq = true, caps...)
+
+    # The context of a batch can be built before its stage 1, as the drivers do.
+    eng_new = OuterKEngine(model_el, kpts, qpts; window_k = window, window_kq = window, verbosity = 0)
+    @test LoopContext(eng_new; batch = 1:1).batch == 1:1
+    @test_throws BoundsError LoopContext(eng_new; batch = 1:2)
 end
 
 @testset "direct stage2 completes polar, derivative and phonon-basis options" begin

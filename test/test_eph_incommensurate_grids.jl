@@ -3,9 +3,8 @@ using ElectronPhonon
 using ElectronPhonon: AbstractCalculator, OuterKLoop
 
 # `run_eph_over_k_and_kq` builds its phonons on the q grid the k and k+q grids span, so it needs the
-# two grids commensurate, and refuses other grids at entry. No caller in this repo or in
-# MigdalEliashberg.jl passes incommensurate grids (the previous release solved the phonons per pair
-# there, a branch only this file reached); a q off the k grid is the outer-q loop's case.
+# two grids commensurate, and refuses other grids at entry. A q off the k grid is the case of
+# `run_eph_over_k_and_q` and `run_eph_over_q_and_k`.
 
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
 

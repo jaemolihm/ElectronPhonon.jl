@@ -143,46 +143,43 @@ end
 function _allocate_engine(order, model, states, options)
     # function barrier for allocation from concrete resident state containers.
     (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq) = states
-    (; el_qty, ph_qty, calculators, backend, precompute_el_kq, energy_conservation_tol,
-       covariant_derivative_of_g, eph_phonon_basis, n_outer_batch, n_inner_tile, nchunks_threads,
-       window_kq, verbosity) = options
+    (; el_qty, ph_qty, calculators, backend, inner_loop_kq, precompute_el_kq, energy_conservation_tol,
+       covariant_derivative_of_g, eph_phonon_basis, nchunks_threads, window_kq, verbosity) = options
     (; nw) = model
 
     nchunks = backend isa CPUBackend ? nchunks_threads : 1
 
     if order isa OuterKLoop
         # Outer k: the inner set is either resident k+q points or q points with a per-tile solve.
-        inner_loop_kq = els_kq !== nothing
         inner_pts = inner_loop_kq ? kqpts : qpts
         n_outer = kpts.n
     else
         # Outer q: the inner set is the resident k points.
-        inner_loop_kq = false
         inner_pts = kpts
         n_outer = qpts.n
     end
     n_inner = inner_pts.n
 
-    (; nbatch_outer, nbatch_inner, committed, bytes) = _plan_widths(order, model, backend, calculators;
+    # The widths the run uses, from the requested ones (`nothing`: the defaults).
+    (; n_outer_batch, n_inner_tile, committed, bytes) = _plan_widths(order, model, backend, calculators;
         n_outer, n_inner, nk = kpts.n, nkq = order isa OuterKLoop ? inner_pts.n : 0, nchunks,
-        inner_loop_kq,
-        n_outer_batch, n_inner_tile, nband_max_k = els_k.nband_max,
+        inner_loop_kq, options.n_outer_batch, options.n_inner_tile, nband_max_k = els_k.nband_max,
         nband_max_kq = els_kq === nothing ? nw : els_kq.nband_max, els_k, els_kq, phs, el_qty, ph_qty,
         precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis)
     if verbosity > 0 && mpi_isroot()
         @info "e-ph loop: committed = $(round(committed / 1e9, digits = 2)) GB, " *
-              "$(round(bytes.per_pair / 1e3, digits = 1)) kB per pair; outer batch = $nbatch_outer, " *
-              "inner tile = $nbatch_inner, $nchunks chunk(s)"
+              "$(round(bytes.per_pair / 1e3, digits = 1)) kB per pair; outer batch = $n_outer_batch, " *
+              "inner tile = $n_inner_tile, $nchunks chunk(s)"
     end
 
     # Allocate the engine for the requested outer momentum.
     if order isa OuterKLoop
         eng = OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
-            n_outer_batch = nbatch_outer, n_inner_tile = nbatch_inner, nchunks,
+            n_outer_batch, n_inner_tile, nchunks,
             covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation_tol)
     else
         eng = OuterQEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
-            n_outer_batch = nbatch_outer, n_inner_tile = nbatch_inner, nchunks, eph_phonon_basis,
+            n_outer_batch, n_inner_tile, nchunks, eph_phonon_basis,
             kqpts, sel_k, sel_kq, window_kq, energy_conservation_tol)
     end
     eng
@@ -191,21 +188,22 @@ end
 
 """
     OuterKEngine(model, kpts, second_pts; inner_loop_kq=false, calculators=[], kwargs...)
-    OuterQEngine(model, kpts, qpts; calculators=[], kwargs...)
 
-Prepare resident states and reusable e-ph buffers without running calculators. OuterKEngine
-defaults to inner q points (k+q is solved per tile); inner_loop_kq=true instead takes a
-commensurate k+q grid. OuterQEngine takes k and q point sets. A single point can be passed as
-Kpoints(Vec3(...)). Both constructors default to symmetry=nothing and one CPU workspace.
+Prepare resident states and reusable e-ph buffers without running calculators, for a model loaded
+with `epmat_outer_momentum = "el"`. The inner points default to q points (k+q is solved per tile);
+`inner_loop_kq = true` instead takes a commensurate k+q grid. A single point can be passed as
+`Kpoints(Vec3(...))`. The defaults are `symmetry = nothing` and one CPU workspace
+(`nchunks_threads = 1`).
 
 Window, cache, energy-conservation, phonon-basis and capacity keywords match the e-ph drivers.
-calculators contributes required state quantities and memory budgets but is not set up or run;
-el_quantities/ph_quantities may request additional state fields explicitly. The prepared
-states/selections are available as eng.els_k, eng.els_kq, eng.phs, eng.sel_k and eng.sel_kq.
+`calculators` contributes required state quantities and memory budgets but is not set up or run;
+`el_quantities` / `ph_quantities` may request additional state fields explicitly. The prepared
+states and selections are available as `eng.els_k`, `eng.els_kq`, `eng.phs`, `eng.sel_k` and
+`eng.sel_kq`.
 
-Call stage1!(eng, outer_indices), then stage2!(eng, outer_index, inner_indices) to obtain an
-EPBlock for run_calculator!. Indices refer to the selected eng.kpts/eng.kqpts/eng.qpts, which
-can differ from the input point sets after window/symmetry filtering.
+Call `stage1!(eng, outer_indices)`, then `stage2!(eng, outer_index, inner_indices)` to obtain an
+`EPBlock` for `run_calculator!`. Indices refer to the selected `eng.kpts` / `eng.kqpts` /
+`eng.qpts`, which can differ from the input point sets after window and symmetry filtering.
 """
 function OuterKEngine(model::Model, kpts, second_pts; inner_loop_kq = false,
         symmetry = nothing, nchunks_threads = 1, kwargs...)
@@ -219,8 +217,8 @@ end
     OuterQEngine(model, kpts, qpts; calculators=[], kwargs...)
 
 Prepare an outer-q engine without running calculators, for a model loaded with
-`epmat_outer_momentum = "ph"`. State, capacity and lifecycle options follow
-[`OuterKEngine`](@ref); `stage2!(eng, iq, k_indices)` returns a complete block.
+`epmat_outer_momentum = "ph"`, from k and q point sets. State, capacity and lifecycle options
+follow [`OuterKEngine`](@ref); `stage2!(eng, iq, k_indices)` returns a complete block.
 """
 function OuterQEngine(model::Model, kpts, qpts; symmetry = nothing, nchunks_threads = 1, kwargs...)
     options = _run_options(model; inner_loop_kq = false, symmetry, nchunks_threads, kwargs...)
@@ -241,29 +239,32 @@ function _run_eph(order::LoopTag, model::Model, kpts_input, second_input; calcul
 
     # Allocate the engine on those states, and run the calculators over every block.
     eng = _allocate_engine(order, model, states, options)
-    _run_eph_loop(eng, order, calculators; options.symmetry, progress_print_step, options.verbosity)
+    _run_eph_loop(eng, calculators; options.symmetry, progress_print_step, options.verbosity)
 end
 
-function _run_eph_loop(eng, order, calculators; symmetry, progress_print_step, verbosity)
+function _run_eph_loop(eng, calculators; symmetry, progress_print_step, verbosity)
     for calculator in calculators
         setup_calculator!(calculator, eng.backend, eng.els_k, eng.els_kq, eng.phs;
             eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles), eng.n_outer_batch, eng.n_inner_tile, verbosity)
     end
 
     # Explicitly bracket each outer batch; each chunk consumes its blocks before buffers are reused.
-    for batch in Iterators.partition(1:eng.n_outer, eng.n_outer_batch)
-        if mpi_isroot() && div(last(batch), progress_print_step) > div(first(batch) - 1, progress_print_step)
-            @info "$(now()) $(order isa OuterKLoop ? "ik" : "iq") = $batch / $(eng.n_outer)"
+    for outer_batch in Iterators.partition(1:eng.n_outer, eng.n_outer_batch)
+        if mpi_isroot() && div(last(outer_batch), progress_print_step) > div(first(outer_batch) - 1, progress_print_step)
+            @info "$(now()) $(eng isa OuterKEngine ? "ik" : "iq") = $outer_batch / $(eng.n_outer)"
             flush(stdout); flush(stderr)
         end
-        ctx = LoopContext(eng.backend, order, batch, 1)
+        # The calculators' bracket opens before the batch's stage 1, so a decision made in
+        # `calculator_begin!` from `free_bytes` (`TiledDeviceOutput`) sees no stage-1 transients.
+        ctx = LoopContext(eng; batch = outer_batch)
         for calculator in calculators
             calculator_begin!(calculator, ctx)
         end
-        if order isa OuterKLoop
-            _loop_outer_k!(eng, batch, calculators)
+        stage1!(eng, outer_batch)
+        if eng isa OuterKEngine
+            _loop_outer_k!(eng, calculators)
         else
-            _loop_outer_q!(eng, batch, calculators)
+            _loop_outer_q!(eng, calculators)
         end
         for calculator in calculators
             calculator_end!(calculator, ctx)
@@ -280,9 +281,10 @@ end
 
 
 # The widths of a run and the device bytes behind them, for `_run_eph` and `estimate_device_memory`
-# alike. The outer batch is a fixed default (256 outer k; 16 q on a device and 1 on the CPU). The
+# alike, from the requested `n_outer_batch` / `n_inner_tile` (`nothing`: the default). The outer
+# batch is a fixed default (256 outer k; 16 q on a device and 1 on the CPU). The
 # inner tile fills the free device memory left after the persistent and per-batch buffers
-# (`plan_batch` on `engine_bytes` plus each calculator's `eph_batched_bytes_per_point`, `per_pair`
+# (`plan_batch` on `engine_bytes` plus each calculator's `calculator_bytes`, `per_pair`
 # once per chunk), capped at all inner points on a device (`2^15` k under `OuterQLoop`) and at a
 # cache-sized 1024 per chunk on the CPU.
 function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, nkq, nchunks,
@@ -290,24 +292,24 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
         precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq)
     (; nw, nmodes) = model
     outer_default = order isa OuterKLoop ? 256 : backend isa CPUBackend ? 1 : 16
-    nbatch_outer = max(1, min(something(n_outer_batch, outer_default), n_outer))
+    n_outer_batch = max(1, min(something(n_outer_batch, outer_default), n_outer))
     inner_default = backend isa CPUBackend ? 1024 : order isa OuterKLoop ? n_inner : 2^15
     inner_cap = max(1, min(cld(n_inner, nchunks), something(n_inner_tile, inner_default)))
     bytes = order isa OuterKLoop ?
         engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk, nkq, el_qty, ph_qty,
             covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq) :
-        engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk, n_outer_batch = nbatch_outer,
-            el_qty, ph_qty, precompute_el_kq, eph_phonon_basis)
+        engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk, el_qty, ph_qty,
+            precompute_el_kq, eph_phonon_basis)
     for c in calculators
-        b = eph_batched_bytes_per_point(c, EPBlock{typeof(order)}; nw, nmodes, nband_max_k,
-                                        nband_max_kq, els_k, els_kq, phs, nchunks_threads = nchunks)
+        b = calculator_bytes(c, EPBlock{typeof(order)}; nw, nmodes, nband_max_k, nband_max_kq,
+                             els_k, els_kq, phs, nchunks_threads = nchunks)
         bytes = (; persistent = bytes.persistent + b.persistent,
                    per_outer = bytes.per_outer + b.per_outer, per_pair = bytes.per_pair + b.per_pair)
     end
-    committed = bytes.persistent + bytes.per_outer * nbatch_outer
-    nbatch_inner = plan_batch(backend, bytes.per_pair * nchunks, committed, inner_cap;
-                          what = order isa OuterKLoop ? "outer-k" : "outer-q")
-    (; nbatch_outer, nbatch_inner, committed, bytes)
+    committed = bytes.persistent + bytes.per_outer * n_outer_batch
+    n_inner_tile = plan_batch(backend, bytes.per_pair * nchunks, committed, inner_cap;
+                              what = order isa OuterKLoop ? "outer-k" : "outer-q")
+    (; n_outer_batch, n_inner_tile, committed, bytes)
 end
 
 """
@@ -320,8 +322,8 @@ Size a batched e-ph loop's batch to free device memory:
 CPU backend `free_bytes` is `typemax(Int)`, so `nbatch = cap`. Errors if the whole-run commitments
 alone exceed free device memory (a clear early failure instead of an OOM mid-loop); `what` names the
 loop in that message. `headroom_num / headroom_den` is the usable fraction of free memory (default
-`7/10`, i.e. a 30% headroom for the batched drivers' recycled temporaries), applied as
-`x ÷ den * num` to match the integer arithmetic of the formulas this replaces. Pass `warn = false`
+`7/10`, i.e. a 30% headroom for the batched drivers' recycled temporaries), applied in integer
+arithmetic as `x ÷ den * num`. Pass `warn = false`
 for a counterfactual query ("how wide would the batch be at a different `per_point`?"), which must
 not tell the user their batch was reduced.
 """
@@ -378,8 +380,10 @@ function _check_run(order, model, kpts_input, second_input, options)
         "energy_conservation_tol is a CPUBackend feature: on a GPU computing every pair and letting " *
         "the calculators' delta functions discard is cheaper. Pass energy_conservation_tol = Inf."))
     if order isa OuterKLoop
+        # Outer k: no precomputed k+q option; the inner set decides the rest.
         precompute_el_kq && throw(ArgumentError("precompute_el_kq is an outer-q option"))
         if !inner_loop_kq
+            # Inner q points: k+q is solved per tile, with `e` and `u` only and no cache.
             (el_k_eigenpairs === nothing || all(_input_ngrid(kpts_input) .> 0)) || throw(ArgumentError(
                 "el_k_eigenpairs needs the outer k points on a grid: the cache is looked up on one"))
             issubset(el_qty, (:e, :u)) || throw(ArgumentError(
@@ -389,6 +393,7 @@ function _check_run(order, model, kpts_input, second_input, options)
                 "el_kq_eigenpairs is not supported by run_eph_over_k_and_q: the k+q states are " *
                 "solved per tile"))
         else
+            # Inner k+q points: both sets on commensurate grids.
             ng_k, ng_kq = _input_ngrid(kpts_input), _input_ngrid(second_input)
             (all(ng_k .> 0) && all(ng_kq .> 0) &&
              (all(mod.(ng_kq, ng_k) .== 0) || all(mod.(ng_k, ng_kq) .== 0))) || throw(ArgumentError(
@@ -396,24 +401,25 @@ function _check_run(order, model, kpts_input, second_input, options)
                 "the phonon states are built on the q grid they span"))
         end
     else
+        # Outer q: the inner k points on a grid, no covariant derivative and no MPI split.
         covariant_derivative_of_g && throw(ArgumentError(
             "covariant_derivative_of_g is not supported by run_eph_over_q_and_k"))
-        all(_input_ngrid(kpts_input) .> 0) || throw(ArgumentError(
+        second_input isa FilteredBandStates && throw(ArgumentError(
+            "run_eph_over_q_and_k takes q points, not a state selection"))
+        ng_k, ng_q = _input_ngrid(kpts_input), _input_ngrid(second_input)
+        all(ng_k .> 0) || throw(ArgumentError(
             "run_eph_over_q_and_k needs the k points on a grid: a grid size, a k-point set on a " *
             "grid or a FilteredBandStates of one"))
         mpi_comm_k === nothing || throw(ArgumentError("mpi_comm_k is not implemented for run_eph_over_q_and_k"))
-        q_on_grid = second_input isa NTuple{3, Int} || (second_input isa AbstractKpoints && all(second_input.ngrid .> 0))
-        precompute_el_kq && !q_on_grid && throw(ArgumentError(
-            "precompute_el_kq needs a q grid, not a q list"))
-        # The precomputed k+q states live on the q grid, which holds every k + q only when it is a
-        # multiple of the k grid.
         if precompute_el_kq
-            ng_k, ng_q = _input_ngrid(kpts_input), _input_ngrid(second_input)
+            # k+q precomputed: the states live on the q grid, which holds every k + q only when it
+            # is a multiple of the k grid.
+            all(ng_q .> 0) || throw(ArgumentError("precompute_el_kq needs a q grid, not a q list"))
             all(mod.(ng_q, ng_k) .== 0) || throw(ArgumentError(
                 "precompute_el_kq needs a q grid that is a multiple of the k grid (got k $ng_k, " *
                 "q $ng_q): k + q is off the q grid otherwise"))
-        end
-        if !precompute_el_kq
+        else
+            # k+q solved per tile, with `e` and `u` only and no cache.
             issubset(el_qty, (:e, :u)) || throw(ArgumentError(
                 "run_eph_over_q_and_k solves the k+q states per tile, with `e` and `u` only; the " *
                 "loop and the calculators request $(setdiff(el_qty, (:e, :u))). Pass precompute_el_kq = true."))
@@ -529,18 +535,19 @@ end
 
 # ---- Explicit outer-k sweep -------------------------------------------------------------------
 
-function _loop_outer_k!(eng::OuterKEngine, batch, calculators)
-    # Compute the outer batch once, then partition inner k+q or q points into independent chunks.
-    stage1!(eng, batch)
+# The blocks of the engine's current stage-1 batch of outer k points.
+function _loop_outer_k!(eng::OuterKEngine, calculators)
+    # Partition the inner k+q or q points into independent chunks.
     inner_pts = eng.inner_loop_kq ? eng.kqpts : eng.qpts
     inner_pts.n == 0 && return nothing
     eng_fields = _workspace_fields(eng)
 
-    # GPU and serial runs remain on the caller's task and CUDA stream.
     if length(eng.tiles) == 1
+        # One chunk: GPU and serial runs remain on the caller's task and CUDA stream.
         _loop_outer_k_chunk!(eng_fields, _workspace_fields(eng.tiles[1]), calculators;
             chunk = 1, inner_indices = 1:inner_pts.n)
     else
+        # Several chunks: one task per chunk of inner points, each on its own tile workspace.
         inner_chunks = collect(enumerate(chunks(1:inner_pts.n; n = min(length(eng.tiles), inner_pts.n))))
         @threads for (chunk, inner_indices) in inner_chunks
             _loop_outer_k_chunk!(eng_fields, _workspace_fields(eng.tiles[chunk]), calculators; chunk, inner_indices)
@@ -559,7 +566,7 @@ function _loop_outer_k_chunk!(eng_fields, tile_workspace, calculators; chunk, in
         phase = nothing
         if eng_fields.inner_loop_kq && isinf(eng_fields.energy_conservation_tol)
             phase = view(tile_workspace.P_kq, :, 1:length(inner_indices_tile))
-            @views build_fourier_phase!(phase, eng_fields.irvecp_mat, eng_fields.xkq[:, inner_indices_tile])
+            @views build_fourier_phase!(phase, eng_fields.irvecp_mat, eng_fields.xkqs[:, inner_indices_tile])
         end
 
         for ik in eng_fields.batch
@@ -577,18 +584,21 @@ end
 
 # ---- Explicit outer-q sweep -------------------------------------------------------------------
 
-function _loop_outer_q!(eng::OuterQEngine, batch, calculators)
-    # Compute the outer q batch; chunks only read its output and own all writable scratch.
-    stage1!(eng, batch)
+# The blocks of the engine's current stage-1 batch of outer q points. The chunks only read the
+# stage-1 output and own all writable scratch.
+function _loop_outer_q!(eng::OuterQEngine, calculators)
     eng.els_k.nk == 0 && return nothing
     eng_fields = _workspace_fields(eng)
+    iqs_batch = eng.batch
 
     # Visit each q explicitly and complete its k chunks before calculator_end! or the next batch.
-    for iq in batch
+    for iq in iqs_batch
         if length(eng.tiles) == 1
+            # One chunk: GPU and serial runs remain on the caller's task and CUDA stream.
             _loop_outer_q_chunk!(eng_fields, _workspace_fields(eng.tiles[1]), calculators;
                 chunk = 1, iks = 1:eng.els_k.nk, iq)
         else
+            # Several chunks: one task per chunk of k points, each on its own tile workspace.
             inner_chunks = collect(enumerate(chunks(1:eng.els_k.nk; n = min(length(eng.tiles), eng.els_k.nk))))
             @threads for (chunk, iks) in inner_chunks
                 _loop_outer_q_chunk!(eng_fields, _workspace_fields(eng.tiles[chunk]), calculators; chunk, iks, iq)
@@ -620,9 +630,10 @@ end
         -> NamedTuple
 
 Estimate the device memory of an e-ph run without running it, from the byte counts the loop plans
-with (`engine_bytes` and the calculators' `eph_batched_bytes_per_point`) at box widths `nw`, so a
+with (`engine_bytes` and the calculators' `calculator_bytes`) at box widths `nw`, so a
 windowed run uses less. The order follows `model.epmat_outer_momentum` (`el` → outer-k, `ph` →
-outer-q); the state containers are not counted. Returns `(; loop, committed, per_pair, batch,
+outer-q). `nk` is the number of k points and `nkq` the number of k+q points of an outer-k model,
+or of outer q points of an outer-q model. The state containers are not counted. Returns `(; loop, committed, per_pair, batch,
 free)`, `batch` the inner tile the run would pick on `backend`, with the run's defaults.
 
 Actual device usage starts ~100-150 MB higher: the CUDA library context and workspace (cuBLAS
@@ -635,22 +646,22 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer, n_o
     order = outer_k ? OuterKLoop() : OuterQLoop()
     el_qty = union(loop_el_quantities(), required_el_quantities.(calculators)...)
     ph_qty = union(loop_ph_quantities(model), required_ph_quantities.(calculators)...)
-    (; nbatch_inner, committed, bytes) = _plan_widths(order, model, backend, calculators;
+    plan = _plan_widths(order, model, backend, calculators;
         n_outer = outer_k ? Int(nk) : Int(nkq), n_inner = outer_k ? Int(nkq) : Int(nk), nk, nkq,
         nchunks = backend isa CPUBackend ? nchunks_threads : 1, n_outer_batch, n_inner_tile,
         nband_max_k = model.nw, nband_max_kq = model.nw, els_k = nothing, els_kq = nothing, phs = nothing,
         el_qty, ph_qty, precompute_el_kq = false, covariant_derivative_of_g = false,
         eph_phonon_basis = :eigenmode, inner_loop_kq = outer_k)
-    (; loop = outer_k ? :outer_k : :outer_q, committed, bytes.per_pair, batch = nbatch_inner,
-       free = free_bytes(backend))
+    (; loop = outer_k ? :outer_k : :outer_q, plan.committed, plan.bytes.per_pair,
+       batch = plan.n_inner_tile, free = free_bytes(backend))
 end
 
 
 # =============================================================================
-# Deprecated driver name — forwarder, removed after one release. Explicit @warn (maxlog=1) because
-# Base.@deprecate depwarns are invisible in ordinary script runs (Julia ≥ 1.5). The driver was renamed
-# to the run_eph_over_<outer>_and_<inner> scheme. Delete this block when the old name goes.
+# Deprecated name of `run_eph_over_q_and_k`: a forwarder, to be removed after one release. An
+# explicit @warn (maxlog = 1) because Base.@deprecate depwarns are invisible in ordinary script
+# runs (Julia ≥ 1.5).
 function run_eph_outer_q(args...; kwargs...)
-    @warn "run_eph_outer_q is deprecated; use run_eph_over_q_and_k (identical arguments)." maxlog=1
+    @warn "run_eph_outer_q is deprecated; use run_eph_over_q_and_k." maxlog=1
     run_eph_over_q_and_k(args...; kwargs...)
 end

@@ -10,7 +10,7 @@ Contract:
 - all three arrays live on one backend, and the whole thing is a single broadcast (no scalar
   indexing, no scratch), so it runs unchanged on CPU and GPU;
 - `phase` is `(nr, nk)` and may be a view;
-- `phase` is caller-owned. That is what lets the GPU outer-k e-ph loop keep two phase tiles of
+- `phase` is caller-owned. That is what lets the outer-k e-ph loop keep two phase tiles of
   different widths (`P_mk` at the k-batch width, `P_kq` at the q-tile width);
 - stateless: the phase depends only on `(R_p, x)`, so a caller whose `x` list is loop-invariant
   builds it once and applies it many times. That hoist is the reason this is reachable at all

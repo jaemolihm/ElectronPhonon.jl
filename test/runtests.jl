@@ -18,7 +18,7 @@ include("common_models_from_artifacts.jl")
         include("test_smearing.jl")
         include("test_kpoints.jl")
         include("test_band_states.jl")  # (k, band) selection: indexing, filter_states, symmetry stars
-        include("test_iq_build.jl")  # GPU outer-k loop's `iq` index build (host arithmetic, CPU-only)
+        include("test_iq_build.jl")  # outer-k loop's `iq` index build (`_fill_iqs!`, host arithmetic)
         include("test_symmetry.jl")
         include("test_wannier.jl")
         include("test_holstein_model.jl")  # analytic Holstein Model builder (no artifacts needed)
