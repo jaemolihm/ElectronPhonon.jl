@@ -40,11 +40,13 @@ cannot rot.
 ## A complete minimal example
 
 This calculator sums `wtq · |g|²/(2ω)` over the in-window bands, the modes and the q points, for each
-k point. It supports both loop orders and runs on the CPU and on a GPU.
+k point (`g2_per_k`), and that sum weighted by `wtk` over the k points (`g2_avg`), which shows a
+reduction over both momenta. It supports both loop orders and runs on the CPU and on a GPU.
 
 <!-- doc-example:begin -->
 ```julia
 using ElectronPhonon
+using LinearAlgebra: dot
 using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, OuterKContext,
     OuterQContext, CPUBackend, GPUBackend, alloc, omega_acoustic
 
@@ -54,12 +56,15 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, Outer
 mutable struct EphG2SumCalculator <: AbstractCalculator
     g2_per_k        :: Vector{Float64}   # the result, indexed by k point
     g2_per_k_buffer :: Matrix{Float64}   # (chunk, outer k of the batch), for the outer-k loop
+    # Σ_k wtk g2_per_k[k], and its partial sum of each chunk.
+    g2_avg          :: Float64
+    g2_avg_buffer   :: Vector{Float64}
     # Scratch of the GPU methods, sized to one tile: the summand of a block, and the per-pair sums
     # of an outer-q block on the device and on the host. Empty on a CPU backend.
     g2_scratch    :: Vector{Any}
     pair_sums_dev :: Vector{Any}
     pair_sums     :: Vector{Vector{Float64}}
-    EphG2SumCalculator() = new(Float64[], zeros(0, 0), [], [], [])
+    EphG2SumCalculator() = new(Float64[], zeros(0, 0), 0.0, Float64[], [], [], [])
 end
 
 ElectronPhonon.supports(::EphG2SumCalculator, ::Type{OuterKLoop}) = true
@@ -76,6 +81,14 @@ function ElectronPhonon.setup_calculator!(c::EphG2SumCalculator, backend, els_k,
     # Outer k: the CPU thread chunks add to the sum of the same outer k concurrently, so each chunk
     # has its own row, one column per outer k of a batch. `calculator_end_batch!` sums the rows.
     c.g2_per_k_buffer = zeros(nchunks_threads, n_outer_batch)
+
+    # The reductions of `g2_avg`. The sum over q happens inside each block, and across the tiles
+    # of an outer k, giving one number per k. The sum over k is weighted by `wtk`: the outer k's
+    # weight under OuterKLoop (`block.wtk` a scalar), each pair's k weight under OuterQLoop
+    # (`block.wtk` a vector). Every block of every chunk adds to the same scalar, so each chunk adds
+    # to its own entry of `g2_avg_buffer`, summed in `postprocess_calculator!`.
+    c.g2_avg = 0.0
+    c.g2_avg_buffer = zeros(nchunks_threads)
 
     if backend isa GPUBackend
         # GPU scratch, sized to the largest block: `ep` is (nband_max_kq, nband_max_k, nmodes,
@@ -152,6 +165,7 @@ function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{Ou
     end
     ik_batch = block.ik - first(ctx.iks_batch) + 1
     c.g2_per_k_buffer[ctx.chunk, ik_batch] += s
+    c.g2_avg_buffer[ctx.chunk] += block.wtk * s
     c
 end
 
@@ -159,8 +173,10 @@ end
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterKLoop},
                                         ctx::OuterKContext{<:GPUBackend})
     g2 = block_g2!(c, block, ctx.chunk)
+    s = sum(g2)
     ik_batch = block.ik - first(ctx.iks_batch) + 1
-    c.g2_per_k_buffer[ctx.chunk, ik_batch] += sum(g2)
+    c.g2_per_k_buffer[ctx.chunk, ik_batch] += s
+    c.g2_avg_buffer[ctx.chunk] += block.wtk * s
     c
 end
 
@@ -180,12 +196,14 @@ function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{Ou
             end
         end
         c.g2_per_k[block.ik[ik_tile]] += s
+        c.g2_avg_buffer[ctx.chunk] += block.wtk[ik_tile] * s
     end
     c
 end
 
 # Outer q, GPU: sum the summand over (m, n, ν) of each pair on the device, copy the npairs sums to
-# the host, and add them to their k points.
+# the host, and add them to their k points. The k-weighted sum is a `dot` of the device sums with
+# the device k weights `block.wtk`, which returns a host number without scalar indexing.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterQLoop},
                                         ctx::OuterQContext{<:GPUBackend})
     g2 = block_g2!(c, block, ctx.chunk)
@@ -194,6 +212,7 @@ function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{Ou
     sum!(reshape(pair_sums_dev, 1, 1, 1, npairs), g2)
     copyto!(c.pair_sums[ctx.chunk], 1, pair_sums_dev, 1, npairs)
     view(c.g2_per_k, block.ik) .+= view(c.pair_sums[ctx.chunk], 1:npairs)
+    c.g2_avg_buffer[ctx.chunk] += dot(pair_sums_dev, block.wtk)
     c
 end
 
@@ -206,7 +225,11 @@ end
 # Outer q: `run_calculator!` already added every pair to its k point; nothing to reduce.
 ElectronPhonon.calculator_end_batch!(c::EphG2SumCalculator, ::OuterQContext) = c
 
-ElectronPhonon.postprocess_calculator!(c::EphG2SumCalculator; kwargs...) = c
+# After the loop: sum the chunks' partial sums of `g2_avg`.
+function ElectronPhonon.postprocess_calculator!(c::EphG2SumCalculator; kwargs...)
+    c.g2_avg = sum(c.g2_avg_buffer)
+    c
+end
 ```
 <!-- doc-example:end -->
 
@@ -249,7 +272,7 @@ out_q = ElectronPhonon.run_eph_over_q_and_k(model_ph, (8, 8, 8), (8, 8, 8);
     calculators = [calc_q], symmetry = nothing, window_k = window, window_kq = window)
 
 # The two grid runs agree on the k-weighted sum, up to the symmetry of the interpolated g2.
-sum(out.kpts.weights .* calc.g2_per_k) ≈ sum(out_q.kpts.weights .* calc_q.g2_per_k)
+calc.g2_avg ≈ calc_q.g2_avg
 ```
 <!-- doc-driver:end -->
 
