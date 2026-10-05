@@ -83,8 +83,8 @@ end
             held = _device_bytes(eng) - _device_bytes((eng.els_k, eng.els_kq, eng.phs))
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
             @info "engine_bytes" order mom dg disk held transient counted ratio = (held + transient) / counted
-            # Everything the engine holds and its stage 1 allocates is counted (0.991-1.000 measured,
-            # Pb, A100)...
+            # Everything the engine holds and its stage 1 allocates is counted (0.980-1.000 measured,
+            # Pb, A100, the disk arms included)...
             @test held + transient <= 1.02 * counted
             # ...and the count is not a loose upper bound.
             @test held + transient >= 0.95 * counted
