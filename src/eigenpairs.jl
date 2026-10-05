@@ -200,11 +200,12 @@ end
     set_el_eigen!(e, u, nw, eigenpairs, ham, xk)
 The full-band electron eigenvalues of `xk` into `e` (nw) and, unless `u === nothing`, the
 eigenvectors into `u` (nw, nw). `eigenpairs === nothing` diagonalizes H(k) with `ham`
-([`compute_el_eigen!`](@ref) or [`compute_el_eigen_valueonly!`](@ref)); an [`Eigenpairs`](@ref) copies
-them out of the cache, which must cover `xk`, and `ham` is unused.
+([`compute_el_eigen!`](@ref) or [`compute_el_eigen_valueonly!`](@ref)); an
+[`Eigenpairs`](@ref) copies them out of the cache, which must cover `xk`, and `ham` is unused.
 """
 set_el_eigen!(e, u, nw, ::Nothing, ham, xk) =
-    u === nothing ? compute_el_eigen_valueonly!(e, nw, ham, xk) : compute_el_eigen!(e, u, nw, ham, xk)
+    u === nothing ? compute_el_eigen_valueonly!(e, nw, ham, xk) :
+                    compute_el_eigen!(e, u, nw, ham, xk)
 
 set_el_eigen!(e, u, nw, eigenpairs::Eigenpairs, ham, xk) = _copy_eigen_from!(e, u, eigenpairs, xk)
 
@@ -285,20 +286,22 @@ set_eigen_valueonly!(el::ElectronState, ham, xk) = set_eigen_valueonly!(el, noth
 Compute phonon eigenenergy and eigenvector and save them in `ph`, or copy them from `eigenpairs`
 (see [`set_ph_eigen!`](@ref)).
 """
-function set_eigen!(ph::PhononState, eigenpairs::Union{Nothing, Eigenpairs}, dyn, mass, polar, xq::Vec3)
+function set_eigen!(ph::PhononState, eigenpairs::Union{Nothing, Eigenpairs}, dyn, mass, polar,
+                    xq::Vec3)
     ph.xq = xq
     set_ph_eigen!(ph.e, ph.u, eigenpairs, dyn, mass, polar, xq)
     ph
 end
 
-set_eigen!(ph::PhononState, dyn, mass, polar, xq::Vec3) = set_eigen!(ph, nothing, dyn, mass, polar, xq)
+set_eigen!(ph::PhononState, dyn, mass, polar, xq::Vec3) =
+    set_eigen!(ph, nothing, dyn, mass, polar, xq)
 
 """
     set_eigen_valueonly!(ph::PhononState, [eigenpairs,] dyn, mass, polar, xq)
 Compute phonon eigenenergy and save them in `ph`, or copy them from `eigenpairs`.
 """
-function set_eigen_valueonly!(ph::PhononState, eigenpairs::Union{Nothing, Eigenpairs}, dyn, mass, polar,
-                              xq::Vec3)
+function set_eigen_valueonly!(ph::PhononState, eigenpairs::Union{Nothing, Eigenpairs}, dyn, mass,
+                              polar, xq::Vec3)
     ph.xq = xq
     set_ph_eigen!(ph.e, nothing, eigenpairs, dyn, mass, polar, xq)
     ph
