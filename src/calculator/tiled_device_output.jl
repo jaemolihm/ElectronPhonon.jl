@@ -51,7 +51,7 @@ mutable struct TiledDeviceOutput{FT}
 end
 
 """
-    residency_stream_per_batch(backend, full_bytes; headroom = 1.2) -> Bool
+    should_stream_per_batch(backend, full_bytes; headroom = 1.2) -> Bool
 
 The residency heuristic (one of the composable building blocks): `true` if `full_bytes` of
 full-device-resident output — summed over all arrays — should fall back to streaming one outer-k
@@ -60,7 +60,7 @@ tile per batch because it would not fit free device memory with the given `headr
 its first batch (with `full_bytes = narr · sizeof(FT) · prod(dims)`); exposed standalone so an exotic
 calculator that hand-rolls its buffers can make the same choice without a `TiledDeviceOutput`.
 """
-residency_stream_per_batch(backend::AbstractBackend, full_bytes::Integer; headroom::Real = 1.2) =
+should_stream_per_batch(backend::AbstractBackend, full_bytes::Integer; headroom::Real = 1.2) =
     headroom * full_bytes > free_bytes(backend)
 
 function TiledDeviceOutput{FT}(dims, i_axis::Integer, el_i::BandStates, n_outer_batch::Integer;
@@ -102,8 +102,7 @@ function tile_begin!(t::TiledDeviceOutput{FT}, ctx::OuterKContext) where {FT}
             t.streamed_per_batch = false
         else
             full_bytes = t.narr * sizeof(FT) * prod(t.dims)
-            t.streamed_per_batch = residency_stream_per_batch(backend, full_bytes;
-                                                              headroom = t.headroom)
+            t.streamed_per_batch = should_stream_per_batch(backend, full_bytes; headroom = t.headroom)
             t.streamed_per_batch && @warn "WARNING : full device-resident output " *
                 "($(t.narr)×$(round(sizeof(FT) * prod(t.dims) / 1e9, digits = 2)) GB) does not fit free " *
                 "GPU memory, falling back to per-batch device→host streaming of one outer-k tile " *
