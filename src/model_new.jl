@@ -166,11 +166,16 @@ end
         folder :: String, outdir :: String, prefix :: String; epmat_outer_momentum :: String = "el",
         load_epmat :: Bool = true,
         load_symmetry_operators :: Bool = false,
-        skip_eph_ndegen :: Bool = false
+        skip_eph_ndegen :: Bool = false,
+        epmat_on_disk :: Bool = false,
+        tmpdir = nothing,
     ) => Model
 - `skip_eph_ndegen:: Bool = false` : If true, skip applying Wigner-Seitz degeneracy correction
   when reading electron-phonon coupling matrix elements. Use for newer EPW versions
   that already apply the correction.
+- `epmat_on_disk :: Bool = false` : If true, write the epmat to `tmpdir/tmp_epmat.bin` and
+  memory-map it (read-only). The epmat is never fully loaded into memory.
+- `tmpdir = nothing` : Directory for the `epmat_on_disk = true` file.
 """
 function load_model_from_epw_new(
     folder :: String,
@@ -181,7 +186,12 @@ function load_model_from_epw_new(
     load_epmat :: Bool = true,
     load_symmetry_operators :: Bool = false,
     skip_eph_ndegen :: Bool = false,
+    epmat_on_disk :: Bool = false,
+    tmpdir = nothing,
     )
+    if epmat_on_disk && load_epmat && tmpdir === nothing
+        error("If epmat_on_disk is true, tmpdir must be provided.")
+    end
 
     # el_velocity_mode = :Direct
     el_velocity_mode = :BerryConnection
@@ -454,7 +464,8 @@ function load_model_from_epw_new(
 
     if load_epmat
         filename = joinpath(folder, outdir, "$prefix.epmatwp")
-        ep = read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum; skip_ndegen_ep = skip_eph_ndegen, ndegen_pre_divided)
+        ep = read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum; skip_eph_ndegen, ndegen_pre_divided,
+                        epmat_on_disk_path = epmat_on_disk ? joinpath(tmpdir, "tmp_epmat.bin") : nothing)
 
     else
         # Do not read epmat
@@ -486,83 +497,93 @@ end
 
 function read_epmat(
     filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum;
-    skip_ndegen_ep = false,
+    skip_eph_ndegen = false,
     ndegen_pre_divided = false,
+    epmat_on_disk_path = nothing,
     )
-    # skip_ndegen : Bool. If true, skip applying Wigner-Seitz degeneracy correction.
-    #               Use for newer EPW versions that already apply the correction.
+    # skip_eph_ndegen : Bool. If true, skip applying Wigner-Seitz degeneracy correction.
+    #                   Use for newer EPW versions that already apply the correction.
     # ndegen_pre_divided : Bool. If true, both ndegen_el and ndegen_ep are already
     #                      pre-divided in the files. This is for EPW v6.2 and afterwards.
+    # epmat_on_disk_path : If not nothing, op_r is written to this file and memory-mapped (read-only).
+    # ind_el, ind_ep, ndegen_el, ndegen_ep : sorted R order (ndegen already permuted by ind).
 
+    # Index order
+    # EPW : (iw, jw, iRe, imode, iRp), R in file order
+    # EP.jl epmat_outer_momentum == "ph" : (iw, jw, imode, iRe, iRp), R sorted
+    # EP.jl epmat_outer_momentum == "el" : (iw, jw, imode, iRp, iRe), R sorted
+
+    # The file is streamed one iRp slab at a time, so the full epmat is never held twice.
+    ir_ep_sorted = invperm(ind_ep)  # sorted iRp of each file slab, in file order
+    epmat_irp = Array{ComplexF64}(undef, nw, nw, nr_el, nmodes)
+    io = epmat_on_disk_path === nothing ? nothing : open(epmat_on_disk_path, "w+")
     f = open(filename, "r")
-    epmat = zeros(ComplexF64, nw, nw, nr_el, nmodes, nr_ep)
-    @views for ir_ep in 1:nr_ep
-        read!(f, epmat[:, :, :, :, ir_ep])
+    if epmat_outer_momentum == "ph"
+        # Outer index iRp
+        dims = (nw^2 * nmodes * nr_el, nr_ep)
+        op_r = io === nothing ? Matrix{ComplexF64}(undef, dims) : Mmap.mmap(io, Matrix{ComplexF64}, dims)
+        op_r_5d = reshape(op_r, nw, nw, nmodes, nr_el, nr_ep)
+        @views for ir_ep in ir_ep_sorted
+            read!(f, epmat_irp)
+            _epmat_irp_to_op_r!(op_r_5d[:, :, :, :, ir_ep], epmat_irp, ir_ep, ind_el, ndegen_el, ndegen_ep;
+                                skip_eph_ndegen, ndegen_pre_divided)
+        end
+        irvec_outer, irvec_inner = irvec_ep, irvec_el
+    else
+        # Outer index iRe
+        dims = (nw^2 * nmodes * nr_ep, nr_el)
+        op_r = io === nothing ? Matrix{ComplexF64}(undef, dims) : Mmap.mmap(io, Matrix{ComplexF64}, dims)
+        op_r_5d = reshape(op_r, nw, nw, nmodes, nr_ep, nr_el)
+        @views for ir_ep in ir_ep_sorted
+            read!(f, epmat_irp)
+            _epmat_irp_to_op_r!(op_r_5d[:, :, :, ir_ep, :], epmat_irp, ir_ep, ind_el, ndegen_el, ndegen_ep;
+                                skip_eph_ndegen, ndegen_pre_divided)
+        end
+        irvec_outer, irvec_inner = irvec_el, irvec_ep
     end
     close(f)
 
-    # Shuffle R vector order
-    epmat = epmat[:, :, ind_el, :, ind_ep]
-
-    # Apply Wigner-Seitz degeneracy
-    if ! (skip_ndegen_ep || ndegen_pre_divided)
-        if size(ndegen_ep, 1) == 1
-            @views for ir_ep in 1:nr_ep
-                if ndegen_ep[1, 1, ir_ep] == 0
-                    epmat[:, :, :, :, ir_ep] .= 0
-                else
-                    epmat[:, :, :, :, ir_ep] ./= ndegen_ep[1, 1, ir_ep]
-                end
-            end
-
-        else
-            @views for ir_ep in 1:nr_ep, imode in 1:nmodes, iw in 1:nw
-                iatm = cld(imode, 3)
-                if ndegen_ep[iw, iatm, ir_ep] == 0
-                    epmat[iw, :, :, imode, ir_ep] .= 0
-                else
-                    epmat[iw, :, :, imode, ir_ep] ./= ndegen_ep[iw, iatm, ir_ep]
-                end
-            end
-        end
+    if io !== nothing
+        # Reopen read-only, so the epmat cannot be modified through op_r.
+        Mmap.sync!(op_r)
+        close(io)
+        op_r = Mmap.mmap(epmat_on_disk_path, Matrix{ComplexF64}, dims)
     end
 
-    if ! ndegen_pre_divided
-        if size(ndegen_el, 1) == 1
-            @views for ir_el in 1:nr_el
-                if ndegen_el[1, 1, ir_el] == 0
-                    epmat[:, :, ir_el, :, :] .= 0
-                else
-                    epmat[:, :, ir_el, :, :] ./= ndegen_el[1, 1, ir_el]
-                end
-            end
-
-        else
-            @views for ir_el in 1:nr_el, jw in 1:nw, iw in 1:nw
-                if ndegen_el[iw, jw, ir_el] == 0
-                    epmat[iw, jw, ir_el, :, :] .= 0
-                else
-                    epmat[iw, jw, ir_el, :, :] ./= ndegen_el[iw, jw, ir_el]
-                end
-            end
-        end
-    end
-
-    # Index order
-    # EPW : (iw, jw, iRe, imode, iRp)
-    # EP.jl epmat_outer_momentum == "ph" : (iw, jw, imode, iRe, iRp)
-    # EP.jl epmat_outer_momentum == "el" : (iw, jw, imode, iRp, iRe)
-
-    if epmat_outer_momentum == "ph"
-        epmat = permutedims(epmat, [1, 2, 4, 3, 5]);
-        epmat = reshape(epmat, (nw^2 * nmodes * nr_el, nr_ep))
-        ep = WannierObject(irvec_ep, epmat; irvec_next = irvec_el)
-
-    else
-        epmat = permutedims(epmat, [1, 2, 4, 5, 3]);
-        epmat = reshape(epmat, (nw^2 * nmodes * nr_ep, nr_el))
-        ep = WannierObject(irvec_el, epmat; irvec_next = irvec_ep)
-    end
-
+    ep = WannierObject(irvec_outer, op_r; irvec_next = irvec_inner)
     return ep
+end
+
+# Index legend: dest[iw, jw, imode, iRe] (iRe sorted) for one sorted iRp,
+# epmat_irp[iw, jw, iRe, imode] (iRe in file order).
+# Divides by ndegen_ep, then by ndegen_el; a zero degeneracy gives zero.
+function _epmat_irp_to_op_r!(dest, epmat_irp, ir_ep, ind_el, ndegen_el, ndegen_ep; skip_eph_ndegen, ndegen_pre_divided)
+    nw, _, nmodes, nr_el = size(dest)
+    @assert size(dest) == (nw, nw, nmodes, nr_el)
+    @assert size(epmat_irp) == (nw, nw, nr_el, nmodes)
+    @assert length(ind_el) == nr_el
+    apply_ndegen_ep = !(skip_eph_ndegen || ndegen_pre_divided)
+    apply_ndegen_el = !ndegen_pre_divided
+    ndegen_ep_per_atom = size(ndegen_ep, 1) != 1
+    ndegen_el_per_wann = size(ndegen_el, 1) != 1
+    if apply_ndegen_ep
+        @assert size(ndegen_ep)[1:2] == (ndegen_ep_per_atom ? (nw, cld(nmodes, 3)) : (1, 1))
+        @assert 1 <= ir_ep <= size(ndegen_ep, 3)
+    end
+    if apply_ndegen_el
+        @assert size(ndegen_el) == (ndegen_el_per_wann ? (nw, nw, nr_el) : (1, 1, nr_el))
+    end
+    for ir_el in 1:nr_el, imode in 1:nmodes, jw in 1:nw, iw in 1:nw
+        x = epmat_irp[iw, jw, ind_el[ir_el], imode]
+        if apply_ndegen_ep
+            n = ndegen_ep_per_atom ? ndegen_ep[iw, cld(imode, 3), ir_ep] : ndegen_ep[1, 1, ir_ep]
+            x = n == 0 ? zero(x) : x / n
+        end
+        if apply_ndegen_el
+            n = ndegen_el_per_wann ? ndegen_el[iw, jw, ir_el] : ndegen_el[1, 1, ir_el]
+            x = n == 0 ? zero(x) : x / n
+        end
+        dest[iw, jw, imode, ir_el] = x
+    end
+    dest
 end

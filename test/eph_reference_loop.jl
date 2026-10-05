@@ -225,3 +225,26 @@ function ElectronPhonon.run_calculator!(c::_PairRecorder, p::EPBlock, ctx)
         end
     end
 end
+
+# Records Σ |dg[:, :, :, d]|² of every pair from the `dg` of the blocks (in-window bands, all modes).
+# The Dict is guarded by a lock: blocks of different thread chunks run concurrently.
+mutable struct _DgRecorder <: ElectronPhonon.AbstractCalculator
+    ngrid :: NTuple{3, Int}
+    sums :: Dict{NTuple{6, Int}, Vector{Float64}}
+    lock :: ReentrantLock
+    _DgRecorder() = new((0, 0, 0), Dict(), ReentrantLock())
+end
+ElectronPhonon.supports(::_DgRecorder, ::Type{OuterKLoop}) = true
+ElectronPhonon.calculator_begin_batch!(::_DgRecorder, ctx) = nothing
+ElectronPhonon.calculator_end_batch!(::_DgRecorder, ctx) = nothing
+ElectronPhonon.postprocess_calculator!(c::_DgRecorder; kwargs...) = c
+ElectronPhonon.setup_calculator!(c::_DgRecorder, backend, els_k, els_kq, phs; kwargs...) =
+    (c.ngrid = els_k.kpts.ngrid; c)
+function ElectronPhonon.run_calculator!(c::_DgRecorder, block::EPBlock{OuterKLoop}, ctx)
+    dg = Array(block.dg)   # (m, n, ν, d, j)
+    nbk, nbkq = Array(block.els_k.nband)[1], Array(block.els_kq.nband)
+    for (j, xq) in enumerate(block.xq)
+        s = [sum(abs2, dg[1:nbkq[j], 1:nbk, :, d, j]) for d in 1:3]
+        lock(() -> c.sums[_pair_key(block.xk, block.xk + xq, c.ngrid)] = s, c.lock)
+    end
+end

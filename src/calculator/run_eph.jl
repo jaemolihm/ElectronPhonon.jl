@@ -367,8 +367,7 @@ function _check_run(order, model, kpts_input, second_input, options)
         "fourier_mode = \"$fourier_mode\" is not supported on a CPU backend. Use \"gridopt\" " *
         "(the default) or \"normal\"."))
     model.epmat isa WannierObject || throw(ArgumentError(
-        "a disk-backed epmat ($(typeof(model.epmat))) is not supported by the e-ph loop; load the " *
-        "model into memory"))
+        "the e-ph loop needs model.epmat; the model was loaded with skip_epmat"))
     _require_epmat_layout(order, model)
     screening_params === nothing || error(
         "screening_params is not supported: dielectric screening is currently disabled (ϵ ≡ 1). " *

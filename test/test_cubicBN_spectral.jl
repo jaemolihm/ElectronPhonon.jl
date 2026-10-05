@@ -70,7 +70,7 @@ using ElectronPhonon
         end
     end
 
-    # @testset "DiskWannierObject, gridopt" begin
+    # @testset "epmat_on_disk, gridopt" begin
     #     for key in keys(output)
     #         key == "kpts" && continue
     #         @test output_disk_gridopt[key] ≈ output[key]

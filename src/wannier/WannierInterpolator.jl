@@ -77,7 +77,6 @@ For a multithreaded use, one must use `get_interpolator_channel` instead.
 
 # Keyword Arguments
 - `fourier_mode`: Interpolation mode - "normal", "batched", "gridopt", or "batched-gridopt".
-  A `DiskWannierObject` supports the per-k modes "normal" and "gridopt" only.
 - `batch_size`: Block width for the "batched" and "batched-gridopt" modes. `nothing` takes
   [`ElectronPhonon._default_batch_size`](@ref) for `backend`.
 - `nk_hint`: Largest k-list the caller will hand this interpolator, if known. Only narrows a
@@ -91,10 +90,8 @@ function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", bat
     if fourier_mode === "normal"
         NormalWannierInterpolator(obj)
     elseif fourier_mode === "batched"
-        parent = _batched_parent(obj, fourier_mode)
-        bs = something(batch_size,
-            _default_batch_size(backend, length(parent.irvec), parent.ndata; nk_hint))
-        BatchedWannierInterpolator(parent; batch_size = bs, backend)
+        bs = something(batch_size, _default_batch_size(backend, length(obj.irvec), obj.ndata; nk_hint))
+        BatchedWannierInterpolator(obj; batch_size = bs, backend)
     elseif fourier_mode === "gridopt"
         GridoptWannierInterpolator(obj, threads)
     elseif fourier_mode === "batched-gridopt"
@@ -103,23 +100,12 @@ function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", bat
         backend isa CPUBackend || throw(ArgumentError(
             "fourier_mode=\"batched-gridopt\" is host-only and cannot run on a " *
             "$(nameof(typeof(backend))); use \"batched\""))
-        parent = _batched_parent(obj, fourier_mode)
-        bs = something(batch_size, _default_batch_size(backend, length(parent.irvec), parent.ndata))
-        BatchedGridoptWannierInterpolator(parent; batch_size = bs, threads)
+        bs = something(batch_size, _default_batch_size(backend, length(obj.irvec), obj.ndata))
+        BatchedGridoptWannierInterpolator(obj; batch_size = bs, threads)
     else
         throw(ArgumentError("Wrong fourier_mode $fourier_mode"))
     end
 end
-
-# A disk-backed object is supported by the per-k modes only. "batched" is one BLAS3 GEMM against the
-# whole operator and cannot be served from disk at all; "batched-gridopt" is rejected with it so that
-# "batched" means one thing, and because the per-R disk reads it would do are what "gridopt" already
-# gives. This asymmetry is the intended contract, not a gap to be filled in later.
-_batched_parent(obj::WannierObject, fourier_mode) = obj
-_batched_parent(obj::AbstractWannierObject, fourier_mode) = throw(ArgumentError(
-    "fourier_mode=\"$fourier_mode\" needs an in-memory op_r, which a $(nameof(typeof(obj))) does " *
-    "not have; use \"normal\" or \"gridopt\""))
-
 
 """
     get_interpolator_channel(obj::AbstractWannierObject{T}; fourier_mode, batch_size = nothing,
@@ -153,7 +139,7 @@ function skip_registered_kpoint!(obj::AbstractWannierInterpolator)
 end
 
 
-@timing "get_fourier" function get_fourier!(op_k, obj::NormalWannierInterpolator{T, WT}, xk) where {T, WT}
+@timing "get_fourier" function get_fourier!(op_k, obj::NormalWannierInterpolator{T}, xk) where {T}
     (; parent, phase) = obj
     @assert eltype(op_k) == Complex{T}
     @assert length(op_k) == parent.ndata
@@ -161,14 +147,7 @@ end
 
     phase .= cispi.(2 .* dot.(parent.irvec, Ref(xk)))
 
-    if WT <: DiskWannierObject
-        op_k_1d .= 0
-        for ir in 1:parent.nr
-            op_k_1d .+= read_op_r(parent, ir) .* phase[ir]
-        end
-    else
-        @views mul!(op_k_1d, parent.op_r[1:parent.ndata, :], phase)
-    end
+    @views mul!(op_k_1d, parent.op_r[1:parent.ndata, :], phase)
 
     op_k
 end
