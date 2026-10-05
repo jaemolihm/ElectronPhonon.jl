@@ -177,52 +177,50 @@ function _eigenpairs_ik(eigenpairs::Eigenpairs, xk)
     ik
 end
 
-# The consumers, one method pair per quantity a caller can take from the cache instead of solving
-# H(k) itself: `::Nothing` solves (exactly what the call site did before a cache existed) and
+# The consumers. A caller takes the eigenpairs of a k point either by solving H(k) or D(q) itself
+# or from the cache, chosen by dispatch on the cache argument: `::Nothing` solves and
 # `::Eigenpairs` copies out. The cache therefore arrives as a typed argument, each call site
-# specializes on one of the two, and no loop gains a branch. They live here, next to the type,
-# rather than beside their callers in compute_states.jl and filter.jl, so that the lookup, the miss
-# error and the copy are written once.
+# specializes on one of the two, and no loop gains a branch. The choice is made once per species,
+# in an array-level pair that every host consumer calls: the per-point state setters below, the
+# batched host builders and the window filter. The copy does not depend on the species, so the
+# lookup, the miss error and the copy are written once, here next to the type.
 
-# The full eigenpair of one k point, into an `ElectronState`.
-_set_eigen_from!(el::ElectronState, ::Nothing, ham, xk) = set_eigen!(el, ham, xk)
-
-function _set_eigen_from!(el::ElectronState, eigenpairs::Eigenpairs, ham, xk)
+# Copy the eigenvalues of `xk` into `e` and, unless `u === nothing`, its eigenvectors into `u`.
+@views function _copy_eigen_from!(e, u, eigenpairs::Eigenpairs, xk)
     ik = _eigenpairs_ik(eigenpairs, xk)
-    el.xk = xk
-    @views el.e_full .= eigenpairs.e_full[:, ik]
-    @views el.u_full .= eigenpairs.u_full[:, :, ik]
-
-    # Reset window to a dummy value
-    el.nband = 0
-    el.rng = 1:0
+    e .= eigenpairs.e_full[:, ik]
+    u === nothing || (u .= eigenpairs.u_full[:, :, ik])
+    nothing
 end
 
-_set_eigen_valueonly_from!(el::ElectronState, ::Nothing, ham, xk) =
-    set_eigen_valueonly!(el, ham, xk)
+# The full-band electron eigenpairs of one k point into `e` (nw) and `u` (nw, nw); `u === nothing`
+# fills the eigenvalues only.
+_get_el_eigen_from!(e, u, nw, ::Nothing, ham, xk) =
+    u === nothing ? compute_el_eigen_valueonly!(e, nw, ham, xk) : compute_el_eigen!(e, u, nw, ham, xk)
 
-function _set_eigen_valueonly_from!(el::ElectronState, eigenpairs::Eigenpairs, ham, xk)
-    ik = _eigenpairs_ik(eigenpairs, xk)
-    el.xk = xk
-    @views el.e_full .= eigenpairs.e_full[:, ik]
+_get_el_eigen_from!(e, u, nw, eigenpairs::Eigenpairs, ham, xk) = _copy_eigen_from!(e, u, eigenpairs, xk)
 
-    # Reset window to a dummy value
-    el.nband = 0
-    el.rng = 1:0
-    el
-end
+# The phonon eigenpairs of one q point: `e` is the frequency ω and `u` the mass-scaled eigenmode,
+# i.e. what `compute_ph_eigen!` returns and what `phonon_eigenpairs` stores, so neither the
+# sign(ω²)√|ω²| nor the 1/√mass step is redone on a copy. `u === nothing` fills ω only. Argument
+# order follows the electron pair, `(arrays, cache, what it takes to solve, momentum)`; the solver
+# arguments differ because `D(q)` needs the masses and the dipole term where `H(k)` needs only its
+# interpolator.
+_get_ph_eigen_from!(e, u, ::Nothing, dyn, mass, polar, xq) =
+    u === nothing ? compute_ph_eigen_valueonly!(e, dyn, mass, polar, xq) :
+                    compute_ph_eigen!(e, u, dyn, mass, polar, xq)
 
-# The full-band eigenvalues of one k point, into `eigenvalues`.
-_set_eigenvalues_from!(eigenvalues, nw, ::Nothing, ham, xk) =
-    compute_el_eigen_valueonly!(eigenvalues, nw, ham, xk)
+# Unlike the other copies this one is not inert for `u === nothing`: `e` comes from the cache's FULL
+# eigensolve where the cacheless path runs the value-only driver. The two agree on ω² to
+# `eps * ‖D(q)‖`, but ω = sign(ω²)√|ω²| turns that into a `1/(2ω)`-amplified deviation, so a mode
+# whose ω² is far below the largest ω² of its own q point -- an acoustic mode at Γ of a cell that
+# also carries optical modes -- can differ in the leading digits. Modes away from ω = 0 agree to
+# round-off.
+_get_ph_eigen_from!(e, u, eigenpairs::Eigenpairs, dyn, mass, polar, xq) =
+    _copy_eigen_from!(e, u, eigenpairs, xq)
 
-function _set_eigenvalues_from!(eigenvalues, nw, eigenpairs::Eigenpairs, ham, xk)
-    ik = _eigenpairs_ik(eigenpairs, xk)
-    @views eigenvalues .= eigenpairs.e_full[:, ik]
-end
-
-# The same, batched over a chunk of k points and returned on the host for the window test. The
-# device arm gathers off a cache that is resident on that same device.
+# The full-band electron eigenvalues of a chunk of k points, batched and returned on the host for
+# the window test. The device arm gathers off a cache that is resident on that same device.
 _eigenvalues_on_host(::Nothing, itp_elham, xks) =
     Array(compute_el_eigen_valueonly_batched(itp_elham, xks))
 
@@ -231,35 +229,32 @@ function _eigenvalues_on_host(eigenpairs::Eigenpairs, itp_elham, xks)
     Array(eigenpairs.e_full[:, iks])
 end
 
-# The full eigenpair of one q point, into a `PhononState`. `e` is the frequency ω and `u` the
-# mass-scaled eigenmode, i.e. what `compute_ph_eigen!` leaves in a `PhononState` and what
-# `phonon_eigenpairs` stores, so neither the sign(ω²)√|ω²| nor the 1/√mass step is redone here.
-# Argument order follows the electron pair above, `(state, cache, what it takes to solve,
-# momentum)`; the solver arguments differ because `D(q)` needs the masses and the dipole term
-# where `H(k)` needs only its interpolator.
-_set_eigen_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
-    set_eigen!(ph, dyn, mass, polar, xq)
+# The per-point state setters: `set_eigen!` / `set_eigen_valueonly!` with the eigenpairs taken from
+# the cache when one is given. The electron window is reset to a dummy value, as `set_eigen!` does.
+function _set_eigen_from!(el::ElectronState, eigenpairs, ham, xk)
+    el.xk = xk
+    _get_el_eigen_from!(el.e_full, el.u_full, el.nw, eigenpairs, ham, xk)
+    el.nband = 0
+    el.rng = 1:0
+    el
+end
 
-function _set_eigen_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
-    iq = _eigenpairs_ik(eigenpairs, xq)
+function _set_eigen_valueonly_from!(el::ElectronState, eigenpairs, ham, xk)
+    el.xk = xk
+    _get_el_eigen_from!(el.e_full, nothing, el.nw, eigenpairs, ham, xk)
+    el.nband = 0
+    el.rng = 1:0
+    el
+end
+
+function _set_eigen_from!(ph::PhononState, eigenpairs, dyn, mass, polar, xq)
     ph.xq = xq
-    @views ph.e .= eigenpairs.e_full[:, iq]
-    @views ph.u .= eigenpairs.u_full[:, :, iq]
+    _get_ph_eigen_from!(ph.e, ph.u, eigenpairs, dyn, mass, polar, xq)
     ph
 end
 
-# Unlike every other consumer here this one is not inert: `e` comes from the cache's FULL
-# eigensolve where the cacheless path runs the value-only driver. The two agree on ω² to
-# `eps * ‖D(q)‖`, but ω = sign(ω²)√|ω²| turns that into a `1/(2ω)`-amplified deviation, so a mode
-# whose ω² is far below the largest ω² of its own q point -- an acoustic mode at Γ of a cell that
-# also carries optical modes -- can differ in the leading digits. Modes away from ω = 0 agree to
-# round-off.
-_set_eigen_valueonly_from!(ph::PhononState, ::Nothing, dyn, mass, polar, xq) =
-    set_eigen_valueonly!(ph, dyn, mass, polar, xq)
-
-function _set_eigen_valueonly_from!(ph::PhononState, eigenpairs::Eigenpairs, dyn, mass, polar, xq)
-    iq = _eigenpairs_ik(eigenpairs, xq)
+function _set_eigen_valueonly_from!(ph::PhononState, eigenpairs, dyn, mass, polar, xq)
     ph.xq = xq
-    @views ph.e .= eigenpairs.e_full[:, iq]
+    _get_ph_eigen_from!(ph.e, nothing, eigenpairs, dyn, mass, polar, xq)
     ph
 end
