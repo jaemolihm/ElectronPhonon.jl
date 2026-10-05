@@ -528,7 +528,7 @@ function read_epmat(
             _epmat_irp_to_op_r!(op_r_5d[:, :, :, :, ir_ep], epmat_irp, ir_ep, ind_el, ndegen_el, ndegen_ep;
                                 skip_eph_ndegen, ndegen_pre_divided)
         end
-        irvec_col, irvec_row = irvec_ep, irvec_el
+        irvec_outer, irvec_inner = irvec_ep, irvec_el
     else
         # Outer index iRe
         dims = (nw^2 * nmodes * nr_ep, nr_el)
@@ -539,7 +539,7 @@ function read_epmat(
             _epmat_irp_to_op_r!(op_r_5d[:, :, :, ir_ep, :], epmat_irp, ir_ep, ind_el, ndegen_el, ndegen_ep;
                                 skip_eph_ndegen, ndegen_pre_divided)
         end
-        irvec_col, irvec_row = irvec_el, irvec_ep
+        irvec_outer, irvec_inner = irvec_el, irvec_ep
     end
     close(f)
 
@@ -550,7 +550,7 @@ function read_epmat(
         op_r = Mmap.mmap(epmat_on_disk_path, Matrix{ComplexF64}, dims)
     end
 
-    ep = WannierObject(irvec_col, op_r; irvec_next = irvec_row)
+    ep = WannierObject(irvec_outer, op_r; irvec_next = irvec_inner)
     return ep
 end
 
@@ -562,13 +562,17 @@ function _epmat_irp_to_op_r!(dest, epmat_irp, ir_ep, ind_el, ndegen_el, ndegen_e
     @assert size(dest) == (nw, nw, nmodes, nr_el)
     @assert size(epmat_irp) == (nw, nw, nr_el, nmodes)
     @assert length(ind_el) == nr_el
-    @assert size(ndegen_el, 1) == 1 ? size(ndegen_el) == (1, 1, nr_el) : size(ndegen_el) == (nw, nw, nr_el)
-    @assert size(ndegen_ep, 1) == 1 || size(ndegen_ep)[1:2] == (nw, cld(nmodes, 3))
-    @assert 1 <= ir_ep <= size(ndegen_ep, 3)
     apply_ndegen_ep = !(skip_eph_ndegen || ndegen_pre_divided)
     apply_ndegen_el = !ndegen_pre_divided
     ndegen_ep_per_atom = size(ndegen_ep, 1) != 1
     ndegen_el_per_wann = size(ndegen_el, 1) != 1
+    if apply_ndegen_ep
+        @assert size(ndegen_ep)[1:2] == (ndegen_ep_per_atom ? (nw, cld(nmodes, 3)) : (1, 1))
+        @assert 1 <= ir_ep <= size(ndegen_ep, 3)
+    end
+    if apply_ndegen_el
+        @assert size(ndegen_el) == (ndegen_el_per_wann ? (nw, nw, nr_el) : (1, 1, nr_el))
+    end
     for ir_el in 1:nr_el, imode in 1:nmodes, jw in 1:nw, iw in 1:nw
         x = epmat_irp[iw, jw, ind_el[ir_el], imode]
         if apply_ndegen_ep
