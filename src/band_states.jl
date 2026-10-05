@@ -13,6 +13,8 @@
 #   * A full iterator: `for st in states` yields a non-allocating per-state NamedTuple.
 #   * Generic over `Kpoints`/`GridKpoints`; only k-vector→state queries need the hash.
 
+using OhMyThreads: tmap
+
 export AbstractBandStates, BandStates, FilteredBandStates
 export state_index, state_weights, state_xks, band_range, electron_states_to_BandStates,
     electron_states_to_FilteredBandStates, unfold_band_states, filter_states,
@@ -324,21 +326,19 @@ end
 
 For each inner (full-BZ) state `f`, the outer (IBZ) state with the same band whose k-point maps to
 `k_f` under `symmetry` (mod a reciprocal lattice vector); `symmetry === nothing` means
-`k_i ≡ k_f` must hold. Errors if any `el_f` state has no counterpart in `el_i`. `el_i` must carry
-`GridKpoints`: the lookup is its integer-grid hash.
+`k_i ≡ k_f` must hold. Errors if any `el_f` state has no counterpart in `el_i`. The lookup is the
+integer-grid hash of `el_i`'s k points, so `el_i` must carry `GridKpoints` (anything else has no
+`state_index` method).
 """
 function find_unfolding_indices(el_i::AbstractBandStates, el_f::AbstractBandStates, symmetry)
     xks_f = state_xks(el_f)   # dense gather once (setup, not a hot loop)
-    ind = Vector{Int}(undef, el_f.n)
-    for f in 1:el_f.n
-        xk_f = xks_f[f]
-        ib = el_f.ibands[f]
-        j = state_index_in_star(el_i, xk_f, ib, symmetry)
-        j != 0 || error("find_unfolding_indices: no representative for inner state $f " *
-                        "(k = $xk_f, band = $ib). Pass `symmetry` to enable IBZ reduction, or " *
-                        "use the same k-grid and window for k and k+q.")
-        ind[f] = j
-    end
+    # A miss is 0, reported after the threaded lookup so the error is the first missing state's, as
+    # a plain `ErrorException` rather than wrapped by a task.
+    ind = tmap(f -> state_index_in_star(el_i, xks_f[f], el_f.ibands[f], symmetry), Int, 1:el_f.n)
+    f = findfirst(iszero, ind)
+    f === nothing || error("find_unfolding_indices: no representative for inner state $f " *
+                           "(k = $(xks_f[f]), band = $(el_f.ibands[f])). Pass `symmetry` to " *
+                           "enable IBZ reduction, or use the same k-grid and window for k and k+q.")
     ind
 end
 
