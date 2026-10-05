@@ -556,7 +556,8 @@ end
 
         if n_kept == n_tile
             # Every pair is kept: the resident phonons as they are.
-            els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq, 1:n_tile)
+            els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq, 1:n_tile;
+                nband_host = nbands_kq)
             iqs = iqs_tile
             phs_block = view(phs, iqs_tile)
             wtqs = eng_fields.wtkqs[iqs_tile]
@@ -565,7 +566,8 @@ end
         else
             # Some pairs are skipped: gather the kept pairs' k+q states, phonons, weights and
             # coordinates.
-            els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq, ind_kept_kqpairs[1:n_kept])
+            els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq, ind_kept_kqpairs[1:n_kept];
+                nband_host = nbands_kq)
             for (i, j) in enumerate(ind_kept_kqpairs[1:n_kept])
                 tile_workspace.iqs[i] = iqs_tile[j]
             end
@@ -859,7 +861,7 @@ end
 
         # Move the kept pairs' window bands at k+q into the tile.
         els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq,
-            n_kept == n_tile ? (1:n_tile) : ind_kept_kqpairs[1:n_kept])
+            n_kept == n_tile ? (1:n_tile) : ind_kept_kqpairs[1:n_kept]; nband_host = nbands_kq)
         ikqs = nothing
     end
 
@@ -893,8 +895,9 @@ end
 @views function _compute_eph_for_pairs!(::OuterQLoop, eng_fields, tile_workspace, els_k, els_kq, iks, ikqs, iq,
         wtks, xks)
     # Borrow the tile's output storage for the block.
+    xkmat = _kpoints_to_device_matrix(eng_fields.backend, xks)
     block = EPBlock{OuterQLoop}(tile_workspace, els_k, els_kq, view(eng_fields.phs, iq:iq);
-        ik = iks, ikq = ikqs, iq, wtk = wtks, wtq = eng_fields.qpts.weights[iq], xk = xks,
+        ik = iks, ikq = ikqs, iq, wtk = wtks, wtq = eng_fields.qpts.weights[iq], xk = xks, xkmat,
         xq = eng_fields.qpts.vectors[iq])
 
     # Fourier-transform R_e of this q's stage-1 output at the tile's k points:
@@ -904,8 +907,7 @@ end
     nw = block.els_k.nw
     g = tile_workspace.g[:, 1:npairs]
     phase = tile_workspace.P_k[:, 1:npairs]
-    xkmat = _kpoints_to_device_matrix(eng_fields.backend, block.xk)
-    _fourier_batched!(g, eng_fields.ep_Rq[:, :, iq_batch], phase, eng_fields.irvece_mat, xkmat)
+    _fourier_batched!(g, eng_fields.ep_Rq[:, :, iq_batch], phase, eng_fields.irvece_mat, block.xkmat)
 
     # Rotate by u_k and u_{k+q}: g_ijν(k, q) -> g_mnν(k, q), with m, n the bands of k+q and k.
     tmp = reshape_buffer_view(tile_workspace.tmp, nbkq, nw * nmodes, npairs)
