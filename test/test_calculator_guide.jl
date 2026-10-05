@@ -48,7 +48,7 @@ end
     include_string(@__MODULE__, code)
 
     # Run it on the Pb artifact model (outer-k driver), with several outer batches and inner tiles,
-    # so the per-chunk rows of `g2_per_k_buffer` and their reduction over `ctx.batch` are exercised.
+    # so the per-chunk rows of `g2_per_k_buffer` and their reduction over `ctx.iks_batch` are exercised.
     # `invokelatest`: the calculator type + its interface methods were just defined by
     # `include_string`, so construct-and-run must execute at the latest world age to see them.
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")

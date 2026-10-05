@@ -249,14 +249,17 @@ function _run_eph_loop(eng, calculators; symmetry, progress_print_step, verbosit
     end
 
     # Explicitly bracket each outer batch; each chunk consumes its blocks before buffers are reused.
-    for outer_batch in Iterators.partition(1:eng.n_outer, eng.n_outer_batch)
+    # The outer points and their batches are k under OuterKEngine and q under OuterQEngine.
+    outer_pts = eng isa OuterKEngine ? eng.kpts : eng.qpts
+    for outer_batch in Iterators.partition(1:outer_pts.n, eng.n_outer_batch)
         if mpi_isroot() && div(last(outer_batch), progress_print_step) > div(first(outer_batch) - 1, progress_print_step)
-            @info "$(now()) $(eng isa OuterKEngine ? "ik" : "iq") = $outer_batch / $(eng.n_outer)"
+            @info "$(now()) $(eng isa OuterKEngine ? "ik" : "iq") = $outer_batch / $(outer_pts.n)"
             flush(stdout); flush(stderr)
         end
         # The calculators' bracket opens before the batch's stage 1, so a decision made in
         # `calculator_begin_batch!` from `free_bytes` (`TiledDeviceOutput`) sees no stage-1 transients.
-        ctx = LoopContext(eng; batch = outer_batch)
+        ctx = eng isa OuterKEngine ? OuterKContext(eng; iks_batch = outer_batch) :
+                                     OuterQContext(eng; iqs_batch = outer_batch)
         for calculator in calculators
             calculator_begin_batch!(calculator, ctx)
         end
@@ -558,7 +561,7 @@ end
 
 function _loop_outer_k_chunk!(eng_fields, tile_workspace, calculators; chunk, inner_indices)
     # function barrier for one CPU/GPU chunk's concrete states and reusable buffers.
-    ctx = LoopContext(eng_fields.backend, OuterKLoop(), eng_fields.batch, chunk)
+    ctx = OuterKContext(eng_fields.backend, eng_fields.iks_batch, chunk)
 
     for inner_indices_tile in Iterators.partition(inner_indices, eng_fields.n_inner_tile)
         # A resident k+q tile shares its Fourier phase across all outer k points, unless the
@@ -569,7 +572,7 @@ function _loop_outer_k_chunk!(eng_fields, tile_workspace, calculators; chunk, in
             @views build_fourier_phase!(phase, eng_fields.irvecp_mat, eng_fields.xkqs[:, inner_indices_tile])
         end
 
-        for ik in eng_fields.batch
+        for ik in eng_fields.iks_batch
             # The same stage-2 worker also serves standalone stage2!(eng, ik, inner_indices).
             block = _stage2!(OuterKLoop(), eng_fields, tile_workspace, ik, inner_indices_tile; phase)
             block === nothing && continue
@@ -589,7 +592,7 @@ end
 function _loop_outer_q!(eng::OuterQEngine, calculators)
     eng.els_k.nk == 0 && return nothing
     eng_fields = _workspace_fields(eng)
-    iqs_batch = eng.batch
+    (; iqs_batch) = eng
 
     # Visit each q explicitly and complete its k chunks before calculator_end_batch! or the next batch.
     for iq in iqs_batch
@@ -610,7 +613,7 @@ end
 
 function _loop_outer_q_chunk!(eng_fields, tile_workspace, calculators; chunk, iks, iq)
     # function barrier for one chunk's concrete state containers and Fourier/rotation scratch.
-    ctx = LoopContext(eng_fields.backend, OuterQLoop(), eng_fields.batch, chunk)
+    ctx = OuterQContext(eng_fields.backend, eng_fields.iqs_batch, chunk)
 
     for iks_tile in Iterators.partition(iks, eng_fields.n_inner_tile)
         # The same stage-2 worker gathers/solves states and returns a complete block for direct calls.

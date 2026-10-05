@@ -91,8 +91,8 @@ tile_stride(t::TiledDeviceOutput) = size(t.dev[1], t.i_axis)
 
 # Begin a batch: on the first batch, decide residency and allocate the device (and, for block mode,
 # host-mirror) buffers from `ctx.backend`; every block-mode batch records this batch's outer-k tile
-# range and zeros the tile's active region. `ctx` supplies `backend` and `batch` (the outer-k range).
-function tile_begin!(t::TiledDeviceOutput{FT}, ctx) where {FT}
+# range and zeros the tile's active region. `ctx` supplies `backend` and `iks_batch`.
+function tile_begin!(t::TiledDeviceOutput{FT}, ctx::OuterKContext) where {FT}
     backend = ctx.backend
     if !t.decided
         if t.force_block === true
@@ -121,7 +121,7 @@ function tile_begin!(t::TiledDeviceOutput{FT}, ctx) where {FT}
         end
     end
     if t.block
-        rng = ind_range_for_k_range(t.el_i, first(ctx.batch), last(ctx.batch))
+        rng = ind_range_for_k_range(t.el_i, first(ctx.iks_batch), last(ctx.iks_batch))
         t.tile_i0 = first(rng) - 1
         t.tile_ni = length(rng)
         for A in t.dev

@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, supports,
-    LoopContext, CPUBackend, calculator_begin_batch!, calculator_end_batch!, to_device
+    OuterKContext, OuterQContext, CPUBackend, calculator_begin_batch!, calculator_end_batch!, to_device
 
 # Calculator-contract checks (CPU-only): the `supports` trait, the fail-early checks the drivers do
 # at entry, `calculators` as a keyword, and the screening-disabled error.
@@ -94,17 +94,18 @@ end
 mutable struct _NoBracketCalc <: AbstractCalculator end
 
 @testset "loop context and the one bracket" begin
-    ctx = LoopContext(CPUBackend(), OuterKLoop(), 3:5, 1)
-    @test ctx isa LoopContext{CPUBackend, OuterKLoop}
-    @test (ctx.batch, ctx.chunk) == (3:5, 1)
-    @test LoopContext{CPUBackend, OuterKLoop} <: LoopContext{CPUBackend}
+    ctx = OuterKContext(CPUBackend(), 3:5, 1)
+    @test ctx isa OuterKContext{CPUBackend}
+    @test (ctx.iks_batch, ctx.chunk) == (3:5, 1)
+    ctx_q = OuterQContext(CPUBackend(), 2:2, 1)
+    @test ctx_q isa OuterQContext{CPUBackend} && ctx_q.iqs_batch == 2:2
     @test_throws ErrorException calculator_begin_batch!(_NoBracketCalc(), ctx)
     @test_throws ErrorException calculator_end_batch!(_NoBracketCalc(), ctx)
 
     # The reference calculator's brackets are its own methods, never the erroring fallback.
     BC = ElectronPhonon.BoltzmannCalculator
     for f in (calculator_begin_batch!, calculator_end_batch!)
-        m = which(f, (BC, LoopContext{CPUBackend, OuterKLoop}))
+        m = which(f, (BC, OuterKContext{CPUBackend}))
         @test Base.unwrap_unionall(m.sig).parameters[2] !== AbstractCalculator
     end
 

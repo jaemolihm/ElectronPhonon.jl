@@ -599,7 +599,7 @@ function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, backend, els_k, 
 end
 ElectronPhonon.calculator_begin_batch!(c::_RecordCalcOuterQ, ctx) = (fill!(c.Adev, 0.0); c)
 function ElectronPhonon.calculator_end_batch!(c::_RecordCalcOuterQ, ctx)
-    c.A[ctx.batch] .= vec(sum(Array(c.Adev); dims = 2))[1:length(ctx.batch)]
+    c.A[ctx.iqs_batch] .= vec(sum(Array(c.Adev); dims = 2))[1:length(ctx.iqs_batch)]
     c
 end
 ElectronPhonon.postprocess_calculator!(c::_RecordCalcOuterQ; kwargs...) = c
@@ -612,7 +612,7 @@ function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.
     inwin = (reshape(1:nbkq, nbkq, 1, 1, 1) .<= reshape(p.els_kq.nband, 1, 1, 1, nkc)) .&
             (reshape(1:nbk, 1, nbk, 1, 1) .<= reshape(p.els_k.nband, 1, 1, 1, nkc))
     val = sum(ifelse.(inwin, abs2.(ep), 0.0) .* reshape(wtk, 1, 1, 1, nkc))
-    ib = p.iq - first(ctx.batch) + 1
+    ib = p.iq - first(ctx.iqs_batch) + 1
     view(c.Adev, ib:ib, ctx.chunk) .+= val
     c
 end

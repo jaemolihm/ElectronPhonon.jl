@@ -1,6 +1,6 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: OuterKEngine, OuterQEngine, OuterKLoop, OuterQLoop, EPBlock, LoopContext,
+using ElectronPhonon: OuterKEngine, OuterQEngine, OuterKLoop, OuterQLoop, EPBlock, OuterKContext, OuterQContext,
     stage1!, stage2!, setup_calculator!, run_calculator!, calculator_begin_batch!, calculator_end_batch!,
     postprocess_calculator!, CPUBackend, gpu_backend, unit_to_aru
 
@@ -19,6 +19,10 @@ _setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, e
     eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles),
     eng.n_outer_batch, eng.n_inner_tile, verbosity = 0)
 
+# The outer batch of either context.
+_outer_batch(ctx::OuterKContext) = ctx.iks_batch
+_outer_batch(ctx::OuterQContext) = ctx.iqs_batch
+
 @testset "direct e-ph engine and calculator API" begin
     keygrid = (10^6, 10^6, 10^6)
     kpts = Kpoints(Vec3(0.2513, 0.2487, 0.0129))
@@ -34,19 +38,20 @@ _setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, e
         CUDA.allowscalar(false)
         push!(backends, gpu_backend())
     end
-    for backend in backends, (Engine, model, Order) in
-            ((OuterKEngine, model_el, OuterKLoop), (OuterQEngine, model_ph, OuterQLoop))
+    for backend in backends, (Engine, model, Order, Context) in
+            ((OuterKEngine, model_el, OuterKLoop, OuterKContext),
+             (OuterQEngine, model_ph, OuterQLoop, OuterQContext))
         calc = _PairRecorder(keygrid)
         eng = Engine(model, kpts, qpts; backend, calculators = [calc], window_k = window,
             window_kq = window, verbosity = 0)
         @test isempty(calc.g2abs) && calc.nw == 0  # construction runs no calculator hooks
         @test_throws ArgumentError stage2!(eng, 1, 1:1)
-        @test_throws ArgumentError LoopContext(eng)
+        @test_throws ArgumentError Context(eng)
         _setup_on_engine!(calc, eng)
         @test calc.nw == model.nw && eng.sel_k !== nothing
         @test stage1!(eng, 1:1) === eng
-        ctx = LoopContext(eng)
-        @test ctx.order isa Order && ctx.batch == 1:1 && ctx.chunk == 1
+        ctx = Context(eng)
+        @test ctx isa Context && _outer_batch(ctx) == 1:1 && ctx.chunk == 1
         calculator_begin_batch!(calc, ctx)
         block = stage2!(eng, 1, 1:1)
         @test block isa EPBlock{Order}
@@ -65,7 +70,7 @@ _setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, e
         @test_throws BoundsError stage2!(eng, 1, 1:1; chunk = 2)
         @test_throws ArgumentError stage2!(eng, 1, 1:0)
         @test_throws BoundsError stage2!(eng, 1, 0:1)
-        @test_throws BoundsError LoopContext(eng; chunk = 0)
+        @test_throws BoundsError Context(eng; chunk = 0)
         @test_throws ArgumentError stage1!(eng, 1:0)
         @test_throws BoundsError stage1!(eng, 0:1)
     end
@@ -92,8 +97,8 @@ _setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, e
 
     # The context of a batch can be built before its stage 1, as the drivers do.
     eng_new = OuterKEngine(model_el, kpts, qpts; window_k = window, window_kq = window, verbosity = 0)
-    @test LoopContext(eng_new; batch = 1:1).batch == 1:1
-    @test_throws BoundsError LoopContext(eng_new; batch = 1:2)
+    @test OuterKContext(eng_new; iks_batch = 1:1).iks_batch == 1:1
+    @test_throws BoundsError OuterKContext(eng_new; iks_batch = 1:2)
 end
 
 @testset "direct stage2 completes polar, derivative and phonon-basis options" begin
@@ -119,8 +124,8 @@ end
 @testset "engine stage capacities, batch offsets and independent chunks" begin
     grid = (3, 3, 3)
     backends = EPH_ENGINE_API_GPU ? Any[CPUBackend(), gpu_backend()] : Any[CPUBackend()]
-    for backend in backends, (Engine, momentum, Order) in
-            ((OuterKEngine, "el", OuterKLoop), (OuterQEngine, "ph", OuterQLoop))
+    for backend in backends, (Engine, momentum, Order, Context) in
+            ((OuterKEngine, "el", OuterKLoop, OuterKContext), (OuterQEngine, "ph", OuterQLoop, OuterQContext))
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum = momentum)
         calc = _PairRecorder()
         eng = Engine(model, grid, grid; backend, calculators = [calc], verbosity = 0,
@@ -129,8 +134,8 @@ end
         _setup_on_engine!(calc, eng)
         @test_throws ArgumentError stage1!(eng, 1:4)
         stage1!(eng, 3:4)  # nonzero offset, shorter than allocated stage-1 capacity
-        ctx = LoopContext(eng)
-        @test ctx.batch == 3:4
+        ctx = Context(eng)
+        @test _outer_batch(ctx) == 3:4
         @test_throws ArgumentError stage2!(eng, 2, 1:1)
         @test_throws ArgumentError stage2!(eng, 3, 1:3)
         # Different outer q points can safely read different stage-1 slices on different chunks.
@@ -140,7 +145,7 @@ end
             blocks = fetch.(tasks)
             @test !Base.mightalias(blocks[1].ep, blocks[2].ep)
             for (chunk, block) in enumerate(blocks)
-                run_calculator!(calc, block, LoopContext(eng; chunk))
+                run_calculator!(calc, block, Context(eng; chunk))
             end
         else
             for i in 3:4
@@ -164,7 +169,7 @@ end
         @test dev.g2_reldev < 1e-11 && dev.ω_dev < 1e-10
         # Stage-1 batch replacement is explicit and invalidates the previous outer indices.
         stage1!(eng, 5:5)
-        @test LoopContext(eng).batch == 5:5
+        @test _outer_batch(Context(eng)) == 5:5
         @test_throws ArgumentError stage2!(eng, 3, 1:1)
     end
 end

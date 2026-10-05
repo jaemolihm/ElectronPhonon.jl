@@ -137,8 +137,7 @@ Base.@kwdef mutable struct OuterKEngine
     energy_conservation_tol :: Float64
     eph_phonon_basis :: Symbol
     inner_loop_kq :: Bool         # inner points are k+q (resident states); false: q, k+q solved per tile
-    n_outer      :: Int           # number of outer k points
-    batch        :: UnitRange{Int}
+    iks_batch    :: UnitRange{Int} # the outer k points of the current stage 1
     backend      :: AbstractBackend
     epmat        :: WannierObject  # model.epmat on the backend
     itp_epmat                     # its batched R_e interpolator
@@ -183,8 +182,7 @@ Base.@kwdef mutable struct OuterQEngine
     energy_conservation_tol :: Float64
     eph_phonon_basis :: Symbol
     precompute_el_kq :: Bool      # the k+q states are resident (`els_kq`); false: solved per tile
-    n_outer      :: Int           # number of outer q points
-    batch        :: UnitRange{Int}
+    iqs_batch    :: UnitRange{Int} # the outer q points of the current stage 1
     backend      :: AbstractBackend
     epmat        :: WannierObject  # model.epmat on the backend
     itp_epmat                     # its batched R_p interpolator
@@ -388,7 +386,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     # Assemble the engine with maximum-capacity stage-1 outputs and the thread workspaces.
     nrows_max = nw^2 * nmodes * nr_p * (covariant_derivative_of_g ? 3 : 1)
     OuterKEngine(; model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
-        energy_conservation_tol, eph_phonon_basis, inner_loop_kq, n_outer = kpts.n, batch = 1:0,
+        energy_conservation_tol, eph_phonon_basis, inner_loop_kq, iks_batch = 1:0,
         backend, epmat, itp_epmat, itp_epmat_R,
         irvecp_mat = _irvec_to_device_matrix(backend, irvec_p, FT), mxks, xkqs,
         wtkqs = to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int, P_mk,
@@ -410,8 +408,9 @@ into the first `length(iks_batch)` points of `eng.ep_kR` (and `eng.dg_kR`).
 - `iks_batch`: Indices of the active outer k points, up to the engine's batch capacity.
 """
 function stage1!(eng::OuterKEngine, iks_batch::UnitRange{Int})
-    _check_stage1(eng, iks_batch)
-    eng.batch = iks_batch
+    isempty(iks_batch) && throw(ArgumentError("stage1! needs a nonempty outer batch"))
+    _check_outer_batch(iks_batch, eng.kpts.n, eng.n_outer_batch)
+    eng.iks_batch = iks_batch
     # function barrier for the outer-k stage-1 buffers.
     _stage1!(OuterKLoop(), _workspace_fields(eng), iks_batch)
     eng
@@ -467,8 +466,8 @@ different CPU chunks may run concurrently, but `stage1!` must wait for all of th
 - `chunk`: Independent workspace slot for CPU threading; use 1 for serial calls and GPU calls.
 """
 function stage2!(eng::OuterKEngine, ik::Int, inner_indices::UnitRange{Int}; chunk::Int = 1)
-    n_inner = eng.inner_loop_kq ? eng.kqpts.n : eng.qpts.n
-    _check_stage2(eng, ik, inner_indices, chunk, n_inner)
+    inner_pts = eng.inner_loop_kq ? eng.kqpts : eng.qpts
+    _check_stage2(eng, ik, eng.iks_batch, inner_indices, chunk, inner_pts.n)
     # function barrier for the concrete resident states, engine buffers, and chunk scratch.
     _stage2!(OuterKLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), ik, inner_indices)
 end
@@ -478,8 +477,8 @@ end
 # The state containers are sliced with an explicit `view`: `@views` covers arrays only.
 @views function _stage2!(::OuterKLoop, eng_fields, tile_workspace, ik, inner_indices; phase = nothing)
     n_tile = length(inner_indices)
-    iouter = ik - first(eng_fields.batch) + 1
-    els_k = view(eng_fields.els_k_batch, iouter:iouter)
+    ik_batch = ik - first(eng_fields.iks_batch) + 1
+    els_k = view(eng_fields.els_k_batch, ik_batch:ik_batch)
     tol = eng_fields.energy_conservation_tol
     (; ind_kept_kqpairs) = tile_workspace
     (; phs) = eng_fields
@@ -582,17 +581,17 @@ end
         xqs = eng_fields.qpts.vectors[iqs]
 
         # Stage 1 includes exp(-2πi R_p·k), so stage 2 needs the phase at k+q, not q.
-        xkqs .+= eng_fields.xks[:, iouter]
+        xkqs .+= eng_fields.xks[:, ik_batch]
         phase = tile_workspace.P_kq[:, 1:n_kept]
         build_fourier_phase!(phase, eng_fields.irvecp_mat, xkqs)
     end
 
     # function barrier for the concrete types of the kept pairs' states and indices.
-    _compute_eph_for_pairs!(OuterKLoop(), eng_fields, tile_workspace, iouter, phase, els_k, els_kq_block,
+    _compute_eph_for_pairs!(OuterKLoop(), eng_fields, tile_workspace, ik_batch, phase, els_k, els_kq_block,
         phs_block, ik, ikqs, iqs, wtqs, xqs)
 end
 
-@views function _compute_eph_for_pairs!(::OuterKLoop, eng_fields, tile_workspace, iouter, phase, els_k, els_kq, phs,
+@views function _compute_eph_for_pairs!(::OuterKLoop, eng_fields, tile_workspace, ik_batch, phase, els_k, els_kq, phs,
         ik, ikqs, iqs, wtqs, xqs)
     # Borrow the tile's output storage for the block.
     block = EPBlock{OuterKLoop}(tile_workspace, els_k, els_kq, phs; ik, ikq = ikqs, iq = iqs,
@@ -605,14 +604,14 @@ end
     g = tile_workspace.g[:, 1:npairs]
     tmp = reshape_buffer_view(tile_workspace.tmp, nbkq, nbk * nmodes, npairs)
     u_ph = tile_workspace.u_ph_id === nothing ? block.phs.u : tile_workspace.u_ph_id[:, :, 1:npairs]
-    get_eph_kR_to_kq_batched!(block.ep, eng_fields.ep_kR[:, :, iouter], phase, u_ph, block.els_kq.u;
+    get_eph_kR_to_kq_batched!(block.ep, eng_fields.ep_kR[:, :, ik_batch], phase, u_ph, block.els_kq.u;
                               g, tmp)
 
     # The same for each direction d of the covariant derivative: dg_inad(k, R_p) -> dg_mnνd(k, q).
     if block.dg !== nothing
         dg_d = reshape_buffer_view(tile_workspace.dg_d, nbkq, nbk, nmodes, npairs)
         for d in 1:3
-            get_eph_kR_to_kq_batched!(dg_d, eng_fields.dg_kR[:, :, d, iouter], phase, u_ph,
+            get_eph_kR_to_kq_batched!(dg_d, eng_fields.dg_kR[:, :, d, ik_batch], phase, u_ph,
                                       block.els_kq.u; g, tmp)
             block.dg[:, :, :, d, :] .= dg_d
         end
@@ -717,7 +716,7 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
 
     # Assemble the engine with maximum-capacity stage-1 outputs and coordinate buffers.
     OuterQEngine(; model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
-        energy_conservation_tol, eph_phonon_basis, precompute_el_kq, n_outer = qpts.n, batch = 1:0, backend, epmat,
+        energy_conservation_tol, eph_phonon_basis, precompute_el_kq, iqs_batch = 1:0, backend, epmat,
         itp_epmat, irvece_mat = _irvec_to_device_matrix(backend, irvec_e, FT),
         g_q = alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch),
         g_rot = eph_phonon_basis == :cartesian ? nothing : alloc(backend, Complex{FT}, nw^2, nr_e, nmodes, n_outer_batch),
@@ -741,8 +740,9 @@ phase, and optionally repeats the contraction and rotation for the three derivat
 - `iqs_batch`: Indices of the active outer q points, up to the engine's batch capacity.
 """
 function stage1!(eng::OuterQEngine, iqs_batch::UnitRange{Int})
-    _check_stage1(eng, iqs_batch)
-    eng.batch = iqs_batch
+    isempty(iqs_batch) && throw(ArgumentError("stage1! needs a nonempty outer batch"))
+    _check_outer_batch(iqs_batch, eng.qpts.n, eng.n_outer_batch)
+    eng.iqs_batch = iqs_batch
     # function barrier for the outer-q stage-1 buffers.
     _stage1!(OuterQLoop(), _workspace_fields(eng), iqs_batch)
     eng
@@ -800,7 +800,7 @@ different CPU chunks may run concurrently, but `stage1!` must wait for all of th
 - `chunk`: Independent workspace slot for CPU threading; use 1 for serial calls and GPU calls.
 """
 function stage2!(eng::OuterQEngine, iq::Int, iks_tile::UnitRange{Int}; chunk::Int = 1)
-    _check_stage2(eng, iq, iks_tile, chunk, eng.kpts.n)
+    _check_stage2(eng, iq, eng.iqs_batch, iks_tile, chunk, eng.kpts.n)
     # function barrier for the concrete resident states, engine buffers, and chunk scratch.
     _stage2!(OuterQLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), iq, iks_tile)
 end
@@ -900,13 +900,13 @@ end
 
     # Fourier-transform R_e of this q's stage-1 output at the tile's k points:
     # g_ijν(R_e, q) -> g_ijν(k, q).
-    iouter = iq - first(eng_fields.batch) + 1
+    iq_batch = iq - first(eng_fields.iqs_batch) + 1
     nbkq, nbk, nmodes, npairs = size(block.ep)
     nw = block.els_k.nw
     g = tile_workspace.g[:, 1:npairs]
     phase = tile_workspace.P_k[:, 1:npairs]
     xkmat = _kpoints_to_device_matrix(eng_fields.backend, block.xk)
-    _fourier_batched!(g, eng_fields.ep_Rq[:, :, iouter], phase, eng_fields.irvece_mat, xkmat)
+    _fourier_batched!(g, eng_fields.ep_Rq[:, :, iq_batch], phase, eng_fields.irvece_mat, xkmat)
 
     # Rotate by u_k and u_{k+q}: g_ijν(k, q) -> g_mnν(k, q), with m, n the bands of k+q and k.
     tmp = reshape_buffer_view(tile_workspace.tmp, nbkq, nw * nmodes, npairs)
@@ -922,17 +922,18 @@ end
 
 # ---- Both orders -----------------------------------------------------------------------------
 
-function _check_stage1(eng, batch)
-    isempty(batch) && throw(ArgumentError("stage1! needs a nonempty outer batch"))
-    (first(batch) >= 1 && last(batch) <= eng.n_outer) || throw(BoundsError(1:eng.n_outer, batch))
-    length(batch) <= eng.n_outer_batch ||
-        throw(ArgumentError("outer batch exceeds the engine's capacity $(eng.n_outer_batch)"))
+# A nonempty outer batch of either order: inside the `npoints` outer points and the capacity.
+function _check_outer_batch(outer_batch, npoints, capacity)
+    (first(outer_batch) >= 1 && last(outer_batch) <= npoints) ||
+        throw(BoundsError(1:npoints, outer_batch))
+    length(outer_batch) <= capacity ||
+        throw(ArgumentError("outer batch exceeds the engine's capacity $capacity"))
     nothing
 end
 
-function _check_stage2(eng, outer_index, inner_indices, chunk, n_inner)
-    outer_index ∈ eng.batch || throw(ArgumentError(
-        "outer point $outer_index is not in the current stage1! batch $(eng.batch)"))
+function _check_stage2(eng, outer_index, outer_batch, inner_indices, chunk, n_inner)
+    outer_index ∈ outer_batch || throw(ArgumentError(
+        "outer point $outer_index is not in the current stage1! batch $outer_batch"))
     1 <= chunk <= length(eng.tiles) || throw(BoundsError(eng.tiles, chunk))
     isempty(inner_indices) && throw(ArgumentError("stage2! needs a nonempty inner tile"))
     (first(inner_indices) >= 1 && last(inner_indices) <= n_inner) || throw(BoundsError(1:n_inner, inner_indices))
@@ -942,22 +943,27 @@ function _check_stage2(eng, outer_index, inner_indices, chunk, n_inner)
 end
 
 """
-    LoopContext(eng::Union{OuterKEngine, OuterQEngine}; batch = eng.batch, chunk = 1)
+    OuterKContext(eng::OuterKEngine; iks_batch = eng.iks_batch, chunk = 1)
+    OuterQContext(eng::OuterQEngine; iqs_batch = eng.iqs_batch, chunk = 1)
 
-The calculator context for the outer batch `batch` and the workspace slot `chunk`. The default
-batch is the engine's current stage-1 batch, so call `stage1!` first or pass `batch`; the drivers
-pass it, so that `calculator_begin_batch!` runs before the batch's stage 1.
+The calculator context for an outer batch and the workspace slot `chunk`. The default batch is the
+engine's current stage-1 batch, so call `stage1!` first or pass the batch; the drivers pass it, so
+that `calculator_begin_batch!` runs before the batch's stage 1.
 """
-function LoopContext(eng::Union{OuterKEngine, OuterQEngine}; batch::UnitRange{Int} = eng.batch,
-        chunk::Int = 1)
-    isempty(batch) && throw(ArgumentError(
-        "the engine's LoopContext needs an outer batch: call stage1! first or pass `batch`"))
-    (first(batch) >= 1 && last(batch) <= eng.n_outer) || throw(BoundsError(1:eng.n_outer, batch))
-    length(batch) <= eng.n_outer_batch ||
-        throw(ArgumentError("outer batch exceeds the engine's capacity $(eng.n_outer_batch)"))
+function OuterKContext(eng::OuterKEngine; iks_batch::UnitRange{Int} = eng.iks_batch, chunk::Int = 1)
+    isempty(iks_batch) && throw(ArgumentError(
+        "the engine's OuterKContext needs an outer batch: call stage1! first or pass `iks_batch`"))
+    _check_outer_batch(iks_batch, eng.kpts.n, eng.n_outer_batch)
     1 <= chunk <= length(eng.tiles) || throw(BoundsError(eng.tiles, chunk))
-    order = eng isa OuterKEngine ? OuterKLoop() : OuterQLoop()
-    LoopContext(eng.backend, order, batch, chunk)
+    OuterKContext(eng.backend, iks_batch, chunk)
+end
+
+function OuterQContext(eng::OuterQEngine; iqs_batch::UnitRange{Int} = eng.iqs_batch, chunk::Int = 1)
+    isempty(iqs_batch) && throw(ArgumentError(
+        "the engine's OuterQContext needs an outer batch: call stage1! first or pass `iqs_batch`"))
+    _check_outer_batch(iqs_batch, eng.qpts.n, eng.n_outer_batch)
+    1 <= chunk <= length(eng.tiles) || throw(BoundsError(eng.tiles, chunk))
+    OuterQContext(eng.backend, iqs_batch, chunk)
 end
 
 # The pairs of a tile whose k+q has a state in the window: writes their positions in the tile to

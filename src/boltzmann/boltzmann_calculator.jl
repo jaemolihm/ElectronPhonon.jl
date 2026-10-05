@@ -176,14 +176,14 @@ end
 
 # Once per outer-k batch, before its blocks: record this batch's Sᵢ tile range and zero the tile's
 # active region (via `calc.tiled`).
-function calculator_begin_batch!(calc::BoltzmannCalculator{FT}, ctx::LoopContext) where {FT}
+function calculator_begin_batch!(calc::BoltzmannCalculator{FT}, ctx::OuterKContext) where {FT}
     # Sᵢ tile for this batch (block mode: zeroed and its range recorded by the helper).
     tile_begin!(calc.tiled, ctx)
     calc
 end
 
 # Once per outer-k batch, after its blocks: stream the batch's Sᵢ tile from device to the host output.
-function calculator_end_batch!(calc::BoltzmannCalculator, ctx::LoopContext)
+function calculator_end_batch!(calc::BoltzmannCalculator, ctx::OuterKContext)
     t = calc.tiled
     ni = tile_length(t)
     if ni > 0

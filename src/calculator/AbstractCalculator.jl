@@ -4,7 +4,7 @@
 A calculator computes properties of the system during a single pass of one of the e-ph drivers
 (`run_eph_over_k_and_kq`, `run_eph_over_k_and_q`, `run_eph_over_q_and_k`). The driver hands each calculator the e-ph matrix
 of one block, an outer point with a tile of inner points, as an [`EPBlock`](@ref) together with a
-[`LoopContext`](@ref).
+context of the loop order, [`OuterKContext`](@ref) or [`OuterQContext`](@ref).
 
 Users subtype `AbstractCalculator` and implement:
 * `supports(calc, ::Type{<:LoopTag})` — the loop orders (`OuterKLoop`, `OuterQLoop`) it handles.
@@ -19,12 +19,13 @@ Users subtype `AbstractCalculator` and implement:
   loop chose, which per-batch and per-tile buffers are sized to.
 * `run_calculator!(calc, block::EPBlock{O}, ctx)` — one method per supported order `O`.
 * `calculator_begin_batch!(calc, ctx)` / `calculator_end_batch!(calc, ctx)` — around every outer batch
-  (`ctx.batch`, never empty). There is no default; a calculator with nothing to do defines `= nothing`.
+  (`ctx.iks_batch` or `ctx.iqs_batch`, never empty). There is no default; a calculator with nothing
+  to do defines `= nothing`.
 * `postprocess_calculator!(calc; kwargs...)` — run once, after the loop.
 
 The contract:
-* **Any batch width.** Every `length(ctx.batch) ≥ 1` must work; a per-outer-point reduction loops
-  over `ctx.batch` in the brackets.
+* **Any batch width.** Every batch length ≥ 1 must work; a per-outer-point reduction loops over
+  `ctx.iks_batch` (or `ctx.iqs_batch`) in the brackets.
 * **Writes.** On the CPU the blocks of different thread chunks run concurrently. Writes indexed by
   an inner-tile point are disjoint across blocks; every other write, and every per-tile scratch,
   is per `ctx.chunk` (`nchunks_threads` at setup), with partials reduced in `calculator_end_batch!`
@@ -45,33 +46,46 @@ Optionally:
 See `docs/writing_a_calculator.md` for a worked example. The public (unexported) API of the
 calculators, the drivers and the engines is the one `public` declaration at the bottom of this file.
 For manual execution, construct an `OuterKEngine` / `OuterQEngine`, call `setup_calculator!` on
-its states, use `stage1!`, `stage2!` and `LoopContext(eng)`, then invoke the same hooks.
+its states, use `stage1!`, `stage2!` and `OuterKContext(eng)` / `OuterQContext(eng)`, then invoke
+the same hooks.
 """
 abstract type AbstractCalculator end
 
 
 # =============================================================================
-#  Loop-order tags: the order a calculator supports, and the type parameter of `EPBlock` and
-#  `LoopContext`.
+#  Loop-order tags: the order a calculator supports (`supports`) and the type parameter of
+#  `EPBlock`.
 abstract type LoopTag end
 struct OuterKLoop <: LoopTag end    # run_eph_over_k_and_kq / _k_and_q (outer k, inner k+q / q)
 struct OuterQLoop <: LoopTag end    # run_eph_over_q_and_k (outer q, inner k)
 
 """
-    LoopContext{BT <: AbstractBackend, OT <: LoopTag}
+    OuterKContext{BT <: AbstractBackend}(backend, iks_batch, chunk)
 
-Loop-level state passed to every calculator hook.
+Loop-level state passed to every calculator hook of an outer-k run (`run_eph_over_k_and_kq`,
+`run_eph_over_k_and_q`); [`OuterQContext`](@ref) is its outer-q twin. The type is the loop order, so
+a calculator dispatches on it.
 
 Fields:
 - `backend` :: `CPUBackend()` or `GPUBackend(proto)`.
-- `order` :: `OuterKLoop()` or `OuterQLoop()`.
-- `batch` :: the outer indices of the current outer batch, never empty.
+- `iks_batch` :: the outer k indices of the current outer batch, never empty.
 - `chunk` :: the CPU thread slot of this `run_calculator!` call; 1 in the brackets and on a device.
 """
-struct LoopContext{BT <: AbstractBackend, OT <: LoopTag}
+struct OuterKContext{BT <: AbstractBackend}
     backend :: BT
-    order :: OT
-    batch :: UnitRange{Int}
+    iks_batch :: UnitRange{Int}
+    chunk :: Int
+end
+
+"""
+    OuterQContext{BT <: AbstractBackend}(backend, iqs_batch, chunk)
+
+The context of an outer-q run (`run_eph_over_q_and_k`), as [`OuterKContext`](@ref) with
+`iqs_batch`, the outer q indices of the current outer batch.
+"""
+struct OuterQContext{BT <: AbstractBackend}
+    backend :: BT
+    iqs_batch :: UnitRange{Int}
     chunk :: Int
 end
 
@@ -218,7 +232,8 @@ calculator_bytes(::AbstractCalculator, ::Type{<:EPBlock}; kwargs...) =
 public run_eph_over_k_and_kq, run_eph_over_k_and_q, run_eph_over_q_and_k,
     OuterKEngine, OuterQEngine, stage1!, stage2!,
     AbstractCalculator, supports, setup_calculator!, run_calculator!, postprocess_calculator!,
-    calculator_begin_batch!, calculator_end_batch!, OuterKLoop, OuterQLoop, EPBlock, LoopContext, AbstractBackend, CPUBackend, GPUBackend,
+    calculator_begin_batch!, calculator_end_batch!, OuterKLoop, OuterQLoop, EPBlock, OuterKContext, OuterQContext,
+    AbstractBackend, CPUBackend, GPUBackend,
     gpu_backend, alloc, free_bytes, synchronize, batched_gemm!, eph_window_scatter!,
     bte_window_accumulate!, calculator_bytes, allowed_eph_phonon_basis,
     required_el_quantities, required_ph_quantities, _indmap_to_device,

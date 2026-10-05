@@ -5,7 +5,8 @@
 # runs on CPU-only machines. Nothing here is exported (use `ElectronPhonon.<name>`).
 
 # Backend objects: the user passes one to a driver entry (`backend = CPUBackend()` or
-# `backend = gpu_backend()`), which carries it in `LoopContext` (see calculator/AbstractCalculator.jl).
+# `backend = gpu_backend()`), which carries it in the calculator context (`OuterKContext` /
+# `OuterQContext`, see calculator/AbstractCalculator.jl).
 # Everywhere below, code allocates buffers via `alloc(backend, T, dims...)`, moves data with
 # `to_device(backend, x)`, and queries `free_bytes(backend)` / `synchronize(backend)`, so the backend
 # object is the only thing that says where "device" is. `GPUBackend` carries a device-array prototype

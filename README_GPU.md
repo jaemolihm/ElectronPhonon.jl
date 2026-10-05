@@ -159,7 +159,7 @@ arrays.
 ### Calculator integration
 
 The calculators receive one `EPBlock` per (outer point, inner tile): `run_calculator!(calc,
-block::EPBlock{OuterKLoop|OuterQLoop}, ctx::LoopContext)`, one method per loop order, on every
+block::EPBlock{OuterKLoop|OuterQLoop}, ctx::OuterKContext|OuterQContext)`, one method per loop order, on every
 backend. The full spec is in the docstrings of `src/calculator/AbstractCalculator.jl`, and
 `docs/writing_a_calculator.md` is the tutorial. This section covers the device side.
 
@@ -169,7 +169,7 @@ backend. The full spec is in the docstrings of `src/calculator/AbstractCalculato
 
 - `backend :: AbstractBackend = CPUBackend()` — where arrays live. Pass
   `backend = ElectronPhonon.gpu_backend()` for a GPU run; `model.epmat` is uploaded once per run and
-  the backend is carried in `LoopContext` as `ctx.backend`.
+  the backend is carried in the context (`OuterKContext` / `OuterQContext`) as `ctx.backend`.
 - `n_outer_batch` — outer points per stage-1 batch and per calculator bracket; `n_inner_tile` —
   inner points per block, sized to free device memory on a GPU.
 
@@ -197,7 +197,7 @@ dipole term is added on the block for both orders (`eph_engine_add_longrange!`).
 A block is `ep` `(nband_max_kq, nband_max_k, nmodes, nb)` with the states, phonons, weights and
 indices of its pairs; the side shared by the block has extent 1 (see `EPBlock`). Under outer k a
 k's k+q tiles are not contiguous (the tile loop is outside the k loop), so a per-k reduction is
-done in the brackets around the outer batch (`ctx.batch`).
+done in the brackets around the outer batch (`ctx.iks_batch`).
 
 Memory: `engine_bytes` counts the engine's buffers next to their `alloc` calls, each calculator
 adds its `calculator_bytes` triple `(; persistent, per_outer, per_pair)`, and

@@ -4,7 +4,8 @@ A **calculator** computes a physical property during one pass of an e-ph driver
 (`run_eph_over_k_and_kq` and `run_eph_over_k_and_q`, outer loop over k, or `run_eph_over_q_and_k`,
 outer loop over q). The driver builds the electron and phonon states and the e-ph matrix elements
 and hands them to each calculator one **block** at a time, an [`EPBlock`](@ref) of one outer point
-with a tile of inner points, together with a **`LoopContext`**. You subtype
+with a tile of inner points, together with a **context** of the loop order (`OuterKContext` or
+`OuterQContext`). You subtype
 `ElectronPhonon.AbstractCalculator` and implement a few methods; the same methods run on the CPU and
 on a GPU when they are written with broadcasts and `alloc(backend, …)`.
 
@@ -25,7 +26,8 @@ cannot rot.
   n_outer_batch, n_inner_tile, verbosity)` — once, before the loop (see below).
 - `run_calculator!(calc, block::EPBlock{OuterKLoop}, ctx)` (or `{OuterQLoop}`) — once per block.
 - `calculator_begin_batch!(calc, ctx)` / `calculator_end_batch!(calc, ctx)` — around every outer batch
-  (`ctx.batch`, the outer indices of the batch). There is no default: define both, even as `= nothing`.
+  (`ctx.iks_batch` of an `OuterKContext` or `ctx.iqs_batch` of an `OuterQContext`, the outer indices
+  of the batch). There is no default: define both, even as `= nothing`.
 - `postprocess_calculator!(calc; kwargs...)` — once, after the loop.
 - Optionally `calculator_bytes(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k, nband_max_kq,
   els_k, els_kq, phs, nchunks_threads) -> (; persistent, per_outer, per_pair)`, the device
@@ -43,8 +45,8 @@ k point. It supports both loop orders and runs on the CPU and on a GPU.
 <!-- doc-example:begin -->
 ```julia
 using ElectronPhonon
-using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, LoopContext, CPUBackend,
-    GPUBackend, alloc, omega_acoustic
+using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, OuterKContext,
+    OuterQContext, CPUBackend, GPUBackend, alloc, omega_acoustic
 
 # For each k: Σ over (q, m, n, ν) of wtq |ep[m, n, ν]|² / (2ω_ν(q)), with m and n the bands of
 # k+q and k inside their windows. Modes with ω < omega_acoustic are skipped, as in the library's
@@ -133,9 +135,9 @@ end
 # Outer k, CPU. The whole block adds to one number, the sum of the outer k. Blocks of other chunks
 # add to the same k concurrently, so it goes to this chunk's row of `g2_per_k_buffer`, summed in
 # `calculator_end_batch!`. The column is the position of the outer k in the batch: `block.ik` is its index
-# in the run, and the batch holds the outer k points `ctx.batch`.
+# in the run, and the batch holds the outer k points `ctx.iks_batch`.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterKLoop},
-                                        ctx::LoopContext{CPUBackend})
+                                        ctx::OuterKContext{CPUBackend})
     (; ep, els_k, els_kq, phs, wtq) = block
     nband_k = els_k.nband[1]              # the outer k, the block's only k point
     s = 0.0
@@ -148,16 +150,16 @@ function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{Ou
             end
         end
     end
-    ik_batch = block.ik - first(ctx.batch) + 1
+    ik_batch = block.ik - first(ctx.iks_batch) + 1
     c.g2_per_k_buffer[ctx.chunk, ik_batch] += s
     c
 end
 
 # Outer k, GPU: the same sum, as one device reduction of the block's summand.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterKLoop},
-                                        ctx::LoopContext{<:GPUBackend})
+                                        ctx::OuterKContext{<:GPUBackend})
     g2 = block_g2!(c, block, ctx.chunk)
-    ik_batch = block.ik - first(ctx.batch) + 1
+    ik_batch = block.ik - first(ctx.iks_batch) + 1
     c.g2_per_k_buffer[ctx.chunk, ik_batch] += sum(g2)
     c
 end
@@ -166,7 +168,7 @@ end
 # the same time (the chunks split the k points, and the q points of a batch run one after another),
 # so the sums go straight into the result.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterQLoop},
-                                        ctx::LoopContext{CPUBackend})
+                                        ctx::OuterQContext{CPUBackend})
     (; ep, els_k, els_kq, phs, wtq) = block
     for ik_tile in axes(ep, 4)            # pair (k_ik_tile, q)
         s = 0.0
@@ -185,7 +187,7 @@ end
 # Outer q, GPU: sum the summand over (m, n, ν) of each pair on the device, copy the npairs sums to
 # the host, and add them to their k points.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterQLoop},
-                                        ctx::LoopContext{<:GPUBackend})
+                                        ctx::OuterQContext{<:GPUBackend})
     g2 = block_g2!(c, block, ctx.chunk)
     npairs = size(g2, 4)
     pair_sums_dev = view(c.pair_sums_dev[ctx.chunk], 1:npairs)
@@ -195,15 +197,14 @@ function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{Ou
     c
 end
 
-function ElectronPhonon.calculator_end_batch!(c::EphG2SumCalculator, ctx)
-    @views if ctx.order isa OuterKLoop
-        # Outer k: sum the chunks' rows into the k points of the batch.
-        c.g2_per_k[ctx.batch] .= vec(sum(c.g2_per_k_buffer[:, 1:length(ctx.batch)]; dims = 1))
-    else
-        # Outer q: `run_calculator!` already added every pair to its k point; nothing to reduce.
-    end
+# After an outer-k batch: sum the chunks' rows into the k points of the batch.
+@views function ElectronPhonon.calculator_end_batch!(c::EphG2SumCalculator, ctx::OuterKContext)
+    c.g2_per_k[ctx.iks_batch] .= vec(sum(c.g2_per_k_buffer[:, 1:length(ctx.iks_batch)]; dims = 1))
     c
 end
+
+# Outer q: `run_calculator!` already added every pair to its k point; nothing to reduce.
+ElectronPhonon.calculator_end_batch!(c::EphG2SumCalculator, ::OuterQContext) = c
 
 ElectronPhonon.postprocess_calculator!(c::EphG2SumCalculator; kwargs...) = c
 ```
@@ -263,7 +264,7 @@ defined above and a model loaded with `epmat_outer_momentum = "el"`:
 
 <!-- doc-single-pair:begin -->
 ```julia
-using ElectronPhonon: OuterKEngine, stage1!, stage2!, LoopContext,
+using ElectronPhonon: OuterKEngine, stage1!, stage2!, OuterKContext,
     setup_calculator!, calculator_begin_batch!, run_calculator!, calculator_end_batch!, postprocess_calculator!
 
 calc = EphG2SumCalculator()
@@ -280,7 +281,7 @@ setup_calculator!(calc, eng.backend, eng.els_k, eng.els_kq, eng.phs;
 
 # Stage 1 for the outer k points 1:1, and the calculator context of that batch.
 stage1!(eng, 1:1)
-ctx = LoopContext(eng)
+ctx = OuterKContext(eng)
 calculator_begin_batch!(calc, ctx)
 
 # Stage 2 for outer k 1 and inner q points 1:1: the block, or `nothing` if the pair is skipped.
@@ -298,7 +299,7 @@ calc.g2_per_k
 `OuterKEngine` defaults to inner q points, solving k+q within each tile. For a resident k+q grid,
 pass `inner_loop_kq = true` and that grid as the third argument. A model loaded with
 `epmat_outer_momentum = "ph"` instead uses `OuterQEngine(model, kpts, qpts; ...)`, with q as
-the outer index and k as the inner range. The same stage calls and `LoopContext(eng)` work.
+the outer index and k as the inner range. The same stage calls work, with `OuterQContext(eng)`.
 
 Pass your calculator to the engine constructor so its requested quantities and memory budget are
 included; construction does **not** call setup or any lifecycle hook. You can also inspect matrix
@@ -311,7 +312,9 @@ the original lists: energy windows and symmetry can change the selection. `stage
 current outer range; `stage2!` requires its outer index to belong to it, and returns `nothing`
 when every pair is skipped. Each returned block borrows reusable storage: consume it before
 the next stage call on that chunk, or copy the arrays to retain them. Different CPU chunks have
-independent writable storage; use matching `chunk` in `stage2!` and `LoopContext(eng; chunk)`.
+independent writable storage; use matching `chunk` in `stage2!` and `OuterKContext(eng; chunk)` /
+`OuterQContext(eng; chunk)`. A context can also be built before the batch's stage 1, as the drivers
+do, by passing the batch: `OuterKContext(eng; iks_batch = 1:1)`.
 
 ## The block
 
@@ -338,7 +341,7 @@ up through an index map that is 0 past it (`_indmap_to_device`), or select with 
 
 - **Any batch width.** The loop chooses `n_outer_batch` and `n_inner_tile` at runtime and passes
   them to `setup_calculator!`; size per-batch buffers to the first and per-tile scratch to the
-  second. Every `length(ctx.batch) ≥ 1` must work.
+  second. Every batch length ≥ 1 (`length(ctx.iks_batch)`, `length(ctx.iqs_batch)`) must work.
 - **Writes.** Writes indexed by an inner-tile point are disjoint across blocks. Every other write
   (indexed by the outer point, or a reduction over the inner points) goes to a per-`ctx.chunk`
   partial, reduced in `calculator_end_batch!`, as in the example. Per-tile scratch is per chunk too: on
