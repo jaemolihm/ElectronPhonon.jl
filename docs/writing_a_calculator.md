@@ -30,7 +30,7 @@ cannot rot.
   (`ctx.iks_batch` of an `OuterKContext` or `ctx.iqs_batch` of an `OuterQContext`, the outer indices
   of the batch). There is no default: define both, even as `= nothing`.
 - `postprocess_calculator!(calc; kwargs...)` — once, after the loop.
-- Optionally `calculator_bytes(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k, nband_max_kq,
+- Optionally `calculator_bytes(calc, ::Type{<:EPBlock{Loop}}; nw, nmodes, nband_max_k, nband_max_kq,
   els_k, els_kq, phs, nchunks_threads) -> (; persistent, per_outer, per_pair)`, the device
   bytes the calculator allocates, so the loop sizes its tiles to the free memory. The loop counts
   `persistent` once, `per_outer` once per outer point of a batch and `per_pair` once per inner point
@@ -38,13 +38,19 @@ cannot rot.
   `nchunks_threads` itself. `els_k`, `els_kq`, `phs` are `nothing` in `estimate_device_memory`. Accept
   `kwargs...` for keywords added later.
 
-## Minimal example: CPU, outer k
+## Minimal example: CPU, outer k, one thread
 
 This calculator sums `wtq · |g|²/(2ω)` over the in-window bands, the modes and the q points, for each
 k point (`g2_per_k`), and that sum weighted by `wtk` over the k points (`g2_avg`), which shows a
-reduction over both momenta. It supports only the outer-k loop, so it runs with `run_eph_over_k_and_kq`
-and `run_eph_over_k_and_q` but not with `run_eph_over_q_and_k`, which refuses it. It runs only on
-the CPU: its one `run_calculator!` is a plain loop over the block. With `epw_folder` the folder of an EPW run:
+reduction over both momenta. It is as small as a calculator gets:
+
+- it supports only the outer-k loop, so it runs with `run_eph_over_k_and_kq` and
+  `run_eph_over_k_and_q`, but not with `run_eph_over_q_and_k`, which refuses it;
+- it runs only on the CPU: its `run_calculator!` is a plain loop over the block;
+- it refuses more than one thread chunk, so the blocks run one after another and it adds straight
+  into its results. The run passes `nchunks_threads = 1`.
+
+With `epw_folder` the folder of an EPW run:
 
 <!-- doc-minimal:begin -->
 ```julia
@@ -55,43 +61,32 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, EPBlock, omega_acoustic
 # k+q and k inside their windows. Modes with ω < omega_acoustic are skipped: at Γ the acoustic ω
 # is ~0, where 1/(2ω) only amplifies roundoff.
 mutable struct MinimalG2Calculator <: AbstractCalculator
-    g2_per_k        :: Vector{Float64}   # the result, indexed by k point
-    g2_per_k_buffer :: Matrix{Float64}   # (chunk, outer k of the batch)
-
-    # Σ_k wtk g2_per_k[k], and its partial sum of each chunk.
-    g2_avg          :: Float64
-    g2_avg_buffer   :: Vector{Float64}
-    MinimalG2Calculator() = new(Float64[], zeros(0, 0), 0.0, Float64[])
+    g2_per_k :: Vector{Float64}   # indexed by k point
+    g2_avg   :: Float64           # Σ_k wtk g2_per_k[k]
+    MinimalG2Calculator() = new(Float64[], 0.0)
 end
 
 # The outer-k drivers only: `run_eph_over_k_and_kq` and `run_eph_over_k_and_q`.
 ElectronPhonon.supports(::MinimalG2Calculator, ::Type{OuterKLoop}) = true
 
-# Once, before the loop.
+# Once, before the loop. With more than one thread chunk, blocks of the same k would run at the same
+# time and race on `g2_per_k[ik]` and `g2_avg`; the complete example below handles that.
 function ElectronPhonon.setup_calculator!(c::MinimalG2Calculator, backend, els_k, els_kq, phs;
-        nchunks_threads, n_outer_batch, kwargs...)
+        nchunks_threads, kwargs...)
+    nchunks_threads == 1 || throw(ArgumentError("MinimalG2Calculator needs nchunks_threads = 1"))
     c.g2_per_k = zeros(els_k.nk)
-    # The CPU thread chunks handle different tiles of the same outer k at the same time, so each
-    # chunk adds to its own row; one column per outer k of a batch.
-    c.g2_per_k_buffer = zeros(nchunks_threads, n_outer_batch)
-
-    # The sum over q happens inside each block and across the tiles of an outer k; the sum over k
-    # is weighted by the outer k's weight `block.wtk`. Every block adds to the same scalar, so each
-    # chunk has its own entry, summed in `postprocess_calculator!`.
     c.g2_avg = 0.0
-    c.g2_avg_buffer = zeros(nchunks_threads)
     c
 end
 
-# Before each outer batch: clear the buffer.
-function ElectronPhonon.calculator_begin_batch!(c::MinimalG2Calculator, ctx)
-    fill!(c.g2_per_k_buffer, 0)
-    c
-end
+# No per-batch work.
+ElectronPhonon.calculator_begin_batch!(c::MinimalG2Calculator, ctx) = c
+ElectronPhonon.calculator_end_batch!(c::MinimalG2Calculator, ctx) = c
 
 # One block: the outer k `block.ik` with a tile of q points. Pair `iq_tile` is (k, q_iq_tile):
 # `ep[:, :, :, iq_tile]`, the k+q states `els_kq` and phonons `phs` at `iq_tile`, and the outer k
-# `els_k` at 1 (the block's only k point).
+# `els_k` at 1 (the block's only k point). The sum over q is over the pairs of the block and over
+# the blocks of the same k; the sum over k is weighted by the outer k's weight `block.wtk`.
 function ElectronPhonon.run_calculator!(c::MinimalG2Calculator, block::EPBlock{OuterKLoop}, ctx)
     (; ep, els_k, els_kq, phs, wtq) = block
     s = 0.0
@@ -102,29 +97,18 @@ function ElectronPhonon.run_calculator!(c::MinimalG2Calculator, block::EPBlock{O
             s += wtq[iq_tile] * abs2(ep[m, n, ν, iq_tile]) / (2ω)
         end
     end
-    ik_batch = block.ik - first(ctx.iks_batch) + 1   # position of the outer k in this batch
-    c.g2_per_k_buffer[ctx.chunk, ik_batch] += s
-    c.g2_avg_buffer[ctx.chunk] += block.wtk * s
+    c.g2_per_k[block.ik] += s
+    c.g2_avg += block.wtk * s
     c
 end
 
-# After each outer batch: sum the chunks' rows into the k points of the batch.
-@views function ElectronPhonon.calculator_end_batch!(c::MinimalG2Calculator, ctx)
-    c.g2_per_k[ctx.iks_batch] .= vec(sum(c.g2_per_k_buffer[:, 1:length(ctx.iks_batch)]; dims = 1))
-    c
-end
+ElectronPhonon.postprocess_calculator!(c::MinimalG2Calculator; kwargs...) = c
 
-# After the loop: sum the chunks' partial sums of `g2_avg`.
-function ElectronPhonon.postprocess_calculator!(c::MinimalG2Calculator; kwargs...)
-    c.g2_avg = sum(c.g2_avg_buffer)
-    c
-end
-
-# Run it: outer k on an 8³ grid (reduced by symmetry), inner k+q on the 8³ grid.
+# Run it: outer k on an 8³ grid (reduced by symmetry), inner k+q on the 8³ grid, one thread chunk.
 model = load_model_from_epw_new(epw_folder, "temp", "pb"; epmat_outer_momentum = "el")
 calc_minimal = MinimalG2Calculator()
 out_minimal = ElectronPhonon.run_eph_over_k_and_kq(model, (8, 8, 8), (8, 8, 8);
-    calculators = [calc_minimal])
+    calculators = [calc_minimal], nchunks_threads = 1)
 calc_minimal.g2_per_k    # one sum per k point of out_minimal.kpts
 calc_minimal.g2_avg
 ```
@@ -134,6 +118,9 @@ calc_minimal.g2_avg
 
 The minimal example's `g2_per_k` and `g2_avg`, extended to
 
+- any number of CPU thread chunks: every sum that blocks of different chunks add to goes to a
+  per-chunk buffer (`g2_per_k_buffer`, `g2_avg_buffer`), reduced in `calculator_end_batch!` and
+  `postprocess_calculator!`;
 - both loop orders: `run_calculator!` and the batch brackets get an outer-q method;
 - the GPU: a second method per order, for a context on a `GPUBackend`, which forms the summand with
   one broadcast and reduces it on the device.

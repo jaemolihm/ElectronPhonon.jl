@@ -239,11 +239,7 @@ function _run_eph(order::LoopTag, model::Model, kpts_input, second_input; calcul
 
     # Allocate the engine on those states, and run the calculators over every block.
     eng = _allocate_engine(order, model, states, options)
-    _run_eph_loop(eng, calculators; options.symmetry, progress_print_step, options.verbosity)
-end
-
-function _run_eph_loop(eng, calculators; symmetry, progress_print_step, verbosity)
-    order = eng isa OuterKEngine ? OuterKLoop() : OuterQLoop()
+    (; symmetry, verbosity) = options
     for calculator in calculators
         setup_calculator!(calculator, eng.backend, eng.els_k, eng.els_kq, eng.phs; order,
             eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles), eng.n_outer_batch, eng.n_inner_tile, verbosity)
@@ -277,11 +273,10 @@ function _run_eph_loop(eng, calculators; symmetry, progress_print_step, verbosit
     end
 
     for calculator in calculators
-        postprocess_calculator!(calculator; qpts = eng.qpts, symmetry)
+        postprocess_calculator!(calculator; eng.qpts, symmetry)
     end
-    (; kpts = eng.kpts, qpts = eng.qpts, els_k = eng.els_k, els_kq = eng.els_kq, phs = eng.phs)
+    (; eng.kpts, eng.qpts, eng.els_k, eng.els_kq, eng.phs)
 end
-
 
 
 # The widths of a run and the device bytes behind them, for `_run_eph` and `estimate_device_memory`
@@ -658,14 +653,4 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer, n_o
         eph_phonon_basis = :eigenmode, inner_loop_kq = outer_k)
     (; loop = outer_k ? :outer_k : :outer_q, plan.committed, plan.bytes.per_pair,
        batch = plan.n_inner_tile, free = free_bytes(backend))
-end
-
-
-# =============================================================================
-# Deprecated name of `run_eph_over_q_and_k`: a forwarder, to be removed after one release. An
-# explicit @warn (maxlog = 1) because Base.@deprecate depwarns are invisible in ordinary script
-# runs (Julia ≥ 1.5).
-function run_eph_outer_q(args...; kwargs...)
-    @warn "run_eph_outer_q is deprecated; use run_eph_over_q_and_k." maxlog=1
-    run_eph_over_q_and_k(args...; kwargs...)
 end

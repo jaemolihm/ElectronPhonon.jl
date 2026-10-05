@@ -198,16 +198,15 @@ Base.@kwdef mutable struct OuterQEngine
     tiles        :: Vector{OuterQTileWorkspace}
 end
 
-
 # A block on a tile's output storage, at exactly the point and band extents of its states.
-function EPBlock{O}(tile_workspace, els_k::BatchedElectronState, els_kq::BatchedElectronState,
-        phs::BatchedPhononState; kwargs...) where {O <: LoopTag}
-    n = O === OuterKLoop ? els_kq.nk : els_k.nk
+function EPBlock{Loop}(tile_workspace, els_k::BatchedElectronState, els_kq::BatchedElectronState,
+        phs::BatchedPhononState; kwargs...) where {Loop <: LoopTag}
+    n = Loop === OuterKLoop ? els_kq.nk : els_k.nk
     dims = (els_kq.nband_max, els_k.nband_max, phs.nmodes, n)
     ep = reshape_buffer_view(tile_workspace.ep, dims...)
-    dg = O === OuterKLoop && tile_workspace.dg !== nothing ?
+    dg = Loop === OuterKLoop && tile_workspace.dg !== nothing ?
         reshape_buffer_view(tile_workspace.dg, dims[1:3]..., 3, n) : nothing
-    EPBlock{O}(; ep, dg, els_k, els_kq, phs, kwargs...)
+    EPBlock{Loop}(; ep, dg, els_k, els_kq, phs, kwargs...)
 end
 
 # Fill `iqs[1:nkq_tile]` with the index into `qpts` of `x_{k+q} - x_k` for outer k `ik` and every

@@ -3,7 +3,7 @@ using ElectronPhonon
 
 # The "writing your own calculator" guide (docs/writing_a_calculator.md) contains the complete
 # example calculator between the <!-- doc-example:begin --> / <!-- doc-example:end --> sentinels,
-# a minimal CPU outer-k calculator and its run between the `doc-minimal` ones,
+# a minimal one-thread CPU outer-k calculator and its run between the `doc-minimal` ones,
 # and a driver run and a single-pair run of it between the `doc-driver` and `doc-single-pair` ones.
 # This test extracts those blocks VERBATIM and evaluates them on the Pb artifact model, so the
 # documented examples cannot rot.
@@ -111,6 +111,10 @@ end
         @test c_full.g2_per_k ≈ c_min.g2_per_k rtol = 1e-12
         @test c_min.g2_avg ≈ sum(out_min.kpts.weights .* c_min.g2_per_k) rtol = 1e-12
         @test c_full.g2_avg ≈ c_min.g2_avg rtol = 1e-12
+        # It refuses more than one thread chunk.
+        @test_throws ArgumentError ElectronPhonon.run_eph_over_k_and_kq(getfield(@__MODULE__, :model),
+            (4, 4, 4), (4, 4, 4); calculators = [getfield(@__MODULE__, :MinimalG2Calculator)()],
+            nchunks_threads = 2, verbosity = 0)
     end
 
     # The driver example, verbatim. It reads the global `epw_folder` and defines `calc` (outer k,

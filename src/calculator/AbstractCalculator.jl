@@ -18,7 +18,7 @@ Users subtype `AbstractCalculator` and implement:
   (the selected states and their weights: `BandStates(els_k, sel_k)`); `els_kq` and `sel_kq` are
   `nothing` when k+q is solved per tile. `n_outer_batch` and `n_inner_tile` are the widths the
   loop chose, which per-batch and per-tile buffers are sized to.
-* `run_calculator!(calc, block::EPBlock{O}, ctx)` — one method per supported order `O`.
+* `run_calculator!(calc, block::EPBlock{Loop}, ctx)` — one method per supported loop order `Loop`.
 * `calculator_begin_batch!(calc, ctx)` / `calculator_end_batch!(calc, ctx)` — around every outer batch
   (`ctx.iks_batch` or `ctx.iqs_batch`, never empty). There is no default; a calculator with nothing
   to do defines `= nothing`.
@@ -40,7 +40,7 @@ The contract:
   `n_inner_tile`, and declare their bytes in `calculator_bytes`.
 
 Optionally:
-* `calculator_bytes(calc, ::Type{<:EPBlock{O}}; kwargs...)` — device bytes the
+* `calculator_bytes(calc, ::Type{<:EPBlock{Loop}}; kwargs...)` — device bytes the
   calculator holds, `(; persistent, per_outer, per_pair)`, for the loops' memory planning.
 * `allowed_eph_phonon_basis(calc)` — phonon bases the calculator accepts.
 
@@ -91,7 +91,7 @@ struct OuterQContext{BT <: AbstractBackend}
 end
 
 """
-    EPBlock{Order <: LoopTag, ...}
+    EPBlock{Loop <: LoopTag, ...}
 
 The e-ph matrix of one block: one outer point with a tile of inner points, on the run's backend.
 Order-agnostic code broadcasts over the pair axis (the last axis of `ep` and of the tile-shaped
@@ -120,7 +120,7 @@ Fields (pair axis `j`):
   `UnitRange`, or a host vector when pairs were dropped); under `OuterQLoop` `iq::Int`, `ik` into the k set (a `UnitRange` or a host
   vector) and `ikq` into the precomputed k+q container, or `nothing` when k+q is solved per tile.
 """
-struct EPBlock{Order <: LoopTag, AT, DGT, EK <: BatchedElectronState, EKQ <: BatchedElectronState,
+struct EPBlock{Loop <: LoopTag, AT, DGT, EK <: BatchedElectronState, EKQ <: BatchedElectronState,
                PH <: BatchedPhononState, WK, WQ, XK, XQ, IK, IKQ, IQ}
     ep    :: AT
     dg    :: DGT
@@ -136,9 +136,9 @@ struct EPBlock{Order <: LoopTag, AT, DGT, EK <: BatchedElectronState, EKQ <: Bat
     iq    :: IQ
 end
 
-function EPBlock{O}(; ep::AT, dg::DGT, els_k::EK, els_kq::EKQ, phs::PH, wtk::WK, wtq::WQ, xk::XK,
-        xq::XQ, ik::IK, ikq::IKQ, iq::IQ) where {O <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}
-    EPBlock{O, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}(ep, dg, els_k, els_kq, phs, wtk, wtq,
+function EPBlock{Loop}(; ep::AT, dg::DGT, els_k::EK, els_kq::EKQ, phs::PH, wtk::WK, wtq::WQ, xk::XK,
+        xq::XQ, ik::IK, ikq::IKQ, iq::IQ) where {Loop <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}
+    EPBlock{Loop, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XQ, IK, IKQ, IQ}(ep, dg, els_k, els_kq, phs, wtk, wtq,
                                                                  xk, xq, ik, ikq, iq)
 end
 
@@ -211,10 +211,10 @@ end
 function run_calculator! end
 
 """
-    calculator_bytes(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k, nband_max_kq,
+    calculator_bytes(calc, ::Type{<:EPBlock{Loop}}; nw, nmodes, nband_max_k, nband_max_kq,
                      els_k, els_kq, phs, nchunks_threads) -> (; persistent, per_outer, per_pair)
 
-Device bytes the calculator allocates for a run of order `O`: whole-run buffers
+Device bytes the calculator allocates for a run of loop order `Loop`: whole-run buffers
 (`persistent`), per outer point of a batch (`per_outer`) and per inner pair of a tile (`per_pair`).
 The loops add them to their own counts to size the inner tile against `free_bytes`, counting
 `per_pair` once per thread chunk; a per-outer buffer held per chunk multiplies by `nchunks_threads`
