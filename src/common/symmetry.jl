@@ -540,9 +540,9 @@ function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=f
     k_irr = Vector{Vec3{Float64}}()
     found = zeros(Bool, ngrid...)
 
-    # Exact integer arithmetic: k = m / L with L the common denominator of the grid, so
-    # k = (i1, i2, i3) ./ ngrid has m = (i1, i2, i3) .* stride. Comparing m lexicographically
-    # orders the k points the same way as comparing k.
+    # For performance, use integers rather than Rational. k = (i1/n1, i2/n2, i3/n3), so multiply
+    # by L = lcm(n1, n2, n3) to make it an integer vector: m = k * L = (i1, i2, i3) .* stride.
+    # Comparing m lexicographically orders the k points the same way as comparing k.
     L = lcm(ngrid...)
     stride = Vec3{Int}(L .÷ ngrid)
 
