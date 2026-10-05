@@ -331,10 +331,7 @@ integer-grid hash of `el_i`'s k points, so `el_i` must carry `GridKpoints` (anyt
 `state_index` method).
 """
 function find_unfolding_indices(el_i::AbstractBandStates, el_f::AbstractBandStates, symmetry)
-    ind = tmap(1:el_f.n) do f
-        st = el_f[f]
-        state_index_in_star(el_i, st.xk, st.iband, symmetry)
-    end
+    ind = tmap(f -> state_index_in_star(el_i, el_f[f], symmetry), 1:el_f.n)
     # A miss is 0, reported after the threaded lookup so the error is the first missing state's, as
     # a plain `ErrorException` rather than wrapped by a task.
     f = findfirst(iszero, ind)
