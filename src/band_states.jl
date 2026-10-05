@@ -331,13 +331,15 @@ integer-grid hash of `el_i`'s k points, so `el_i` must carry `GridKpoints` (anyt
 `state_index` method).
 """
 function find_unfolding_indices(el_i::AbstractBandStates, el_f::AbstractBandStates, symmetry)
-    xks_f = state_xks(el_f)   # dense gather once (setup, not a hot loop)
+    ind = tmap(1:el_f.n) do f
+        st = el_f[f]
+        state_index_in_star(el_i, st.xk, st.iband, symmetry)
+    end
     # A miss is 0, reported after the threaded lookup so the error is the first missing state's, as
     # a plain `ErrorException` rather than wrapped by a task.
-    ind = tmap(f -> state_index_in_star(el_i, xks_f[f], el_f.ibands[f], symmetry), Int, 1:el_f.n)
     f = findfirst(iszero, ind)
     f === nothing || error("find_unfolding_indices: no representative for inner state $f " *
-                           "(k = $(xks_f[f]), band = $(el_f.ibands[f])). Pass `symmetry` to " *
+                           "(k = $(el_f[f].xk), band = $(el_f[f].iband)). Pass `symmetry` to " *
                            "enable IBZ reduction, or use the same k-grid and window for k and k+q.")
     ind
 end
