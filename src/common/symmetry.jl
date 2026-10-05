@@ -528,9 +528,10 @@ function bzmesh_ir_wedge(ngrid, symmetry::Symmetry; ignore_time_reversal=false)
 end
 
 """
-    kpoints_grid(grid, symmetry::Symmetry; ignore_time_reversal=false)
-Construct the irreducible wedge of a uniform Brillouin zone mesh for sampling ``k``-Points.
-The mesh includes the Gamma point. Returns a `Kpoints` object.
+    kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=false)
+Construct the irreducible wedge of a Γ-centered `n1 × n2 × n3` Brillouin zone mesh, with
+`ngrid = (n1, n2, n3)`. The mesh must be invariant under `symmetry` (e.g. `n1 = n2 = n3` for
+cubic systems); otherwise an error is thrown. Returns a `GridKpoints` object.
 - `ignore_time_reversal`: If true, ignore all symmetries involving time reversal.
 """
 function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=false)
@@ -539,38 +540,53 @@ function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=f
     k_irr = Vector{Vec3{Float64}}()
     found = zeros(Bool, ngrid...)
 
+    # For performance, use integers rather than Rational. k = (i1/n1, i2/n2, i3/n3), so multiply
+    # by L = lcm(n1, n2, n3) to make it an integer vector: m = k * L = (i1, i2, i3) .* stride.
+    # Comparing m lexicographically orders the k points the same way as comparing k.
+    L = lcm(ngrid...)
+    stride = Vec3{Int}(L .÷ ngrid)
+
+    # The grid is invariant under S iff S maps each grid basis vector e ./ ngrid onto the grid.
+    for symop in symmetry
+        ignore_time_reversal && symop.is_tr && continue
+        for e in (Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, 1))
+            Sk = apply_symop(symop, e .// Vec3(ngrid), :momentum)
+            all(isinteger, Sk .* ngrid) || error("The k-point grid breaks the symmetry")
+        end
+    end
+
     # kz = i3 / ngrid[3] is the fastest index
     for (i3, i2, i1) in Iterators.product((0:n-1 for n in reverse(ngrid))...)
         # check if this k-point has already been found equivalent to another. If so, skip.
         found[i1+1, i2+1, i3+1] && continue
 
-        k = Vec3{Rational{Int}}((i1, i2, i3) .// ngrid)
+        m = Vec3{Int}(i1, i2, i3) .* stride
 
         # Check if there are equivalent k-point to the remaining k points
         # Also, count the number of symops that map k to itself.
         nsym_star = 0
-        for (S, is_tr) in zip(symmetry.S, symmetry.is_tr)
-            if ignore_time_reversal && is_tr
-                continue
-            end
-            Sk = is_tr ? mod.(-S * k, 1) : mod.(S * k, 1)
-            if Sk > k
-                i1, i2, i3 = Int.(Sk.data .* ngrid) .+ 1
-                found[i1, i2, i3] = true
-            elseif Sk == k
+        for symop in symmetry
+            ignore_time_reversal && symop.is_tr && continue
+            Sm = mod.(apply_symop(symop, m, :momentum), L)
+            if Sm > m
+                # Sk is a later k point: mark it as equivalent to k.
+                j = Sm .÷ stride
+                j .* stride == Sm || error("Sk is off the grid although the grid passed the symmetry check")
+                found[(j .+ 1)...] = true
+            elseif Sm == m
+                # symop leaves k invariant: count it for the weight of k.
                 nsym_star += 1
             else
-                # If Sk is not in the later k points and not itself, i) the grid breaks the
-                # symmetry, or ii) symmetry search has a problem.
+                # Sk is an earlier k point, whose star should have contained k: the symmetry
+                # operations do not form a group.
                 error("Problem in symmetry of the irreducible k points")
             end
         end
-        push!(k_irr, k)
-        push!(weight_irr_int, nsym_used / nsym_star)
+        push!(k_irr, Vec3{Int}(i1, i2, i3) ./ ngrid)
+        push!(weight_irr_int, nsym_used ÷ nsym_star)
     end
     @assert sum(weight_irr_int) == prod(ngrid)
     weight_irr = weight_irr_int / prod(ngrid)
-    k_irr, weight_irr
     GridKpoints(Kpoints{Float64}(length(k_irr), k_irr, weight_irr, ngrid))
 end
 
