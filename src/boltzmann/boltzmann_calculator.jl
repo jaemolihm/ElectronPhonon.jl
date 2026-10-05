@@ -31,7 +31,7 @@ export BoltzmannCalculator
 # Buffers on the run's backend, built once in `setup_calculator!` from
 # `alloc(backend, …)` / `to_device(backend, …)`. Held behind `dev::Union{Nothing, …}` on the
 # calculator; touched only at hook granularity (one kernel launch per call), so the function boundary
-# keeps the hot code type-stable. The tiled Sᵢ output lives in `calc.tiled` (a `TiledDeviceOutput`).
+# keeps the hot code type-stable. The tiled Sᵢ output lives in `calc.tile_dev` (a `TiledDeviceOutput`).
 # The energies/weights/index maps are intrinsic to the state sets, so they are uploaded at setup.
 struct BoltzmannDeviceBuffers{MT, MI, VT, ST, GT}
     Sₒ       :: MT      # (n_i, nT, nchunks) per-chunk partials — small, device-resident
@@ -78,10 +78,10 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     dev::Union{Nothing, BoltzmannDeviceBuffers} = nothing
 
     # --- Tiled Sᵢ device output ---
-    # Sᵢ is never held whole on the device: `TiledDeviceOutput` (always block mode) keeps one outer-k
-    # tile (i-extent = the largest k-batch) resident and streams it to `calc.Sᵢ` per batch. Built at
-    # setup; device buffers allocated lazily on the first batch.
-    tiled::Union{Nothing, TiledDeviceOutput{FT}} = nothing
+    # Sᵢ is never held whole on the device: `TiledDeviceOutput` (always streamed per batch) keeps one
+    # outer-k tile (i-extent = the largest k-batch) resident and streams it to `calc.Sᵢ` per batch.
+    # Built at setup; device buffers allocated lazily on the first batch.
+    tile_dev::Union{Nothing, TiledDeviceOutput{FT}} = nothing
 
     # Set by `postprocess_calculator!`; `setup_calculator!` errors if already `true`. A calculator
     # instance is single-use — reconstruct it rather than re-running it on a new grid.
@@ -149,10 +149,10 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
     calc.Sₒ = [zeros(FT, n_i) for _ in 1:nT]
     calc.Sᵢ = [zeros(FT, n_i, n_f) for _ in 1:nT]
     # Tiled Sᵢ device output: shape (n_i, n_f, nT), tiled over the outer-k state axis (axis 1), always
-    # block mode (there is deliberately no full-device-resident Sᵢ path). Metadata only at setup; the
+    # streamed mode (there is deliberately no full-device-resident Sᵢ path). Metadata only at setup; the
     # device/host tile buffers are lazy in `tile_begin!` (first batch).
-    calc.tiled = TiledDeviceOutput{FT}((n_i, n_f, nT), 1, calc.el_i, n_outer_batch; narr = 1,
-                                       force_block = true)
+    calc.tile_dev = TiledDeviceOutput{FT}((n_i, n_f, nT), 1, calc.el_i, n_outer_batch; narr = 1,
+                                       force_stream_per_batch = true)
 
     # The whole-run device buffers: the band energies/weights/index maps are intrinsic to the state
     # sets and temperatures, so they are set up once here. `alloc`/`to_device` are backend-generic, so
@@ -175,21 +175,21 @@ end
 # --- Blocks (EPBlock) ----------------------------------------------------------------
 
 # Once per outer-k batch, before its blocks: record this batch's Sᵢ tile range and zero the tile's
-# active region (via `calc.tiled`).
+# active region (via `calc.tile_dev`).
 function calculator_begin_batch!(calc::BoltzmannCalculator{FT}, ctx::OuterKContext) where {FT}
-    # Sᵢ tile for this batch (block mode: zeroed and its range recorded by the helper).
-    tile_begin!(calc.tiled, ctx)
+    # Sᵢ tile for this batch (streamed mode: zeroed and its range recorded by the helper).
+    tile_begin!(calc.tile_dev, ctx)
     calc
 end
 
 # Once per outer-k batch, after its blocks: stream the batch's Sᵢ tile from device to the host output.
 function calculator_end_batch!(calc::BoltzmannCalculator, ctx::OuterKContext)
-    t = calc.tiled
-    ni = tile_length(t)
+    tile_dev = calc.tile_dev
+    ni = tile_length(tile_dev)
     if ni > 0
-        i0 = tile_offset(t)
-        tile_download!(t)             # contiguous device→host copy into the tile's host mirror
-        host = host_array(t, 1)
+        i0 = tile_offset(tile_dev)
+        tile_download!(tile_dev)      # contiguous device→host copy into the tile's host mirror
+        host = host_array(tile_dev, 1)
         @inbounds for iT in 1:length(calc.occ)
             @views calc.Sᵢ[iT][i0+1:i0+ni, :] .= host[:, :, iT]
         end
@@ -272,10 +272,10 @@ function run_calculator!(calc::BoltzmannCalculator{FT}, block::EPBlock{OuterKLoo
     nmodes, npairs = size(ep, 3), size(ep, 4)
     g2 = view(dev.g2, :, :, :, 1:npairs, ctx.chunk)
     g2 .= abs2.(ep) .* inv.(2 .* reshape(phs.e, 1, 1, nmodes, npairs))   # as `epstate_set_g2!`
-    t = calc.tiled
-    bte_window_accumulate!(view(dev.Sₒ, :, :, ctx.chunk), device_array(t, 1), g2, phs.e,
+    tile_dev = calc.tile_dev
+    bte_window_accumulate!(view(dev.Sₒ, :, :, ctx.chunk), device_array(tile_dev, 1), g2, phs.e,
         view(dev.imap_i, :, ik), dev.imap_f, ikq, dev.e_i, dev.e_f, dev.wf,
-        dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff, tile_offset(t))
+        dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff, tile_offset(tile_dev))
     calc
 end
 
@@ -293,6 +293,6 @@ function postprocess_calculator!(calc::BoltzmannCalculator{FT}; kwargs...) where
     end
     # Free device buffers (the calc is single-use; `done` forbids a re-run in `setup_calculator!`).
     calc.dev = nothing
-    calc.tiled === nothing || tile_free!(calc.tiled)
+    calc.tile_dev === nothing || tile_free!(calc.tile_dev)
     calc
 end
