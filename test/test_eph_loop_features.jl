@@ -26,8 +26,8 @@ mutable struct _DgRecorder <: ElectronPhonon.AbstractCalculator
     _DgRecorder() = new((0, 0, 0), Dict(), ReentrantLock())
 end
 ElectronPhonon.supports(::_DgRecorder, ::Type{OuterKLoop}) = true
-ElectronPhonon.calculator_begin!(::_DgRecorder, ctx) = nothing
-ElectronPhonon.calculator_end!(::_DgRecorder, ctx) = nothing
+ElectronPhonon.calculator_begin_batch!(::_DgRecorder, ctx) = nothing
+ElectronPhonon.calculator_end_batch!(::_DgRecorder, ctx) = nothing
 ElectronPhonon.postprocess_calculator!(c::_DgRecorder; kwargs...) = c
 ElectronPhonon.setup_calculator!(c::_DgRecorder, backend, els_k, els_kq, phs; kwargs...) =
     (c.ngrid = els_k.kpts.ngrid; c)

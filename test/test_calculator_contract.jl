@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, supports,
-    LoopContext, CPUBackend, calculator_begin!, calculator_end!, to_device
+    LoopContext, CPUBackend, calculator_begin_batch!, calculator_end_batch!, to_device
 
 # Calculator-contract checks (CPU-only): the `supports` trait, the fail-early checks the drivers do
 # at entry, `calculators` as a keyword, and the screening-disabled error.
@@ -17,8 +17,8 @@ ElectronPhonon.supports(::_CountCalc, ::Type{OuterKLoop}) = true
 ElectronPhonon.setup_calculator!(c::_CountCalc, backend, els_k, els_kq, phs; kwargs...) = c
 ElectronPhonon.postprocess_calculator!(c::_CountCalc; kwargs...) = c
 ElectronPhonon.run_calculator!(c::_CountCalc, ::EPBlock, ctx) = (Threads.atomic_add!(c.n, 1); c)
-ElectronPhonon.calculator_begin!(::_CountCalc, ctx) = nothing
-ElectronPhonon.calculator_end!(::_CountCalc, ctx) = nothing
+ElectronPhonon.calculator_begin_batch!(::_CountCalc, ctx) = nothing
+ElectronPhonon.calculator_end_batch!(::_CountCalc, ctx) = nothing
 
 # `_CountCalc` reading the band velocities, which `run_eph_over_k_and_q` cannot provide at k+q.
 struct _VdiagCountCalc <: AbstractCalculator end
@@ -98,12 +98,12 @@ mutable struct _NoBracketCalc <: AbstractCalculator end
     @test ctx isa LoopContext{CPUBackend, OuterKLoop}
     @test (ctx.batch, ctx.chunk) == (3:5, 1)
     @test LoopContext{CPUBackend, OuterKLoop} <: LoopContext{CPUBackend}
-    @test_throws ErrorException calculator_begin!(_NoBracketCalc(), ctx)
-    @test_throws ErrorException calculator_end!(_NoBracketCalc(), ctx)
+    @test_throws ErrorException calculator_begin_batch!(_NoBracketCalc(), ctx)
+    @test_throws ErrorException calculator_end_batch!(_NoBracketCalc(), ctx)
 
     # The reference calculator's brackets are its own methods, never the erroring fallback.
     BC = ElectronPhonon.BoltzmannCalculator
-    for f in (calculator_begin!, calculator_end!)
+    for f in (calculator_begin_batch!, calculator_end_batch!)
         m = which(f, (BC, LoopContext{CPUBackend, OuterKLoop}))
         @test Base.unwrap_unionall(m.sig).parameters[2] !== AbstractCalculator
     end

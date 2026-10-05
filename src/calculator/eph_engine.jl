@@ -946,7 +946,7 @@ end
 
 The calculator context for the outer batch `batch` and the workspace slot `chunk`. The default
 batch is the engine's current stage-1 batch, so call `stage1!` first or pass `batch`; the drivers
-pass it, so that `calculator_begin!` runs before the batch's stage 1.
+pass it, so that `calculator_begin_batch!` runs before the batch's stage 1.
 """
 function LoopContext(eng::Union{OuterKEngine, OuterQEngine}; batch::UnitRange{Int} = eng.batch,
         chunk::Int = 1)

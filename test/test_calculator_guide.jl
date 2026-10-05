@@ -48,7 +48,7 @@ end
     include_string(@__MODULE__, code)
 
     # Run it on the Pb artifact model (outer-k driver), with several outer batches and inner tiles,
-    # so the per-chunk partials and their reduction over `ctx.batch` are exercised.
+    # so the per-chunk rows of `g2_per_k_buffer` and their reduction over `ctx.batch` are exercised.
     # `invokelatest`: the calculator type + its interface methods were just defined by
     # `include_string`, so construct-and-run must execute at the latest world age to see them.
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
@@ -68,7 +68,7 @@ end
     # The other drivers on the same full grids hand the calculator the same pairs, so they give the
     # same sums: `run_eph_over_k_and_q` (k + q solved per tile) and `run_eph_over_q_and_k` (outer q),
     # on the CPU (the loop methods of `run_calculator!`) and, when available, on a GPU (the
-    # broadcast methods).
+    # broadcast methods), which compares all four methods.
     model_ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
     grid = (nk, nk, nk)
     common = (; symmetry = nothing, progress_print_step = 10^9, n_outer_batch = 5, n_inner_tile = 7,
@@ -92,15 +92,24 @@ end
         @test c.g2_per_k ≈ calc.g2_per_k rtol = 1e-10
     end
 
-    # The driver example, verbatim. It reads the global `epw_folder` and defines `calc` (outer k)
-    # and `calc_q` (outer q), which hold the same sums on the same full grids.
+    # The driver example, verbatim. It reads the global `epw_folder` and defines `calc` (outer k,
+    # symmetry-reduced), `calc_line` (outer k on a k line) and `calc_q` (outer q, full grid), with
+    # the driver outputs `out`, `out_line` and `out_q`.
     Core.eval(@__MODULE__, :(epw_folder = $(_artifact_folder("pb"))))
     include_string(@__MODULE__, _extract_doc_example(guide; tag = "doc-driver"))
     Base.invokelatest() do
-        c, c_q = getfield(@__MODULE__, :calc), getfield(@__MODULE__, :calc_q)
-        @test length(c.g2_per_k) == 8^3
-        @test all(isfinite, c.g2_per_k) && all(>(0), c.g2_per_k)
-        @test c_q.g2_per_k ≈ c.g2_per_k rtol = 1e-10
+        read_global(name) = getfield(@__MODULE__, name)
+        c, c_line, c_q = read_global(:calc), read_global(:calc_line), read_global(:calc_q)
+        out, out_line, out_q = read_global(:out), read_global(:out_line), read_global(:out_q)
+        # Symmetry reduces the outer k of the outer-k run, and not the k of the outer-q run.
+        @test out.kpts.n < out_q.kpts.n
+        for (calc_run, out_run) in ((c, out), (c_line, out_line), (c_q, out_q))
+            @test length(calc_run.g2_per_k) == out_run.kpts.n
+            @test all(isfinite, calc_run.g2_per_k) && all(>(0), calc_run.g2_per_k)
+        end
+        # The irreducible-wedge sum equals the full-grid sum only as far as the interpolated g2 is
+        # symmetric (6e-9 relative here).
+        @test sum(out.kpts.weights .* c.g2_per_k) ≈ sum(out_q.kpts.weights .* c_q.g2_per_k) rtol = 1e-7
     end
 
     # The direct-call example uses exactly the same calculator implementation and lifecycle.
@@ -117,17 +126,5 @@ end
         ElectronPhonon.run_eph_over_k_and_q(model, getfield(@__MODULE__, :kpts), getfield(@__MODULE__, :qpts);
             calculators = [driver], verbosity = 0)
         @test driver.g2_per_k ≈ c.g2_per_k rtol = 1e-10
-
-        # The broadcast (GPU) method of `run_calculator!`, run on the CPU, gives the loop's sum.
-        eng = getfield(@__MODULE__, :eng)
-        block = ElectronPhonon.stage2!(eng, 1, 1:1)
-        ctx = ElectronPhonon.LoopContext(eng)
-        sums = map((ElectronPhonon.LoopContext{ElectronPhonon.CPUBackend}, ElectronPhonon.LoopContext)) do C
-            fill!(c.partial_sums, 0.0)
-            invoke(ElectronPhonon.run_calculator!, Tuple{typeof(c), typeof(block), C}, c, block, ctx)
-            c.partial_sums[1, 1]
-        end
-        @test sums[1] > 0
-        @test sums[2] ≈ sums[1] rtol = 1e-12
     end
 end

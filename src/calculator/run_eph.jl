@@ -255,10 +255,10 @@ function _run_eph_loop(eng, calculators; symmetry, progress_print_step, verbosit
             flush(stdout); flush(stderr)
         end
         # The calculators' bracket opens before the batch's stage 1, so a decision made in
-        # `calculator_begin!` from `free_bytes` (`TiledDeviceOutput`) sees no stage-1 transients.
+        # `calculator_begin_batch!` from `free_bytes` (`TiledDeviceOutput`) sees no stage-1 transients.
         ctx = LoopContext(eng; batch = outer_batch)
         for calculator in calculators
-            calculator_begin!(calculator, ctx)
+            calculator_begin_batch!(calculator, ctx)
         end
         stage1!(eng, outer_batch)
         if eng isa OuterKEngine
@@ -267,7 +267,7 @@ function _run_eph_loop(eng, calculators; symmetry, progress_print_step, verbosit
             _loop_outer_q!(eng, calculators)
         end
         for calculator in calculators
-            calculator_end!(calculator, ctx)
+            calculator_end_batch!(calculator, ctx)
         end
         synchronize(eng.backend)
     end
@@ -591,7 +591,7 @@ function _loop_outer_q!(eng::OuterQEngine, calculators)
     eng_fields = _workspace_fields(eng)
     iqs_batch = eng.batch
 
-    # Visit each q explicitly and complete its k chunks before calculator_end! or the next batch.
+    # Visit each q explicitly and complete its k chunks before calculator_end_batch! or the next batch.
     for iq in iqs_batch
         if length(eng.tiles) == 1
             # One chunk: GPU and serial runs remain on the caller's task and CUDA stream.

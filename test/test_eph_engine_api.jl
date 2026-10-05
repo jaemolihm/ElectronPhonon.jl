@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: OuterKEngine, OuterQEngine, OuterKLoop, OuterQLoop, EPBlock, LoopContext,
-    stage1!, stage2!, setup_calculator!, run_calculator!, calculator_begin!, calculator_end!,
+    stage1!, stage2!, setup_calculator!, run_calculator!, calculator_begin_batch!, calculator_end_batch!,
     postprocess_calculator!, CPUBackend, gpu_backend, unit_to_aru
 
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
@@ -47,7 +47,7 @@ _setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, e
         @test stage1!(eng, 1:1) === eng
         ctx = LoopContext(eng)
         @test ctx.order isa Order && ctx.batch == 1:1 && ctx.chunk == 1
-        calculator_begin!(calc, ctx)
+        calculator_begin_batch!(calc, ctx)
         block = stage2!(eng, 1, 1:1)
         @test block isa EPBlock{Order}
         @test block.els_k isa BatchedElectronState && block.els_kq isa BatchedElectronState
@@ -56,7 +56,7 @@ _setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, e
         @test size(block.ep) == (block.els_kq.nband_max, block.els_k.nband_max, model.nmodes, 1)
         @test block.dg === nothing
         run_calculator!(calc, block, ctx)
-        calculator_end!(calc, ctx)
+        calculator_end_batch!(calc, ctx)
         postprocess_calculator!(calc; qpts = eng.qpts, symmetry = nothing)
         dev = compare_with_reference(ref, calc)
         @test dev.nmissing == dev.nextra == 0

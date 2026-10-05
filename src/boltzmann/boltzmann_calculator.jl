@@ -14,7 +14,7 @@
 #
 # Device memory (Sᵢ): the scattering-in matrix Sᵢ (n_i·n_f·nT) is the large object. On the GPU it
 # is never held whole on the device — it is tiled over outer k, each tile filled by one k-batch and
-# streamed to the host (calculator_begin!/end! brackets), so only one tile (≈ one k-batch of rows)
+# streamed to the host (calculator_begin_batch!/end_batch! brackets), so only one tile (≈ one k-batch of rows)
 # is device-resident. This bounds device memory to the tile regardless of grid size at no measurable
 # speed cost: streaming is within ~2% of a single whole-Sᵢ copy even at 1.1 GB Sᵢ, because the D2H
 # bytes moved are identical either way. There is deliberately no full-device-resident Sᵢ path. (Sₒ is
@@ -176,14 +176,14 @@ end
 
 # Once per outer-k batch, before its blocks: record this batch's Sᵢ tile range and zero the tile's
 # active region (via `calc.tiled`).
-function calculator_begin!(calc::BoltzmannCalculator{FT}, ctx::LoopContext) where {FT}
+function calculator_begin_batch!(calc::BoltzmannCalculator{FT}, ctx::LoopContext) where {FT}
     # Sᵢ tile for this batch (block mode: zeroed and its range recorded by the helper).
     tile_begin!(calc.tiled, ctx)
     calc
 end
 
 # Once per outer-k batch, after its blocks: stream the batch's Sᵢ tile from device to the host output.
-function calculator_end!(calc::BoltzmannCalculator, ctx::LoopContext)
+function calculator_end_batch!(calc::BoltzmannCalculator, ctx::LoopContext)
     t = calc.tiled
     ni = tile_length(t)
     if ni > 0

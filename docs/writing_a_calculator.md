@@ -24,7 +24,7 @@ cannot rot.
 - `setup_calculator!(calc, backend, els_k, els_kq, phs; sel_k, sel_kq, nchunks_threads,
   n_outer_batch, n_inner_tile, verbosity)` — once, before the loop (see below).
 - `run_calculator!(calc, block::EPBlock{OuterKLoop}, ctx)` (or `{OuterQLoop}`) — once per block.
-- `calculator_begin!(calc, ctx)` / `calculator_end!(calc, ctx)` — around every outer batch
+- `calculator_begin_batch!(calc, ctx)` / `calculator_end_batch!(calc, ctx)` — around every outer batch
   (`ctx.batch`, the outer indices of the batch). There is no default: define both, even as `= nothing`.
 - `postprocess_calculator!(calc; kwargs...)` — once, after the loop.
 - Optionally `calculator_bytes(calc, ::Type{<:EPBlock{O}}; nw, nmodes, nband_max_k, nband_max_kq,
@@ -44,16 +44,16 @@ k point. It supports both loop orders and runs on the CPU and on a GPU.
 ```julia
 using ElectronPhonon
 using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, LoopContext, CPUBackend,
-    alloc, omega_acoustic
+    GPUBackend, alloc, omega_acoustic
 
 # For each k: Σ over (q, m, n, ν) of wtq |ep[m, n, ν]|² / (2ω_ν(q)), with m and n the bands of
 # k+q and k inside their windows. Modes with ω < omega_acoustic are skipped, as in the library's
 # calculators: at Γ the acoustic ω is ~0, where 1/(2ω) only amplifies roundoff.
 mutable struct EphG2SumCalculator <: AbstractCalculator
-    g2_per_k     :: Vector{Float64}   # the result, indexed by k point
-    partial_sums :: Matrix{Float64}   # (chunk, outer k of the batch), for the outer-k loop
-    # Scratch of the GPU methods, one per thread chunk, sized to one tile: the summand of a block,
-    # and the per-pair sums of an outer-q block on the backend and on the host.
+    g2_per_k        :: Vector{Float64}   # the result, indexed by k point
+    g2_per_k_buffer :: Matrix{Float64}   # (chunk, outer k of the batch), for the outer-k loop
+    # Scratch of the GPU methods, sized to one tile: the summand of a block, and the per-pair sums
+    # of an outer-q block on the device and on the host. Empty on a CPU backend.
     g2_scratch    :: Vector{Any}
     pair_sums_dev :: Vector{Any}
     pair_sums     :: Vector{Vector{Float64}}
@@ -71,22 +71,28 @@ function ElectronPhonon.setup_calculator!(c::EphG2SumCalculator, backend, els_k,
     # The result: one sum per k point of the run.
     c.g2_per_k = zeros(els_k.nk)
 
-    # Outer k: every chunk adds to the sum of the same outer k, so each chunk has its own partial,
-    # one per outer k of a batch.
-    c.partial_sums = zeros(nchunks_threads, n_outer_batch)
+    # Outer k: the CPU thread chunks add to the sum of the same outer k concurrently, so each chunk
+    # has its own row, one column per outer k of a batch. `calculator_end_batch!` sums the rows.
+    c.g2_per_k_buffer = zeros(nchunks_threads, n_outer_batch)
 
-    # GPU scratch, sized to the largest block: `ep` is (nband_max_kq, nband_max_k, nmodes, npairs)
-    # with npairs ≤ n_inner_tile. The k+q box is the container's, or at most `nw` when k+q is
-    # solved per tile.
-    nband_max_kq = els_kq === nothing ? els_k.nw : els_kq.nband_max
-    block_size = nband_max_kq * els_k.nband_max * phs.nmodes * n_inner_tile
-    c.g2_scratch = [alloc(backend, Float64, block_size) for _ in 1:nchunks_threads]
-    c.pair_sums_dev = [alloc(backend, Float64, n_inner_tile) for _ in 1:nchunks_threads]
-    c.pair_sums = [zeros(n_inner_tile) for _ in 1:nchunks_threads]
+    if backend isa GPUBackend
+        # GPU scratch, sized to the largest block: `ep` is (nband_max_kq, nband_max_k, nmodes,
+        # npairs) with npairs ≤ n_inner_tile. The k+q box is the container's, or at most `nw` when
+        # k+q is solved per tile. On a device `ctx.chunk` is always 1.
+        nband_max_kq = els_kq === nothing ? els_k.nw : els_kq.nband_max
+        block_size = nband_max_kq * els_k.nband_max * phs.nmodes * n_inner_tile
+        c.g2_scratch = [alloc(backend, Float64, block_size)]
+        c.pair_sums_dev = [alloc(backend, Float64, n_inner_tile)]
+        c.pair_sums = [zeros(n_inner_tile)]
+    end
     c
 end
 
-ElectronPhonon.calculator_begin!(c::EphG2SumCalculator, ctx) = (fill!(c.partial_sums, 0.0); c)
+# Before each outer batch: clear the outer-k buffer, which holds the sums of the current batch only.
+function ElectronPhonon.calculator_begin_batch!(c::EphG2SumCalculator, ctx)
+    fill!(c.g2_per_k_buffer, 0)
+    c
+end
 
 # `run_calculator!` receives one block: one outer point with a tile of inner points. Pair `j` of the
 # block is entry `[:, :, :, j]` of `ep`. Each array of the block has the pairs on its last axis,
@@ -96,10 +102,13 @@ ElectronPhonon.calculator_begin!(c::EphG2SumCalculator, ctx) = (fill!(c.partial_
 #   OuterKLoop  k: els_k[1]        k+q_j: els_kq[j], q_j: phs[j]         wtq[j]
 #   OuterQLoop  q: phs[1]          k_j: els_k[j], k_j+q: els_kq[j]       wtq (the q weight)
 #
+# The shared side is still a one-point `BatchedElectronState` / `BatchedPhononState`, not a single
+# state, so the block has one type for both orders and its extent 1 broadcasts over the pairs.
+#
 # There is one method per (loop order, backend). The CPU methods are plain loops. The GPU methods
 # cannot read a device array one element at a time (an error under `CUDA.allowscalar(false)`), so
 # they form the summand of the whole block with one broadcast (`block_g2!`) and reduce it on the
-# device. They are written for any backend, so they also run on a CPU backend.
+# device.
 
 # The summand of a block, w_j |ep[m, n, ν, j]|² / (2ω_ν), as an array shaped like `ep`. Every factor
 # is reshaped to broadcast along ep[m, n, ν, j]; the shared side's extent 1 broadcasts over the
@@ -122,48 +131,53 @@ function block_g2!(c::EphG2SumCalculator, block, chunk)
 end
 
 # Outer k, CPU. The whole block adds to one number, the sum of the outer k. Blocks of other chunks
-# add to the same k concurrently, so it goes to this chunk's partial, reduced in `calculator_end!`.
+# add to the same k concurrently, so it goes to this chunk's row of `g2_per_k_buffer`, summed in
+# `calculator_end_batch!`. The column is the position of the outer k in the batch: `block.ik` is its index
+# in the run, and the batch holds the outer k points `ctx.batch`.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterKLoop},
                                         ctx::LoopContext{CPUBackend})
     (; ep, els_k, els_kq, phs, wtq) = block
+    nband_k = els_k.nband[1]              # the outer k, the block's only k point
     s = 0.0
-    for j in axes(ep, 4)                  # pair j: (k, q_j)
+    for iq_tile in axes(ep, 4)            # pair (k, q_iq_tile)
         for ν in axes(ep, 3)
-            ω = phs.e[ν, j]
+            ω = phs.e[ν, iq_tile]
             ω < omega_acoustic && continue
-            for n in 1:els_k.nband[1], m in 1:els_kq.nband[j]
-                s += wtq[j] * abs2(ep[m, n, ν, j]) / (2ω)
+            for n in 1:nband_k, m in 1:els_kq.nband[iq_tile]
+                s += wtq[iq_tile] * abs2(ep[m, n, ν, iq_tile]) / (2ω)
             end
         end
     end
-    c.partial_sums[ctx.chunk, block.ik - first(ctx.batch) + 1] += s
+    ik_batch = block.ik - first(ctx.batch) + 1
+    c.g2_per_k_buffer[ctx.chunk, ik_batch] += s
     c
 end
 
 # Outer k, GPU: the same sum, as one device reduction of the block's summand.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterKLoop},
-                                        ctx::LoopContext)
+                                        ctx::LoopContext{<:GPUBackend})
     g2 = block_g2!(c, block, ctx.chunk)
-    c.partial_sums[ctx.chunk, block.ik - first(ctx.batch) + 1] += sum(g2)
+    ik_batch = block.ik - first(ctx.batch) + 1
+    c.g2_per_k_buffer[ctx.chunk, ik_batch] += sum(g2)
     c
 end
 
-# Outer q, CPU. Each pair adds to its own k point, `block.ik[j]`. No other block writes these k at
+# Outer q, CPU. Each pair adds to its own k point, `block.ik[ik_tile]`. No other block writes these k at
 # the same time (the chunks split the k points, and the q points of a batch run one after another),
 # so the sums go straight into the result.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterQLoop},
                                         ctx::LoopContext{CPUBackend})
     (; ep, els_k, els_kq, phs, wtq) = block
-    for j in axes(ep, 4)                  # pair j: (k_j, q)
+    for ik_tile in axes(ep, 4)            # pair (k_ik_tile, q)
         s = 0.0
         for ν in axes(ep, 3)
-            ω = phs.e[ν, 1]
+            ω = phs.e[ν, 1]               # the outer q, the block's only q point
             ω < omega_acoustic && continue
-            for n in 1:els_k.nband[j], m in 1:els_kq.nband[j]
-                s += wtq * abs2(ep[m, n, ν, j]) / (2ω)
+            for n in 1:els_k.nband[ik_tile], m in 1:els_kq.nband[ik_tile]
+                s += wtq * abs2(ep[m, n, ν, ik_tile]) / (2ω)
             end
         end
-        c.g2_per_k[block.ik[j]] += s
+        c.g2_per_k[block.ik[ik_tile]] += s
     end
     c
 end
@@ -171,7 +185,7 @@ end
 # Outer q, GPU: sum the summand over (m, n, ν) of each pair on the device, copy the npairs sums to
 # the host, and add them to their k points.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{OuterQLoop},
-                                        ctx::LoopContext)
+                                        ctx::LoopContext{<:GPUBackend})
     g2 = block_g2!(c, block, ctx.chunk)
     npairs = size(g2, 4)
     pair_sums_dev = view(c.pair_sums_dev[ctx.chunk], 1:npairs)
@@ -181,10 +195,10 @@ function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, block::EPBlock{Ou
     c
 end
 
-function ElectronPhonon.calculator_end!(c::EphG2SumCalculator, ctx)
-    if ctx.order isa OuterKLoop
-        # Outer k: reduce the chunks' partials into the k points of the batch.
-        c.g2_per_k[ctx.batch] .= vec(sum(view(c.partial_sums, :, 1:length(ctx.batch)); dims = 1))
+function ElectronPhonon.calculator_end_batch!(c::EphG2SumCalculator, ctx)
+    @views if ctx.order isa OuterKLoop
+        # Outer k: sum the chunks' rows into the k points of the batch.
+        c.g2_per_k[ctx.batch] .= vec(sum(c.g2_per_k_buffer[:, 1:length(ctx.batch)]; dims = 1))
     else
         # Outer q: `run_calculator!` already added every pair to its k point; nothing to reduce.
     end
@@ -202,24 +216,43 @@ The drivers are public but not exported, so they are called as `ElectronPhonon.<
 
 <!-- doc-driver:begin -->
 ```julia
-# A model from an EPW run, stored for the outer-k loop.
-model = load_model_from_epw_new(epw_folder, "temp", "pb"; epmat_outer_momentum = "el")
+using ElectronPhonon.units: eV
 
+# Pb from an EPW run, stored for the outer-k loops. Only the bands within 0.5 eV of the Fermi level
+# are kept, on both electron sides.
+model = load_model_from_epw_new(epw_folder, "temp", "pb"; epmat_outer_momentum = "el")
+μ = 11.68eV
+window = (μ - 0.5eV, μ + 0.5eV)
+
+# Outer k on a k grid, inner k+q on a k+q grid. `symmetry = model.symmetry` (the default) reduces
+# the outer k to the irreducible wedge: `out.kpts` holds the irreducible k points in the window, with
+# their weights, and `calc.g2_per_k` one sum per point of `out.kpts`.
 calc = EphG2SumCalculator()
 out = ElectronPhonon.run_eph_over_k_and_kq(model, (8, 8, 8), (8, 8, 8);
-    calculators = [calc], symmetry = nothing)
-calc.g2_per_k    # one number per k point of out.kpts
+    calculators = [calc], window_k = window, window_kq = window)
 
-# The same sums with q as the outer loop, from the model stored for the outer-q loop.
+# Outer k on any list of k points, here a line from Γ to X, with inner q on a grid; k+q is solved
+# per tile. A k point with no band in `window_k` is dropped, so `out_line.kpts` lists the k points
+# that were run.
+kpts_line = Kpoints([Vec3(x, 0.0, x) for x in range(0, 0.5, length = 11)])
+calc_line = EphG2SumCalculator()
+out_line = ElectronPhonon.run_eph_over_k_and_q(model, kpts_line, (8, 8, 8);
+    calculators = [calc_line], window_k = window, window_kq = window)
+
+# Outer q, from the model stored for the outer-q loop. Here `symmetry` would reduce the outer q
+# points. That is exact only for a sum over k, and this calculator's result is per k, so the run
+# keeps the full q grid with `symmetry = nothing`.
 model_ph = load_model_from_epw_new(epw_folder, "temp", "pb"; epmat_outer_momentum = "ph")
 calc_q = EphG2SumCalculator()
-ElectronPhonon.run_eph_over_q_and_k(model_ph, (8, 8, 8), (8, 8, 8);
-    calculators = [calc_q], symmetry = nothing)
+out_q = ElectronPhonon.run_eph_over_q_and_k(model_ph, (8, 8, 8), (8, 8, 8);
+    calculators = [calc_q], symmetry = nothing, window_k = window, window_kq = window)
+
+# The two grid runs agree on the k-weighted sum, up to the symmetry of the interpolated g2.
+sum(out.kpts.weights .* calc.g2_per_k) ≈ sum(out_q.kpts.weights .* calc_q.g2_per_k)
 ```
 <!-- doc-driver:end -->
 
-Pass `backend = ElectronPhonon.gpu_backend()` to a driver to run on a GPU, and `window_k` /
-`window_kq` to keep the bands near the Fermi level.
+Pass `backend = ElectronPhonon.gpu_backend()` to a driver to run on a GPU.
 
 ## Run one k, q pair yourself
 
@@ -231,7 +264,7 @@ defined above and a model loaded with `epmat_outer_momentum = "el"`:
 <!-- doc-single-pair:begin -->
 ```julia
 using ElectronPhonon: OuterKEngine, stage1!, stage2!, LoopContext,
-    setup_calculator!, calculator_begin!, run_calculator!, calculator_end!, postprocess_calculator!
+    setup_calculator!, calculator_begin_batch!, run_calculator!, calculator_end_batch!, postprocess_calculator!
 
 calc = EphG2SumCalculator()
 kpts = Kpoints(Vec3(0.25, 0.25, 0.25))   # one k point
@@ -248,7 +281,7 @@ setup_calculator!(calc, eng.backend, eng.els_k, eng.els_kq, eng.phs;
 # Stage 1 for the outer k points 1:1, and the calculator context of that batch.
 stage1!(eng, 1:1)
 ctx = LoopContext(eng)
-calculator_begin!(calc, ctx)
+calculator_begin_batch!(calc, ctx)
 
 # Stage 2 for outer k 1 and inner q points 1:1: the block, or `nothing` if the pair is skipped.
 block = stage2!(eng, 1, 1:1)
@@ -256,7 +289,7 @@ if block !== nothing
     run_calculator!(calc, block, ctx)
 end
 
-calculator_end!(calc, ctx)
+calculator_end_batch!(calc, ctx)
 postprocess_calculator!(calc; qpts = eng.qpts, symmetry = nothing)
 calc.g2_per_k
 ```
@@ -308,7 +341,7 @@ up through an index map that is 0 past it (`_indmap_to_device`), or select with 
   second. Every `length(ctx.batch) ≥ 1` must work.
 - **Writes.** Writes indexed by an inner-tile point are disjoint across blocks. Every other write
   (indexed by the outer point, or a reduction over the inner points) goes to a per-`ctx.chunk`
-  partial, reduced in `calculator_end!`, as in the example. Per-tile scratch is per chunk too: on
+  partial, reduced in `calculator_end_batch!`, as in the example. Per-tile scratch is per chunk too: on
   the CPU the blocks of different chunks run concurrently. `ctx.chunk` is 1 on a device. Data of the
   block's shared side (the outer k's energies under `OuterKLoop`, the q's frequencies under
   `OuterQLoop`) is not an inner-tile write either: concurrent blocks write the same slot, so record
@@ -346,9 +379,9 @@ whole thing on the device. `ElectronPhonon.TiledDeviceOutput` owns that bookkeep
 - It decides full-device-resident vs per-tile block residency from `free_bytes(ctx.backend)`
   (override with `force_block`), allocates lazily on the first batch, computes the outer-k tile
   ranges, zeros the active tile per batch, and does the contiguous device→host download.
-- In `calculator_begin!(calc, ctx)` call `tile_begin!(t, ctx)`; scatter into `device_array(t, k)`
+- In `calculator_begin_batch!(calc, ctx)` call `tile_begin!(t, ctx)`; scatter into `device_array(t, k)`
   using `tile_offset(t)` / `tile_stride(t)` (`eph_window_scatter!`, `eph_window_scatter_reim!`, or
-  your own); in `calculator_end!(calc, ctx)` flush a block tile with `tile_download!(t)` and a small
+  your own); in `calculator_end_batch!(calc, ctx)` flush a block tile with `tile_download!(t)` and a small
   view-copy into your host output; in `postprocess_calculator!` copy a full-resident buffer back and
   `tile_free!(t)`.
 

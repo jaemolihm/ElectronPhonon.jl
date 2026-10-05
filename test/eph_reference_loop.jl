@@ -197,8 +197,8 @@ ElectronPhonon.supports(::_PairRecorder, ::Type{OuterKLoop}) = true
 ElectronPhonon.supports(::_PairRecorder, ::Type{OuterQLoop}) = true
 # The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator
 # reads, so it defines no `required_el_quantities` / `required_ph_quantities`.
-ElectronPhonon.calculator_begin!(::_PairRecorder, ctx) = nothing
-ElectronPhonon.calculator_end!(::_PairRecorder, ctx) = nothing
+ElectronPhonon.calculator_begin_batch!(::_PairRecorder, ctx) = nothing
+ElectronPhonon.calculator_end_batch!(::_PairRecorder, ctx) = nothing
 ElectronPhonon.postprocess_calculator!(c::_PairRecorder; kwargs...) = c
 function ElectronPhonon.setup_calculator!(c::_PairRecorder, backend, els_k, els_kq, phs; kwargs...)
     c.nw, c.nmodes = els_k.nw, phs.nmodes

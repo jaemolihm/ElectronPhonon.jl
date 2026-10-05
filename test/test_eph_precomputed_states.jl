@@ -20,8 +20,8 @@ ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{OuterKLoop}) = true
 ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{OuterQLoop}) = true
 # The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator
 # reads, so it defines no `required_el_quantities` / `required_ph_quantities`.
-ElectronPhonon.calculator_begin!(::_PrecomputedStatesProbe, ctx) = nothing
-ElectronPhonon.calculator_end!(::_PrecomputedStatesProbe, ctx) = nothing
+ElectronPhonon.calculator_begin_batch!(::_PrecomputedStatesProbe, ctx) = nothing
+ElectronPhonon.calculator_end_batch!(::_PrecomputedStatesProbe, ctx) = nothing
 ElectronPhonon.setup_calculator!(c::_PrecomputedStatesProbe, backend, els_k, els_kq, phs; kwargs...) = c
 ElectronPhonon.postprocess_calculator!(c::_PrecomputedStatesProbe; kwargs...) = c
 ElectronPhonon.run_calculator!(c::_PrecomputedStatesProbe, ::EPBlock, ctx) = c

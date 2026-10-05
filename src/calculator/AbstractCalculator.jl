@@ -18,7 +18,7 @@ Users subtype `AbstractCalculator` and implement:
   `nothing` when k+q is solved per tile. `n_outer_batch` and `n_inner_tile` are the widths the
   loop chose, which per-batch and per-tile buffers are sized to.
 * `run_calculator!(calc, block::EPBlock{O}, ctx)` — one method per supported order `O`.
-* `calculator_begin!(calc, ctx)` / `calculator_end!(calc, ctx)` — around every outer batch
+* `calculator_begin_batch!(calc, ctx)` / `calculator_end_batch!(calc, ctx)` — around every outer batch
   (`ctx.batch`, never empty). There is no default; a calculator with nothing to do defines `= nothing`.
 * `postprocess_calculator!(calc; kwargs...)` — run once, after the loop.
 
@@ -27,7 +27,7 @@ The contract:
   over `ctx.batch` in the brackets.
 * **Writes.** On the CPU the blocks of different thread chunks run concurrently. Writes indexed by
   an inner-tile point are disjoint across blocks; every other write, and every per-tile scratch,
-  is per `ctx.chunk` (`nchunks_threads` at setup), with partials reduced in `calculator_end!`
+  is per `ctx.chunk` (`nchunks_threads` at setup), with partials reduced in `calculator_end_batch!`
   (`ctx.chunk` is 1 on the device).
 * **Extents.** Every array of a block holds exactly the block's points. Band `n` of a block's
   electron side is physical band `iband_offset[j] + n` only for `n ≤ nband[j]`; entries past it
@@ -180,12 +180,12 @@ end
 # The one bracket, around every outer batch. There is NO no-op default: a missing method is a loud
 # error, never a silent skip; a calculator that does nothing there defines `= nothing`. `ctx` is
 # unannotated so the fallback is never ambiguous with a calculator method that leaves it untyped.
-function calculator_begin!(calc::AbstractCalculator, ctx)
-    error("calculator_begin!($(typeof(calc)), ::$(typeof(ctx))) is not defined. Every calculator " *
+function calculator_begin_batch!(calc::AbstractCalculator, ctx)
+    error("calculator_begin_batch!($(typeof(calc)), ::$(typeof(ctx))) is not defined. Every calculator " *
           "defines the begin/end brackets, even as an explicit no-op (`= nothing`).")
 end
-function calculator_end!(calc::AbstractCalculator, ctx)
-    error("calculator_end!($(typeof(calc)), ::$(typeof(ctx))) is not defined. Every calculator " *
+function calculator_end_batch!(calc::AbstractCalculator, ctx)
+    error("calculator_end_batch!($(typeof(calc)), ::$(typeof(ctx))) is not defined. Every calculator " *
           "defines the begin/end brackets, even as an explicit no-op (`= nothing`).")
 end
 
@@ -218,7 +218,7 @@ calculator_bytes(::AbstractCalculator, ::Type{<:EPBlock}; kwargs...) =
 public run_eph_over_k_and_kq, run_eph_over_k_and_q, run_eph_over_q_and_k,
     OuterKEngine, OuterQEngine, stage1!, stage2!,
     AbstractCalculator, supports, setup_calculator!, run_calculator!, postprocess_calculator!,
-    calculator_begin!, calculator_end!, OuterKLoop, OuterQLoop, EPBlock, LoopContext, AbstractBackend, CPUBackend, GPUBackend,
+    calculator_begin_batch!, calculator_end_batch!, OuterKLoop, OuterQLoop, EPBlock, LoopContext, AbstractBackend, CPUBackend, GPUBackend,
     gpu_backend, alloc, free_bytes, synchronize, batched_gemm!, eph_window_scatter!,
     bte_window_accumulate!, calculator_bytes, allowed_eph_phonon_basis,
     required_el_quantities, required_ph_quantities, _indmap_to_device,

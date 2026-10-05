@@ -460,8 +460,8 @@ end
 ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.OuterKLoop}) = true
 # The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator
 # reads, so it defines no `required_el_quantities` / `required_ph_quantities`.
-ElectronPhonon.calculator_begin!(::_RecordCalc, ctx) = nothing
-ElectronPhonon.calculator_end!(::_RecordCalc, ctx) = nothing
+ElectronPhonon.calculator_begin_batch!(::_RecordCalc, ctx) = nothing
+ElectronPhonon.calculator_end_batch!(::_RecordCalc, ctx) = nothing
 function ElectronPhonon.setup_calculator!(c::_RecordCalc, backend, els_k, els_kq, phs; kwargs...)
     (; nw) = els_k
     (; nmodes) = phs
@@ -597,8 +597,8 @@ function ElectronPhonon.setup_calculator!(c::_RecordCalcOuterQ, backend, els_k, 
     c.Adev = ElectronPhonon.alloc(backend, Float64, n_outer_batch, nchunks_threads)
     c
 end
-ElectronPhonon.calculator_begin!(c::_RecordCalcOuterQ, ctx) = (fill!(c.Adev, 0.0); c)
-function ElectronPhonon.calculator_end!(c::_RecordCalcOuterQ, ctx)
+ElectronPhonon.calculator_begin_batch!(c::_RecordCalcOuterQ, ctx) = (fill!(c.Adev, 0.0); c)
+function ElectronPhonon.calculator_end_batch!(c::_RecordCalcOuterQ, ctx)
     c.A[ctx.batch] .= vec(sum(Array(c.Adev); dims = 2))[1:length(ctx.batch)]
     c
 end
