@@ -93,10 +93,18 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
     el_sym::Union{SymmetryOperators{FT, HostWannierObject{FT}}, Nothing} = nothing
 end
 
-"Read file and create Model object in the MPI root.
-Broadcast to all other processors."
+"""
+    load_model(folder; epmat_on_disk=false, tmpdir=nothing, epmat_outer_momentum="ph",
+               load_symmetry_operators=false, skip_epmat=false) => Model
+
+Read `folder/epw_data_julia.bin` and create a Model object.
+
+!!! warning "Deprecated"
+    Use [`load_model_from_epw_new`](@ref), which reads the standard EPW output files.
+"""
 function load_model(folder::String; epmat_on_disk::Bool=false, tmpdir=nothing,
     epmat_outer_momentum="ph", load_symmetry_operators=false, skip_epmat=false)
+    Base.depwarn("load_model is deprecated, use load_model_from_epw_new instead", :load_model)
     # Read model from file
     if mpi_initialized()
         # FIXME: Read only in the root core, and then bcast.

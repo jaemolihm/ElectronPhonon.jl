@@ -12,17 +12,6 @@ function _load_model_from_artifacts(prefix; kwargs...)
     load_model_from_epw_new(folder, "temp", prefix; kwargs...)
 end
 
-# `model` with its epmat written to `dir/epmat.bin` and memory-mapped back, as `epmat_on_disk` does.
-function _disk_epmat_model(model, dir)
-    e = model.epmat
-    path = joinpath(dir, "epmat.bin")
-    write(path, e.op_r)
-    op_r = ElectronPhonon.Mmap.mmap(path, Matrix{ComplexF64}, size(e.op_r))
-    epmat = ElectronPhonon.WannierObject(e.irvec, op_r; e.irvec_next)
-    names = fieldnames(typeof(model))
-    ElectronPhonon.Model(; merge(NamedTuple{names}(getfield.(Ref(model), names)), (; epmat))...)
-end
-
 # The phonon twin of `_electron_state_equal`, and the assembler of a phonon `Eigenpairs`. Both live
 # here for the same reason: `Eigenpairs` has no phonon builder -- a cache is made from the states of
 # an earlier run, which is how a consumer inherits that run's eigenmode basis -- and the tests of

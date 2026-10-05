@@ -24,9 +24,12 @@ isdefined(@__MODULE__, :_PairRecorder) || include("eph_reference_loop.jl")
               progress_print_step = 10^9, n_outer_batch = 5, n_inner_tile = 40)
     models = Dict(mom => _load_model_from_artifacts("pb"; epmat_outer_momentum = mom) for mom in ("el", "ph"))
     dir = mktempdir()
-    disk_models = Dict(mom => _disk_epmat_model(models[mom], mkpath(joinpath(dir, mom))) for mom in ("el", "ph"))
-    @test typeof(disk_models["el"].epmat) === typeof(models["el"].epmat)
-    @test disk_models["el"].epmat.op_r == models["el"].epmat.op_r
+    disk_models = Dict(mom => _load_model_from_artifacts("pb"; epmat_outer_momentum = mom, epmat_on_disk = true,
+                                                         tmpdir = mkpath(joinpath(dir, mom))) for mom in ("el", "ph"))
+    for mom in ("el", "ph")
+        @test typeof(disk_models[mom].epmat) === typeof(models[mom].epmat)
+        @test disk_models[mom].epmat.op_r == models[mom].epmat.op_r
+    end
 
     @testset "$order, $(nameof(typeof(backend)))" for (order, mom) in ((:k, "el"), (:q, "ph")),
             backend in (DISK_EPMAT_GPU ? Any[CPUBackend(), gpu_backend()] : Any[CPUBackend()])
