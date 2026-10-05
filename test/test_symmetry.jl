@@ -67,6 +67,28 @@ using Test
     @test kpts.n == 16
     kpts = kpoints_grid((7, 7, 7); symmetry)
     @test kpts.n == 20
+
+    # Pb (fcc, one atom)
+    lattice = 4.9 / 2 * [[0 1 1.];
+                         [1 0 1.];
+                         [1 1 0.]]
+    symmetry = symmetry_operations(lattice, ["Pb" => [zeros(3)]])
+    @test symmetry.nsym == 96
+    kpts = kpoints_grid((6, 6, 6); symmetry)
+    @test kpts.n == 16
+    @test kpts.vectors[2] == Vec3(0, 0, 1/6)
+    @test kpts.weights[2] ≈ 8 / 6^3
+    kpts = kpoints_grid((7, 7, 7); symmetry, ignore_time_reversal=true)
+    @test kpts.n == 20
+    # A grid that breaks the cubic symmetry
+    @test_throws "breaks the symmetry" kpoints_grid((6, 6, 4); symmetry)
+    @test_throws "breaks the symmetry" kpoints_grid((1, 2, 1); symmetry)
+
+    # Simple tetragonal, non-uniform grids
+    symmetry = symmetry_operations([3.0 0 0; 0 3.0 0; 0 0 5.0], ["X" => [zeros(3)]])
+    @test symmetry.nsym == 32
+    @test kpoints_grid((6, 6, 4); symmetry).n == 30
+    @test kpoints_grid((5, 5, 7); symmetry).n == 24
 end
 
 @testset "small group of q" begin

@@ -529,7 +529,7 @@ end
 
 """
     kpoints_grid(grid, symmetry::Symmetry; ignore_time_reversal=false)
-Construct the irreducible wedge of a uniform Brillouin zone mesh for sampling ``k``-Points.
+Construct the irreducible wedge of a regular (possibly non-uniform) Brillouin zone mesh for sampling ``k``-Points.
 The mesh includes the Gamma point. Returns a `Kpoints` object.
 - `ignore_time_reversal`: If true, ignore all symmetries involving time reversal.
 """
@@ -539,12 +539,18 @@ function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=f
     k_irr = Vector{Vec3{Float64}}()
     found = zeros(Bool, ngrid...)
 
+    # Exact integer arithmetic: k = m / L with L the common denominator of the grid, so
+    # k = (i1, i2, i3) ./ ngrid has m = (i1, i2, i3) .* stride. Comparing m lexicographically
+    # orders the k points the same way as comparing k.
+    L = lcm(ngrid...)
+    stride = Vec3{Int}(L .÷ ngrid)
+
     # kz = i3 / ngrid[3] is the fastest index
     for (i3, i2, i1) in Iterators.product((0:n-1 for n in reverse(ngrid))...)
         # check if this k-point has already been found equivalent to another. If so, skip.
         found[i1+1, i2+1, i3+1] && continue
 
-        k = Vec3{Rational{Int}}((i1, i2, i3) .// ngrid)
+        m = Vec3{Int}(i1, i2, i3) .* stride
 
         # Check if there are equivalent k-point to the remaining k points
         # Also, count the number of symops that map k to itself.
@@ -553,24 +559,24 @@ function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=f
             if ignore_time_reversal && is_tr
                 continue
             end
-            Sk = is_tr ? mod.(-S * k, 1) : mod.(S * k, 1)
-            if Sk > k
-                i1, i2, i3 = Int.(Sk.data .* ngrid) .+ 1
-                found[i1, i2, i3] = true
-            elseif Sk == k
+            Sm = is_tr ? mod.(-S * m, L) : mod.(S * m, L)
+            # Sk is off the grid if Sm is not a multiple of stride.
+            all(iszero, Sm .% stride) || error("The k-point grid breaks the symmetry")
+            if Sm > m
+                found[(Sm .÷ stride .+ 1)...] = true
+            elseif Sm == m
                 nsym_star += 1
             else
-                # If Sk is not in the later k points and not itself, i) the grid breaks the
-                # symmetry, or ii) symmetry search has a problem.
+                # Sk is on the grid but already visited and not k itself: the symmetry
+                # operations do not form a group.
                 error("Problem in symmetry of the irreducible k points")
             end
         end
-        push!(k_irr, k)
-        push!(weight_irr_int, nsym_used / nsym_star)
+        push!(k_irr, Vec3{Int}(i1, i2, i3) ./ ngrid)
+        push!(weight_irr_int, nsym_used ÷ nsym_star)
     end
     @assert sum(weight_irr_int) == prod(ngrid)
     weight_irr = weight_irr_int / prod(ngrid)
-    k_irr, weight_irr
     GridKpoints(Kpoints{Float64}(length(k_irr), k_irr, weight_irr, ngrid))
 end
 
