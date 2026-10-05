@@ -38,11 +38,87 @@ cannot rot.
   `nchunks_threads` itself. `els_k`, `els_kq`, `phs` are `nothing` in `estimate_device_memory`. Accept
   `kwargs...` for keywords added later.
 
-## A complete minimal example
+## Minimal example: CPU, outer k
 
 This calculator sums `wtq · |g|²/(2ω)` over the in-window bands, the modes and the q points, for each
-k point (`g2_per_k`), and that sum weighted by `wtk` over the k points (`g2_avg`), which shows a
-reduction over both momenta. It supports both loop orders and runs on the CPU and on a GPU.
+k point (`g2_per_k`). It supports only the outer-k loop and runs only on the CPU: its one
+`run_calculator!` is a plain loop over the block. With `epw_folder` the folder of an EPW run:
+
+<!-- doc-minimal:begin -->
+```julia
+using ElectronPhonon
+using ElectronPhonon: AbstractCalculator, OuterKLoop, EPBlock, omega_acoustic
+
+# For each k: Σ over (q, m, n, ν) of wtq |ep[m, n, ν]|² / (2ω_ν(q)), with m and n the bands of
+# k+q and k inside their windows. Modes with ω < omega_acoustic are skipped: at Γ the acoustic ω
+# is ~0, where 1/(2ω) only amplifies roundoff.
+mutable struct MinimalG2Calculator <: AbstractCalculator
+    g2_per_k        :: Vector{Float64}   # the result, indexed by k point
+    g2_per_k_buffer :: Matrix{Float64}   # (chunk, outer k of the batch)
+    MinimalG2Calculator() = new(Float64[], zeros(0, 0))
+end
+
+ElectronPhonon.supports(::MinimalG2Calculator, ::Type{OuterKLoop}) = true
+
+# Once, before the loop.
+function ElectronPhonon.setup_calculator!(c::MinimalG2Calculator, backend, els_k, els_kq, phs;
+        nchunks_threads, n_outer_batch, kwargs...)
+    c.g2_per_k = zeros(els_k.nk)
+    # The CPU thread chunks handle different tiles of the same outer k at the same time, so each
+    # chunk adds to its own row; one column per outer k of a batch.
+    c.g2_per_k_buffer = zeros(nchunks_threads, n_outer_batch)
+    c
+end
+
+# Before each outer batch: clear the buffer.
+function ElectronPhonon.calculator_begin_batch!(c::MinimalG2Calculator, ctx)
+    fill!(c.g2_per_k_buffer, 0)
+    c
+end
+
+# One block: the outer k `block.ik` with a tile of q points. Pair `iq_tile` is (k, q_iq_tile):
+# `ep[:, :, :, iq_tile]`, the k+q states `els_kq` and phonons `phs` at `iq_tile`, and the outer k
+# `els_k` at 1 (the block's only k point).
+function ElectronPhonon.run_calculator!(c::MinimalG2Calculator, block::EPBlock{OuterKLoop}, ctx)
+    (; ep, els_k, els_kq, phs, wtq) = block
+    s = 0.0
+    for iq_tile in axes(ep, 4), ν in axes(ep, 3)
+        ω = phs.e[ν, iq_tile]
+        ω < omega_acoustic && continue
+        for n in 1:els_k.nband[1], m in 1:els_kq.nband[iq_tile]
+            s += wtq[iq_tile] * abs2(ep[m, n, ν, iq_tile]) / (2ω)
+        end
+    end
+    ik_batch = block.ik - first(ctx.iks_batch) + 1   # position of the outer k in this batch
+    c.g2_per_k_buffer[ctx.chunk, ik_batch] += s
+    c
+end
+
+# After each outer batch: sum the chunks' rows into the k points of the batch.
+@views function ElectronPhonon.calculator_end_batch!(c::MinimalG2Calculator, ctx)
+    c.g2_per_k[ctx.iks_batch] .= vec(sum(c.g2_per_k_buffer[:, 1:length(ctx.iks_batch)]; dims = 1))
+    c
+end
+
+ElectronPhonon.postprocess_calculator!(c::MinimalG2Calculator; kwargs...) = c
+
+# Run it: outer k on an 8³ grid (reduced by symmetry), inner k+q on the 8³ grid.
+model = load_model_from_epw_new(epw_folder, "temp", "pb"; epmat_outer_momentum = "el")
+calc_minimal = MinimalG2Calculator()
+out_minimal = ElectronPhonon.run_eph_over_k_and_kq(model, (8, 8, 8), (8, 8, 8);
+    calculators = [calc_minimal])
+calc_minimal.g2_per_k    # one sum per k point of out_minimal.kpts
+```
+<!-- doc-minimal:end -->
+
+## Complete example: both loop orders and the GPU
+
+The minimal example's sum, extended to
+
+- both loop orders: `run_calculator!` and the batch brackets get an outer-q method;
+- the GPU: a second method per order, for a context on a `GPUBackend`, which forms the summand with
+  one broadcast and reduces it on the device;
+- a reduction over both momenta: `g2_avg`, the sum weighted by `wtk` over the k points.
 
 <!-- doc-example:begin -->
 ```julia

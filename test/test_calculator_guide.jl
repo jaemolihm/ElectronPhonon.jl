@@ -1,8 +1,9 @@
 using Test
 using ElectronPhonon
 
-# The "writing your own calculator" guide (docs/writing_a_calculator.md) contains a complete minimal
+# The "writing your own calculator" guide (docs/writing_a_calculator.md) contains the complete
 # example calculator between the <!-- doc-example:begin --> / <!-- doc-example:end --> sentinels,
+# a minimal CPU outer-k calculator and its run between the `doc-minimal` ones,
 # and a driver run and a single-pair run of it between the `doc-driver` and `doc-single-pair` ones.
 # This test extracts those blocks VERBATIM and evaluates them on the Pb artifact model, so the
 # documented examples cannot rot.
@@ -96,10 +97,23 @@ end
         @test c.g2_avg ≈ calc.g2_avg rtol = 1e-10
     end
 
+    # The minimal example, verbatim: it defines `MinimalG2Calculator` and runs it on the outer-k
+    # driver, which the full calculator reproduces.
+    Core.eval(@__MODULE__, :(epw_folder = $(_artifact_folder("pb"))))
+    include_string(@__MODULE__, _extract_doc_example(guide; tag = "doc-minimal"))
+    Base.invokelatest() do
+        c_min, out_min = getfield(@__MODULE__, :calc_minimal), getfield(@__MODULE__, :out_minimal)
+        @test length(c_min.g2_per_k) == out_min.kpts.n
+        @test all(isfinite, c_min.g2_per_k) && all(>(0), c_min.g2_per_k)
+        c_full = getfield(@__MODULE__, :EphG2SumCalculator)()
+        ElectronPhonon.run_eph_over_k_and_kq(getfield(@__MODULE__, :model), (8, 8, 8), (8, 8, 8);
+            calculators = [c_full], verbosity = 0)
+        @test c_full.g2_per_k ≈ c_min.g2_per_k rtol = 1e-12
+    end
+
     # The driver example, verbatim. It reads the global `epw_folder` and defines `calc` (outer k,
     # symmetry-reduced), `calc_line` (outer k on a k line) and `calc_q` (outer q, full grid), with
     # the driver outputs `out`, `out_line` and `out_q`.
-    Core.eval(@__MODULE__, :(epw_folder = $(_artifact_folder("pb"))))
     include_string(@__MODULE__, _extract_doc_example(guide; tag = "doc-driver"))
     Base.invokelatest() do
         read_global(name) = getfield(@__MODULE__, name)
