@@ -21,7 +21,6 @@ end
 # phase build for them the way the production driver does — an explicit `irvec_mat` and a
 # caller-owned destination, not the interpolator's internal scratch. It lives here rather than in
 # `src` because no `src` caller needs it.
-# Requires an in-memory parent (it reads `parent.op_r`), so no `DiskWannierObject`.
 function kR_to_kq_from_qs!(ep_kq_all, backend, itp_ep_ekpR, qs, u_phs, ukqs; scratch = (;))
     parent = itp_ep_ekpR.parent
     irvec_mat = ElectronPhonon._irvec_to_device_matrix(backend, parent.irvec, Float64)

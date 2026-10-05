@@ -147,26 +147,6 @@ end
     end
 end
 
-@testset "batched modes reject a DiskWannierObject" begin
-    # A disk-backed object is supported by the per-k modes only; the batched modes need an
-    # in-memory op_r. The rejection is at `get_interpolator`, and its message names the two modes
-    # that do work. No file is read here — construction only records the path.
-    using ElectronPhonon: DiskWannierObject
-    irvec = [Vec3{Int}([0, 0, 0]), Vec3{Int}([1, 0, 0])]
-    obj = DiskWannierObject(Float64, "tag", length(irvec), irvec, 4, mktempdir(), "nonexistent.bin")
-
-    for mode in ("batched", "batched-gridopt")
-        err = try get_interpolator(obj; fourier_mode = mode); nothing catch e; e end
-        @test err isa ArgumentError
-        @test occursin("in-memory op_r", err.msg)
-        @test occursin("\"normal\" or \"gridopt\"", err.msg)
-    end
-
-    # The per-k modes still accept it.
-    @test get_interpolator(obj; fourier_mode = "normal") isa ElectronPhonon.NormalWannierInterpolator
-    @test get_interpolator(obj; fourier_mode = "gridopt") isa ElectronPhonon.GridoptWannierInterpolator
-end
-
 @testset "backend-dependent batch_size default" begin
     using ElectronPhonon: _default_batch_size, CPUBackend
     irvec = [Vec3{Int}([0, 0, 0]), Vec3{Int}([1, 0, 0])]

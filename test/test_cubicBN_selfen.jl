@@ -66,7 +66,7 @@ using NPZ
         end
     end
 
-    # @testset "DiskWannierObject" begin
+    # @testset "epmat_on_disk" begin
     #     _test(output_disk)
     #     for key in keys(output)
     #         key == "kpts" && continue
