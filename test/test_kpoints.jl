@@ -140,9 +140,9 @@ end
 
 @testset "kpoints: GridKpoints sortperm" begin
     using ElectronPhonon: shift_center!
-    # The counting sort must be the stable sort on the integer-coordinate tuples, ties included:
-    # folded and unfolded points, repeats, odd/even/non-cubic grids, shifts, and a spread that
-    # takes the tuple fallback.
+    # The packed-key sort must be the stable sort on the integer-coordinate tuples, ties included:
+    # folded and unfolded points, repeats, odd/even/non-cubic grids, shifts, and a spread whose
+    # bounding box overflows an `Int` key and takes the tuple fallback.
     tuple_sortperm(k) = sortperm(map(xk -> round.(Int, (xk - k.shift).data .* k.ngrid), k.vectors))
     mk(xs, ng, s) = GridKpoints(length(xs), xs, fill(1 / length(xs), length(xs)), ng, s)
     Random.seed!(11)
@@ -156,8 +156,8 @@ end
         u = mk(shuffle(unique(k.vectors)), ng, s)
         @test sortperm(u) == tuple_sortperm(u)                      # folded, distinct
     end
-    spread = mk([Vec3(rand(-10^6:10^6), rand(-10^6:10^6), 0) ./ 100 for _ in 1:100], (100, 100, 1),
-                Vec3(0.0, 0.0, 0.0))
+    spread = mk([Vec3(rand(-10^7:10^7), rand(-10^7:10^7), rand(-10^7:10^7)) ./ 100 for _ in 1:100],
+                (100, 100, 100), Vec3(0.0, 0.0, 0.0))
     @test sortperm(spread) == tuple_sortperm(spread)
     @test isempty(sortperm(GridKpoints{Float64}()))
 end

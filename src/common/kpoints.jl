@@ -706,27 +706,15 @@ function xk_to_ik_unsafe(xk, kpts)
 end
 
 # The points in lexicographic order of their integer grid coordinates, ties in index order: a
-# stable counting sort on the coordinates packed into one `Int` (offset by their per-axis minimum,
-# since a GridKpoints need not be folded). Its table has one slot per node of the points' bounding
-# box; a box much larger than the point count falls back to a comparison sort of the tuples.
+# stable sort on the coordinates packed into one `Int` (offset by their per-axis minimum, since a
+# GridKpoints need not be folded). A bounding box too large for an `Int` key sorts the tuples.
 function Base.sortperm(k::GridKpoints)
     coords = map(xk -> round.(Int, (xk - k.shift).data .* k.ngrid), k.vectors)
     isempty(coords) && return Int[]
     lo = reduce((a, b) -> min.(a, b), coords)
     w = reduce((a, b) -> max.(a, b), coords) .- lo .+ 1
-    prod(Int128.(w)) <= 8 * length(coords) + 2^20 || return sortperm(coords)
-    slot(c) = ((c[1] - lo[1]) * w[2] + (c[2] - lo[2])) * w[3] + (c[3] - lo[3]) + 1
-    # Counts at `[slot + 1]`; after the cumsum, `[slot]` is the last position filled for `slot`.
-    last_filled = zeros(Int, prod(w) + 1)
-    for c in coords
-        last_filled[slot(c) + 1] += 1
-    end
-    cumsum!(last_filled, last_filled)
-    perm = Vector{Int}(undef, length(coords))
-    for (i, c) in enumerate(coords)
-        perm[last_filled[slot(c)] += 1] = i
-    end
-    perm
+    prod(Int128.(w)) <= typemax(Int) || return sortperm(coords)
+    sortperm(map(c -> ((c[1] - lo[1]) * w[2] + (c[2] - lo[2])) * w[3] + (c[3] - lo[3]), coords))
 end
 
 function Base.sort!(k::GridKpoints)
