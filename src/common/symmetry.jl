@@ -546,11 +546,11 @@ function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=f
     L = lcm(ngrid...)
     stride = Vec3{Int}(L .÷ ngrid)
 
-    # The grid is invariant under S iff S maps each grid basis vector e_b / n_b onto the grid,
-    # i.e. S[a, b] * stride[b] is divisible by stride[a] for all a, b.
+    # The grid is invariant under S iff S maps each grid basis vector e_b / n_b onto the grid.
     for symop in symmetry
         ignore_time_reversal && symop.is_tr && continue
-        all(iszero, (symop.S .* stride') .% stride) || error("The k-point grid breaks the symmetry")
+        Sk_basis = symop.S .* (1 .// Vec3{Int}(ngrid))'  # column b: S * e_b / n_b
+        all(isinteger, Sk_basis .* ngrid) || error("The k-point grid breaks the symmetry")
     end
 
     # kz = i3 / ngrid[3] is the fastest index
