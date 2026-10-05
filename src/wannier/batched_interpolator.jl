@@ -65,8 +65,8 @@ mutable struct BatchedWannierInterpolator{T, WT <: WannierObject, BT, MC, MR, VC
     # `wannier_to_bloch.jl` drivers, which this interpolator's `get_fourier!` API feeds.
     const buffer::VC
 
-    # Buffer for diagonalization, used by the per-k eigensolve drivers (`get_el_eigen!`,
-    # `get_ph_eigen!`) when `compute_eigenvalues_el` / `compute_electron_states` is run with
+    # Buffer for diagonalization, used by the per-k eigensolve drivers (`compute_el_eigen!`,
+    # `compute_ph_eigen!`) when `compute_eigenvalues_el` / `compute_electron_states` is run with
     # `fourier_mode = "batched"`.
     const ws::HermitianEigenWsSYEV{Complex{T},T}
 end

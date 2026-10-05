@@ -603,15 +603,15 @@ end
     g = tile_workspace.g[:, 1:npairs]
     tmp = reshape_buffer_view(tile_workspace.tmp, nbkq, nbk * nmodes, npairs)
     u_ph = tile_workspace.u_ph_id === nothing ? block.phs.u : tile_workspace.u_ph_id[:, :, 1:npairs]
-    get_eph_kR_to_kq_batched!(block.ep, eng_fields.ep_kR[:, :, ik_batch], phase, u_ph, block.els_kq.u;
-                              g, tmp)
+    compute_eph_kR_to_kq_batched!(block.ep, eng_fields.ep_kR[:, :, ik_batch], phase, u_ph,
+                                  block.els_kq.u; g, tmp)
 
     # The same for each direction d of the covariant derivative: dg_inad(k, R_p) -> dg_mnνd(k, q).
     if block.dg !== nothing
         dg_d = reshape_buffer_view(tile_workspace.dg_d, nbkq, nbk, nmodes, npairs)
         for d in 1:3
-            get_eph_kR_to_kq_batched!(dg_d, eng_fields.dg_kR[:, :, d, ik_batch], phase, u_ph,
-                                      block.els_kq.u; g, tmp)
+            compute_eph_kR_to_kq_batched!(dg_d, eng_fields.dg_kR[:, :, d, ik_batch], phase, u_ph,
+                                          block.els_kq.u; g, tmp)
             block.dg[:, :, :, d, :] .= dg_d
         end
     end

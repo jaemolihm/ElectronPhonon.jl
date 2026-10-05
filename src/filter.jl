@@ -47,8 +47,8 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", bac
     if !(backend isa CPUBackend)
         # Device: batched valueonly eigensolve (the band-eigenvalues are the expensive part of
         # filtering); the cheap window test stays on the host. `to_device` /
-        # `get_el_eigen_valueonly_batched` come from the base + CUDA extension. Chunk over k so the
-        # per-chunk device H(k) stack (nw*nw*kchunk complex) stays bounded — a single all-nk solve
+        # `compute_el_eigen_valueonly_batched` come from the base + CUDA extension. Chunk over k so
+        # the per-chunk device H(k) stack (nw*nw*kchunk complex) stays bounded — a single all-nk solve
         # can exhaust GPU memory on large grids. kchunk caps that stack at ~1 GiB (nk if smaller).
         # It is a separate cap from the interpolator's Fourier-scratch budget, which bounds a
         # different buffer; `kchunk` only enters here as the `nk_hint` for that budget.
@@ -131,7 +131,7 @@ function filter_qpoints(qpoints, kpoints, nw, el_ham, window; fourier_mode="grid
 
             for xk in kpoints.vectors
                 xkq = xq + xk
-                get_el_eigen_valueonly!(eigenvalues, nw, ham, xkq)
+                compute_el_eigen_valueonly!(eigenvalues, nw, ham, xkq)
 
                 # If k+q is inside window, use this q point
                 if ! isempty(inside_window(eigenvalues, window...))

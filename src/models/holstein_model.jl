@@ -184,7 +184,7 @@ function holstein_model(;
     el_velocity_mode = :Direct
 
     # --- Phonon dynamical matrix -------------------------------------------------------
-    # `get_ph_eigen!` divides by √(mass_i mass_j), so D(R=0) = M ω₀² gives ω_q = ω₀ for all q
+    # `compute_ph_eigen!` divides by √(mass_i mass_j), so D(R=0) = M ω₀² gives ω_q = ω₀ for all q
     # and a phonon eigenvector u = 1/√M.
     dyn = fill(Complex{FT}(mass * ω₀^2), nmodes^2, length(irvec_ph))
     ph_dyn = WannierObject(irvec_ph, dyn)

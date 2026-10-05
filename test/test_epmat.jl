@@ -4,8 +4,8 @@ using OffsetArrays: no_offset_view
 
 @testset "cubicBN epmat" begin
     using ElectronPhonon: WannierObject
-    using ElectronPhonon: get_eph_RR_to_Rq!, get_eph_Rq_to_kq!
-    using ElectronPhonon: get_eph_RR_to_kR!, get_eph_kR_to_kq!
+    using ElectronPhonon: compute_eph_RR_to_Rq!, compute_eph_Rq_to_kq!
+    using ElectronPhonon: compute_eph_RR_to_kR!, compute_eph_kR_to_kq!
 
     # Test fourier transform of electron-phonon matrix elements
 
@@ -58,14 +58,14 @@ using OffsetArrays: no_offset_view
                 ep_eRpq_obj = WannierObject(model.epmat.irvec_next,
                             zeros(ComplexF64, (nw*nw*nmodes, length(model.epmat.irvec_next))))
                 ep_eRpq = get_interpolator(ep_eRpq_obj; fourier_mode)
-                get_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
-                get_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
+                compute_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
+                compute_eph_Rq_to_kq!(epstate, ep_eRpq, xk)
             else
                 ep_ekpR_obj = WannierObject(model.epmat.irvec_next,
                             zeros(ComplexF64, (nw*epstate.nband_bound*nmodes, length(model.epmat.irvec_next))))
                 ep_ekpR = get_interpolator(ep_ekpR_obj; fourier_mode)
-                get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epstate.el_k.u))
-                get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
+                compute_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(epstate.el_k.u))
+                compute_eph_kR_to_kq!(epstate, ep_ekpR, xq)
             end
 
             @test axes(epstate.ep) == (el_kq.rng, el_k.rng, 1:ph.nmodes)

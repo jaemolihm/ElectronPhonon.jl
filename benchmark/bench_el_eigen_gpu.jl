@@ -1,8 +1,8 @@
 # Benchmark: electron band energies over a k-grid, CPU vs GPU.
 #
 # Uses the SAME batched drivers on both backends — only the backend of `op_r` differs:
-#   * get_el_eigen_valueonly_batched  — eigenvalues only
-#   * get_el_eigen_batched            — eigenvalues AND eigenvectors
+#   * compute_el_eigen_valueonly_batched  — eigenvalues only
+#   * compute_el_eigen_batched            — eigenvalues AND eigenvectors
 #
 # Reports eigenvalue agreement (GPU vs CPU) and the wall time of each backend.
 #
@@ -56,9 +56,9 @@ function bench(name, driver, eigvals_of)
 end
 
 println("Band eigenvalues over $(length(kpts)) k-points:")
-bench("valueonly", (ham, backend) -> get_el_eigen_valueonly_batched(
+bench("valueonly", (ham, backend) -> compute_el_eigen_valueonly_batched(
     get_interpolator(ham; fourier_mode="batched", backend, nk_hint = length(kpts)), kpts), E -> E);
-bench("eigen",     (ham, backend) -> get_el_eigen_batched(
+bench("eigen",     (ham, backend) -> compute_el_eigen_batched(
     get_interpolator(ham; fourier_mode="batched", backend, nk_hint = length(kpts)), kpts), EU -> first(EU));
 
 # NOTE: For Pb (nw=4) the operators are tiny; the GPU advantage grows with band count and

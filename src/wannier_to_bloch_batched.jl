@@ -6,14 +6,14 @@ using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV, syev!
 
 # Batched Wannier -> Bloch diagonalization over a whole k-grid.
 #
-# These complement the per-k `get_el_eigen!` / `get_el_eigen_valueonly!` (wannier_to_bloch.jl):
-# `get_fourier_batched!` interpolates `H(k)` for all k at once (one GEMM chain), then a
-# batched Hermitian eigensolve diagonalizes the stack. Everything runs on the backend of
-# `ham.op_r` (CPU or GPU); the CUDA extension provides the batched `heevjBatched!` methods.
+# These complement the per-k `compute_el_eigen!` / `compute_el_eigen_valueonly!`
+# (wannier_to_bloch.jl): `get_fourier_batched!` interpolates `H(k)` for all k at once (one GEMM
+# chain), then a batched Hermitian eigensolve diagonalizes the stack. Everything runs on the backend
+# of `ham.op_r` (CPU or GPU); the CUDA extension provides the batched `heevjBatched!` methods.
 #
 # Naming mirrors the per-k routines:
-#   get_el_eigen_batched           <-> get_el_eigen!            (eigenvalues + eigenvectors)
-#   get_el_eigen_valueonly_batched <-> get_el_eigen_valueonly!  (eigenvalues only)
+#   compute_el_eigen_batched           <-> compute_el_eigen!            (eigenvalues + eigenvectors)
+#   compute_el_eigen_valueonly_batched <-> compute_el_eigen_valueonly!  (eigenvalues only)
 
 # =============================================================================
 #  Batched Hermitian eigensolves (CPU methods; CUDA extension adds CuArray methods)
@@ -48,8 +48,8 @@ extension provides a batched `heevjBatched!` method for `CuArray`s.
 
 Overwrites `Hk`: the returned `U` is `Hk` itself, overwritten in place with the eigenvectors.
 
-Note: unlike the per-k `get_el_eigen!`, no EPW degeneracy gauge-fixing is applied, so for
-degenerate bands the eigenvectors may differ from `get_el_eigen!` by a gauge (the
+Note: unlike the per-k `compute_el_eigen!`, no EPW degeneracy gauge-fixing is applied, so for
+degenerate bands the eigenvectors may differ from `compute_el_eigen!` by a gauge (the
 eigenvalues, and the eigen-decomposition, are unaffected).
 """
 function eigen_batched(Hk::AbstractArray{Complex{T},3}) where {T}
@@ -87,30 +87,31 @@ function _fourier_hk_batched(itp::BatchedWannierInterpolator{T}, xk_list) where 
 end
 
 """
-    get_el_eigen_valueonly_batched(itp::BatchedWannierInterpolator, xk_list) -> E
+    compute_el_eigen_valueonly_batched(itp::BatchedWannierInterpolator, xk_list) -> E
 
 Electron band eigenvalues `(nw, nk)` at every k-point in `xk_list`. Batched counterpart of
-[`get_el_eigen_valueonly!`](@ref). Runs on, and returns on, the backend of `itp.parent.op_r`.
+[`compute_el_eigen_valueonly!`](@ref). Runs on, and returns on, the backend of `itp.parent.op_r`.
 """
-function get_el_eigen_valueonly_batched(itp::BatchedWannierInterpolator, xk_list)
+function compute_el_eigen_valueonly_batched(itp::BatchedWannierInterpolator, xk_list)
     eigvals_batched(_fourier_hk_batched(itp, xk_list))
 end
 
 """
-    get_el_eigen_batched(itp::BatchedWannierInterpolator, xk_list) -> (E, U)
+    compute_el_eigen_batched(itp::BatchedWannierInterpolator, xk_list) -> (E, U)
 
 Electron band eigenvalues `(nw, nk)` and eigenvectors `(nw, nw, nk)` at every k-point in
-`xk_list`. Batched counterpart of [`get_el_eigen!`](@ref). Runs on, and returns on, the backend
+`xk_list`. Batched counterpart of [`compute_el_eigen!`](@ref). Runs on, and returns on, the backend
 of `itp.parent.op_r`. See [`eigen_batched`](@ref) for the eigenvector gauge caveat.
 """
-function get_el_eigen_batched(itp::BatchedWannierInterpolator, xk_list)
+function compute_el_eigen_batched(itp::BatchedWannierInterpolator, xk_list)
     eigen_batched(_fourier_hk_batched(itp, xk_list))
 end
 
 """
-    get_el_velocity_direct_batched(itp::BatchedWannierInterpolator, xk_list, uks) -> (nw, nw, 3, nk)
+    compute_el_velocity_direct_batched(itp::BatchedWannierInterpolator, xk_list, uks)
+        -> (nw, nw, 3, nk)
 
-Batched counterpart of [`get_el_velocity_direct!`](@ref): for a 3-direction Wannier operator
+Batched counterpart of [`compute_el_velocity_direct!`](@ref): for a 3-direction Wannier operator
 (`itp.parent.ndata == nw^2 * 3`, e.g. `model.el_vel` (dH/dk) or `model.el_pos` (position A)),
 Fourier-interpolate over all k in `xk_list` and apply the per-k gauge rotation `uk' * M[:,:,idir] * uk`
 for each Cartesian direction. Runs on the backend of `itp.parent.op_r`; `uks` is `(nw, nw, nk)`
@@ -121,7 +122,7 @@ Used for the electron position matrix `rbar` (`el_pos`) and the `:Direct`-mode v
 The Fourier output is laid out `(nw, nw, 3, nk)` with `idir` the slowest of the three operator dims,
 matching the per-k `get_fourier!`'s `reshape(out, (nw, nw, 3))` convention.
 """
-function get_el_velocity_direct_batched(itp::BatchedWannierInterpolator{T}, xk_list,
+function compute_el_velocity_direct_batched(itp::BatchedWannierInterpolator{T}, xk_list,
         uks::AbstractArray{Complex{T},3}) where {T}
     vel = itp.parent
     nw = size(uks, 1)
@@ -172,7 +173,7 @@ writes the whole array. The outer-k engine passes `conj(exp(2πi R_p · x_k))` t
 k+q convention, which makes the following `R_p` Fourier a function of `x_{k+q}` alone and hence
 independent of the outer `k`.
 
-All `nk` points share one `nband` (unlike the per-k `get_eph_RR_to_kR!`, which handles a per-k
+All `nk` points share one `nband` (unlike the per-k `compute_eph_RR_to_kR!`, which handles a per-k
 window): a windowed run projects every k onto the same `nbandk_max`-wide eigenvector window.
 """
 function eph_rotate_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T}}, g, uks;
@@ -199,8 +200,8 @@ function eph_rotate_kR_batched!(ep_ekpR_all::AbstractArray{Complex{T}}, g, uks;
 end
 
 """
-    get_eph_kR_to_kq_batched!(ep_kq_all, ep_kR::AbstractMatrix, phase::AbstractMatrix, u_phs, ukqs;
-                              g=nothing, tmp=nothing)
+    compute_eph_kR_to_kq_batched!(ep_kq_all, ep_kR::AbstractMatrix, phase::AbstractMatrix, u_phs,
+                                  ukqs; g=nothing, tmp=nothing)
 
 Batched over a list of q-points (for a fixed k). `ukqs` is `(nw, nbandkq, nq)` and
 `u_phs` is `(nmodes, nmodes, nq)`. Writes `ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nq)`.
@@ -216,8 +217,8 @@ engine does that via the k+q convention of [`eph_rotate_kR_batched!`](@ref).
 `g` `(nw*nbandk*nmodes, nq)` and `tmp` `(nbandkq, nbandk*nmodes, nq)` are the scratch at exactly
 this `nq`, reused across calls; `nothing` allocates them.
 """
-function get_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
-                                   ep_kR::AbstractMatrix, phase::AbstractMatrix, u_phs, ukqs;
+function compute_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
+                                       ep_kR::AbstractMatrix, phase::AbstractMatrix, u_phs, ukqs;
                                    g=nothing, tmp=nothing) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
@@ -241,9 +242,9 @@ end
     eph_apply_rotations_rqkq!(ep_kq_all, g, uks, ukqs, tmp, uk_rep)
 
 Apply the two per-k electron gauge rotations of the Rq→kq step (fixed q, a list of k; the batched
-counterpart of [`get_eph_Rq_to_kq!`](@ref)) to `g`, the electron-Wannier / phonon-Bloch e-ph matrix
-Fourier-transformed over `R_el` at every k (`(nw²·nmodes, nk)`, viewed as `g[iw, jw, ν, k]`), writing
-`ep_kq_all[m, n, ν, k] = Σ_{iw,jw} conj(ukqs[iw,m,k]) · g[iw,jw,ν,k] · uks[jw,n,k]`.
+counterpart of [`compute_eph_Rq_to_kq!`](@ref)) to `g`, the electron-Wannier / phonon-Bloch e-ph
+matrix Fourier-transformed over `R_el` at every k (`(nw²·nmodes, nk)`, viewed as `g[iw, jw, ν, k]`),
+writing `ep_kq_all[m, n, ν, k] = Σ_{iw,jw} conj(ukqs[iw,m,k]) · g[iw,jw,ν,k] · uks[jw,n,k]`.
 `uks` is `(nw, nbandk, nk)`, `ukqs` `(nw, nbandkq, nk)`; `tmp` `(nbandkq, nw*nmodes, nk)` and
 `uk_rep` `(nw, nbandk, nmodes*nk)` are scratch at exactly this `nk`.
 

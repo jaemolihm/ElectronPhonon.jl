@@ -69,7 +69,7 @@ Compute phonon eigenenergy and eigenvector and save them in `ph`.
 """
 function set_eigen!(ph::PhononState, dyn, mass, polar, xk::Vec3)
     ph.xq = xk
-    get_ph_eigen!(ph.e, ph.u, dyn, mass, polar, xk)
+    compute_ph_eigen!(ph.e, ph.u, dyn, mass, polar, xk)
 end
 
 """
@@ -78,7 +78,7 @@ Compute phonon eigenenergy and save them in `ph`.
 """
 function set_eigen_valueonly!(ph::PhononState, dyn, mass, polar, xk::Vec3)
     ph.xq = xk
-    get_ph_eigen_valueonly!(ph.e, dyn, mass, polar, xk)
+    compute_ph_eigen_valueonly!(ph.e, dyn, mass, polar, xk)
 end
 
 """
@@ -87,8 +87,8 @@ Compute phonon band velocity, only the band-diagonal part.
 """
 function set_velocity_diag!(ph::PhononState{T}, dyn_R, xk::Vec3) where {T}
     @views vdiag = reshape(reinterpret(T, ph.vdiag), 3, ph.nmodes)
-    get_ph_velocity_diag!(vdiag, dyn_R, xk, ph.u)
-    # get_ph_velocity_diag! calculates the derivative of the dynamical matrix, but the
+    compute_ph_velocity_diag!(vdiag, dyn_R, xk, ph.u)
+    # compute_ph_velocity_diag! calculates the derivative of the dynamical matrix, but the
     # phonon frequency is sqrt of the eigenvalue of the dynamical matrix.
     # We use dw/dk = (d(w^2)/dk) / (2 * w).
     for imode in 1:ph.nmodes
@@ -102,5 +102,5 @@ Compute the coefficients for the dipole electron-phonon coupling. The phonon eig
 be already set.
 """
 function set_eph_dipole_coeff!(ph::PhononState{T}, polar, xk::Vec3) where {T}
-    get_eph_dipole_coeffs!(ph.eph_dipole_coeff, ph.eph_r_coeff, xk, polar, ph.u)
+    compute_eph_dipole_coeffs!(ph.eph_dipole_coeff, ph.eph_r_coeff, xk, polar, ph.u)
 end

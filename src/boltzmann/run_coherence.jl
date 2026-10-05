@@ -356,7 +356,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             epstate.el_k = el_k
         end
 
-        get_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
+        compute_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(el_k.u))
 
         bt_nscat = 0
         bt_nmmat = 0
@@ -386,7 +386,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
             check_energy_conservation_all(epstate, kqpts.ngrid, model.recip_lattice, energy_conservation...) || continue
 
             # Compute electron-phonon coupling
-            get_eph_kR_to_kq!(epstate, ep_ekpR, xq)
+            compute_eph_kR_to_kq!(epstate, ep_ekpR, xq)
 
             # Save mmat for computing dipole contribution to electron-phonon coupling
             # The dipole e-ph matrix element itself is computed in compute_qme_scattering_matrix

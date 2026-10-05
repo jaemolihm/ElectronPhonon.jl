@@ -33,7 +33,7 @@ end
     model = _load_model_from_artifacts("pb"; load_epmat = false)
     kpts = GridKpoints(kpoints_grid((4, 4, 4)))
 
-    # The eigenpairs come from the same `get_el_eigen!` call on the same H(k), so the cache must
+    # The eigenpairs come from the same `compute_el_eigen!` call on the same H(k), so the cache must
     # reproduce `compute_electron_states` bit for bit. Both `fourier_mode`s, since the cache and
     # the states default to different ones.
     for fourier_mode in ("normal", "gridopt")
@@ -82,7 +82,7 @@ end
 
     @testset "consumed by compute_electron_states" begin
         # A cache must be inert: with it, every state a run produces is bit for bit what the same
-        # run produces without it, because the eigenpairs are the same `get_el_eigen!` output on
+        # run produces without it, because the eigenpairs are the same `compute_el_eigen!` output on
         # the same H(k). Covered for both `compute_electron_states` methods (uniform window and
         # per-k band extent from a selection), every quantity list, and both `el_velocity_mode`s --
         # `:BerryConnection` is the one where "velocity" pulls in "position".

@@ -1,27 +1,36 @@
 using LinearAlgebra
 
-export get_el_eigen!
-export get_el_eigen_valueonly!
-export get_el_velocity_diag!
-export get_el_velocity!
-export get_ph_eigen!
-export get_ph_eigen_valueonly!
-export get_ph_velocity_diag!
-export get_eph_RR_to_Rq!
-export get_eph_Rq_to_kq!
-export get_eph_RR_to_kR!
-export get_eph_kR_to_kq!
+export compute_el_eigen!
+export compute_el_eigen_valueonly!
+export compute_ph_eigen!
+export compute_ph_eigen_valueonly!
+export compute_ph_velocity_diag!
+export compute_eph_RR_to_Rq!
+export compute_eph_Rq_to_kq!
+export compute_eph_RR_to_kR!
+export compute_eph_kR_to_kq!
 export get_symmetry_representation_wannier!
+
+# The solver family was named `get_*`; the old exported names forward to the new ones.
+Base.@deprecate get_el_eigen! compute_el_eigen!
+Base.@deprecate get_el_eigen_valueonly! compute_el_eigen_valueonly!
+Base.@deprecate get_ph_eigen! compute_ph_eigen!
+Base.@deprecate get_ph_eigen_valueonly! compute_ph_eigen_valueonly!
+Base.@deprecate get_ph_velocity_diag! compute_ph_velocity_diag!
+Base.@deprecate get_eph_RR_to_Rq! compute_eph_RR_to_Rq!
+Base.@deprecate get_eph_Rq_to_kq! compute_eph_Rq_to_kq!
+Base.@deprecate get_eph_RR_to_kR! compute_eph_RR_to_kR!
+Base.@deprecate get_eph_kR_to_kq! compute_eph_kR_to_kq!
 
 
 # =============================================================================
 #  Electrons
 
 """
-    get_el_eigen!(values, vectors, nw, ham, xk)
+    compute_el_eigen!(values, vectors, nw, ham, xk)
 Compute electron eigenenergy and eigenvector.
 """
-@timing "w2b_el_eig" function get_el_eigen!(values, vectors, nw, ham, xk)
+@timing "w2b_el_eig" function compute_el_eigen!(values, vectors, nw, ham, xk)
     @assert size(values) == (nw,)
     @assert size(vectors) == (nw, nw)
 
@@ -32,10 +41,10 @@ Compute electron eigenenergy and eigenvector.
 end
 
 """
-    get_el_eigen_valueonly!(values, nw, ham, xk)
+    compute_el_eigen_valueonly!(values, nw, ham, xk)
 """
-@timing "w2b_el_eigval" function get_el_eigen_valueonly!(values, nw, ham, xk)
-    # FIXME: Names get_el_eigen_valueonly! and solve_eigen_el_valueonly! are confusing.
+@timing "w2b_el_eigval" function compute_el_eigen_valueonly!(values, nw, ham, xk)
+    # FIXME: Names compute_el_eigen_valueonly! and solve_eigen_el_valueonly! are confusing.
     @assert size(values) == (nw,)
 
     hk = _reshape_buffer(ham.out, (nw, nw))
@@ -45,15 +54,15 @@ end
 end
 
 """
-    get_el_velocity_diag_berry_connection!(velocity_diag, nw, ham_R, xk, uk)
+    compute_el_velocity_diag_berry_connection!(velocity_diag, nw, ham_R, xk, uk)
 Compute the diagoanl part of electron band velocity using the Berry connection formula. See
-docstring for get_el_velocity_berry_connection! for details.
+docstring for compute_el_velocity_berry_connection! for details.
 For the diagonal part, the Berry connection contribution is zero.
 
 velocity_diag: nband-dimensional vector.
 uk: nw * nband matrix containing nband eigenvectors of H(k).
 """
-@timing "w2b_el_vel" function get_el_velocity_diag_berry_connection!(velocity_diag, nw, ham_R, xk, uk)
+@timing "w2b_el_vel" function compute_el_velocity_diag_berry_connection!(velocity_diag, nw, ham_R, xk, uk)
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity_diag) == (3, nband)
@@ -68,7 +77,7 @@ uk: nw * nband matrix containing nband eigenvectors of H(k).
 end
 
 """
-    get_el_velocity_berry_connection!(velocity, nw, ham_R, ek, xk, uk, rbar)
+    compute_el_velocity_berry_connection!(velocity, nw, ham_R, ek, xk, uk, rbar)
 Compute electron band velocity using the Berry connection formula:
 ``v_{m,n} = (U^\\dagger dH^{(W)}(k) / dk U)_{m,n} + i * (e_m - e_n) * rbar_{m,n}``,
 where ``rbar = U^\\dagger A U``
@@ -77,7 +86,7 @@ where ``rbar = U^\\dagger A U``
 - `velocity``: (3, `nband`, `nband`) matrix
 - `uk`: `nw` * `nband` matrix containing nband eigenvectors of ``H(k)``.
 """
-@timing "w2b_el_vel" function get_el_velocity_berry_connection!(velocity, nw, ham_R, ek, xk, uk, rbar)
+@timing "w2b_el_vel" function compute_el_velocity_berry_connection!(velocity, nw, ham_R, ek, xk, uk, rbar)
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)
@@ -102,15 +111,15 @@ where ``rbar = U^\\dagger A U``
 end
 
 """
-    get_el_velocity_direct!(velocity, nw, vel, xk, uk)
+    compute_el_velocity_direct!(velocity, nw, vel, xk, uk)
 Compute electron band velocity by direct Wannier interpolation of ``dH/dk`` matrix elements.
 - `vel`: WannierInterpolator for the velocity matrix (``dH/dk``).
 - `velocity``: (3, `nband`, `nband`) matrix
 - `uk`: `nw` * `nband` matrix containing nband eigenvectors of ``H(k)``.
 
-TODO: Can we reduce code duplication with get_el_velocity_berry_connection?
+TODO: Can we reduce code duplication with compute_el_velocity_berry_connection?
 """
-@timing "w2b_el_vel" function get_el_velocity_direct!(velocity, nw, vel, xk, uk)
+@timing "w2b_el_vel" function compute_el_velocity_direct!(velocity, nw, vel, xk, uk)
     @assert size(uk, 1) == nw
     nband = size(uk, 2)
     @assert size(velocity) == (3, nband, nband)
@@ -170,10 +179,10 @@ end
 # arguments would otherwise accept anything.
 
 """
-    get_ph_eigen!(values, vectors, dyn, mass, polar, xq)
+    compute_ph_eigen!(values, vectors, dyn, mass, polar, xq)
 Compute phonon eigenenergy and eigenvector.
 """
-@timing "w2b_ph_eig" function get_ph_eigen!(values, vectors, dyn, mass, polar, xq::Vec3)
+@timing "w2b_ph_eig" function compute_ph_eigen!(values, vectors, dyn, mass, polar, xq::Vec3)
     nmodes = length(values)
     @assert size(vectors) == (nmodes, nmodes)
     @assert size(mass) == (nmodes,)
@@ -195,9 +204,9 @@ Compute phonon eigenenergy and eigenvector.
 end
 
 """
-    get_ph_eigen_valueonly!(values, dyn, mass, polar, xq)
+    compute_ph_eigen_valueonly!(values, dyn, mass, polar, xq)
 """
-@timing "w2b_ph_eigval" function get_ph_eigen_valueonly!(values, dyn, mass, polar, xq::Vec3)
+@timing "w2b_ph_eigval" function compute_ph_eigen_valueonly!(values, dyn, mass, polar, xq::Vec3)
     nmodes = length(values)
     @assert size(mass) == (nmodes,)
     @assert dyn.parent.ndata == nmodes^2
@@ -218,14 +227,14 @@ end
 
 
 """
-    get_ph_velocity_diag!(vel_diag, dyn_R, xk, uk)
+    compute_ph_velocity_diag!(vel_diag, dyn_R, xk, uk)
 Compute phonon band velocity, only the band-diagonal part.
 # Outputs
 - `vel_diag`: (3, nmodes) array, contains diagonal band velocity.
 # Inputs
 - `uk`: nmodes * nmodes matrix containing phonon eigenvectors.
 """
-@timing "w2b_ph_vel" function get_ph_velocity_diag!(vel_diag, dyn_R, xk, uk)
+@timing "w2b_ph_vel" function compute_ph_velocity_diag!(vel_diag, dyn_R, xk, uk)
     # FIXME: Polar is not implemented.
     nmodes = size(uk, 1)
     @assert size(uk) == (nmodes, nmodes)
@@ -251,7 +260,7 @@ end
 #  Electron-phonon coupling
 
 """
-`get_eph_RR_to_Rq!(epobj_eRpq::WannierObject, epmat, xq, u_ph)`
+`compute_eph_RR_to_Rq!(epobj_eRpq::WannierObject, epmat, xq, u_ph)`
 
 Compute electron-phonon coupling matrix in electron Wannier, phonon Bloch basis.
 Multithreading is not supported because of large buffer array size.
@@ -264,7 +273,7 @@ Multithreading is not supported because of large buffer array size.
 - `u_ph`: Input. nmodes * nmodes matrix containing phonon eigenvectors. To keep the
     e-ph matrix in Cartesian basis (no transformation), pass `I(nmodes)`.
 """
-@timing "w2b_eph_RRtoRq" function get_eph_RR_to_Rq!(epobj_eRpq::WannierObject, epmat, xq, u_ph::AbstractMatrix)
+@timing "w2b_eph_RRtoRq" function compute_eph_RR_to_Rq!(epobj_eRpq::WannierObject, epmat, xq, u_ph::AbstractMatrix)
     nr_el = epobj_eRpq.nr
 
     nmodes = size(u_ph, 1)
@@ -290,20 +299,20 @@ Multithreading is not supported because of large buffer array size.
 end
 
 """
-    get_eph_RR_to_Rq!(epobj_eRpq, epmat, xq, ph, eph_phonon_basis::Symbol)
+    compute_eph_RR_to_Rq!(epobj_eRpq, epmat, xq, ph, eph_phonon_basis::Symbol)
 
-Phonon state `ph` + basis overload of [`get_eph_RR_to_Rq!`](@ref): choose the phonon-mode rotation
-from `eph_phonon_basis` — `:eigenmode` rotates by the phonon eigenvectors `ph.u`, `:cartesian` leaves
-the modes in the Cartesian basis (identity). The per-q host e-ph step shared by the CPU and GPU
-outer-q loops.
+Phonon state `ph` + basis overload of [`compute_eph_RR_to_Rq!`](@ref): choose the phonon-mode
+rotation from `eph_phonon_basis` — `:eigenmode` rotates by the phonon eigenvectors `ph.u`,
+`:cartesian` leaves the modes in the Cartesian basis (identity). The per-q host e-ph step shared by
+the CPU and GPU outer-q loops.
 """
-function get_eph_RR_to_Rq!(epobj_eRpq, epmat, xq, ph, eph_phonon_basis::Symbol)
+function compute_eph_RR_to_Rq!(epobj_eRpq, epmat, xq, ph, eph_phonon_basis::Symbol)
     u_ph = eph_phonon_basis == :eigenmode ? ph.u : I(length(ph.e))
-    get_eph_RR_to_Rq!(epobj_eRpq, epmat, xq, u_ph)
+    compute_eph_RR_to_Rq!(epobj_eRpq, epmat, xq, u_ph)
 end
 
 """
-    get_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq)
+    compute_eph_Rq_to_kq!(ep_kq, epobj_eRpq, xk, uk, ukq)
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 
 # Arguments
@@ -313,7 +322,7 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 - `xk`: Input. k point vector.
 - `uk`, `ukq`: Input. Electron eigenstate at k and k+q, respectively.
 """
-@timing "w2b_eph_Rqtokq" function get_eph_Rq_to_kq!(ep, epobj_eRpq, xk, uk, ukq)
+@timing "w2b_eph_Rqtokq" function compute_eph_Rq_to_kq!(ep, epobj_eRpq, xk, uk, ukq)
     # Indices: i: k+q Wannier, j: k Wannier, m: k+q band, n: k band, ν: mode.
     nbandkq, nbandk, nmodes = size(ep)
     nwq = size(ukq, 1)
@@ -340,7 +349,7 @@ Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 end
 
 """
-    get_eph_RR_to_kR!(epobj_ekpR::WannierObject{T}, epmat, xk, uk) where {T}
+    compute_eph_RR_to_kR!(epobj_ekpR::WannierObject{T}, epmat, xk, uk) where {T}
 
 Compute electron-phonon coupling matrix in electron Bloch, phonon Wannier basis.
 Multithreading is not supported because of large buffer array size.
@@ -352,7 +361,7 @@ Multithreading is not supported because of large buffer array size.
 - `xk`: Input. k point vector.
 - `uk`: Input. nw * nw matrix containing electron eigenvectors at k.
 """
-@timing "w2b_eph_RRtokR" function get_eph_RR_to_kR!(epobj_ekpR::WannierObject{T}, epmat, xk, uk) where {T}
+@timing "w2b_eph_RRtokR" function compute_eph_RR_to_kR!(epobj_ekpR::WannierObject{T}, epmat, xk, uk) where {T}
     """
     size(uk) = (nw, nband)
     size(epobj_ekpR.op_r) = (nw * nband_bound * nmodes, nr_ep)
@@ -383,7 +392,7 @@ Multithreading is not supported because of large buffer array size.
 end
 
 """
-    get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xk, u_ph, ukq)
+    compute_eph_kR_to_kq!(ep_kq, epobj_ekpR, xk, u_ph, ukq)
 Compute electron-phonon coupling matrix in electron and phonon Bloch basis.
 The electron state at k should be already in the eigenstate basis in epobj_ekpR.
 
@@ -396,7 +405,7 @@ The electron state at k should be already in the eigenstate basis in epobj_ekpR.
 - `ukq`: Input. Electron eigenstate at k+q.
 - `rngk`, `rngkq`: Input. Range of electron states inside the window.
 """
-@timing "w2b_eph_kRtokq" function get_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, u_ph, ukq)
+@timing "w2b_eph_kRtokq" function compute_eph_kR_to_kq!(ep_kq, epobj_ekpR, xq, u_ph, ukq)
     """
     size(ep_kq) = (nbandkq, nbandk, nmodes)
     size(epobj_ekpR.op_r) = (nw * nband_bound * nmodes, nr_ep)

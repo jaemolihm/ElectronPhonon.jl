@@ -154,8 +154,8 @@ end
 # bounded, so a very large k-grid can OOM. Chunk over k like `_filter_kpoints` (which caps the
 # per-chunk stack) if that becomes a problem.
 # NOTE: the batched solver does NOT apply the EPW degeneracy gauge-fixing of the per-k
-# get_el_eigen!, so for degenerate bands the eigenvectors (and per-band-pair e-ph matrix elements /
-# g2) can differ from the CPU path by a unitary rotation within the degenerate subspace. Gauge-
+# compute_el_eigen!, so for degenerate bands the eigenvectors (and per-band-pair e-ph matrix
+# elements / g2) can differ from the CPU path by a unitary rotation within the degenerate subspace. Gauge-
 # independent quantities (eigenvalues, ωq, BZ-summed observables) are unaffected.
 function _compute_electron_states_device!(states, model::Model{FT}, kpts, quantities, window,
                                           backend, eigenpairs) where FT
@@ -178,7 +178,7 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
 
     if quantities == ["eigenvalue"]
         E = if eigenpairs === nothing
-            Array(get_el_eigen_valueonly_batched(itp_elham, kpts.vectors))
+            Array(compute_el_eigen_valueonly_batched(itp_elham, kpts.vectors))
         else
             Array(eigenpairs.e_full[:, iks])
         end
@@ -187,13 +187,13 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
     end
 
     E_dev, U_dev = if eigenpairs === nothing
-        get_el_eigen_batched(itp_elham, kpts.vectors)
+        compute_el_eigen_batched(itp_elham, kpts.vectors)
     else
         (eigenpairs.e_full[:, iks], eigenpairs.u_full[:, :, iks])
     end
     rbar_dev = if need_position
         itp_pos = get_interpolator(to_device(backend, model.el_pos); fourier_mode="batched", backend, nk_hint=kpts.n)
-        get_el_velocity_direct_batched(itp_pos, kpts.vectors, U_dev)
+        compute_el_velocity_direct_batched(itp_pos, kpts.vectors, U_dev)
     else
         nothing
     end
@@ -206,7 +206,7 @@ function _compute_electron_states_device!(states, model::Model{FT}, kpts, quanti
             throw(ArgumentError("unknown el_velocity_mode $el_velocity_mode"))
         end
         itp_vel = get_interpolator(to_device(backend, Mop); fourier_mode="batched", backend, nk_hint=kpts.n)
-        v_dev = get_el_velocity_direct_batched(itp_vel, kpts.vectors, U_dev)
+        v_dev = compute_el_velocity_direct_batched(itp_vel, kpts.vectors, U_dev)
         if el_velocity_mode === :BerryConnection && need_vfull
             nk = kpts.n
             v_dev .+= im .* (reshape(E_dev, nw, 1, 1, nk) .- reshape(E_dev, 1, nw, 1, nk)) .* rbar_dev
@@ -322,7 +322,7 @@ function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode=
                 if need_dipole
                     # Use ph.u for eigenmode basis, nothing for Cartesian basis
                     u_ph_for_dipole = (eph_phonon_basis == :eigenmode) ? ph.u : nothing
-                    get_eph_dipole_coeffs!(ph.eph_dipole_coeff, ph.eph_r_coeff, xk, polar, u_ph_for_dipole)
+                    compute_eph_dipole_coeffs!(ph.eph_dipole_coeff, ph.eph_r_coeff, xk, polar, u_ph_for_dipole)
                 end
             end
         end  # ik
@@ -447,21 +447,21 @@ function _compute_phonon_states_batched_cpu!(phs, model::Model{FT}, eigenpairs, 
                 e .= eigenpairs.e_full[:, jq]
                 valueonly || (u .= eigenpairs.u_full[:, :, jq])
             elseif valueonly
-                get_ph_eigen_valueonly!(e, dyn, mass, polar, xq)
+                compute_ph_eigen_valueonly!(e, dyn, mass, polar, xq)
             else
-                get_ph_eigen!(e, u, dyn, mass, polar, xq)
+                compute_ph_eigen!(e, u, dyn, mass, polar, xq)
             end
             valueonly && continue
             if phs.vdiag !== nothing
                 # dω/dk = (dω²/dk) / (2ω), as `set_velocity_diag!(::PhononState, ...)`
-                get_ph_velocity_diag!(phs.vdiag[:, :, iq], dyn_R, xq, u)
+                compute_ph_velocity_diag!(phs.vdiag[:, :, iq], dyn_R, xq, u)
                 for imode in 1:nmodes
                     phs.vdiag[:, imode, iq] ./= 2 .* e[imode]
                 end
             end
             if need_dipole
                 # u for the eigenmode basis, nothing for the Cartesian basis
-                get_eph_dipole_coeffs!(
+                compute_eph_dipole_coeffs!(
                     phs.eph_dipole_coeff === nothing ? d_s : phs.eph_dipole_coeff[:, iq],
                     phs.eph_r_coeff === nothing ? r_s : phs.eph_r_coeff[:, :, iq], xq, polar,
                     eph_phonon_basis == :eigenmode ? u : nothing)
@@ -525,7 +525,7 @@ function _compute_electron_states_batched(model::Model{FT}, kpts, quantities, wi
         _electron_eigenpairs_cpu(model, kpts, eigenpairs, need_u; fourier_mode)
     elseif eigenpairs === nothing
         itp = get_interpolator(to_device(backend, model.el_ham); fourier_mode = "batched", backend, nk_hint = nk)
-        need_u ? get_el_eigen_batched(itp, kpts.vectors) : (get_el_eigen_valueonly_batched(itp, kpts.vectors), nothing)
+        need_u ? compute_el_eigen_batched(itp, kpts.vectors) : (compute_el_eigen_valueonly_batched(itp, kpts.vectors), nothing)
     else
         # Resolved on the host: a miss inside the device gather would surface as a bare
         # `KernelException` naming only the device.
@@ -571,9 +571,9 @@ function _electron_eigenpairs_cpu(model::Model{FT}, kpts, eigenpairs, need_u; fo
                 E[:, ik] .= eigenpairs.e_full[:, jk]
                 U === nothing || (U[:, :, ik] .= eigenpairs.u_full[:, :, jk])
             elseif U === nothing
-                get_el_eigen_valueonly!(E[:, ik], nw, ham, xk)
+                compute_el_eigen_valueonly!(E[:, ik], nw, ham, xk)
             else
-                get_el_eigen!(E[:, ik], U[:, :, ik], nw, ham, xk)
+                compute_el_eigen!(E[:, ik], U[:, :, ik], nw, ham, xk)
             end
         end
     end
@@ -608,15 +608,15 @@ function _fill_electron_states_batched_cpu!(els, model::Model{FT}, E, U, rngs; f
             u_w = U[:, rng, ik]
             rbar_w = reshape(r_s[1:3nb*nb], 3, nb, nb)
             if need_position
-                get_el_velocity_direct!(rbar_w, nw, pos, xk, u_w)
+                compute_el_velocity_direct!(rbar_w, nw, pos, xk, u_w)
                 els.rbar === nothing || (els.rbar[:, 1:nb, 1:nb, ik] .= rbar_w)
             end
             v_w = reshape(v_s[1:3nb*nb], 3, nb, nb)
             if els.v !== nothing
                 if el_velocity_mode === :Direct
-                    get_el_velocity_direct!(v_w, nw, vel, xk, u_w)
+                    compute_el_velocity_direct!(v_w, nw, vel, xk, u_w)
                 else
-                    get_el_velocity_berry_connection!(v_w, nw, vel, E[rng, ik], xk, u_w,
+                    compute_el_velocity_berry_connection!(v_w, nw, vel, E[rng, ik], xk, u_w,
                         reinterpret(reshape, Vec3{Complex{FT}}, rbar_w))
                 end
                 els.v[:, 1:nb, 1:nb, ik] .= v_w
@@ -629,12 +629,13 @@ function _fill_electron_states_batched_cpu!(els, model::Model{FT}, E, U, rngs; f
                 # As `set_velocity_diag!(::ElectronState, ...)`: direct interpolation has no
                 # diagonal-only form, and the Berry connection term is zero on the diagonal.
                 if el_velocity_mode === :Direct
-                    get_el_velocity_direct!(v_w, nw, vel, xk, u_w)
+                    compute_el_velocity_direct!(v_w, nw, vel, xk, u_w)
                     for i in 1:nb
                         els.vdiag[:, i, ik] .= real.(v_w[:, i, i])
                     end
                 elseif el_velocity_mode === :BerryConnection
-                    get_el_velocity_diag_berry_connection!(els.vdiag[:, 1:nb, ik], nw, vel, xk, u_w)
+                    compute_el_velocity_diag_berry_connection!(els.vdiag[:, 1:nb, ik], nw, vel, xk,
+                                                               u_w)
                 else
                     throw(ArgumentError("mode must be :Direct or :BerryConnection, not $el_velocity_mode."))
                 end
@@ -661,7 +662,7 @@ function _fill_electron_states_batched_device!(els, model, E, U, offset_h, backe
               model.el_velocity_mode === :BerryConnection ? model.el_ham_R :
               throw(ArgumentError("unknown el_velocity_mode $(model.el_velocity_mode)"))
         itp_vel = get_interpolator(to_device(backend, Mop); fourier_mode = "batched", backend, nk_hint = nk)
-        vel = get_el_velocity_direct_batched(itp_vel, kpts.vectors, U)   # (nw, nw, 3, nk)
+        vel = compute_el_velocity_direct_batched(itp_vel, kpts.vectors, U)   # (nw, nw, 3, nk)
         # vdiag[d, n, k] = real(vel[b, b, d, k]) with b = band[n, k]
         diag_lin = to_device_copy(backend, [band[n, ik] + nw * (band[n, ik] - 1) +
             nw^2 * (d - 1) + 3nw^2 * (ik - 1) for d in 1:3, n in 1:nband_max, ik in 1:nk])
