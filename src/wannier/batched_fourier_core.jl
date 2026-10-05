@@ -38,10 +38,6 @@ registration order or cache position (that is [`SequentialQueryCache`](@ref)'s j
 Interpolates fresh from `parent.op_r` on every call and never consults `parent._id`, so it is
 stateless with respect to the parent data (`_id` is a GridOpt-family concern).
 
-The parent bound is `WannierObject`, not `AbstractWannierObject`: the engine is one GEMM against an
-in-memory `op_r`, and a disk-backed parent is served by the per-k `"normal"` / `"gridopt"` modes
-instead ([`get_interpolator`](@ref) rejects the combination).
-
 # Type parameters
 The buffer arrays are allocated on `backend`:
 - `BT` — backend        : `CPUBackend` or `GPUBackend`

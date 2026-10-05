@@ -1,5 +1,6 @@
 
 using FortranFiles
+using Mmap
 
 # Symmetry convention of ElectronPhonon.jl and Quantum ESPRESSO
 # In QE, the symmetry operation is r -> r * S_QE - τ_QE.
@@ -123,10 +124,10 @@ end
 """
 Arguments:
 epmat_on_disk
-    If true, write epmat to file and read at each get_fourier! call.
+    If true, write epmat to `tmpdir/tmp_epmat.bin` and memory-map it (read-only).
     If false, load epmat to memory.
 tmpdir
-    Directory to write temporary binary files for epmat_on_disk=false calse.
+    Directory to write temporary binary files for the epmat_on_disk=true case.
 epmat_outer_momentum
     Outer momentum that model.epmat couples to. "ph" (default) or "el".
 skip_epmat
@@ -336,13 +337,11 @@ function load_model_from_epw(folder::String, epmat_on_disk::Bool=false, tmpdir=n
         epmat = nothing
         epmat_outer_momentum = "nothing"
     elseif epmat_on_disk
-        if epmat_outer_momentum == "ph"
-            epmat = DiskWannierObject(Float64, "epmat", nr_ep, irvec_ep, nw*nw*nmodes*nr_el,
-                tmpdir, empat_filename, irvec_next=irvec_el)
-        else # epmat_outer_momentum == "el"
-            epmat = DiskWannierObject(Float64, "epmat", nr_el, irvec_el, nw*nw*nmodes*nr_ep,
-                tmpdir, empat_filename, irvec_next=irvec_ep)
-        end
+        # The file holds op_r column-major with no header, so the map is the in-memory matrix.
+        (irvec_col, irvec_row) = epmat_outer_momentum == "ph" ? (irvec_ep, irvec_el) : (irvec_el, irvec_ep)
+        op_r = Mmap.mmap(joinpath(tmpdir, empat_filename), Matrix{ComplexF64},
+                         (nw*nw*nmodes*length(irvec_row), length(irvec_col)))
+        epmat = WannierObject(irvec_col, op_r, irvec_next=irvec_row)
     else
         if epmat_outer_momentum == "ph"
             epmat_re_rp = reshape(epmat_re_rp, (nw*nw*nmodes*nr_el, nr_ep))

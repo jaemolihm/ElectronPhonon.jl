@@ -68,7 +68,7 @@ mutable struct GridOpt{T<:Real}
 end
 
 # TODO: Rename to gridopt_compute_krr?
-@timing "s23" function gridopt_set23!(gridopt::GridOpt{T}, parent::WT, k, ndata) where {T, WT}
+@timing "s23" function gridopt_set23!(gridopt::GridOpt{T}, parent, k, ndata) where {T}
     gridopt.k1 = k
     gridopt.k2 = NaN
     gridopt.op_r_23 .= 0
@@ -84,26 +84,12 @@ end
         # If this is solved, make @batch always activated.
         @views @batch for ir_23 in eachindex(gridopt.irmap_rng_23)
             ir_rng = gridopt.irmap_rng_23[ir_23]
-            if WT <: DiskWannierObject
-                gridopt.op_r_23[rng_data, ir_23] .= 0
-                for ir in ir_rng
-                    gridopt.op_r_23[rng_data, ir_23] .+= phase[ir] .* read_op_r(parent, ir)[rng_data]
-                end
-            else
-                mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
-            end
+            mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
         end
     else
         @views for ir_23 in eachindex(gridopt.irmap_rng_23)
             ir_rng = gridopt.irmap_rng_23[ir_23]
-            if WT <: DiskWannierObject
-                gridopt.op_r_23[rng_data, ir_23] .= 0
-                for ir in ir_rng
-                    gridopt.op_r_23[rng_data, ir_23] .+= phase[ir] .* read_op_r(parent, ir)[rng_data]
-                end
-            else
-                mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
-            end
+            mul!(gridopt.op_r_23[rng_data, ir_23], parent.op_r[rng_data, ir_rng], phase[ir_rng])
         end
     end
 end
