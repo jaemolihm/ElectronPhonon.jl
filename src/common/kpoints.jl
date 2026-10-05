@@ -655,8 +655,8 @@ _hash_xk(xk, kpts::GridKpoints) = _hash_xk(xk, kpts.ngrid, kpts.shift)
 # Index of the k point with the given hash, 0 if there is none. `ik` is 1-based, so 0 is
 # unambiguous even though 0 is itself a legal hash (Γ on an unshifted grid).
 # `hash` must be in `0:prod(kpts.ngrid)-1`, which every hash from `_hash_xk` is (it mods each
-# coordinate by `ngrid`), as is the equivalent integer-coordinate arithmetic in the GPU outer-k
-# loop. The dense index is bounds-checked, so a caller that packs a hash by hand against a different
+# coordinate by `ngrid`), as is the equivalent integer-coordinate arithmetic of the outer-k
+# loop (`_fill_iqs!`). The dense index is bounds-checked, so a caller that packs a hash by hand against a different
 # `ngrid` gets a `BoundsError` rather than a silently wrong `ik`.
 @inline function _ik_from_hash(kpts::GridKpoints, hash::Int)
     dense = kpts._dense_hash_to_ik

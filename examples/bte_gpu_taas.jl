@@ -6,7 +6,7 @@
 #   2. solve the linearized BTE with `solve_electron_bte` (now BandStates-aware) to get σ.
 #
 # The same calculator runs on the CPU (backend = EP.CPUBackend()) for validation. Uses IBZ symmetry
-# (`symmetry = model.symmetry`, `el_kq_from_unfolding = false`) — the outer k-grid is reduced to
+# (`symmetry = model.symmetry`) — the outer k-grid is reduced to
 # the irreducible BZ, the dominant transport speedup. FermiDirac occupation + Gaussian smearing.
 
 using ElectronPhonon
@@ -45,10 +45,10 @@ occupation-factor convention 1..6 (see `bte_scattering_increments`).
 """
 function run_bte_gpu(model, nk; η, window, occ, method = 5,
         backend = EP.gpu_backend(), symmetry = model.symmetry)
-    calc = BoltzmannCalculator{Float64}(; occ, smearing = [(:Gaussian, η) for _ in 1:length(occ)],
-        occupation_method = method)
+    calc = BoltzmannCalculator{Float64}(; occ,
+        smearing_list = [SmearingType(:Gaussian, η) for _ in 1:length(occ)], occupation_method = method)
     EP.run_eph_over_k_and_kq(model, (nk, nk, nk), (nk, nk, nk);
-        calculators = [calc], symmetry, el_kq_from_unfolding = false,
+        calculators = [calc], symmetry,
         window_k = window, window_kq = window, backend,
         nchunks_threads = Threads.nthreads(), progress_print_step = 200)
     res = EP.solve_electron_bte(calc.el_i, calc.el_f, calc.Sᵢ, stack(calc.Sₒ), occ, symmetry)
@@ -59,7 +59,7 @@ end
 nk = 16
 η  = 10.0 * meV
 occ = occupation_params()
-out = run_bte_gpu(model, nk; η, window, occ, method = :Method5, backend = EP.gpu_backend())
+out = run_bte_gpu(model, nk; η, window, occ, method = 5, backend = EP.gpu_backend())
 
 println("\nTaAs σ (GPU BTE), trace/3, per temperature:")
 for (iT, T) in enumerate(occ.Tlist)

@@ -10,7 +10,7 @@ Contract:
 - all three arrays live on one backend, and the whole thing is a single broadcast (no scalar
   indexing, no scratch), so it runs unchanged on CPU and GPU;
 - `phase` is `(nr, nk)` and may be a view;
-- `phase` is caller-owned. That is what lets the GPU outer-k e-ph loop keep two phase tiles of
+- `phase` is caller-owned. That is what lets the outer-k e-ph loop keep two phase tiles of
   different widths (`P_mk` at the k-batch width, `P_kq` at the q-tile width);
 - stateless: the phase depends only on `(R_p, x)`, so a caller whose `x` list is loop-invariant
   builds it once and applies it many times. That hoist is the reason this is reachable at all
@@ -99,16 +99,28 @@ function _fourier_batched!(out, core::BatchedFourierCore, xkmat::AbstractMatrix)
     @assert size(out) == (ndata, nk)
     @assert nk <= core.batch_size
 
-    @views build_fourier_phase!(phase[:, 1:nk], core.irvec_mat, xkmat)
+    @views _fourier_batched!(out, parent.op_r[1:ndata, :], phase[:, 1:nk], core.irvec_mat, xkmat)
+end
+
+"""
+    _fourier_batched!(out, op_r, phase, irvec_mat, xkmat::AbstractMatrix)
+
+The transform on explicit data: `out[:, j] = Σ_R op_r[:, R] exp(2πi R · x_j)` for the R vectors
+`irvec_mat` `(nr × 3)` and the points `xkmat` `(3 × nk)`, with `phase` `(nr, nk)` as scratch. All
+arrays live on one backend. For a caller whose `op_r` changes between calls on fixed R vectors
+(the outer-q e-ph engine reads one stage-1 slice per q).
+"""
+function _fourier_batched!(out, op_r, phase, irvec_mat, xkmat::AbstractMatrix)
+    build_fourier_phase!(phase, irvec_mat, xkmat)
     # BLAS3 gemm: much faster than multiple BLAS2 gemv calls
-    @views mul!(out, parent.op_r[1:ndata, :], phase[:, 1:nk])
+    mul!(out, op_r, phase)
     out
 end
 
 
 # Device byte budget for one interpolator's Fourier scratch. Fixed rather than `free_bytes`-derived,
-# so the default stays deterministic and the device-byte formulas in `calculator/eph_device_staging.jl`
-# stay static. 1 GiB is the smallest power of two that clears the measured launch/efficiency knee at
+# so the default stays deterministic and the device-byte formulas (`engine_bytes` in
+# `calculator/eph_engine.jl`) stay static. 1 GiB is the smallest power of two that clears the measured launch/efficiency knee at
 # both ends of the range of objects in use: at 512 MB a Cu-sized `el_ham` (nr = 2000, ndata = 49)
 # gets 16 376 columns and runs 24% slower than at 65 536, while 1 GiB gives it 32 752 (+6%) and puts
 # every Pb object past 10^5. `filter.jl` keeps its own 1 GiB constant; the two bound different

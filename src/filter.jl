@@ -183,7 +183,8 @@ function _filter_with_band_ranges(kpts_input, nw, el_ham, window;
     end
     # Pass the known shift rather than re-deriving it from the kept points.
     grid_shift = kpts_input isa NTuple{3,Integer} ? shift : nothing
-    to_grid(k) = k isa GridKpoints ? k : GridKpoints(k; shift = grid_shift)
+    # A k list with no grid (`ngrid` unset, e.g. a band path) stays a plain `Kpoints`.
+    to_grid(k) = k isa GridKpoints || !all(k.ngrid .> 0) ? k : GridKpoints(k; shift = grid_shift)
     if window == (-Inf, Inf)
         gkpts = to_grid(kpoints)
         return gkpts, fill(1, gkpts.n), fill(nw, gkpts.n), zero(eltype(window))
@@ -201,7 +202,8 @@ end
 The unified electron-state filtering primitive (Generator 1). Filters a k-grid spec (an
 `NTuple{3,Int}`, `Kpoints`, or `GridKpoints`) to the energy `window` — optionally IBZ-reducing with
 `symmetry` and offsetting an `NTuple` grid by `shift` — and returns the selected `(k, band)` states
-as a `FilteredBandStates`: `sel.kpts` is the filtered `GridKpoints`, `band_range(sel)` the global band
+as a `FilteredBandStates`: `sel.kpts` is the filtered `GridKpoints` (a plain `Kpoints` for a k list
+with no grid, which then has no xk -> ik lookup), `band_range(sel)` the global band
 range, `sel.nstates_base` the below-window carrier count, `state_weights(sel)` the per-state (uniform
 per-k) BZ weights. Supersedes the legacy tuple-returning `filter_kpoints`.
 

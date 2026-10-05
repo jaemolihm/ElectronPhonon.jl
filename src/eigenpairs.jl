@@ -146,8 +146,8 @@ not supported. The batched eigensolve picks its own basis inside a degenerate mo
 device-built cache differs from a CPU-built one there.
 """
 function phonon_eigenpairs(model::Model, qpts; fourier_mode = "gridopt", backend = CPUBackend())
-    ph_states = compute_phonon_states_batched(model, GridKpoints(qpts), [:e, :u]; fourier_mode, backend)
-    Eigenpairs(model.nmodes, ph_states.qpts, ph_states.e, ph_states.u)
+    phs = compute_phonon_states_batched(model, GridKpoints(qpts), [:e, :u]; fourier_mode, backend)
+    Eigenpairs(model.nmodes, phs.qpts, phs.e, phs.u)
 end
 
 # Guards on a caller-supplied cache, checked once per consuming call rather than per k point. Both

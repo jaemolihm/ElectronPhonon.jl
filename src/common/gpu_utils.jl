@@ -5,14 +5,13 @@
 # runs on CPU-only machines. Nothing here is exported (use `ElectronPhonon.<name>`).
 
 # Backend objects: the user passes one to a driver entry (`backend = CPUBackend()` or
-# `backend = gpu_backend()`), which carries it in `LoopContext` (see calculator/AbstractCalculator.jl).
+# `backend = gpu_backend()`), which carries it in the calculator context (`OuterKContext` /
+# `OuterQContext`, see calculator/AbstractCalculator.jl).
 # Everywhere below, code allocates buffers via `alloc(backend, T, dims...)`, moves data with
 # `to_device(backend, x)`, and queries `free_bytes(backend)` / `synchronize(backend)`, so the backend
 # object is the only thing that says where "device" is. `GPUBackend` carries a device-array prototype
 # that `alloc` uses as a `similar` template; `gpu_backend()` (extension) builds one with an empty
-# prototype so a backend can be constructed before any array is moved. Note the backend does NOT say
-# which loop SHAPE runs — that is the drivers' separate `batched` keyword, which defaults from the
-# backend but can be set independently (batched-on-`CPUBackend` is a validation configuration).
+# prototype so a backend can be constructed before any array is moved.
 abstract type AbstractBackend end
 struct CPUBackend <: AbstractBackend end
 struct GPUBackend{AT <: AbstractArray} <: AbstractBackend
@@ -174,26 +173,31 @@ reclaim_device_memory(::CPUBackend) = nothing
     synchronize(backend)
 
 Block until queued device work on `backend` completes. No-op on `CPUBackend` (host work is
-synchronous); the CUDA extension calls `CUDA.synchronize()`. Used to bound the host look-ahead in
-the GPU e-ph loop so per-tile scratch does not pile up in the memory pool.
+synchronous); the CUDA extension calls `CUDA.synchronize()`. The e-ph loop calls it after every
+outer batch, which bounds the host look-ahead of a device run so per-tile scratch does not pile up
+in the memory pool.
 """
 synchronize(::CPUBackend) = nothing
 
-@inline _batched_op(t::Char, X) = t == 'N' ? X : (t == 'T' ? transpose(X) : adjoint(X))
+_batched_opf(t::Char) = t == 'N' ? identity : (t == 'T' ? transpose : adjoint)
 
 """
     batched_gemm!(transA, transB, A, B, C)
 
 `C[:,:,b] = op(transA, A[:,:,b]) * op(transB, B[:,:,b])` for every batch `b` (α=1, β=0),
-where `op('N',X)=X`, `op('T',X)=transpose(X)`, `op('C',X)=adjoint(X)`. The CPU method loops
-over `mul!`; the CUDA extension uses `CUBLAS.gemm_strided_batched!`.
+where `op('N',X)=X`, `op('T',X)=transpose(X)`, `op('C',X)=adjoint(X)`. The generic method loops
+over the batches with `mul!`; the CUDA extension uses `CUBLAS.gemm_strided_batched!`.
 """
 function batched_gemm!(transA::Char, transB::Char,
                        A::AbstractArray{T,3}, B::AbstractArray{T,3}, C::AbstractArray{T,3}) where {T}
     @assert size(A, 3) == size(B, 3) == size(C, 3)
+    _batched_gemm!(_batched_opf(transA), _batched_opf(transB), A, B, C)
+end
+
+# Function barrier: `opA`/`opB` are concrete here, so `mul!` is statically dispatched.
+function _batched_gemm!(opA::FA, opB::FB, A, B, C) where {FA, FB}
     @views for b in axes(C, 3)
-        mul!(C[:, :, b], _batched_op(transA, A[:, :, b]), _batched_op(transB, B[:, :, b]))
+        mul!(C[:, :, b], opA(A[:, :, b]), opB(B[:, :, b]))
     end
     C
 end
-

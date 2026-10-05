@@ -1,4 +1,4 @@
-# Shared helpers of `copy_batched_electron_states!` and `copy_batched_phonon_states!`.
+# Shared helpers of the batched state containers.
 
 # The index side of `copy_batched_electron_states!` / `copy_batched_phonon_states!`: `inds` on the
 # backend of `array_on_backend`. A range, or an index array already on that backend, is returned as
@@ -7,7 +7,7 @@ function _copy_indices_on_backend(array_on_backend, inds, npoints)
     inds_on_host = on_backend(CPUBackend(), inds)
     inds_on_host && checkbounds(Base.OneTo(npoints), inds)
     if inds_on_host && !(inds isa AbstractUnitRange) && !on_backend(CPUBackend(), array_on_backend)
-        copyto!(similar(array_on_backend, Int, length(inds)), inds)
+        copyto!(similar(array_on_backend, Int, length(inds)), Vector{Int}(inds))   # a host view has no bulk upload
     else
         inds
     end

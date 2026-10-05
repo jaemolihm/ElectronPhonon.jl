@@ -14,20 +14,6 @@ export get_eph_kR_to_kq!
 export get_symmetry_representation_wannier!
 
 
-"""
-    _reshape_buffer(buffer::Vector{T}, dims::NTuple{N, Int}) where {T, N}
-Get preallocated buffer as a ReshapedArray.
-Resize buffer if the allocated size is smaller than the requested size.
-"""
-function _reshape_buffer(buffer::AbstractVector{T}, dims::NTuple{N, Int}) where {T, N}
-    n = prod(dims)
-    if length(buffer) < n
-        resize!(buffer, n)
-    end
-    Base.ReshapedArray(view(buffer, 1:n), dims, ())
-end
-
-
 # =============================================================================
 #  Electrons
 

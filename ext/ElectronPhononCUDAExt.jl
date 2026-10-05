@@ -162,22 +162,22 @@ end
 # ---- fused e-ph gauge rotation (replaces the two tiny cuBLAS strided-batched GEMMs) -----------
 #
 # For small nw/nmodes the rotations `ep_kq = ukq' * g * u_ph` are tiny matmuls that cuBLAS
-# strided-batched runs far below FP64 peak. A single fused kernel (one thread per q, both rotations
-# from registers) is faster and bit-faithful, and can also fold g2 = |ep|²/(2ω) into the same pass.
-# Above a threshold the matmuls are large enough that cuBLAS wins, so we fall back to the two GEMMs.
+# strided-batched runs far below FP64 peak. A single fused kernel (both rotations from registers)
+# is faster. Above a threshold the matmuls are large enough that cuBLAS wins, so we fall back to
+# the two GEMMs.
 # Per-thread work grows ~nw³·nmodes², so we gate on the single product nw·nmodes (nmodes = 3·N_atoms
 # ≥ 3, so the product bounds the aspect ratio — no separate per-dim cap needed). Assumes nbandk,
 # nbandkq ≤ nw (true in the full-band loop). The threshold itself is
 # `ElectronPhonon._FUSED_ROT_MAX_NWNM`, in `src` next to the generic method it selects against.
 
 # g : (nw, nbandk, nmodes, nq) ; ukq : (nw, nbandkq, nq) ; uph : (nmodes, nmodes, nq)
-# ep : (nbandkq, nbandk, nmodes, nq) ; g2 / ωq optional (g2 : same as ep ; ωq : (nmodes, nq)).
+# ep : (nbandkq, nbandk, nmodes, nq).
 # One thread per (ibkq, ibk, q) — NOT per q: a per-q thread leaves the GPU idle at production
 # chunk sizes (nq ~ 2·10³-2·10⁴ threads is a handful of blocks on ~100 SMs; the (band², q) grid
-# is nbandkq·nbandk× larger). The scalar accumulation below is the previous per-q kernel body
-# verbatim (with the ibk/ibkq loops hoisted into the thread index), so results are bit-identical;
-# the redundant per-im re-read of g/ukq is L1-served (the kernel is occupancy-, not flop-bound).
-function _fused_eph_rot_kernel!(ep, g2, g, ukq, uph, ωq, nw, nbkq, nbk, nm, nq)
+# is nbandkq·nbandk× larger). Each thread accumulates its entry in a fixed order over (jm, iw), so
+# the result does not depend on the launch configuration; the per-im re-read of g/ukq is L1-served
+# (the kernel is occupancy-, not flop-bound).
+function _fused_eph_rot_kernel!(ep, g, ukq, uph, nw, nbkq, nbk, nm, nq)
     t = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     t <= nbkq * nbk * nq || return
     @inbounds begin
@@ -195,22 +195,19 @@ function _fused_eph_rot_kernel!(ep, g2, g, ukq, uph, ωq, nw, nbkq, nbk, nm, nq)
                 acc += tval * uph[jm, im, q]
             end
             ep[ibkq, ibk, im, q] = acc
-            if g2 !== nothing
-                g2[ibkq, ibk, im, q] = abs2(acc) / (2 * ωq[im, q])
-            end
         end
     end
     return
 end
 
-# `DenseCuArray` (not `CuArray`): the GPU e-ph loop passes contiguous device VIEWS
-# (e.g. `view(epkq_dev, :,:,:, 1:nq_batch)`) for a partial final q-batch. The fused kernel takes
+# `DenseCuArray` (not `CuArray`): the e-ph loop passes contiguous device VIEWS of a tile's
+# buffers for a block narrower than the tile. The fused kernel takes
 # them through `@cuda` (cudaconvert handles strided views) and the cuBLAS path takes their
 # reshapes (strided), so no padding to a fixed batch width is needed. `g` alone may be any strided
 # device array: only the fused branch accepts that, hence the density assert on the cuBLAS branch.
 function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},4},
         g::AnyCuArray{Complex{T},4},
-        ukqs::DenseCuArray, u_phs::DenseCuArray, tmp; g2_out=nothing, ωq=nothing) where {T}
+        ukqs::DenseCuArray, u_phs::DenseCuArray, tmp) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
     @assert size(g) == (nw, nbandk, nmodes, nq)
@@ -218,7 +215,7 @@ function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},
         threads = 256
         blocks = cld(nbandkq * nbandk * nq, threads)
         @cuda threads=threads blocks=blocks _fused_eph_rot_kernel!(
-            ep_kq_all, g2_out, g, ukqs, u_phs, ωq, nw, nbandkq, nbandk, nmodes, nq)
+            ep_kq_all, g, ukqs, u_phs, nw, nbandkq, nbandk, nmodes, nq)
     else
         # Large nw/nmodes: cuBLAS strided-batched is efficient; keep the two-GEMM path.
         @assert ElectronPhonon._is_dense(g)
@@ -227,9 +224,6 @@ function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},
         gemm_strided_batched!('N', 'N', one(Complex{T}),
                               reshape(tmp, nbandkq * nbandk, nmodes, nq), u_phs, zero(Complex{T}),
                               reshape(ep_kq_all, nbandkq * nbandk, nmodes, nq))
-        if g2_out !== nothing
-            g2_out .= abs2.(ep_kq_all) ./ (2 .* reshape(ωq, 1, 1, nmodes, nq))
-        end
     end
     ep_kq_all
 end
@@ -304,7 +298,7 @@ end
 
 # Decode a 1-based flat index into its column-major subscripts, given the axis lengths. @inline and
 # non-allocating (tuple recursion) so it is device-safe inside a kernel:
-#   m, n, ν, iq_batch = _unroll_index(ind, (nbandkq, nbandk, nm, nq_batch))
+#   m, n, ν, ipair = _unroll_index(ind, (nbandkq, nbandk, nm, npairs))
 @inline _unroll_index(ind::Integer, ::Tuple{}) = ()
 @inline function _unroll_index(ind::Integer, dims::NTuple{N, Integer}) where {N}
     d = dims[1]
@@ -312,39 +306,39 @@ end
 end
 
 function _window_scatter_kernel!(g2_out, ωq_out, g2vals, imap_i_col, imap_f,
-                                 ikqs, ωq, nbandkq, nbandk, nm, nq_batch, ni_stride, i0)
+                                 ikqs, ωq, nbandkq, nbandk, nm, npairs, ni_stride, i0)
     ind_mnνq = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    N = nbandkq * nbandk * nm * nq_batch
+    N = nbandkq * nbandk * nm * npairs
     ind_mnνq <= N || return
     @inbounds begin
-        m, n, ν, iq_batch = _unroll_index(ind_mnνq, (nbandkq, nbandk, nm, nq_batch))
+        m, n, ν, ipair = _unroll_index(ind_mnνq, (nbandkq, nbandk, nm, npairs))
         i = imap_i_col[n]
-        f = imap_f[m, ikqs[iq_batch]]
+        f = imap_f[m, ikqs[ipair]]
         if i > 0 && f > 0
             lin = ν + nm * (i - i0 - 1) + nm * ni_stride * (f - 1)
-            g2_out[lin] = g2vals[m, n, ν, iq_batch]
-            ωq_out[lin] = ωq[ν, iq_batch]
+            g2_out[lin] = g2vals[m, n, ν, ipair]
+            ωq_out[lin] = ωq[ν, ipair]
         end
     end
     return
 end
 
 # Dispatch on the device-resident output arrays only. The inputs arrive as device VIEWS (e.g.
-# `view(g2_dev, :,:,:,1:nq_batch)`, `view(imap_i_dev,:,ik)`) whose type depends on the index
+# `view(dev.g2, :, :, :, 1:npairs, chunk)`, `view(imap_i_dev, :, ik)`) whose type depends on the index
 # pattern: a CONTIGUOUS view of a `CuArray` is a `CuArray`, a strided one is a `SubArray` of one,
 # and both work here (cudaconvert handles either) only because they are left unannotated. So a host
 # argument cannot be caught by an annotation; `CUDA.allowscalar(false)` instead makes an accidental
 # host array a hard error inside the kernel. The outputs are annotated, so a strided output
 # `SubArray` would miss this method and fall through to the generic one.
 function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, ωq_out::CuArray, g2vals,
-        imap_i_col, imap_f, ikqs, ωq,
-        nbandkq::Int, nbandk::Int, nm::Int, nq_batch::Int, ni_stride::Int, i0::Int)
-    N = nbandkq * nbandk * nm * nq_batch
+        imap_i_col, imap_f, ikqs, ωq, ni_stride::Int, i0::Int)
+    nbandkq, nbandk, nm, npairs = ElectronPhonon._scatter_extents(g2vals, ωq, ikqs, imap_i_col, imap_f)
+    N = nbandkq * nbandk * nm * npairs
     threads = 256
     blocks = cld(N, threads)
     @cuda threads=threads blocks=blocks _window_scatter_kernel!(
         g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
-        nbandkq, nbandk, nm, nq_batch, ni_stride, i0)
+        nbandkq, nbandk, nm, npairs, ni_stride, i0)
     nothing
 end
 
@@ -353,32 +347,32 @@ end
 # time and the no-ωq launch carries no extra work. See `eph_window_scatter_reim!` in
 # calculator/calculator_utils.jl.
 function _window_scatter_reim_kernel!(re_out, im_out, ωq_out, epvals, imap_i_col, imap_f,
-                                      ikqs, ωq, nbandkq, nbandk, nm, nq_batch, ni_stride, i0)
+                                      ikqs, ωq, nbandkq, nbandk, nm, npairs, ni_stride, i0)
     ind_mnνq = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    N = nbandkq * nbandk * nm * nq_batch
+    N = nbandkq * nbandk * nm * npairs
     ind_mnνq <= N || return
-    m, n, ν, iq_batch = _unroll_index(ind_mnνq, (nbandkq, nbandk, nm, nq_batch))
+    m, n, ν, ipair = _unroll_index(ind_mnνq, (nbandkq, nbandk, nm, npairs))
     i = imap_i_col[n]
-    f = imap_f[m, ikqs[iq_batch]]
+    f = imap_f[m, ikqs[ipair]]
     if i > 0 && f > 0
         lin = ν + nm * (i - i0 - 1) + nm * ni_stride * (f - 1)
-        ep = epvals[m, n, ν, iq_batch]
+        ep = epvals[m, n, ν, ipair]
         re_out[lin] = real(ep)
         im_out[lin] = imag(ep)
-        ωq_out === nothing || (ωq_out[lin] = ωq[ν, iq_batch])
+        ωq_out === nothing || (ωq_out[lin] = ωq[ν, ipair])
     end
     return
 end
 
 function ElectronPhonon.eph_window_scatter_reim!(re_out::CuArray, im_out::CuArray, ωq_out, epvals,
-        imap_i_col, imap_f, ikqs, ωq,
-        nbandkq::Int, nbandk::Int, nm::Int, nq_batch::Int, ni_stride::Int, i0::Int)
-    N = nbandkq * nbandk * nm * nq_batch
+        imap_i_col, imap_f, ikqs, ωq, ni_stride::Int, i0::Int)
+    nbandkq, nbandk, nm, npairs = ElectronPhonon._scatter_extents(epvals, ωq, ikqs, imap_i_col, imap_f)
+    N = nbandkq * nbandk * nm * npairs
     threads = 256
     blocks = cld(N, threads)
     @cuda threads=threads blocks=blocks _window_scatter_reim_kernel!(
         re_out, im_out, ωq_out, epvals, imap_i_col, imap_f, ikqs, ωq,
-        nbandkq, nbandk, nm, nq_batch, ni_stride, i0)
+        nbandkq, nbandk, nm, npairs, ni_stride, i0)
     nothing
 end
 
@@ -391,19 +385,19 @@ end
 # i) and writes the scattering-in term into Sᵢ (each (i,f) is hit by a unique thread across the whole
 # run → no atomic). See the generic method's docstring for the full accumulation semantics.
 function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
-        e_i, e_f, wf, μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nq_batch, nT, i0)
-    # Flat thread index ind_mnq ∈ 1:N over the (m, n, iq_batch) grid (N = nbandkq·nbandk·nq_batch).
+        e_i, e_f, wf, μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, npairs, nT, i0)
+    # Flat thread index ind_mnq ∈ 1:N over the (m, n, ipair) grid (N = nbandkq·nbandk·npairs).
     # TODO: the CUDA index intrinsics are Int32, so this overflows if N ≥ 2^31. Unreachable today (a
     # grid that large would exceed device memory), and systemic to all kernels in this extension;
     # widen to Int (or chunk the launch) if a case ever approaches 2^31 threads.
     ind_mnq = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    N = nbandkq * nbandk * nq_batch
+    N = nbandkq * nbandk * npairs
     ind_mnq <= N || return
     @inbounds begin
-        m, n, iq_batch = _unroll_index(ind_mnq, (nbandkq, nbandk, nq_batch))
+        m, n, ipair = _unroll_index(ind_mnq, (nbandkq, nbandk, npairs))
         i = imap_i_at_k[n]         # outer (k) state index; 0 = out of window → skip
         i > 0 || return
-        ikq = ikqs[iq_batch]       # k+q point of this q within the batch
+        ikq = ikqs[ipair]       # k+q point of this pair
         f = imap_f[m, ikq]         # inner (k+q) state index; 0 = out of window → skip
         f > 0 || return
         ek = e_i[i]; ekq = e_f[f]; wtq = wf[f]   # per-final-state weight
@@ -412,10 +406,10 @@ function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap
             μ = μs[iT]; T = Ts[iT]; η = ηs[iT]
             sₒ = zero(eltype(Sₒ_out)); sᵢ = sₒ
             for ν in 1:nmodes
-                ωq = ωqmat[ν, iq_batch]
+                ωq = ωqmat[ν, ipair]
                 ωq < ω_cutoff && continue
                 sₒ_ν, sᵢ_ν = ElectronPhonon.bte_scattering_increments(
-                    method, ek, ekq, ωq, g2vals[m, n, ν, iq_batch], wtq, μ, T, η)
+                    method, ek, ekq, ωq, g2vals[m, n, ν, ipair], wtq, μ, T, η)
                 sₒ += sₒ_ν; sᵢ += sᵢ_ν
             end
             CUDA.@atomic Sₒ_out[i, iT] += sₒ
@@ -429,15 +423,16 @@ end
 # src/boltzmann/boltzmann_calculator.jl): launches `_bte_window_accumulate_kernel!` with one thread per
 # (m, n, j) over the batch, accumulating this batch's Sₒ/Sᵢ contributions into the device buffers.
 function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
-        imap_i_at_k, imap_f, ikqs, e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff,
-        nbandkq::Int, nbandk::Int, nmodes::Int, nq_batch::Int, i0::Int)
+        imap_i_at_k, imap_f, ikqs, e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff, i0::Int)
+    nbandkq, nbandk, nmodes, npairs = ElectronPhonon._scatter_extents(g2vals, ωqmat, ikqs,
+                                                                        imap_i_at_k, imap_f)
     nT = length(μs)
-    N = nbandkq * nbandk * nq_batch
+    N = nbandkq * nbandk * npairs
     threads = 256
     blocks = cld(N, threads)
     @cuda threads=threads blocks=blocks _bte_window_accumulate_kernel!(
         Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
-        μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, nq_batch, nT, i0)
+        μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, npairs, nT, i0)
     nothing
 end
 

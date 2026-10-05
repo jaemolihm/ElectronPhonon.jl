@@ -18,11 +18,12 @@ include("common_models_from_artifacts.jl")
         include("test_smearing.jl")
         include("test_kpoints.jl")
         include("test_band_states.jl")  # (k, band) selection: indexing, filter_states, symmetry stars
-        include("test_iq_build.jl")  # GPU outer-k loop's `iq` index build (host arithmetic, CPU-only)
+        include("test_iq_build.jl")  # outer-k loop's `iq` index build (`_fill_iqs!`, host arithmetic)
         include("test_symmetry.jl")
         include("test_wannier.jl")
         include("test_holstein_model.jl")  # analytic Holstein Model builder (no artifacts needed)
         include("test_gpu.jl")  # skips gracefully when CUDA is unavailable
+        include("test_engine_bytes.jl")  # engine_bytes against the engines' device allocations (GPU)
         include("test_backend_alloc.jl")  # alloc_zeros / to_device_copy / is_host; GPU arm skips w/o CUDA
         include("test_mpi_wrappers.jl")  # the mpi_* wrappers on the `comm === nothing` serial path
         include("test_diagonalize.jl")
@@ -39,7 +40,9 @@ include("common_models_from_artifacts.jl")
         include("test_batched_electron_state.jl")  # box-stored electron stacks; GPU part skips w/o CUDA
         include("test_eph_precomputed_states.jl")  # the eigenpair cache through the e-ph drivers
         include("test_eph_reference.jl")  # every e-ph loop against the reference double loop
-        include("test_eph_incommensurate_grids.jl")  # run_eph_over_k_and_kq's per-(k,q) phonon solve
+        include("test_eph_engine_api.jl")  # direct engine stages and single-pair calculator calls
+        include("test_eph_incommensurate_grids.jl")  # outer-k refuses incommensurate grids at entry
+        include("test_eph_loop_features.jl")  # outer-k polar, energy conservation, dg (#72)
         include("test_eph_window_scatter.jl")  # calculator-facing scatter; GPU part skips w/o CUDA
         include("test_high_symmetry_kpath.jl")
         include("test_postprocess_compute.jl")
