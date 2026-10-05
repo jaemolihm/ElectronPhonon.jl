@@ -529,8 +529,9 @@ end
 
 """
     kpoints_grid(grid, symmetry::Symmetry; ignore_time_reversal=false)
-Construct the irreducible wedge of a regular (possibly non-uniform) Brillouin zone mesh for sampling ``k``-Points.
-The mesh includes the Gamma point. Returns a `Kpoints` object.
+Construct the irreducible wedge of a Γ-centered `n1 × n2 × n3` Brillouin zone mesh. The mesh
+must be invariant under `symmetry` (e.g. `n1 = n2 = n3` for cubic systems); otherwise an error
+is thrown. Returns a `GridKpoints` object.
 - `ignore_time_reversal`: If true, ignore all symmetries involving time reversal.
 """
 function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=false)
