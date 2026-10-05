@@ -125,10 +125,10 @@ function _compute_electron_states_cpu!(states, model::Model{FT}, kpts, quantitie
             el = states[ik]
 
             if quantities == ["eigenvalue"]
-                _set_eigen_valueonly_from!(el, eigenpairs, ham, xk)
+                set_eigen_valueonly!(el, eigenpairs, ham, xk)
                 set_window!(el, _window_for(window, ik))
             else
-                _set_eigen_from!(el, eigenpairs, ham, xk)
+                set_eigen!(el, eigenpairs, ham, xk)
                 set_window!(el, _window_for(window, ik))
                 if need_position
                     set_position!(el, pos, xk)
@@ -313,9 +313,9 @@ function compute_phonon_states(model::Model{FT}, kpts, quantities; fourier_mode=
             ph = states[ik]
 
             if valueonly
-                _set_eigen_valueonly_from!(ph, eigenpairs, dyn, mass, polar, xk)
+                set_eigen_valueonly!(ph, eigenpairs, dyn, mass, polar, xk)
             else
-                _set_eigen_from!(ph, eigenpairs, dyn, mass, polar, xk)
+                set_eigen!(ph, eigenpairs, dyn, mass, polar, xk)
                 if need_vdiag
                     set_velocity_diag!(ph, dyn_R, xk)
                 end
@@ -442,15 +442,7 @@ function _compute_phonon_states_batched_cpu!(phs, model::Model{FT}, eigenpairs, 
             xq = qpts.vectors[iq]
             e = phs.e === nothing ? e_s : phs.e[:, iq]
             u = phs.u === nothing ? u_s : phs.u[:, :, iq]
-            if eigenpairs !== nothing
-                jq = _eigenpairs_ik(eigenpairs, xq)
-                e .= eigenpairs.e_full[:, jq]
-                valueonly || (u .= eigenpairs.u_full[:, :, jq])
-            elseif valueonly
-                compute_ph_eigen_valueonly!(e, dyn, mass, polar, xq)
-            else
-                compute_ph_eigen!(e, u, dyn, mass, polar, xq)
-            end
+            set_ph_eigen!(e, valueonly ? nothing : u, eigenpairs, dyn, mass, polar, xq)
             valueonly && continue
             if phs.vdiag !== nothing
                 # dω/dk = (dω²/dk) / (2ω), as `set_velocity_diag!(::PhononState, ...)`
@@ -566,15 +558,7 @@ function _electron_eigenpairs_cpu(model::Model{FT}, kpts, eigenpairs, need_u; fo
         end
         @views for ik in iks
             xk = kpts.vectors[ik]
-            if eigenpairs !== nothing
-                jk = _eigenpairs_ik(eigenpairs, xk)
-                E[:, ik] .= eigenpairs.e_full[:, jk]
-                U === nothing || (U[:, :, ik] .= eigenpairs.u_full[:, :, jk])
-            elseif U === nothing
-                compute_el_eigen_valueonly!(E[:, ik], nw, ham, xk)
-            else
-                compute_el_eigen!(E[:, ik], U[:, :, ik], nw, ham, xk)
-            end
+            set_el_eigen!(E[:, ik], U === nothing ? nothing : U[:, :, ik], nw, eigenpairs, ham, xk)
         end
     end
     E, U

@@ -57,30 +57,6 @@ function set_occupation!(ph::PhononState, T)
 end
 get_occupation(ph::PhononState, T) = occ_boson.(ph.e, T)
 
-# Define wrappers of wannier_to_bloch functions.
-#
-# Argument order is the one the `ElectronState` setters use: `(state, what it takes to compute,
-# momentum)`, with the momentum annotated so that a call left in an older order is a `MethodError`
-# rather than a mis-binding -- every argument here would otherwise accept anything.
-
-"""
-    set_eigen!(ph::PhononState, dyn, mass, polar, xk)
-Compute phonon eigenenergy and eigenvector and save them in `ph`.
-"""
-function set_eigen!(ph::PhononState, dyn, mass, polar, xk::Vec3)
-    ph.xq = xk
-    compute_ph_eigen!(ph.e, ph.u, dyn, mass, polar, xk)
-end
-
-"""
-    set_eigen_valueonly!(ph::PhononState, dyn, mass, polar, xk)
-Compute phonon eigenenergy and save them in `ph`.
-"""
-function set_eigen_valueonly!(ph::PhononState, dyn, mass, polar, xk::Vec3)
-    ph.xq = xk
-    compute_ph_eigen_valueonly!(ph.e, dyn, mass, polar, xk)
-end
-
 """
     set_velocity_diag!(ph::PhononState, dyn_R, xk)
 Compute phonon band velocity, only the band-diagonal part.

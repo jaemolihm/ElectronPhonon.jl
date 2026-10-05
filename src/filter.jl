@@ -90,7 +90,7 @@ function _filter_kpoints(nw, kpoints, el_ham, window; fourier_mode="normal", bac
 
         for ik in iks
             xk = kpoints.vectors[ik]
-            _set_eigenvalues_from!(eigenvalues, nw, eigenpairs, ham, xk)
+            set_el_eigen!(eigenvalues, nothing, nw, eigenpairs, ham, xk)
             bands_in_window = inside_window(eigenvalues, window...)
 
             nelec_below_window_[ik] = (bands_in_window.start - 1) * kpoints.weights[ik]
