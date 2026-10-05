@@ -41,8 +41,9 @@ cannot rot.
 ## Minimal example: CPU, outer k
 
 This calculator sums `wtq · |g|²/(2ω)` over the in-window bands, the modes and the q points, for each
-k point (`g2_per_k`). It supports only the outer-k loop and runs only on the CPU: its one
-`run_calculator!` is a plain loop over the block. With `epw_folder` the folder of an EPW run:
+k point (`g2_per_k`). It supports only the outer-k loop, so it runs with `run_eph_over_k_and_kq`
+and `run_eph_over_k_and_q` but not with `run_eph_over_q_and_k`, which refuses it. It runs only on
+the CPU: its one `run_calculator!` is a plain loop over the block. With `epw_folder` the folder of an EPW run:
 
 <!-- doc-minimal:begin -->
 ```julia
@@ -58,6 +59,7 @@ mutable struct MinimalG2Calculator <: AbstractCalculator
     MinimalG2Calculator() = new(Float64[], zeros(0, 0))
 end
 
+# The outer-k drivers only: `run_eph_over_k_and_kq` and `run_eph_over_k_and_q`.
 ElectronPhonon.supports(::MinimalG2Calculator, ::Type{OuterKLoop}) = true
 
 # Once, before the loop.
