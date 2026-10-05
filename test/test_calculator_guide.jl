@@ -109,6 +109,8 @@ end
         ElectronPhonon.run_eph_over_k_and_kq(getfield(@__MODULE__, :model), (8, 8, 8), (8, 8, 8);
             calculators = [c_full], verbosity = 0)
         @test c_full.g2_per_k ≈ c_min.g2_per_k rtol = 1e-12
+        @test c_min.g2_avg ≈ sum(out_min.kpts.weights .* c_min.g2_per_k) rtol = 1e-12
+        @test c_full.g2_avg ≈ c_min.g2_avg rtol = 1e-12
     end
 
     # The driver example, verbatim. It reads the global `epw_folder` and defines `calc` (outer k,

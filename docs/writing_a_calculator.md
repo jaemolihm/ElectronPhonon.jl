@@ -41,7 +41,8 @@ cannot rot.
 ## Minimal example: CPU, outer k
 
 This calculator sums `wtq · |g|²/(2ω)` over the in-window bands, the modes and the q points, for each
-k point (`g2_per_k`). It supports only the outer-k loop, so it runs with `run_eph_over_k_and_kq`
+k point (`g2_per_k`), and that sum weighted by `wtk` over the k points (`g2_avg`), which shows a
+reduction over both momenta. It supports only the outer-k loop, so it runs with `run_eph_over_k_and_kq`
 and `run_eph_over_k_and_q` but not with `run_eph_over_q_and_k`, which refuses it. It runs only on
 the CPU: its one `run_calculator!` is a plain loop over the block. With `epw_folder` the folder of an EPW run:
 
@@ -56,7 +57,11 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, EPBlock, omega_acoustic
 mutable struct MinimalG2Calculator <: AbstractCalculator
     g2_per_k        :: Vector{Float64}   # the result, indexed by k point
     g2_per_k_buffer :: Matrix{Float64}   # (chunk, outer k of the batch)
-    MinimalG2Calculator() = new(Float64[], zeros(0, 0))
+
+    # Σ_k wtk g2_per_k[k], and its partial sum of each chunk.
+    g2_avg          :: Float64
+    g2_avg_buffer   :: Vector{Float64}
+    MinimalG2Calculator() = new(Float64[], zeros(0, 0), 0.0, Float64[])
 end
 
 # The outer-k drivers only: `run_eph_over_k_and_kq` and `run_eph_over_k_and_q`.
@@ -69,6 +74,12 @@ function ElectronPhonon.setup_calculator!(c::MinimalG2Calculator, backend, els_k
     # The CPU thread chunks handle different tiles of the same outer k at the same time, so each
     # chunk adds to its own row; one column per outer k of a batch.
     c.g2_per_k_buffer = zeros(nchunks_threads, n_outer_batch)
+
+    # The sum over q happens inside each block and across the tiles of an outer k; the sum over k
+    # is weighted by the outer k's weight `block.wtk`. Every block adds to the same scalar, so each
+    # chunk has its own entry, summed in `postprocess_calculator!`.
+    c.g2_avg = 0.0
+    c.g2_avg_buffer = zeros(nchunks_threads)
     c
 end
 
@@ -93,6 +104,7 @@ function ElectronPhonon.run_calculator!(c::MinimalG2Calculator, block::EPBlock{O
     end
     ik_batch = block.ik - first(ctx.iks_batch) + 1   # position of the outer k in this batch
     c.g2_per_k_buffer[ctx.chunk, ik_batch] += s
+    c.g2_avg_buffer[ctx.chunk] += block.wtk * s
     c
 end
 
@@ -102,7 +114,11 @@ end
     c
 end
 
-ElectronPhonon.postprocess_calculator!(c::MinimalG2Calculator; kwargs...) = c
+# After the loop: sum the chunks' partial sums of `g2_avg`.
+function ElectronPhonon.postprocess_calculator!(c::MinimalG2Calculator; kwargs...)
+    c.g2_avg = sum(c.g2_avg_buffer)
+    c
+end
 
 # Run it: outer k on an 8³ grid (reduced by symmetry), inner k+q on the 8³ grid.
 model = load_model_from_epw_new(epw_folder, "temp", "pb"; epmat_outer_momentum = "el")
@@ -110,17 +126,17 @@ calc_minimal = MinimalG2Calculator()
 out_minimal = ElectronPhonon.run_eph_over_k_and_kq(model, (8, 8, 8), (8, 8, 8);
     calculators = [calc_minimal])
 calc_minimal.g2_per_k    # one sum per k point of out_minimal.kpts
+calc_minimal.g2_avg
 ```
 <!-- doc-minimal:end -->
 
 ## Complete example: both loop orders and the GPU
 
-The minimal example's sum, extended to
+The minimal example's `g2_per_k` and `g2_avg`, extended to
 
 - both loop orders: `run_calculator!` and the batch brackets get an outer-q method;
 - the GPU: a second method per order, for a context on a `GPUBackend`, which forms the summand with
-  one broadcast and reduces it on the device;
-- a reduction over both momenta: `g2_avg`, the sum weighted by `wtk` over the k points.
+  one broadcast and reduces it on the device.
 
 <!-- doc-example:begin -->
 ```julia
