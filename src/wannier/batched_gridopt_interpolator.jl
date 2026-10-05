@@ -134,7 +134,7 @@ Compute Fourier transform at k-point xk.
 - If xk doesn't match the expected next k-point
 - If all registered k-points have been exhausted
 """
-@timing "get_fourier" function get_fourier!(op_k, obj::BatchedGridoptWannierInterpolator{T, WT}, xk) where {T, WT}
+@timing "get_fourier" function get_fourier!(op_k, obj::BatchedGridoptWannierInterpolator{T}, xk) where {T}
     (; parent, gridopt, cache) = obj
     xk_tol = cache.xk_tol
     @assert eltype(op_k) == Complex{T}

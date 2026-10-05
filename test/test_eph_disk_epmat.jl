@@ -30,12 +30,12 @@ isdefined(@__MODULE__, :_PairRecorder) || include("eph_reference_loop.jl")
 
     @testset "$order, $(nameof(typeof(backend)))" for (order, mom) in ((:k, "el"), (:q, "ph")),
             backend in (DISK_EPMAT_GPU ? Any[CPUBackend(), gpu_backend()] : Any[CPUBackend()])
-        run(model) = (rec = _PairRecorder();
+        record_pairs(model) = (rec = _PairRecorder();
             order === :k ? run_eph_over_k_and_kq(model, grid, grid; calculators = [rec], backend, common...) :
                            run_eph_over_q_and_k(model, grid, grid; calculators = [rec], backend, common...);
             rec)
-        ref = run(models[mom])
-        disk = run(disk_models[mom])
+        ref = record_pairs(models[mom])
+        disk = record_pairs(disk_models[mom])
         @test !isempty(ref.g2abs)
         @test keys(disk.g2abs) == keys(ref.g2abs)
         @test all(disk.g2abs[key] == ref.g2abs[key] && disk.ωq[key] == ref.ωq[key] for key in keys(ref.g2abs))
@@ -43,12 +43,12 @@ isdefined(@__MODULE__, :_PairRecorder) || include("eph_reference_loop.jl")
 
     # The covariant derivative builds its position-weighted epmat from `op_r` on the host.
     @testset "covariant_derivative_of_g" begin
-        run(model) = (rec = _DgRecorder();
+        record_dg(model) = (rec = _DgRecorder();
             run_eph_over_k_and_kq(model, grid, grid; calculators = [rec],
                                   covariant_derivative_of_g = true, common...);
             rec)
-        ref = run(models["el"])
-        disk = run(disk_models["el"])
+        ref = record_dg(models["el"])
+        disk = record_dg(disk_models["el"])
         @test !isempty(ref.sums)
         @test keys(disk.sums) == keys(ref.sums)
         @test all(disk.sums[key] == ref.sums[key] for key in keys(ref.sums))
