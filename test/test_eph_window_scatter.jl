@@ -13,20 +13,20 @@ catch
 end
 
 # Independent reference for both scatters: the same window lookup written as a dense
-# (nm, n_i, n_f) write, without the linear-index arithmetic the implementations use. `w` holds the
-# block frequency `ωq[ν, j]` at each written slot, zero elsewhere.
-function _scatter_reference(ep, ωq, imap_i_col, imap_f, ikqs, n_i, n_f, i0)
+# (nm, n_i, n_f) write, without the linear-index arithmetic the implementations use, and the mask
+# of the slots it writes.
+function _scatter_reference(ep, imap_i_col, imap_f, ikqs, n_i, n_f, i0)
     nbandkq, nbandk, nm, npairs = size(ep)
-    re = zeros(nm, n_i, n_f); im_out = zeros(nm, n_i, n_f); w = zeros(nm, n_i, n_f)
+    re = zeros(nm, n_i, n_f); im_out = zeros(nm, n_i, n_f); written = falses(nm, n_i, n_f)
     for j in 1:npairs, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_col[n]
         f = imap_f[m, ikqs[j]]
         (i > 0 && f > 0) || continue
         re[ν, i - i0, f] = real(ep[m, n, ν, j])
         im_out[ν, i - i0, f] = imag(ep[m, n, ν, j])
-        w[ν, i - i0, f] = ωq[ν, j]
+        written[ν, i - i0, f] = true
     end
-    (re, im_out, w)
+    (re, im_out, written)
 end
 
 @testset "eph_window_scatter_reim!" begin
@@ -53,22 +53,24 @@ end
     N = nm * n_i * n_f
     re, im_out = (zeros(N), zeros(N))
     eph_window_scatter_reim!(re, im_out, ep, imap_i_col, imap_f, ikqs, n_i, 0)
-    re_ref, im_ref, w_ref = _scatter_reference(ep, ωq, imap_i_col, imap_f, ikqs, n_i, n_f, 0)
+    re_ref, im_ref, written_ref = _scatter_reference(ep, imap_i_col, imap_f, ikqs, n_i, n_f, 0)
     @test reshape(re, nm, n_i, n_f) == re_ref
     @test reshape(im_out, nm, n_i, n_f) == im_ref
     # Vacuity guard: the window maps must leave some slots written and some untouched, or the
     # equalities above would hold for an implementation that writes nothing.
-    w = vec(w_ref)
-    @test 0 < count(!iszero, w) < N
+    written = vec(written_ref)
+    @test 0 < count(written) < N
 
     # The relation the four-channel caller is built on: `(re² + im²)/(2ω)` is `abs2(ep)/(2ω)`, the
     # value today's `eph_window_scatter!` writes, and it is exact -- `abs2` is that sum of squares
     # and both sides divide by the same `2ω`. So a `Re/Im` sweep can reproduce a `g2` sweep bit for
     # bit, which is what lets a generic-vertex run be regression-tested against a TRS one.
-    g2 = zeros(N)
+    # `g2`, and the block frequency `w` of each slot placed by the same scatter.
+    g2, w = zeros(N), zeros(N)
     eph_window_scatter!(g2, abs2.(ep) ./ (2 .* reshape(ωq, 1, 1, nm, npairs)),
                         imap_i_col, imap_f, ikqs, n_i, 0)
-    written = w .!= 0
+    eph_window_scatter!(w, repeat(reshape(ωq, 1, 1, nm, npairs), nbandkq, nbandk),
+                        imap_i_col, imap_f, ikqs, n_i, 0)
     @test (re[written].^2 .+ im_out[written].^2) ./ (2 .* w[written]) == g2[written]
     @test all(iszero, g2[.!written])
 
@@ -77,7 +79,7 @@ end
     i0, ni_stride = 2, 1
     re_b, im_b = (zeros(nm * ni_stride * n_f) for _ in 1:2)
     eph_window_scatter_reim!(re_b, im_b, ep, imap_i_col, imap_f, ikqs, ni_stride, i0)
-    re_bref, im_bref, _ = _scatter_reference(ep, ωq, imap_i_col, imap_f, ikqs, ni_stride, n_f, i0)
+    re_bref, im_bref, _ = _scatter_reference(ep, imap_i_col, imap_f, ikqs, ni_stride, n_f, i0)
     @test reshape(re_b, nm, ni_stride, n_f) == re_bref
     @test reshape(im_b, nm, ni_stride, n_f) == im_bref
 

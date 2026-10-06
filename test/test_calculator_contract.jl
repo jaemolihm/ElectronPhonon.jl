@@ -8,6 +8,7 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, suppo
 # at entry, `calculators` as a keyword, and the screening-disabled error.
 
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
+isdefined(@__MODULE__, :pair_ω) || include("pair_frequencies.jl")
 
 # A minimal well-formed outer-k calculator that just counts run_calculator! calls.
 mutable struct _CountCalc <: AbstractCalculator

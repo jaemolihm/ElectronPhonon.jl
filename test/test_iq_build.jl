@@ -122,6 +122,8 @@ end
                             f.qpts.ngrid)
         iqs = fill(-7, f.kqpts.n)
         @test_throws ArgumentError _fill_iqs!(iqs, one_q, f.xkqs_int, f.xks_int, 1, 1, f.kqpts.n)
+        # The same miss inside the threaded table build, wrapped by `@threads`.
+        @test_throws CompositeException q_index_table(f.kpts, f.kqpts, one_q)
     end
 
     @testset "q_index_table" begin

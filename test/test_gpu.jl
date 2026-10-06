@@ -55,7 +55,7 @@ GPU_AVAILABLE && CUDA.allowscalar(false)
 
 # Pb EPW model comes from a downloaded test artifact (see test/Artifacts.toml).
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
-isdefined(@__MODULE__, :pair_ω) || include("calculator_contract_harness.jl")
+isdefined(@__MODULE__, :pair_ω) || include("pair_frequencies.jl")
 
 """
 Validate the batched e-ph drivers against the per-k/q reference (`compute_eph_RR_to_kR!` /
@@ -557,13 +557,15 @@ end
 end
 
 
-# A minimal AbstractCalculator that records the mode-resolved g2 = |ep|²/2ω and phonon frequency for
-# every (ik, ikq) at physical bands, from the blocks of `run_eph_over_k_and_kq`. It mirrors what
-# `G2Calculator` reads, on the (band, k) box instead of the window's state slots.
+# A minimal AbstractCalculator that records the mode-resolved g2 = |ep|²/2ω, the phonon frequency
+# and the block's q index for every (ik, ikq) at physical bands, from the blocks of
+# `run_eph_over_k_and_kq`. It mirrors what `G2Calculator` reads, on the (band, k) box instead of the
+# window's state slots.
 mutable struct _RecordCalc <: ElectronPhonon.AbstractCalculator
     g2::Array{Float64,5}    # (nw, nw, nmodes, nk, nkq)
     ωq::Array{Float64,5}
-    _RecordCalc() = new(zeros(0, 0, 0, 0, 0), zeros(0, 0, 0, 0, 0))
+    iq::Matrix{Int}         # (nk, nkq), 0 for a pair no block visited
+    _RecordCalc() = new(zeros(0, 0, 0, 0, 0), zeros(0, 0, 0, 0, 0), zeros(Int, 0, 0))
 end
 ElectronPhonon.supports(::_RecordCalc, ::Type{ElectronPhonon.OuterKLoop}) = true
 # The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator
@@ -575,6 +577,7 @@ function ElectronPhonon.setup_calculator!(c::_RecordCalc, backend, els_k, els_kq
     (; nmodes) = phs
     c.g2 = zeros(nw, nw, nmodes, els_k.nk, els_kq.nk)
     c.ωq = zeros(nw, nw, nmodes, els_k.nk, els_kq.nk)
+    c.iq = zeros(Int, els_k.nk, els_kq.nk)
     c
 end
 ElectronPhonon.postprocess_calculator!(c::_RecordCalc; kwargs...) = c
@@ -582,6 +585,7 @@ function ElectronPhonon.run_calculator!(c::_RecordCalc, p::ElectronPhonon.EPBloc
     (; ep, phs, ik, ikq) = p
     g2h = Array(abs2.(ep) ./ (2 .* reshape(phs.e, 1, 1, size(ep, 3), size(ep, 4))))
     ωh = Array(phs.e)
+    c.iq[ik, ikq] .= Array(p.iq)
     offk, nbk = Array(p.els_k.iband_offset)[1], Array(p.els_k.nband)[1]
     offkq, nbkq = Array(p.els_kq.iband_offset), Array(p.els_kq.nband)
     for (j, ikq_j) in enumerate(ikq), ν in axes(ep, 3), n in 1:nbk, m in 1:nbkq[j]
@@ -688,7 +692,9 @@ end
 # The pair frequency of `G2Calculator`, gathered from its phonon table `ωph` through its q index
 # `iq_kk`, against the frequency the loop handed the block of that pair, recorded by `_RecordCalc`
 # in the same run: equal with `==`, on a windowed selection with several inner tiles and a partial
-# outer batch, on the host and on the GPU.
+# outer batch, on the host and on the GPU. The q index itself is compared with the block's: on this
+# square run a transposed table would still give the same frequencies (ω(-q) = ω(q)), but not the
+# same indices.
 @testset "pair frequencies are bitwise the loop's" begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
     grid, win = (4, 4, 4), (0.87 - 0.2, 0.87 + 0.2)
@@ -708,6 +714,8 @@ end
                    for ν in 1:model.nmodes, i in 1:el_i.n, f in 1:el_f.n]
         @test ω_table == ω_loop
         @test pair_ω(c) == ω_table
+        @test c.iq_kk == rec.iq
+        @test c.iq_kk != permutedims(c.iq_kk)   # the order is distinguishable
         @test count(!iszero, ω_loop) > length(ω_loop) ÷ 2   # recorded, not the zero init
     end
 end
