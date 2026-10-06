@@ -1005,11 +1005,14 @@ end
     end
 end
 
-# `G2Calculator` on the GPU against the CPU run, including the energy-window path (box storage + the
-# box-coordinate imap scatter that skips the padding). Needs the Pb model artifact.
-function _g2_cpu_gpu_pair(model, grid, win)
-    cc = ElectronPhonon.G2Calculator{Float64}(; nmodes=model.nmodes)
-    cg = ElectronPhonon.G2Calculator{Float64}(; nmodes=model.nmodes)
+# `G2Calculator` and `EPElementCalculator` on the GPU against the CPU run, including the
+# energy-window path (box storage + the box-coordinate imap scatter that skips the padding). Needs
+# the Pb model artifact.
+isdefined(@__MODULE__, :contract_pair_sum) || include("calculator_contract_harness.jl")
+
+function _cpu_gpu_pair(T, model, grid, win)
+    cc = T{Float64}(; nmodes=model.nmodes)
+    cg = T{Float64}(; nmodes=model.nmodes)
     ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid; calculators=[cc], symmetry=nothing,
         window_k=win, window_kq=win, progress_print_step=10^9)
     ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid; calculators=[cg], symmetry=nothing,
@@ -1028,7 +1031,7 @@ end
 # reason for not comparing g2 elementwise stays a measured claim rather than prose, plus the
 # gauge-invariant electron energies and the phonon frequencies. The gauge-invariant multiplet sums
 # of g2 are compared by the contract harness (test_calculator_contract.jl).
-function _assert_g2_cpu_gpu_match(cc, cg)
+function _assert_cpu_gpu_match(cc::ElectronPhonon.G2Calculator, cg)
     # The scale is a signed `g2` max on Pb (the ω ≤ 0 modes make entries negative), so take abs.
     nm = cc.nmodes
     mdeg = [minimum(abs(cc.ωq[ν, i, f] - cc.ωq[μ, i, f]) for μ in 1:nm if μ != ν) < 1e-8
@@ -1049,39 +1052,57 @@ function _assert_g2_cpu_gpu_match(cc, cg)
     @test maximum(abs, cc.ωq .- cg.ωq) < 1e-8
 end
 
-@testset "GPU G2Calculator (full-band + windowed)" begin
+# The phase of `ep` is the electron gauge, which the two eigensolvers fix independently, so raw `ep`
+# is not comparable (relative 2-norm difference 1.4 on the windowed fixture). Per element,
+# `|ep|^2` there agrees to 1e-14 of max off the mode- and electron-degenerate pairs but differs by
+# 0.46 of max on pairs with a level split below `electron_degen_cutoff` (1.3e-8 Ry at the worst
+# entry), so this compares `|ep|^2` summed over both multiplets, the contract harness's reduction.
+function _assert_cpu_gpu_match(cc::ElectronPhonon.EPElementCalculator, cg)
+    pair_sum(c) = contract_pair_sum(abs2.(c.ep), c.ωq, contract_multiplet_ids(c.el_i),
+                                    contract_multiplet_ids(c.el_f))
+    @test pair_sum(cg) ≈ pair_sum(cc)
+    @test maximum(abs, cc.el_i.es .- cg.el_i.es) < 1e-10
+    @test maximum(abs, cc.ωq .- cg.ωq) < 1e-8
+end
+
+@testset "GPU G2Calculator and EPElementCalculator (full-band + windowed)" begin
     if !GPU_AVAILABLE
-        @info "CUDA not functional — skipping GPU G2Calculator test"
+        @info "CUDA not functional — skipping GPU G2Calculator and EPElementCalculator test"
     else
         model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
         grid = (6, 6, 6)
-        # full-band (regression: window-aware scatter must reduce to the dense scatter)
-        cc, cg = _g2_cpu_gpu_pair(model, grid, (-Inf, Inf))
-        _assert_g2_cpu_gpu_match(cc, cg)
-        # windowed around E_F (≈0.87 Ha for Pb): exercises the imap==0 skip
-        win = (0.87 - 0.2, 0.87 + 0.2)
-        ccw, cgw = _g2_cpu_gpu_pair(model, grid, win)
-        @test size(ccw.g2, 2) < size(cc.g2, 2)   # window really dropped states
-        _assert_g2_cpu_gpu_match(ccw, cgw)
+        win = (0.87 - 0.2, 0.87 + 0.2)   # around E_F (≈0.87 Ha for Pb): exercises the imap==0 skip
+        # `out` is each calculator's per-pair output.
+        @testset "$(nameof(T))" for (T, out) in ((ElectronPhonon.G2Calculator, :g2),
+                                                  (ElectronPhonon.EPElementCalculator, :ep))
+            # full-band (regression: window-aware scatter must reduce to the dense scatter)
+            cc, cg = _cpu_gpu_pair(T, model, grid, (-Inf, Inf))
+            _assert_cpu_gpu_match(cc, cg)
+            # windowed
+            ccw, cgw = _cpu_gpu_pair(T, model, grid, win)
+            # the window really dropped states
+            @test size(getproperty(ccw, out), 2) < size(getproperty(cc, out), 2)
+            _assert_cpu_gpu_match(ccw, cgw)
 
-        # Streamed path: forcing per-tile device buffering (instead of holding the full
-        # g2/ωq resident) must produce BIT-IDENTICAL g2/ωq to the full GPU path — it is the same
-        # device scatter into a tile-sized buffer D2H'd per outer-k tile. Compared at the SAME small
-        # `n_outer_batch` (the k-batching affects the batched-GEMM rounding, so both must use it);
-        # the small tile makes several tiles (exercises the contiguous-i-range mapping, buffer growth,
-        # partial tail).
-        cgf = ElectronPhonon.G2Calculator{Float64}(; nmodes = model.nmodes)   # full resident, kb=4
-        ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid; calculators = [cgf],
-            symmetry = nothing, window_k = win, window_kq = win,
-            backend = ElectronPhonon.gpu_backend(), progress_print_step = 10^9, n_outer_batch = 4)
-        cg_streamed = ElectronPhonon.G2Calculator{Float64}(; nmodes = model.nmodes,
-            force_stream_per_batch = true)                                     # streamed, kb=4
-        ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid; calculators = [cg_streamed],
-            symmetry = nothing, window_k = win, window_kq = win,
-            backend = ElectronPhonon.gpu_backend(), progress_print_step = 10^9, n_outer_batch = 4)
-        # bit-identical to the full-resident GPU run at the same k-batching
-        @test cg_streamed.g2 == cgf.g2
-        @test cg_streamed.ωq == cgf.ωq
+            # Streamed path: forcing per-tile device buffering (instead of holding the full output
+            # resident) must produce BIT-IDENTICAL output and ωq to the full GPU path — it is the
+            # same device scatter into a tile-sized buffer D2H'd per outer-k tile. Compared at the
+            # SAME small `n_outer_batch` (the k-batching affects the batched-GEMM rounding, so both
+            # must use it); the small tile makes several tiles (exercises the contiguous-i-range
+            # mapping, buffer growth, partial tail).
+            cgf = T{Float64}(; nmodes = model.nmodes)   # full resident, kb=4
+            ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid; calculators = [cgf],
+                symmetry = nothing, window_k = win, window_kq = win,
+                backend = ElectronPhonon.gpu_backend(), progress_print_step = 10^9, n_outer_batch = 4)
+            # streamed, kb=4
+            cg_streamed = T{Float64}(; nmodes = model.nmodes, force_stream_per_batch = true)
+            ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid; calculators = [cg_streamed],
+                symmetry = nothing, window_k = win, window_kq = win,
+                backend = ElectronPhonon.gpu_backend(), progress_print_step = 10^9, n_outer_batch = 4)
+            # bit-identical to the full-resident GPU run at the same k-batching
+            @test getproperty(cg_streamed, out) == getproperty(cgf, out)
+            @test cg_streamed.ωq == cgf.ωq
+        end
     end
 end
 
