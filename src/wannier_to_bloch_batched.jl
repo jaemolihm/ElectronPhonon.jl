@@ -9,7 +9,7 @@ using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV, syev!
 # These complement the per-k `compute_el_eigen!` / `compute_el_eigen_valueonly!`
 # (wannier_to_bloch.jl): `get_fourier_batched!` interpolates `H(k)` for all k at once (one GEMM
 # chain), then a batched Hermitian eigensolve diagonalizes the stack. Everything runs on the backend
-# of `ham.op_r` (CPU or GPU); the CUDA extension provides the batched `heevjBatched` methods.
+# of `ham.op_r` (CPU or GPU); the CUDA extension provides the device eigensolve methods.
 #
 # Naming mirrors the per-k routines:
 #   compute_el_eigen_batched           <-> compute_el_eigen!            (eigenvalues + eigenvectors)
@@ -19,16 +19,18 @@ using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV, syev!
 #  Batched Hermitian eigensolves (CPU methods; CUDA extension adds CuArray methods)
 
 """
-    eigvals_batched(Hk) -> E
+    eigvals_batched(Hk; check = true) -> E
 
 Eigenvalues of a stack of Hermitian matrices `Hk` of size `(nw, nw, nk)`, returned as
-`(nw, nk)`. CPU method loops over LAPACK `syev!`; the CUDA extension provides a batched
-`heevjBatched` method for `CuArray`s.
+`(nw, nk)`. CPU method loops over LAPACK `syev!`; the CUDA extension provides a `CuArray` method:
+one-thread-per-matrix Jacobi for `nw ≤ 12`, cuSOLVER `heevjBatched` above.
 
-Overwrites (destroys) `Hk`; a caller that still needs `Hk` afterwards must copy it first.
+May overwrite (destroy) `Hk`; a caller that still needs `Hk` afterwards must copy it first.
+`check = true` makes the device method throw if a matrix did not converge (NaN or Inf input); with
+`false` that matrix gets NaN eigenvalues and the caller checks. The CPU method ignores `check`.
 """
-function eigvals_batched(Hk::AbstractArray{Complex{T},3}) where {T}
-    # CPU method; the CuArray method (CUSOLVER heevjBatched) lives in ext/ElectronPhononCUDAExt.jl.
+function eigvals_batched(Hk::AbstractArray{Complex{T},3}; check::Bool = true) where {T}
+    # CPU method; the CuArray method lives in ext/ElectronPhononCUDAExt.jl.
     nw, n2, nk = size(Hk)
     @assert nw == n2
     E = Matrix{T}(undef, nw, nk)
@@ -40,22 +42,23 @@ function eigvals_batched(Hk::AbstractArray{Complex{T},3}) where {T}
 end
 
 """
-    eigen_batched(Hk) -> (E, U)
+    eigen_batched(Hk; check = true) -> (E, U)
 
 Eigenvalues `E` `(nw, nk)` and eigenvectors `U` `(nw, nw, nk)` of a stack of Hermitian
 matrices `Hk` of size `(nw, nw, nk)`. CPU method loops over LAPACK `syev!`; the CUDA
-extension provides a batched `heevjBatched` method for `CuArray`s.
+extension provides a `CuArray` method: one-thread-per-matrix Jacobi for `nw ≤ 12`, cuSOLVER
+`heevjBatched` above.
 
 Overwrites `Hk`: the returned `U` is `Hk` itself, overwritten in place with the eigenvectors.
-The device method does not check the solver's `info`: cuSOLVER 12.2.6 does not report
-non-convergence through it.
+`check` is as in [`eigvals_batched`](@ref); with `false` a device matrix that did not converge gets
+NaN eigenvalues and eigenvectors.
 
 Note: unlike the per-k `compute_el_eigen!`, no EPW degeneracy gauge-fixing is applied, so for
 degenerate bands the eigenvectors may differ from `compute_el_eigen!` by a gauge (the
 eigenvalues, and the eigen-decomposition, are unaffected).
 """
-function eigen_batched(Hk::AbstractArray{Complex{T},3}) where {T}
-    # CPU method; the CuArray method (CUSOLVER heevjBatched) lives in ext/ElectronPhononCUDAExt.jl.
+function eigen_batched(Hk::AbstractArray{Complex{T},3}; check::Bool = true) where {T}
+    # CPU method; the CuArray method lives in ext/ElectronPhononCUDAExt.jl.
     nw, n2, nk = size(Hk)
     @assert nw == n2
     E = Matrix{T}(undef, nw, nk)

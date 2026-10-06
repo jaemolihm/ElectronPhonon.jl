@@ -665,7 +665,9 @@ transform with `itp_ham` (the `BatchedWannierInterpolator` of `model.el_ham`, bl
 on `hk`'s backend, all `nw` sorted eigenvalues `E` and the eigenvectors `U` (`nothing` without
 `eigenvectors`) of every point, and its bands inside the energy `window`: bands
 `offset + 1 : offset + nband`, `nband = 0` for a point with none. The batched eigensolve applies no
-degeneracy gauge fix, as in `eigen_batched`.
+degeneracy gauge fix, as in `eigen_batched`. It runs with `check = false`, so it adds no host
+synchronization: a point whose eigensolve did not converge has NaN eigenvalues and `nband = -1`,
+which the caller must check on the host copy of `nband` it reads anyway.
 
 [`copy_window_bands!`](@ref) moves the window bands of chosen points into a
 [`BatchedElectronState`](@ref).
@@ -676,11 +678,13 @@ function solve_electron_bands_batched(itp_ham, hk, model::Model, xks, window::Tu
     hk_x = view(hk, :, 1:nx)
     get_fourier_batched!(hk_x, itp_ham, xks)
     H = reshape(hk_x, nw, nw, nx)
-    E, U = eigenvectors ? eigen_batched(H) : (eigvals_batched(H), nothing)
-    # The eigenvalues are sorted per point, so counts give `inside_window`'s range.
+    E, U = eigenvectors ? eigen_batched(H; check = false) :
+                          (eigvals_batched(H; check = false), nothing)
+    # The eigenvalues are sorted per point, so counts give `inside_window`'s range. A point that did
+    # not converge has NaN eigenvalues and is marked `nband = -1`.
     wmin, wmax = window
     offset = vec(sum(E .< wmin; dims = 1))
-    nband = max.(vec(sum(E .<= wmax; dims = 1)) .- offset, 0)
+    nband = ifelse.(isnan.(view(E, 1, :)), -1, max.(vec(sum(E .<= wmax; dims = 1)) .- offset, 0))
     (; E, U, offset, nband)
 end
 

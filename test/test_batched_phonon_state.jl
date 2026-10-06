@@ -107,7 +107,8 @@ end
             # The device solve is chunked over q at the Fourier block width. Against one
             # eigensolve over the whole set with the same Fourier blocks (the unchunked build), it
             # is bitwise: the batched eigensolve is per matrix. The grid is sized for two chunks,
-            # both above the eigensolver's own 65 536-matrix split.
+            # both above the 65 536-matrix split of the cuSOLVER path (nmodes > 12; Pb's 3 modes
+            # run the unsplit Jacobi path).
             qgrid = GridKpoints(kpoints_grid((112, 112, 112)))
             phs = compute_phonon_states_batched(model_pb, qgrid, full; backend)
             itp = ElectronPhonon.get_interpolator(to_device(backend, model_pb.ph_dyn);
