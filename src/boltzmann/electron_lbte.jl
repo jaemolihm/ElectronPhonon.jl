@@ -219,6 +219,7 @@ function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, 
                          solver, max_iter, rtol, mixing, observable=obs, iT)
 
         if solver === :fixed_point
+            # Save history for fixed-point iteration. (History not stored for GMRES solver)
             for (iter, σ_iter) in enumerate(sol.obs_iter)
                 output.σ_iter[iter, :, :, iT] .= σ_iter
             end
