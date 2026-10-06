@@ -1,7 +1,8 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, supports,
-    OuterKContext, OuterQContext, CPUBackend, calculator_begin_batch!, calculator_end_batch!, to_device
+    OuterKContext, OuterQContext, CPUBackend, calculator_begin_batch!, calculator_end_batch!, to_device,
+    setup_calculator!, calculator_bytes
 
 # Calculator-contract checks (CPU-only): the `supports` trait, the fail-early checks the drivers do
 # at entry, `calculators` as a keyword, and the screening-disabled error.
@@ -123,8 +124,17 @@ end
 CONTRACT_GPU_AVAILABLE && CUDA.allowscalar(false)
 include("calculator_contract_harness.jl")
 
-# Every ElectronPhonon.jl calculator through the generic contract harness (MigdalEliashberg.jl's
-# run the same harness from its own test_calculator_contract.jl).
+# `|ep|^2 / (2ω)` of each state pair from the reference double loop, in `G2Calculator`'s layout.
+function g2_contract_reference(c, ref)
+    g2 = zero(c.g2); ωq = zero(c.ωq)
+    contract_foreach_reference_pair(ref, c.el_i, c.el_f) do i, j, ep, ω, _...
+        g2[:, i, j] .= abs2.(ep) ./ (2 .* ω)
+        ωq[:, i, j] .= ω
+    end
+    (; c.el_i, c.el_f, g2, ωq)
+end
+
+# Every ElectronPhonon.jl calculator through the generic contract harness.
 @testset "calculator contract harness" begin
     models = (; el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el"),
                 ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph"))
@@ -160,4 +170,76 @@ include("calculator_contract_harness.jl")
     # degenerate gauge fix and the device one does not, so a multiplet sum weighted by a function of
     # each level's own energy moves by about split / smearing: 2.8e-7 on the ragged fixture (A100).
     check_calculator_contract(entries, models; gpu = CONTRACT_GPU_AVAILABLE, rtol_gpu = 1e-6)
+
+    # The two state-pair extraction calculators.
+    nmodes = models.el.nmodes
+    entries = [
+        (; name = "G2Calculator", orders = (OuterKLoop,),
+           make = () -> ElectronPhonon.G2Calculator{Float64}(; nmodes),
+           outputs = c -> Dict("g2" => contract_pair_sum(c.g2, c.ωq,
+                    contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)),
+                    "ωq" => contract_physical_ω(c.ωq)),
+           reference = g2_contract_reference),
+        (; name = "EPElementCalculator", orders = (OuterKLoop,),
+           make = () -> ElectronPhonon.EPElementCalculator{Float64}(; nmodes),
+           # The phase of `ep` is a gauge; `|ep|^2` summed over multiplets is not.
+           outputs = c -> Dict("abs2_ep" => contract_pair_sum(abs2.(c.ep), c.ωq,
+                    contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)),
+                    "ωq" => contract_physical_ω(c.ωq)),
+           reference = function (c, ref)
+               ep = zero(c.ep); ωq = zero(c.ωq)
+               contract_foreach_reference_pair(ref, c.el_i, c.el_f) do i, j, ep_ij, ω, _...
+                   ep[:, i, j] .= ep_ij
+                   ωq[:, i, j] .= ω
+               end
+               (; c.el_i, c.el_f, ep, ωq)
+           end),
+    ]
+    check_calculator_contract(entries, models; gpu = CONTRACT_GPU_AVAILABLE)
+end
+
+# The reference pins which mode carries the coupling: swapping two non-degenerate physical modes
+# at one state pair must fail it, while the multiplet sums leave a basis change inside one alone.
+@testset "calculator contract harness: a mode swap fails the reference" begin
+    model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
+    fixture = contract_fixtures().narrow
+    c = run_contract(
+        (; make = () -> ElectronPhonon.G2Calculator{Float64}(; nmodes = model.nmodes)),
+        OuterKLoop, (; el = model), fixture, contract_settings(OuterKLoop).default)
+    ids_i, ids_f = contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)
+    want = g2_contract_reference(c, contract_reference(model, fixture))
+    pair_sum(g2, ωq) = contract_pair_sum(g2, ωq, ids_i, ids_f)
+    @test isapprox(pair_sum(c.g2, c.ωq), pair_sum(want.g2, want.ωq); rtol = 1e-10)
+    pair = findfirst(CartesianIndices((axes(c.g2, 2), axes(c.g2, 3)))) do I
+        ω = c.ωq[:, I]
+        minimum(ω[1:2]) >= ElectronPhonon.omega_acoustic && abs(ω[2] - ω[1]) > 1e-6 &&
+            c.g2[1, I] != c.g2[2, I]
+    end
+    @test pair !== nothing
+    swapped = copy(c.g2)
+    swapped[1, pair], swapped[2, pair] = c.g2[2, pair], c.g2[1, pair]
+    @test !isapprox(pair_sum(swapped, c.ωq), pair_sum(want.g2, want.ωq); rtol = 1e-10)
+end
+
+# `calculator_bytes` declares what `setup_calculator!` allocates on the backend, on a one-state
+# fixture whose boxes equal the index-map extents: the two index maps (`persistent`) and, for
+# `G2Calculator`, the per-tile g2 scratch (`per_pair`). Without containers the maps are not counted.
+@testset "calculator_bytes matches the setup allocations" begin
+    nm = 2
+    kpts = ElectronPhonon.GridKpoints(kpoints_grid((1, 1, 1)))
+    sel = ElectronPhonon.FilteredBandStates(kpts, [1], [1]; nw = 2)
+    els = ElectronPhonon.BatchedElectronState(CPUBackend(), 2, 1, 1, [:e, :u]; kpts)
+    els.e .= 0.1; els.nband .= 1
+    phs = ElectronPhonon.BatchedPhononState(CPUBackend(), nm, 1, [:e])
+    sizes = (; nw = 2, nmodes = nm, nband_max_k = 1, nband_max_kq = 1, nchunks_threads = 1)
+    for calc in (ElectronPhonon.G2Calculator{Float64}(; nmodes = nm),
+                 ElectronPhonon.EPElementCalculator{Float64}(; nmodes = nm))
+        setup_calculator!(calc, CPUBackend(), els, els, phs; order = OuterKLoop(), sel_k = sel,
+            sel_kq = sel, n_outer_batch = 1, n_inner_tile = 1, nchunks_threads = 1)
+        bytes = calculator_bytes(calc, EPBlock{OuterKLoop}; sizes..., els_k = els, els_kq = els, phs)
+        scratch = calc isa ElectronPhonon.G2Calculator ? sizeof(calc.g2_tile) : 0
+        @test bytes == (; persistent = sizeof(calc.imap_i_dev) + sizeof(calc.imap_f_dev), per_outer = 0,
+                          per_pair = scratch)
+        @test calculator_bytes(calc, EPBlock{OuterKLoop}; sizes...).persistent == 0
+    end
 end

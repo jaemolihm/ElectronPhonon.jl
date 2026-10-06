@@ -1,6 +1,6 @@
 # TiledDeviceOutput: the outer-k-tiled device-output machinery shared by the device-resident batched
-# calculators (`BoltzmannCalculator`, MigdalEliashberg's `EliashbergCalculator`). It owns the parts
-# both duplicated: the residency decision (full device-resident vs streamed per batch), the outer-k
+# calculators (`BoltzmannCalculator`, `G2Calculator`, `EPElementCalculator`). It owns the parts
+# they would duplicate: the residency decision (full device-resident vs streamed per batch), the outer-k
 # tile ranges (via `ind_range_for_k_range`, including the ni-cap pre-scan and the contiguity error),
 # the lazy device allocation from `ctx.backend`, the per-batch zeroing of the active tile region, and the
 # per-tile device→host download (a contiguous copy that avoids scalar-indexing strided device→host

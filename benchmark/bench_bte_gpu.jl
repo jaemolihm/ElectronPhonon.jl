@@ -1,8 +1,9 @@
 # Benchmark: full e-ph calculator loop (run_eph_over_k_and_kq) with the BoltzmannCalculator
-# (BTE transport scattering), CPU vs GPU, over a k/k+q grid. Same driver as the EliashbergCalculator
-# benchmark, but the calculator folds the temperature-dependent occupation physics into the
-# scattering-out (Sₒ) / scattering-in (Sᵢ) matrices on the device via the shared
-# `bte_scattering_increments` core, so CPU and GPU compute the same scattering (to round-off).
+# (BTE transport scattering), CPU vs GPU, over a k/k+q grid. Same driver as the G2Calculator
+# benchmark (bench_eliashberg_loop_gpu.jl), but the calculator folds the temperature-dependent
+# occupation physics into the scattering-out (Sₒ) / scattering-in (Sᵢ) matrices on the device via
+# the shared `bte_scattering_increments` core, so CPU and GPU compute the same scattering (to
+# round-off).
 #
 #   CPU : fourier_mode="gridopt", capped to 12 threads (nchunks_threads=12)
 #   GPU : backend=EP.gpu_backend(), device-native batched calculator + device-resident Sₒ/Sᵢ scatter

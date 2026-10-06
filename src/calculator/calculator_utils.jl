@@ -102,7 +102,7 @@ function eph_window_scatter_reim!(re_out, im_out, ωq_out, epvals, imap_i_col, i
     nothing
 end
 
-# `eph_window_scatter!` above is used by device-resident calculators that copy g2/ωq (e.g. the
-# MigdalEliashberg EliashbergCalculator), not by the BTE calculator. The BTE analogue
+# `eph_window_scatter!` above is used by device-resident calculators that copy g2/ωq (e.g.
+# `G2Calculator`), not by the BTE calculator. The BTE analogue
 # `bte_window_accumulate!` lives next to its sole caller `BoltzmannCalculator`
 # (src/boltzmann/boltzmann_calculator.jl); its CUDA method is in the extension.

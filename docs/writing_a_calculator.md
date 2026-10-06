@@ -513,7 +513,7 @@ tile.
 `sel_k`, `sel_kq` are the `FilteredBandStates` selections they were built from: the selected states
 with their weights (per state on a multigrid selection) and the below-window carrier count
 `nstates_base`. `BandStates(els_k, sel_k)` gives the flattened per-state view (energies, velocities,
-weights) that `BoltzmannCalculator` and the MigdalEliashberg calculators keep.
+weights) that `BoltzmannCalculator`, `G2Calculator` and `EPElementCalculator` keep.
 
 ## Device buffers
 
@@ -544,5 +544,5 @@ whole thing on the device. `ElectronPhonon.TiledDeviceOutput` owns that bookkeep
   back and `tile_free!(t)`.
 
 `BoltzmannCalculator` (`src/boltzmann/boltzmann_calculator.jl`) and `G2Calculator` /
-`EPElementCalculator` (MigdalEliashberg.jl) are worked references. See `README_GPU.md` for the
-device-loop details.
+`EPElementCalculator` (`src/calculator/g2_calculator.jl`, `src/calculator/ep_element_calculator.jl`)
+are worked references. See `README_GPU.md` for the device-loop details.
