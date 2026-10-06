@@ -30,6 +30,9 @@ using SparseArrays: SparseMatrixCSC
 #     "n ≤ 32" is a performance figure, not a correctness bound, so there is no size guard.
 #     Relative residual ≤ 3e-15 for nw ≤ 16 and ≤ 2.2e-14 at nw = 64 (same batches plus real
 #     interpolated H(k)), with `tol = eps(Float64)` and `max_sweeps = 100`.
+#     cuSOLVER.jl reads `info` back after every call but throws only on `info < 0`, so an
+#     `info > 0` (no convergence) would go unreported. The readback is a host synchronization:
+#     0.1-0.2 ms per call and the call is no longer asynchronous. Neither matters for now.
 #   - Eigenvectors of degenerate bands differ from the per-k CPU path by a gauge (no EPW
 #     gauge-fixing here). That is a basis choice, not an accuracy loss.
 
