@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using Random
-using ElectronPhonon: Vec3, _grid_coords_reduced, _wrap_reduced, _fill_iqs!
+using ElectronPhonon: Vec3, _grid_coords_reduced, _wrap_reduced, _fill_iqs!, q_index_table
 
 # The per-(k, k+q tile) `iq` index build of the outer-k loop (`_fill_iqs!`). The loop hashes
 # integer grid coordinates instead of calling `xk_to_ik` per pair, so the whole correctness story is
@@ -122,5 +122,22 @@ end
                             f.qpts.ngrid)
         iqs = fill(-7, f.kqpts.n)
         @test_throws ArgumentError _fill_iqs!(iqs, one_q, f.xkqs_int, f.xks_int, 1, 1, f.kqpts.n)
+        # The same miss inside the threaded table build, wrapped by `@threads`.
+        @test_throws CompositeException q_index_table(f.kpts, f.kqpts, one_q)
+    end
+
+    @testset "q_index_table" begin
+        # The whole (k, k+q) table on a shifted non-cubic grid, with an outer subset of the k grid
+        # (the IBZ shape: n_k < n_kq), against a k-vector search of `qpts` for q = x_{k+q} - x_k.
+        f = _iq_build_fixture((4, 3, 5); shift = (1//2, 0, 1//2))
+        iks_sub = 3:4:f.kpts.n
+        kpts = GridKpoints(Kpoints(length(iks_sub), f.kpts.vectors[iks_sub], f.kpts.weights[iks_sub],
+                                   f.kpts.ngrid), f.kpts.ngrid)
+        iq_kk = q_index_table(kpts, f.kqpts, f.qpts)
+        @test iq_kk isa Matrix{Int32} && size(iq_kk) == (kpts.n, f.kqpts.n)
+        iq_ref = [findfirst(xq -> all(abs.(mod.(xq - (xkq - xk) .+ 1/2, 1) .- 1/2) .< 1e-10),
+                            f.qpts.vectors)
+                  for xk in kpts.vectors, xkq in f.kqpts.vectors]
+        @test iq_kk == iq_ref
     end
 end

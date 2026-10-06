@@ -1,7 +1,9 @@
 # G2Calculator: an AbstractCalculator that extracts the mode-resolved electron-phonon coupling
-# g2 = |ep|²/(2ω) and the phonon frequency ωq of every in-window state pair, during a single pass of
-# `run_eph_over_k_and_kq`. The coupling is temperature-independent, so a consumer that needs it at
-# many temperatures or iterations runs the e-ph loop once and reads these arrays.
+# g2 = |ep|²/(2ω) of every in-window state pair during a single pass of `run_eph_over_k_and_kq`,
+# with the run's phonon table `ωph[ν, iq]` and the q index `iq_kk[ik, ikq]` of every point pair. The
+# coupling is temperature-independent, so a consumer that needs it at many temperatures or
+# iterations runs the e-ph loop once and reads these arrays. The pair frequency is a gather
+# (`gather_pair_table!`), never stored densely.
 #
 # Electronic states are flattened into `BandStates` and addressed through `state_index(el, ik, iband)`.
 # The `BandStates` also carry `nstates_base`, the below-window carrier count of the selection
@@ -32,11 +34,16 @@ Base.@kwdef mutable struct G2Calculator{FT} <: AbstractCalculator
     # consumer's sum over modes cache-friendly.
     g2::Array{FT,3} = zeros(FT, 0, 0, 0)
 
-    # Phonon frequency ω_{qν} for the q = k'(f) - k(i) connecting each state pair; g2[ν, i, f].
-    ωq::Array{FT,3} = zeros(FT, 0, 0, 0)
+    # The run's phonon frequencies ω_{qν} as ωph[ν, iq], over the loop's q set (`phs.qpts`, the
+    # window-connecting q points in its sorted order), and the index iq_kk[ik, ikq] into it of
+    # q = k+q - k for outer k point ik (`el_i.kpts`) and inner point ikq (`el_f.kpts`). The
+    # frequency of the pair (i, f) is ωph[ν, iq_kk[el_i.iks[i], el_f.iks[f]]], bitwise the ω in
+    # its g2. Host arrays.
+    ωph::Matrix{FT} = zeros(FT, 0, 0)
+    iq_kk::Matrix{Int32} = zeros(Int32, 0, 0)
 
     # GPU loop output residency, forwarded to the `TiledDeviceOutput` helper. The batched loop
-    # scatters each chunk on the device into either the FULL g2/ωq (downloaded once at
+    # scatters each chunk on the device into either the FULL g2 (downloaded once at
     # `postprocess_calculator!`) or ONE outer-k batch's tile of it (downloaded after every batch,
     # device memory bounded by the batch). `nothing` = choose from free device memory; `true` =
     # force streaming per batch; `false` = force the full arrays.
@@ -54,11 +61,11 @@ Base.@kwdef mutable struct G2Calculator{FT} <: AbstractCalculator
     imap_f_dev::Any = nothing   # (nband_max_kq, n_kq) state index for (box band, k+q); device Int matrix
     g2_tile::Any = nothing      # (nband_max_kq, nband_max_k, nmodes, n_inner_tile, nchunks) per-tile scratch
 
-    # Device-resident g2/ωq output (full or streamed per batch, chosen from free device memory).
-    # Owned by the shared `TiledDeviceOutput` helper: it holds both arrays (g2 = array 1, ωq =
-    # array 2, tiled over the outer-k state axis = axis 2), the residency decision, tile ranges,
-    # per-batch zeroing, and the per-tile / final device→host copy. Built at setup; device buffers
-    # alloc'd lazily on the first batch.
+    # Device-resident g2 output (full or streamed per batch, chosen from free device memory).
+    # Owned by the shared `TiledDeviceOutput` helper: it holds g2 (array 1, tiled over the outer-k
+    # state axis = axis 2), the residency decision, tile ranges, per-batch zeroing, and the
+    # per-tile / final device→host copy. Built at setup; device buffers alloc'd lazily on the first
+    # batch.
     tile_dev::Union{Nothing,TiledDeviceOutput{FT}} = nothing
 
     # Set by `postprocess_calculator!`; `setup_calculator!` errors if already `true`. A calculator
@@ -75,7 +82,7 @@ required_el_quantities(::G2Calculator) = [:vdiag]
 # What `setup_calculator!` allocates on the backend: the two index maps, bounded by the containers'
 # boxes (nothing without containers, in `estimate_device_memory`), and the per-tile g2 scratch. The
 # tiled output is not counted: on the first batch it chooses full or streamed residency from the
-# memory then free.
+# memory then free. `ωph` and `iq_kk` are host arrays.
 function calculator_bytes(::G2Calculator{FT}, ::Type{<:EPBlock{OuterKLoop}}; nmodes,
         nband_max_k, nband_max_kq, els_k = nothing, els_kq = nothing, kwargs...) where {FT}
     per_pair = sizeof(FT) * nband_max_kq * nband_max_k * nmodes                     # g2_tile
@@ -97,12 +104,14 @@ function setup_calculator!(calc::G2Calculator{FT}, backend, els_k, els_kq, phs;
     n_i = calc.el_i.n
     n_f = calc.el_f.n
     calc.g2 = zeros(FT, calc.nmodes, n_i, n_f)
-    calc.ωq = zeros(FT, calc.nmodes, n_i, n_f)
-    # Device-resident output: `g2` and `ωq`, each of shape (nmodes, n_i, n_f), tiled over the outer-k
-    # state axis (axis 2). `force_stream_per_batch` overrides the full-vs-streamed residency
-    # decision. Device buffers alloc'd lazily on the first batch.
+    # The loop's phonon table and the q index of every (k, k+q) pair, by the loop's own lookup.
+    calc.ωph = Array(phs.e)
+    calc.iq_kk = q_index_table(sel_k.kpts, sel_kq.kpts, phs.qpts)
+    # Device-resident output: `g2` of shape (nmodes, n_i, n_f), tiled over the outer-k state axis
+    # (axis 2). `force_stream_per_batch` overrides the full-vs-streamed residency decision. Device
+    # buffers alloc'd lazily on the first batch.
     calc.tile_dev = TiledDeviceOutput{FT}((calc.nmodes, n_i, n_f), 2, calc.el_i,
-        n_outer_batch; narr = 2, force_stream_per_batch = calc.force_stream_per_batch)
+        n_outer_batch; narr = 1, force_stream_per_batch = calc.force_stream_per_batch)
     # The (band, k) → state-index maps on `backend`, in the containers' box coordinates (0 for a band
     # that is not a state, and on the box padding).
     calc.imap_i_dev = _indmap_to_device(backend, calc.el_i)
@@ -129,11 +138,10 @@ function calculator_end_batch!(calc::G2Calculator, ctx::OuterKContext)
     ni == 0 && return calc
     i0 = tile_offset(tile_dev)
     inds_i = i0+1:i0+ni   # outer-state indices i of this tile in the full output
-    # Copy each device tile buffer into its contiguous host mirror (one bulk D2H per array). A direct
+    # Copy the device tile buffer into its contiguous host mirror (one bulk D2H). A direct
     # device→strided-host-SubArray copyto! would fall back to scalar indexing.
     tile_download!(tile_dev)
     @views calc.g2[:, inds_i, :] .= host_array(tile_dev, 1)
-    @views calc.ωq[:, inds_i, :] .= host_array(tile_dev, 2)
     calc
 end
 
@@ -145,7 +153,6 @@ function postprocess_calculator!(calc::G2Calculator; kwargs...)
     if tile_dev !== nothing && is_allocated(tile_dev)
         if !streamed_per_batch(tile_dev)
             copyto!(vec(calc.g2), device_array(tile_dev, 1))
-            copyto!(vec(calc.ωq), device_array(tile_dev, 2))
         end
         tile_free!(tile_dev)
     end
@@ -158,7 +165,7 @@ end
 
 """
 One block: one outer k-point `ik` with a tile of k+q points `ikq[j]`. Forms `g2 = |ep|²/(2ω)` in the
-per-tile scratch of the block's thread chunk and writes it with `ωq` into the device-resident output
+per-tile scratch of the block's thread chunk and writes it into the device-resident output
 at the `[ν, i, f]` slots, with `i = imap_i[n, ik]` and `f = imap_f[m, ikq[j]]` in the containers' box
 coordinates. The `TiledDeviceOutput` helper's `tile_stride`/`tile_offset`
 select the linear-index layout, so the same call serves the full and the streamed residency
@@ -174,9 +181,7 @@ function run_calculator!(calc::G2Calculator, block::EPBlock{OuterKLoop}, ctx)
     g2 = view(calc.g2_tile, :, :, :, 1:npairs, ctx.chunk)
     g2 .= abs2.(ep) .* inv.(2 .* reshape(phs.e, 1, 1, nm, npairs))   # as `epstate_set_g2!`
     tile_dev = calc.tile_dev
-    eph_window_scatter!(
-        device_array(tile_dev, 1), device_array(tile_dev, 2),
-        g2, view(calc.imap_i_dev, :, ik), calc.imap_f_dev, ikq, phs.e,
-        tile_stride(tile_dev), tile_offset(tile_dev))
+    eph_window_scatter!(device_array(tile_dev, 1), g2, view(calc.imap_i_dev, :, ik),
+        calc.imap_f_dev, ikq, tile_stride(tile_dev), tile_offset(tile_dev))
     calc
 end
