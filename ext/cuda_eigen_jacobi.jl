@@ -148,7 +148,7 @@ function jacobi_eigen_batched!(E, U, H)
     U === nothing || size(U) == size(H) ||
         throw(DimensionMismatch("U must be $(size(H)), got $(size(U))"))
     nb == 0 && return E
-    threads = 128
+    threads = 256
     # `Val(nw)` is the function barrier: one kernel per nw (and per eigenvalues-only/full).
     @cuda threads = threads blocks = cld(nb, threads) jacobi_eigen_kernel!(E, U, H, Val(nw))
     E
