@@ -141,8 +141,8 @@ may be `H` itself. A matrix that does not converge (NaN or Inf input) gets NaN e
 eigenvectors.
 """
 function jacobi_eigen_batched!(E, U, H)
-    nw, n2, nb = size(H)
-    nw == n2 || throw(DimensionMismatch("H must be square in its first two dimensions, got $(size(H))"))
+    nw, nw2, nb = size(H)
+    nw == nw2 || throw(DimensionMismatch("H must be square in its first two dimensions, got $(size(H))"))
     # The kernel indexes E, U and H under @inbounds.
     size(E) == (nw, nb) || throw(DimensionMismatch("E must be $((nw, nb)), got $(size(E))"))
     U === nothing || size(U) == size(H) ||
