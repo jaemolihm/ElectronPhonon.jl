@@ -130,14 +130,6 @@ end
 # `heevjBatched!` in the process throw `InexactError`.
 heevj_batch_max(nw::Int) = min(2^16, 2^24 ÷ nw^2)
 
-# `check = true` of the device methods: one reduction and one host synchronization. A matrix the
-# Jacobi solver did not converge on has NaN eigenvalues; cuSOLVER reports nothing for NaN input.
-function check_converged(E, fname)
-    any(isnan, E) && error("$fname: the eigensolve did not converge for ",
-        count(isnan, view(E, 1, :)), " of ", size(E, 2), " matrices (NaN or Inf input?)")
-    nothing
-end
-
 """
     eigvals_batched(Hk::CuArray{ComplexF64,3}; check = true) -> CuMatrix
 
@@ -158,16 +150,16 @@ function ElectronPhonon.eigvals_batched(Hk::CuArray{ComplexF64,3}; check::Bool =
         heevj_batched!('N', Hk)
     else
         # cuSOLVER, chunked.
-        E_c = similar(Hk, Float64, nw, nk)
+        E_chunked = similar(Hk, Float64, nw, nk)
         for c in Iterators.partition(1:nk, heevj_batch_max(nw))
             # `Hk[:,:,c]` is a fresh getindex copy that heevj_batched! may overwrite — do NOT wrap
-            # the source in @views (a CuArray trailing-range view aliases Hk). `E_c[:,c] .=` is
-            # already an in-place broadcast assignment (dotview), so it needs no @views.
-            E_c[:, c] .= heevj_batched!('N', Hk[:, :, c])
+            # the source in @views (a CuArray trailing-range view aliases Hk). `E_chunked[:,c] .=`
+            # is already an in-place broadcast assignment (dotview), so it needs no @views.
+            E_chunked[:, c] .= heevj_batched!('N', Hk[:, :, c])
         end
-        E_c
+        E_chunked
     end
-    check && check_converged(E, "eigvals_batched")
+    check && ElectronPhonon.check_eigensolve_converged(E, "eigvals_batched")
     E
 end
 
@@ -182,25 +174,25 @@ function ElectronPhonon.eigen_batched(Hk::CuArray{ComplexF64,3}; check::Bool = t
     nw, n2, nk = size(Hk)
     nw == n2 || throw(DimensionMismatch("Hk must be square in its first two dimensions, got $(size(Hk))"))
     nk == 0 && return (similar(Hk, Float64, nw, 0), Hk)
-    E, U = if nw <= JACOBI_NW_MAX
-        # Jacobi: the eigenvectors overwrite Hk (destroy-input contract; see the CPU method).
-        (jacobi_eigen_batched!(similar(Hk, Float64, nw, nk), Hk, Hk), Hk)
+    # Every branch overwrites Hk with the eigenvectors (destroy-input contract; see the CPU method).
+    E = if nw <= JACOBI_NW_MAX
+        # Jacobi
+        jacobi_eigen_batched!(similar(Hk, Float64, nw, nk), Hk, Hk)
     elseif nk <= heevj_batch_max(nw)
-        # cuSOLVER, one call: heevj_batched!('V', ...) overwrites Hk with the eigenvectors.
-        (heevj_batched!('V', Hk), Hk)
+        # cuSOLVER, one call
+        heevj_batched!('V', Hk)
     else
-        # cuSOLVER, chunked.
-        E_c = similar(Hk, Float64, nw, nk)
-        U_c = similar(Hk, nw, nw, nk)
+        # cuSOLVER, chunked: each chunk is solved in a fresh copy and written back.
+        E_chunked = similar(Hk, Float64, nw, nk)
         for c in Iterators.partition(1:nk, heevj_batch_max(nw))
-            Uc = Hk[:, :, c]   # fresh getindex copy ('V' overwrites it)
-            E_c[:, c] .= heevj_batched!('V', Uc)
-            U_c[:, :, c] .= Uc
+            U_chunk = Hk[:, :, c]   # fresh getindex copy ('V' overwrites it)
+            E_chunked[:, c] .= heevj_batched!('V', U_chunk)
+            Hk[:, :, c] .= U_chunk
         end
-        (E_c, U_c)
+        E_chunked
     end
-    check && check_converged(E, "eigen_batched")
-    (E, U)
+    check && ElectronPhonon.check_eigensolve_converged(E, "eigen_batched")
+    (E, Hk)
 end
 
 """

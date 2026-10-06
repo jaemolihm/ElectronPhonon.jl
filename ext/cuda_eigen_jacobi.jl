@@ -106,7 +106,7 @@ end
 
 @inline function identity_mmatrix(::Val{N}) where {N}
     V = MMatrix{N,N,ComplexF64}(undef)
-    @inbounds for j in 1:N, i in 1:N
+    for j in 1:N, i in 1:N
         V[i, j] = ifelse(i == j, one(ComplexF64), zero(ComplexF64))
     end
     V
@@ -142,6 +142,10 @@ may be `H` itself. A matrix that does not converge (NaN or Inf input) gets NaN e
 function jacobi_eigen_batched!(E, U, H)
     nw, n2, nb = size(H)
     nw == n2 || throw(DimensionMismatch("H must be square in its first two dimensions, got $(size(H))"))
+    # The kernel indexes E, U and H under @inbounds.
+    size(E) == (nw, nb) || throw(DimensionMismatch("E must be $((nw, nb)), got $(size(E))"))
+    U === nothing || size(U) == size(H) ||
+        throw(DimensionMismatch("U must be $(size(H)), got $(size(U))"))
     nb == 0 && return E
     threads = 128
     # `Val(nw)` is the function barrier: one kernel per nw (and per eigenvalues-only/full).

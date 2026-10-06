@@ -265,6 +265,10 @@ end
         @test sort(E[:, k]) ≈ sort(real(eigvals(Hermitian(Hh[:, :, k]))))
         @test U[:, :, k] * Diagonal(E[:, k]) * U[:, :, k]' ≈ Hh[:, :, k]
     end
+    # `check = true`: a NaN eigenvalue in any column throws (LAPACK itself throws on NaN input, so
+    # the check is exercised directly).
+    @test ElectronPhonon.check_eigensolve_converged(E, "eigen_batched") === nothing
+    @test_throws ErrorException ElectronPhonon.check_eigensolve_converged([1.0 2.0; 3.0 NaN], "x")
 end
 
 # Gauge-invariant errors of eigenpairs (E, U) of the Hermitian H, relative to ‖H‖_F (1 if H = 0):
@@ -423,10 +427,10 @@ end
             end
         end
 
-        # --- the direct cusolverDnZheevjBatched call is bitwise cuSOLVER.jl's heevjBatched!,
-        #     unchunked and chunked at heevj_batch_max: `heevj_batched!` itself at nw = 3 and 8
-        #     (which `eigen_batched` sends to Jacobi), and through `eigen_batched` at nw = 40 ---
-        for (nw2, nk2) in ((3, 1000), (8, ext.heevj_batch_max(8) + 37), (40, ext.heevj_batch_max(40) + 5))
+        # --- the cuSOLVER path (nw > JACOBI_NW_MAX) of eigen_batched / eigvals_batched is bitwise
+        #     cuSOLVER.jl's heevjBatched!, unchunked (nw = 13) and chunked at heevj_batch_max
+        #     (nw = 40); the eigenvectors overwrite the input on both ---
+        for (nw2, nk2) in ((13, 1000), (40, ext.heevj_batch_max(40) + 5))
             A3 = CUDA.randn(ComplexF64, nw2, nw2, nk2)
             H3 = A3 .+ permutedims(conj.(A3), (2, 1, 3))
             E_ref = similar(H3, Float64, nw2, nk2); U_ref = similar(H3); V_ref = similar(E_ref)
@@ -435,21 +439,11 @@ end
                 E_ref[:, c] .= W; U_ref[:, :, c] .= Uc
                 V_ref[:, c] .= CUDA.cuSOLVER.heevjBatched!('N', 'U', H3[:, :, c])
             end
-            if nw2 > ext.JACOBI_NW_MAX
-                # cuSOLVER path of the dispatch
-                E3, U3 = eigen_batched(copy(H3))
-                @test E3 == E_ref && U3 == U_ref
-                @test eigvals_batched(copy(H3)) == V_ref
-            else
-                # Jacobi sizes: the wrapper itself, chunked as the dispatch would
-                E3 = similar(E_ref); U3 = similar(U_ref); V3 = similar(V_ref)
-                for c in Iterators.partition(1:nk2, ext.heevj_batch_max(nw2))
-                    Uc = H3[:, :, c]
-                    E3[:, c] .= ext.heevj_batched!('V', Uc); U3[:, :, c] .= Uc
-                    V3[:, c] .= ext.heevj_batched!('N', H3[:, :, c])
-                end
-                @test E3 == E_ref && U3 == U_ref && V3 == V_ref
-            end
+            H3_in = copy(H3)
+            E3, U3 = eigen_batched(H3_in)
+            @test E3 == E_ref && U3 == U_ref
+            @test U3 === H3_in
+            @test eigvals_batched(copy(H3)) == V_ref
         end
 
         # --- Jacobi path (nw ≤ JACOBI_NW_MAX) against LAPACK on the same matrices; the batch mixes

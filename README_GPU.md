@@ -139,10 +139,11 @@ the same one:
   `nw ≤ 16` at `tol = eps(Float64)`.
 
 Non-convergence (in practice NaN or Inf in `H`) gives the Jacobi matrix NaN eigenvalues and
-eigenvectors. With `check = true` (default) the device methods throw on that, at one reduction and
-one host synchronization per call. The per-tile k+q solve of the e-ph loop passes `check = false`
-and marks the point `nband = -1`, which the engine's window count throws on from the host copy it
-already reads, so the loop gains no synchronization. cuSOLVER reports nothing for NaN input.
+eigenvectors. With `check = true` (default) the device and the CPU methods throw on NaN
+eigenvalues, on the device at one reduction and one host synchronization per call. The per-tile
+k+q solve of the e-ph loop passes `check = false` and marks the point `nband = -1`, which the
+engine's window count throws on from the host copy it already reads, so the loop gains no
+synchronization. cuSOLVER reports nothing for NaN input.
 
 The cuSOLVER path chunks the batch at `heevj_batch_max` (2^16 for small `nw`).
 Two reasons: the solver reports its workspace size as a 32-bit int, and that workspace is ~16 kB

@@ -26,8 +26,10 @@ Eigenvalues of a stack of Hermitian matrices `Hk` of size `(nw, nw, nk)`, return
 one-thread-per-matrix Jacobi for `nw ≤ 12`, cuSOLVER `heevjBatched` above.
 
 May overwrite (destroy) `Hk`; a caller that still needs `Hk` afterwards must copy it first.
-`check = true` makes the device method throw if a matrix did not converge (NaN or Inf input); with
-`false` that matrix gets NaN eigenvalues and the caller checks. The CPU method ignores `check`.
+`check = true` throws if a matrix has NaN eigenvalues: on the device, one that did not converge
+(NaN or Inf input); with `false` the caller checks. On the device the check costs one reduction
+and one host synchronization; cuSOLVER (`nw > 12`) returns finite values for NaN input. On the
+CPU, LAPACK itself throws on NaN input.
 """
 function eigvals_batched(Hk::AbstractArray{Complex{T},3}; check::Bool = true) where {T}
     # CPU method; the CuArray method lives in ext/ElectronPhononCUDAExt.jl.
@@ -38,7 +40,17 @@ function eigvals_batched(Hk::AbstractArray{Complex{T},3}; check::Bool = true) wh
     @views for ik in 1:nk
         E[:, ik] .= syev!(ws, 'N', 'U', Hk[:, :, ik])[1]   # syev! overwrites the slice
     end
+    check && check_eigensolve_converged(E, "eigvals_batched")
     E
+end
+
+# `check = true` of `eigvals_batched` / `eigen_batched`, on either backend: throws if a column of `E`
+# has a NaN.
+function check_eigensolve_converged(E, fname)
+    any(isnan, E) || return nothing
+    nfailed = count(isnan, vec(sum(E; dims = 1)))   # columns with a NaN
+    error("$fname: the eigensolve did not converge for $nfailed of $(size(E, 2)) matrices ",
+          "(NaN or Inf input?)")
 end
 
 """
@@ -66,6 +78,7 @@ function eigen_batched(Hk::AbstractArray{Complex{T},3}; check::Bool = true) wher
     @views for ik in 1:nk
         E[:, ik] .= syev!(ws, 'V', 'U', Hk[:, :, ik])[1]
     end
+    check && check_eigensolve_converged(E, "eigen_batched")
     E, Hk   # eigenvectors overwritten into Hk
 end
 
