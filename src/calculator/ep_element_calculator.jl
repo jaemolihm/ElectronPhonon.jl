@@ -1,6 +1,6 @@
 # EPElementCalculator: an AbstractCalculator that stores one e-ph run's RAW complex
 # matrix element ep_{mnν}(k, q) as a complex array `ep` on the `[ν, i, f]` state-pair slots, plus
-# `ωq`.
+# the run's phonon table `ωph` and q index `iq_kk`.
 #
 # States i = (k, n) (outer, "el_i") and f = (k', m) (inner, "el_f"); q = k' - k. The run protocol
 # — setup, the tiled device output, the D2H brackets, the device index maps — is
@@ -11,7 +11,8 @@
     EPElementCalculator{FT}(; nmodes, force_stream_per_batch)
 
 One electron-phonon run's RAW matrix element `ep_{mnν}(k, q)` on the `[ν, i, f]` slots
-[`G2Calculator`](@ref) uses, as the complex array `ep`, plus `ωq`. Unlike `g2` it
+[`G2Calculator`](@ref) uses, as the complex array `ep`, plus `G2Calculator`'s phonon table `ωph`
+and q index `iq_kk` (the pair frequency is a [`gather_pair_table!`](@ref)). Unlike `g2` it
 keeps the phase, which a vertex without time-reversal symmetry needs: two such runs, the second over
 both k-lists negated, give the elements at (k, q) and at (-k, -q). No `1/(2ω)` is applied here.
 `force_stream_per_batch` is `G2Calculator`'s GPU output residency option.
@@ -24,7 +25,10 @@ Base.@kwdef mutable struct EPElementCalculator{FT} <: AbstractCalculator
 
     # The raw element ep_{mnν}(k, q), stored as [ν, i, f].
     ep::Array{Complex{FT},3} = zeros(Complex{FT}, 0, 0, 0)
-    ωq::Array{FT,3} = zeros(FT, 0, 0, 0)
+    # ωph[ν, iq] over the loop's q set and iq_kk[ik, ikq] into it; the pair (i, f) has frequency
+    # ωph[ν, iq_kk[el_i.iks[i], el_f.iks[f]]]. As `G2Calculator`'s; host arrays.
+    ωph::Matrix{FT} = zeros(FT, 0, 0)
+    iq_kk::Matrix{Int32} = zeros(Int32, 0, 0)
 
     force_stream_per_batch::Union{Nothing,Bool} = nothing
 
@@ -35,7 +39,7 @@ Base.@kwdef mutable struct EPElementCalculator{FT} <: AbstractCalculator
     # scatter kernel. Typed `Any` to avoid a CUDA dependency.
     imap_i_dev::Any = nothing
     imap_f_dev::Any = nothing
-    # Tiled device output, real arrays: Re(ep) = array 1, Im(ep) = array 2, `ωq` = array 3.
+    # Tiled device output, real arrays: Re(ep) = array 1, Im(ep) = array 2.
     tile_dev::Union{Nothing,TiledDeviceOutput{FT}} = nothing
     done::Bool = false
 end
@@ -49,7 +53,7 @@ required_el_quantities(::EPElementCalculator) = [:vdiag]
 # What `setup_calculator!` allocates on the backend: the two index maps, bounded by the containers'
 # boxes; without containers (`estimate_device_memory`) nothing. `run_calculator!` scatters `block.ep`
 # directly, so there is no per-pair scratch. The tiled output is not counted: on the first batch it
-# chooses full or streamed residency from the memory then free.
+# chooses full or streamed residency from the memory then free. `ωph` and `iq_kk` are host arrays.
 function calculator_bytes(::EPElementCalculator, ::Type{<:EPBlock{OuterKLoop}};
         els_k = nothing, els_kq = nothing, kwargs...)
     (els_k === nothing || els_kq === nothing) && return (; persistent = 0, per_outer = 0, per_pair = 0)
@@ -70,12 +74,14 @@ function setup_calculator!(calc::EPElementCalculator{FT}, backend, els_k, els_kq
     n_i = calc.el_i.n
     n_f = calc.el_f.n
     calc.ep = zeros(Complex{FT}, calc.nmodes, n_i, n_f)
-    calc.ωq = zeros(FT, calc.nmodes, n_i, n_f)
-    # Device-resident output: Re(ep), Im(ep) and `ωq`, each a real array of shape (nmodes, n_i, n_f),
+    # The loop's phonon table and the q index of every (k, k+q) pair, by the loop's own lookup.
+    calc.ωph = Array(phs.e)
+    calc.iq_kk = q_index_table(sel_k.kpts, sel_kq.kpts, phs.qpts)
+    # Device-resident output: Re(ep) and Im(ep), each a real array of shape (nmodes, n_i, n_f),
     # tiled over the outer-k state axis (axis 2). `force_stream_per_batch` overrides the
     # full-vs-streamed residency decision. Device buffers alloc'd lazily on the first batch.
     calc.tile_dev = TiledDeviceOutput{FT}((calc.nmodes, n_i, n_f), 2, calc.el_i,
-        n_outer_batch; narr = 3, force_stream_per_batch = calc.force_stream_per_batch)
+        n_outer_batch; narr = 2, force_stream_per_batch = calc.force_stream_per_batch)
     # The (band, k) → state-index maps on `backend`, in the containers' box coordinates (0 for a band
     # that is not a state, and on the box padding).
     calc.imap_i_dev = _indmap_to_device(backend, calc.el_i)
@@ -104,7 +110,6 @@ function calculator_end_batch!(calc::EPElementCalculator, ctx::OuterKContext)
     tile_download!(tile_dev)
     @views calc.ep[:, inds_i, :] .= complex.(host_array(tile_dev, 1),
                                             host_array(tile_dev, 2))
-    @views calc.ωq[:, inds_i, :] .= host_array(tile_dev, 3)
     calc
 end
 
@@ -117,7 +122,6 @@ function postprocess_calculator!(calc::EPElementCalculator; kwargs...)
         if !streamed_per_batch(tile_dev)
             vec(calc.ep) .= complex.(vec(Array(device_array(tile_dev, 1))),
                                      vec(Array(device_array(tile_dev, 2))))
-            copyto!(vec(calc.ωq), device_array(tile_dev, 3))
         end
         tile_free!(tile_dev)
     end
@@ -129,19 +133,17 @@ end
 
 """
 One block: one outer k-point `ik` with a tile of k+q points `ikq[j]`. Writes `real(ep)` and
-`imag(ep)` of the RAW matrix element `p.ep[m, n, ν, j]`, plus `ωq`, into the device-resident output
+`imag(ep)` of the RAW matrix element `p.ep[m, n, ν, j]` into the device-resident output
 at the `[ν, i, f]` slots, with `i = imap_i[n, ik]` and `f = imap_f[m, ikq[j]]` in the containers'
 box coordinates; a band that is not a state, and the box padding, have `imap == 0` and are dropped.
 One `eph_window_scatter_reim!` kernel serves the full and the streamed residency (see
 `G2Calculator`'s `force_stream_per_batch`).
 """
 function run_calculator!(calc::EPElementCalculator, block::EPBlock{OuterKLoop}, ctx)
-    (; ep, phs, ik, ikq) = block
+    (; ep, ik, ikq) = block
     tile_dev = calc.tile_dev
-    eph_window_scatter_reim!(
-        device_array(tile_dev, 1), device_array(tile_dev, 2),
-        device_array(tile_dev, 3),
-        ep, view(calc.imap_i_dev, :, ik), calc.imap_f_dev, ikq, phs.e,
+    eph_window_scatter_reim!(device_array(tile_dev, 1), device_array(tile_dev, 2),
+        ep, view(calc.imap_i_dev, :, ik), calc.imap_f_dev, ikq,
         tile_stride(tile_dev), tile_offset(tile_dev))
     calc
 end

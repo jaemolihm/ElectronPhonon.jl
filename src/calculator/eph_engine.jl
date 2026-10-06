@@ -209,25 +209,65 @@ function EPBlock{Loop}(tile_workspace, els_k::BatchedElectronState, els_kq::Batc
     EPBlock{Loop}(; ep, dg, els_k, els_kq, phs, kwargs...)
 end
 
-# Fill `iqs[1:nkq_tile]` with the index into `qpts` of `x_{k+q} - x_k` for outer k `ik` and every
-# k+q of the tile `ikq_first .+ (0:nkq_tile-1)`, by integer grid hash on the coordinates the engine
-# reduced once.
-function _fill_iqs!(iqs, qpts, xkqs_int, xks_int, ik, ikq_first, nkq_tile)
+# The integer grid coordinates of `kpts` and `kqpts` on the q grid, reduced into `0:ng-1` once so
+# that `_iq_of_pair` folds their difference with a compare-and-add. The q-grid shift is folded into
+# the k+q side. Returns `(xks_int, xkqs_int)`, each `(3, n)`.
+function _q_hash_coords(kpts, kqpts, qpts)
+    xks_int = Matrix{Int}(undef, 3, kpts.n)
+    xkqs_int = Matrix{Int}(undef, 3, kqpts.n)
+    for ikq in axes(xkqs_int, 2)
+        xkqs_int[:, ikq] .= _grid_coords_reduced(kqpts.vectors[ikq], qpts.ngrid, qpts.shift)
+    end
+    for ik in axes(xks_int, 2)
+        xks_int[:, ik] .= _grid_coords_reduced(kpts.vectors[ik], qpts.ngrid, zero(qpts.shift))
+    end
+    (xks_int, xkqs_int)
+end
+
+# The index into `qpts` of `x_{k+q} - x_k` for outer k `ik` and k+q point `ikq`, by integer grid
+# hash on the coordinates of `_q_hash_coords`.
+@inline function _iq_of_pair(qpts, xkqs_int, xks_int, ikq, ik)
     ng1, ng2, ng3 = qpts.ngrid
-    k1, k2, k3 = xks_int[1, ik], xks_int[2, ik], xks_int[3, ik]
+    # Both operands are pre-reduced into 0:ng-1, so the fold is a compare-and-add.
+    h1 = _wrap_reduced(xkqs_int[1, ikq] - xks_int[1, ik], ng1)
+    h2 = _wrap_reduced(xkqs_int[2, ikq] - xks_int[2, ik], ng2)
+    h3 = _wrap_reduced(xkqs_int[3, ikq] - xks_int[3, ik], ng3)
+    hash = (h1 * ng2 + h2) * ng3 + h3
+    iq = _ik_from_hash(qpts, hash)
+    # 0 = miss on either index.
+    (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
+    iq
+end
+
+# Fill `iqs[1:nkq_tile]` with the q index of outer k `ik` and every k+q of the tile
+# `ikq_first .+ (0:nkq_tile-1)`.
+function _fill_iqs!(iqs, qpts, xkqs_int, xks_int, ik, ikq_first, nkq_tile)
     for j in 1:nkq_tile
-        ikq = ikq_first + j - 1
-        # Both operands are pre-reduced into 0:ng-1, so the fold is a compare-and-add.
-        h1 = _wrap_reduced(xkqs_int[1, ikq] - k1, ng1)
-        h2 = _wrap_reduced(xkqs_int[2, ikq] - k2, ng2)
-        h3 = _wrap_reduced(xkqs_int[3, ikq] - k3, ng3)
-        hash = (h1 * ng2 + h2) * ng3 + h3
-        iq = _ik_from_hash(qpts, hash)
-        # 0 = miss on either index.
-        (iq < 1 || iq > qpts.n) && throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
-        iqs[j] = iq
+        iqs[j] = _iq_of_pair(qpts, xkqs_int, xks_int, ikq_first + j - 1, ik)
     end
     iqs
+end
+
+"""
+    q_index_table(kpts, kqpts, qpts) -> Matrix{Int32}
+
+The index `iq_kk[ik, ikq]` into `qpts` of `q = x_{k+q} - x_k` for every outer k point `ik` of
+`kpts` and inner point `ikq` of `kqpts`, `(kpts.n, kqpts.n)`. Every pair must have its q in
+`qpts`, as for the set `combine_kpoint_grids(kqpts, kpts, -, ngrid_q)` of `run_eph_over_k_and_kq`;
+a miss throws. The lookup is the outer-k loop's own (`_fill_iqs!`), so `iq` is the index the loop
+used for that pair's phonons.
+"""
+function q_index_table(kpts, kqpts, qpts)
+    qpts.n <= typemax(Int32) || throw(ArgumentError(
+        "$(qpts.n) q points do not fit the Int32 q index"))
+    xks_int, xkqs_int = _q_hash_coords(kpts, kqpts, qpts)
+    iq_kk = Matrix{Int32}(undef, kpts.n, kqpts.n)
+    @threads for ikq in axes(iq_kk, 2)
+        for ik in axes(iq_kk, 1)
+            iq_kk[ik, ikq] = _iq_of_pair(qpts, xkqs_int, xks_int, ikq, ik)
+        end
+    end
+    iq_kk
 end
 
 # ---- OuterKEngine ----------------------------------------------------------------------------
@@ -334,16 +374,9 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     # `CPUBackend` `_kpoints_to_device_matrix` is a view onto `kpts.vectors`.
     mxks = _kpoints_to_device_matrix(backend, kpts) .* -1
     xkqs = _kpoints_to_device_matrix(backend, inner_pts)
-    # The q index of a pair by integer grid hash (`_fill_iqs!`): both coordinate lists reduced into
-    # `0:ng-1` once, the q-grid shift folded into the k+q side. Not needed without a k+q grid.
-    xkqs_int = Matrix{Int}(undef, 3, inner_loop_kq ? kqpts.n : 0)
-    xks_int = Matrix{Int}(undef, 3, inner_loop_kq ? kpts.n : 0)
-    for ikq in axes(xkqs_int, 2)
-        xkqs_int[:, ikq] .= _grid_coords_reduced(kqpts.vectors[ikq], qpts.ngrid, qpts.shift)
-    end
-    for ik in axes(xks_int, 2)
-        xks_int[:, ik] .= _grid_coords_reduced(kpts.vectors[ik], qpts.ngrid, zero(Vec3{FT}))
-    end
+    # The q index of a pair by integer grid hash (`_fill_iqs!`). Not needed without a k+q grid.
+    xks_int, xkqs_int = inner_loop_kq ? _q_hash_coords(kpts, kqpts, qpts) :
+        (Matrix{Int}(undef, 3, 0), Matrix{Int}(undef, 3, 0))
     el_ham = inner_loop_kq ? nothing : to_device(backend, model.el_ham)
     # A partial last batch operates on views of the leading columns of the maximum-capacity buffers.
     P_mk = fill!(alloc(backend, Complex{FT}, nr_p, n_outer_batch), 1)

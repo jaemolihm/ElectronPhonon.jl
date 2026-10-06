@@ -126,7 +126,7 @@ include("calculator_contract_harness.jl")
 
 # `|ep|^2 / (2ω)` of each state pair from the reference double loop, in `G2Calculator`'s layout.
 function g2_contract_reference(c, ref)
-    g2 = zero(c.g2); ωq = zero(c.ωq)
+    g2 = zero(c.g2); ωq = zero(c.g2)
     contract_foreach_reference_pair(ref, c.el_i, c.el_f) do i, j, ep, ω, _...
         g2[:, i, j] .= abs2.(ep) ./ (2 .* ω)
         ωq[:, i, j] .= ω
@@ -176,18 +176,18 @@ end
     entries = [
         (; name = "G2Calculator", orders = (OuterKLoop,),
            make = () -> ElectronPhonon.G2Calculator{Float64}(; nmodes),
-           outputs = c -> Dict("g2" => contract_pair_sum(c.g2, c.ωq,
+           outputs = c -> Dict("g2" => contract_pair_sum(c.g2, pair_ω(c),
                     contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)),
-                    "ωq" => contract_physical_ω(c.ωq)),
+                    "ωq" => contract_physical_ω(pair_ω(c))),
            reference = g2_contract_reference),
         (; name = "EPElementCalculator", orders = (OuterKLoop,),
            make = () -> ElectronPhonon.EPElementCalculator{Float64}(; nmodes),
            # The phase of `ep` is a gauge; `|ep|^2` summed over multiplets is not.
-           outputs = c -> Dict("abs2_ep" => contract_pair_sum(abs2.(c.ep), c.ωq,
+           outputs = c -> Dict("abs2_ep" => contract_pair_sum(abs2.(c.ep), pair_ω(c),
                     contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)),
-                    "ωq" => contract_physical_ω(c.ωq)),
+                    "ωq" => contract_physical_ω(pair_ω(c))),
            reference = function (c, ref)
-               ep = zero(c.ep); ωq = zero(c.ωq)
+               ep = zero(c.ep); ωq = zeros(size(c.ep))
                contract_foreach_reference_pair(ref, c.el_i, c.el_f) do i, j, ep_ij, ω, _...
                    ep[:, i, j] .= ep_ij
                    ωq[:, i, j] .= ω
@@ -209,16 +209,17 @@ end
     ids_i, ids_f = contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)
     want = g2_contract_reference(c, contract_reference(model, fixture))
     pair_sum(g2, ωq) = contract_pair_sum(g2, ωq, ids_i, ids_f)
-    @test isapprox(pair_sum(c.g2, c.ωq), pair_sum(want.g2, want.ωq); rtol = 1e-10)
+    ωq = pair_ω(c)
+    @test isapprox(pair_sum(c.g2, ωq), pair_sum(want.g2, want.ωq); rtol = 1e-10)
     pair = findfirst(CartesianIndices((axes(c.g2, 2), axes(c.g2, 3)))) do I
-        ω = c.ωq[:, I]
+        ω = ωq[:, I]
         minimum(ω[1:2]) >= ElectronPhonon.omega_acoustic && abs(ω[2] - ω[1]) > 1e-6 &&
             c.g2[1, I] != c.g2[2, I]
     end
     @test pair !== nothing
     swapped = copy(c.g2)
     swapped[1, pair], swapped[2, pair] = c.g2[2, pair], c.g2[1, pair]
-    @test !isapprox(pair_sum(swapped, c.ωq), pair_sum(want.g2, want.ωq); rtol = 1e-10)
+    @test !isapprox(pair_sum(swapped, ωq), pair_sum(want.g2, want.ωq); rtol = 1e-10)
 end
 
 # `setup_calculator!` must consume the SELECTION, not re-derive the state set from its k-grid:
@@ -272,7 +273,7 @@ end
     sel = ElectronPhonon.FilteredBandStates(kpts, [1], [1]; nw = 2)
     els = ElectronPhonon.BatchedElectronState(CPUBackend(), 2, 1, 1, [:e, :u]; kpts)
     els.e .= 0.1; els.nband .= 1
-    phs = ElectronPhonon.BatchedPhononState(CPUBackend(), nm, 1, [:e])
+    phs = ElectronPhonon.BatchedPhononState(CPUBackend(), nm, 1, [:e]; qpts = kpts)
     sizes = (; nw = 2, nmodes = nm, nband_max_k = 1, nband_max_kq = 1, nchunks_threads = 1)
     for calc in (ElectronPhonon.G2Calculator{Float64}(; nmodes = nm),
                  ElectronPhonon.EPElementCalculator{Float64}(; nmodes = nm))

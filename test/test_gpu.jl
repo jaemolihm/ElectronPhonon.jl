@@ -55,6 +55,7 @@ GPU_AVAILABLE && CUDA.allowscalar(false)
 
 # Pb EPW model comes from a downloaded test artifact (see test/Artifacts.toml).
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
+isdefined(@__MODULE__, :pair_ω) || include("calculator_contract_harness.jl")
 
 """
 Validate the batched e-ph drivers against the per-k/q reference (`compute_eph_RR_to_kR!` /
@@ -684,6 +685,33 @@ end
     @test cpt.ωq == cba.ωq
 end
 
+# The pair frequency of `G2Calculator`, gathered from its phonon table `ωph` through its q index
+# `iq_kk`, against the frequency the loop handed the block of that pair, recorded by `_RecordCalc`
+# in the same run: equal with `==`, on a windowed selection with several inner tiles and a partial
+# outer batch, on the host and on the GPU.
+@testset "pair frequencies are bitwise the loop's" begin
+    model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
+    grid, win = (4, 4, 4), (0.87 - 0.2, 0.87 + 0.2)
+    backends = GPU_AVAILABLE ? (ElectronPhonon.CPUBackend(), ElectronPhonon.gpu_backend()) :
+                               (ElectronPhonon.CPUBackend(),)
+    for backend in backends
+        c = ElectronPhonon.G2Calculator{Float64}(; nmodes = model.nmodes)
+        rec = _RecordCalc()
+        ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid; calculators = [c, rec],
+            symmetry = nothing, window_k = win, window_kq = win, backend, n_inner_tile = 7,
+            n_outer_batch = 5, progress_print_step = 10^9, verbosity = 0)
+        (; el_i, el_f) = c
+        @test 0 < el_i.n < model.nw * prod(grid)   # windowed, not empty
+        ω_loop = [rec.ωq[el_f.ibands[f], el_i.ibands[i], ν, el_i.iks[i], el_f.iks[f]]
+                  for ν in 1:model.nmodes, i in 1:el_i.n, f in 1:el_f.n]
+        ω_table = [c.ωph[ν, c.iq_kk[el_i.iks[i], el_f.iks[f]]]
+                   for ν in 1:model.nmodes, i in 1:el_i.n, f in 1:el_f.n]
+        @test ω_table == ω_loop
+        @test pair_ω(c) == ω_table
+        @test count(!iszero, ω_loop) > length(ω_loop) ÷ 2   # recorded, not the zero init
+    end
+end
+
 # Outer-q analogue of `_RecordCalc`: a calculator for `run_eph_over_q_and_k` that accumulates a
 # per-q, GAUGE-INVARIANT scalar
 #   A[iq] = Σ_{m,n,ν,k} wtk[k] · |ep[m,n,ν,k]|²
@@ -972,20 +1000,16 @@ end
     @test allunique(lins)
 
     g2vals = abs.(randn(nw, nbandk, nm, nqc))
-    ωq = 0.01 .+ abs.(randn(nm, nqc))
 
     if GPU_AVAILABLE
         for (ni_stride, i0) in ((n_i, 0), (5, 1))       # full buffer, then a per-tile buffer
             len = nm * ni_stride * n_f
-            g2c = zeros(FT, len); ωc = zeros(FT, len)
-            ElectronPhonon.eph_window_scatter!(g2c, ωc, g2vals, imap_i_col, imap_f, ikqs, ωq,
-                ni_stride, i0)
-            g2g = CUDA.zeros(FT, len); ωg = CUDA.zeros(FT, len)
-            ElectronPhonon.eph_window_scatter!(g2g, ωg, CUDA.CuArray(g2vals),
-                CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), CUDA.CuArray(ikqs), CUDA.CuArray(ωq),
-                ni_stride, i0)
+            g2c = zeros(FT, len)
+            ElectronPhonon.eph_window_scatter!(g2c, g2vals, imap_i_col, imap_f, ikqs, ni_stride, i0)
+            g2g = CUDA.zeros(FT, len)
+            ElectronPhonon.eph_window_scatter!(g2g, CUDA.CuArray(g2vals),
+                CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), CUDA.CuArray(ikqs), ni_stride, i0)
             @test Array(g2g) == g2c                     # same integer indexing + copy ⇒ bit-identical
-            @test Array(ωg) == ωc
         end
 
         # The outer-k driver always hands a contiguous k+q tile, so `ikqs` reaches the kernel as a
@@ -993,15 +1017,12 @@ end
         # values, same result — but it is a different argument type through `cudaconvert`.
         rng_ikqs = 2:6
         len = nm * n_i * n_f
-        g2c = zeros(FT, len); ωc = zeros(FT, len)
-        ElectronPhonon.eph_window_scatter!(g2c, ωc, g2vals, imap_i_col, imap_f, rng_ikqs, ωq,
-            n_i, 0)
-        g2g = CUDA.zeros(FT, len); ωg = CUDA.zeros(FT, len)
-        ElectronPhonon.eph_window_scatter!(g2g, ωg, CUDA.CuArray(g2vals),
-            CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), rng_ikqs, CUDA.CuArray(ωq),
-            n_i, 0)
+        g2c = zeros(FT, len)
+        ElectronPhonon.eph_window_scatter!(g2c, g2vals, imap_i_col, imap_f, rng_ikqs, n_i, 0)
+        g2g = CUDA.zeros(FT, len)
+        ElectronPhonon.eph_window_scatter!(g2g, CUDA.CuArray(g2vals),
+            CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), rng_ikqs, n_i, 0)
         @test Array(g2g) == g2c
-        @test Array(ωg) == ωc
     end
 end
 
@@ -1034,7 +1055,8 @@ end
 function _assert_cpu_gpu_match(cc::ElectronPhonon.G2Calculator, cg)
     # The scale is a signed `g2` max on Pb (the ω ≤ 0 modes make entries negative), so take abs.
     nm = cc.nmodes
-    mdeg = [minimum(abs(cc.ωq[ν, i, f] - cc.ωq[μ, i, f]) for μ in 1:nm if μ != ν) < 1e-8
+    ωq_c, ωq_g = pair_ω(cc), pair_ω(cg)
+    mdeg = [minimum(abs(ωq_c[ν, i, f] - ωq_c[μ, i, f]) for μ in 1:nm if μ != ν) < 1e-8
             for ν in 1:nm, i in 1:cc.el_i.n, f in 1:cc.el_f.n]
     dg = abs.(cc.g2 .- cg.g2); sc = maximum(abs, cc.g2)
     @test count(mdeg) > 0 && count(.!mdeg) > 0   # the partition is not vacuous
@@ -1049,7 +1071,7 @@ function _assert_cpu_gpu_match(cc::ElectronPhonon.G2Calculator, cg)
     @test maximum(abs, cc.el_i.es .- cg.el_i.es) < 1e-10
     # Phonon frequencies depend only on q (not the electron gauge): elementwise match, with a
     # tolerance for the near-zero acoustic modes where LAPACK/cuSOLVER differ at ~1e-12.
-    @test maximum(abs, cc.ωq .- cg.ωq) < 1e-8
+    @test maximum(abs, ωq_c .- ωq_g) < 1e-8
 end
 
 # The phase of `ep` is the electron gauge, which the two eigensolvers fix independently, so raw `ep`
@@ -1058,11 +1080,11 @@ end
 # 0.46 of max on pairs with a level split below `electron_degen_cutoff` (1.3e-8 Ry at the worst
 # entry), so this compares `|ep|^2` summed over both multiplets, the contract harness's reduction.
 function _assert_cpu_gpu_match(cc::ElectronPhonon.EPElementCalculator, cg)
-    pair_sum(c) = contract_pair_sum(abs2.(c.ep), c.ωq, contract_multiplet_ids(c.el_i),
+    pair_sum(c) = contract_pair_sum(abs2.(c.ep), pair_ω(c), contract_multiplet_ids(c.el_i),
                                     contract_multiplet_ids(c.el_f))
     @test pair_sum(cg) ≈ pair_sum(cc)
     @test maximum(abs, cc.el_i.es .- cg.el_i.es) < 1e-10
-    @test maximum(abs, cc.ωq .- cg.ωq) < 1e-8
+    @test maximum(abs, pair_ω(cc) .- pair_ω(cg)) < 1e-8
 end
 
 @testset "GPU G2Calculator and EPElementCalculator (full-band + windowed)" begin
@@ -1085,11 +1107,11 @@ end
             _assert_cpu_gpu_match(ccw, cgw)
 
             # Streamed path: forcing per-tile device buffering (instead of holding the full output
-            # resident) must produce BIT-IDENTICAL output and ωq to the full GPU path — it is the
-            # same device scatter into a tile-sized buffer D2H'd per outer-k tile. Compared at the
-            # SAME small `n_outer_batch` (the k-batching affects the batched-GEMM rounding, so both
-            # must use it); the small tile makes several tiles (exercises the contiguous-i-range
-            # mapping, buffer growth, partial tail).
+            # resident) must produce BIT-IDENTICAL output and pair ω to the full GPU path — it is
+            # the same device scatter into a tile-sized buffer D2H'd per outer-k tile. Compared at
+            # the SAME small `n_outer_batch` (the k-batching affects the batched-GEMM rounding, so
+            # both must use it); the small tile makes several tiles (exercises the
+            # contiguous-i-range mapping, buffer growth, partial tail).
             cgf = T{Float64}(; nmodes = model.nmodes)   # full resident, kb=4
             ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid; calculators = [cgf],
                 symmetry = nothing, window_k = win, window_kq = win,
@@ -1101,7 +1123,7 @@ end
                 backend = ElectronPhonon.gpu_backend(), progress_print_step = 10^9, n_outer_batch = 4)
             # bit-identical to the full-resident GPU run at the same k-batching
             @test getproperty(cg_streamed, out) == getproperty(cgf, out)
-            @test cg_streamed.ωq == cgf.ωq
+            @test pair_ω(cg_streamed) == pair_ω(cgf)
         end
     end
 end

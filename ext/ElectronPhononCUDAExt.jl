@@ -303,13 +303,13 @@ function ElectronPhonon.eph_apply_rotations_rqkq!(ep_kq_all::CuArray{Complex{T},
     end
 end
 
-# ---- device-resident scatter (calculator keeps g2/ωq on the device, no host streaming) --------
+# ---- device-resident scatter (calculator keeps g2 on the device, no host streaming) -----------
 #
 # One thread per (m,n,ν,j) entry: look up i = imap_i_col[n], f = imap_f[m, ikqs[j]]; if both
-# in-window, write the value straight into the flat device g2_out / ωq_out at the mode-fastest
+# in-window, write the value straight into the flat device g2_out at the mode-fastest
 # linear slot. The target `lin` indices are unique across the whole run (distinct k → distinct i,
 # distinct k+q → distinct f), so the writes never collide — no atomics, no compaction. Removes the
-# per-batch D2H + host scatter (the calculator's g2/ωq stay resident on the device).
+# per-batch D2H + host scatter (the calculator's g2 stays resident on the device).
 # `ni_stride` = the output buffer's outer-k (i) extent, `i0` = its global-i offset, so global state
 # i writes to local row (i - i0): full buffer → ni_stride = n_i, i0 = 0; per-batch buffer →
 # ni_stride = batch i-extent, i0 = batch offset. See `eph_window_scatter!` in calculator/calculator_utils.jl.
@@ -323,8 +323,8 @@ end
     ((ind - 1) % d + 1, _unroll_index((ind - 1) ÷ d + 1, Base.tail(dims))...)
 end
 
-function _window_scatter_kernel!(g2_out, ωq_out, g2vals, imap_i_col, imap_f,
-                                 ikqs, ωq, nbandkq, nbandk, nm, npairs, ni_stride, i0)
+function _window_scatter_kernel!(g2_out, g2vals, imap_i_col, imap_f,
+                                 ikqs, nbandkq, nbandk, nm, npairs, ni_stride, i0)
     ind_mnνq = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     N = nbandkq * nbandk * nm * npairs
     ind_mnνq <= N || return
@@ -335,7 +335,6 @@ function _window_scatter_kernel!(g2_out, ωq_out, g2vals, imap_i_col, imap_f,
         if i > 0 && f > 0
             lin = ν + nm * (i - i0 - 1) + nm * ni_stride * (f - 1)
             g2_out[lin] = g2vals[m, n, ν, ipair]
-            ωq_out[lin] = ωq[ν, ipair]
         end
     end
     return
@@ -346,26 +345,24 @@ end
 # pattern: a CONTIGUOUS view of a `CuArray` is a `CuArray`, a strided one is a `SubArray` of one,
 # and both work here (cudaconvert handles either) only because they are left unannotated. So a host
 # argument cannot be caught by an annotation; `CUDA.allowscalar(false)` instead makes an accidental
-# host array a hard error inside the kernel. The outputs are annotated, so a strided output
+# host array a hard error inside the kernel. The output is annotated, so a strided output
 # `SubArray` would miss this method and fall through to the generic one.
-function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, ωq_out::CuArray, g2vals,
-        imap_i_col, imap_f, ikqs, ωq, ni_stride::Int, i0::Int)
-    nbandkq, nbandk, nm, npairs = ElectronPhonon._scatter_extents(g2vals, ωq, ikqs, imap_i_col, imap_f)
+function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, g2vals,
+        imap_i_col, imap_f, ikqs, ni_stride::Int, i0::Int)
+    nbandkq, nbandk, nm, npairs = ElectronPhonon._scatter_extents(g2vals, ikqs, imap_i_col, imap_f)
     N = nbandkq * nbandk * nm * npairs
     threads = 256
     blocks = cld(N, threads)
     @cuda threads=threads blocks=blocks _window_scatter_kernel!(
-        g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
+        g2_out, g2vals, imap_i_col, imap_f, ikqs,
         nbandkq, nbandk, nm, npairs, ni_stride, i0)
     nothing
 end
 
-# Complex sibling of the above: writes Re/Im of the raw matrix element and, when `ωq_out` is not
-# `nothing`, the frequency. `Nothing` is a singleton type, so that branch is resolved at compile
-# time and the no-ωq launch carries no extra work. See `eph_window_scatter_reim!` in
-# calculator/calculator_utils.jl.
-function _window_scatter_reim_kernel!(re_out, im_out, ωq_out, epvals, imap_i_col, imap_f,
-                                      ikqs, ωq, nbandkq, nbandk, nm, npairs, ni_stride, i0)
+# Complex sibling of the above: writes Re/Im of the raw matrix element. See
+# `eph_window_scatter_reim!` in calculator/calculator_utils.jl.
+function _window_scatter_reim_kernel!(re_out, im_out, epvals, imap_i_col, imap_f,
+                                      ikqs, nbandkq, nbandk, nm, npairs, ni_stride, i0)
     ind_mnνq = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     N = nbandkq * nbandk * nm * npairs
     ind_mnνq <= N || return
@@ -377,19 +374,18 @@ function _window_scatter_reim_kernel!(re_out, im_out, ωq_out, epvals, imap_i_co
         ep = epvals[m, n, ν, ipair]
         re_out[lin] = real(ep)
         im_out[lin] = imag(ep)
-        ωq_out === nothing || (ωq_out[lin] = ωq[ν, ipair])
     end
     return
 end
 
-function ElectronPhonon.eph_window_scatter_reim!(re_out::CuArray, im_out::CuArray, ωq_out, epvals,
-        imap_i_col, imap_f, ikqs, ωq, ni_stride::Int, i0::Int)
-    nbandkq, nbandk, nm, npairs = ElectronPhonon._scatter_extents(epvals, ωq, ikqs, imap_i_col, imap_f)
+function ElectronPhonon.eph_window_scatter_reim!(re_out::CuArray, im_out::CuArray, epvals,
+        imap_i_col, imap_f, ikqs, ni_stride::Int, i0::Int)
+    nbandkq, nbandk, nm, npairs = ElectronPhonon._scatter_extents(epvals, ikqs, imap_i_col, imap_f)
     N = nbandkq * nbandk * nm * npairs
     threads = 256
     blocks = cld(N, threads)
     @cuda threads=threads blocks=blocks _window_scatter_reim_kernel!(
-        re_out, im_out, ωq_out, epvals, imap_i_col, imap_f, ikqs, ωq,
+        re_out, im_out, epvals, imap_i_col, imap_f, ikqs,
         nbandkq, nbandk, nm, npairs, ni_stride, i0)
     nothing
 end
