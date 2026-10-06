@@ -926,6 +926,14 @@ end
             epmat_outer_momentum = mom); nk = 64, nkq = 64, nchunks_threads = 1)
         @test est.loop == loop && est.committed > 0 && est.per_pair > 0 && est.batch == 64
     end
+    # On a device, the outer-q tile defaults to `GPU_OUTER_Q_TILE_BYTES` of tile buffers when the
+    # free memory allows it, whatever the number of k points.
+    if GPU_AVAILABLE
+        est = ElectronPhonon.estimate_device_memory(_load_model_from_artifacts("pb";
+            epmat_outer_momentum = "ph"); nk = 10^8, nkq = 64, backend = ElectronPhonon.gpu_backend())
+        budget = ElectronPhonon.GPU_OUTER_Q_TILE_BYTES ÷ est.per_pair
+        @test est.loop == :outer_q && est.batch == min(budget, (est.free - est.committed) ÷ 10 * 7 ÷ est.per_pair)
+    end
 end
 
 @testset "plan_batch memory-adaptive sizing + fail-early" begin

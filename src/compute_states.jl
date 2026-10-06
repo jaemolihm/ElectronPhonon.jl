@@ -685,7 +685,7 @@ function solve_electron_bands_batched(itp_ham, hk, model::Model, xks, window::Tu
 end
 
 """
-    copy_window_bands!(els, bands, points) -> BatchedElectronState
+    copy_window_bands!(els, bands, points; nband_host = nothing) -> BatchedElectronState
 
 Move the window bands of the solved points `points` of `bands`
 ([`solve_electron_bands_batched`](@ref)) to local bands `1:nband` of the buffers of `els`, a
@@ -693,8 +693,11 @@ Move the window bands of the solved points `points` of `bands`
 or a host vector of at most `els.nk` points. Returns the `length(points)` points as a container
 whose box is the largest `nband` of them (at least 1), stored in the leading elements of `els`'s
 arrays (`reshape_buffer_view`), so the blocks built on it shrink with the window.
+
+`nband_host`: a host copy of `bands.nband`, if the caller holds one. The box width is then read
+from it rather than reduced on the backend, which on a GPU costs a device-to-host sync.
 """
-function copy_window_bands!(els::BatchedElectronState, bands, points)
+function copy_window_bands!(els::BatchedElectronState, bands, points; nband_host = nothing)
     (; nw) = els
     els.vdiag === nothing && els.v === nothing && els.rbar === nothing || throw(ArgumentError(
         "the in-tile electron builder fills e and u only"))
@@ -703,11 +706,13 @@ function copy_window_bands!(els::BatchedElectronState, bands, points)
     n = length(points)
     n <= els.nk || throw(ArgumentError("$n points do not fit a buffer of width $(els.nk)"))
     n == 0 && return reshape_view_batched_electron_states(els, 1, 0)
+    points_host = points
     points = _copy_indices_on_backend(bands.nband, points, length(bands.nband))
     offset, nband = bands.offset[points], bands.nband[points]
     view(els.iband_offset, 1:n) .= ifelse.(nband .> 0, offset, 0)
     view(els.nband, 1:n) .= nband
-    els_out = reshape_view_batched_electron_states(els, max(maximum(nband), 1), n)
+    nband_box = nband_host === nothing ? maximum(nband) : maximum(view(nband_host, points_host))
+    els_out = reshape_view_batched_electron_states(els, max(nband_box, 1), n)
     # col[b, j]: the column of band offset + b of point `points[j]` in the (nw, nw * npoints) view,
     # clamped into 1:nw on the padding.
     col = vec(min.(reshape(offset, 1, n) .+ (1:els_out.nband_max), nw) .+ nw .* reshape(points .- 1, 1, n))

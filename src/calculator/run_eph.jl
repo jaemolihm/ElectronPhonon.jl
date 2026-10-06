@@ -82,7 +82,8 @@ point is kept, also one with no k+q state in `window_kq`; `precompute_el_kq` nee
 refused;
 `n_outer_batch` q points per stage-1 batch and per bracket, 16 on a GPU and 1 on the CPU (stage 1
 gains nothing from a wider batch there, while a calculator's per-q buffers are held per thread
-chunk); `n_inner_tile` k points per block, at most `2^15` on a GPU; no `covariant_derivative_of_g`;
+chunk); `n_inner_tile` k points per block, by default at most `GPU_OUTER_Q_TILE_BYTES` (8 GiB) of tile
+buffers on a GPU; no `covariant_derivative_of_g`;
 `el_kq_eigenpairs` only with `precompute_el_kq`.
 """
 run_eph_over_q_and_k(model::Model, kpts_input, qpts_input; kwargs...) =
@@ -279,21 +280,27 @@ function _run_eph(order::LoopTag, model::Model, kpts_input, second_input; calcul
 end
 
 
+# The default device bytes of one outer-q inner tile on a GPU: `per_pair` (the engine plus every
+# calculator) times the tile width. A tile costs a fixed ~1.6 ms of host work (syncs, uploads,
+# launches), so it must carry enough GPU work to amortize it, and the bytes of a pair grow with its
+# work (both scale with nw²·nmodes and the calculators' widths). Past the plateau a wider tile only
+# holds memory that other calculators and later stages could use. A100, 2026-10-05: hBN (nw = 3,
+# 23.8 kB per pair) is at the plateau at 6.2 GB of tile (2^18 k) and gains nothing at 37 GB.
+const GPU_OUTER_Q_TILE_BYTES = 8 * 2^30
+
 # The widths of a run and the device bytes behind them, for `_run_eph` and `estimate_device_memory`
 # alike, from the requested `n_outer_batch` / `n_inner_tile` (`nothing`: the default). The outer
 # batch is a fixed default (256 outer k; 16 q on a device and 1 on the CPU). The
 # inner tile fills the free device memory left after the persistent and per-batch buffers
 # (`plan_batch` on `engine_bytes` plus each calculator's `calculator_bytes`, `per_pair`
-# once per chunk), capped at all inner points on a device (`2^15` k under `OuterQLoop`) and at a
-# cache-sized 1024 per chunk on the CPU.
+# once per chunk), capped at all inner points on a device (`GPU_OUTER_Q_TILE_BYTES` of tile under
+# `OuterQLoop`) and at a cache-sized 1024 per chunk on the CPU.
 function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, nkq, nchunks,
         n_outer_batch, n_inner_tile, nband_max_k, nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
         precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq)
     (; nw, nmodes) = model
     outer_default = order isa OuterKLoop ? 256 : backend isa CPUBackend ? 1 : 16
     n_outer_batch = max(1, min(something(n_outer_batch, outer_default), n_outer))
-    inner_default = backend isa CPUBackend ? 1024 : order isa OuterKLoop ? n_inner : 2^15
-    inner_cap = max(1, min(cld(n_inner, nchunks), something(n_inner_tile, inner_default)))
     bytes = order isa OuterKLoop ?
         engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk, nkq, el_qty, ph_qty,
             covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq) :
@@ -305,6 +312,9 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
         bytes = (; persistent = bytes.persistent + b.persistent,
                    per_outer = bytes.per_outer + b.per_outer, per_pair = bytes.per_pair + b.per_pair)
     end
+    inner_default = backend isa CPUBackend ? 1024 : order isa OuterKLoop ? n_inner :
+        max(1, GPU_OUTER_Q_TILE_BYTES ÷ bytes.per_pair)
+    inner_cap = max(1, min(cld(n_inner, nchunks), something(n_inner_tile, inner_default)))
     committed = bytes.persistent + bytes.per_outer * n_outer_batch
     n_inner_tile = plan_batch(backend, bytes.per_pair * nchunks, committed, inner_cap;
                               what = order isa OuterKLoop ? "outer-k" : "outer-q")
