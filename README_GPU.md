@@ -121,15 +121,28 @@ only public constructor: the `BatchedFourierCore` engine it composes is internal
 ### Batched Hermitian eigensolve + band-eigenvalue drivers
 
 Diagonalization lives in `src/wannier_to_bloch_batched.jl` (keeping `src/wannier/` pure Fourier).
-Two batched eigensolves over a stack `Hk :: (nw, nw, nk)`: `eigvals_batched` (values) and
-`eigen_batched` (values + vectors). CPU methods loop over LAPACK `syev!`; the extension uses
-`CUSOLVER.heevjBatched!` (batched Jacobi). The `nw ≤ 32` figure often quoted for that solver is
-a *performance* characteristic, not a correctness bound (verified correct to `nw=256`,
-agreeing with LAPACK to ~1e-11), so no size guard is imposed. Accuracy matches LAPACK for
-eigenvalues *and* eigenvectors (relative residual ≤ 3e-15 for `nw ≤ 16`); CUDA.jl runs the Jacobi
-sweeps at `tol = eps(Float64)`.
+Two batched eigensolves over a stack `Hk :: (nw, nw, nk)`: `eigvals_batched!` (values) and
+`eigen_batched!` (values + vectors). CPU methods loop over LAPACK `syev!`. The extension has two
+device solvers, chosen by `nw` alone, so k and k+q (and the filter and the state build) always use
+the same one:
 
-`eigvals_batched` / `eigen_batched` chunk the batch at `heevj_batch_max` (2^16 for small `nw`).
+- `nw ≤ JACOBI_NW_MAX = 12`: cyclic complex Jacobi with one thread per matrix
+  (`ext/cuda_eigen_jacobi.jl`, `MMatrix` in thread-local memory). It is faster than cuSOLVER
+  through `nw = 12` on A100, H100 and A6000, and as accurate as LAPACK (relative residual
+  ≤ 2e-15 and `‖UᴴU - I‖_F` ≤ 2e-14 through `nw = 16`, on random, exactly-degenerate and
+  near-degenerate matrices). Its eigenvalues are the same bit for bit
+  with and without eigenvectors. The eigenvectors overwrite `Hk` as on the CPU. No chunking.
+- `nw > 12`: cuSOLVER `heevjBatched!` (also Jacobi, one block per matrix). The
+  `nw ≤ 32` figure often quoted for it is a *performance* characteristic, not a correctness bound
+  (verified correct to `nw=256`, agreeing with LAPACK to ~1e-11); relative residual ≤ 3e-15 for
+  `nw ≤ 16` at `tol = eps(Float64)`.
+
+Both device methods throw on a NaN eigenvalue, at one reduction and one host synchronization per
+call: a Jacobi matrix that did not converge (in practice NaN or Inf in `H`) gets NaN eigenvalues,
+and cuSOLVER returns them for Inf input. cuSOLVER's `info` is 0 even when it does not converge
+(12.3.4), and a single NaN entry can come back as finite eigenvalues.
+
+The cuSOLVER path chunks the batch at `heevj_batch_max` (2^16 for small `nw`).
 Two reasons: the solver reports its workspace size as a 32-bit int, and that workspace is ~16 kB
 per matrix and is cached on the cuSOLVER handle for the lifetime of the process — neither GC nor
 `CUDA.reclaim()` returns it, so an oversized chunk permanently parks memory the device-resident
@@ -249,9 +262,9 @@ Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
   to allow huge `ngrid` with few points). A dedicated type for the common case — `ngrid` small
   enough that a `prod(ngrid)` array fits — could carry an `is_full` field and use a simple integer
   hash, replacing the special-casing here.
-- **A QR-based batched eigensolve (future).** The batched eigensolve uses `CUSOLVER.heevjBatched!`
-  (Jacobi). A QR-based `HEEV` (e.g. via cuSolverDx) may be faster for the small matrices here;
-  worth evaluating, but not in this PR. Accuracy is not a motivation — Jacobi is already at
+- **A faster batched eigensolve for `nw > 12` (future).** Above `JACOBI_NW_MAX` the batched
+  eigensolve uses cuSOLVER's `heevjBatched` (Jacobi). A QR-based `HEEV` (e.g. via cuSolverDx) may
+  be faster there; worth evaluating. Accuracy is not a motivation — Jacobi is already at
   machine precision. Note that `cusolverDnXsyevBatched` is *not* the answer: it is 2–3× faster per
   matrix but needs ~1.05 MB of workspace per matrix (65× heevj), which caps one call at ~72k
   matrices on an 80 GB A100 and competes with the device-resident e-ph tiles.
@@ -277,13 +290,14 @@ Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
 - `src/wannier/WannierInterpolator.jl` — declare/export `to_device`.
 - `src/wannier/batched_interpolator.jl` — backend-generic buffers + GEMM phase; new
   `get_fourier_batched!`. Per-k API unchanged. Pure Fourier only.
-- `src/wannier_to_bloch_batched.jl` — `eigvals_batched`/`eigen_batched` (CPU), the
+- `src/wannier_to_bloch_batched.jl` — `eigvals_batched!`/`eigen_batched!` (CPU), the
   `compute_el_eigen[_valueonly]_batched` and e-ph drivers (per-k/q and list-batched). Included after
   `wannier_to_bloch.jl`. All backend-generic.
 - `src/common/gpu_utils.jl` — the backend primitives (`alloc`, `to_device`, `free_bytes`,
   `synchronize`, `batched_gemm!`).
-- `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`, `eigvals_batched`/
-  `eigen_batched` (`heevjBatched!`), `batched_gemm!` (`gemm_strided_batched!`), and the fused
+- `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`, `eigvals_batched!`/
+  `eigen_batched!` (Jacobi in `ext/cuda_eigen_jacobi.jl` for `nw ≤ 12`, cuSOLVER `heevjBatched`
+  above), `batched_gemm!` (`gemm_strided_batched!`), and the fused
   rotation / window-scatter kernels.
 - `src/calculator/run_eph.jl` — the three drivers as one `_run_eph` (entry checks, state containers,
   `plan_batch`, brackets) with the two loop bodies; `src/calculator/eph_engine.jl` — the

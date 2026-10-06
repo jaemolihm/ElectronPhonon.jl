@@ -393,9 +393,9 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
             D ./= reshape(msqrt_d, nmodes, 1, 1)         # dynq[i,j] /= sqrt(mass[i] mass[j])
             D ./= reshape(msqrt_d, 1, nmodes, 1)
             Esq = if valueonly
-                eigvals_batched(D)
+                eigvals_batched!(D)
             else
-                Esq_c, U = eigen_batched(D)
+                Esq_c, U = eigen_batched!(D)
                 U ./= reshape(msqrt_d, nmodes, 1, 1)     # mass factor: u[i,:] /= sqrt(mass[i])
                 phs.u[:, :, iq_chunk] .= U
                 Esq_c
@@ -665,7 +665,7 @@ transform with `itp_ham` (the `BatchedWannierInterpolator` of `model.el_ham`, bl
 on `hk`'s backend, all `nw` sorted eigenvalues `E` and the eigenvectors `U` (`nothing` without
 `eigenvectors`) of every point, and its bands inside the energy `window`: bands
 `offset + 1 : offset + nband`, `nband = 0` for a point with none. The batched eigensolve applies no
-degeneracy gauge fix, as in `eigen_batched`.
+degeneracy gauge fix, as in `eigen_batched!`.
 
 [`copy_window_bands!`](@ref) moves the window bands of chosen points into a
 [`BatchedElectronState`](@ref).
@@ -676,7 +676,7 @@ function solve_electron_bands_batched(itp_ham, hk, model::Model, xks, window::Tu
     hk_x = view(hk, :, 1:nx)
     get_fourier_batched!(hk_x, itp_ham, xks)
     H = reshape(hk_x, nw, nw, nx)
-    E, U = eigenvectors ? eigen_batched(H) : (eigvals_batched(H), nothing)
+    E, U = eigenvectors ? eigen_batched!(H) : (eigvals_batched!(H), nothing)
     # The eigenvalues are sorted per point, so counts give `inside_window`'s range.
     wmin, wmax = window
     offset = vec(sum(E .< wmin; dims = 1))

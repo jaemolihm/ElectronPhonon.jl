@@ -2,7 +2,7 @@ using Test
 using ElectronPhonon
 using ElectronPhonon: WannierObject, Vec3, compute_eph_RR_to_kR!, compute_eph_kR_to_kq!, compute_eph_Rq_to_kq!, to_device
 # Batched drivers / primitives are internal (unexported); import the ones the tests use.
-using ElectronPhonon: eigvals_batched, eigen_batched, compute_el_eigen_batched, compute_el_eigen_valueonly_batched,
+using ElectronPhonon: eigvals_batched!, eigen_batched!, compute_el_eigen_batched, compute_el_eigen_valueonly_batched,
     compute_el_velocity_direct_batched, compute_eph_kR_to_kq_batched!, eph_rotate_kR_batched!,
     eph_apply_rotations!, eph_apply_rotations_rqkq!, batched_gemm!, get_fourier_batched!
 using LinearAlgebra
@@ -253,17 +253,60 @@ end
 end
 
 @testset "batched eigensolve (CPU)" begin
-    # CPU eigen_batched: U must be eigenvectors of H — check eigenvalues vs LAPACK and the
+    # CPU eigen_batched!: U must be eigenvectors of H — check eigenvalues vs LAPACK and the
     # gauge-invariant reconstruction H ≈ U·diag(E)·U† at a few k-points. (The GPU counterpart is
     # in "GPU batched Wannier interpolation".)
     nw, nk = 8, 5
     H = Array{ComplexF64,3}(undef, nw, nw, nk)
     for k in 1:nk; A = rand(ComplexF64, nw, nw); @views H[:, :, k] .= (A + A') / 2; end
-    Hh = copy(H)   # eigen_batched overwrites its input
-    E, U = eigen_batched(H)
+    Hh = copy(H)   # eigen_batched! overwrites its input
+    E, U = eigen_batched!(H)
     for k in (1, 3, 5)
         @test sort(E[:, k]) ≈ sort(real(eigvals(Hermitian(Hh[:, :, k]))))
         @test U[:, :, k] * Diagonal(E[:, k]) * U[:, :, k]' ≈ Hh[:, :, k]
+    end
+end
+
+# Gauge-invariant errors of eigenpairs (E, U) of the Hermitian H, relative to ‖H‖_F (1 if H = 0):
+# eigenvalues against LAPACK, residual ‖HU - UΛ‖ and orthogonality ‖U'U - I‖.
+function eigenpair_errors(H, E, U)
+    Hh = Hermitian(H)
+    scale = max(norm(H), 1.0)
+    (norm(E - eigvals(Hh)) / scale, norm(Hh * U - U * Diagonal(E)) / scale, norm(U' * U - I))
+end
+
+@testset "Jacobi eigensolver (CPU)" begin
+    # The device solver for nw ≤ JACOBI_NW_MAX, run on the host against LAPACK. The extension
+    # loads whenever CUDA does, with or without a GPU.
+    ext = Base.get_extension(ElectronPhonon, :ElectronPhononCUDAExt)
+    if ext === nothing
+        @info "ElectronPhononCUDAExt not loaded — skipping the CPU Jacobi test"
+    else
+        for nw in 1:12
+            Q = Matrix(qr(randn(ComplexF64, nw, nw)).Q)
+            levels = Float64[max(i - 1, 1) for i in 1:nw]       # 1, 1, 2, 3, ...: one exact pair
+            inputs = (; random = randn(ComplexF64, nw, nw),     # only the upper triangle is read
+                        degenerate = Q * Diagonal(levels) * Q',
+                        near_degenerate = Q * Diagonal(levels .+ 1e-10 .* (1:nw)) * Q',
+                        diagonal = ComplexF64.(Diagonal(randn(nw))))
+            for (name, H) in pairs(inputs)
+                H3 = reshape(H, nw, nw, 1)
+                V = ext.identity_mmatrix(Val(nw))
+                d, perm, nsweep, converged = ext.jacobi_eigen!(ext.load_hermitian(H3, 1, Val(nw)), V)
+                errs = eigenpair_errors(H, Vector(d), Matrix(V)[:, perm])
+                @test all(<=(1e-13), errs)
+                @test issorted(d) && converged
+                @test nsweep <= (name === :diagonal ? 0 : 12)
+                # The rotations depend on A only: the eigenvalues-only run is bitwise the same.
+                @test ext.jacobi_eigen!(ext.load_hermitian(H3, 1, Val(nw)), nothing)[1] == d
+            end
+        end
+        # NaN or Inf input never converges.
+        for x in (NaN, Inf)
+            H = randn(ComplexF64, 4, 4, 1); H[1, 2, 1] = x
+            _, _, nsweep, converged = ext.jacobi_eigen!(ext.load_hermitian(H, 1, Val(4)), nothing)
+            @test !converged && nsweep == 20
+        end
     end
 end
 
@@ -358,18 +401,82 @@ end
             @test U[:, :, ik] * Diagonal(Ev[:, ik]) * U[:, :, ik]' ≈ H[:, :, ik]
         end
 
-        # --- batched eigensolve is not limited to nw ≤ 32 on this cuSOLVER; check both the
-        #     eigenvalues (vs LAPACK) and that the eigenvectors reconstruct H ≈ U·diag(E)·U† ---
-        let nw2 = 40, nk2 = 4
+        # --- cuSOLVER path (nw > JACOBI_NW_MAX; 13 is its first size), not limited to nw ≤ 32 on
+        #     this cuSOLVER; check both the eigenvalues (vs LAPACK) and that the eigenvectors
+        #     reconstruct H ≈ U·diag(E)·U† ---
+        ext = Base.get_extension(ElectronPhonon, :ElectronPhononCUDAExt)
+        @test ext.JACOBI_NW_MAX == 12
+        for nw2 in (13, 40)
+            nk2 = 4
             H = CUDA.rand(ComplexF64, nw2, nw2, nk2)
             for k in 1:nk2; @views H[:, :, k] .= (H[:, :, k] + H[:, :, k]') / 2; end
             Hh = Array(H)   # the batched solvers overwrite their input, so snapshot it first
-            Ebig = Array(eigvals_batched(copy(H)))
-            Eev, Uev = eigen_batched(copy(H)); Eev = Array(Eev); Uev = Array(Uev)
+            Ebig = Array(eigvals_batched!(copy(H)))
+            Eev, Uev = eigen_batched!(copy(H)); Eev = Array(Eev); Uev = Array(Uev)
             for k in 1:nk2
                 @test sort(Ebig[:, k]) ≈ sort(real(eigvals(Hermitian(Hh[:, :, k]))))
                 @test Uev[:, :, k] * Diagonal(Eev[:, k]) * Uev[:, :, k]' ≈ Hh[:, :, k]
             end
+        end
+
+        # --- the cuSOLVER path (nw > JACOBI_NW_MAX) of eigen_batched! / eigvals_batched!, solved in
+        #     place in views of the input, is bitwise heevjBatched! on a copy of each chunk: one
+        #     chunk (nw = 13) and two at heevj_batch_max (nw = 40) ---
+        for (nw2, nk2) in ((13, 1000), (40, ext.heevj_batch_max(40) + 5))
+            A3 = CUDA.randn(ComplexF64, nw2, nw2, nk2)
+            H3 = A3 .+ permutedims(conj.(A3), (2, 1, 3))
+            E_ref = similar(H3, Float64, nw2, nk2); U_ref = similar(H3); V_ref = similar(E_ref)
+            for c in Iterators.partition(1:nk2, ext.heevj_batch_max(nw2))
+                W, Uc = CUDA.cuSOLVER.heevjBatched!('V', 'U', H3[:, :, c])
+                E_ref[:, c] .= W; U_ref[:, :, c] .= Uc
+                V_ref[:, c] .= CUDA.cuSOLVER.heevjBatched!('N', 'U', H3[:, :, c])
+            end
+            H3_in = copy(H3)
+            E3, U3 = eigen_batched!(H3_in)
+            @test E3 == E_ref && U3 == U_ref
+            @test U3 === H3_in
+            @test eigvals_batched!(copy(H3)) == V_ref
+        end
+
+        # --- Jacobi path (nw ≤ JACOBI_NW_MAX) against LAPACK on the same matrices; the batch mixes
+        #     random and exactly degenerate matrices ---
+        for nw2 in (3, 8, 12)
+            nk2 = 3000
+            Hh = randn(ComplexF64, nw2, nw2, nk2)
+            Q = Matrix(qr(randn(ComplexF64, nw2, nw2)).Q)
+            for k in 1:10:nk2
+                Hh[:, :, k] .= Q * Diagonal(Float64[max(i - 1, 1) for i in 1:nw2]) * Q'
+            end
+            H = CuArray(Hh)
+            Ej, Uj = eigen_batched!(H)
+            @test Uj === H                                   # eigenvectors overwrite the input
+            @test eigvals_batched!(CuArray(Hh)) == Ej         # bitwise the same eigenvalues
+            Ej = Array(Ej); Uj = Array(Uj)
+            errs = [eigenpair_errors(Hh[:, :, k], Ej[:, k], Uj[:, :, k]) for k in 1:nk2]
+            @test maximum(maximum, errs) <= 1e-13
+        end
+
+        # --- a NaN eigenvalue throws: Jacobi (nw = 3) on NaN or Inf input, cuSOLVER (nw = 13) on
+        #     Inf input (a single NaN entry can come back from cuSOLVER as finite eigenvalues) ---
+        for (nw2, x) in ((3, NaN), (3, Inf), (13, Inf))
+            Hn = CUDA.randn(ComplexF64, nw2, nw2, 5)
+            Hn .= (Hn .+ permutedims(conj.(Hn), (2, 1, 3))) ./ 2
+            Hn[1:1, 2:2, 4:4] .= x
+            @test_throws ErrorException eigen_batched!(copy(Hn))
+            @test_throws ErrorException eigvals_batched!(copy(Hn))
+        end
+        # The Jacobi kernel marks only the matrix that did not converge.
+        Hn = CUDA.randn(ComplexF64, 3, 3, 5); Hn[1:1, 2:2, 4:4] .= NaN
+        En = Array(ext.jacobi_eigen_batched!(CUDA.zeros(Float64, 3, 5), Hn, Hn)); Un = Array(Hn)
+        @test all(isnan, En[:, 4]) && all(isnan, Un[:, :, 4])
+        @test all(isfinite, En[:, [1, 2, 3, 5]]) && all(isfinite, Un[:, :, [1, 2, 3, 5]])
+
+        # --- empty batch, both paths ---
+        for nw2 in (3, 13)
+            H0 = CuArray{ComplexF64}(undef, nw2, nw2, 0)
+            @test size(eigvals_batched!(H0)) == (nw2, 0)
+            E0, U0 = eigen_batched!(H0)
+            @test size(E0) == (nw2, 0) && U0 === H0
         end
 
         # electron-phonon batched drivers on the GPU vs the per-k/q CPU reference
