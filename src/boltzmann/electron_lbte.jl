@@ -3,6 +3,8 @@
 using LinearAlgebra
 using SparseArrays
 using Interpolations
+import Krylov
+using LinearMaps: LinearMap
 using Interpolations: WeightedArbIndex, coordslookup, value_weights, weightedindexes
 using Dictionaries
 
@@ -101,18 +103,60 @@ function compute_bte_scattering_matrix(filename, params, recip_lattice, ::Type{F
 end
 
 """
-    _solve_bte(rhs, scat_mat, map_i_to_f, inv_τ; max_iter, rtol, mixing, observable, iT=nothing)
+    _solve_bte(rhs, scat_mat, map_i_to_f, inv_τ; solver = :gmres, max_iter, rtol, mixing,
+               observable, iT = nothing)
 
-Iteratively solve the linearized Boltzmann equation
-``δf = (scat_mat * map_i_to_f * δf) ./ inv_τ + rhs``
-using fixed-point iteration with optional linear mixing. Initial guess is `δf = rhs`.
+Solve the linearized Boltzmann equation
+``δf = (scat_mat * map_i_to_f * δf) ./ inv_τ + rhs``,
+i.e. ``(I - D⁻¹ Sᵢ U) δf = rhs`` with `D = diag(inv_τ)`, `Sᵢ = scat_mat`, `U = map_i_to_f`, and
+`rhs` the SERTA solution.
 
-`observable(δf) -> X` is invoked each iteration; convergence is tested on
-`norm(X - X_old) / norm(X) < rtol`. The full history of observables is returned
-as `obs_iter` (length `max_iter+1`).
+* `solver = :gmres`: GMRES (Krylov.jl, no restart) from `δf = 0`. Stops when the relative residual
+  `‖rhs - (I - D⁻¹ Sᵢ U) δf‖ / ‖rhs‖ ≤ rtol`. `obs_iter` holds only the SERTA observable. The
+  Krylov basis is stored, so memory grows to `niter × length(rhs)` Vec3 values (`niter ≤ max_iter`).
+* `solver = :fixed_point`: fixed-point iteration with linear `mixing` from `δf = rhs`. Stops when
+  `norm(X - X_old) / norm(X) < rtol` for the observable `X`; `obs_iter` holds the observable of every
+  iterate. It contracts by the slowest-relaxing mode, so it converges slowly when scattering is
+  mostly small-angle, as in metals at low temperature.
+
+`observable(δf) -> X` is the reported quantity (`obs`, `obs_iter`), e.g. the conductivity.
 """
-function _solve_bte(rhs::AbstractVector, scat_mat, map_i_to_f, inv_τ;
+function _solve_bte(rhs::AbstractVector, scat_mat, map_i_to_f, inv_τ; solver::Symbol = :gmres,
         max_iter=100, rtol=1e-10, mixing=1.0, observable=identity, iT=nothing)
+    if solver === :gmres
+        isone(mixing) || throw(ArgumentError("mixing applies to solver = :fixed_point only, got mixing = $mixing"))
+        _solve_bte_gmres(rhs, scat_mat, map_i_to_f, inv_τ; max_iter, rtol, observable, iT)
+    elseif solver === :fixed_point
+        @warn "solver = :fixed_point can converge slowly, especially for metals at low temperature; solver = :gmres is recommended" maxlog=1
+        _solve_bte_fixed_point(rhs, scat_mat, map_i_to_f, inv_τ; max_iter, rtol, mixing, observable, iT)
+    else
+        throw(ArgumentError("solver must be :gmres or :fixed_point, got $solver"))
+    end
+end
+
+function _solve_bte_gmres(rhs::AbstractVector{Vec3{FT}}, scat_mat, map_i_to_f, inv_τ;
+        max_iter, rtol, observable, iT) where {FT}
+    # `I - D⁻¹ Sᵢ U` on the Vec3 field stored as its flat real components: Krylov.jl needs a
+    # numeric element type.
+    function apply!(y, x)
+        x_vec3 = reinterpret(Vec3{FT}, x)
+        reinterpret(Vec3{FT}, y) .= x_vec3 .- (scat_mat * (map_i_to_f * x_vec3)) ./ inv_τ
+    end
+    op = LinearMap{FT}(apply!, 3length(rhs); ismutating = true)
+    x, stats = Krylov.gmres(op, collect(reinterpret(FT, rhs)); atol = zero(FT), rtol = FT(rtol),
+                            itmax = max_iter)
+    δf = collect(reinterpret(Vec3{FT}, x))
+    converged = stats.solved
+    if !converged
+        @warn "GMRES not converged at iteration $(stats.niter)$(iT === nothing ? "" : " (iT=$iT)"): $(stats.status)"
+    elseif iT !== nothing
+        @info "iT=$iT, GMRES converged at iteration $(stats.niter)"
+    end
+    (; δf, obs = observable(δf), obs_iter = [observable(rhs)], niter = stats.niter, converged)
+end
+
+function _solve_bte_fixed_point(rhs::AbstractVector, scat_mat, map_i_to_f, inv_τ;
+        max_iter, rtol, mixing, observable, iT)
     δf = copy(rhs)
     δf_tmp = similar(δf)
     obs = observable(δf)
@@ -139,6 +183,7 @@ function _solve_bte(rhs::AbstractVector, scat_mat, map_i_to_f, inv_τ;
             iT === nothing || @info "iT=$iT, convergence not reached at maximum iteration $max_iter"
         end
     end
+    resize!(obs_iter, niter + 1)
     (; δf, obs, obs_iter, niter, converged)
 end
 
@@ -147,8 +192,10 @@ Solve Boltzmann transport equation for electrons.
 ``δf_i[i] = scat_mat[i, j] * δf_f[j] / inv_τ_i[i] + δf_i_serta[i]``
 scat_mat is a rectangular matrix, mapping states in `el_f` to states in `el_i`.
 δf[j] is the occupations for states `el_f` and is calculated by unfolding `δf_i`.
+`solver` is `:gmres` (default) or `:fixed_point`; see `_solve_bte`. `σ_iter` holds the
+conductivity of every fixed-point iterate, and only the SERTA one (first row) for GMRES.
 """
-function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; max_iter=100, rtol=1e-10, mixing = 1.0, interpolate = false) where {FT}
+function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; solver = :gmres, max_iter=100, rtol=1e-10, mixing = 1.0, interpolate = false) where {FT}
     output = (σ_serta = zeros(FT, 3, 3, length(params.Tlist)),
               σ = zeros(FT, 3, 3, length(params.Tlist)),
               δf_i_serta = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
@@ -168,11 +215,11 @@ function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, 
         obs = δf -> symmetrize(occupation_to_conductivity(δf, el_i, params), symmetry)
 
         sol = _solve_bte(δf_i_serta, scat_mat[iT], map_i_to_f, view(inv_τ_i, :, iT);
-                         max_iter, rtol, mixing, observable=obs, iT)
+                         solver, max_iter, rtol, mixing, observable=obs, iT)
 
         output.σ_iter[1, :, :, iT] .= σ_serta
-        for iter in 1:sol.niter
-            output.σ_iter[iter + 1, :, :, iT] .= sol.obs_iter[iter + 1]
+        for iter in 2:length(sol.obs_iter)
+            output.σ_iter[iter, :, :, iT] .= sol.obs_iter[iter]
         end
 
         output.σ_serta[:, :, iT] .= σ_serta
