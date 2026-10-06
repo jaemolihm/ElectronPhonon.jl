@@ -221,6 +221,48 @@ end
     @test !isapprox(pair_sum(swapped, c.ωq), pair_sum(want.g2, want.ωq); rtol = 1e-10)
 end
 
+# `setup_calculator!` must consume the SELECTION, not re-derive the state set from its k-grid:
+# the selection owns the per-state BZ weights (non-uniform for a multigrid selection) and the exact
+# `(k, band)` list. Driven with an explicit `FilteredBandStates` whose weights are deliberately
+# perturbed away from `kpts.weights[ik]`, so the uniform fallback is detectable. CPU only.
+@testset "calculator consumes the selection" begin
+    model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
+    win = (0.87 - 0.2, 0.87 + 0.2)
+    sel0 = ElectronPhonon.filter_electron_states((4, 4, 4), model.nw, model.el_ham, win;
+        fourier_mode="gridopt")
+    w = collect(ElectronPhonon.state_weights(sel0)) .* range(0.5, 1.5; length=sel0.n)
+    sel = ElectronPhonon.FilteredBandStates(sel0.kpts, sel0.iks, sel0.ibands;
+        nw=sel0.nw, weights=w, nstates_base=sel0.nstates_base)
+    c = ElectronPhonon.G2Calculator{Float64}(; nmodes=model.nmodes)
+    ElectronPhonon.run_eph_over_k_and_kq(model, sel, sel; calculators=[c], symmetry=nothing,
+        progress_print_step=10^9)
+    @test c.el_i.n == sel.n                     # no states fabricated from band_extent
+    @test c.el_i.iks == sel.iks
+    @test c.el_i.ibands == sel.ibands
+    @test ElectronPhonon.state_weights(c.el_i) == w   # not the uniform kpts.weights[ik]
+    @test ElectronPhonon.state_weights(c.el_f) == w
+    @test c.el_i.nstates_base == sel.nstates_base
+    # every selected state resolves to its own index
+    @test all(ElectronPhonon.state_index(c.el_i, sel.iks[i], sel.ibands[i]) == i for i in 1:sel.n)
+
+    # Non-contiguous selection: `band_extent` is then a strict superset of the selected bands,
+    # and re-deriving the state set from it fabricates the gap states (86 vs 80 here).
+    cnt = Dict{Int,Vector{Int}}()
+    for i in 1:sel.n
+        push!(get!(cnt, sel.iks[i], Int[]), i)
+    end
+    drop = Set(sort(cnt[ik]; by = i -> sel.ibands[i])[2] for ik in keys(cnt) if length(cnt[ik]) >= 3)
+    @test !isempty(drop)                        # the fixture really is non-contiguous
+    selnc = ElectronPhonon.filter_states(sel, [i for i in 1:sel.n if !(i in drop)])
+    @test sum(length, selnc.band_extent) > selnc.n
+    cnc = ElectronPhonon.G2Calculator{Float64}(; nmodes=model.nmodes)
+    ElectronPhonon.run_eph_over_k_and_kq(model, selnc, selnc; calculators=[cnc], symmetry=nothing,
+        progress_print_step=10^9)
+    @test cnc.el_i.n == selnc.n
+    @test cnc.el_i.ibands == selnc.ibands
+    @test cnc.el_i.iks == selnc.iks
+end
+
 # `calculator_bytes` declares what `setup_calculator!` allocates on the backend, on a one-state
 # fixture whose boxes equal the index-map extents: the two index maps (`persistent`) and, for
 # `G2Calculator`, the per-tile g2 scratch (`per_pair`). Without containers the maps are not counted.

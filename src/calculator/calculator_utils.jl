@@ -44,14 +44,11 @@ The target `lin` indices are unique across the run (distinct k → distinct i, d
 distinct f), so the writes never collide (no atomics needed). Generic (CPU/fallback) method; the
 CUDA extension provides a one-kernel `CuArray` method.
 
-A helper for downstream device-resident calculators: from their `run_calculator!(calc,
-::EPBlock{OuterKLoop}, ctx)` method they call this to scatter each block's `g2`/`ωq` into their own
-window-mapped device accumulators, with `imap_i_col` / `imap_f` in the containers' box coordinates
-(see `_indmap_to_device`). The library itself stays agnostic to any particular calculator.
-
-TODO: the non-collision invariant (unique `lin` indices across the run) has no in-repo test —
-correctness currently rides on the downstream calculator's tests. Add a small scatter round-trip
-test that checks the CPU and CUDA methods agree and that no two writes collide.
+Called from a device-resident calculator's `run_calculator!(calc, ::EPBlock{OuterKLoop}, ctx)`
+(`G2Calculator`) to scatter each block's `g2`/`ωq` into its window-mapped device output, with
+`imap_i_col` / `imap_f` in the containers' box coordinates (see `_indmap_to_device`). The
+"Scatter round-trip" testset of `test/test_gpu.jl` checks the non-collision invariant and the
+CPU/CUDA agreement.
 """
 function eph_window_scatter!(g2_out, ωq_out, g2vals, imap_i_col, imap_f, ikqs, ωq,
                              ni_stride::Int, i0::Int)

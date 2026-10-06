@@ -12,8 +12,7 @@
 # (production transport uses an fsthick window). For large grids (a run > ~60 s) warm up on a
 # coarse grid, then time the main grid ONCE. Pass `gpu` as the 4th arg to skip the CPU side.
 #
-# Requires ElectronPhonon (this branch) + CUDA in the environment. BoltzmannCalculator lives in
-# ElectronPhonon itself (no MigdalEliashberg needed), e.g.:
+# Requires ElectronPhonon (this branch) + CUDA in the environment, e.g.:
 #   julia --project=/mnt/home/jlihm/EPjl/gpuenv-stage benchmark/bench_bte_gpu.jl
 #
 # CLI args (all optional, positional):
