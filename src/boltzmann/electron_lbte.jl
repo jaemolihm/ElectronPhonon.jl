@@ -142,7 +142,7 @@ function _solve_bte_gmres(rhs::AbstractVector{Vec3{FT}}, scat_mat, map_i_to_f, i
         x_vec3 = reinterpret(Vec3{FT}, x)
         reinterpret(Vec3{FT}, y) .= x_vec3 .- (scat_mat * (map_i_to_f * x_vec3)) ./ inv_τ
     end
-    op = LinearMap{FT}(apply!, 3length(rhs); ismutating = true)
+    op = LinearMap{FT}(apply!, 3 * length(rhs); ismutating = true)
     x, stats = Krylov.gmres(op, collect(reinterpret(FT, rhs)); atol = zero(FT), rtol = FT(rtol),
                             itmax = max_iter)
     δf = collect(reinterpret(Vec3{FT}, x))
