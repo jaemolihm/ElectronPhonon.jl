@@ -64,6 +64,23 @@ end
     c_mg = run_sel(sel_k, sel_kq; backend = bk)
 
     r_ref = solve(c_ref); r_coarse = solve(c_coarse); r_mg = solve(c_mg)
+
+    @testset "GMRES (default) == fixed point" begin
+        r_fp = EP.solve_electron_bte(c_ref.el_i, c_ref.el_f, c_ref.Sᵢ, stack(c_ref.Sₒ), occ(), sym;
+                                     solver = :fixed_point, interpolate = false)
+        @test r_ref.σ_serta == r_fp.σ_serta
+        @test r_ref.δf_i_serta == r_fp.δf_i_serta
+        @test r_ref.σ ≈ r_fp.σ rtol = 1e-8
+        @test r_ref.δf_i ≈ r_fp.δf_i rtol = 1e-8
+        # σ_iter is a fixed-point output: SERTA in row 1, then the iterates.
+        @test r_ref.σ_iter === nothing
+        @test r_fp.σ_iter[1, :, :, :] == r_fp.σ_serta
+        @test all(isfinite, r_fp.σ_iter[2, :, :, :])
+        @test_throws ArgumentError EP.solve_electron_bte(c_ref.el_i, c_ref.el_f, c_ref.Sᵢ,
+            stack(c_ref.Sₒ), occ(), sym; solver = :jacobi)
+        @test_throws ArgumentError EP.solve_electron_bte(c_ref.el_i, c_ref.el_f, c_ref.Sᵢ,
+            stack(c_ref.Sₒ), occ(), sym; mixing = 0.5)
+    end
     @test all(isfinite, r_mg.σ) && all(isfinite, r_mg.σ_serta)
 
     # The multigrid shrinks the final-state count vs the uniform reference.
