@@ -137,8 +137,8 @@ end
 
 Eigenvalues `E (nw, nb)` (ascending) and, unless `U === nothing`, eigenvectors `U (nw, nw, nb)` of
 the Hermitian device matrices `H (nw, nw, nb)` (upper triangle read), one thread per matrix. `U`
-may be `H` itself. Throws if a matrix did not converge (NaN or Inf input), at the cost of one
-reduction and one host synchronization: a kernel cannot throw, so it marks the matrix with NaN.
+may be `H` itself. A matrix that does not converge (NaN or Inf input) gets NaN eigenvalues and
+eigenvectors.
 """
 function jacobi_eigen_batched!(E, U, H)
     nw, n2, nb = size(H)
@@ -151,7 +151,5 @@ function jacobi_eigen_batched!(E, U, H)
     threads = 128
     # `Val(nw)` is the function barrier: one kernel per nw (and per eigenvalues-only/full).
     @cuda threads = threads blocks = cld(nb, threads) jacobi_eigen_kernel!(E, U, H, Val(nw))
-    any(isnan, E) && error("jacobi_eigen_batched!: $(count(isnan, E) ÷ nw) of $nb matrices did not ",
-                           "converge (NaN or Inf input?)")
     E
 end

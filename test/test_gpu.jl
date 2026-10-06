@@ -419,9 +419,9 @@ end
             end
         end
 
-        # --- the cuSOLVER path (nw > JACOBI_NW_MAX) of eigen_batched! / eigvals_batched! is bitwise
-        #     cuSOLVER.jl's heevjBatched!, unchunked (nw = 13) and chunked at heevj_batch_max
-        #     (nw = 40); the eigenvectors overwrite the input on both ---
+        # --- the cuSOLVER path (nw > JACOBI_NW_MAX) of eigen_batched! / eigvals_batched!, solved in
+        #     place in views of the input, is bitwise heevjBatched! on a copy of each chunk: one
+        #     chunk (nw = 13) and two at heevj_batch_max (nw = 40) ---
         for (nw2, nk2) in ((13, 1000), (40, ext.heevj_batch_max(40) + 5))
             A3 = CUDA.randn(ComplexF64, nw2, nw2, nk2)
             H3 = A3 .+ permutedims(conj.(A3), (2, 1, 3))
@@ -456,14 +456,20 @@ end
             @test maximum(maximum, errs) <= 1e-13
         end
 
-        # --- Jacobi non-convergence: NaN or Inf input throws. (cuSOLVER returns finite values for
-        #     NaN input, so the nw > JACOBI_NW_MAX path has nothing to detect.) ---
-        for x in (NaN, Inf)
-            Hn = CUDA.randn(ComplexF64, 3, 3, 5)
+        # --- a NaN eigenvalue throws: Jacobi (nw = 3) on NaN or Inf input, cuSOLVER (nw = 13) on
+        #     Inf input (a single NaN entry can come back from cuSOLVER as finite eigenvalues) ---
+        for (nw2, x) in ((3, NaN), (3, Inf), (13, Inf))
+            Hn = CUDA.randn(ComplexF64, nw2, nw2, 5)
+            Hn .= (Hn .+ permutedims(conj.(Hn), (2, 1, 3))) ./ 2
             Hn[1:1, 2:2, 4:4] .= x
             @test_throws ErrorException eigen_batched!(copy(Hn))
             @test_throws ErrorException eigvals_batched!(copy(Hn))
         end
+        # The Jacobi kernel marks only the matrix that did not converge.
+        Hn = CUDA.randn(ComplexF64, 3, 3, 5); Hn[1:1, 2:2, 4:4] .= NaN
+        En = Array(ext.jacobi_eigen_batched!(CUDA.zeros(Float64, 3, 5), Hn, Hn)); Un = Array(Hn)
+        @test all(isnan, En[:, 4]) && all(isnan, Un[:, :, 4])
+        @test all(isfinite, En[:, [1, 2, 3, 5]]) && all(isfinite, Un[:, :, [1, 2, 3, 5]])
 
         # --- empty batch, both paths ---
         for nw2 in (3, 13)

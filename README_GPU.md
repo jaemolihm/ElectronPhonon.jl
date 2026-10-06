@@ -132,15 +132,15 @@ the same one:
   ≤ 2e-15 and `‖UᴴU - I‖_F` ≤ 2e-14 through `nw = 16`, on random, exactly-degenerate and
   near-degenerate matrices). Its eigenvalues are the same bit for bit
   with and without eigenvectors. The eigenvectors overwrite `Hk` as on the CPU. No chunking.
-- `nw > 12`: cuSOLVER `cusolverDnZheevjBatched` (also Jacobi, one block per matrix), called
-  directly without the per-chunk `info` readback (cuSOLVER 12.2.6 writes 0 even on failure). The
+- `nw > 12`: cuSOLVER `heevjBatched!` (also Jacobi, one block per matrix). The
   `nw ≤ 32` figure often quoted for it is a *performance* characteristic, not a correctness bound
   (verified correct to `nw=256`, agreeing with LAPACK to ~1e-11); relative residual ≤ 3e-15 for
   `nw ≤ 16` at `tol = eps(Float64)`.
 
-The Jacobi solve throws if a matrix did not converge (in practice NaN or Inf in `H`): the kernel
-marks it with NaN eigenvalues and the launch checks them, at one reduction and one host
-synchronization per call. cuSOLVER reports nothing for NaN input.
+Both device methods throw on a NaN eigenvalue, at one reduction and one host synchronization per
+call: a Jacobi matrix that did not converge (in practice NaN or Inf in `H`) gets NaN eigenvalues,
+and cuSOLVER returns them for Inf input. cuSOLVER's `info` is 0 even when it does not converge
+(12.3.4), and a single NaN entry can come back as finite eigenvalues.
 
 The cuSOLVER path chunks the batch at `heevj_batch_max` (2^16 for small `nw`).
 Two reasons: the solver reports its workspace size as a 32-bit int, and that workspace is ~16 kB
