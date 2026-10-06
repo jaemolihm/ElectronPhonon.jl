@@ -1,5 +1,5 @@
-# Benchmark: full e-ph calculator loop (run_eph_over_k_and_kq) with the MigdalEliashberg
-# EliashbergCalculator, CPU vs GPU, over a k/k+q grid. This is the end-to-end driver the GPU
+# Benchmark: full e-ph calculator loop (run_eph_over_k_and_kq) with the G2Calculator,
+# CPU vs GPU, over a k/k+q grid. This is the end-to-end driver the GPU
 # work targets — it exercises RR->kR, kR->kq, and the device-native g2 scatter / host-streaming.
 #
 #   CPU : fourier_mode="gridopt", capped to 12 threads (nchunks_threads=12)
@@ -10,7 +10,7 @@
 # grid, then time the main grid ONCE. CPU scales ~grid^6 like the GPU, so for big grids pass
 # `gpu` as the 4th arg to skip the CPU side (GPU-only timing).
 #
-# Requires ElectronPhonon (this gpu branch) + CUDA + MigdalEliashberg in the environment, e.g.:
+# Requires ElectronPhonon (this gpu branch) + CUDA in the environment, e.g.:
 #   julia --project=/mnt/home/jlihm/EPjl/gpuenv benchmark/bench_eliashberg_loop_gpu.jl
 #
 # CLI args (all optional, positional):
@@ -21,7 +21,6 @@
 
 using ElectronPhonon
 using CUDA
-using MigdalEliashberg
 using Printf
 const EP = ElectronPhonon
 
@@ -44,7 +43,7 @@ model = EP.load_model_from_epw_new(PB_FOLDER, "temp", "pb"; epmat_outer_momentum
 @printf "Model: nw=%d nmodes=%d   CUDA functional: %s\n" model.nw model.nmodes CUDA.functional()
 @printf "Window: %s   grids: %s   %s\n\n" (isfinite(fsthick) ? "E_F ± $fsthick eV" : "full band") grids (gpu_only ? "(GPU only)" : "(CPU vs GPU)")
 
-newcalc() = EliashbergCalculator{Float64}(; nmodes = model.nmodes)
+newcalc() = EP.G2Calculator{Float64}(; nmodes = model.nmodes)
 
 run_cpu(g, win) = (c = newcalc(); EP.run_eph_over_k_and_kq(model, (g,g,g), (g,g,g); calculators=[c],
     symmetry=nothing, window_k=win, window_kq=win,

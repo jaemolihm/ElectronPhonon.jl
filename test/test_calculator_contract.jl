@@ -1,7 +1,8 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, supports,
-    OuterKContext, OuterQContext, CPUBackend, calculator_begin_batch!, calculator_end_batch!, to_device
+    OuterKContext, OuterQContext, CPUBackend, calculator_begin_batch!, calculator_end_batch!, to_device,
+    setup_calculator!, calculator_bytes
 
 # Calculator-contract checks (CPU-only): the `supports` trait, the fail-early checks the drivers do
 # at entry, `calculators` as a keyword, and the screening-disabled error.
@@ -123,8 +124,17 @@ end
 CONTRACT_GPU_AVAILABLE && CUDA.allowscalar(false)
 include("calculator_contract_harness.jl")
 
-# Every ElectronPhonon.jl calculator through the generic contract harness (MigdalEliashberg.jl's
-# run the same harness from its own test_calculator_contract.jl).
+# `|ep|^2 / (2ω)` of each state pair from the reference double loop, in `G2Calculator`'s layout.
+function g2_contract_reference(c, ref)
+    g2 = zero(c.g2); ωq = zero(c.ωq)
+    contract_foreach_reference_pair(ref, c.el_i, c.el_f) do i, j, ep, ω, _...
+        g2[:, i, j] .= abs2.(ep) ./ (2 .* ω)
+        ωq[:, i, j] .= ω
+    end
+    (; c.el_i, c.el_f, g2, ωq)
+end
+
+# Every ElectronPhonon.jl calculator through the generic contract harness.
 @testset "calculator contract harness" begin
     models = (; el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el"),
                 ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph"))
@@ -160,4 +170,118 @@ include("calculator_contract_harness.jl")
     # degenerate gauge fix and the device one does not, so a multiplet sum weighted by a function of
     # each level's own energy moves by about split / smearing: 2.8e-7 on the ragged fixture (A100).
     check_calculator_contract(entries, models; gpu = CONTRACT_GPU_AVAILABLE, rtol_gpu = 1e-6)
+
+    # The two state-pair extraction calculators.
+    nmodes = models.el.nmodes
+    entries = [
+        (; name = "G2Calculator", orders = (OuterKLoop,),
+           make = () -> ElectronPhonon.G2Calculator{Float64}(; nmodes),
+           outputs = c -> Dict("g2" => contract_pair_sum(c.g2, c.ωq,
+                    contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)),
+                    "ωq" => contract_physical_ω(c.ωq)),
+           reference = g2_contract_reference),
+        (; name = "EPElementCalculator", orders = (OuterKLoop,),
+           make = () -> ElectronPhonon.EPElementCalculator{Float64}(; nmodes),
+           # The phase of `ep` is a gauge; `|ep|^2` summed over multiplets is not.
+           outputs = c -> Dict("abs2_ep" => contract_pair_sum(abs2.(c.ep), c.ωq,
+                    contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)),
+                    "ωq" => contract_physical_ω(c.ωq)),
+           reference = function (c, ref)
+               ep = zero(c.ep); ωq = zero(c.ωq)
+               contract_foreach_reference_pair(ref, c.el_i, c.el_f) do i, j, ep_ij, ω, _...
+                   ep[:, i, j] .= ep_ij
+                   ωq[:, i, j] .= ω
+               end
+               (; c.el_i, c.el_f, ep, ωq)
+           end),
+    ]
+    check_calculator_contract(entries, models; gpu = CONTRACT_GPU_AVAILABLE)
+end
+
+# The reference pins which mode carries the coupling: swapping two non-degenerate physical modes
+# at one state pair must fail it, while the multiplet sums leave a basis change inside one alone.
+@testset "calculator contract harness: a mode swap fails the reference" begin
+    model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
+    fixture = contract_fixtures().narrow
+    c = run_contract(
+        (; make = () -> ElectronPhonon.G2Calculator{Float64}(; nmodes = model.nmodes)),
+        OuterKLoop, (; el = model), fixture, contract_settings(OuterKLoop).default)
+    ids_i, ids_f = contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)
+    want = g2_contract_reference(c, contract_reference(model, fixture))
+    pair_sum(g2, ωq) = contract_pair_sum(g2, ωq, ids_i, ids_f)
+    @test isapprox(pair_sum(c.g2, c.ωq), pair_sum(want.g2, want.ωq); rtol = 1e-10)
+    pair = findfirst(CartesianIndices((axes(c.g2, 2), axes(c.g2, 3)))) do I
+        ω = c.ωq[:, I]
+        minimum(ω[1:2]) >= ElectronPhonon.omega_acoustic && abs(ω[2] - ω[1]) > 1e-6 &&
+            c.g2[1, I] != c.g2[2, I]
+    end
+    @test pair !== nothing
+    swapped = copy(c.g2)
+    swapped[1, pair], swapped[2, pair] = c.g2[2, pair], c.g2[1, pair]
+    @test !isapprox(pair_sum(swapped, c.ωq), pair_sum(want.g2, want.ωq); rtol = 1e-10)
+end
+
+# `setup_calculator!` must consume the SELECTION, not re-derive the state set from its k-grid:
+# the selection owns the per-state BZ weights (non-uniform for a multigrid selection) and the exact
+# `(k, band)` list. Driven with an explicit `FilteredBandStates` whose weights are deliberately
+# perturbed away from `kpts.weights[ik]`, so the uniform fallback is detectable. CPU only.
+@testset "calculator consumes the selection" begin
+    model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
+    win = (0.87 - 0.2, 0.87 + 0.2)
+    sel0 = ElectronPhonon.filter_electron_states((4, 4, 4), model.nw, model.el_ham, win;
+        fourier_mode="gridopt")
+    w = collect(ElectronPhonon.state_weights(sel0)) .* range(0.5, 1.5; length=sel0.n)
+    sel = ElectronPhonon.FilteredBandStates(sel0.kpts, sel0.iks, sel0.ibands;
+        nw=sel0.nw, weights=w, nstates_base=sel0.nstates_base)
+    c = ElectronPhonon.G2Calculator{Float64}(; nmodes=model.nmodes)
+    ElectronPhonon.run_eph_over_k_and_kq(model, sel, sel; calculators=[c], symmetry=nothing,
+        progress_print_step=10^9)
+    @test c.el_i.n == sel.n                     # no states fabricated from band_extent
+    @test c.el_i.iks == sel.iks
+    @test c.el_i.ibands == sel.ibands
+    @test ElectronPhonon.state_weights(c.el_i) == w   # not the uniform kpts.weights[ik]
+    @test ElectronPhonon.state_weights(c.el_f) == w
+    @test c.el_i.nstates_base == sel.nstates_base
+    # every selected state resolves to its own index
+    @test all(ElectronPhonon.state_index(c.el_i, sel.iks[i], sel.ibands[i]) == i for i in 1:sel.n)
+
+    # Non-contiguous selection: `band_extent` is then a strict superset of the selected bands,
+    # and re-deriving the state set from it fabricates the gap states (86 vs 80 here).
+    cnt = Dict{Int,Vector{Int}}()
+    for i in 1:sel.n
+        push!(get!(cnt, sel.iks[i], Int[]), i)
+    end
+    drop = Set(sort(cnt[ik]; by = i -> sel.ibands[i])[2] for ik in keys(cnt) if length(cnt[ik]) >= 3)
+    @test !isempty(drop)                        # the fixture really is non-contiguous
+    selnc = ElectronPhonon.filter_states(sel, [i for i in 1:sel.n if !(i in drop)])
+    @test sum(length, selnc.band_extent) > selnc.n
+    cnc = ElectronPhonon.G2Calculator{Float64}(; nmodes=model.nmodes)
+    ElectronPhonon.run_eph_over_k_and_kq(model, selnc, selnc; calculators=[cnc], symmetry=nothing,
+        progress_print_step=10^9)
+    @test cnc.el_i.n == selnc.n
+    @test cnc.el_i.ibands == selnc.ibands
+    @test cnc.el_i.iks == selnc.iks
+end
+
+# `calculator_bytes` declares what `setup_calculator!` allocates on the backend, on a one-state
+# fixture whose boxes equal the index-map extents: the two index maps (`persistent`) and, for
+# `G2Calculator`, the per-tile g2 scratch (`per_pair`). Without containers the maps are not counted.
+@testset "calculator_bytes matches the setup allocations" begin
+    nm = 2
+    kpts = ElectronPhonon.GridKpoints(kpoints_grid((1, 1, 1)))
+    sel = ElectronPhonon.FilteredBandStates(kpts, [1], [1]; nw = 2)
+    els = ElectronPhonon.BatchedElectronState(CPUBackend(), 2, 1, 1, [:e, :u]; kpts)
+    els.e .= 0.1; els.nband .= 1
+    phs = ElectronPhonon.BatchedPhononState(CPUBackend(), nm, 1, [:e])
+    sizes = (; nw = 2, nmodes = nm, nband_max_k = 1, nband_max_kq = 1, nchunks_threads = 1)
+    for calc in (ElectronPhonon.G2Calculator{Float64}(; nmodes = nm),
+                 ElectronPhonon.EPElementCalculator{Float64}(; nmodes = nm))
+        setup_calculator!(calc, CPUBackend(), els, els, phs; order = OuterKLoop(), sel_k = sel,
+            sel_kq = sel, n_outer_batch = 1, n_inner_tile = 1, nchunks_threads = 1)
+        bytes = calculator_bytes(calc, EPBlock{OuterKLoop}; sizes..., els_k = els, els_kq = els, phs)
+        scratch = calc isa ElectronPhonon.G2Calculator ? sizeof(calc.g2_tile) : 0
+        @test bytes == (; persistent = sizeof(calc.imap_i_dev) + sizeof(calc.imap_f_dev), per_outer = 0,
+                          per_pair = scratch)
+        @test calculator_bytes(calc, EPBlock{OuterKLoop}; sizes...).persistent == 0
+    end
 end

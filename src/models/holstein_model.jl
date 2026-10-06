@@ -1,12 +1,5 @@
 # Holstein model: a single-orbital tight-binding band coupled to a dispersionless
 # (Einstein) phonon with a momentum-independent coupling constant.
-#
-# EPSpectral.jl/src/holstein.jl has a `HolsteinLatticeModel` with the same physics, which is not
-# reused here: it lives in a different package (EPSpectral depends on nothing from here), works in
-# Hartree units, is 1d-only, and carries its own `μ` and `T`. Most of all it is not an
-# ElectronPhonon `Model` — it feeds EPSpectral's own spectral-function solver directly, whereas the
-# point of this builder is to produce a `Model` that the Wannier interpolation and e-ph drivers
-# consume like any EPW-loaded one.
 
 using Printf
 

@@ -1,5 +1,5 @@
-# The generic calculator contract harness. Shared by ElectronPhonon.jl's and MigdalEliashberg.jl's
-# `test_calculator_contract.jl`, each with its own list of calculator entries.
+# The generic calculator contract harness. `test_calculator_contract.jl` runs it on ElectronPhonon.jl's
+# calculators; a downstream package can include it with its own list of calculator entries.
 #
 # An entry is a NamedTuple `(; name, make, orders, outputs, reference)`: `make()` returns a fresh
 # calculator, `orders` the loop orders it supports (`OuterKLoop`, `OuterQLoop`), and `outputs(c)` a
