@@ -187,8 +187,8 @@ function run_wfpt(folder, outdir, prefix, model, window_wfpt, kpts, occupation_p
 
         compute_eph_RR_to_kR!(ep_ekpR_obj, epmat, xk, no_offset_view(uk))
 
-        for (id_chunk, iqs) in enumerate(chunks(1:qpts_coarse.n; n = nchunks_threads))
-        # @threads for (id_chunk, iqs) in enumerate(chunks(1:qpts_coarse.n; n = nchunks_threads))
+        for (id_chunk, iqs) in enumerate(index_chunks(1:qpts_coarse.n; n = nchunks_threads))
+        # @threads for (id_chunk, iqs) in enumerate(index_chunks(1:qpts_coarse.n; n = nchunks_threads))
             epstate = take!(epstates)
             ep_ekpR = take!(ep_ekpRs)
             itp_dw = take!(dw_itps)

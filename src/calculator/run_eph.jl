@@ -556,7 +556,7 @@ function _loop_outer_k!(eng::OuterKEngine, calculators)
             chunk = 1, inner_indices = 1:inner_pts.n)
     else
         # Several chunks: one task per chunk of inner points, each on its own tile workspace.
-        inner_chunks = collect(enumerate(chunks(1:inner_pts.n; n = min(length(eng.tiles), inner_pts.n))))
+        inner_chunks = collect(enumerate(index_chunks(1:inner_pts.n; n = min(length(eng.tiles), inner_pts.n))))
         @threads for (chunk, inner_indices) in inner_chunks
             _loop_outer_k_chunk!(eng_fields, _workspace_fields(eng.tiles[chunk]), calculators; chunk, inner_indices)
         end
@@ -607,7 +607,7 @@ function _loop_outer_q!(eng::OuterQEngine, calculators)
                 chunk = 1, iks = 1:eng.els_k.nk, iq)
         else
             # Several chunks: one task per chunk of k points, each on its own tile workspace.
-            inner_chunks = collect(enumerate(chunks(1:eng.els_k.nk; n = min(length(eng.tiles), eng.els_k.nk))))
+            inner_chunks = collect(enumerate(index_chunks(1:eng.els_k.nk; n = min(length(eng.tiles), eng.els_k.nk))))
             @threads for (chunk, iks) in inner_chunks
                 _loop_outer_q_chunk!(eng_fields, _workspace_fields(eng.tiles[chunk]), calculators; chunk, iks, iq)
             end

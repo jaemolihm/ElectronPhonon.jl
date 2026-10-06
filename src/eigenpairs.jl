@@ -115,7 +115,7 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
     if backend isa CPUBackend
         e_full = zeros(FT, nw, gkpts.n)
         u_full = zeros(Complex{FT}, nw, nw, gkpts.n)
-        @threads for iks in chunks(gkpts.vectors; n=2nthreads())
+        @threads for iks in index_chunks(gkpts.vectors; n = 2*nthreads())
             @views begin
                 # Setup thread-local WannierInterpolator
                 ham = get_interpolator(model.el_ham; fourier_mode)

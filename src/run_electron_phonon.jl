@@ -76,12 +76,14 @@ function run_eph_outer_loop_q(
     nq = qpoints.n
     nband = iband_max - iband_min + 1
 
-    epstates = [EPState{FT}(nw, nmodes, nband) for _ in 1:nthreads()]
+    # Thread chunks of the k loop; each chunk owns one entry of every per-chunk buffer below.
+    nchunks = 2*nthreads()
+    epstates = [EPState{FT}(nw, nmodes, nband) for _ in 1:nchunks]
 
     # Initialize data structs (always assign to avoid Core.Box in @threads closure)
     elself = compute_elself ? ElectronSelfEnergy{FT}(iband_min:iband_max, nk, length(elself_params.Tlist)) : nothing
-    phselfs = compute_phself ? [PhononSelfEnergy{FT}(nmodes, nq, length(phself_params.Tlist)) for _ in 1:nthreads()] : nothing
-    phspecs = compute_phspec ? [PhononSpectralData(phspec_params, nmodes, nq) for _ in 1:nthreads()] : nothing
+    phselfs = compute_phself ? [PhononSelfEnergy{FT}(nmodes, nq, length(phself_params.Tlist)) for _ in 1:nchunks] : nothing
+    phspecs = compute_phspec ? [PhononSpectralData(phspec_params, nmodes, nq) for _ in 1:nchunks] : nothing
     transport_serta = compute_transport ? TransportSERTA{FT}(iband_min:iband_max, nk, length(transport_params.Tlist)) : nothing
 
     # Compute and save electron state at k
@@ -102,18 +104,18 @@ function run_eph_outer_loop_q(
     # Setup WannierInterpolators
     epmat = get_interpolator(model.epmat; fourier_mode)
     dyn = get_interpolator(model.ph_dyn; fourier_mode)
-    ham_threads = [get_interpolator(model.el_ham; fourier_mode) for _ in 1:nthreads()]
+    ham_threads = [get_interpolator(model.el_ham; fourier_mode) for _ in 1:nchunks]
     vel_threads = if model.el_velocity_mode === :Direct
-        [get_interpolator(model.el_vel; fourier_mode) for _ in 1:nthreads()]
+        [get_interpolator(model.el_vel; fourier_mode) for _ in 1:nchunks]
     else
-        [get_interpolator(model.el_ham_R; fourier_mode) for _ in 1:nthreads()]
+        [get_interpolator(model.el_ham_R; fourier_mode) for _ in 1:nchunks]
     end
     register_kpoints!(epmat, qpoints.vectors)
     register_kpoints!(dyn, qpoints.vectors)
 
     # E-ph matrix in electron Wannier, phonon Bloch representation
     ep_eRpq_obj = get_next_wannier_object(model.epmat)
-    ep_eRpq_threads = [get_interpolator(ep_eRpq_obj; fourier_mode) for _ in 1:nthreads()]
+    ep_eRpq_threads = [get_interpolator(ep_eRpq_obj; fourier_mode) for _ in 1:nchunks]
 
     mpi_isroot() && @info "Number of q points = $nq"
     mpi_isroot() && @info "Number of k points = $nk"
@@ -137,7 +139,7 @@ function run_eph_outer_loop_q(
 
         compute_eph_RR_to_Rq!(ep_eRpq_obj, epmat, xq, ph.u)
 
-        @threads for (id_chunk, iks) in enumerate(chunks(1:nk; n = Threads.nthreads()))
+        @threads for (id_chunk, iks) in enumerate(index_chunks(1:nk; n = nchunks))
             epstate = epstates[id_chunk]
 
             ham = ham_threads[id_chunk]
