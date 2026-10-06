@@ -112,11 +112,11 @@ i.e. ``(I - D⁻¹ Sᵢ U) δf = rhs`` with `D = diag(inv_τ)`, `Sᵢ = scat_mat
 `rhs` the SERTA solution.
 
 * `solver = :gmres`: GMRES (Krylov.jl, no restart) from `δf = 0`. Stops when the relative residual
-  `‖rhs - (I - D⁻¹ Sᵢ U) δf‖ / ‖rhs‖ ≤ rtol`. `obs_iter` holds only the SERTA observable. The
+  `‖rhs - (I - D⁻¹ Sᵢ U) δf‖ / ‖rhs‖ ≤ rtol`. `obs_iter` is `nothing`. The
   Krylov basis is stored, so memory grows to `niter × length(rhs)` Vec3 values (`niter ≤ max_iter`).
 * `solver = :fixed_point`: fixed-point iteration with linear `mixing` from `δf = rhs`. Stops when
   `norm(X - X_old) / norm(X) < rtol` for the observable `X`; `obs_iter` holds the observable of every
-  iterate. It contracts by the slowest-relaxing mode, so it converges slowly when scattering is
+  iterate, starting from `rhs`. It contracts by the slowest-relaxing mode, so it converges slowly when scattering is
   mostly small-angle, as in metals at low temperature.
 
 `observable(δf) -> X` is the reported quantity (`obs`, `obs_iter`), e.g. the conductivity.
@@ -152,7 +152,7 @@ function _solve_bte_gmres(rhs::AbstractVector{Vec3{FT}}, scat_mat, map_i_to_f, i
     elseif iT !== nothing
         @info "iT=$iT, GMRES converged at iteration $(stats.niter)"
     end
-    (; δf, obs = observable(δf), obs_iter = [observable(rhs)], niter = stats.niter, converged)
+    (; δf, obs = observable(δf), obs_iter = nothing, niter = stats.niter, converged)
 end
 
 function _solve_bte_fixed_point(rhs::AbstractVector, scat_mat, map_i_to_f, inv_τ;
@@ -192,15 +192,16 @@ Solve Boltzmann transport equation for electrons.
 ``δf_i[i] = scat_mat[i, j] * δf_f[j] / inv_τ_i[i] + δf_i_serta[i]``
 scat_mat is a rectangular matrix, mapping states in `el_f` to states in `el_i`.
 δf[j] is the occupations for states `el_f` and is calculated by unfolding `δf_i`.
-`solver` is `:gmres` (default) or `:fixed_point`; see `_solve_bte`. `σ_iter` holds the
-conductivity of every fixed-point iterate, and only the SERTA one (first row) for GMRES.
+`solver` is `:gmres` (default) or `:fixed_point`; see `_solve_bte`. `σ_iter`, the conductivity
+of every fixed-point iterate (first row SERTA), is returned only for `solver = :fixed_point` and
+is `nothing` for GMRES.
 """
 function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; solver = :gmres, max_iter=100, rtol=1e-10, mixing = 1.0, interpolate = false) where {FT}
     output = (σ_serta = zeros(FT, 3, 3, length(params.Tlist)),
               σ = zeros(FT, 3, 3, length(params.Tlist)),
               δf_i_serta = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
               δf_i = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
-              σ_iter = fill(FT(NaN), (max_iter+1, 3, 3, length(params.Tlist))),
+              σ_iter = solver === :fixed_point ? fill(FT(NaN), (max_iter+1, 3, 3, length(params.Tlist))) : nothing,
     )
 
     map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry; interpolate)
@@ -217,9 +218,10 @@ function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, 
         sol = _solve_bte(δf_i_serta, scat_mat[iT], map_i_to_f, view(inv_τ_i, :, iT);
                          solver, max_iter, rtol, mixing, observable=obs, iT)
 
-        output.σ_iter[1, :, :, iT] .= σ_serta
-        for iter in 2:length(sol.obs_iter)
-            output.σ_iter[iter, :, :, iT] .= sol.obs_iter[iter]
+        if solver === :fixed_point
+            for (iter, σ_iter) in enumerate(sol.obs_iter)
+                output.σ_iter[iter, :, :, iT] .= σ_iter
+            end
         end
 
         output.σ_serta[:, :, iT] .= σ_serta

@@ -69,10 +69,12 @@ end
         r_fp = EP.solve_electron_bte(c_ref.el_i, c_ref.el_f, c_ref.Sᵢ, stack(c_ref.Sₒ), occ(), sym;
                                      solver = :fixed_point, interpolate = false)
         @test r_ref.σ_serta == r_fp.σ_serta
+        @test r_ref.δf_i_serta == r_fp.δf_i_serta
         @test r_ref.σ ≈ r_fp.σ rtol = 1e-8
-        # σ_iter: SERTA in row 1 for both; the iterates only for the fixed point.
-        @test r_ref.σ_iter[1, :, :, :] == r_fp.σ_iter[1, :, :, :]
-        @test all(isnan, r_ref.σ_iter[2:end, :, :, :])
+        @test r_ref.δf_i ≈ r_fp.δf_i rtol = 1e-8
+        # σ_iter is a fixed-point output: SERTA in row 1, then the iterates.
+        @test r_ref.σ_iter === nothing
+        @test r_fp.σ_iter[1, :, :, :] == r_fp.σ_serta
         @test all(isfinite, r_fp.σ_iter[2, :, :, :])
         @test_throws ArgumentError EP.solve_electron_bte(c_ref.el_i, c_ref.el_f, c_ref.Sᵢ,
             stack(c_ref.Sₒ), occ(), sym; solver = :jacobi)
