@@ -372,6 +372,23 @@ end
             end
         end
 
+        # --- the direct cusolverDnZheevjBatched call is bitwise cuSOLVER.jl's heevjBatched!,
+        #     unchunked and chunked at heevj_batch_max ---
+        ext = Base.get_extension(ElectronPhonon, :ElectronPhononCUDAExt)
+        for (nw2, nk2) in ((3, 1000), (8, ext.heevj_batch_max(8) + 37), (40, ext.heevj_batch_max(40) + 5))
+            A3 = CUDA.randn(ComplexF64, nw2, nw2, nk2)
+            H3 = A3 .+ permutedims(conj.(A3), (2, 1, 3))
+            E_ref = similar(H3, Float64, nw2, nk2); U_ref = similar(H3); V_ref = similar(E_ref)
+            for c in Iterators.partition(1:nk2, ext.heevj_batch_max(nw2))
+                W, Uc = CUDA.cuSOLVER.heevjBatched!('V', 'U', H3[:, :, c])
+                E_ref[:, c] .= W; U_ref[:, :, c] .= Uc
+                V_ref[:, c] .= CUDA.cuSOLVER.heevjBatched!('N', 'U', H3[:, :, c])
+            end
+            E3, U3 = eigen_batched(copy(H3))
+            @test E3 == E_ref && U3 == U_ref
+            @test eigvals_batched(copy(H3)) == V_ref
+        end
+
         # electron-phonon batched drivers on the GPU vs the per-k/q CPU reference
         check_eph_batched(ElectronPhonon.gpu_backend(); rtol=1e-9)
 

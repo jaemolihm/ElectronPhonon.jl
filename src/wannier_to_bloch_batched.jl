@@ -9,7 +9,7 @@ using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV, syev!
 # These complement the per-k `compute_el_eigen!` / `compute_el_eigen_valueonly!`
 # (wannier_to_bloch.jl): `get_fourier_batched!` interpolates `H(k)` for all k at once (one GEMM
 # chain), then a batched Hermitian eigensolve diagonalizes the stack. Everything runs on the backend
-# of `ham.op_r` (CPU or GPU); the CUDA extension provides the batched `heevjBatched!` methods.
+# of `ham.op_r` (CPU or GPU); the CUDA extension provides the batched `heevjBatched` methods.
 #
 # Naming mirrors the per-k routines:
 #   compute_el_eigen_batched           <-> compute_el_eigen!            (eigenvalues + eigenvectors)
@@ -23,12 +23,12 @@ using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV, syev!
 
 Eigenvalues of a stack of Hermitian matrices `Hk` of size `(nw, nw, nk)`, returned as
 `(nw, nk)`. CPU method loops over LAPACK `syev!`; the CUDA extension provides a batched
-`heevjBatched!` method for `CuArray`s.
+`heevjBatched` method for `CuArray`s.
 
 Overwrites (destroys) `Hk`; a caller that still needs `Hk` afterwards must copy it first.
 """
 function eigvals_batched(Hk::AbstractArray{Complex{T},3}) where {T}
-    # CPU method; the CuArray method (CUSOLVER heevjBatched!) lives in ext/ElectronPhononCUDAExt.jl.
+    # CPU method; the CuArray method (CUSOLVER heevjBatched) lives in ext/ElectronPhononCUDAExt.jl.
     nw, n2, nk = size(Hk)
     @assert nw == n2
     E = Matrix{T}(undef, nw, nk)
@@ -44,16 +44,18 @@ end
 
 Eigenvalues `E` `(nw, nk)` and eigenvectors `U` `(nw, nw, nk)` of a stack of Hermitian
 matrices `Hk` of size `(nw, nw, nk)`. CPU method loops over LAPACK `syev!`; the CUDA
-extension provides a batched `heevjBatched!` method for `CuArray`s.
+extension provides a batched `heevjBatched` method for `CuArray`s.
 
 Overwrites `Hk`: the returned `U` is `Hk` itself, overwritten in place with the eigenvectors.
+The device method does not check the solver's `info`: cuSOLVER 12.2.6 does not report
+non-convergence through it.
 
 Note: unlike the per-k `compute_el_eigen!`, no EPW degeneracy gauge-fixing is applied, so for
 degenerate bands the eigenvectors may differ from `compute_el_eigen!` by a gauge (the
 eigenvalues, and the eigen-decomposition, are unaffected).
 """
 function eigen_batched(Hk::AbstractArray{Complex{T},3}) where {T}
-    # CPU method; the CuArray method (CUSOLVER heevjBatched!) lives in ext/ElectronPhononCUDAExt.jl.
+    # CPU method; the CuArray method (CUSOLVER heevjBatched) lives in ext/ElectronPhononCUDAExt.jl.
     nw, n2, nk = size(Hk)
     @assert nw == n2
     E = Matrix{T}(undef, nw, nk)
