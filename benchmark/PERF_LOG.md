@@ -42,7 +42,7 @@ timing noise and should not be trended on its own.
 
 **Caveat — the bench's `relerr(g2)=0.76` / `ωq` mismatch is NOT a correctness regression.**
 `run_cpu` uses the EPW-degeneracy-gauge-fixed per-k eigensolver; `run_gpu` uses the batched
-Jacobi (`eigen_batched`, no gauge-fixing). For Pb's degenerate bands the two pick different
+Jacobi (`eigen_batched!`, no gauge-fixing). For Pb's degenerate bands the two pick different
 eigenvector gauges, so per-band `g2 = |ep|²/(2ω)` differs while gauge-independent quantities
 match: the sorted `ωq` value set agrees to 2.7e-9, eigenvalues agree to 3.8e-15, and the
 Eliashberg gaps were previously validated CPU-vs-GPU to 1e-5 meV. The in-repo loop test

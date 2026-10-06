@@ -121,8 +121,8 @@ only public constructor: the `BatchedFourierCore` engine it composes is internal
 ### Batched Hermitian eigensolve + band-eigenvalue drivers
 
 Diagonalization lives in `src/wannier_to_bloch_batched.jl` (keeping `src/wannier/` pure Fourier).
-Two batched eigensolves over a stack `Hk :: (nw, nw, nk)`: `eigvals_batched` (values) and
-`eigen_batched` (values + vectors). CPU methods loop over LAPACK `syev!`. The extension has two
+Two batched eigensolves over a stack `Hk :: (nw, nw, nk)`: `eigvals_batched!` (values) and
+`eigen_batched!` (values + vectors). CPU methods loop over LAPACK `syev!`. The extension has two
 device solvers, chosen by `nw` alone, so k and k+q (and the filter and the state build) always use
 the same one:
 
@@ -138,12 +138,9 @@ the same one:
   (verified correct to `nw=256`, agreeing with LAPACK to ~1e-11); relative residual ≤ 3e-15 for
   `nw ≤ 16` at `tol = eps(Float64)`.
 
-Non-convergence (in practice NaN or Inf in `H`) gives the Jacobi matrix NaN eigenvalues and
-eigenvectors. With `check = true` (default) the device and the CPU methods throw on NaN
-eigenvalues, on the device at one reduction and one host synchronization per call. The per-tile
-k+q solve of the e-ph loop passes `check = false` and marks the point `nband = -1`, which the
-engine's window count throws on from the host copy it already reads, so the loop gains no
-synchronization. cuSOLVER reports nothing for NaN input.
+The Jacobi solve throws if a matrix did not converge (in practice NaN or Inf in `H`): the kernel
+marks it with NaN eigenvalues and the launch checks them, at one reduction and one host
+synchronization per call. cuSOLVER reports nothing for NaN input.
 
 The cuSOLVER path chunks the batch at `heevj_batch_max` (2^16 for small `nw`).
 Two reasons: the solver reports its workspace size as a 32-bit int, and that workspace is ~16 kB
@@ -293,13 +290,13 @@ Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
 - `src/wannier/WannierInterpolator.jl` — declare/export `to_device`.
 - `src/wannier/batched_interpolator.jl` — backend-generic buffers + GEMM phase; new
   `get_fourier_batched!`. Per-k API unchanged. Pure Fourier only.
-- `src/wannier_to_bloch_batched.jl` — `eigvals_batched`/`eigen_batched` (CPU), the
+- `src/wannier_to_bloch_batched.jl` — `eigvals_batched!`/`eigen_batched!` (CPU), the
   `compute_el_eigen[_valueonly]_batched` and e-ph drivers (per-k/q and list-batched). Included after
   `wannier_to_bloch.jl`. All backend-generic.
 - `src/common/gpu_utils.jl` — the backend primitives (`alloc`, `to_device`, `free_bytes`,
   `synchronize`, `batched_gemm!`).
-- `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`, `eigvals_batched`/
-  `eigen_batched` (Jacobi in `ext/cuda_eigen_jacobi.jl` for `nw ≤ 12`, cuSOLVER `heevjBatched`
+- `ext/ElectronPhononCUDAExt.jl` — `to_device(::WannierObject)`, `eigvals_batched!`/
+  `eigen_batched!` (Jacobi in `ext/cuda_eigen_jacobi.jl` for `nw ≤ 12`, cuSOLVER `heevjBatched`
   above), `batched_gemm!` (`gemm_strided_batched!`), and the fused
   rotation / window-scatter kernels.
 - `src/calculator/run_eph.jl` — the three drivers as one `_run_eph` (entry checks, state containers,

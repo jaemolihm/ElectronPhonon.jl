@@ -2,7 +2,7 @@ using Test
 using ElectronPhonon
 using ElectronPhonon: WannierObject, Vec3, compute_eph_RR_to_kR!, compute_eph_kR_to_kq!, compute_eph_Rq_to_kq!, to_device
 # Batched drivers / primitives are internal (unexported); import the ones the tests use.
-using ElectronPhonon: eigvals_batched, eigen_batched, compute_el_eigen_batched, compute_el_eigen_valueonly_batched,
+using ElectronPhonon: eigvals_batched!, eigen_batched!, compute_el_eigen_batched, compute_el_eigen_valueonly_batched,
     compute_el_velocity_direct_batched, compute_eph_kR_to_kq_batched!, eph_rotate_kR_batched!,
     eph_apply_rotations!, eph_apply_rotations_rqkq!, batched_gemm!, get_fourier_batched!
 using LinearAlgebra
@@ -253,22 +253,18 @@ end
 end
 
 @testset "batched eigensolve (CPU)" begin
-    # CPU eigen_batched: U must be eigenvectors of H — check eigenvalues vs LAPACK and the
+    # CPU eigen_batched!: U must be eigenvectors of H — check eigenvalues vs LAPACK and the
     # gauge-invariant reconstruction H ≈ U·diag(E)·U† at a few k-points. (The GPU counterpart is
     # in "GPU batched Wannier interpolation".)
     nw, nk = 8, 5
     H = Array{ComplexF64,3}(undef, nw, nw, nk)
     for k in 1:nk; A = rand(ComplexF64, nw, nw); @views H[:, :, k] .= (A + A') / 2; end
-    Hh = copy(H)   # eigen_batched overwrites its input
-    E, U = eigen_batched(H)
+    Hh = copy(H)   # eigen_batched! overwrites its input
+    E, U = eigen_batched!(H)
     for k in (1, 3, 5)
         @test sort(E[:, k]) ≈ sort(real(eigvals(Hermitian(Hh[:, :, k]))))
         @test U[:, :, k] * Diagonal(E[:, k]) * U[:, :, k]' ≈ Hh[:, :, k]
     end
-    # `check = true`: a NaN eigenvalue in any column throws (LAPACK itself throws on NaN input, so
-    # the check is exercised directly).
-    @test ElectronPhonon.check_eigensolve_converged(E, "eigen_batched") === nothing
-    @test_throws ErrorException ElectronPhonon.check_eigensolve_converged([1.0 2.0; 3.0 NaN], "x")
 end
 
 # Gauge-invariant errors of eigenpairs (E, U) of the Hermitian H, relative to ‖H‖_F (1 if H = 0):
@@ -312,10 +308,6 @@ end
             @test !converged && nsweep == 20
         end
     end
-    # The per-tile k+q solve marks a point whose eigensolve did not converge `nband = -1`, and the
-    # e-ph engine's window count throws on it.
-    @test ElectronPhonon._kqpairs_in_window!(zeros(Int, 3), [2, 0, 1]) == 2
-    @test_throws ErrorException ElectronPhonon._kqpairs_in_window!(zeros(Int, 3), [2, -1, 1])
 end
 
 @testset "GPU batch_size budget" begin
@@ -419,15 +411,15 @@ end
             H = CUDA.rand(ComplexF64, nw2, nw2, nk2)
             for k in 1:nk2; @views H[:, :, k] .= (H[:, :, k] + H[:, :, k]') / 2; end
             Hh = Array(H)   # the batched solvers overwrite their input, so snapshot it first
-            Ebig = Array(eigvals_batched(copy(H)))
-            Eev, Uev = eigen_batched(copy(H)); Eev = Array(Eev); Uev = Array(Uev)
+            Ebig = Array(eigvals_batched!(copy(H)))
+            Eev, Uev = eigen_batched!(copy(H)); Eev = Array(Eev); Uev = Array(Uev)
             for k in 1:nk2
                 @test sort(Ebig[:, k]) ≈ sort(real(eigvals(Hermitian(Hh[:, :, k]))))
                 @test Uev[:, :, k] * Diagonal(Eev[:, k]) * Uev[:, :, k]' ≈ Hh[:, :, k]
             end
         end
 
-        # --- the cuSOLVER path (nw > JACOBI_NW_MAX) of eigen_batched / eigvals_batched is bitwise
+        # --- the cuSOLVER path (nw > JACOBI_NW_MAX) of eigen_batched! / eigvals_batched! is bitwise
         #     cuSOLVER.jl's heevjBatched!, unchunked (nw = 13) and chunked at heevj_batch_max
         #     (nw = 40); the eigenvectors overwrite the input on both ---
         for (nw2, nk2) in ((13, 1000), (40, ext.heevj_batch_max(40) + 5))
@@ -440,10 +432,10 @@ end
                 V_ref[:, c] .= CUDA.cuSOLVER.heevjBatched!('N', 'U', H3[:, :, c])
             end
             H3_in = copy(H3)
-            E3, U3 = eigen_batched(H3_in)
+            E3, U3 = eigen_batched!(H3_in)
             @test E3 == E_ref && U3 == U_ref
             @test U3 === H3_in
-            @test eigvals_batched(copy(H3)) == V_ref
+            @test eigvals_batched!(copy(H3)) == V_ref
         end
 
         # --- Jacobi path (nw ≤ JACOBI_NW_MAX) against LAPACK on the same matrices; the batch mixes
@@ -456,33 +448,28 @@ end
                 Hh[:, :, k] .= Q * Diagonal(Float64[max(i - 1, 1) for i in 1:nw2]) * Q'
             end
             H = CuArray(Hh)
-            Ej, Uj = eigen_batched(H)
+            Ej, Uj = eigen_batched!(H)
             @test Uj === H                                   # eigenvectors overwrite the input
-            @test eigvals_batched(CuArray(Hh)) == Ej         # bitwise the same eigenvalues
+            @test eigvals_batched!(CuArray(Hh)) == Ej         # bitwise the same eigenvalues
             Ej = Array(Ej); Uj = Array(Uj)
             errs = [eigenpair_errors(Hh[:, :, k], Ej[:, k], Uj[:, :, k]) for k in 1:nk2]
             @test maximum(maximum, errs) <= 1e-13
         end
 
-        # --- Jacobi non-convergence: NaN or Inf input throws with `check = true` (the default);
-        #     with `false` that matrix alone gets NaN eigenvalues and eigenvectors. (cuSOLVER returns
-        #     finite values for NaN input, so the nw > JACOBI_NW_MAX path has nothing to detect.) ---
+        # --- Jacobi non-convergence: NaN or Inf input throws. (cuSOLVER returns finite values for
+        #     NaN input, so the nw > JACOBI_NW_MAX path has nothing to detect.) ---
         for x in (NaN, Inf)
             Hn = CUDA.randn(ComplexF64, 3, 3, 5)
             Hn[1:1, 2:2, 4:4] .= x
-            @test_throws ErrorException eigen_batched(copy(Hn))
-            @test_throws ErrorException eigvals_batched(copy(Hn))
-            En, Un = Array.(eigen_batched(copy(Hn); check = false))
-            @test all(isnan, En[:, 4]) && all(isnan, Un[:, :, 4])
-            @test all(isfinite, En[:, [1, 2, 3, 5]]) && all(isfinite, Un[:, :, [1, 2, 3, 5]])
-            @test isequal(Array(eigvals_batched(copy(Hn); check = false)), En)
+            @test_throws ErrorException eigen_batched!(copy(Hn))
+            @test_throws ErrorException eigvals_batched!(copy(Hn))
         end
 
         # --- empty batch, both paths ---
         for nw2 in (3, 13)
             H0 = CuArray{ComplexF64}(undef, nw2, nw2, 0)
-            @test size(eigvals_batched(H0)) == (nw2, 0)
-            E0, U0 = eigen_batched(H0)
+            @test size(eigvals_batched!(H0)) == (nw2, 0)
+            E0, U0 = eigen_batched!(H0)
             @test size(E0) == (nw2, 0) && U0 === H0
         end
 

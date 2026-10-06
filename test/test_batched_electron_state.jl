@@ -2,7 +2,7 @@ using Test
 using ElectronPhonon
 using ElectronPhonon: gpu_backend, on_backend, Vec3, CPUBackend, copy_batched_electron_states!,
     solve_electron_bands_batched, copy_window_bands!, unit_to_aru, BatchedWannierInterpolator,
-    get_fourier_batched!, eigen_batched, inside_window
+    get_fourier_batched!, eigen_batched!, inside_window
 using OffsetArrays: no_offset_view
 
 const BATCHED_ELECTRON_GPU_AVAILABLE = try
@@ -138,7 +138,7 @@ end
             out = copy_window_bands!(tile, bands, eachindex(xks))
             hk = ElectronPhonon.alloc(backend, ComplexF64, nw^2, length(xks))
             get_fourier_batched!(hk, itp, xks)
-            E, U = Array.(eigen_batched(reshape(hk, nw, nw, :)))
+            E, U = Array.(eigen_batched!(reshape(hk, nw, nw, :)))
             e, u = Array(out.e), Array(out.u)
             off, nband = Array(out.iband_offset), Array(out.nband)
             @test out.nk == length(xks) && out.nband_max == max(maximum(nband), 1)

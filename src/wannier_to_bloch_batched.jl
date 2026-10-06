@@ -19,42 +19,28 @@ using ElectronPhonon.AllocatedLAPACK: HermitianEigenWsSYEV, syev!
 #  Batched Hermitian eigensolves (CPU methods; CUDA extension adds CuArray methods)
 
 """
-    eigvals_batched(Hk; check = true) -> E
+    eigvals_batched!(Hk) -> E
 
 Eigenvalues of a stack of Hermitian matrices `Hk` of size `(nw, nw, nk)`, returned as
 `(nw, nk)`. CPU method loops over LAPACK `syev!`; the CUDA extension provides a `CuArray` method:
 one-thread-per-matrix Jacobi for `nw ≤ 12`, cuSOLVER `heevjBatched` above.
 
 May overwrite (destroy) `Hk`; a caller that still needs `Hk` afterwards must copy it first.
-`check = true` throws if a matrix has NaN eigenvalues: on the device, one that did not converge
-(NaN or Inf input); with `false` the caller checks. On the device the check costs one reduction
-and one host synchronization; cuSOLVER (`nw > 12`) returns finite values for NaN input. On the
-CPU, LAPACK itself throws on NaN input.
 """
-function eigvals_batched(Hk::AbstractArray{Complex{T},3}; check::Bool = true) where {T}
+function eigvals_batched!(Hk::AbstractArray{Complex{T},3}) where {T}
     # CPU method; the CuArray method lives in ext/ElectronPhononCUDAExt.jl.
-    nw, n2, nk = size(Hk)
-    @assert nw == n2
+    nw, nw2, nk = size(Hk)
+    @assert nw == nw2
     E = Matrix{T}(undef, nw, nk)
     ws = HermitianEigenWsSYEV{Complex{T},T}()
     @views for ik in 1:nk
         E[:, ik] .= syev!(ws, 'N', 'U', Hk[:, :, ik])[1]   # syev! overwrites the slice
     end
-    check && check_eigensolve_converged(E, "eigvals_batched")
     E
 end
 
-# `check = true` of `eigvals_batched` / `eigen_batched`, on either backend: throws if a column of `E`
-# has a NaN.
-function check_eigensolve_converged(E, fname)
-    any(isnan, E) || return nothing
-    nfailed = count(isnan, vec(sum(E; dims = 1)))   # columns with a NaN
-    error("$fname: the eigensolve did not converge for $nfailed of $(size(E, 2)) matrices ",
-          "(NaN or Inf input?)")
-end
-
 """
-    eigen_batched(Hk; check = true) -> (E, U)
+    eigen_batched!(Hk) -> (E, U)
 
 Eigenvalues `E` `(nw, nk)` and eigenvectors `U` `(nw, nw, nk)` of a stack of Hermitian
 matrices `Hk` of size `(nw, nw, nk)`. CPU method loops over LAPACK `syev!`; the CUDA
@@ -62,23 +48,20 @@ extension provides a `CuArray` method: one-thread-per-matrix Jacobi for `nw ≤ 
 `heevjBatched` above.
 
 Overwrites `Hk`: the returned `U` is `Hk` itself, overwritten in place with the eigenvectors.
-`check` is as in [`eigvals_batched`](@ref); with `false` a device matrix that did not converge gets
-NaN eigenvalues and eigenvectors.
 
 Note: unlike the per-k `compute_el_eigen!`, no EPW degeneracy gauge-fixing is applied, so for
 degenerate bands the eigenvectors may differ from `compute_el_eigen!` by a gauge (the
 eigenvalues, and the eigen-decomposition, are unaffected).
 """
-function eigen_batched(Hk::AbstractArray{Complex{T},3}; check::Bool = true) where {T}
+function eigen_batched!(Hk::AbstractArray{Complex{T},3}) where {T}
     # CPU method; the CuArray method lives in ext/ElectronPhononCUDAExt.jl.
-    nw, n2, nk = size(Hk)
-    @assert nw == n2
+    nw, nw2, nk = size(Hk)
+    @assert nw == nw2
     E = Matrix{T}(undef, nw, nk)
     ws = HermitianEigenWsSYEV{Complex{T},T}()
     @views for ik in 1:nk
         E[:, ik] .= syev!(ws, 'V', 'U', Hk[:, :, ik])[1]
     end
-    check && check_eigensolve_converged(E, "eigen_batched")
     E, Hk   # eigenvectors overwritten into Hk
 end
 
@@ -111,7 +94,7 @@ Electron band eigenvalues `(nw, nk)` at every k-point in `xk_list`. Batched coun
 [`compute_el_eigen_valueonly!`](@ref). Runs on, and returns on, the backend of `itp.parent.op_r`.
 """
 function compute_el_eigen_valueonly_batched(itp::BatchedWannierInterpolator, xk_list)
-    eigvals_batched(_fourier_hk_batched(itp, xk_list))
+    eigvals_batched!(_fourier_hk_batched(itp, xk_list))
 end
 
 """
@@ -119,10 +102,10 @@ end
 
 Electron band eigenvalues `(nw, nk)` and eigenvectors `(nw, nw, nk)` at every k-point in
 `xk_list`. Batched counterpart of [`compute_el_eigen!`](@ref). Runs on, and returns on, the backend
-of `itp.parent.op_r`. See [`eigen_batched`](@ref) for the eigenvector gauge caveat.
+of `itp.parent.op_r`. See [`eigen_batched!`](@ref) for the eigenvector gauge caveat.
 """
 function compute_el_eigen_batched(itp::BatchedWannierInterpolator, xk_list)
-    eigen_batched(_fourier_hk_batched(itp, xk_list))
+    eigen_batched!(_fourier_hk_batched(itp, xk_list))
 end
 
 """

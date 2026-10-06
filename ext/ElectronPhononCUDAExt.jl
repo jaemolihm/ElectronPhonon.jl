@@ -21,7 +21,7 @@ using LinearAlgebra: LinearAlgebra
 using CUDA.cuSPARSE: CuSparseMatrixCSR
 using SparseArrays: SparseMatrixCSC
 
-# Notes on the device batched eigensolve (`eigen_batched` / `eigvals_batched`):
+# Notes on the device batched eigensolve (`eigen_batched!` / `eigvals_batched!`):
 #   - nw ≤ JACOBI_NW_MAX: one-thread-per-matrix cyclic Jacobi (`cuda_eigen_jacobi.jl`). Relative
 #     residual ≤ 2e-15 and ‖UᴴU - I‖_F ≤ 2e-14 through nw = 16 on random, exactly-degenerate
 #     and near-degenerate (1e-10 splitting) batches. Its eigenvalues are the same bit for bit with
@@ -84,11 +84,11 @@ ElectronPhonon.to_device(::ElectronPhonon.GPUBackend, arr::AbstractArray) = CuAr
 
 # `heevjBatched!` as cuSOLVER.jl's wrapper of `cusolverDnZheevjBatched` runs it (same `tol`,
 # `max_sweeps`, handle, handle-cached workspace and `info` buffer, so bitwise the same `W` and `A`),
-# but without reading `info` back. An invalid argument still throws, through the returned status.
-function heevj_batched!(jobz::Char, A::CuArray{ComplexF64,3})
+# but into a given `W` and without reading `info` back. An invalid argument still throws, through
+# the returned status.
+function heevj_batched!(jobz::Char, W::CuArray{Float64,2}, A::CuArray{ComplexF64,3})
     n, _, batchSize = size(A)
     lda = max(1, stride(A, 2))
-    W = CuArray{Float64}(undef, n, batchSize)
     dh = cuSOLVER.dense_handle()
     resize!(dh.info, batchSize)
     params = Ref{cuSOLVER.syevjInfo_t}(C_NULL)
@@ -130,68 +130,52 @@ end
 # `heevjBatched!` in the process throw `InexactError`.
 heevj_batch_max(nw::Int) = min(2^16, 2^24 ÷ nw^2)
 
-"""
-    eigvals_batched(Hk::CuArray{ComplexF64,3}; check = true) -> CuMatrix
-
-Eigenvalues `(nw, nk)` of a stack of Hermitian matrices `(nw, nw, nk)` on the device: Jacobi with
-one thread per matrix for `nw ≤ JACOBI_NW_MAX`, cuSOLVER `heevjBatched` above (see module notes).
-`check = true` throws if a matrix did not converge; with `false` its eigenvalues are NaN instead.
-"""
-function ElectronPhonon.eigvals_batched(Hk::CuArray{ComplexF64,3}; check::Bool = true)
-    nw, n2, nk = size(Hk)
-    nw == n2 || throw(DimensionMismatch("Hk must be square in its first two dimensions, got $(size(Hk))"))
-    nk == 0 && return similar(Hk, Float64, nw, 0)
-    E = if nw <= JACOBI_NW_MAX
-        # Jacobi: Hk is read only.
-        jacobi_eigen_batched!(similar(Hk, Float64, nw, nk), nothing, Hk)
-    elseif nk <= heevj_batch_max(nw)
-        # cuSOLVER, one call: heevj_batched! overwrites Hk (destroy-input contract; see the CPU
-        # method).
-        heevj_batched!('N', Hk)
-    else
-        # cuSOLVER, chunked.
-        E_chunked = similar(Hk, Float64, nw, nk)
-        for c in Iterators.partition(1:nk, heevj_batch_max(nw))
-            # `Hk[:,:,c]` is a fresh getindex copy that heevj_batched! may overwrite — do NOT wrap
-            # the source in @views (a CuArray trailing-range view aliases Hk). `E_chunked[:,c] .=`
-            # is already an in-place broadcast assignment (dotview), so it needs no @views.
-            E_chunked[:, c] .= heevj_batched!('N', Hk[:, :, c])
-        end
-        E_chunked
+# The cuSOLVER solve of `eigvals_batched!` / `eigen_batched!`, in chunks of `heevj_batch_max`: each
+# chunk of `Hk` is overwritten in place (a trailing-range view of a `CuArray` is a `CuArray` on the
+# same memory), with the eigenvectors for `jobz = 'V'`.
+function heevj_chunked!(jobz::Char, Hk::CuArray{ComplexF64,3})
+    nw, _, nk = size(Hk)
+    E = similar(Hk, Float64, nw, nk)
+    @views for c in Iterators.partition(1:nk, heevj_batch_max(nw))
+        heevj_batched!(jobz, E[:, c], Hk[:, :, c])
     end
-    check && ElectronPhonon.check_eigensolve_converged(E, "eigvals_batched")
     E
 end
 
 """
-    eigen_batched(Hk::CuArray{ComplexF64,3}; check = true) -> (CuMatrix, CuArray{_,3})
+    eigvals_batched!(Hk::CuArray{ComplexF64,3}) -> CuMatrix
+
+Eigenvalues `(nw, nk)` of a stack of Hermitian matrices `(nw, nw, nk)` on the device: Jacobi with
+one thread per matrix for `nw ≤ JACOBI_NW_MAX` (`Hk` is only read), cuSOLVER `heevjBatched` above
+(`Hk` is destroyed); see module notes. The Jacobi solve throws if a matrix did not converge.
+"""
+function ElectronPhonon.eigvals_batched!(Hk::CuArray{ComplexF64,3})
+    nw, nw2, nk = size(Hk)
+    nw == nw2 || throw(DimensionMismatch("Hk must be square in its first two dimensions, got $(size(Hk))"))
+    nk == 0 && return similar(Hk, Float64, nw, 0)
+    if nw <= JACOBI_NW_MAX
+        jacobi_eigen_batched!(similar(Hk, Float64, nw, nk), nothing, Hk)
+    else
+        heevj_chunked!('N', Hk)
+    end
+end
+
+"""
+    eigen_batched!(Hk::CuArray{ComplexF64,3}) -> (CuMatrix, CuArray{_,3})
 
 Eigenvalues `(nw, nk)` and eigenvectors `(nw, nw, nk)` of a stack of Hermitian matrices on the
-device, by the solver of [`eigvals_batched`](@ref), whose eigenvalues it reproduces bit for bit.
-`check` is as there; with `false` a matrix that did not converge has NaN eigenvalues and vectors.
+device, by the solver of [`eigvals_batched!`](@ref), whose eigenvalues it reproduces bit for bit.
+The eigenvectors overwrite `Hk`, which is the array returned.
 """
-function ElectronPhonon.eigen_batched(Hk::CuArray{ComplexF64,3}; check::Bool = true)
-    nw, n2, nk = size(Hk)
-    nw == n2 || throw(DimensionMismatch("Hk must be square in its first two dimensions, got $(size(Hk))"))
+function ElectronPhonon.eigen_batched!(Hk::CuArray{ComplexF64,3})
+    nw, nw2, nk = size(Hk)
+    nw == nw2 || throw(DimensionMismatch("Hk must be square in its first two dimensions, got $(size(Hk))"))
     nk == 0 && return (similar(Hk, Float64, nw, 0), Hk)
-    # Every branch overwrites Hk with the eigenvectors (destroy-input contract; see the CPU method).
     E = if nw <= JACOBI_NW_MAX
-        # Jacobi
         jacobi_eigen_batched!(similar(Hk, Float64, nw, nk), Hk, Hk)
-    elseif nk <= heevj_batch_max(nw)
-        # cuSOLVER, one call
-        heevj_batched!('V', Hk)
     else
-        # cuSOLVER, chunked: each chunk is solved in a fresh copy and written back.
-        E_chunked = similar(Hk, Float64, nw, nk)
-        for c in Iterators.partition(1:nk, heevj_batch_max(nw))
-            U_chunk = Hk[:, :, c]   # fresh getindex copy ('V' overwrites it)
-            E_chunked[:, c] .= heevj_batched!('V', U_chunk)
-            Hk[:, :, c] .= U_chunk
-        end
-        E_chunked
+        heevj_chunked!('V', Hk)
     end
-    check && ElectronPhonon.check_eigensolve_converged(E, "eigen_batched")
     (E, Hk)
 end
 

@@ -118,7 +118,7 @@ end
             msqrt = to_device(backend, sqrt.(model_pb.mass))
             D ./= reshape(msqrt, :, 1, 1)
             D ./= reshape(msqrt, 1, :, 1)
-            Esq, U = ElectronPhonon.eigen_batched(D)
+            Esq, U = ElectronPhonon.eigen_batched!(D)
             @test on_backend(backend, phs.e) && on_backend(backend, phs.u)
             @test isequal(Array(phs.e), Array(sign.(Esq) .* sqrt.(abs.(Esq))))
             @test isequal(Array(phs.u), Array(U ./ reshape(msqrt, :, 1, 1)))

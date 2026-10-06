@@ -970,12 +970,9 @@ end
 # The pairs of a tile whose k+q has a state in the window: writes their positions in the tile to
 # the front of `ind_kept_kqpairs`, in order, and returns their number. `in_window[j]` is nonzero
 # for such a pair: its number of window bands at k+q, or its index in the precomputed k+q states.
-# A negative entry is a k+q whose eigensolve did not converge (`solve_electron_bands_batched`).
 function _kqpairs_in_window!(ind_kept_kqpairs, in_window)
     n_kept = 0
     for (j, x) in enumerate(in_window)
-        x < 0 && error("the k+q eigensolve did not converge for pair $j of the tile ",
-                       "(NaN or Inf in H(k+q)?)")
         x == 0 && continue
         ind_kept_kqpairs[n_kept += 1] = j
     end
