@@ -182,20 +182,31 @@ end
 # For small nw/nmodes the rotations `ep_kq = ukq' * g * u_ph` are tiny matmuls that cuBLAS
 # strided-batched runs far below FP64 peak. A single fused kernel (both rotations from registers)
 # is faster. Above a threshold the matmuls are large enough that cuBLAS wins, so we fall back to
-# the two GEMMs.
-# Per-thread work grows ~nw³·nmodes², so we gate on the single product nw·nmodes (nmodes = 3·N_atoms
-# ≥ 3, so the product bounds the aspect ratio — no separate per-dim cap needed). Assumes nbandk,
-# nbandkq ≤ nw (true in the full-band loop). The threshold itself is
-# `ElectronPhonon._FUSED_ROT_MAX_NWNM`, in `src` next to the generic method it selects against.
+# the two GEMMs. The gate constants live in `src`, next to the generic method they select against.
+# Assumes nbandk, nbandkq ≤ nw (true in the full-band loop).
 
 # g : (nw, nbandk, nmodes, nq) ; ukq : (nw, nbandkq, nq) ; uph : (nmodes, nmodes, nq)
 # ep : (nbandkq, nbandk, nmodes, nq).
 # One thread per (ibkq, ibk, q) — NOT per q: a per-q thread leaves the GPU idle at production
 # chunk sizes (nq ~ 2·10³-2·10⁴ threads is a handful of blocks on ~100 SMs; the (band², q) grid
-# is nbandkq·nbandk× larger). Each thread accumulates its entry in a fixed order over (jm, iw), so
-# the result does not depend on the launch configuration; the per-im re-read of g/ukq is L1-served
-# (the kernel is occupancy-, not flop-bound).
-function _fused_eph_rot_kernel!(ep, g, ukq, uph, nw, nbkq, nbk, nm, nq)
+# is nbandkq·nbandk× larger). Each thread first forms the left product
+# `t[jm] = Σ_iw conj(ukq[iw, ibkq, q]) g[iw, ibk, jm, q]` for every mode jm, held in registers as an
+# `NTuple{NM}` (nw·nm FMA), then `ep[im] = Σ_jm t[jm] uph[jm, im, q]` (nm² FMA). Both sums run in
+# a fixed order, so the result does not depend on the launch configuration.
+@inline function _rot_left(ukq, g, nw, ibkq, ibk, jm, q)
+    s = zero(eltype(g))
+    for iw in 1:nw
+        s += conj(ukq[iw, ibkq, q]) * g[iw, ibk, jm, q]
+    end
+    s
+end
+
+# Σ_jm t[jm] uph[jm, im, q] over the tuple `t`, unrolled so `t` stays in registers.
+@inline _rot_right(acc, ::Tuple{}, uph, im, q, jm) = acc
+@inline _rot_right(acc, t::Tuple, uph, im, q, jm) =
+    _rot_right(acc + first(t) * uph[jm, im, q], Base.tail(t), uph, im, q, jm + 1)
+
+function _fused_eph_rot_kernel!(ep, g, ukq, uph, ::Val{NM}, nw, nbkq, nbk, nq) where {NM}
     t = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     t <= nbkq * nbk * nq || return
     @inbounds begin
@@ -203,16 +214,9 @@ function _fused_eph_rot_kernel!(ep, g, ukq, uph, nw, nbkq, nbk, nm, nq)
         r = (t - 1) ÷ nbkq
         ibk = r % nbk + 1
         q = r ÷ nbk + 1
-        for im in 1:nm
-            acc = zero(eltype(ep))
-            for jm in 1:nm
-                tval = zero(eltype(ep))
-                for iw in 1:nw
-                    tval += conj(ukq[iw, ibkq, q]) * g[iw, ibk, jm, q]
-                end
-                acc += tval * uph[jm, im, q]
-            end
-            ep[ibkq, ibk, im, q] = acc
+        tv = ntuple(@inline(jm -> _rot_left(ukq, g, nw, ibkq, ibk, jm, q)), Val(NM))
+        for im in 1:NM
+            ep[ibkq, ibk, im, q] = _rot_right(zero(eltype(ep)), tv, uph, im, q, 1)
         end
     end
     return
@@ -229,11 +233,12 @@ function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
     @assert size(g) == (nw, nbandk, nmodes, nq)
-    if nw * nmodes <= ElectronPhonon._FUSED_ROT_MAX_NWNM
+    if nw * nmodes <= ElectronPhonon._FUSED_ROT_MAX_NWNM && nw <= ElectronPhonon._FUSED_ROT_MAX_NW &&
+       nmodes <= ElectronPhonon._FUSED_ROT_MAX_NMODES
         threads = 256
         blocks = cld(nbandkq * nbandk * nq, threads)
         @cuda threads=threads blocks=blocks _fused_eph_rot_kernel!(
-            ep_kq_all, g, ukqs, u_phs, nw, nbandkq, nbandk, nmodes, nq)
+            ep_kq_all, g, ukqs, u_phs, Val(nmodes), nw, nbandkq, nbandk, nq)
     else
         # Large nw/nmodes: cuBLAS strided-batched is efficient; keep the two-GEMM path.
         @assert ElectronPhonon._is_dense(g)
