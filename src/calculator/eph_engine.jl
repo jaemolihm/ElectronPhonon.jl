@@ -507,8 +507,13 @@ function stage1!(eng::OuterKEngine, iks_batch::UnitRange{Int})
         (r == 0 && last(iks_batch) == min(first(iks_batch) + eng.n_outer_batch - 1, eng.kpts.n)) ||
             throw(ArgumentError("with phonons per outer batch, stage1! takes the batches of the loop"))
         iqs = eng.iqs_per_batch[b + 1]
-        eng.phs = compute_phonon_states_batched(eng.model, Kpoints(eng.qpts.vectors[iqs]), [:e, :u];
-            backend = eng.backend, nmodes_kept = eng.phs.nmodes, phs_out = view(eng.phs_capacity, 1:length(iqs)))
+        eng.phs = if isempty(iqs)
+            # No pair of the batch is kept.
+            view(eng.phs_capacity, 1:0)
+        else
+            compute_phonon_states_batched(eng.model, Kpoints(eng.qpts.vectors[iqs]), [:e, :u];
+                backend = eng.backend, nmodes_kept = eng.phs.nmodes, phs_out = view(eng.phs_capacity, 1:length(iqs)))
+        end
         fill!(eng.iq_to_ph_dev, 0)
         view(eng.iq_to_ph_dev, to_device_copy(eng.backend, iqs)) .= Int32(1):Int32(length(iqs))
     end

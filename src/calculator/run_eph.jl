@@ -549,12 +549,14 @@ function _setup_states(order, model::Model{FT}, kpts_input, second_input, option
     # are ascending, so when no ω is below -Ω those modes are the lowest `nmodes_kept` of each q.
     nmodes_kept = model.nmodes
     ω_all = nothing
-    if order isa OuterKLoop && inner_loop_kq && isfinite(energy_conservation_tol) &&
-            !(backend isa CPUBackend) && eph_phonon_basis == :eigenmode && issubset(ph_qty, (:e, :u)) &&
-            !model.polar_phonon.use && ph_eigenpairs === nothing && els_k.nk > 0 && els_kq.nk > 0 &&
-            all(allows_phonon_mode_truncation, calculators) &&
-            (qpts.n * _phonon_state_bytes(FT, model.nmodes, ph_qty) > free_bytes(backend) ÷ 2 ||
-             _FORCE_PHONONS_PER_BATCH[])
+    truncation_allowed = order isa OuterKLoop && inner_loop_kq && isfinite(energy_conservation_tol) &&
+        !(backend isa CPUBackend) && eph_phonon_basis == :eigenmode && issubset(ph_qty, (:e, :u)) &&
+        !model.polar_phonon.use && ph_eigenpairs === nothing && els_k.nk > 0 && els_kq.nk > 0 &&
+        all(allows_phonon_mode_truncation, calculators)
+    # `free_bytes` reads the driver, which does not see the pool's cached memory.
+    truncation_allowed && reclaim_device_memory(backend)
+    if truncation_allowed && (qpts.n * _phonon_state_bytes(FT, model.nmodes, ph_qty) > free_bytes(backend) ÷ 2 ||
+                              _FORCE_PHONONS_PER_BATCH[])
         e_extrema(els) = (in_window = axes(els.e, 1) .<= reshape(els.nband, 1, :);
             (minimum(ifelse.(in_window, els.e, Inf)), maximum(ifelse.(in_window, els.e, -Inf))))
         (emin_k, emax_k), (emin_kq, emax_kq) = e_extrema(els_k), e_extrema(els_kq)
@@ -567,14 +569,27 @@ function _setup_states(order, model::Model{FT}, kpts_input, second_input, option
             Ω_meV = round(Ω / unit_to_aru(:meV), digits = 2)
             @info "Phonon modes kept = $nmodes_kept of $(model.nmodes) (|ω| ≤ $Ω_meV meV)"
         end
-        # When even the kept modes of all q would take more than 3/4 of the free device memory (after
-        # returning the pool's cached memory to the driver), the engine builds the phonons per outer
-        # batch, of the q its kept pairs use only, and selects the pairs with the frequencies of this
-        # value-only solve.
+        # When the kept modes of all q, the engine and the calculators' committed buffers and a
+        # minimal inner tile do not fit the free device memory (the accounting of `plan_batch`),
+        # the engine builds the phonons per outer batch, of the q its kept pairs use only, and selects
+        # the pairs with these value-only frequencies.
+        ω_kept = ω[1:nmodes_kept, :]
+        ω = nothing
         reclaim_device_memory(backend)
-        if qpts.n * _phonon_state_bytes(FT, nmodes_kept, ph_qty; ndisp = model.nmodes) >
-                free_bytes(backend) ÷ 4 * 3 || _FORCE_PHONONS_PER_BATCH[]
-            ω_all = ω[1:nmodes_kept, :]
+        plan = _plan_widths(order, model, backend, calculators; n_outer = kpts.n, n_inner = kqpts.n,
+            nk = kpts.n, nkq = kqpts.n, nchunks = 1, nq_grid = prod(qpts.ngrid), energy_conservation_tol,
+            options.n_outer_batch, n_inner_tile = 1, nband_max_k = els_k.nband_max,
+            nband_max_kq = els_kq.nband_max, els_k, els_kq, phs = (; nmodes = nmodes_kept), el_qty, ph_qty,
+            precompute_el_kq, options.covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq)
+        min_tile = min(kqpts.n, 2^16)
+        needed = qpts.n * _phonon_state_bytes(FT, nmodes_kept, ph_qty; ndisp = model.nmodes) +
+                 plan.committed + plan.bytes.per_pair * min_tile ÷ 7 * 10
+        if needed > free_bytes(backend) || _FORCE_PHONONS_PER_BATCH[]
+            ω_all = ω_kept
+            if verbosity > 0 && mpi_isroot()
+                @info "Phonons built per outer batch: $(round(needed / 1e9, digits = 1)) GB needed with all q, " *
+                      "$(round(free_bytes(backend) / 1e9, digits = 1)) GB free"
+            end
         end
     end
     phs = if ω_all === nothing
