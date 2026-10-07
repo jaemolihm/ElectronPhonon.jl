@@ -23,7 +23,7 @@ Keywords:
   selection whatever `symmetry` is, and a k+q set is used as given.
 * `energy_conservation_tol = Inf` — a finite tolerance drops the point pairs with no process inside
   it (`|e_k - e_{k+q} ± ω_q| <= energy_conservation_tol` for some bands and mode) before the e-ph
-  matrix is computed (`CPUBackend` only).
+  matrix is computed. On a GPU only `run_eph_over_k_and_kq` takes a finite tolerance.
 * `covariant_derivative_of_g = false` — also compute the covariant derivative `block.dg`.
 * `eph_phonon_basis = :eigenmode` — or `:cartesian` (identity phonon rotation).
 * `fourier_mode = "gridopt"` — or `"normal"`: the interpolation of the setup-time state solves on a
@@ -164,6 +164,7 @@ function _allocate_engine(order, model, states, options)
     # The widths the run uses, from the requested ones (`nothing`: the defaults).
     (; n_outer_batch, n_inner_tile, committed, bytes) = _plan_widths(order, model, backend, calculators;
         n_outer, n_inner, nk = kpts.n, nkq = order isa OuterKLoop ? inner_pts.n : 0, nchunks,
+        nq_grid = order isa OuterKLoop && inner_loop_kq ? prod(qpts.ngrid) : 0, energy_conservation_tol,
         inner_loop_kq, options.n_outer_batch, options.n_inner_tile, nband_max_k = els_k.nband_max,
         nband_max_kq = els_kq === nothing ? nw : els_kq.nband_max, els_k, els_kq, phs, el_qty, ph_qty,
         precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis)
@@ -296,14 +297,17 @@ const GPU_OUTER_Q_TILE_BYTES = 8 * 2^30
 # once per chunk), capped at all inner points on a device (`GPU_OUTER_Q_TILE_BYTES` of tile under
 # `OuterQLoop`) and at a cache-sized 1024 per chunk on the CPU.
 function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, nkq, nchunks,
-        n_outer_batch, n_inner_tile, nband_max_k, nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
+        nq_grid = 0, energy_conservation_tol = Inf, n_outer_batch, n_inner_tile, nband_max_k,
+        nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
         precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq)
     (; nw, nmodes) = model
     outer_default = order isa OuterKLoop ? 256 : backend isa CPUBackend ? 1 : 16
     n_outer_batch = max(1, min(something(n_outer_batch, outer_default), n_outer))
     bytes = order isa OuterKLoop ?
         engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk, nkq, el_qty, ph_qty,
-            covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq) :
+            covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
+            device_pair_selection = inner_loop_kq && !(backend isa CPUBackend) &&
+                isfinite(energy_conservation_tol), nq_grid) :
         engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk, el_qty, ph_qty,
             precompute_el_kq, eph_phonon_basis)
     for c in calculators
@@ -384,9 +388,9 @@ function _check_run(order, model, kpts_input, second_input, options)
         "Pass screening_params = nothing.")
     energy_conservation_tol >= 0 ||
         throw(ArgumentError("energy_conservation_tol must be nonnegative, got $energy_conservation_tol"))
-    (isinf(energy_conservation_tol) || backend isa CPUBackend) || throw(ArgumentError(
-        "energy_conservation_tol is a CPUBackend feature: on a GPU computing every pair and letting " *
-        "the calculators' delta functions discard is cheaper. Pass energy_conservation_tol = Inf."))
+    (isinf(energy_conservation_tol) || backend isa CPUBackend || (order isa OuterKLoop && inner_loop_kq)) ||
+        throw(ArgumentError("on a GPU, energy_conservation_tol is supported by run_eph_over_k_and_kq " *
+            "only; pass energy_conservation_tol = Inf"))
     if order isa OuterKLoop
         # Outer k: no precomputed k+q option; the inner set decides the rest.
         precompute_el_kq && throw(ArgumentError("precompute_el_kq is an outer-q option"))
@@ -641,7 +645,8 @@ Estimate the device memory of an e-ph run without running it, from the byte coun
 with (`engine_bytes` and the calculators' `calculator_bytes`) at box widths `nw`, so a
 windowed run uses less. The order follows `model.epmat_outer_momentum` (`el` → outer-k, `ph` →
 outer-q). `nk` is the number of k points and `nkq` the number of k+q points of an outer-k model,
-or of outer q points of an outer-q model. The state containers are not counted. Returns `(; loop, committed, per_pair, batch,
+or of outer q points of an outer-q model. The state containers are not counted, nor the q-index
+table of a device run over a k+q grid (4 bytes per node of the q grid). Returns `(; loop, committed, per_pair, batch,
 free)`, `batch` the inner tile the run would pick on `backend`, with the run's defaults.
 
 Actual device usage starts ~100-150 MB higher: the CUDA library context and workspace (cuBLAS

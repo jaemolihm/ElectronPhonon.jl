@@ -17,7 +17,8 @@ On the GPU:
 - The e-ph calculator loop of the three drivers (`run_eph_over_k_and_kq`, `run_eph_over_k_and_q`,
   `run_eph_over_q_and_k`): the same engines run on host or device arrays, with energy windows (box
   storage, see the design note), the polar dipole term, the covariant derivative (outer k) and
-  symmetry-reduced outer points.
+  symmetry-reduced outer points. `run_eph_over_k_and_kq` also selects the energy-conserving pairs
+  (`energy_conservation_tol`) on the device.
 
 **Not** on the GPU:
 
@@ -25,7 +26,7 @@ On the GPU:
   interpolator.
 - The phonons of a polar model and the phonon quantities beyond `e` and `u` (`vdiag`, the dipole
   coefficients): built on the host and copied to the device.
-- `energy_conservation_tol`: a `CPUBackend` option, refused on a GPU.
+- `energy_conservation_tol` of `run_eph_over_k_and_q` and `run_eph_over_q_and_k`: refused on a GPU.
 - Screening (`screening_params`) is refused on every backend.
 
 ## Decisions

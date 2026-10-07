@@ -459,4 +459,65 @@ function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuAr
     nothing
 end
 
+# ---- device pair selection of the outer-k loop over a resident k+q grid ----------------------
+#
+# `_select_kqpairs_on_device!` (declared in src/calculator/eph_engine.jl): one thread per pair j of
+# the tile finds the q index by the integer grid hash of `_fill_iqs!` and applies the
+# `_kqpairs_conserving_energy!` test. An inclusive scan of the keep flags then gives each
+# kept pair its slot, and a scatter compacts the kept indices in tile order.
+# `ElectronPhonon._wrap_reduced` without its argument check, whose error message does not compile
+# for the device. Both operands are reduced into 0:ng-1 by the engine.
+@inline _wrap_reduced_device(d, ng) = ifelse(d < 0, d + ng, ifelse(d >= ng, d - ng, d))
+
+function _kqpair_select_kernel!(iq_out, keep, qtable, xkqs_int, k1, k2, k3, ng1, ng2, ng3, ikq_first,
+        n_tile, e_k, nband_k, e_kq, nband_kq, ω_q, tol)
+    j = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    j <= n_tile || return
+    @inbounds begin
+        ikq = ikq_first + j - 1
+        h1 = _wrap_reduced_device(xkqs_int[1, ikq] - k1, ng1)
+        h2 = _wrap_reduced_device(xkqs_int[2, ikq] - k2, ng2)
+        h3 = _wrap_reduced_device(xkqs_int[3, ikq] - k3, ng3)
+        iq = Int(qtable[(h1 * ng2 + h2) * ng3 + h3 + 1])
+        iq_out[j] = iq
+        # A missing q (iq = 0) is kept for the caller to refuse.
+        conserving = iq == 0
+        for ν in axes(ω_q, 1), m in 1:nband_kq[ikq], n in 1:nband_k[1], s in (-1, 1)
+            conserving && break
+            conserving = abs(e_k[n, 1] - e_kq[m, ikq] - s * ω_q[ν, iq]) <= tol
+        end
+        keep[j] = conserving
+    end
+    return
+end
+
+function _kqpair_compact_kernel!(ikqs_out, iqs_out, keep, pos, iqs_tile, ikq_first, n_tile)
+    j = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    j <= n_tile || return
+    @inbounds if keep[j] == 1
+        ikqs_out[pos[j]] = ikq_first + j - 1
+        iqs_out[pos[j]] = iqs_tile[j]
+    end
+    return
+end
+
+function ElectronPhonon._select_kqpairs_on_device!(tile_workspace, eng_fields, els_k, ik, ikq_first,
+        n_tile, tol)
+    ng1, ng2, ng3 = eng_fields.qpts.ngrid
+    k1, k2, k3 = eng_fields.xks_int[1, ik], eng_fields.xks_int[2, ik], eng_fields.xks_int[3, ik]
+    (; keep_dev, pos_dev, iqs_tile_dev, ikqs_dev, iqs_dev, n_kept_host) = tile_workspace
+    els_kq, phs = eng_fields.els_kq, eng_fields.phs
+    threads = 256
+    blocks = cld(n_tile, threads)
+    @cuda threads=threads blocks=blocks _kqpair_select_kernel!(iqs_tile_dev, keep_dev,
+        eng_fields.qtable_dev, eng_fields.xkqs_int_dev, k1, k2, k3, ng1, ng2, ng3, ikq_first,
+        n_tile, els_k.e, els_k.nband, els_kq.e, els_kq.nband, phs.e, tol)
+    pos = view(pos_dev, 1:n_tile)
+    accumulate!(+, pos, view(keep_dev, 1:n_tile))
+    @cuda threads=threads blocks=blocks _kqpair_compact_kernel!(ikqs_dev, iqs_dev, keep_dev, pos_dev,
+        iqs_tile_dev, ikq_first, n_tile)
+    copyto!(n_kept_host, 1, pos_dev, n_tile, 1)
+    n_kept_host[1]
+end
+
 end # module

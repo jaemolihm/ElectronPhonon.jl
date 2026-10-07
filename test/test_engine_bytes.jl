@@ -41,8 +41,9 @@ end
         grid = (6, 6, 6)
         el_qty, ph_qty = [:u, :e], [:u, :e]
         nb, ntile = 7, 40
-        for (order, mom, dg) in ((OuterKLoop(), "el", false), (OuterKLoop(), "el", true),
-                                 (OuterQLoop(), "ph", false))
+        # The last case selects the pairs on the device (a finite energy_conservation_tol).
+        for (order, mom, dg, tol) in ((OuterKLoop(), "el", false, Inf), (OuterKLoop(), "el", true, Inf),
+                                      (OuterQLoop(), "ph", false, Inf), (OuterKLoop(), "el", false, 1e-3))
             model = _load_model_from_artifacts("pb"; epmat_outer_momentum = mom)
             options = _run_options(model; inner_loop_kq = order isa OuterKLoop, backend,
                 window_k = window, window_kq = window, symmetry = nothing, 
@@ -55,10 +56,12 @@ end
             if order isa OuterKLoop
                 bytes = engine_bytes(OuterKEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, nkq = st.kqpts.n, el_qty, ph_qty,
-                    inner_loop_kq = true,
+                    inner_loop_kq = true, device_pair_selection = isfinite(tol),
+                    nq_grid = prod(st.qpts.ngrid),
                     covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
                 eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
-                    st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = dg, common...)
+                    st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = dg,
+                    energy_conservation_tol = tol, common...)
                 run1 = () -> stage1!(eng, 1:nb)
             else
                 bytes = engine_bytes(OuterQEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,

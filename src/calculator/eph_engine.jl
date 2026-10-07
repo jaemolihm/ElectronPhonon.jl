@@ -12,7 +12,8 @@
 # pairs that need no e-ph matrix and gathers the others' states once, into the tile's buffers; a
 # side whose whole tile is kept and resident is a view, with no copy. A pair is skipped when
 # (i) its k+q has no state in the window (`_kqpairs_in_window!`), or (ii) it has no process inside
-# `energy_conservation_tol` (`_kqpairs_conserving_energy!`, `CPUBackend` only). (i) by route:
+# `energy_conservation_tol` (`_kqpairs_conserving_energy!` on the host; on a device, the same test in
+# `_select_kqpairs_on_device!` for an inner k+q grid). (i) by route:
 #   outer k, inner k+q            never: the resident k+q set holds only points with a state;
 #   outer k, inner q              no window band after the tile's k+q solve;
 #   outer q, k+q solved per tile  no window band after the tile's k+q solve;
@@ -48,6 +49,9 @@ end
 Scratch for one thread chunk's inner tiles. `ind_kept_kqpairs` lists the kept pairs of a tile,
 `ikqs` and `iqs` their indices (`iqs_dev` on the backend), and `els_kq`, `phs`, `wtqs`, `xkqs` and
 `P_kq` hold their gathered k+q states, phonons, weights, k+q coordinates and Fourier phase.
+With the pairs selected on a device (`OuterKEngine.qtable_dev`), `keep_dev`, `pos_dev` and
+`iqs_tile_dev` hold each pair's keep flag, its running count and its q index, `ikqs_dev` the kept
+pairs' k+q indices, and `n_kept_host` the count read back; all are `nothing` otherwise.
 `itp_el_ham`, `hk` and `kqs` solve k+q per tile for an inner q grid, and are `nothing` for an inner
 k+q grid.
 `u_ph_id` holds the cartesian phonon basis, `dg` and `dg_d` serve covariant derivatives, and
@@ -59,6 +63,11 @@ Base.@kwdef struct OuterKTileWorkspace
     ikqs
     iqs
     iqs_dev
+    keep_dev
+    pos_dev
+    iqs_tile_dev
+    ikqs_dev
+    n_kept_host
     els_kq
     phs
     wtqs
@@ -148,6 +157,9 @@ Base.@kwdef mutable struct OuterKEngine
     wtkqs                         # (nkq,) their weights
     xks_int      :: Matrix{Int}     # (3, nk) k grid coordinates, reduced
     xkqs_int     :: Matrix{Int}     # (3, nkq) k+q grid coordinates, reduced, minus the q shift
+    xkqs_int_dev                  # `xkqs_int` on the device, or `nothing`
+    qtable_dev                    # (prod(qpts.ngrid),) Int32 q index of each grid hash (0: none) on
+                                  # the device, or `nothing`: the pairs are selected on the host
     P_mk                          # (nr_p, n_outer_batch) exp(-2πi R_p · x_k)
     ep_kR                         # (nw nband_max_k nmodes, nr_p, n_outer_batch) stage-1 output
     dg_kR                         # (nw nband_max_k nmodes, nr_p, 3, n_outer_batch), or `nothing`
@@ -233,7 +245,8 @@ end
 # ---- OuterKEngine ----------------------------------------------------------------------------
 
 function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband_max_kq, nk, nkq,
-        el_qty, ph_qty, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq) where {FT}
+        el_qty, ph_qty, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
+        device_pair_selection = false, nq_grid = 0) where {FT}
     (; nw, nmodes) = model
     cx, rl, iz = sizeof(Complex{FT}), sizeof(FT), sizeof(Int)
     nr_p = length(model.epmat.irvec_next)
@@ -248,7 +261,8 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
         rl * 3 * (nr_p + nr_e) * (covariant_derivative_of_g ? 2 : 1) +  # R-vector matrices
         cx * nrows + (covariant_derivative_of_g ? cx * 3nrows : 0) +  # interpolator outputs
         rl * 3 * (nk + nkq) + rl * nkq +                        # mxks, xkqs, wtkqs
-        (inner_loop_kq ? 0 : cx * length(model.el_ham.op_r))      # el_ham
+        (inner_loop_kq ? 0 : cx * length(model.el_ham.op_r)) +    # el_ham
+        (device_pair_selection ? iz * 3nkq + sizeof(Int32) * nq_grid : 0)  # xkqs_int_dev, qtable_dev
     per_outer =
         cx * ndata * nr_p * nd +                                # ep_kR (+ dg_kR)
         cx * nr_p + rl * 3 +                                    # P_mk, xks
@@ -264,6 +278,7 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
         _electron_state_bytes(FT, nw, nband_max_kq, el_qty) +   # k+q tile
         _phonon_state_bytes(FT, nmodes, ph_qty) +               # phs tile
         4iz + rl + 3rl +                                        # kept pairs, ikqs, iqs, iqs_dev, wtqs, x_{k+q}
+        (device_pair_selection ? 4iz : 0) +                     # keep, pos, iqs_tile, ikqs on the device
         (inner_loop_kq ? 0 :
             cx * length(model.el_ham.irvec) + cx * nw^2 * 3) +  # k+q Fourier phase, H and eigensolve
         (eph_phonon_basis == :cartesian ? cx * nmodes^2 : 0) +  # identity basis
@@ -344,6 +359,18 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     for ik in axes(xks_int, 2)
         xks_int[:, ik] .= _grid_coords_reduced(kpts.vectors[ik], qpts.ngrid, zero(Vec3{FT}))
     end
+    # With a finite tolerance on a device, the pairs of a k+q tile are selected there
+    # (`_select_kqpairs_on_device!`), from the k+q coordinates and a dense table of the q index of
+    # each grid hash, both uploaded once. With `Inf` the host's q index overlaps the device's work.
+    device_pair_selection = inner_loop_kq && !(backend isa CPUBackend) && isfinite(energy_conservation_tol)
+    xkqs_int_dev = device_pair_selection ? to_device_copy(backend, xkqs_int) : nothing
+    qtable_dev = if device_pair_selection
+        qtable = zeros(Int32, prod(qpts.ngrid))
+        for (iq, xq) in enumerate(qpts.vectors)
+            qtable[_hash_xk(xq, qpts.ngrid, qpts.shift) + 1] = iq
+        end
+        to_device_copy(backend, qtable)
+    end
     el_ham = inner_loop_kq ? nothing : to_device(backend, model.el_ham)
     # A partial last batch operates on views of the leading columns of the maximum-capacity buffers.
     P_mk = fill!(alloc(backend, Complex{FT}, nr_p, n_outer_batch), 1)
@@ -364,6 +391,11 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
             ikqs = Vector{Int}(undef, n_inner_tile),
             iqs = Vector{Int}(undef, n_inner_tile),
             iqs_dev = alloc(backend, Int, n_inner_tile),
+            keep_dev = device_pair_selection ? alloc(backend, Int, n_inner_tile) : nothing,
+            pos_dev = device_pair_selection ? alloc(backend, Int, n_inner_tile) : nothing,
+            iqs_tile_dev = device_pair_selection ? alloc(backend, Int, n_inner_tile) : nothing,
+            ikqs_dev = device_pair_selection ? alloc(backend, Int, n_inner_tile) : nothing,
+            n_kept_host = device_pair_selection ? Vector{Int}(undef, 1) : nothing,
             els_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
             phs = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT),
             wtqs = alloc(backend, FT, n_inner_tile),
@@ -388,7 +420,8 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
         energy_conservation_tol, eph_phonon_basis, inner_loop_kq, iks_batch = 1:0,
         backend, epmat, itp_epmat, itp_epmat_R,
         irvecp_mat = _irvec_to_device_matrix(backend, irvec_p, FT), mxks, xkqs,
-        wtkqs = to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int, P_mk,
+        wtkqs = to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int,
+        xkqs_int_dev, qtable_dev, P_mk,
         ep_kR = alloc(backend, Complex{FT}, ndata, nr_p, n_outer_batch),
         dg_kR = covariant_derivative_of_g ? alloc(backend, Complex{FT}, ndata, nr_p, 3, n_outer_batch) : nothing,
         els_k_batch = BatchedElectronState(backend, nw, nbk, n_outer_batch, el_qty; FT),
@@ -484,21 +517,43 @@ end
 
     if eng_fields.inner_loop_kq
         # Inner k+q points (run_eph_over_k_and_kq): the k+q states are resident, and each has a
-        # state in the window. Find q = (k+q) - k of each pair.
+        # state in the window. Find q = (k+q) - k of each pair, and keep the pairs with a process
+        # inside the energy-conservation tolerance: their q indices end up in `iqs_dev`, and those
+        # of a partial tile's kept pairs in `ikqs_kept`.
         ikqs_tile = inner_indices
         (; els_kq) = eng_fields
         iqs_host = tile_workspace.iqs
-        _fill_iqs!(iqs_host, eng_fields.qpts, eng_fields.xkqs_int, eng_fields.xks_int, ik, first(ikqs_tile), n_tile)
-        n_kept = if isinf(tol)
-            # Every pair of the tile is kept.
-            n_tile
+        if eng_fields.qtable_dev === nothing
+            # On the host.
+            _fill_iqs!(iqs_host, eng_fields.qpts, eng_fields.xkqs_int, eng_fields.xks_int, ik, first(ikqs_tile), n_tile)
+            n_kept = if isinf(tol)
+                # Every pair of the tile is kept.
+                n_tile
+            else
+                # Keep the pairs with a process inside the energy-conservation tolerance.
+                ind_kept_kqpairs[1:n_tile] .= 1:n_tile
+                _kqpairs_conserving_energy!(ind_kept_kqpairs, n_tile, tol,
+                    els_k.e, els_k.nband, 1, els_kq.e, nothing, els_kq.nband, ikqs_tile, phs.e, iqs_host)
+            end
+            n_kept == 0 && return nothing
+            if n_kept < n_tile
+                for (i, j) in enumerate(ind_kept_kqpairs[1:n_kept])
+                    tile_workspace.ikqs[i] = ikqs_tile[j]
+                    iqs_host[i] = iqs_host[j]
+                end
+                ikqs_kept = tile_workspace.ikqs[1:n_kept]
+            end
+            copyto!(tile_workspace.iqs_dev, 1, iqs_host, 1, n_kept)
         else
-            # Keep the pairs with a process inside the energy-conservation tolerance.
-            ind_kept_kqpairs[1:n_tile] .= 1:n_tile
-            _kqpairs_conserving_energy!(ind_kept_kqpairs, n_tile, tol,
-                els_k.e, els_k.nband, 1, els_kq.e, nothing, els_kq.nband, ikqs_tile, phs.e, iqs_host)
+            # On the device. The kept pairs' q indices come back for the block's `xq`.
+            n_kept = _select_kqpairs_on_device!(tile_workspace, eng_fields, els_k, ik, first(ikqs_tile),
+                                                n_tile, tol)
+            n_kept == 0 && return nothing
+            ikqs_kept = tile_workspace.ikqs_dev[1:n_kept]
+            copyto!(iqs_host, 1, tile_workspace.iqs_dev, 1, n_kept)
+            all(>(0), iqs_host[1:n_kept]) ||
+                throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
         end
-        n_kept == 0 && return nothing
 
         if n_kept == n_tile
             # Every pair is kept: the resident k+q states as they are.
@@ -512,23 +567,16 @@ end
         else
             # Some pairs are skipped: gather the kept pairs' k+q states, weights and coordinates.
             phase === nothing || throw(ArgumentError("a shared tile phase needs every pair of the tile"))
-            for (i, j) in enumerate(ind_kept_kqpairs[1:n_kept])
-                tile_workspace.ikqs[i] = ikqs_tile[j]
-                iqs_host[i] = iqs_host[j]
-            end
-            ikqs = tile_workspace.ikqs[1:n_kept]
-            # Pairs are skipped here only by `energy_conservation_tol`, a `CPUBackend` option, so the
-            # indices stay on the host and need no tile buffer on the backend.
-            ikqs_dev = _copy_indices_on_backend(eng_fields.xkqs, ikqs, els_kq.nk)
-            els_kq_block = view(copy_batched_electron_states!(tile_workspace.els_kq, els_kq, ikqs_dev), 1:n_kept)
-            wtqs = _copy_last_axis!(tile_workspace.wtqs, eng_fields.wtkqs, ikqs_dev)[1:n_kept]
-            xkqs = _copy_last_axis!(tile_workspace.xkqs, eng_fields.xkqs, ikqs_dev)[:, 1:n_kept]
+            ikqs = ikqs_kept
+            ikqs_on_backend = _copy_indices_on_backend(eng_fields.xkqs, ikqs, els_kq.nk)
+            els_kq_block = view(copy_batched_electron_states!(tile_workspace.els_kq, els_kq, ikqs_on_backend), 1:n_kept)
+            wtqs = _copy_last_axis!(tile_workspace.wtqs, eng_fields.wtkqs, ikqs_on_backend)[1:n_kept]
+            xkqs = _copy_last_axis!(tile_workspace.xkqs, eng_fields.xkqs, ikqs_on_backend)[:, 1:n_kept]
             phase = tile_workspace.P_kq[:, 1:n_kept]
             build_fourier_phase!(phase, eng_fields.irvecp_mat, xkqs)
         end
 
         # Gather the kept pairs' phonons.
-        copyto!(tile_workspace.iqs_dev, 1, iqs_host, 1, n_kept)
         iqs = tile_workspace.iqs_dev[1:n_kept]
         phs_block = view(copy_batched_phonon_states!(tile_workspace.phs, phs, iqs), 1:n_kept)
         xqs = eng_fields.qpts.vectors[iqs_host[1:n_kept]]
@@ -1002,6 +1050,19 @@ end
     end
     n_conserving
 end
+
+"""
+    _select_kqpairs_on_device!(tile_workspace, eng_fields, els_k, ik, ikq_first, n_tile, tol) -> n_kept
+
+The device counterpart of `_fill_iqs!` followed by `_kqpairs_conserving_energy!`, for outer k `ik`
+(`els_k` its one-point view) and the k+q tile `ikq_first .+ (0:n_tile-1)` of an `OuterKEngine` with
+`qtable_dev`: the q index of each pair from the same integer grid hash, and the same test
+`|e_k - e_{k+q} ± ω_q| <= tol` over the window bands and every mode. Writes the kept pairs' q and k+q
+indices, in tile order, to the front of `iqs_dev` and `ikqs_dev`, and returns their number, read
+back with one device-to-host copy. A pair whose q is missing from `qpts` is kept with q index 0, for
+the caller to refuse. Defined by the CUDA extension.
+"""
+function _select_kqpairs_on_device! end
 
 """
     eph_engine_add_longrange!(block, tile_workspace, model)
