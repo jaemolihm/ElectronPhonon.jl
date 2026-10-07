@@ -567,11 +567,13 @@ function _setup_states(order, model::Model{FT}, kpts_input, second_input, option
             Ω_meV = round(Ω / unit_to_aru(:meV), digits = 2)
             @info "Phonon modes kept = $nmodes_kept of $(model.nmodes) (|ω| ≤ $Ω_meV meV)"
         end
-        # When even the kept modes of all q would take more than half of the free device memory, the
-        # engine builds the phonons per outer batch, of the q its kept pairs use only, and selects the
-        # pairs with the frequencies of this value-only solve.
+        # When even the kept modes of all q would take more than 3/4 of the free device memory (after
+        # returning the pool's cached memory to the driver), the engine builds the phonons per outer
+        # batch, of the q its kept pairs use only, and selects the pairs with the frequencies of this
+        # value-only solve.
+        reclaim_device_memory(backend)
         if qpts.n * _phonon_state_bytes(FT, nmodes_kept, ph_qty; ndisp = model.nmodes) >
-                free_bytes(backend) ÷ 2 || _FORCE_PHONONS_PER_BATCH[]
+                free_bytes(backend) ÷ 4 * 3 || _FORCE_PHONONS_PER_BATCH[]
             ω_all = ω[1:nmodes_kept, :]
         end
     end
