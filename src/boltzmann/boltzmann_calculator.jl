@@ -58,6 +58,9 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # save the (large) Sᵢ host + tile storage.
     const scattering_method::Symbol = :BTE
     const omega_cutoff::FT = FT(omega_acoustic)           # skip modes below this (e.g. acoustic modes at Γ)
+    # :dense stores Sᵢ in `Sᵢ`; :csr stores only its nonzeros, in `Sᵢᵀ` (a CSC matrix of Sᵢ's
+    # transpose, i.e. Sᵢ in CSR), for runs whose dense Sᵢ does not fit host memory.
+    const Si_format::Symbol = :dense
 
     # Number of CPU thread chunks of the loop; set at setup (0 = not set yet).
     nchunks::Int = 0
@@ -70,7 +73,8 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
 
     # --- Host outputs (solver-facing) ---
     Sₒ::Vector{Vector{FT}} = Vector{Vector{FT}}()         # per iT, length n_i
-    Sᵢ::Vector{Matrix{FT}} = Vector{Matrix{FT}}()         # per iT, (n_i, n_f)
+    Sᵢ::Vector{Matrix{FT}} = Vector{Matrix{FT}}()         # per iT, (n_i, n_f); empty with Si_format = :csr
+    Sᵢᵀ::Vector{SparseMatrixCSC{FT, Int}} = SparseMatrixCSC{FT, Int}[]  # per iT, (n_f, n_i), Si_format = :csr
 
     # --- Device buffers ---
     # Built once in `setup_calculator!`. See `BoltzmannDeviceBuffers`.
@@ -126,6 +130,8 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
                             "FP32 support is not planned (transport accuracy)."))
     1 <= calc.occupation_method <= 6 ||
         throw(ArgumentError("occupation_method must be an integer in 1:6, got $(calc.occupation_method)"))
+    calc.Si_format ∈ (:dense, :csr) ||
+        throw(ArgumentError("Si_format must be :dense or :csr, got :$(calc.Si_format)"))
     calc.nchunks = nchunks_threads
 
     # The selections' states with their energies and velocities, so el_i/el_f carry the
@@ -147,7 +153,12 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
     nT = length(calc.occ)
 
     calc.Sₒ = [zeros(FT, n_i) for _ in 1:nT]
-    calc.Sᵢ = [zeros(FT, n_i, n_f) for _ in 1:nT]
+    if calc.Si_format === :dense
+        calc.Sᵢ = [zeros(FT, n_i, n_f) for _ in 1:nT]
+    else
+        # Filled column by column (one per outer state, in order) as the batches end.
+        calc.Sᵢᵀ = [SparseMatrixCSC(n_f, n_i, ones(Int, n_i + 1), Int[], FT[]) for _ in 1:nT]
+    end
     # Tiled Sᵢ device output: shape (n_i, n_f, nT), tiled over the outer-k state axis (axis 1), always
     # streamed mode (there is deliberately no full-device-resident Sᵢ path). Metadata only at setup; the
     # device/host tile buffers are lazy in `tile_begin!` (first batch).
@@ -192,12 +203,53 @@ function calculator_end_batch!(calc::BoltzmannCalculator, ctx::OuterKContext)
         # Threaded over blocks of inner states: each column is a short contiguous run of the output.
         colblocks = collect(Iterators.partition(axes(host, 2), cld(size(host, 2), 4nthreads())))
         for iT in 1:length(calc.occ)
-            @threads for cols in colblocks
-                @views calc.Sᵢ[iT][i0+1:i0+ni, cols] .= host[:, cols, iT]
+            if calc.Si_format === :dense
+                @threads for cols in colblocks
+                    @views calc.Sᵢ[iT][i0+1:i0+ni, cols] .= host[:, cols, iT]
+                end
+            else
+                _append_csr_columns!(calc.Sᵢᵀ[iT], view(host, :, :, iT), i0, colblocks)
             end
         end
     end
     calc
+end
+
+# Append the nonzeros of the tile `tile` (rows: the outer states `i0+1:i0+ni`) as columns
+# `i0+1:i0+ni` of `Sᵀ`, whose earlier columns are complete; a function barrier for the tile's
+# concrete type. Threaded over the blocks of inner states `colblocks`: each block counts its nonzeros
+# per row, then writes them at offsets from the prefix sum, so every column's rows come out sorted.
+function _append_csr_columns!(Sᵀ::SparseMatrixCSC, tile::AbstractMatrix, i0, colblocks)
+    ni = size(tile, 1)
+    counts = zeros(Int, ni, length(colblocks))
+    @threads for b in eachindex(colblocks)
+        for f in colblocks[b], r in 1:ni
+            counts[r, b] += !iszero(tile[r, f])
+        end
+    end
+    # offsets[r, b]: the elements of column i0 + r before block b.
+    offsets = similar(counts)
+    nnz0 = Sᵀ.colptr[i0 + 1] - 1
+    pos = nnz0
+    for r in 1:ni
+        for b in axes(counts, 2)
+            offsets[r, b] = pos
+            pos += counts[r, b]
+        end
+        Sᵀ.colptr[i0 + r + 1] = pos + 1
+    end
+    resize!(Sᵀ.rowval, pos)
+    resize!(Sᵀ.nzval, pos)
+    @threads for b in eachindex(colblocks)
+        for f in colblocks[b], r in 1:ni
+            v = tile[r, f]
+            iszero(v) && continue
+            offsets[r, b] += 1
+            Sᵀ.rowval[offsets[r, b]] = f
+            Sᵀ.nzval[offsets[r, b]] = v
+        end
+    end
+    Sᵀ
 end
 
 """
@@ -289,6 +341,10 @@ function postprocess_calculator!(calc::BoltzmannCalculator{FT}; kwargs...) where
         for chunk in 2:size(Sₒ_host, 3)
             calc.Sₒ[iT] .+= Sₒ_host[:, iT, chunk]
         end
+    end
+    # A CSR Sᵢ column of an outer state no batch of this rank reached is empty.
+    for Sᵀ in calc.Sᵢᵀ, i in 1:size(Sᵀ, 2)
+        Sᵀ.colptr[i + 1] = max(Sᵀ.colptr[i + 1], Sᵀ.colptr[i])
     end
     # Free device buffers (the calc is single-use; `done` forbids a re-run in `setup_calculator!`).
     calc.dev = nothing

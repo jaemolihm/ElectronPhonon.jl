@@ -2,6 +2,7 @@ using Test
 using ElectronPhonon
 const EP = ElectronPhonon
 using Random
+using SparseArrays: nnz
 
 @testset "bte_scattering_increments (shared core) pinned values" begin
     # (sₒ, sᵢ) for methods 1..6 at a fixed in-window input, pinned from the validated
@@ -150,12 +151,12 @@ end
     model = _load_model_from_artifacts("pb")   # nw=4, nmodes=3; loads the e-ph matrix
     eV = EP.unit_to_aru(:eV); K = EP.unit_to_aru(:K); meV = EP.unit_to_aru(:meV)
     μ = 11.68eV; window = (μ - 0.5eV, μ + 0.5eV)
-    mkcalc() = BoltzmannCalculator{Float64}(;
+    mkcalc(Si_format = :dense) = BoltzmannCalculator{Float64}(;
         occ = ElectronOccupationParams(; Tlist = [300.0 * K], nlist = 4.0, μlist = μ,
             volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac),
-        smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
-    runbte(grid, backend; n_inner_tile = nothing, n_outer_batch = 256) =
-        (c = mkcalc(); EP.run_eph_over_k_and_kq(model, grid, grid;
+        smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5, Si_format)
+    runbte(grid, backend; n_inner_tile = nothing, n_outer_batch = 256, Si_format = :dense) =
+        (c = mkcalc(Si_format); EP.run_eph_over_k_and_kq(model, grid, grid;
             calculators = [c], symmetry = nothing, window_k = window, window_kq = window,
             backend, n_inner_tile, n_outer_batch,
             progress_print_step = 10^9, verbosity = 0); c)
@@ -199,5 +200,16 @@ end
         # Sᵢ IS bitwise reproducible). Measured CPU-vs-GPU at 6³: Sₒ 1.8e-13, Sᵢ 2.5e-13.
         @test stack(cg.Sₒ) ≈ stack(cc.Sₒ) rtol = 1e-9
         @test stack(cg.Sᵢ) ≈ stack(cc.Sᵢ) rtol = 1e-9
+    end
+
+    # Si_format = :csr stores the same Sᵢ, as the nonzeros of its transpose, over several tiles.
+    @testset "Si_format = :csr == :dense" begin
+        for backend in (_CUDA_OK ? (EP.CPUBackend(), EP.gpu_backend()) : (EP.CPUBackend(),))
+            c_dense = runbte((6, 6, 6), backend; n_outer_batch = 20)
+            c_csr = runbte((6, 6, 6), backend; n_outer_batch = 20, Si_format = :csr)
+            @test isempty(c_csr.Sᵢ) && size(c_csr.Sᵢᵀ[1]) == reverse(size(c_dense.Sᵢ[1]))
+            @test Matrix(transpose(c_csr.Sᵢᵀ[1])) == c_dense.Sᵢ[1]
+            @test nnz(c_csr.Sᵢᵀ[1]) == count(!iszero, c_dense.Sᵢ[1])
+        end
     end
 end
