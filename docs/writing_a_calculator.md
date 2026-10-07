@@ -476,7 +476,7 @@ Each array of an `EPBlock` has the pairs of the block on its last axis; the side
 block has extent 1 there. Under `OuterKLoop`: `ep` is `(nband_max_kq, nband_max_k, nmodes, nq)`,
 `els_k` the outer k (extent 1) at a box of its own band count (`nband_max_k = els_k.nband[1]`, so a
 calculator's per-k box-shaped buffers are views at the block's extents), `els_kq` and `phs` the tile's k+q points and phonons, `ik::Int`,
-`ikq` the k+q indices (a range, or a host vector when the loop dropped pairs), `iq` the q indices,
+`ikq` the k+q indices (a range, or a vector on the run's backend when the loop dropped pairs), `iq` the q indices,
 `wtk::Float64`, `wtq` the k+q weights; under `run_eph_over_k_and_q` the inner points are the q
 points, `ikq === nothing` and the k+q states are solved per tile. Under `OuterQLoop` the roles swap: `phs` has extent 1,
 `iq::Int`, `ik` the k indices, and `ikq === nothing` when k+q is solved per tile; then

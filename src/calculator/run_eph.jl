@@ -27,7 +27,8 @@ Keywords:
   every calculator `allows_phonon_mode_truncation` and the phonons of all q would take more than
   half of the free device memory, it also drops the modes with `|ω|` above the energy range of the
   resident states plus the tolerance: the returned `phs` and the blocks then hold the lowest
-  `phs.nmodes` modes.
+  `phs.nmodes` modes. When even those do not fit beside the loop's buffers, the phonons are built per
+  outer batch for the q of its kept pairs, and the returned `phs` holds no q.
 * `covariant_derivative_of_g = false` — also compute the covariant derivative `block.dg`.
 * `eph_phonon_basis = :eigenmode` — or `:cartesian` (identity phonon rotation).
 * `fourier_mode = "gridopt"` — or `"normal"`: the interpolation of the setup-time state solves on a

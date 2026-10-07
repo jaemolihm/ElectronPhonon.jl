@@ -478,46 +478,51 @@ function _kqpair_select_kernel!(iq_out, keep, qtable, xkqs_int, k1, k2, k3, ng1,
         n_tile, e_k, nband_k, e_kq, nband_kq, ω_q, tol)
     j = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     j <= n_tile || return
-    @inbounds begin
-        ikq = ikq_first + j - 1
-        h1 = _wrap_reduced_device(xkqs_int[1, ikq] - k1, ng1)
-        h2 = _wrap_reduced_device(xkqs_int[2, ikq] - k2, ng2)
-        h3 = _wrap_reduced_device(xkqs_int[3, ikq] - k3, ng3)
-        iq = Int(qtable[(h1 * ng2 + h2) * ng3 + h3 + 1])
-        iq_out[j] = iq
-        # A missing q (iq = 0) is kept for the caller to refuse.
-        conserving = iq == 0
-        for ν in axes(ω_q, 1), m in 1:nband_kq[ikq], n in 1:nband_k[1], s in (-1, 1)
-            conserving && break
-            conserving = abs(e_k[n, 1] - e_kq[m, ikq] - s * ω_q[ν, iq]) <= tol
-        end
-        keep[j] = conserving
+    ikq = ikq_first + j - 1
+    h1 = _wrap_reduced_device(xkqs_int[1, ikq] - k1, ng1)
+    h2 = _wrap_reduced_device(xkqs_int[2, ikq] - k2, ng2)
+    h3 = _wrap_reduced_device(xkqs_int[3, ikq] - k3, ng3)
+    iq = Int(qtable[(h1 * ng2 + h2) * ng3 + h3 + 1])
+    iq_out[j] = iq
+    # A missing q (iq = 0) is kept for the caller to refuse.
+    conserving = iq == 0
+    for ν in axes(ω_q, 1), m in 1:nband_kq[ikq], n in 1:nband_k[1], s in (-1, 1)
+        conserving && break
+        conserving = abs(e_k[n, 1] - e_kq[m, ikq] - s * ω_q[ν, iq]) <= tol
     end
+    keep[j] = conserving
     return
 end
 
 function _kqpair_compact_kernel!(ikqs_out, iqs_out, keep, pos, iqs_tile, ikq_first, n_tile)
     j = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     j <= n_tile || return
-    @inbounds if keep[j] == 1
+    if keep[j] == 1
         ikqs_out[pos[j]] = ikq_first + j - 1
         iqs_out[pos[j]] = iqs_tile[j]
     end
     return
 end
 
-function ElectronPhonon._select_kqpairs_on_device!(tile_workspace, eng_fields, els_k, ik, ikq_first,
-        n_tile, tol)
+# Launch `_kqpair_select_kernel!` for outer k `ik` and the k+q tile `ikq_first .+ (0:n_tile-1)`, into
+# the tile's `iqs_tile_dev` and `keep_dev`.
+function _launch_kqpair_select!(tile_workspace, eng_fields, els_k, ik, ikq_first, n_tile, ω_q, tol)
     ng1, ng2, ng3 = eng_fields.qpts.ngrid
     k1, k2, k3 = eng_fields.xks_int[1, ik], eng_fields.xks_int[2, ik], eng_fields.xks_int[3, ik]
+    threads = 256
+    @cuda threads=threads blocks=cld(n_tile, threads) _kqpair_select_kernel!(
+        tile_workspace.iqs_tile_dev, tile_workspace.keep_dev, eng_fields.qtable_dev,
+        eng_fields.xkqs_int_dev, k1, k2, k3, ng1, ng2, ng3, ikq_first, n_tile, els_k.e, els_k.nband,
+        eng_fields.els_kq.e, eng_fields.els_kq.nband, ω_q, tol)
+end
+
+function ElectronPhonon._select_kqpairs_on_device!(tile_workspace, eng_fields, els_k, ik, ikq_first,
+        n_tile, tol)
     (; keep_dev, pos_dev, iqs_tile_dev, ikqs_dev, iqs_dev, n_kept_host) = tile_workspace
-    els_kq = eng_fields.els_kq
-    ω_q = something(eng_fields.ω_all, eng_fields.phs.e)
+    _launch_kqpair_select!(tile_workspace, eng_fields, els_k, ik, ikq_first, n_tile,
+                           something(eng_fields.ω_all, eng_fields.phs.e), tol)
     threads = 256
     blocks = cld(n_tile, threads)
-    @cuda threads=threads blocks=blocks _kqpair_select_kernel!(iqs_tile_dev, keep_dev,
-        eng_fields.qtable_dev, eng_fields.xkqs_int_dev, k1, k2, k3, ng1, ng2, ng3, ikq_first,
-        n_tile, els_k.e, els_k.nband, els_kq.e, els_kq.nband, ω_q, tol)
     pos = view(pos_dev, 1:n_tile)
     accumulate!(+, pos, view(keep_dev, 1:n_tile))
     @cuda threads=threads blocks=blocks _kqpair_compact_kernel!(ikqs_dev, iqs_dev, keep_dev, pos_dev,
@@ -529,7 +534,7 @@ end
 function _mark_kept_qs_kernel!(q_marks, keep, iqs_tile, n_tile)
     j = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     j <= n_tile || return
-    @inbounds if keep[j] == 1 && iqs_tile[j] > 0
+    if keep[j] == 1 && iqs_tile[j] > 0
         q_marks[iqs_tile[j]] = true
     end
     return
@@ -537,15 +542,10 @@ end
 
 function ElectronPhonon._mark_conserving_qs!(q_marks, tile_workspace, eng_fields, els_k, ik, ikq_first,
         n_tile, tol)
-    ng1, ng2, ng3 = eng_fields.qpts.ngrid
-    k1, k2, k3 = eng_fields.xks_int[1, ik], eng_fields.xks_int[2, ik], eng_fields.xks_int[3, ik]
-    (; keep_dev, iqs_tile_dev) = tile_workspace
+    _launch_kqpair_select!(tile_workspace, eng_fields, els_k, ik, ikq_first, n_tile, eng_fields.ω_all, tol)
     threads = 256
-    blocks = cld(n_tile, threads)
-    @cuda threads=threads blocks=blocks _kqpair_select_kernel!(iqs_tile_dev, keep_dev,
-        eng_fields.qtable_dev, eng_fields.xkqs_int_dev, k1, k2, k3, ng1, ng2, ng3, ikq_first,
-        n_tile, els_k.e, els_k.nband, eng_fields.els_kq.e, eng_fields.els_kq.nband, eng_fields.ω_all, tol)
-    @cuda threads=threads blocks=blocks _mark_kept_qs_kernel!(q_marks, keep_dev, iqs_tile_dev, n_tile)
+    @cuda threads=threads blocks=cld(n_tile, threads) _mark_kept_qs_kernel!(q_marks,
+        tile_workspace.keep_dev, tile_workspace.iqs_tile_dev, n_tile)
     q_marks
 end
 
