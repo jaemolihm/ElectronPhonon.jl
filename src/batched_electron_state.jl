@@ -90,20 +90,25 @@ Copy the k points `inds` of `els_src` into the first `length(inds)` points of `e
 `nothing` field is skipped), `iband_offset` and `nband` included. `inds` is a range or a host vector,
 checked here, or an index array already on `els_src`'s device, used as it is: its caller has checked
 it. A host index vector for a device `els_src` is uploaded once per call.
+
+`els_dst` may have a narrower box than `els_src`: its `nband_max = b` leading bands are copied, so
+every copied point must have `nband ≤ b` (not checked).
 """
 function copy_batched_electron_states!(els_dst::BatchedElectronState, els_src::BatchedElectronState,
         inds)
-    els_dst.nw == els_src.nw && els_dst.nband_max == els_src.nband_max &&
+    els_dst.nw == els_src.nw && els_dst.nband_max <= els_src.nband_max &&
         length(inds) <= els_dst.nk ||
         throw(ArgumentError("cannot copy $(length(inds)) points of $els_src into $els_dst"))
     inds = _copy_indices_on_backend(els_src.nband, inds, els_src.nk)
+    b = els_dst.nband_max
+    leading(x, axes...) = x === nothing ? nothing : view(x, axes..., :)
     _copy_last_axis!(els_dst.iband_offset, els_src.iband_offset, inds)
     _copy_last_axis!(els_dst.nband, els_src.nband, inds)
-    _copy_last_axis!(els_dst.e, els_src.e, inds)
-    _copy_last_axis!(els_dst.u, els_src.u, inds)
-    _copy_last_axis!(els_dst.vdiag, els_src.vdiag, inds)
-    _copy_last_axis!(els_dst.v, els_src.v, inds)
-    _copy_last_axis!(els_dst.rbar, els_src.rbar, inds)
+    _copy_last_axis!(els_dst.e, leading(els_src.e, 1:b), inds)
+    _copy_last_axis!(els_dst.u, leading(els_src.u, :, 1:b), inds)
+    _copy_last_axis!(els_dst.vdiag, leading(els_src.vdiag, :, 1:b), inds)
+    _copy_last_axis!(els_dst.v, leading(els_src.v, :, 1:b, 1:b), inds)
+    _copy_last_axis!(els_dst.rbar, leading(els_src.rbar, :, 1:b, 1:b), inds)
     els_dst
 end
 

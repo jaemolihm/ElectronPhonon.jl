@@ -126,7 +126,9 @@ end
 The `OuterKLoop` engine: g(k, R_p) for an outer-k batch (stage 1), then g(k, k+q) for one k and a
 tile of k+q (stage 2), in the k+q convention of [`eph_rotate_kR_batched!`](@ref): stage 1 folds
 `exp(-2πi R_p · x_k)` into g(k, R_p), so the stage-2 phase `exp(2πi R_p · x_{k+q})` of a tile is
-shared by every k of the batch. With `covariant_derivative_of_g`, the same two stages run on the
+shared by every k of the batch. Stage 1 orders the batch by band count and stores each class of
+equal count `b` at width `b`, so a block's k side carries exactly the k's bands. With
+`covariant_derivative_of_g`, the same two stages run on the
 position-weighted `epmat_R` (`wannier_object_multiply_R` plus the tight-binding term
 `im (r_j - r_i) g`) into `dg`. Without a k+q container (`run_eph_over_k_and_q`) the inner points are
 q points, the k+q states are solved per (k, tile) into the tile's buffers and the phase is built at
@@ -152,7 +154,7 @@ Base.@kwdef mutable struct OuterKEngine
     itp_epmat                     # its batched R_e interpolator
     itp_epmat_R                   # interpolator of epmat_R (dg), or `nothing`
     irvecp_mat                    # (nr_p, 3) R_p
-    mxks                          # (3, nk) -x_k
+    mxks                          # (3, n_outer_batch) the batch's -x_k on the backend
     xkqs                          # (3, nkq) x_{k+q}, or x_q without a k+q grid
     wtkqs                         # (nkq,) their weights
     xks_int      :: Matrix{Int}     # (3, nk) k grid coordinates, reduced
@@ -161,9 +163,14 @@ Base.@kwdef mutable struct OuterKEngine
     qtable_dev                    # (prod(qpts.ngrid),) Int32 q index of each grid hash (0: none) on
                                   # the device, or `nothing`: the pairs are selected on the host
     P_mk                          # (nr_p, n_outer_batch) exp(-2πi R_p · x_k)
-    ep_kR                         # (nw nband_max_k nmodes, nr_p, n_outer_batch) stage-1 output
-    dg_kR                         # (nw nband_max_k nmodes, nr_p, 3, n_outer_batch), or `nothing`
-    els_k_batch  :: BatchedElectronState # the outer batch's k states
+    ep_kR                         # stage-1 output, one (nw b nmodes, nr_p, n_b) segment per band class b
+    dg_kR                         # the same, (nw b nmodes, nr_p, 3, n_b) segments, or `nothing`
+    nband_k_host :: Vector{Int}     # (nk,) the k points' band counts, on the host
+    els_k_classes :: Vector         # [b] the batch's k states with b bands, at box width b
+    iks_sorted   :: Vector{Int}     # the batch's k points ordered by band count
+    slot_in_class :: Vector{Int}    # (n_outer_batch,) position of each batch k in its band class
+    class_first  :: Vector{Int}     # (nband_max_k,) position of class b's first k in `iks_sorted`
+    class_offsets :: Matrix{Int}    # (2, nband_max_k) element offsets of class b in ep_kR, dg_kR
     xks_host     :: Matrix{Float64} # (3, n_outer_batch) the batch's x_k, staged for `xks`
     xks                           # (3, n_outer_batch) the batch's x_k on the backend
     g_fourier                     # stage-1 Fourier output, `reshape_buffer_view` per use
@@ -260,16 +267,16 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
         cx * nepmat * (covariant_derivative_of_g ? 4 : 1) +    # epmat (+ epmat_R)
         rl * 3 * (nr_p + nr_e) * (covariant_derivative_of_g ? 2 : 1) +  # R-vector matrices
         cx * nrows + (covariant_derivative_of_g ? cx * 3nrows : 0) +  # interpolator outputs
-        rl * 3 * (nk + nkq) + rl * nkq +                        # mxks, xkqs, wtkqs
+        rl * 3 * nkq + rl * nkq +                               # xkqs, wtkqs
         (inner_loop_kq ? 0 : cx * length(model.el_ham.op_r)) +    # el_ham
         (device_pair_selection ? iz * 3nkq + sizeof(Int32) * nq_grid : 0)  # xkqs_int_dev, qtable_dev
     per_outer =
         cx * ndata * nr_p * nd +                                # ep_kR (+ dg_kR)
-        cx * nr_p + rl * 3 +                                    # P_mk, xks
+        cx * nr_p + 2rl * 3 +                                   # P_mk, xks, mxks
         cx * nr_e * (covariant_derivative_of_g ? 2 : 1) +       # Fourier phases
         cx * nrows_max +                                        # g_fourier
         cx * (nrows + 2 * nband_max_k * nrows ÷ nw) * nd +      # transients of eph_rotate_kR_batched!
-        _electron_state_bytes(FT, nw, nband_max_k, el_qty)      # els_k_batch
+        sum(b -> _electron_state_bytes(FT, nw, b, el_qty), 1:nband_max_k; init = 0)  # els_k_classes
     nbox = nband_max_kq * nband_max_k * nmodes_kept             # ep box, in the modes the run keeps
     per_pair =
         cx * nbox * (covariant_derivative_of_g ? 5 : 1) +       # ep (+ dg and its per-direction scratch)
@@ -348,7 +355,6 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     # Prepare run-wide coordinates, grid hashes, and the outer-batch phase buffer.
     # Grid coordinates as (3 × n) device matrices for the two phase builds. -x_k out of place: on
     # `CPUBackend` `_kpoints_to_device_matrix` is a view onto `kpts.vectors`.
-    mxks = _kpoints_to_device_matrix(backend, kpts) .* -1
     xkqs = _kpoints_to_device_matrix(backend, inner_pts)
     # The q index of a pair by integer grid hash (`_fill_iqs!`): both coordinate lists reduced into
     # `0:ng-1` once, the q-grid shift folded into the k+q side. Not needed without a k+q grid.
@@ -420,12 +426,15 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     OuterKEngine(; model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
         energy_conservation_tol, eph_phonon_basis, inner_loop_kq, iks_batch = 1:0,
         backend, epmat, itp_epmat, itp_epmat_R,
-        irvecp_mat = _irvec_to_device_matrix(backend, irvec_p, FT), mxks, xkqs,
+        irvecp_mat = _irvec_to_device_matrix(backend, irvec_p, FT), mxks = alloc(backend, FT, 3, n_outer_batch), xkqs,
         wtkqs = to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int,
         xkqs_int_dev, qtable_dev, P_mk,
         ep_kR = alloc(backend, Complex{FT}, ndata, nr_p, n_outer_batch),
         dg_kR = covariant_derivative_of_g ? alloc(backend, Complex{FT}, ndata, nr_p, 3, n_outer_batch) : nothing,
-        els_k_batch = BatchedElectronState(backend, nw, nbk, n_outer_batch, el_qty; FT),
+        nband_k_host = Array(els_k.nband),
+        els_k_classes = [BatchedElectronState(backend, nw, b, n_outer_batch, el_qty; FT) for b in 1:nbk],
+        iks_sorted = Int[], slot_in_class = zeros(Int, n_outer_batch), class_first = zeros(Int, nbk),
+        class_offsets = zeros(Int, 2, nbk),
         xks_host = zeros(FT, 3, n_outer_batch), xks = alloc(backend, FT, 3, n_outer_batch),
         g_fourier = alloc(backend, Complex{FT}, nrows_max * n_outer_batch),
         n_outer_batch, n_inner_tile, tiles)
@@ -450,33 +459,58 @@ function stage1!(eng::OuterKEngine, iks_batch::UnitRange{Int})
 end
 
 @views function _stage1!(::OuterKLoop, eng_fields, iks_batch)
-    # Gather the active electron states and stage their k coordinates on the backend.
+    # Order the batch by the number of bands at k, so that each band class is a contiguous range,
+    # and stage the k coordinates on the backend in that order.
     nk_batch = length(iks_batch)
-    copy_batched_electron_states!(eng_fields.els_k_batch, eng_fields.els_k, iks_batch)
-    for (j, ik) in enumerate(iks_batch)
+    (; iks_sorted, slot_in_class, class_first, class_offsets, nband_k_host) = eng_fields
+    resize!(iks_sorted, nk_batch)
+    iks_sorted .= iks_batch[sortperm(nband_k_host[iks_batch]; alg = MergeSort)]
+    for (j, ik) in enumerate(iks_sorted)
         eng_fields.xks_host[:, j] .= eng_fields.kpts.vectors[ik]
     end
     xks = eng_fields.xks[:, 1:nk_batch]
     copyto!(eng_fields.xks, eng_fields.xks_host)
 
-    # Build the k+q-convention phase and select the active electronic rotations.
+    # Build the k+q-convention phase.
+    mxks = eng_fields.mxks[:, 1:nk_batch]
+    mxks .= xks .* -1
     P_mk = eng_fields.P_mk[:, 1:nk_batch]
-    build_fourier_phase!(P_mk, eng_fields.irvecp_mat, eng_fields.mxks[:, iks_batch])
-    uks = eng_fields.els_k_batch.u[:, :, 1:nk_batch]
+    build_fourier_phase!(P_mk, eng_fields.irvecp_mat, mxks)
 
-    # Fourier-transform R_e and rotate by u_k: g_ija(R_e, R_p) -> g_ina(k, R_p), with i, j Wannier
-    # indices, a the atomic displacement and n the band of k.
-    g = reshape_buffer_view(eng_fields.g_fourier, eng_fields.itp_epmat.parent.ndata, nk_batch)
-    get_fourier_batched!(g, eng_fields.itp_epmat, xks)
-    ep_kR = eng_fields.ep_kR[:, :, 1:nk_batch]
-    eph_rotate_kR_batched!(ep_kR, g, uks; additional_phase = P_mk)
+    # The band classes: the ranges of equal band count in that order.
+    nbands_sorted = nband_k_host[iks_sorted]
+    classes = [(b, searchsortedfirst(nbands_sorted, b):searchsortedlast(nbands_sorted, b))
+               for b in unique(nbands_sorted) if b > 0]
+    for (b, cols) in classes
+        class_first[b] = first(cols)
+        for (j, s) in enumerate(cols)
+            slot_in_class[iks_sorted[s] - first(iks_batch) + 1] = j
+        end
+    end
 
-    # The same for the covariant derivative, direction d: dg_ijad(R_e, R_p) -> dg_inad(k, R_p).
-    if eng_fields.itp_epmat_R !== nothing
-        g = reshape_buffer_view(eng_fields.g_fourier, eng_fields.itp_epmat_R.parent.ndata, nk_batch)
-        get_fourier_batched!(g, eng_fields.itp_epmat_R, xks)
-        dg_kR = eng_fields.dg_kR[:, :, :, 1:nk_batch]
-        eph_rotate_kR_batched!(dg_kR, g, uks; additional_phase = P_mk)
+    # Fourier-transform R_e, g_ija(R_e, R_p) at each k with i, j Wannier indices and a the atomic
+    # displacement, and rotate each band class b by its u_k at width b, g_ina(k, R_p) with n ≤ b the
+    # band of k, into its own segment of `ep_kR`, so stage 2 contracts no box padding. The same for
+    # the covariant derivative, direction d: dg_ijad(R_e, R_p) -> dg_inad(k, R_p) into `dg_kR`.
+    nw, nmodes, nr_p = eng_fields.model.nw, eng_fields.model.nmodes, size(eng_fields.P_mk, 1)
+    for (b, cols) in classes
+        copy_batched_electron_states!(eng_fields.els_k_classes[b], eng_fields.els_k, iks_sorted[cols])
+    end
+    for (itp, out, iout) in ((eng_fields.itp_epmat, eng_fields.ep_kR, 1),
+                             (eng_fields.itp_epmat_R, eng_fields.dg_kR, 2))
+        itp === nothing && continue
+        ndata = itp.parent.ndata
+        get_fourier_batched!(reshape_buffer_view(eng_fields.g_fourier, ndata, nk_batch), itp, xks)
+        offset = 0
+        for (b, cols) in classes
+            class_offsets[iout, b] = offset
+            dims = iout == 1 ? (nw * b * nmodes, nr_p, length(cols)) : (nw * b * nmodes, nr_p, 3, length(cols))
+            out_c = reshape_buffer_view(out, dims...; offset)
+            g = reshape_buffer_view(eng_fields.g_fourier, ndata, length(cols); offset = ndata * (first(cols) - 1))
+            eph_rotate_kR_batched!(out_c, g, eng_fields.els_k_classes[b].u[:, :, 1:length(cols)];
+                                   additional_phase = P_mk[:, cols])
+            offset += length(out_c)
+        end
     end
     eng_fields
 end
@@ -510,8 +544,18 @@ end
 # The state containers are sliced with an explicit `view`: `@views` covers arrays only.
 @views function _stage2!(::OuterKLoop, eng_fields, tile_workspace, ik, inner_indices; phase = nothing)
     n_tile = length(inner_indices)
-    ik_batch = ik - first(eng_fields.iks_batch) + 1
-    els_k = view(eng_fields.els_k_batch, ik_batch:ik_batch)
+    # The stage-1 output of `ik`: its states at its own band count `b` (a one-point container of box
+    # width `b`), and its `(nw b nmodes, nr_p)` slice of `ep_kR` (and `(…, 3)` slice of `dg_kR`).
+    b = eng_fields.nband_k_host[ik]
+    b == 0 && return nothing
+    j = eng_fields.slot_in_class[ik - first(eng_fields.iks_batch) + 1]
+    ik_sorted = eng_fields.class_first[b] + j - 1
+    els_k = view(eng_fields.els_k_classes[b], j:j)
+    nrows, nr_p = eng_fields.model.nw * b * eng_fields.model.nmodes, size(eng_fields.P_mk, 1)
+    ep_kR = reshape_buffer_view(eng_fields.ep_kR, nrows, nr_p;
+        offset = eng_fields.class_offsets[1, b] + nrows * nr_p * (j - 1))
+    dg_kR = eng_fields.dg_kR === nothing ? nothing : reshape_buffer_view(eng_fields.dg_kR, nrows, nr_p, 3;
+        offset = eng_fields.class_offsets[2, b] + 3 * nrows * nr_p * (j - 1))
     tol = eng_fields.energy_conservation_tol
     (; ind_kept_kqpairs) = tile_workspace
     (; phs) = eng_fields
@@ -631,17 +675,17 @@ end
         xqs = eng_fields.qpts.vectors[iqs]
 
         # Stage 1 includes exp(-2πi R_p·k), so stage 2 needs the phase at k+q, not q.
-        xkqs .+= eng_fields.xks[:, ik_batch]
+        xkqs .+= eng_fields.xks[:, ik_sorted]
         phase = tile_workspace.P_kq[:, 1:n_kept]
         build_fourier_phase!(phase, eng_fields.irvecp_mat, xkqs)
     end
 
     # function barrier for the concrete types of the kept pairs' states and indices.
-    _compute_eph_for_pairs!(OuterKLoop(), eng_fields, tile_workspace, ik_batch, phase, els_k, els_kq_block,
+    _compute_eph_for_pairs!(OuterKLoop(), eng_fields, tile_workspace, ep_kR, dg_kR, phase, els_k, els_kq_block,
         phs_block, ik, ikqs, iqs, wtqs, xqs)
 end
 
-@views function _compute_eph_for_pairs!(::OuterKLoop, eng_fields, tile_workspace, ik_batch, phase, els_k, els_kq, phs,
+@views function _compute_eph_for_pairs!(::OuterKLoop, eng_fields, tile_workspace, ep_kR, dg_kR, phase, els_k, els_kq, phs,
         ik, ikqs, iqs, wtqs, xqs)
     # Borrow the tile's output storage for the block.
     block = EPBlock{OuterKLoop}(tile_workspace, els_k, els_kq, phs; ik, ikq = ikqs, iq = iqs,
@@ -651,17 +695,17 @@ end
     # g_ina(k, R_p) -> g_mnν(k, q), with m the band of k+q and ν the phonon mode
     # (the displacement a itself under `:cartesian`).
     nbkq, nbk, nmodes, npairs = size(block.ep)
-    g = tile_workspace.g[:, 1:npairs]
+    g = reshape_buffer_view(tile_workspace.g, size(ep_kR, 1), npairs)
     u_ph = tile_workspace.u_ph_id === nothing ? block.phs.u : tile_workspace.u_ph_id[:, :, 1:npairs]
     tmp = reshape_buffer_view(tile_workspace.tmp, nbkq, nbk * size(u_ph, 1), npairs)
-    compute_eph_kR_to_kq_batched!(block.ep, eng_fields.ep_kR[:, :, ik_batch], phase, u_ph,
+    compute_eph_kR_to_kq_batched!(block.ep, ep_kR, phase, u_ph,
                                   block.els_kq.u; g, tmp)
 
     # The same for each direction d of the covariant derivative: dg_inad(k, R_p) -> dg_mnνd(k, q).
     if block.dg !== nothing
         dg_d = reshape_buffer_view(tile_workspace.dg_d, nbkq, nbk, nmodes, npairs)
         for d in 1:3
-            compute_eph_kR_to_kq_batched!(dg_d, eng_fields.dg_kR[:, :, d, ik_batch], phase, u_ph,
+            compute_eph_kR_to_kq_batched!(dg_d, dg_kR[:, :, d], phase, u_ph,
                                           block.els_kq.u; g, tmp)
             block.dg[:, :, :, d, :] .= dg_d
         end

@@ -104,7 +104,8 @@ Fields (pair axis `j`):
 - `ep` :: `(nband_max_kq, nband_max_k, nmodes, nb)` eigenbasis e-ph matrix, before `1/(2ω)`, in the
   run's phonon basis, the polar term included. Defined on each pair's windows only: entry
   `[m, n, ν, j]` is meaningful for `m ≤ els_kq.nband[j]` and `n ≤ els_k.nband[j]` (the shared side's
-  index is 1). `nband_max_kq == els_kq.nband_max`; with the k+q states solved per tile
+  index is 1). `nband_max_k == els_k.nband_max`: under `OuterKLoop` the outer k's own band count,
+  so the k side of a block has no padding. `nband_max_kq == els_kq.nband_max`; with the k+q states solved per tile
   (`run_eph_over_q_and_k`, `run_eph_over_k_and_q`) it is the block's largest k+q window, so it
   differs between blocks and is at most `nw`.
 - `dg` :: `(nband_max_kq, nband_max_k, nmodes, 3, nb)` covariant derivative of `ep` along the
