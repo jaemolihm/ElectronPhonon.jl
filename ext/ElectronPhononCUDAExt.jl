@@ -49,6 +49,8 @@ const JACOBI_NW_MAX = 12
 ElectronPhonon.gpu_backend() = ElectronPhonon.GPUBackend(CuArray{ComplexF64}(undef, 0))
 
 ElectronPhonon.free_bytes(::ElectronPhonon.GPUBackend) = CUDA.free_memory()
+ElectronPhonon.alloc_host_pinned(::ElectronPhonon.GPUBackend, ::Type{T}, dims...) where {T} =
+    CUDA.pin(Array{T}(undef, dims...))
 ElectronPhonon.synchronize(::ElectronPhonon.GPUBackend) = CUDA.synchronize()
 
 # GPU-aware MPI hands the device pointer straight to the MPI library, so the kernels that filled the

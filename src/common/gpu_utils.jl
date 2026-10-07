@@ -132,6 +132,16 @@ first, and this is that allocation in one call. Not exported; use
 alloc_zeros(backend, ::Type{T}, dims...) where {T} = fill!(alloc(backend, T, dims...), zero(T))
 
 """
+    alloc_host_pinned(backend, ::Type{T}, dims...) -> Array{T}
+
+Uninitialised HOST array of `T` for repeated device-to-host copies from `backend`: a plain `Array`
+for `CPUBackend`, and page-locked (pinned) for a `GPUBackend` (CUDA extension), which a copy from
+the device reaches directly instead of through a staging buffer, at about twice the bandwidth. The
+pinning lasts as long as the array. Not exported; use `ElectronPhonon.alloc_host_pinned`.
+"""
+alloc_host_pinned(::CPUBackend, ::Type{T}, dims...) where {T} = Array{T}(undef, dims...)
+
+"""
     to_device_copy(backend, A::AbstractArray) -> AbstractArray
 
 Copy of `A` on `backend`, always a DISTINCT array; element type and size follow `A`. `to_device` is

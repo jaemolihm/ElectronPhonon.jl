@@ -189,8 +189,12 @@ function calculator_end_batch!(calc::BoltzmannCalculator, ctx::OuterKContext)
         i0 = tile_offset(tile_dev)
         tile_download!(tile_dev)      # contiguous device→host copy into the tile's host mirror
         host = host_array(tile_dev, 1)
-        @inbounds for iT in 1:length(calc.occ)
-            @views calc.Sᵢ[iT][i0+1:i0+ni, :] .= host[:, :, iT]
+        # Threaded over blocks of inner states: each column is a short contiguous run of the output.
+        colblocks = collect(Iterators.partition(axes(host, 2), cld(size(host, 2), 4nthreads())))
+        for iT in 1:length(calc.occ)
+            @threads for cols in colblocks
+                @views calc.Sᵢ[iT][i0+1:i0+ni, cols] .= host[:, cols, iT]
+            end
         end
     end
     calc
