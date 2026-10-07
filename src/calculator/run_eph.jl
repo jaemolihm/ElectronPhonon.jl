@@ -147,7 +147,7 @@ end
 # (`els_kq` is nothing for per-tile k+q solves).
 function _allocate_engine(order, model, states, options)
     # function barrier for allocation from concrete resident state containers.
-    (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq) = states
+    (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, ω_all) = states
     (; el_qty, ph_qty, calculators, backend, inner_loop_kq, precompute_el_kq, energy_conservation_tol,
        covariant_derivative_of_g, eph_phonon_basis, nchunks_threads, window_kq, verbosity) = options
     (; nw) = model
@@ -183,7 +183,7 @@ function _allocate_engine(order, model, states, options)
         eng = OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
             n_outer_batch, n_inner_tile, nchunks,
             covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation_tol,
-            phonon_u_by_index = _reads_phonon_u_by_index(backend, model, eph_phonon_basis, calculators,
+            ω_all, phonon_u_by_index = _reads_phonon_u_by_index(backend, model, eph_phonon_basis, calculators,
                                                          inner_loop_kq))
     else
         eng = OuterQEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
@@ -548,11 +548,13 @@ function _setup_states(order, model::Model{FT}, kpts_input, second_input, option
     # over the resident states of both sides, has no process inside the tolerance. The eigenvalues
     # are ascending, so when no ω is below -Ω those modes are the lowest `nmodes_kept` of each q.
     nmodes_kept = model.nmodes
+    ω_all = nothing
     if order isa OuterKLoop && inner_loop_kq && isfinite(energy_conservation_tol) &&
             !(backend isa CPUBackend) && eph_phonon_basis == :eigenmode && issubset(ph_qty, (:e, :u)) &&
             !model.polar_phonon.use && ph_eigenpairs === nothing && els_k.nk > 0 && els_kq.nk > 0 &&
             all(allows_phonon_mode_truncation, calculators) &&
-            qpts.n * _phonon_state_bytes(FT, model.nmodes, ph_qty) > free_bytes(backend) ÷ 2
+            (qpts.n * _phonon_state_bytes(FT, model.nmodes, ph_qty) > free_bytes(backend) ÷ 2 ||
+             _FORCE_PHONONS_PER_BATCH[])
         e_extrema(els) = (in_window = axes(els.e, 1) .<= reshape(els.nband, 1, :);
             (minimum(ifelse.(in_window, els.e, Inf)), maximum(ifelse.(in_window, els.e, -Inf))))
         (emin_k, emax_k), (emin_kq, emax_kq) = e_extrema(els_k), e_extrema(els_kq)
@@ -565,10 +567,22 @@ function _setup_states(order, model::Model{FT}, kpts_input, second_input, option
             Ω_meV = round(Ω / unit_to_aru(:meV), digits = 2)
             @info "Phonon modes kept = $nmodes_kept of $(model.nmodes) (|ω| ≤ $Ω_meV meV)"
         end
+        # When even the kept modes of all q would take more than half of the free device memory, the
+        # engine builds the phonons per outer batch, of the q its kept pairs use only, and selects the
+        # pairs with the frequencies of this value-only solve.
+        if qpts.n * _phonon_state_bytes(FT, nmodes_kept, ph_qty; ndisp = model.nmodes) >
+                free_bytes(backend) ÷ 2 || _FORCE_PHONONS_PER_BATCH[]
+            ω_all = ω[1:nmodes_kept, :]
+        end
     end
-    phs = maybe_time(verbosity) do
-        compute_phonon_states_batched(model, qpts, ph_qty; fourier_mode, eph_phonon_basis, backend,
-                                      eigenpairs = ph_eigenpairs, nmodes_kept)
+    phs = if ω_all === nothing
+        maybe_time(verbosity) do
+            compute_phonon_states_batched(model, qpts, ph_qty; fourier_mode, eph_phonon_basis, backend,
+                                          eigenpairs = ph_eigenpairs, nmodes_kept)
+        end
+    else
+        # An empty container with the run's modes: the engine fills one per outer batch.
+        BatchedPhononState(backend, nmodes_kept, 0, ph_qty; FT, ndisp = model.nmodes)
     end
 
     if verbosity > 0 && mpi_isroot()
@@ -576,8 +590,11 @@ function _setup_states(order, model::Model{FT}, kpts_input, second_input, option
         kqpts === nothing || @info "Number of k+q points = $(kqpts.n)"
         @info "Number of q points = $(qpts.n)"
     end
-    (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq)
+    (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, ω_all)
 end
+
+# Tests force the per-batch phonons (`_setup_states`) on fixtures whose phonons fit the device.
+const _FORCE_PHONONS_PER_BATCH = Ref(false)
 
 
 # ---- Explicit outer-k sweep -------------------------------------------------------------------

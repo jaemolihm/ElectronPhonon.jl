@@ -511,18 +511,42 @@ function ElectronPhonon._select_kqpairs_on_device!(tile_workspace, eng_fields, e
     ng1, ng2, ng3 = eng_fields.qpts.ngrid
     k1, k2, k3 = eng_fields.xks_int[1, ik], eng_fields.xks_int[2, ik], eng_fields.xks_int[3, ik]
     (; keep_dev, pos_dev, iqs_tile_dev, ikqs_dev, iqs_dev, n_kept_host) = tile_workspace
-    els_kq, phs = eng_fields.els_kq, eng_fields.phs
+    els_kq = eng_fields.els_kq
+    ω_q = something(eng_fields.ω_all, eng_fields.phs.e)
     threads = 256
     blocks = cld(n_tile, threads)
     @cuda threads=threads blocks=blocks _kqpair_select_kernel!(iqs_tile_dev, keep_dev,
         eng_fields.qtable_dev, eng_fields.xkqs_int_dev, k1, k2, k3, ng1, ng2, ng3, ikq_first,
-        n_tile, els_k.e, els_k.nband, els_kq.e, els_kq.nband, phs.e, tol)
+        n_tile, els_k.e, els_k.nband, els_kq.e, els_kq.nband, ω_q, tol)
     pos = view(pos_dev, 1:n_tile)
     accumulate!(+, pos, view(keep_dev, 1:n_tile))
     @cuda threads=threads blocks=blocks _kqpair_compact_kernel!(ikqs_dev, iqs_dev, keep_dev, pos_dev,
         iqs_tile_dev, ikq_first, n_tile)
     copyto!(n_kept_host, 1, pos_dev, n_tile, 1)
     n_kept_host[1]
+end
+
+function _mark_kept_qs_kernel!(q_marks, keep, iqs_tile, n_tile)
+    j = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    j <= n_tile || return
+    @inbounds if keep[j] == 1 && iqs_tile[j] > 0
+        q_marks[iqs_tile[j]] = true
+    end
+    return
+end
+
+function ElectronPhonon._mark_conserving_qs!(q_marks, tile_workspace, eng_fields, els_k, ik, ikq_first,
+        n_tile, tol)
+    ng1, ng2, ng3 = eng_fields.qpts.ngrid
+    k1, k2, k3 = eng_fields.xks_int[1, ik], eng_fields.xks_int[2, ik], eng_fields.xks_int[3, ik]
+    (; keep_dev, iqs_tile_dev) = tile_workspace
+    threads = 256
+    blocks = cld(n_tile, threads)
+    @cuda threads=threads blocks=blocks _kqpair_select_kernel!(iqs_tile_dev, keep_dev,
+        eng_fields.qtable_dev, eng_fields.xkqs_int_dev, k1, k2, k3, ng1, ng2, ng3, ikq_first,
+        n_tile, els_k.e, els_k.nband, eng_fields.els_kq.e, eng_fields.els_kq.nband, eng_fields.ω_all, tol)
+    @cuda threads=threads blocks=blocks _mark_kept_qs_kernel!(q_marks, keep_dev, iqs_tile_dev, n_tile)
+    q_marks
 end
 
 end # module

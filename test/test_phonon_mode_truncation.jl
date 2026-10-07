@@ -1,6 +1,6 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: OuterKEngine, stage1!, stage2!, compute_phonon_states_batched,
+using ElectronPhonon: OuterKEngine, stage1!, stage2!, compute_phonon_states_batched, unit_to_aru,
     eph_apply_rotations!, _run_options, _setup_states, OuterKLoop
 
 # A run with a finite energy_conservation_tol on a GPU may keep only the lowest phonon modes
@@ -69,5 +69,34 @@ isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_fr
         end
         @test nwrong_shape == 0
         @test maxdev <= 1e-12 * scale
+    end
+end
+
+# When even the kept modes of all q do not fit, the engine builds the phonons of each outer batch,
+# for the q of its kept pairs only (forced here on Pb 6³): the BTE kernel is the one of the run with
+# all phonons resident.
+@testset "phonons per outer batch (GPU)" begin
+    if MODE_TRUNCATION_GPU
+        model = _load_model_from_artifacts("pb")
+        eV, K, meV = unit_to_aru(:eV), unit_to_aru(:K), unit_to_aru(:meV)
+        μ = 11.68eV; window = (μ - 0.5eV, μ + 0.5eV); σ = 20meV
+        runbte() = (c = BoltzmannCalculator{Float64}(;
+                occ = ElectronOccupationParams(; Tlist = [300.0K], nlist = 4.0, μlist = μ,
+                    volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac),
+                smearing_list = [SmearingType(:Gaussian, σ)], occupation_method = 5);
+            ElectronPhonon.run_eph_over_k_and_kq(model, (6, 6, 6), (6, 6, 6); calculators = [c],
+                symmetry = nothing, window_k = window, window_kq = window, n_outer_batch = 20,
+                energy_conservation_tol = 6σ, backend = ElectronPhonon.gpu_backend(),
+                progress_print_step = 10^9, verbosity = 0); c)
+        c_all = runbte()
+        c_per_batch = try
+            ElectronPhonon._FORCE_PHONONS_PER_BATCH[] = true
+            runbte()
+        finally
+            ElectronPhonon._FORCE_PHONONS_PER_BATCH[] = false
+        end
+        @test maximum(stack(c_all.Sₒ)) > 0
+        @test isapprox(stack(c_per_batch.Sᵢ), stack(c_all.Sᵢ); rtol = 1e-12)
+        @test isapprox(stack(c_per_batch.Sₒ), stack(c_all.Sₒ); rtol = 1e-12)
     end
 end
