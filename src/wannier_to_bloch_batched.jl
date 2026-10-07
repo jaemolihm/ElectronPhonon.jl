@@ -290,17 +290,18 @@ function add_eph_dipole_batched!(eps, coeffs, ukqs, uks, mmats)
     eps
 end
 
-# Above this `nw*nmodes` the two rotation GEMMs are large enough that cuBLAS beats the CUDA
-# extension's fused kernel; see `_fused_eph_rot_kernel!` for the full rationale. It lives here
-# rather than in the extension so the base package documents the crossover the generic
-# `eph_apply_rotations!` docstring refers to. The crossover is hardware-dependent: the value was
-# tuned on one GPU and should be retuned elsewhere.
-#
-# Measured, so it does not get removed as a "small-size optimization": at nw=7, nmodes=3 (Cu,
-# ndata=21) the fused kernel is **1.51x faster than cuBLAS** — 34% less wall on the whole outer-k
-# BTE loop, 31.07 s vs 47.00 s at nk=150 on an A100-80GB. The two paths sum in different orders, so
-# compare them with a tolerance, not bitwise.
-const _FUSED_ROT_MAX_NWNM = 24
+# The CUDA extension's fused rotation kernel (`_fused_eph_rot_kernel!`) runs when
+# `nw*nmodes ≤ _FUSED_ROT_MAX_NWNM`, `nw ≤ _FUSED_ROT_MAX_NW` and `nmodes ≤ _FUSED_ROT_MAX_NMODES`;
+# above, the two rotation GEMMs are large enough that cuBLAS wins. The gate lives here rather than in
+# the extension so the base package documents the crossover the generic `eph_apply_rotations!`
+# docstring refers to. Measured on an A100 against the cuBLAS branch (2026-10-06), with
+# nbandk = nbandkq = nw: the kernel wins 1.2-3x through nw*nmodes = 60 and up to nw = 14, and loses
+# at nw = 16 with nmodes = 3 and at nw = 8 with nmodes = 15. `nmodes` bounds the per-thread
+# register tuple (2 nmodes Float64). The two paths sum in different orders, so compare them with a
+# tolerance, not bitwise.
+const _FUSED_ROT_MAX_NWNM = 60
+const _FUSED_ROT_MAX_NW = 12
+const _FUSED_ROT_MAX_NMODES = 32
 
 # The two-GEMM rotation paths merge `g`'s band and mode axes with a `reshape`, which needs `g` to be
 # densely packed — a reshape of a strided view is a `ReshapedArray`, which the batched GEMMs reject.
