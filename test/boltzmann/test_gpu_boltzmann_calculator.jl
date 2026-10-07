@@ -41,7 +41,7 @@ end
 # Independent CPU reference for the Sₒ/Sᵢ accumulation (NOT a production method, and deliberately not
 # shared with `src`: keeping it duplicated is what makes it an oracle for the generic host method that
 # now lives in src/boltzmann/boltzmann_calculator.jl as well as for the CUDA kernel).
-function _bte_accumulate_ref!(So, Si, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
+function _bte_accumulate_ref!(So, Si, epvals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
         μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, npairs, i0)
     nT = length(μs)
     for ipair in 1:npairs, n in 1:nbandk, m in 1:nbandkq
@@ -52,8 +52,9 @@ function _bte_accumulate_ref!(So, Si, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
             sₒ = 0.0; sᵢ = 0.0
             for ν in 1:nmodes
                 ωq = ωqmat[ν, ipair]; ωq < ω_cutoff && continue
+                g2 = abs2(epvals[m, n, ν, ipair]) / (2ωq)
                 sₒ_ν, sᵢ_ν = EP.bte_scattering_increments(method, ek, ekq, ωq,
-                    g2vals[m, n, ν, ipair], wtq, μs[iT], Ts[iT], ηs[iT])
+                    g2, wtq, μs[iT], Ts[iT], ηs[iT])
                 sₒ += sₒ_ν; sᵢ += sᵢ_ν
             end
             So[i, iT] += sₒ
@@ -74,15 +75,15 @@ function check_bte_accumulate_methods(arr, zdev)
     imap_f = reshape(collect(1:nw*npairs), nw, npairs)
     n_i=nw; n_f=nw*npairs
     e_i=0.01randn(n_i); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight
-    g2vals=abs.(randn(nw,nw,nmodes,npairs)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
+    epvals=randn(ComplexF64,nw,nw,nmodes,npairs).*0.03; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
     μs=FT[0.0,0.002]; Ts=FT[0.01,0.02]; ωcut=FT(1e-6)
     ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005, 0.005]]
     for method in 1:6
         So=zeros(n_i,nT); Si=zeros(n_i,n_f,nT)
-        _bte_accumulate_ref!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
+        _bte_accumulate_ref!(So,Si,epvals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
             μs,Ts,ηs,method,ωcut,nw,nw,nmodes,npairs,0)
         Sod=zdev(FT,n_i,nT); Sid=zdev(FT,n_i,n_f,nT)
-        EP.bte_window_accumulate!(Sod,Sid,arr(g2vals),arr(ωqmat),
+        EP.bte_window_accumulate!(Sod,Sid,arr(epvals),arr(ωqmat),
             arr(imap_i_at_k),arr(imap_f),arr(ikqs),
             arr(e_i),arr(e_f),arr(wf),
             arr(μs),arr(Ts),arr(ηs),method,ωcut,0)
@@ -102,15 +103,15 @@ function check_bte_accumulate_tile(arr, zdev)
     imap_f = [ (m+ (kq-1)*nw) % 7 == 0 ? 0 : (m + (kq-1)*nw) for m in 1:nw, kq in 1:npairs ]  # scatter some 0s
     n_f = nw*npairs
     e_i=0.01randn(n_i_global); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight
-    g2vals=abs.(randn(nw,nw,nmodes,npairs)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
+    epvals=randn(ComplexF64,nw,nw,nmodes,npairs).*0.03; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
     μs=FT[0.0]; Ts=FT[0.01]; ωcut=FT(1e-6)
     ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005]]
     for method in (1,5,6)
         So=zeros(n_i_global,nT); Si=zeros(ni,n_f,nT)
-        _bte_accumulate_ref!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
+        _bte_accumulate_ref!(So,Si,epvals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
             μs,Ts,ηs,method,ωcut,nw,nw,nmodes,npairs,i0)
         Sod=zdev(FT,n_i_global,nT); Sid=zdev(FT,ni,n_f,nT)
-        EP.bte_window_accumulate!(Sod,Sid,arr(g2vals),arr(ωqmat),
+        EP.bte_window_accumulate!(Sod,Sid,arr(epvals),arr(ωqmat),
             arr(imap_i_at_k),arr(imap_f),arr(ikqs),
             arr(e_i),arr(e_f),arr(wf),
             arr(μs),arr(Ts),arr(ηs),method,ωcut,i0)

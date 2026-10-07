@@ -409,7 +409,7 @@ end
 # nmodes modes for each temperature; atomic-adds the scattering-out term into Sₒ (many (m,j) share an
 # i) and writes the scattering-in term into Sᵢ (each (i,f) is hit by a unique thread across the whole
 # run → no atomic). See the generic method's docstring for the full accumulation semantics.
-function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
+function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, epvals, ωqmat, imap_i_at_k, imap_f, ikqs,
         e_i, e_f, wf, μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, npairs, nT, i0)
     # Flat thread index ind_mnq ∈ 1:N over the (m, n, ipair) grid (N = nbandkq·nbandk·npairs).
     # TODO: the CUDA index intrinsics are Int32, so this overflows if N ≥ 2^31. Unreachable today (a
@@ -433,8 +433,8 @@ function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap
             for ν in 1:nmodes
                 ωq = ωqmat[ν, ipair]
                 ωq < ω_cutoff && continue
-                sₒ_ν, sᵢ_ν = ElectronPhonon.bte_scattering_increments(
-                    method, ek, ekq, ωq, g2vals[m, n, ν, ipair], wtq, μ, T, η)
+                g2 = abs2(epvals[m, n, ν, ipair]) * inv(2 * ωq)   # as `epstate_set_g2!`
+                sₒ_ν, sᵢ_ν = ElectronPhonon.bte_scattering_increments(method, ek, ekq, ωq, g2, wtq, μ, T, η)
                 sₒ += sₒ_ν; sᵢ += sᵢ_ν
             end
             CUDA.@atomic Sₒ_out[i, iT] += sₒ
@@ -447,16 +447,16 @@ end
 # CuArray method of `bte_window_accumulate!` (generic method + full docstring in
 # src/boltzmann/boltzmann_calculator.jl): launches `_bte_window_accumulate_kernel!` with one thread per
 # (m, n, j) over the batch, accumulating this batch's Sₒ/Sᵢ contributions into the device buffers.
-function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
+function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, epvals, ωqmat,
         imap_i_at_k, imap_f, ikqs, e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff, i0::Int)
-    nbandkq, nbandk, nmodes, npairs = ElectronPhonon._scatter_extents(g2vals, ωqmat, ikqs,
+    nbandkq, nbandk, nmodes, npairs = ElectronPhonon._scatter_extents(epvals, ωqmat, ikqs,
                                                                         imap_i_at_k, imap_f)
     nT = length(μs)
     N = nbandkq * nbandk * npairs
     threads = 256
     blocks = cld(N, threads)
     @cuda threads=threads blocks=blocks _bte_window_accumulate_kernel!(
-        Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
+        Sₒ_out, Sᵢ_out, epvals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
         μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, npairs, nT, i0)
     nothing
 end
