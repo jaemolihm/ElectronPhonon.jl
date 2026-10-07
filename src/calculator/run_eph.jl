@@ -182,7 +182,9 @@ function _allocate_engine(order, model, states, options)
     if order isa OuterKLoop
         eng = OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
             n_outer_batch, n_inner_tile, nchunks,
-            covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation_tol)
+            covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation_tol,
+            phonon_u_by_index = _reads_phonon_u_by_index(backend, model, eph_phonon_basis, calculators,
+                                                         inner_loop_kq))
     else
         eng = OuterQEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
             n_outer_batch, n_inner_tile, nchunks, eph_phonon_basis,
@@ -313,7 +315,9 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
         engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk, nkq, el_qty, ph_qty,
             covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
             device_pair_selection = inner_loop_kq && !(backend isa CPUBackend) &&
-                isfinite(energy_conservation_tol), nq_grid, nmodes_kept = nmodes) :
+                isfinite(energy_conservation_tol), nq_grid, nmodes_kept = nmodes,
+            phonon_u_by_index = _reads_phonon_u_by_index(backend, model, eph_phonon_basis, calculators,
+                                                         inner_loop_kq)) :
         engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk, el_qty, ph_qty,
             precompute_el_kq, eph_phonon_basis)
     for c in calculators

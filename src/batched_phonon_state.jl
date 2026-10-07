@@ -75,7 +75,7 @@ end
     copy_batched_phonon_states!(phs_dst, phs_src, iqs)
 
 Copy the q points `iqs` of `phs_src` into the first `length(iqs)` points of `phs_dst`, field by field (a
-`nothing` field is skipped). `iqs` is a range or a host vector, checked here, or an index array
+field `phs_dst` does not hold is skipped). `iqs` is a range or a host vector, checked here, or an index array
 already on `phs_src`'s device, used as it is: its caller has checked it. A host index vector for a
 device `phs_src` is uploaded once per call, so a hot loop keeps its own device index buffer instead.
 """

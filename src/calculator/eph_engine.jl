@@ -148,6 +148,7 @@ Base.@kwdef mutable struct OuterKEngine
     energy_conservation_tol :: Float64
     eph_phonon_basis :: Symbol
     inner_loop_kq :: Bool         # inner points are k+q (resident states); false: q, k+q solved per tile
+    phonon_u_by_index :: Bool     # the rotation reads `phs.u` by q index; the tiles hold no `u`
     iks_batch    :: UnitRange{Int} # the outer k points of the current stage 1
     backend      :: AbstractBackend
     epmat        :: WannierObject  # model.epmat on the backend
@@ -253,7 +254,8 @@ end
 
 function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband_max_kq, nk, nkq,
         el_qty, ph_qty, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
-        device_pair_selection = false, nq_grid = 0, nmodes_kept = model.nmodes) where {FT}
+        device_pair_selection = false, nq_grid = 0, nmodes_kept = model.nmodes,
+        phonon_u_by_index = false) where {FT}
     (; nw, nmodes) = model
     cx, rl, iz = sizeof(Complex{FT}), sizeof(FT), sizeof(Int)
     nr_p = length(model.epmat.irvec_next)
@@ -283,7 +285,8 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
         cx * ndata + cx * nband_max_kq * nband_max_k * nmodes + # stage-2 scratch g, tmp
         cx * nr_p +                                             # P_kq
         _electron_state_bytes(FT, nw, nband_max_kq, el_qty) +   # k+q tile
-        _phonon_state_bytes(FT, nmodes_kept, ph_qty; ndisp = nmodes) +  # phs tile
+        _phonon_state_bytes(FT, nmodes_kept, phonon_u_by_index ? setdiff(ph_qty, (:u,)) : ph_qty;
+                            ndisp = nmodes) +                   # phs tile
         4iz + rl + 3rl +                                        # kept pairs, ikqs, iqs, iqs_dev, wtqs, x_{k+q}
         (device_pair_selection ? 4iz : 0) +                     # keep, pos, iqs_tile, ikqs on the device
         (inner_loop_kq ? 0 :
@@ -298,6 +301,17 @@ _electron_state_bytes(FT, nw, nb, qty) = 2sizeof(Int) +
     sizeof(Complex{FT}) * ((:u ∈ qty) * nw * nb + ((:v ∈ qty) + (:rbar ∈ qty)) * 3nb^2)
 _phonon_state_bytes(FT, nm, qty; ndisp = nm) = sizeof(FT) * ((:e ∈ qty) * nm + (:vdiag ∈ qty) * 3nm) +
     sizeof(Complex{FT}) * ((:u ∈ qty) * ndisp * nm + (:eph_dipole_coeff ∈ qty) * nm + (:eph_r_coeff ∈ qty) * 3nm)
+
+# Whether an outer-k run over a k+q grid reads each pair's phonon eigenmodes from the resident
+# `phs.u` by q index instead of gathering them into its tile: on a device whose fused rotation kernel
+# takes them (the gate of `eph_apply_rotations!`), in the eigenmode basis, when no calculator reads
+# `block.phs.u`.
+function _reads_phonon_u_by_index(backend, model, eph_phonon_basis, calculators, inner_loop_kq)
+    nw, ndisp = model.nw, model.nmodes
+    inner_loop_kq && !(backend isa CPUBackend) && eph_phonon_basis == :eigenmode &&
+        !isempty(calculators) && !any(c -> :u ∈ required_ph_quantities(c), calculators) &&
+        nw * ndisp <= _FUSED_ROT_MAX_NWNM && nw <= _FUSED_ROT_MAX_NW && ndisp <= _FUSED_ROT_MAX_NMODES
+end
 
 """
     OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kwargs...)
@@ -319,7 +333,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
         inner_loop_kq = els_kq !== nothing, n_outer_batch, n_inner_tile, nchunks,
         covariant_derivative_of_g,
         eph_phonon_basis, sel_k = nothing, sel_kq = nothing, window_kq = (-Inf, Inf),
-        energy_conservation_tol = Inf) where {FT}
+        energy_conservation_tol = Inf, phonon_u_by_index = false) where {FT}
     # Validate the model layout and prepare the stage-1 interpolators for the selected inner loop.
     (; nw, nmodes) = model
     _require_epmat_layout(OuterKLoop(), model)
@@ -404,7 +418,8 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
             ikqs_dev = device_pair_selection ? alloc(backend, Int, n_inner_tile) : nothing,
             n_kept_host = device_pair_selection ? Vector{Int}(undef, 1) : nothing,
             els_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
-            phs = BatchedPhononState(backend, phs.nmodes, n_inner_tile, ph_qty; FT, ndisp = nmodes),
+            phs = BatchedPhononState(backend, phs.nmodes, n_inner_tile,
+                phonon_u_by_index ? setdiff(ph_qty, (:u,)) : ph_qty; FT, ndisp = nmodes),
             wtqs = alloc(backend, FT, n_inner_tile),
             itp_el_ham, hk, kqs,
             xkqs = alloc(backend, FT, 3, n_inner_tile),
@@ -424,7 +439,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     # Assemble the engine with maximum-capacity stage-1 outputs and the thread workspaces.
     nrows_max = nw^2 * nmodes * nr_p * (covariant_derivative_of_g ? 3 : 1)
     OuterKEngine(; model, els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, window_kq,
-        energy_conservation_tol, eph_phonon_basis, inner_loop_kq, iks_batch = 1:0,
+        energy_conservation_tol, eph_phonon_basis, inner_loop_kq, phonon_u_by_index, iks_batch = 1:0,
         backend, epmat, itp_epmat, itp_epmat_R,
         irvecp_mat = _irvec_to_device_matrix(backend, irvec_p, FT), mxks = alloc(backend, FT, 3, n_outer_batch), xkqs,
         wtkqs = to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int,
@@ -696,7 +711,15 @@ end
     # (the displacement a itself under `:cartesian`).
     nbkq, nbk, nmodes, npairs = size(block.ep)
     g = reshape_buffer_view(tile_workspace.g, size(ep_kR, 1), npairs)
-    u_ph = tile_workspace.u_ph_id === nothing ? block.phs.u : tile_workspace.u_ph_id[:, :, 1:npairs]
+    u_ph = if tile_workspace.u_ph_id !== nothing
+        # The cartesian basis: the identity.
+        tile_workspace.u_ph_id[:, :, 1:npairs]
+    elseif eng_fields.phonon_u_by_index
+        # The resident eigenmodes, read by the pairs' q indices (on the device).
+        eng_fields.phs.u[:, :, iqs]
+    else
+        block.phs.u
+    end
     tmp = reshape_buffer_view(tile_workspace.tmp, nbkq, nbk * size(u_ph, 1), npairs)
     compute_eph_kR_to_kq_batched!(block.ep, ep_kR, phase, u_ph,
                                   block.els_kq.u; g, tmp)

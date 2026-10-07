@@ -228,11 +228,12 @@ end
 # `DenseCuArray` (not `CuArray`): the e-ph loop passes contiguous device VIEWS of a tile's
 # buffers for a block narrower than the tile. The fused kernel takes
 # them through `@cuda` (cudaconvert handles strided views) and the cuBLAS path takes their
-# reshapes (strided), so no padding to a fixed batch width is needed. `g` alone may be any strided
-# device array: only the fused branch accepts that, hence the density assert on the cuBLAS branch.
+# reshapes (strided), so no padding to a fixed batch width is needed. `g` and `u_phs` may be any
+# device array, `u_phs` e.g. the resident eigenmodes viewed at the pairs' q indices: only the fused
+# branch accepts that, hence the density asserts on the cuBLAS branch.
 function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},4},
         g::AnyCuArray{Complex{T},4},
-        ukqs::DenseCuArray, u_phs::DenseCuArray, tmp) where {T}
+        ukqs::DenseCuArray, u_phs::AnyCuArray, tmp) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
     ndisp = size(u_phs, 1)
@@ -245,7 +246,7 @@ function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},
             ep_kq_all, g, ukqs, u_phs, Val(ndisp), nw, nbandkq, nbandk, nmodes, nq)
     else
         # Large nw/nmodes: cuBLAS strided-batched is efficient; keep the two-GEMM path.
-        @assert ElectronPhonon._is_dense(g)
+        @assert ElectronPhonon._is_dense(g) && u_phs isa DenseCuArray
         gemm_strided_batched!('C', 'N', one(Complex{T}), ukqs,
                               reshape(g, nw, nbandk * ndisp, nq), zero(Complex{T}), tmp)
         gemm_strided_batched!('N', 'N', one(Complex{T}),

@@ -14,8 +14,8 @@ function _copy_indices_on_backend(array_on_backend, inds, npoints)
 end
 
 # Copy `src[..., inds]` into `dst[..., 1:length(inds)]`, `inds` as `_copy_indices_on_backend`
-# returns it; `nothing` for a quantity a container does not hold.
-_copy_last_axis!(::Nothing, ::Nothing, inds) = nothing
+# returns it; nothing to do for a quantity the destination does not hold.
+_copy_last_axis!(::Nothing, src, inds) = nothing
 function _copy_last_axis!(dst::AbstractArray{T, N}, src::AbstractArray{T, N}, inds) where {T, N}
     dst_head = selectdim(dst, N, 1:length(inds))
     colons = ntuple(_ -> Colon(), N - 1)
