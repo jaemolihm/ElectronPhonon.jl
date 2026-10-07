@@ -180,7 +180,8 @@ allowed_eph_phonon_basis(::AbstractCalculator) = [:eigenmode]
 
 Whether the calculator accepts a run that keeps only the lowest phonon modes: with a finite
 `energy_conservation_tol`, `run_eph_over_k_and_kq` on a GPU drops the modes with `|ω| > Ω` at every
-q, `Ω` the energy range of the resident states plus the tolerance, when every calculator allows it.
+q, `Ω` the energy range of the resident states plus the tolerance, when every calculator allows it
+and the full phonon stacks would take more than half of the free device memory.
 Such a mode has no process inside the tolerance for any pair. `phs.nmodes` and `size(ep, 3)` are then
 below `model.nmodes`. Default `false`.
 """

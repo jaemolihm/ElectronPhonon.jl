@@ -24,9 +24,10 @@ Keywords:
 * `energy_conservation_tol = Inf` — a finite tolerance drops the point pairs with no process inside
   it (`|e_k - e_{k+q} ± ω_q| <= energy_conservation_tol` for some bands and mode) before the e-ph
   matrix is computed. On a GPU only `run_eph_over_k_and_kq` takes a finite tolerance, and when
-  every calculator `allows_phonon_mode_truncation` it also drops the modes with `|ω|` above the
-  energy range of the resident states plus the tolerance: the returned `phs` and the blocks then
-  hold the lowest `phs.nmodes` modes.
+  every calculator `allows_phonon_mode_truncation` and the phonons of all q would take more than
+  half of the free device memory, it also drops the modes with `|ω|` above the energy range of the
+  resident states plus the tolerance: the returned `phs` and the blocks then hold the lowest
+  `phs.nmodes` modes.
 * `covariant_derivative_of_g = false` — also compute the covariant derivative `block.dg`.
 * `eph_phonon_basis = :eigenmode` — or `:cartesian` (identity phonon rotation).
 * `fourier_mode = "gridopt"` — or `"normal"`: the interpolation of the setup-time state solves on a
@@ -455,7 +456,7 @@ _input_ngrid(x::AbstractKpoints) = x.ngrid
 # The state containers of a run: the k side from its selection, the k+q side (`nothing` when solved
 # per tile: under `OuterQLoop`, or under `OuterKLoop` with `inner_loop_kq = false`), the q set and its
 # phonons, all on `backend`.
-function _setup_states(order, model::Model, kpts_input, second_input, options)
+function _setup_states(order, model::Model{FT}, kpts_input, second_input, options) where {FT}
     (; el_qty, ph_qty, inner_loop_kq, backend, window_k, window_kq, symmetry, precompute_el_kq,
        eph_phonon_basis, mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs,
        energy_conservation_tol, calculators, verbosity) = options
@@ -537,15 +538,17 @@ function _setup_states(order, model::Model, kpts_input, second_input, options)
     end
 
     # With a finite energy-conservation tolerance on a device, the outer-k loop over a k+q grid
-    # keeps only the modes that can conserve energy for some pair, when every calculator allows it:
-    # a mode with |ω| > Ω = (E_max - E_min) + tol, E over the resident states of both sides, has no
-    # process inside the tolerance. The eigenvalues are ascending, so when no ω is below -Ω those
-    # modes are the lowest `nmodes_kept` of each q.
+    # keeps only the modes that can conserve energy for some pair, when every calculator allows it
+    # and the full phonon stacks would take more than half of the free device memory (finding the
+    # modes costs a value-only solve over all q): a mode with |ω| > Ω = (E_max - E_min) + tol, E
+    # over the resident states of both sides, has no process inside the tolerance. The eigenvalues
+    # are ascending, so when no ω is below -Ω those modes are the lowest `nmodes_kept` of each q.
     nmodes_kept = model.nmodes
     if order isa OuterKLoop && inner_loop_kq && isfinite(energy_conservation_tol) &&
             !(backend isa CPUBackend) && eph_phonon_basis == :eigenmode && issubset(ph_qty, (:e, :u)) &&
             !model.polar_phonon.use && ph_eigenpairs === nothing && els_k.nk > 0 && els_kq.nk > 0 &&
-            all(allows_phonon_mode_truncation, calculators)
+            all(allows_phonon_mode_truncation, calculators) &&
+            qpts.n * _phonon_state_bytes(FT, model.nmodes, ph_qty) > free_bytes(backend) ÷ 2
         e_extrema(els) = (in_window = axes(els.e, 1) .<= reshape(els.nband, 1, :);
             (minimum(ifelse.(in_window, els.e, Inf)), maximum(ifelse.(in_window, els.e, -Inf))))
         (emin_k, emax_k), (emin_kq, emax_kq) = e_extrema(els_k), e_extrema(els_kq)
