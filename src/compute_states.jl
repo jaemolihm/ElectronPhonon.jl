@@ -361,11 +361,13 @@ host LAPACK in the second.
 
 `nmodes_kept < model.nmodes` stores only the lowest `nmodes_kept` modes of each q (`e` and the
 leading columns of `u`), which bounds the stacks for a run that can use no higher mode. It is
-supported by the device solve only.
+supported by the device solve only, as is `phs_out`: a container of `qpts.n` points and
+`nmodes_kept` modes on `backend` to fill instead of allocating one.
 """
 function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fourier_mode = "gridopt",
         eph_phonon_basis::Symbol = :eigenmode, backend = CPUBackend(),
-        eigenpairs::Union{Nothing, Eigenpairs} = nothing, nmodes_kept::Int = model.nmodes) where FT
+        eigenpairs::Union{Nothing, Eigenpairs} = nothing, nmodes_kept::Int = model.nmodes,
+        phs_out = nothing) where FT
     (; nmodes, mass) = model
     nq = qpts.n
     if nmodes_kept != nmodes
@@ -380,7 +382,10 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
         phs = BatchedPhononState(backend, nmodes, nq, quantities; qpts, FT)
         return copy_batched_phonon_states!(phs, phs_host, 1:nq)
     end
-    phs = BatchedPhononState(backend, nmodes_kept, nq, quantities; qpts, FT, ndisp = nmodes)
+    phs_out === nothing || (!(backend isa CPUBackend) && phs_out.nq == nq && phs_out.nmodes == nmodes_kept) ||
+        throw(ArgumentError("phs_out must hold $nq points of $nmodes_kept modes on a device backend"))
+    phs = phs_out === nothing ? BatchedPhononState(backend, nmodes_kept, nq, quantities; qpts, FT, ndisp = nmodes) :
+        phs_out
     _check_eigenpairs(eigenpairs, nmodes, backend)
     need_dipole = :eph_dipole_coeff ∈ quantities || :eph_r_coeff ∈ quantities
     valueonly = !(:u ∈ quantities || :vdiag ∈ quantities || need_dipole)

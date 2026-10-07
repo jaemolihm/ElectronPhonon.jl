@@ -169,6 +169,7 @@ Base.@kwdef mutable struct OuterKEngine
                                   # outer batch (`iqs_per_batch`), else `nothing`
     iqs_per_batch                 # [b] the q of the kept pairs of outer batch b (host), or `nothing`
     iq_to_ph_dev                  # (nq,) Int32 index of each q in the current batch's `phs` (0: none)
+    phs_capacity                  # the per-batch phonons' storage, for the largest batch, or `nothing`
     P_mk                          # (nr_p, n_outer_batch) exp(-2πi R_p · x_k)
     ep_kR                         # stage-1 output, one (nw b nmodes, nr_p, n_b) segment per band class b
     dg_kR                         # the same, (nw b nmodes, nr_p, 3, n_b) segments, or `nothing`
@@ -451,7 +452,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
         irvecp_mat = _irvec_to_device_matrix(backend, irvec_p, FT), mxks = alloc(backend, FT, 3, n_outer_batch), xkqs,
         wtkqs = to_device_copy(backend, collect(FT, inner_pts.weights)), xks_int, xkqs_int,
         xkqs_int_dev, qtable_dev, ω_all, iqs_per_batch = nothing,
-        iq_to_ph_dev = ω_all === nothing ? nothing : alloc(backend, Int32, qpts.n), P_mk,
+        iq_to_ph_dev = ω_all === nothing ? nothing : alloc(backend, Int32, qpts.n), phs_capacity = nothing, P_mk,
         ep_kR = alloc(backend, Complex{FT}, ndata, nr_p, n_outer_batch),
         dg_kR = covariant_derivative_of_g ? alloc(backend, Complex{FT}, ndata, nr_p, 3, n_outer_batch) : nothing,
         nband_k_host = Array(els_k.nband),
@@ -475,6 +476,13 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
             end
             Vector{Int32}(findall(Array(q_marks)))
         end
+        # One allocation for every batch, made before the loop's transients fragment the pool.
+        nq_max = maximum(length, eng.iqs_per_batch; init = 0)
+        bytes = nq_max * _phonon_state_bytes(FT, phs.nmodes, [:e, :u]; ndisp = nmodes)
+        bytes < free_bytes(backend) || error("the phonons of the largest outer batch " *
+            "($(round(bytes / 1e9, digits = 1)) GB) do not fit the free device memory: pass a smaller " *
+            "n_outer_batch or n_inner_tile")
+        eng.phs_capacity = BatchedPhononState(backend, phs.nmodes, nq_max, [:e, :u]; FT, ndisp = nmodes)
     end
     eng
 end
@@ -500,7 +508,7 @@ function stage1!(eng::OuterKEngine, iks_batch::UnitRange{Int})
             throw(ArgumentError("with phonons per outer batch, stage1! takes the batches of the loop"))
         iqs = eng.iqs_per_batch[b + 1]
         eng.phs = compute_phonon_states_batched(eng.model, Kpoints(eng.qpts.vectors[iqs]), [:e, :u];
-            backend = eng.backend, nmodes_kept = eng.phs.nmodes)
+            backend = eng.backend, nmodes_kept = eng.phs.nmodes, phs_out = view(eng.phs_capacity, 1:length(iqs)))
         fill!(eng.iq_to_ph_dev, 0)
         view(eng.iq_to_ph_dev, to_device_copy(eng.backend, iqs)) .= Int32(1):Int32(length(iqs))
     end
