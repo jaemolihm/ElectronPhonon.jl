@@ -185,13 +185,14 @@ end
 # the two GEMMs. The gate constants live in `src`, next to the generic method they select against.
 # Assumes nbandk, nbandkq ≤ nw (true in the full-band loop).
 
-# g : (nw, nbandk, nmodes, nq) ; ukq : (nw, nbandkq, nq) ; uph : (nmodes, nmodes, nq)
-# ep : (nbandkq, nbandk, nmodes, nq).
+# g : (nw, nbandk, ndisp, nq) ; ukq : (nw, nbandkq, nq) ; uph : (ndisp, nmodes, nq)
+# ep : (nbandkq, nbandk, nmodes, nq), nmodes ≤ ndisp.
 # One thread per (ibkq, ibk, q) — NOT per q: a per-q thread leaves the GPU idle at production
 # chunk sizes (nq ~ 2·10³-2·10⁴ threads is a handful of blocks on ~100 SMs; the (band², q) grid
 # is nbandkq·nbandk× larger). Each thread first forms the left product
-# `t[jm] = Σ_iw conj(ukq[iw, ibkq, q]) g[iw, ibk, jm, q]` for every mode jm, held in registers as an
-# `NTuple{NM}` (nw·nm FMA), then `ep[im] = Σ_jm t[jm] uph[jm, im, q]` (nm² FMA). Both sums run in
+# `t[jm] = Σ_iw conj(ukq[iw, ibkq, q]) g[iw, ibk, jm, q]` for every displacement jm, held in
+# registers as an `NTuple{NDISP}` (nw·ndisp FMA), then `ep[im] = Σ_jm t[jm] uph[jm, im, q]`
+# (ndisp·nmodes FMA). Both sums run in
 # a fixed order, so the result does not depend on the launch configuration.
 @inline function _rot_left(ukq, g, nw, ibkq, ibk, jm, q)
     s = zero(eltype(g))
@@ -206,7 +207,7 @@ end
 @inline _rot_right(acc, t::Tuple, uph, im, q, jm) =
     _rot_right(acc + first(t) * uph[jm, im, q], Base.tail(t), uph, im, q, jm + 1)
 
-function _fused_eph_rot_kernel!(ep, g, ukq, uph, ::Val{NM}, nw, nbkq, nbk, nq) where {NM}
+function _fused_eph_rot_kernel!(ep, g, ukq, uph, ::Val{NDISP}, nw, nbkq, nbk, nm, nq) where {NDISP}
     t = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     t <= nbkq * nbk * nq || return
     @inbounds begin
@@ -214,8 +215,8 @@ function _fused_eph_rot_kernel!(ep, g, ukq, uph, ::Val{NM}, nw, nbkq, nbk, nq) w
         r = (t - 1) ÷ nbkq
         ibk = r % nbk + 1
         q = r ÷ nbk + 1
-        tv = ntuple(@inline(jm -> _rot_left(ukq, g, nw, ibkq, ibk, jm, q)), Val(NM))
-        for im in 1:NM
+        tv = ntuple(@inline(jm -> _rot_left(ukq, g, nw, ibkq, ibk, jm, q)), Val(NDISP))
+        for im in 1:nm
             ep[ibkq, ibk, im, q] = _rot_right(zero(eltype(ep)), tv, uph, im, q, 1)
         end
     end
@@ -232,20 +233,21 @@ function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},
         ukqs::DenseCuArray, u_phs::DenseCuArray, tmp) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
-    @assert size(g) == (nw, nbandk, nmodes, nq)
-    if nw * nmodes <= ElectronPhonon._FUSED_ROT_MAX_NWNM && nw <= ElectronPhonon._FUSED_ROT_MAX_NW &&
-       nmodes <= ElectronPhonon._FUSED_ROT_MAX_NMODES
+    ndisp = size(u_phs, 1)
+    @assert size(g) == (nw, nbandk, ndisp, nq)
+    if nw * ndisp <= ElectronPhonon._FUSED_ROT_MAX_NWNM && nw <= ElectronPhonon._FUSED_ROT_MAX_NW &&
+       ndisp <= ElectronPhonon._FUSED_ROT_MAX_NMODES
         threads = 256
         blocks = cld(nbandkq * nbandk * nq, threads)
         @cuda threads=threads blocks=blocks _fused_eph_rot_kernel!(
-            ep_kq_all, g, ukqs, u_phs, Val(nmodes), nw, nbandkq, nbandk, nq)
+            ep_kq_all, g, ukqs, u_phs, Val(ndisp), nw, nbandkq, nbandk, nmodes, nq)
     else
         # Large nw/nmodes: cuBLAS strided-batched is efficient; keep the two-GEMM path.
         @assert ElectronPhonon._is_dense(g)
         gemm_strided_batched!('C', 'N', one(Complex{T}), ukqs,
-                              reshape(g, nw, nbandk * nmodes, nq), zero(Complex{T}), tmp)
+                              reshape(g, nw, nbandk * ndisp, nq), zero(Complex{T}), tmp)
         gemm_strided_batched!('N', 'N', one(Complex{T}),
-                              reshape(tmp, nbandkq * nbandk, nmodes, nq), u_phs, zero(Complex{T}),
+                              reshape(tmp, nbandkq * nbandk, ndisp, nq), u_phs, zero(Complex{T}),
                               reshape(ep_kq_all, nbandkq * nbandk, nmodes, nq))
     end
     ep_kq_all

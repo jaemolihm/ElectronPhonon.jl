@@ -22,7 +22,9 @@ Cartesian direction, `q` q point.
 | `eph_r_coeff` | `(ν, d, q)` | dipole e-ph coefficients of the 2D dipole |
 
 The arrays live on the backend that built them. `qpts` stays on the host, and is `nothing` for a
-per-batch buffer, whose `nq` is the buffer width.
+per-batch buffer, whose `nq` is the buffer width. `nmodes` counts the modes held: a container may
+hold only the lowest modes of each q (`compute_phonon_states_batched`'s `nmodes_kept`), so `u` has
+`size(u, 1) ≥ nmodes` displacements.
 """
 struct BatchedPhononState{T, KT <: Union{Nothing, AbstractKpoints{T}},
         ET <: Union{Nothing, AbstractMatrix{T}}, UT <: Union{Nothing, AbstractArray{Complex{T}, 3}},
@@ -41,7 +43,8 @@ struct BatchedPhononState{T, KT <: Union{Nothing, AbstractKpoints{T}},
             eph_dipole_coeff::DT, eph_r_coeff::RT) where {T, KT, ET, UT, VT, DT, RT}
         qpts === nothing || qpts.n == nq || throw(ArgumentError("qpts holds $(qpts.n) points, nq = $nq"))
         e === nothing || size(e) == (nmodes, nq) || throw(ArgumentError("e must be (nmodes, nq)"))
-        u === nothing || size(u) == (nmodes, nmodes, nq) || throw(ArgumentError("u must be (nmodes, nmodes, nq)"))
+        u === nothing || (size(u, 1) >= nmodes && size(u)[2:3] == (nmodes, nq)) ||
+            throw(ArgumentError("u must be (ndisp, nmodes, nq) with ndisp ≥ nmodes"))
         vdiag === nothing || size(vdiag) == (3, nmodes, nq) || throw(ArgumentError("vdiag must be (3, nmodes, nq)"))
         eph_dipole_coeff === nothing || size(eph_dipole_coeff) == (nmodes, nq) || throw(ArgumentError("eph_dipole_coeff must be (nmodes, nq)"))
         eph_r_coeff === nothing || size(eph_r_coeff) == (nmodes, 3, nq) || throw(ArgumentError("eph_r_coeff must be (nmodes, 3, nq)"))
@@ -50,15 +53,15 @@ struct BatchedPhononState{T, KT <: Union{Nothing, AbstractKpoints{T}},
 end
 
 # The empty container: zero-filled arrays on `backend` for the `quantities` requested, `nothing` for
-# the others.
-function BatchedPhononState(backend, nmodes, nq, quantities; qpts = nothing, FT = Float64)
+# the others; `u` has `ndisp` displacement rows.
+function BatchedPhononState(backend, nmodes, nq, quantities; qpts = nothing, FT = Float64, ndisp = nmodes)
     unknown = setdiff(quantities, (:e, :u, :vdiag, :eph_dipole_coeff, :eph_r_coeff))
     isempty(unknown) || throw(ArgumentError("unknown phonon quantities $unknown"))
     allunique(quantities) || throw(ArgumentError("quantities $quantities has duplicates"))
     alloc_if_required(name, T, dims...) = name ∈ quantities ? alloc_zeros(backend, T, dims...) : nothing
     BatchedPhononState{FT}(nmodes, nq, qpts,
         alloc_if_required(:e, FT, nmodes, nq),
-        alloc_if_required(:u, Complex{FT}, nmodes, nmodes, nq),
+        alloc_if_required(:u, Complex{FT}, ndisp, nmodes, nq),
         alloc_if_required(:vdiag, FT, 3, nmodes, nq),
         alloc_if_required(:eph_dipole_coeff, Complex{FT}, nmodes, nq),
         alloc_if_required(:eph_r_coeff, Complex{FT}, nmodes, 3, nq))

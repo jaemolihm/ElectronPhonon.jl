@@ -337,8 +337,8 @@ end
 # `compute_phonon_states` bit for bit.
 """
     compute_phonon_states_batched(model, qpts, quantities; fourier_mode = "gridopt",
-        eph_phonon_basis = :eigenmode, backend = CPUBackend(), eigenpairs = nothing)
-        -> BatchedPhononState
+        eph_phonon_basis = :eigenmode, backend = CPUBackend(), eigenpairs = nothing,
+        nmodes_kept = model.nmodes) -> BatchedPhononState
 
 The phonons of `qpts` as a [`BatchedPhononState`](@ref) on `backend`: what
 [`compute_phonon_states`](@ref) computes for the same arguments, stored as dense stacks instead of
@@ -358,19 +358,29 @@ device `D(q)` transient is bounded whatever `qpts.n`. As in [`electron_eigenpair
 batched eigensolve picks its own basis inside a degenerate mode multiplet, so device and host `u`
 differ there: a GPU run takes its phonon gauge from the device solve in the first case and from
 host LAPACK in the second.
+
+`nmodes_kept < model.nmodes` stores only the lowest `nmodes_kept` modes of each q (`e` and the
+leading columns of `u`), which bounds the stacks for a run that can use no higher mode. It is
+supported by the device solve only.
 """
 function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fourier_mode = "gridopt",
         eph_phonon_basis::Symbol = :eigenmode, backend = CPUBackend(),
-        eigenpairs::Union{Nothing, Eigenpairs} = nothing) where FT
+        eigenpairs::Union{Nothing, Eigenpairs} = nothing, nmodes_kept::Int = model.nmodes) where FT
     (; nmodes, mass) = model
     nq = qpts.n
+    if nmodes_kept != nmodes
+        (1 <= nmodes_kept < nmodes && !(backend isa CPUBackend) && eigenpairs === nothing &&
+         !model.polar_phonon.use && issubset(quantities, (:e, :u)) && eph_phonon_basis == :eigenmode) ||
+            throw(ArgumentError("nmodes_kept = $nmodes_kept < nmodes = $nmodes needs the device " *
+                "solve: a GPU backend, no eigenpairs, a non-polar model, quantities e and u, eigenmodes"))
+    end
     if !(backend isa CPUBackend) && (model.polar_phonon.use || !issubset(quantities, (:e, :u)))
         phs_host = compute_phonon_states_batched(model, qpts, quantities; fourier_mode,
                                                  eph_phonon_basis, eigenpairs)
         phs = BatchedPhononState(backend, nmodes, nq, quantities; qpts, FT)
         return copy_batched_phonon_states!(phs, phs_host, 1:nq)
     end
-    phs = BatchedPhononState(backend, nmodes, nq, quantities; qpts, FT)
+    phs = BatchedPhononState(backend, nmodes_kept, nq, quantities; qpts, FT, ndisp = nmodes)
     _check_eigenpairs(eigenpairs, nmodes, backend)
     need_dipole = :eph_dipole_coeff ∈ quantities || :eph_r_coeff ∈ quantities
     valueonly = !(:u ∈ quantities || :vdiag ∈ quantities || need_dipole)
@@ -381,8 +391,10 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
                                             eph_phonon_basis; fourier_mode)
         return phs
     end
-    # Device: ω into `e` (or a temporary), eigenmodes into `u` when requested.
-    e = phs.e === nothing ? alloc(backend, FT, nmodes, nq) : phs.e
+    # Device: ω into `e` (or a temporary), eigenmodes into `u` when requested, the lowest
+    # `nmodes_kept` of each.
+    e = phs.e === nothing ? alloc(backend, FT, nmodes_kept, nq) : phs.e
+    kept = 1:nmodes_kept
     if eigenpairs === nothing
         itp_dyn = get_interpolator(to_device(backend, model.ph_dyn); fourier_mode = "batched", backend, nk_hint = nq)
         msqrt_d = alloc(backend, FT, nmodes); copyto!(msqrt_d, sqrt.(mass))
@@ -396,11 +408,10 @@ function compute_phonon_states_batched(model::Model{FT}, qpts, quantities; fouri
                 eigvals_batched!(D)
             else
                 Esq_c, U = eigen_batched!(D)
-                U ./= reshape(msqrt_d, nmodes, 1, 1)     # mass factor: u[i,:] /= sqrt(mass[i])
-                phs.u[:, :, iq_chunk] .= U
+                phs.u[:, :, iq_chunk] .= view(U, :, kept, :) ./ reshape(msqrt_d, nmodes, 1, 1)  # u[i,:] /= sqrt(mass[i])
                 Esq_c
             end
-            e[:, iq_chunk] .= sign.(Esq) .* sqrt.(abs.(Esq))  # ω = sign(ω²)·√|ω²|
+            e[:, iq_chunk] .= sign.(view(Esq, kept, :)) .* sqrt.(abs.(view(Esq, kept, :)))  # ω = sign(ω²)·√|ω²|
         end
     else
         # Gather from the cache. Its columns for this q list are resolved on the host: a miss

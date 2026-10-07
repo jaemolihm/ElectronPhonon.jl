@@ -246,7 +246,7 @@ end
 
 function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband_max_kq, nk, nkq,
         el_qty, ph_qty, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
-        device_pair_selection = false, nq_grid = 0) where {FT}
+        device_pair_selection = false, nq_grid = 0, nmodes_kept = model.nmodes) where {FT}
     (; nw, nmodes) = model
     cx, rl, iz = sizeof(Complex{FT}), sizeof(FT), sizeof(Int)
     nr_p = length(model.epmat.irvec_next)
@@ -270,13 +270,13 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
         cx * nrows_max +                                        # g_fourier
         cx * (nrows + 2 * nband_max_k * nrows ÷ nw) * nd +      # transients of eph_rotate_kR_batched!
         _electron_state_bytes(FT, nw, nband_max_k, el_qty)      # els_k_batch
-    nbox = nband_max_kq * nband_max_k * nmodes
+    nbox = nband_max_kq * nband_max_k * nmodes_kept             # ep box, in the modes the run keeps
     per_pair =
         cx * nbox * (covariant_derivative_of_g ? 5 : 1) +       # ep (+ dg and its per-direction scratch)
-        cx * ndata + cx * nbox +                                # stage-2 scratch g, tmp
+        cx * ndata + cx * nband_max_kq * nband_max_k * nmodes + # stage-2 scratch g, tmp
         cx * nr_p +                                             # P_kq
         _electron_state_bytes(FT, nw, nband_max_kq, el_qty) +   # k+q tile
-        _phonon_state_bytes(FT, nmodes, ph_qty) +               # phs tile
+        _phonon_state_bytes(FT, nmodes_kept, ph_qty; ndisp = nmodes) +  # phs tile
         4iz + rl + 3rl +                                        # kept pairs, ikqs, iqs, iqs_dev, wtqs, x_{k+q}
         (device_pair_selection ? 4iz : 0) +                     # keep, pos, iqs_tile, ikqs on the device
         (inner_loop_kq ? 0 :
@@ -289,8 +289,8 @@ end
 _electron_state_bytes(FT, nw, nb, qty) = 2sizeof(Int) +
     sizeof(FT) * ((:e ∈ qty) * nb + (:vdiag ∈ qty) * 3nb) +
     sizeof(Complex{FT}) * ((:u ∈ qty) * nw * nb + ((:v ∈ qty) + (:rbar ∈ qty)) * 3nb^2)
-_phonon_state_bytes(FT, nm, qty) = sizeof(FT) * ((:e ∈ qty) * nm + (:vdiag ∈ qty) * 3nm) +
-    sizeof(Complex{FT}) * ((:u ∈ qty) * nm^2 + (:eph_dipole_coeff ∈ qty) * nm + (:eph_r_coeff ∈ qty) * 3nm)
+_phonon_state_bytes(FT, nm, qty; ndisp = nm) = sizeof(FT) * ((:e ∈ qty) * nm + (:vdiag ∈ qty) * 3nm) +
+    sizeof(Complex{FT}) * ((:u ∈ qty) * ndisp * nm + (:eph_dipole_coeff ∈ qty) * nm + (:eph_r_coeff ∈ qty) * 3nm)
 
 """
     OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kwargs...)
@@ -304,7 +304,8 @@ tile. It defaults to `els_kq !== nothing`; a contradicting value is an `Argument
 `n_outer_batch` and `n_inner_tile` set the buffer capacities; `nchunks` sets the number of
 independent thread workspaces. `el_qty` / `ph_qty` select stored state fields.
 `energy_conservation_tol` skips point pairs (`_kqpairs_conserving_energy!`); it does not change any
-band window or phonon-mode selection. `covariant_derivative_of_g` allocates the three derivative
+band window. `phs` may hold only the lowest `phs.nmodes` modes (`size(phs.u, 1) == model.nmodes`
+displacements), and the blocks then carry that many. `covariant_derivative_of_g` allocates the three derivative
 components; `eph_phonon_basis` selects eigenmode or cartesian phonons.
 """
 function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
@@ -397,18 +398,18 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
             ikqs_dev = device_pair_selection ? alloc(backend, Int, n_inner_tile) : nothing,
             n_kept_host = device_pair_selection ? Vector{Int}(undef, 1) : nothing,
             els_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
-            phs = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT),
+            phs = BatchedPhononState(backend, phs.nmodes, n_inner_tile, ph_qty; FT, ndisp = nmodes),
             wtqs = alloc(backend, FT, n_inner_tile),
             itp_el_ham, hk, kqs,
             xkqs = alloc(backend, FT, 3, n_inner_tile),
             P_kq = alloc(backend, Complex{FT}, nr_p, n_inner_tile),
             u_ph_id = eph_phonon_basis == :cartesian ? to_device_copy(backend,
                 repeat(Matrix{Complex{FT}}(I, nmodes, nmodes), 1, 1, n_inner_tile)) : nothing,
-            ep = alloc(backend, Complex{FT}, nbkq * nbk * nmodes * n_inner_tile),
+            ep = alloc(backend, Complex{FT}, nbkq * nbk * phs.nmodes * n_inner_tile),
             g = alloc(backend, Complex{FT}, ndata, n_inner_tile),
             tmp = alloc(backend, Complex{FT}, nbkq * nbk * nmodes * n_inner_tile),
-            dg = covariant_derivative_of_g ? alloc(backend, Complex{FT}, nbkq * nbk * nmodes * 3 * n_inner_tile) : nothing,
-            dg_d = covariant_derivative_of_g ? alloc(backend, Complex{FT}, nbkq * nbk * nmodes * n_inner_tile) : nothing,
+            dg = covariant_derivative_of_g ? alloc(backend, Complex{FT}, nbkq * nbk * phs.nmodes * 3 * n_inner_tile) : nothing,
+            dg_d = covariant_derivative_of_g ? alloc(backend, Complex{FT}, nbkq * nbk * phs.nmodes * n_inner_tile) : nothing,
             uk_polar = model.polar_eph.use ? alloc(backend, Complex{FT}, nw * nbk * n_inner_tile) : nothing,
             mmat_buffer = model.polar_eph.use ? alloc(backend, Complex{FT}, nbkq * nbk * n_inner_tile) : nothing,
         )
@@ -651,8 +652,8 @@ end
     # (the displacement a itself under `:cartesian`).
     nbkq, nbk, nmodes, npairs = size(block.ep)
     g = tile_workspace.g[:, 1:npairs]
-    tmp = reshape_buffer_view(tile_workspace.tmp, nbkq, nbk * nmodes, npairs)
     u_ph = tile_workspace.u_ph_id === nothing ? block.phs.u : tile_workspace.u_ph_id[:, :, 1:npairs]
+    tmp = reshape_buffer_view(tile_workspace.tmp, nbkq, nbk * size(u_ph, 1), npairs)
     compute_eph_kR_to_kq_batched!(block.ep, eng_fields.ep_kR[:, :, ik_batch], phase, u_ph,
                                   block.els_kq.u; g, tmp)
 

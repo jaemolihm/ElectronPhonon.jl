@@ -23,7 +23,10 @@ Keywords:
   selection whatever `symmetry` is, and a k+q set is used as given.
 * `energy_conservation_tol = Inf` — a finite tolerance drops the point pairs with no process inside
   it (`|e_k - e_{k+q} ± ω_q| <= energy_conservation_tol` for some bands and mode) before the e-ph
-  matrix is computed. On a GPU only `run_eph_over_k_and_kq` takes a finite tolerance.
+  matrix is computed. On a GPU only `run_eph_over_k_and_kq` takes a finite tolerance, and when
+  every calculator `allows_phonon_mode_truncation` it also drops the modes with `|ω|` above the
+  energy range of the resident states plus the tolerance: the returned `phs` and the blocks then
+  hold the lowest `phs.nmodes` modes.
 * `covariant_derivative_of_g = false` — also compute the covariant derivative `block.dg`.
 * `eph_phonon_basis = :eigenmode` — or `:cartesian` (identity phonon rotation).
 * `fourier_mode = "gridopt"` — or `"normal"`: the interpolation of the setup-time state solves on a
@@ -300,14 +303,16 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
         nq_grid = 0, energy_conservation_tol = Inf, n_outer_batch, n_inner_tile, nband_max_k,
         nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
         precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq)
-    (; nw, nmodes) = model
+    (; nw) = model
+    # The modes of the run: `phs` may hold only the lowest ones (`_setup_states`).
+    nmodes = phs === nothing ? model.nmodes : phs.nmodes
     outer_default = order isa OuterKLoop ? 256 : backend isa CPUBackend ? 1 : 16
     n_outer_batch = max(1, min(something(n_outer_batch, outer_default), n_outer))
     bytes = order isa OuterKLoop ?
         engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk, nkq, el_qty, ph_qty,
             covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
             device_pair_selection = inner_loop_kq && !(backend isa CPUBackend) &&
-                isfinite(energy_conservation_tol), nq_grid) :
+                isfinite(energy_conservation_tol), nq_grid, nmodes_kept = nmodes) :
         engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk, el_qty, ph_qty,
             precompute_el_kq, eph_phonon_basis)
     for c in calculators
@@ -453,7 +458,7 @@ _input_ngrid(x::AbstractKpoints) = x.ngrid
 function _setup_states(order, model::Model, kpts_input, second_input, options)
     (; el_qty, ph_qty, inner_loop_kq, backend, window_k, window_kq, symmetry, precompute_el_kq,
        eph_phonon_basis, mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs,
-       verbosity) = options
+       energy_conservation_tol, calculators, verbosity) = options
     (; nw) = model
     # The host solves of a GPU run (q filter, polar phonons) keep the default interpolation.
     fourier_mode = backend isa CPUBackend ? options.fourier_mode : "gridopt"
@@ -531,9 +536,32 @@ function _setup_states(order, model::Model, kpts_input, second_input, options)
         end
     end
 
+    # With a finite energy-conservation tolerance on a device, the outer-k loop over a k+q grid
+    # keeps only the modes that can conserve energy for some pair, when every calculator allows it:
+    # a mode with |ω| > Ω = (E_max - E_min) + tol, E over the resident states of both sides, has no
+    # process inside the tolerance. The eigenvalues are ascending, so when no ω is below -Ω those
+    # modes are the lowest `nmodes_kept` of each q.
+    nmodes_kept = model.nmodes
+    if order isa OuterKLoop && inner_loop_kq && isfinite(energy_conservation_tol) &&
+            !(backend isa CPUBackend) && eph_phonon_basis == :eigenmode && issubset(ph_qty, (:e, :u)) &&
+            !model.polar_phonon.use && ph_eigenpairs === nothing && els_k.nk > 0 && els_kq.nk > 0 &&
+            all(allows_phonon_mode_truncation, calculators)
+        e_extrema(els) = (in_window = axes(els.e, 1) .<= reshape(els.nband, 1, :);
+            (minimum(ifelse.(in_window, els.e, Inf)), maximum(ifelse.(in_window, els.e, -Inf))))
+        (emin_k, emax_k), (emin_kq, emax_kq) = e_extrema(els_k), e_extrema(els_kq)
+        Ω = max(emax_k, emax_kq) - min(emin_k, emin_kq) + energy_conservation_tol
+        ω = compute_phonon_states_batched(model, qpts, [:e]; backend).e
+        if minimum(ω) >= -Ω
+            nmodes_kept = max(1, Int(maximum(sum(ω .<= Ω; dims = 1))))
+        end
+        if verbosity > 0 && mpi_isroot()
+            Ω_meV = round(Ω / unit_to_aru(:meV), digits = 2)
+            @info "Phonon modes kept = $nmodes_kept of $(model.nmodes) (|ω| ≤ $Ω_meV meV)"
+        end
+    end
     phs = maybe_time(verbosity) do
         compute_phonon_states_batched(model, qpts, ph_qty; fourier_mode, eph_phonon_basis, backend,
-                                      eigenpairs = ph_eigenpairs)
+                                      eigenpairs = ph_eigenpairs, nmodes_kept)
     end
 
     if verbosity > 0 && mpi_isroot()

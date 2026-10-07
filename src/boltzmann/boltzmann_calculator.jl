@@ -92,6 +92,9 @@ supports(::BoltzmannCalculator, ::Type{OuterKLoop}) = true
 # The loop always provides `e`, `u` and the e-ph matrix elements; this lists the extra quantities:
 # the band velocities of both sides (`BandStates`).
 required_el_quantities(::BoltzmannCalculator) = [:vdiag]
+# Sₒ and Sᵢ sum over the modes, and a mode that conserves energy for no pair adds nothing beyond the
+# tolerance.
+allows_phonon_mode_truncation(::BoltzmannCalculator) = true
 
 # What `setup_calculator!` allocates on the backend: the whole-run Sₒ, index maps and per-state
 # arrays, the Sᵢ tile (rows of the outer states of one k, all inner states and temperatures, per
