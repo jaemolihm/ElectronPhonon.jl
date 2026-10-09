@@ -305,6 +305,10 @@ const _FUSED_ROT_MAX_NWNM = 60
 const _FUSED_ROT_MAX_NW = 12
 const _FUSED_ROT_MAX_NMODES = 32
 
+# Whether the fused rotation kernel takes `nw` Wannier functions and `ndisp` phonon displacements.
+_fused_rotation_supported(nw, ndisp) =
+    nw * ndisp <= _FUSED_ROT_MAX_NWNM && nw <= _FUSED_ROT_MAX_NW && ndisp <= _FUSED_ROT_MAX_NMODES
+
 # The two-GEMM rotation paths merge `g`'s band and mode axes with a `reshape`, which needs `g` to be
 # densely packed — a reshape of a strided view is a `ReshapedArray`, which the batched GEMMs reject.
 # A non-strided array is `false`, not an error, so the caller's own assertion message is what the

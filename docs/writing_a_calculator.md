@@ -19,9 +19,11 @@ cannot rot.
   calculator handles (default `false`; pass the type, not an instance). The driver refuses a
   calculator that does not support its order.
 - `required_el_quantities(calc)`, `required_ph_quantities(calc)` — the state quantities it reads
-  beyond the energies `e` and eigenvectors `u`, which the loop always provides on both electron sides
-  and on the phonons, as field names of `BatchedElectronState` (`:vdiag`, `:v`, `:rbar`) and
-  `BatchedPhononState` (`:vdiag`, …). Default: none.
+  beyond those the loop always provides: the energies `e` and eigenvectors `u` on both electron
+  sides, and the phonon frequencies `e`. As field names of `BatchedElectronState` (`:vdiag`, `:v`,
+  `:rbar`) and `BatchedPhononState` (`:u`, `:vdiag`, …). The phonon eigenvectors always enter the
+  e-ph rotation, but a block's `phs.u` is filled only when some calculator lists `:u`; otherwise a
+  GPU run over a k+q grid in the eigenmode basis leaves it `nothing`. Default: none.
 - `setup_calculator!(calc, backend, els_k, els_kq, phs; order, sel_k, sel_kq, nchunks_threads,
   n_outer_batch, n_inner_tile, verbosity)` — once, before the loop (see below). `order` is
   `OuterKLoop()` or `OuterQLoop()`.

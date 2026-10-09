@@ -92,7 +92,9 @@ checked here, or an index array already on `els_src`'s device, used as it is: it
 it. A host index vector for a device `els_src` is uploaded once per call.
 
 `els_dst` may have a narrower box than `els_src`: its `nband_max = b` leading bands are copied, so
-every copied point must have `nband ≤ b` (not checked).
+every copied point must have `nband ≤ b`. That is checked for a host `els_src` only; a device
+caller ensures it from its host band counts (`_stage1!` copies each band class into a box of
+exactly its band count).
 """
 function copy_batched_electron_states!(els_dst::BatchedElectronState, els_src::BatchedElectronState,
         inds)
@@ -101,6 +103,8 @@ function copy_batched_electron_states!(els_dst::BatchedElectronState, els_src::B
         throw(ArgumentError("cannot copy $(length(inds)) points of $els_src into $els_dst"))
     inds = _copy_indices_on_backend(els_src.nband, inds, els_src.nk)
     b = els_dst.nband_max
+    (b == els_src.nband_max || !(els_src.nband isa Array) || all(<=(b), view(els_src.nband, inds))) ||
+        throw(ArgumentError("a copied point has more than els_dst.nband_max = $b bands"))
     leading(x, axes...) = x === nothing ? nothing : view(x, axes..., :)
     _copy_last_axis!(els_dst.iband_offset, els_src.iband_offset, inds)
     _copy_last_axis!(els_dst.nband, els_src.nband, inds)

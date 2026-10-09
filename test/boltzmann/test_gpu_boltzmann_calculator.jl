@@ -210,6 +210,13 @@ end
             @test isempty(c_csr.Sᵢ) && size(c_csr.Sᵢᵀ[1]) == reverse(size(c_dense.Sᵢ[1]))
             @test Matrix(transpose(c_csr.Sᵢᵀ[1])) == c_dense.Sᵢ[1]
             @test nnz(c_csr.Sᵢᵀ[1]) == count(!iszero, c_dense.Sᵢ[1])
+            # The solver takes the CSR output as `transpose.(Sᵢᵀ)`: the same solve as on its dense
+            # form, with the same Sₒ (Sₒ is a device atomic fold, not bitwise across runs).
+            solve(scat_mat) = EP.solve_electron_bte(c_csr.el_i, c_csr.el_f, scat_mat, stack(c_csr.Sₒ),
+                                                    c_csr.occ; solver = :fixed_point)
+            r_csr, r_dense = solve(transpose.(c_csr.Sᵢᵀ)), solve(Matrix.(transpose.(c_csr.Sᵢᵀ)))
+            @test r_csr.σ ≈ r_dense.σ rtol = 1e-12
+            @test !(r_dense.σ ≈ r_dense.σ_serta)
         end
     end
 end

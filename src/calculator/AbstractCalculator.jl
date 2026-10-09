@@ -9,8 +9,9 @@ context of the loop order, [`OuterKContext`](@ref) or [`OuterQContext`](@ref).
 Users subtype `AbstractCalculator` and implement:
 * `supports(calc, ::Type{<:LoopTag})` — the loop orders (`OuterKLoop`, `OuterQLoop`) it handles.
 * `required_el_quantities(calc)`, `required_ph_quantities(calc)` — the electron and phonon
-  quantities it reads beyond `e` and `u`, as `Symbol` field names of `BatchedElectronState` /
-  `BatchedPhononState`.
+  quantities it reads beyond the electrons' `e` and `u` and the phonons' `e`, as `Symbol` field
+  names of `BatchedElectronState` / `BatchedPhononState`; a calculator that reads `block.phs.u`
+  lists `:u`.
 * `setup_calculator!(calc, backend, els_k, els_kq, phs; order, sel_k, sel_kq, nchunks_threads,
   n_outer_batch, n_inner_tile, verbosity)` — run once, before the loop. `order` is the loop order
   of the run, `OuterKLoop()` or `OuterQLoop()`, for buffers only one order needs. `els_k`, `els_kq`, `phs` are
@@ -113,7 +114,9 @@ Fields (pair axis `j`):
   `nothing`.
 - `els_k`, `els_kq` :: `BatchedElectronState` views at block extent; `els_k` has extent 1 under
   `OuterKLoop`.
-- `phs` :: `BatchedPhononState` view; extent 1 under `OuterQLoop`.
+- `phs` :: `BatchedPhononState` view; extent 1 under `OuterQLoop`. `phs.e` is always present;
+  `phs.u` is `nothing` when no calculator of the run lists `:u` in `required_ph_quantities` and
+  the rotation reads the eigenvectors elsewhere (a GPU run over a k+q grid in the eigenmode basis).
 - `wtk`, `wtq` :: the weights; the shared side's is a scalar, the pair side's a device vector.
 - `xk`, `xq` :: the momenta, `Vec3` on the shared side and a host vector on the pair side.
 - `xkmat` :: under `OuterQLoop`, `xk` as a `(3, nb)` matrix on the run's backend (a view of `xk` on
@@ -183,9 +186,9 @@ Whether the calculator accepts a run that keeps only the lowest phonon modes: wi
 `energy_conservation_tol`, `run_eph_over_k_and_kq` on a GPU may drop the modes with `|ω| > Ω` at
 every q, `Ω` the energy range of the resident states plus the tolerance, when every calculator
 allows it. Such a mode has no process inside the tolerance for any pair. `phs.nmodes` and
-`size(ep, 3)` are then below `model.nmodes`, and the `phs` handed to `setup_calculator!` may hold no
-q at all (the phonons are then built per outer batch; the blocks carry the pairs' phonons as
-always). Default `false`.
+`size(ep, 3)` are then below `model.nmodes`. The run may also build the phonons per outer batch:
+the `phs` handed to `setup_calculator!` then holds no q, the driver returns `phs = nothing`, and the
+blocks carry the pairs' phonons as always. Default `false`.
 """
 allows_phonon_mode_truncation(::AbstractCalculator) = false
 
@@ -194,9 +197,11 @@ allows_phonon_mode_truncation(::AbstractCalculator) = false
     required_ph_quantities(calc) -> Vector{Symbol}
 
 The electron (k and k+q side alike) and phonon quantities the calculator reads beyond the ones the
-loop always provides (the energies `e`, the eigenvectors `u` and the e-ph matrix elements), named
-as the fields of `BatchedElectronState` (`:vdiag`, `:v`, `:rbar`) and `BatchedPhononState`
-(`:vdiag`, `:eph_dipole_coeff`, ...). The loop builds the union. Default: none.
+loop always provides (the electrons' energies `e` and eigenvectors `u`, the phonon frequencies `e`
+and the e-ph matrix elements), named as the fields of `BatchedElectronState` (`:vdiag`, `:v`,
+`:rbar`) and `BatchedPhononState` (`:u`, `:vdiag`, `:eph_dipole_coeff`, ...). The loop builds the
+union. The phonon eigenvectors always enter the e-ph rotation, but `block.phs.u` is filled only
+when some calculator lists `:u`. Default: none.
 """
 required_el_quantities(::AbstractCalculator) = Symbol[]
 required_ph_quantities(::AbstractCalculator) = Symbol[]

@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: OuterKLoop, OuterQLoop, OuterKEngine, OuterQEngine, engine_bytes, stage1!,
-    _run_options, _setup_states, unit_to_aru
+    _run_options, _setup_states, unit_to_aru, _select_qs_per_outer_batch
 
 # `engine_bytes` is what `plan_batch` sizes the inner tile from, before the engine exists: it must
 # cover the device arrays the engine constructor allocates (summed `sizeof`) and what one `stage1!`
@@ -41,14 +41,22 @@ end
         grid = (6, 6, 6)
         el_qty, ph_qty = [:u, :e], [:u, :e]
         nb, ntile = 7, 40
-        # The last case selects the pairs on the device (a finite energy_conservation_tol).
-        for (order, mom, dg, tol) in ((OuterKLoop(), "el", false, Inf), (OuterKLoop(), "el", true, Inf),
-                                      (OuterQLoop(), "ph", false, Inf), (OuterKLoop(), "el", false, 1e-3))
+        # (measured, counted) of the device-selection cases, by phonon storage.
+        selection_cases = Dict{Symbol, Tuple{Int, Int}}()
+        # The last two cases select the pairs on the device (a finite energy_conservation_tol), the
+        # last with the phonons built per outer batch.
+        for (order, mom, dg, tol, phonon_storage) in ((OuterKLoop(), "el", false, Inf, :auto),
+                (OuterKLoop(), "el", true, Inf, :auto), (OuterQLoop(), "ph", false, Inf, :auto),
+                (OuterKLoop(), "el", false, 1e-3, :auto), (OuterKLoop(), "el", false, 1e-3, :per_batch))
             model = _load_model_from_artifacts("pb"; epmat_outer_momentum = mom)
             options = _run_options(model; inner_loop_kq = order isa OuterKLoop, backend,
-                window_k = window, window_kq = window, symmetry = nothing, 
-                verbosity = 0)
+                window_k = window, window_kq = window, symmetry = nothing,
+                energy_conservation_tol = tol, phonon_storage, verbosity = 0)
             st = _setup_states(order, model, grid, grid, options)
+            # Phonons per outer batch: the largest batch's q, and the engine's phonon solve.
+            iqs_per_batch = st.ω_all === nothing ? nothing : _select_qs_per_outer_batch(backend,
+                st.kpts, st.kqpts, st.qpts, st.els_k, st.els_kq, st.ω_all, nb, tol)
+            nq_per_batch = iqs_per_batch === nothing ? nothing : maximum(length, iqs_per_batch)
             nbk = st.els_k.nband_max
             nbkq = st.els_kq === nothing ? model.nw : st.els_kq.nband_max
             common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1,
@@ -57,11 +65,16 @@ end
                 bytes = engine_bytes(OuterKEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, nkq = st.kqpts.n, el_qty, ph_qty,
                     inner_loop_kq = true, device_pair_selection = isfinite(tol),
-                    nq_grid = prod(st.qpts.ngrid),
+                    nq_grid = prod(st.qpts.ngrid), nmodes_kept = st.phs.nmodes, nq_per_batch,
+                    nq = st.qpts.n, backend, covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
+                # The per-batch count needs the q set's size and the backend of the solve.
+                nq_per_batch === nothing || @test_throws ArgumentError engine_bytes(OuterKEngine, model;
+                    nband_max_k = nbk, nband_max_kq = nbkq, nk = st.kpts.n, nkq = st.kqpts.n, el_qty,
+                    ph_qty, inner_loop_kq = true, device_pair_selection = true, nq_per_batch,
                     covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
                 eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = dg,
-                    energy_conservation_tol = tol, common...)
+                    energy_conservation_tol = tol, st.ω_all, iqs_per_batch, common...)
                 run1 = () -> stage1!(eng, 1:nb)
             else
                 bytes = engine_bytes(OuterQEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
@@ -74,18 +87,26 @@ end
             run1()
             CUDA.synchronize()
             transient = _device_allocated(run1)
-            # The planner runs after resident states are built: their bytes are already unavailable
-            # in free_bytes, so the engine budget counts newly allocated scratch, not those aliases.
-            held = _device_bytes(eng) - _device_bytes((eng.els_k, eng.els_kq, eng.phs))
+            # The planner runs after resident states (and the frequencies of the per-batch pair
+            # selection) are built: their bytes are already unavailable in free_bytes, so the engine
+            # budget counts newly allocated scratch, not those aliases.
+            held = _device_bytes(eng) - _device_bytes((st.els_k, st.els_kq, st.phs, st.ω_all))
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
-            @info "engine_bytes" order mom dg held transient counted ratio = (held + transient) / counted
+            @info "engine_bytes" order mom dg tol phonon_storage held transient counted ratio = (held + transient) / counted
             # Everything the engine holds and its stage 1 allocates is counted (0.925-1.000 measured,
             # Pb, A100)...
             @test held + transient <= 1.02 * counted
             # ...and the count is not a loose upper bound. The outer-k stage-1 rotation transients are
             # counted at the box width, while each band class of the batch allocates at its own.
             @test held + transient >= (order isa OuterKLoop ? 0.9 : 0.95) * counted
+            isfinite(tol) && (selection_cases[phonon_storage] = (held + transient, counted))
         end
+        # What the per-batch phonons add (their storage, index buffers and per-batch solve) is counted
+        # on its own, not hidden by the rest of the engine. The first batch's solve stands in for the
+        # largest batch's, which the count holds.
+        Δmeasured, Δcounted = selection_cases[:per_batch] .- selection_cases[:auto]
+        @info "engine_bytes, per-batch phonons" Δmeasured Δcounted ratio = Δmeasured / Δcounted
+        @test 0.95 * Δcounted <= Δmeasured <= 1.02 * Δcounted
     end
 end
 

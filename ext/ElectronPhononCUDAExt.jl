@@ -238,8 +238,7 @@ function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},
     nw = size(ukqs, 1)
     ndisp = size(u_phs, 1)
     @assert size(g) == (nw, nbandk, ndisp, nq)
-    if nw * ndisp <= ElectronPhonon._FUSED_ROT_MAX_NWNM && nw <= ElectronPhonon._FUSED_ROT_MAX_NW &&
-       ndisp <= ElectronPhonon._FUSED_ROT_MAX_NMODES
+    if ElectronPhonon._fused_rotation_supported(nw, ndisp)
         threads = 256
         blocks = cld(nbandkq * nbandk * nq, threads)
         @cuda threads=threads blocks=blocks _fused_eph_rot_kernel!(
@@ -504,23 +503,19 @@ function _kqpair_compact_kernel!(ikqs_out, iqs_out, keep, pos, iqs_tile, ikq_fir
     return
 end
 
-# Launch `_kqpair_select_kernel!` for outer k `ik` and the k+q tile `ikq_first .+ (0:n_tile-1)`, into
-# the tile's `iqs_tile_dev` and `keep_dev`.
-function _launch_kqpair_select!(tile_workspace, eng_fields, els_k, ik, ikq_first, n_tile, ω_q, tol)
-    ng1, ng2, ng3 = eng_fields.qpts.ngrid
-    k1, k2, k3 = eng_fields.xks_int[1, ik], eng_fields.xks_int[2, ik], eng_fields.xks_int[3, ik]
+# Launch `_kqpair_select_kernel!` for one outer k (`els_k`, reduced grid coordinates `k_int`) and the
+# k+q tile `ikq_first .+ (0:n_tile-1)`, into the selection's `iqs_tile_dev` and `keep_dev`.
+function _launch_kqpair_select!(selection, k_int, ngrid, els_k, els_kq, ikq_first, n_tile, ω_q, tol)
     threads = 256
     @cuda threads=threads blocks=cld(n_tile, threads) _kqpair_select_kernel!(
-        tile_workspace.iqs_tile_dev, tile_workspace.keep_dev, eng_fields.qtable_dev,
-        eng_fields.xkqs_int_dev, k1, k2, k3, ng1, ng2, ng3, ikq_first, n_tile, els_k.e, els_k.nband,
-        eng_fields.els_kq.e, eng_fields.els_kq.nband, ω_q, tol)
+        selection.iqs_tile_dev, selection.keep_dev, selection.qtable_dev, selection.xkqs_int_dev,
+        k_int..., ngrid..., ikq_first, n_tile, els_k.e, els_k.nband, els_kq.e, els_kq.nband, ω_q, tol)
 end
 
-function ElectronPhonon._select_kqpairs_on_device!(tile_workspace, eng_fields, els_k, ik, ikq_first,
-        n_tile, tol)
-    (; keep_dev, pos_dev, iqs_tile_dev, ikqs_dev, iqs_dev, n_kept_host) = tile_workspace
-    _launch_kqpair_select!(tile_workspace, eng_fields, els_k, ik, ikq_first, n_tile,
-                           something(eng_fields.ω_all, eng_fields.phs.e), tol)
+function ElectronPhonon._select_kqpairs_on_device!(iqs_dev, selection::ElectronPhonon.DevicePairSelection,
+        k_int, ngrid, els_k, els_kq, ikq_first, n_tile, ω_q, tol)
+    (; keep_dev, pos_dev, iqs_tile_dev, ikqs_dev, n_kept_host) = selection
+    _launch_kqpair_select!(selection, k_int, ngrid, els_k, els_kq, ikq_first, n_tile, ω_q, tol)
     threads = 256
     blocks = cld(n_tile, threads)
     pos = view(pos_dev, 1:n_tile)
@@ -540,12 +535,12 @@ function _mark_kept_qs_kernel!(q_marks, keep, iqs_tile, n_tile)
     return
 end
 
-function ElectronPhonon._mark_conserving_qs!(q_marks, tile_workspace, eng_fields, els_k, ik, ikq_first,
-        n_tile, tol)
-    _launch_kqpair_select!(tile_workspace, eng_fields, els_k, ik, ikq_first, n_tile, eng_fields.ω_all, tol)
+function ElectronPhonon._mark_conserving_qs!(q_marks, selection::ElectronPhonon.DevicePairSelection,
+        k_int, ngrid, els_k, els_kq, ikq_first, n_tile, ω_q, tol)
+    _launch_kqpair_select!(selection, k_int, ngrid, els_k, els_kq, ikq_first, n_tile, ω_q, tol)
     threads = 256
     @cuda threads=threads blocks=cld(n_tile, threads) _mark_kept_qs_kernel!(q_marks,
-        tile_workspace.keep_dev, tile_workspace.iqs_tile_dev, n_tile)
+        selection.keep_dev, selection.iqs_tile_dev, n_tile)
     q_marks
 end
 

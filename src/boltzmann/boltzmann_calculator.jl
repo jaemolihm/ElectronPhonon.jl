@@ -45,6 +45,21 @@ struct BoltzmannDeviceBuffers{MT, MI, VT, ST}
     smearing :: ST      # (nT,)
 end
 
+"""
+    BoltzmannCalculator{FT}(; occ, smearing_list, occupation_method = 5, Si_format = :dense, ...)
+
+Accumulates the BTE scattering-out rates `Sₒ[iT]` (length `n_i`) and the scattering-in matrices of
+one pass of `run_eph_over_k_and_kq`, over the outer states `el_i` and inner states `el_f`. With
+`Si_format = :dense` the scattering-in matrix is `Sᵢ[iT]` `(n_i, n_f)`; with `:csr` only its nonzeros
+are kept, as `Sᵢᵀ[iT]`, the `SparseMatrixCSC` `(n_f, n_i)` of its transpose (Sᵢ in CSR), and `Sᵢ`
+is empty. Either goes to the solver as `scat_mat`:
+
+    solve_electron_bte(calc.el_i, calc.el_f, calc.Sᵢ, stack(calc.Sₒ), occ, symmetry)                # :dense
+    solve_electron_bte(calc.el_i, calc.el_f, transpose.(calc.Sᵢᵀ), stack(calc.Sₒ), occ, symmetry)   # :csr
+
+`:csr` shrinks only the host storage: the device tile, the device-to-host transfer and the host scan
+of each tile are those of `:dense`.
+"""
 Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # --- Parameters ---
     const occ::ElectronOccupationParams
@@ -216,11 +231,15 @@ function calculator_end_batch!(calc::BoltzmannCalculator, ctx::OuterKContext)
 end
 
 # Append the nonzeros of the tile `tile` (rows: the outer states `i0+1:i0+ni`) as columns
-# `i0+1:i0+ni` of `Sᵀ`, whose earlier columns are complete; a function barrier for the tile's
-# concrete type. Threaded over the blocks of inner states `colblocks`: each block counts its nonzeros
-# per row, then writes them at offsets from the prefix sum, so every column's rows come out sorted.
+# `i0+1:i0+ni` of `Sᵀ`, whose earlier columns are complete and later ones untouched (the batches end
+# in order); a function barrier for the tile's concrete type. Threaded over the blocks of inner
+# states `colblocks`: each block counts its nonzeros per row, then writes them at offsets from the
+# prefix sum, so every column's rows come out sorted.
 function _append_csr_columns!(Sᵀ::SparseMatrixCSC, tile::AbstractMatrix, i0, colblocks)
     ni = size(tile, 1)
+    (Sᵀ.colptr[i0 + 1] == length(Sᵀ.rowval) + 1 && all(==(1), view(Sᵀ.colptr, i0+2:length(Sᵀ.colptr)))) ||
+        throw(ArgumentError("CSR Sᵢ: columns are appended in order, got outer states $(i0+1):$(i0+ni) " *
+                            "after $(length(Sᵀ.rowval)) nonzeros up to column $i0"))
     counts = zeros(Int, ni, length(colblocks))
     @threads for b in eachindex(colblocks)
         for f in colblocks[b], r in 1:ni
