@@ -19,9 +19,11 @@ cannot rot.
   calculator handles (default `false`; pass the type, not an instance). The driver refuses a
   calculator that does not support its order.
 - `required_el_quantities(calc)`, `required_ph_quantities(calc)` — the state quantities it reads
-  beyond the energies `e` and eigenvectors `u`, which the loop always provides on both electron sides
-  and on the phonons, as field names of `BatchedElectronState` (`:vdiag`, `:v`, `:rbar`) and
-  `BatchedPhononState` (`:vdiag`, …). Default: none.
+  beyond those the loop always provides: the energies `e` and eigenvectors `u` on both electron
+  sides, and the phonon frequencies `e`. As field names of `BatchedElectronState` (`:vdiag`, `:v`,
+  `:rbar`) and `BatchedPhononState` (`:u`, `:vdiag`, …). The phonon eigenvectors always enter the
+  e-ph rotation, but a block's `phs.u` is filled only when some calculator lists `:u`; otherwise a
+  GPU run over a k+q grid in the eigenmode basis leaves it `nothing`. Default: none.
 - `setup_calculator!(calc, backend, els_k, els_kq, phs; order, sel_k, sel_kq, nchunks_threads,
   n_outer_batch, n_inner_tile, verbosity)` — once, before the loop (see below). `order` is
   `OuterKLoop()` or `OuterQLoop()`.
@@ -474,8 +476,9 @@ do, by passing the batch: `OuterKContext(eng; iks_batch = 1:1)`.
 
 Each array of an `EPBlock` has the pairs of the block on its last axis; the side shared by the whole
 block has extent 1 there. Under `OuterKLoop`: `ep` is `(nband_max_kq, nband_max_k, nmodes, nq)`,
-`els_k` the outer k (extent 1), `els_kq` and `phs` the tile's k+q points and phonons, `ik::Int`,
-`ikq` the k+q indices (a range, or a host vector when the loop dropped pairs), `iq` the q indices,
+`els_k` the outer k (extent 1) at a box of its own band count (`nband_max_k = els_k.nband[1]`, so a
+calculator's per-k box-shaped buffers are views at the block's extents), `els_kq` and `phs` the tile's k+q points and phonons, `ik::Int`,
+`ikq` the k+q indices (a range, or a vector on the run's backend when the loop dropped pairs), `iq` the q indices,
 `wtk::Float64`, `wtq` the k+q weights; under `run_eph_over_k_and_q` the inner points are the q
 points, `ikq === nothing` and the k+q states are solved per tile. Under `OuterQLoop` the roles swap: `phs` has extent 1,
 `iq::Int`, `ik` the k indices, and `ikq === nothing` when k+q is solved per tile; then

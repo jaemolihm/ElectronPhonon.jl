@@ -5,7 +5,8 @@
 
 # The extents `(nbandkq, nbandk, nm, npairs)` of a scatter's block values `vals`, after checking
 # that the other block arrays agree: `ωq` `(nm, npairs)` (unless `nothing`), `ikqs` of length
-# `npairs`, and index maps with exactly the box rows `nbandk` / `nbandkq`. The scatters loop over
+# `npairs`, and index maps with at least the block's rows `nbandk` / `nbandkq` (a block may be
+# narrower than the containers' box). The scatters loop over
 # these extents unchecked (the device kernels with no bounds checks at all), so a mismatched array
 # fails here instead.
 function _scatter_extents(vals, ωq, ikqs, imap_i_col, imap_f)
@@ -14,10 +15,10 @@ function _scatter_extents(vals, ωq, ikqs, imap_i_col, imap_f)
         throw(DimensionMismatch("ωq is $(size(ωq)), the block values $(size(vals))"))
     length(ikqs) == npairs ||
         throw(DimensionMismatch("$(length(ikqs)) k+q indices for $npairs block points"))
-    length(imap_i_col) == nbandk ||
-        throw(DimensionMismatch("the outer index map has $(length(imap_i_col)) rows, the box $nbandk"))
-    size(imap_f, 1) == nbandkq ||
-        throw(DimensionMismatch("the inner index map has $(size(imap_f, 1)) rows, the box $nbandkq"))
+    length(imap_i_col) >= nbandk ||
+        throw(DimensionMismatch("the outer index map has $(length(imap_i_col)) rows, the block $nbandk"))
+    size(imap_f, 1) >= nbandkq ||
+        throw(DimensionMismatch("the inner index map has $(size(imap_f, 1)) rows, the block $nbandkq"))
     (nbandkq, nbandk, nm, npairs)
 end
 

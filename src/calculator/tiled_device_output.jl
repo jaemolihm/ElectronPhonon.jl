@@ -116,7 +116,7 @@ function tile_begin!(t::TiledDeviceOutput{FT}, ctx::OuterKContext) where {FT}
                                for ks in 1:nb:nk)
             tdims = copy(t.dims); tdims[t.i_axis] = t.ni_cap
             t.dev  = Any[alloc(backend, FT, tdims...) for _ in 1:t.narr]
-            t.host = Any[Array{FT}(undef, tdims...) for _ in 1:t.narr]
+            t.host = Any[alloc_host_pinned(backend, FT, tdims...) for _ in 1:t.narr]
         else
             t.dev  = Any[alloc_zeros(backend, FT, t.dims...) for _ in 1:t.narr]
         end
@@ -133,7 +133,7 @@ function tile_begin!(t::TiledDeviceOutput{FT}, ctx::OuterKContext) where {FT}
 end
 
 # Download the current tile (streamed mode): a single contiguous device→host copy per buffer into
-# the host mirrors. The calculator then copies `host_array(t, k)` into its output.
+# the (pinned) host mirrors. The calculator then copies `host_array(t, k)` into its output.
 function tile_download!(t::TiledDeviceOutput)
     for k in 1:t.narr
         copyto!(t.host[k], t.dev[k])

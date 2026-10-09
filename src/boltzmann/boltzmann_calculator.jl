@@ -4,8 +4,8 @@
 # into Sₒ/Sᵢ via the shared `bte_scattering_increments` (see src/boltzmann/bte_scattering_core.jl).
 #
 # One method per block, `run_calculator!(::EPBlock{OuterKLoop})`, on every backend (`backend` selects
-# where its arrays live): it forms g2 = |ep|²/(2ω) in a per-tile scratch and folds it through
-# `bte_scattering_increments`. CPU thread chunks write their own Sₒ partial and g2 scratch.
+# where its arrays live): it forms g2 = |ep|²/(2ω) per entry and folds it through
+# `bte_scattering_increments`. CPU thread chunks write their own Sₒ partial.
 #
 # Output layout is what the transport solver (`solve_electron_bte` / `solve_thermoelectric_bte`)
 # consumes unchanged:
@@ -33,7 +33,7 @@ export BoltzmannCalculator
 # calculator; touched only at hook granularity (one kernel launch per call), so the function boundary
 # keeps the hot code type-stable. The tiled Sᵢ output lives in `calc.tile_dev` (a `TiledDeviceOutput`).
 # The energies/weights/index maps are intrinsic to the state sets, so they are uploaded at setup.
-struct BoltzmannDeviceBuffers{MT, MI, VT, ST, GT}
+struct BoltzmannDeviceBuffers{MT, MI, VT, ST}
     Sₒ       :: MT      # (n_i, nT, nchunks) per-chunk partials — small, device-resident
     imap_i   :: MI      # (nband_max_k, n_k)   box band → outer state index (0: none)
     imap_f   :: MI      # (nband_max_kq, n_kq) box band → inner state index (0: none)
@@ -43,9 +43,23 @@ struct BoltzmannDeviceBuffers{MT, MI, VT, ST, GT}
     μ        :: VT      # (nT,)
     T        :: VT      # (nT,)
     smearing :: ST      # (nT,)
-    g2       :: GT      # (nband_max_kq, nband_max_k, nmodes, n_inner_tile, nchunks) per-tile scratch
 end
 
+"""
+    BoltzmannCalculator{FT}(; occ, smearing_list, occupation_method = 5, Si_format = :dense, ...)
+
+Accumulates the BTE scattering-out rates `Sₒ[iT]` (length `n_i`) and the scattering-in matrices of
+one pass of `run_eph_over_k_and_kq`, over the outer states `el_i` and inner states `el_f`. With
+`Si_format = :dense` the scattering-in matrix is `Sᵢ[iT]` `(n_i, n_f)`; with `:csr` only its nonzeros
+are kept, as `Sᵢᵀ[iT]`, the `SparseMatrixCSC` `(n_f, n_i)` of its transpose (Sᵢ in CSR), and `Sᵢ`
+is empty. Either goes to the solver as `scat_mat`:
+
+    solve_electron_bte(calc.el_i, calc.el_f, calc.Sᵢ, stack(calc.Sₒ), occ, symmetry)                # :dense
+    solve_electron_bte(calc.el_i, calc.el_f, transpose.(calc.Sᵢᵀ), stack(calc.Sₒ), occ, symmetry)   # :csr
+
+`:csr` shrinks only the host storage: the device tile, the device-to-host transfer and the host scan
+of each tile are those of `:dense`.
+"""
 Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # --- Parameters ---
     const occ::ElectronOccupationParams
@@ -59,6 +73,9 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # save the (large) Sᵢ host + tile storage.
     const scattering_method::Symbol = :BTE
     const omega_cutoff::FT = FT(omega_acoustic)           # skip modes below this (e.g. acoustic modes at Γ)
+    # :dense stores Sᵢ in `Sᵢ`; :csr stores only its nonzeros, in `Sᵢᵀ` (a CSC matrix of Sᵢ's
+    # transpose, i.e. Sᵢ in CSR), for runs whose dense Sᵢ does not fit host memory.
+    const Si_format::Symbol = :dense
 
     # Number of CPU thread chunks of the loop; set at setup (0 = not set yet).
     nchunks::Int = 0
@@ -71,7 +88,8 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
 
     # --- Host outputs (solver-facing) ---
     Sₒ::Vector{Vector{FT}} = Vector{Vector{FT}}()         # per iT, length n_i
-    Sᵢ::Vector{Matrix{FT}} = Vector{Matrix{FT}}()         # per iT, (n_i, n_f)
+    Sᵢ::Vector{Matrix{FT}} = Vector{Matrix{FT}}()         # per iT, (n_i, n_f); empty with Si_format = :csr
+    Sᵢᵀ::Vector{SparseMatrixCSC{FT, Int}} = SparseMatrixCSC{FT, Int}[]  # per iT, (n_f, n_i), Si_format = :csr
 
     # --- Device buffers ---
     # Built once in `setup_calculator!`. See `BoltzmannDeviceBuffers`.
@@ -92,25 +110,26 @@ supports(::BoltzmannCalculator, ::Type{OuterKLoop}) = true
 # The loop always provides `e`, `u` and the e-ph matrix elements; this lists the extra quantities:
 # the band velocities of both sides (`BandStates`).
 required_el_quantities(::BoltzmannCalculator) = [:vdiag]
+# Sₒ and Sᵢ sum over the modes, and a mode that conserves energy for no pair adds nothing beyond the
+# tolerance.
+allows_phonon_mode_truncation(::BoltzmannCalculator) = true
 
 # What `setup_calculator!` allocates on the backend: the whole-run Sₒ, index maps and per-state
 # arrays, the Sᵢ tile (rows of the outer states of one k, all inner states and temperatures, per
-# outer point), and the per-tile g2 scratch. The state counts are bounded by the containers' boxes;
-# without containers (`estimate_device_memory`) only the scratch is counted.
+# outer point). The state counts are bounded by the containers' boxes; without containers
+# (`estimate_device_memory`) nothing is counted.
 function calculator_bytes(calc::BoltzmannCalculator{FT}, ::Type{<:EPBlock{OuterKLoop}};
-        nmodes, nband_max_k, nband_max_kq, els_k = nothing, els_kq = nothing, kwargs...) where {FT}
-    per_pair = sizeof(FT) * nband_max_kq * nband_max_k * nmodes
-    (els_k === nothing || els_kq === nothing) && return (; persistent = 0, per_outer = 0, per_pair)
+        nband_max_k, els_k = nothing, els_kq = nothing, kwargs...) where {FT}
+    (els_k === nothing || els_kq === nothing) && return (; persistent = 0, per_outer = 0, per_pair = 0)
     n_i, n_f, nT = sum(els_k.nband), sum(els_kq.nband), length(calc.occ)
     persistent = sizeof(FT) * (n_i * nT + n_i + 2n_f + 3nT) +                      # Sₒ, e_i, e_f, wf, μ, T, smearing
         sizeof(Int) * (els_k.nband_max * els_k.nk + els_kq.nband_max * els_kq.nk)     # imap_i, imap_f
-    (; persistent, per_outer = sizeof(FT) * nband_max_k * n_f * nT, per_pair)
+    (; persistent, per_outer = sizeof(FT) * nband_max_k * n_f * nT, per_pair = 0)
 end
 
 function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBackend, els_k, els_kq, phs;
         sel_k, sel_kq, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...) where {FT}
     mpi_isroot() && println("Setting up BoltzmannCalculator")
-    (; nmodes) = phs
     calc.done &&
         throw(ArgumentError("this BoltzmannCalculator has already been run; reconstruct the " *
                             "calculator, reuse is not supported"))
@@ -126,6 +145,8 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
                             "FP32 support is not planned (transport accuracy)."))
     1 <= calc.occupation_method <= 6 ||
         throw(ArgumentError("occupation_method must be an integer in 1:6, got $(calc.occupation_method)"))
+    calc.Si_format ∈ (:dense, :csr) ||
+        throw(ArgumentError("Si_format must be :dense or :csr, got :$(calc.Si_format)"))
     calc.nchunks = nchunks_threads
 
     # The selections' states with their energies and velocities, so el_i/el_f carry the
@@ -147,7 +168,12 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
     nT = length(calc.occ)
 
     calc.Sₒ = [zeros(FT, n_i) for _ in 1:nT]
-    calc.Sᵢ = [zeros(FT, n_i, n_f) for _ in 1:nT]
+    if calc.Si_format === :dense
+        calc.Sᵢ = [zeros(FT, n_i, n_f) for _ in 1:nT]
+    else
+        # Filled column by column (one per outer state, in order) as the batches end.
+        calc.Sᵢᵀ = [SparseMatrixCSC(n_f, n_i, ones(Int, n_i + 1), Int[], FT[]) for _ in 1:nT]
+    end
     # Tiled Sᵢ device output: shape (n_i, n_f, nT), tiled over the outer-k state axis (axis 1), always
     # streamed mode (there is deliberately no full-device-resident Sᵢ path). Metadata only at setup; the
     # device/host tile buffers are lazy in `tile_begin!` (first batch).
@@ -167,7 +193,6 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
         to_device(backend, collect(FT, calc.occ.μlist)),                    # μ
         to_device(backend, collect(FT, calc.occ.Tlist)),                    # T
         to_device(backend, calc.smearing_list),                             # smearing (one per T)
-        alloc(backend, FT, els_kq.nband_max, els_k.nband_max, nmodes, n_inner_tile, nchunks_threads),   # g2
     )
     calc
 end
@@ -190,15 +215,64 @@ function calculator_end_batch!(calc::BoltzmannCalculator, ctx::OuterKContext)
         i0 = tile_offset(tile_dev)
         tile_download!(tile_dev)      # contiguous device→host copy into the tile's host mirror
         host = host_array(tile_dev, 1)
-        @inbounds for iT in 1:length(calc.occ)
-            @views calc.Sᵢ[iT][i0+1:i0+ni, :] .= host[:, :, iT]
+        # Threaded over blocks of inner states: each column is a short contiguous run of the output.
+        colblocks = collect(Iterators.partition(axes(host, 2), cld(size(host, 2), 4nthreads())))
+        for iT in 1:length(calc.occ)
+            if calc.Si_format === :dense
+                @threads for cols in colblocks
+                    @views calc.Sᵢ[iT][i0+1:i0+ni, cols] .= host[:, cols, iT]
+                end
+            else
+                _append_csr_columns!(calc.Sᵢᵀ[iT], view(host, :, :, iT), i0, colblocks)
+            end
         end
     end
     calc
 end
 
+# Append the nonzeros of the tile `tile` (rows: the outer states `i0+1:i0+ni`) as columns
+# `i0+1:i0+ni` of `Sᵀ`, whose earlier columns are complete and later ones untouched (the batches end
+# in order); a function barrier for the tile's concrete type. Threaded over the blocks of inner
+# states `colblocks`: each block counts its nonzeros per row, then writes them at offsets from the
+# prefix sum, so every column's rows come out sorted.
+function _append_csr_columns!(Sᵀ::SparseMatrixCSC, tile::AbstractMatrix, i0, colblocks)
+    ni = size(tile, 1)
+    (Sᵀ.colptr[i0 + 1] == length(Sᵀ.rowval) + 1 && all(==(1), view(Sᵀ.colptr, i0+2:length(Sᵀ.colptr)))) ||
+        throw(ArgumentError("CSR Sᵢ: columns are appended in order, got outer states $(i0+1):$(i0+ni) " *
+                            "after $(length(Sᵀ.rowval)) nonzeros up to column $i0"))
+    counts = zeros(Int, ni, length(colblocks))
+    @threads for b in eachindex(colblocks)
+        for f in colblocks[b], r in 1:ni
+            counts[r, b] += !iszero(tile[r, f])
+        end
+    end
+    # offsets[r, b]: the elements of column i0 + r before block b.
+    offsets = similar(counts)
+    nnz0 = Sᵀ.colptr[i0 + 1] - 1
+    pos = nnz0
+    for r in 1:ni
+        for b in axes(counts, 2)
+            offsets[r, b] = pos
+            pos += counts[r, b]
+        end
+        Sᵀ.colptr[i0 + r + 1] = pos + 1
+    end
+    resize!(Sᵀ.rowval, pos)
+    resize!(Sᵀ.nzval, pos)
+    @threads for b in eachindex(colblocks)
+        for f in colblocks[b], r in 1:ni
+            v = tile[r, f]
+            iszero(v) && continue
+            offsets[r, b] += 1
+            Sᵀ.rowval[offsets[r, b]] = f
+            Sᵀ.nzval[offsets[r, b]] = v
+        end
+    end
+    Sᵀ
+end
+
 """
-    bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
+    bte_window_accumulate!(Sₒ_out, Sᵢ_out, epvals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
                            μs, Ts, ηs, method, ω_cutoff, i0)
 
 Accumulate the BTE scattering-out (Sₒ) and scattering-in (Sᵢ) contributions of one k+q batch into
@@ -208,7 +282,7 @@ device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPBlock{OuterK
 `f = imap_f[m, ikqs[j]]` (skip if either is out-of-window, `== 0`), the per-final-state weight
 `wtq = wf[f]`, then for each temperature
 `iT` sum the shared per-mode physics (`bte_scattering_increments`) over the `nmodes` phonon modes
-(`ωqmat[ν,j] ≥ ω_cutoff`) and:
+(`ωqmat[ν,j] ≥ ω_cutoff`), with `g2 = |epvals[m,n,ν,j]|² / (2ω)` as `epstate_set_g2!`, and:
 
   * `Sₒ_out[i, iT] += Σ_ν sₒ`      — scattering-out, added over `(m, ν, j)` (many `(m,j)` map to
     the same outer `i`), so the device method uses an atomic add here. `Sₒ` is small (`n_i × nT`)
@@ -220,8 +294,8 @@ device-resident work of `run_calculator!(::BoltzmannCalculator, ::EPBlock{OuterK
 
 `imap_i_at_k` is `imap_i[:, ik]` — the outer-state indices of the box bands at the batch's fixed
 outer k `ik` — and `imap_f` is in the k+q container's box coordinates; both are 0 on the box padding,
-so its `g2vals` entries are never read. `i0` is the global-i offset of the current `Sᵢ` tile. The
-extents are those of `g2vals` `(nbandkq, nbandk, nmodes, npairs)`; `ωqmat`, `ikqs` and the index
+so its `epvals` entries are never read. `i0` is the global-i offset of the current `Sᵢ` tile. The
+extents are those of `epvals` `(nbandkq, nbandk, nmodes, npairs)`; `ωqmat`, `ikqs` and the index
 maps must agree with them, or a `DimensionMismatch` is thrown.
 
 The generic method below serves a run on a `CPUBackend`, where the whole loop runs on host arrays;
@@ -235,9 +309,9 @@ The generic method adds into `Sₒ_out` with a plain `+=` where the device kerne
 each CPU thread chunk passes its own `Sₒ` partial, so there is no host counterpart to the kernel's
 concurrent writes.
 """
-function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
+function bte_window_accumulate!(Sₒ_out, Sᵢ_out, epvals, ωqmat, imap_i_at_k, imap_f, ikqs,
         e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff, i0::Int)
-    nbandkq, nbandk, nmodes, npairs = _scatter_extents(g2vals, ωqmat, ikqs, imap_i_at_k, imap_f)
+    nbandkq, nbandk, nmodes, npairs = _scatter_extents(epvals, ωqmat, ikqs, imap_i_at_k, imap_f)
     nT = length(μs)
     @inbounds for ipair in 1:npairs, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_at_k[n]         # outer (k) state index; 0 = out of window → skip
@@ -252,8 +326,8 @@ function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k,
             for ν in 1:nmodes
                 ωq = ωqmat[ν, ipair]
                 ωq < ω_cutoff && continue
-                sₒ_ν, sᵢ_ν = bte_scattering_increments(method, ek, ekq, ωq,
-                    g2vals[m, n, ν, ipair], wtq, μ, T, η)
+                g2 = abs2(epvals[m, n, ν, ipair]) * inv(2 * ωq)   # as `epstate_set_g2!`
+                sₒ_ν, sᵢ_ν = bte_scattering_increments(method, ek, ekq, ωq, g2, wtq, μ, T, η)
                 sₒ += sₒ_ν; sᵢ += sᵢ_ν
             end
             Sₒ_out[i, iT] += sₒ
@@ -263,17 +337,13 @@ function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k,
     nothing
 end
 
-# One block: one outer k with a tile of k+q points. Forms g2 = |ep|²/(2ω) in the per-tile scratch and
-# scatters into `dev.Sₒ` and the current Sᵢ tile via `bte_window_accumulate!` (same
-# `bte_scattering_increments`), with this chunk's g2 scratch and Sₒ partial.
+# One block: one outer k with a tile of k+q points, scattered into `dev.Sₒ` and the current Sᵢ tile
+# via `bte_window_accumulate!` (same `bte_scattering_increments`), with this chunk's Sₒ partial.
 function run_calculator!(calc::BoltzmannCalculator{FT}, block::EPBlock{OuterKLoop}, ctx) where {FT}
     (; ep, phs, ik, ikq) = block
     dev = calc.dev
-    nmodes, npairs = size(ep, 3), size(ep, 4)
-    g2 = view(dev.g2, :, :, :, 1:npairs, ctx.chunk)
-    g2 .= abs2.(ep) .* inv.(2 .* reshape(phs.e, 1, 1, nmodes, npairs))   # as `epstate_set_g2!`
     tile_dev = calc.tile_dev
-    bte_window_accumulate!(view(dev.Sₒ, :, :, ctx.chunk), device_array(tile_dev, 1), g2, phs.e,
+    bte_window_accumulate!(view(dev.Sₒ, :, :, ctx.chunk), device_array(tile_dev, 1), ep, phs.e,
         view(dev.imap_i, :, ik), dev.imap_f, ikq, dev.e_i, dev.e_f, dev.wf,
         dev.μ, dev.T, dev.smearing, calc.occupation_method, calc.omega_cutoff, tile_offset(tile_dev))
     calc
@@ -290,6 +360,10 @@ function postprocess_calculator!(calc::BoltzmannCalculator{FT}; kwargs...) where
         for chunk in 2:size(Sₒ_host, 3)
             calc.Sₒ[iT] .+= Sₒ_host[:, iT, chunk]
         end
+    end
+    # A CSR Sᵢ column of an outer state no batch of this rank reached is empty.
+    for Sᵀ in calc.Sᵢᵀ, i in 1:size(Sᵀ, 2)
+        Sᵀ.colptr[i + 1] = max(Sᵀ.colptr[i + 1], Sᵀ.colptr[i])
     end
     # Free device buffers (the calc is single-use; `done` forbids a re-run in `setup_calculator!`).
     calc.dev = nothing

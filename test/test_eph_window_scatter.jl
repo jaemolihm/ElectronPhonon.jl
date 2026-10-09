@@ -161,7 +161,7 @@ end
     @test_throws DimensionMismatch eph_window_scatter_reim!(zeros(N), zeros(N), zeros(N),
         complex.(full), imap_i_col, imap_f, ikqs, ωq, 2, 0)
     @test_throws DimensionMismatch ElectronPhonon.bte_window_accumulate!(zeros(2, 1),
-        zeros(2, nbandkq * nkq, 1), full, ωq, imap_i_col, imap_f, ikqs, zeros(2),
+        zeros(2, nbandkq * nkq, 1), complex.(full), ωq, imap_i_col, imap_f, ikqs, zeros(2),
         zeros(nbandkq * nkq), ones(nbandkq * nkq), [0.0], [0.01],
         [SmearingType(:Gaussian, 0.005)], 5, 0.0, 0)
 end

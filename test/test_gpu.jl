@@ -492,7 +492,7 @@ end
 # by passing contiguous device VIEWS (`view(buf, :,:,:, 1:npairs)`) into
 # `compute_eph_kR_to_kq_batched!`, its scratch `g` / `tmp` as views of the max-width buffers. This checks that path directly:
 # the sliced-view result must match the full-width result, through BOTH `eph_apply_rotations!`
-# branches — the fused kernel (`nw*nmodes ≤ _FUSED_ROT_MAX_NWNM`) and the cuBLAS
+# branches — the fused kernel (`nw*nmodes ≤ _FUSED_ROT_MAX_NWNM`, …) and the cuBLAS
 # `gemm_strided_batched!` path (above it), where a reshape of a view must stay a strided CuArray.
 function check_eph_partial_view(nw, nmodes; rtol)
     nband, nr_ep, nq, m = nw, 8, 10, 7   # slice width m < full width nq
@@ -521,8 +521,29 @@ end
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU partial-batch test"
     else
-        check_eph_partial_view(3, 4; rtol=1e-9)   # nw*nmodes = 12 ≤ 24 → fused kernel path
-        check_eph_partial_view(6, 6; rtol=1e-9)   # nw*nmodes = 36 > 24 → cuBLAS strided path
+        check_eph_partial_view(3, 4; rtol=1e-9)    # nw*nmodes = 12 ≤ 60 → fused kernel path
+        check_eph_partial_view(3, 15; rtol=1e-9)   # nw*nmodes = 45 ≤ 60 → fused kernel path
+        check_eph_partial_view(6, 12; rtol=1e-9)   # nw*nmodes = 72 > 60 → cuBLAS strided path
+    end
+end
+
+@testset "GPU eph_apply_rotations! vs the generic method (fused and cuBLAS branches)" begin
+    # The fused kernel (nw = 3, nmodes = 15) and the cuBLAS branch (nw = 8, nmodes = 15) against the
+    # generic two-GEMM method on the host, with nbandk < nbandkq = nw.
+    if !GPU_AVAILABLE
+        @info "CUDA not available/functional — skipping GPU rotation-branch test"
+    else
+        for (nw, nmodes) in ((3, 15), (8, 15))
+            nbk, nbkq, nq = nw - 1, nw, 37
+            g, ukqs = rand(ComplexF64, nw, nbk, nmodes, nq), rand(ComplexF64, nw, nbkq, nq)
+            uphs = rand(ComplexF64, nmodes, nmodes, nq)
+            ep_cpu = zeros(ComplexF64, nbkq, nbk, nmodes, nq)
+            eph_apply_rotations!(ep_cpu, g, ukqs, uphs, zeros(ComplexF64, nbkq, nbk * nmodes, nq))
+            ep_gpu = CUDA.zeros(ComplexF64, nbkq, nbk, nmodes, nq)
+            eph_apply_rotations!(ep_gpu, CuArray(g), CuArray(ukqs), CuArray(uphs),
+                                 CUDA.zeros(ComplexF64, nbkq, nbk * nmodes, nq))
+            @test isapprox(Array(ep_gpu), ep_cpu; rtol=1e-13)
+        end
     end
 end
 
@@ -652,8 +673,34 @@ ElectronPhonon.supports(::_QOnlyCalc, ::Type{ElectronPhonon.OuterQLoop}) = true
             calculators=[_QOnlyCalc()], symmetry=nothing, backend=ElectronPhonon.gpu_backend(),
             progress_print_step=10^9)
 
-        # Energy conservation is a CPU feature, refused on the GPU.
-        @test_throws "CPUBackend feature" ElectronPhonon.run_eph_over_k_and_kq(model, grid, grid;
+        # The device pair selection keeps exactly the pairs of the host test on the same states: every
+        # (k, tile) of a GPU engine, partial tiles and k batches included, against `_fill_iqs!` and
+        # `_kqpairs_conserving_energy!` on host copies of its states. 2-43 % of the pairs are kept.
+        for tol in (1e-4, 1e-3, 0.02)
+            eng = ElectronPhonon.OuterKEngine(model, grid, grid; inner_loop_kq = true, symmetry = nothing,
+                backend = ElectronPhonon.gpu_backend(), energy_conservation_tol = tol, n_inner_tile = 7,
+                n_outer_batch = 5, verbosity = 0)
+            ek, nbk = Array(eng.els_k.e), Array(eng.els_k.nband)
+            ekq, nbkq, ωq = Array(eng.els_kq.e), Array(eng.els_kq.nband), Array(eng.phs.e)
+            nmismatch = 0; nkept = 0
+            for batch in Iterators.partition(1:eng.kpts.n, 5)
+                ElectronPhonon.stage1!(eng, batch)
+                for ik in batch, tile in Iterators.partition(1:eng.kqpts.n, 7)
+                    block = ElectronPhonon.stage2!(eng, ik, tile)
+                    iqs, ind = zeros(Int, length(tile)), collect(eachindex(tile))
+                    ElectronPhonon._fill_iqs!(iqs, eng.qpts, eng.xkqs_int, eng.xks_int, ik, first(tile), length(tile))
+                    n = ElectronPhonon._kqpairs_conserving_energy!(ind, length(tile), tol,
+                        view(ek, :, ik:ik), view(nbk, ik:ik), 1, ekq, nothing, nbkq, tile, ωq, iqs)
+                    got = block === nothing ? (Int[], Int[]) : (collect(Array(block.ikq)), Array(block.iq))
+                    nmismatch += got != (tile[ind[1:n]], iqs[ind[1:n]])
+                    nkept += n
+                end
+            end
+            @test nmismatch == 0
+            @test 0 < nkept < eng.kpts.n * eng.kqpts.n
+        end
+        # The routes that test the pairs on the host refuse a finite tolerance on the GPU.
+        @test_throws "run_eph_over_k_and_kq only" ElectronPhonon.run_eph_over_k_and_q(model, grid, grid;
             calculators=[_RecordCalc()], symmetry=nothing, backend=ElectronPhonon.gpu_backend(),
             energy_conservation_tol=0.1, progress_print_step=10^9)
     end
