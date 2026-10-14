@@ -9,7 +9,7 @@ function _write_qe_input(dir, name, system, cards)
     path
 end
 
-@testset "load_structure_from_qe + write_kpath" begin
+@testset "load_structure_from_qe + write_kpath_files" begin
     model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
     kpts_ref, xdata_ref = high_symmetry_kpath(model; kline_density = 10)
 
@@ -53,18 +53,27 @@ end
     _, xdata_hex = high_symmetry_kpath(st_hex; kline_density = 20, is_2d = true)
     @test xdata_hex.xlabels == ["Γ", "M", "K", "Γ"]
 
-    # Output file, for the fcc path with its "U|K" branch break.
-    write_kpath("BN", kpts, xdata; dir)
-    rows = split.(filter(l -> !startswith(l, "#"), readlines(joinpath(dir, "BN_kpath.dat"))))
-    @test length(rows) == kpts.n
-    @test [parse(Int, r[1]) for r in rows] == 1:kpts.n
-    @test [parse.(Float64, r[2:4]) for r in rows] ≈ kpts.vectors atol = 1e-11
-    @test [parse(Float64, r[5]) for r in rows] ≈ xdata.x
+    # Output files, for the fcc path with its "U|K" branch break.
+    write_kpath_files("BN", kpts, xdata; dir)
 
-    labeled = filter(r -> length(r) == 6, rows)
-    @test [r[6] for r in labeled] == ["G", "X", "U", "K", "G", "L", "W", "X"]
-    iks = [parse(Int, r[1]) for r in labeled]
+    lines = readlines(joinpath(dir, "BN_kpath_qe.txt"))
+    @test lines[1] == "K_POINTS crystal"
+    @test parse(Int, lines[2]) == kpts.n == length(lines) - 2
+    @test [parse.(Float64, split(l)[1:3]) for l in lines[3:end]] ≈ kpts.vectors atol = 1e-11
+
+    lines = readlines(joinpath(dir, "BN_kpath_win.txt"))
+    @test lines[1] == "begin kpoint_path" && lines[end] == "end kpoint_path"
+    @test [split(l)[[1, 5]] for l in lines[2:end-1]] ==
+        [["G", "X"], ["X", "U"], ["K", "G"], ["G", "L"], ["L", "W"], ["W", "X"]]
+
+    info = split.(readlines(joinpath(dir, "BN_kpath.labelinfo.dat")))
+    @test first.(info) == ["G", "X", "U", "K", "G", "L", "W", "X"]
+    iks = [parse(Int, l[2]) for l in info]
     @test iks[1] == 1 && iks[end] == kpts.n
-    @test iks[4] == iks[3] + 1 && labeled[3][5] == labeled[4][5]  # U|K: consecutive, same x
-    @test all(length(r) == 5 for r in rows if !(r in labeled))
+    @test iks[4] == iks[3] + 1  # U and K are the two ends of the branch break
+    for l in info
+        ik = parse(Int, l[2])
+        @test parse(Float64, l[3]) ≈ xdata.x[ik]
+        @test kpts.vectors[ik] ≈ parse.(Float64, l[4:6]) atol = 1e-11
+    end
 end
