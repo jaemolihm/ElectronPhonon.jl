@@ -93,7 +93,7 @@ _ascii_klabel(label) = map(c -> c == 'Γ' ? 'G' : '₀' <= c <= '₉' ? Char(c -
 
 Write the output of [`high_symmetry_kpath`](@ref) for use in DFT and Wannier90 band calculations:
 - `{prefix}_kpath_qe.txt`: `K_POINTS crystal` card with all `kpts`, to append to a `pw.x` `bands` input.
-- `{prefix}_kpath_win.txt`: `kpoint_path` block for a Wannier90 `.win` file (one line per segment).
+- `{prefix}_kpath_wannier.txt`: `kpoint_path` block for a Wannier90 `.win` file (one line per segment).
 - `{prefix}_kpath.labelinfo.dat`: one line per high-symmetry point in the format of Wannier90's
   `{seedname}_band.labelinfo.dat`: label, 1-based index into `kpts`, path coordinate `x` (1/Bohr),
   and the crystal coordinates.
@@ -113,7 +113,7 @@ function write_kpath_files(prefix, kpts, plot_xdata; dir = ".")
     end
 
     # Segments: an xlabel "X|U" ends the current branch at X and starts the next one at U.
-    open(joinpath(dir, "$(prefix)_kpath_win.txt"), "w") do io
+    open(joinpath(dir, "$(prefix)_kpath_wannier.txt"), "w") do io
         println(io, "begin kpoint_path")
         current = nothing
         for xlabel in plot_xdata.xlabels

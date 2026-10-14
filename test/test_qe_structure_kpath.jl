@@ -61,7 +61,7 @@ end
     @test parse(Int, lines[2]) == kpts.n == length(lines) - 2
     @test [parse.(Float64, split(l)[1:3]) for l in lines[3:end]] ≈ kpts.vectors atol = 1e-11
 
-    lines = readlines(joinpath(dir, "BN_kpath_win.txt"))
+    lines = readlines(joinpath(dir, "BN_kpath_wannier.txt"))
     @test lines[1] == "begin kpoint_path" && lines[end] == "end kpoint_path"
     @test [split(l)[[1, 5]] for l in lines[2:end-1]] ==
         [["G", "X"], ["X", "U"], ["K", "G"], ["G", "L"], ["L", "W"], ["W", "X"]]
