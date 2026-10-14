@@ -3,7 +3,7 @@ import Bravais
 using Printf
 
 export high_symmetry_kpath
-export write_kpath_files
+export write_kpath
 
 """
     high_symmetry_kpath(model; kline_density=40, is_2d = false) => (kpts, plot_xdata)
@@ -88,53 +88,47 @@ end
 # Brillouin.jl labels may contain Γ and Unicode subscripts; QE/Wannier90 inputs want ASCII.
 _ascii_klabel(label) = map(c -> c == 'Γ' ? 'G' : '₀' <= c <= '₉' ? Char(c - '₀' + '0') : c, label)
 
-"""
-    write_kpath_files(prefix, kpts, plot_xdata; dir = ".")
+_fmt_kcrys(k) = join((@sprintf("%16.12f", abs(x) < 1e-12 ? 0.0 : x) for x in k), " ")
 
-Write the output of [`high_symmetry_kpath`](@ref) for use in DFT and Wannier90 band calculations:
-- `{prefix}_kpath_qe.txt`: `K_POINTS crystal` card with all `kpts`, to append to a `pw.x` `bands` input.
-- `{prefix}_kpath_win.txt`: `kpoint_path` block for a Wannier90 `.win` file (one line per segment).
-- `{prefix}_kpath.labelinfo.dat`: one line per high-symmetry point in the format of Wannier90's
-  `{seedname}_band.labelinfo.dat`: label, 1-based index into `kpts`, path coordinate `x` (1/Bohr),
-  and the crystal coordinates.
-
-Labels are written in ASCII (`Γ` -> `G`).
 """
-function write_kpath_files(prefix, kpts, plot_xdata; dir = ".")
+    kpath_labels(kpts, plot_xdata) -> Vector{Pair{Int, String}}
+
+Index into `kpts` and ASCII label (`Γ` -> `G`) of each high-symmetry point along the path, in path
+order. At a branch break `X|U`, `X` and `U` are two consecutive points.
+"""
+function kpath_labels(kpts, plot_xdata)
     kbl = plot_xdata.kpts_by_label
-    fmt3(k) = join((@sprintf("%16.12f", abs(x) < 1e-12 ? 0.0 : x) for x in k), " ")
-
-    open(joinpath(dir, "$(prefix)_kpath_qe.txt"), "w") do io
-        println(io, "K_POINTS crystal")
-        println(io, kpts.n)
-        for k in kpts.vectors
-            println(io, fmt3(k), "  1.0")
-        end
+    out = Pair{Int, String}[]
+    ik = 1
+    # Search forward from the previous label, so that a label visited more than once (e.g. Γ at
+    # both ends) gets the right index.
+    for xlabel in plot_xdata.xlabels, label in split(xlabel, "|")
+        ik = findnext(k -> isapprox(k, kbl[label]; atol = 1e-8), kpts.vectors, ik)
+        ik === nothing && error("high-symmetry point $label not found in kpts")
+        push!(out, ik => _ascii_klabel(label))
     end
+    out
+end
 
-    # Segments: an xlabel "X|U" ends the current branch at X and starts the next one at U.
-    open(joinpath(dir, "$(prefix)_kpath_win.txt"), "w") do io
-        println(io, "begin kpoint_path")
-        current = nothing
-        for xlabel in plot_xdata.xlabels
-            parts = split(xlabel, "|")
-            if current !== nothing
-                @printf(io, "%-4s %s    %-4s %s\n", _ascii_klabel(current), fmt3(kbl[current]),
-                        _ascii_klabel(parts[1]), fmt3(kbl[parts[1]]))
-            end
-            current = String(parts[end])
-        end
-        println(io, "end kpoint_path")
-    end
+"""
+    write_kpath(prefix, kpts, plot_xdata; dir = ".")
 
-    # Each label is matched to its k point, searching forward from the previous label so that a
-    # label visited more than once (e.g. Γ at both ends) gets the right index.
-    open(joinpath(dir, "$(prefix)_kpath.labelinfo.dat"), "w") do io
-        ik = 1
-        for xlabel in plot_xdata.xlabels, label in split(xlabel, "|")
-            ik = findnext(k -> isapprox(k, kbl[label]; atol = 1e-8), kpts.vectors, ik)
-            ik === nothing && error("high-symmetry point $label not found in kpts")
-            @printf(io, "%-4s %8d %16.10f %s\n", _ascii_klabel(label), ik, plot_xdata.x[ik], fmt3(kbl[label]))
+Write the output of [`high_symmetry_kpath`](@ref) to `{prefix}_kpath.dat` in `dir`, one line per
+k point: index, crystal coordinates, path coordinate `x` (1/Bohr), and for high-symmetry points
+the ASCII label (`Γ` -> `G`). At a branch break `X|U`, `X` and `U` are consecutive lines with the
+same `x`.
+
+Columns 2-4 are a `pw.x` `K_POINTS crystal` list; the labeled lines give the Wannier90
+`kpoint_path` segments and the tick positions of a band plot.
+"""
+function write_kpath(prefix, kpts, plot_xdata; dir = ".")
+    label_at = Dict(kpath_labels(kpts, plot_xdata))
+    open(joinpath(dir, "$(prefix)_kpath.dat"), "w") do io
+        println(io, "# High-symmetry k path (ElectronPhonon.high_symmetry_kpath)")
+        println(io, "# ik  k (crystal)  x (1/Bohr)  label")
+        for (ik, k) in enumerate(kpts.vectors)
+            @printf(io, "%6d %s %16.10f", ik, _fmt_kcrys(k), plot_xdata.x[ik])
+            println(io, haskey(label_at, ik) ? " " * label_at[ik] : "")
         end
     end
     nothing

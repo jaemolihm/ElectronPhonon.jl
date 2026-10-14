@@ -46,7 +46,7 @@ include("common_models_from_artifacts.jl")
         include("test_eph_disk_epmat.jl")  # memory-mapped epmat bitwise vs in-memory; GPU part skips w/o CUDA
         include("test_eph_window_scatter.jl")  # calculator-facing scatter; GPU part skips w/o CUDA
         include("test_high_symmetry_kpath.jl")
-        include("test_qe_structure_kpath.jl")  # QE scf.in -> Structure -> k path files
+        include("test_qe_structure_kpath.jl")  # QE scf.in -> Structure -> k path file
         include("test_postprocess_compute.jl")
         # include("test_check_model_symmetry.jl")
         include("test_screening.jl")
