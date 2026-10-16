@@ -59,6 +59,18 @@ end
     end
 end
 
+# A host buffer for device-to-host copies: an `Array` on every backend, page-locked for a GPU backend.
+@testset "alloc_host_pinned" begin
+    backends = BACKEND_ALLOC_GPU ? (CPUBackend(), gpu_backend()) : (CPUBackend(),)
+    for backend in backends
+        H = ElectronPhonon.alloc_host_pinned(backend, Float64, 3, 4)
+        @test H isa Matrix{Float64} && size(H) == (3, 4)
+        X = reshape(collect(1.0:12.0), 3, 4)
+        @test copyto!(H, to_device_copy(backend, X)) == X
+        BACKEND_ALLOC_GPU && backend isa ElectronPhonon.GPUBackend && @test CUDA.is_pinned(pointer(H))
+    end
+end
+
 # `reclaim_device_memory`'s contract, which a residency decision reading `free_bytes` depends on.
 #
 # The allocation happens in a function, not inline: a `@testset begin … end` body is one top-level

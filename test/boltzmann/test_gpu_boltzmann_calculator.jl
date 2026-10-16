@@ -2,6 +2,7 @@ using Test
 using ElectronPhonon
 const EP = ElectronPhonon
 using Random
+using SparseArrays: nnz
 
 @testset "bte_scattering_increments (shared core) pinned values" begin
     # (sₒ, sᵢ) for methods 1..6 at a fixed in-window input, pinned from the validated
@@ -41,7 +42,7 @@ end
 # Independent CPU reference for the Sₒ/Sᵢ accumulation (NOT a production method, and deliberately not
 # shared with `src`: keeping it duplicated is what makes it an oracle for the generic host method that
 # now lives in src/boltzmann/boltzmann_calculator.jl as well as for the CUDA kernel).
-function _bte_accumulate_ref!(So, Si, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
+function _bte_accumulate_ref!(So, Si, epvals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
         μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, npairs, i0)
     nT = length(μs)
     for ipair in 1:npairs, n in 1:nbandk, m in 1:nbandkq
@@ -52,8 +53,9 @@ function _bte_accumulate_ref!(So, Si, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
             sₒ = 0.0; sᵢ = 0.0
             for ν in 1:nmodes
                 ωq = ωqmat[ν, ipair]; ωq < ω_cutoff && continue
+                g2 = abs2(epvals[m, n, ν, ipair]) / (2ωq)
                 sₒ_ν, sᵢ_ν = EP.bte_scattering_increments(method, ek, ekq, ωq,
-                    g2vals[m, n, ν, ipair], wtq, μs[iT], Ts[iT], ηs[iT])
+                    g2, wtq, μs[iT], Ts[iT], ηs[iT])
                 sₒ += sₒ_ν; sᵢ += sᵢ_ν
             end
             So[i, iT] += sₒ
@@ -74,15 +76,15 @@ function check_bte_accumulate_methods(arr, zdev)
     imap_f = reshape(collect(1:nw*npairs), nw, npairs)
     n_i=nw; n_f=nw*npairs
     e_i=0.01randn(n_i); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight
-    g2vals=abs.(randn(nw,nw,nmodes,npairs)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
+    epvals=randn(ComplexF64,nw,nw,nmodes,npairs).*0.03; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
     μs=FT[0.0,0.002]; Ts=FT[0.01,0.02]; ωcut=FT(1e-6)
     ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005, 0.005]]
     for method in 1:6
         So=zeros(n_i,nT); Si=zeros(n_i,n_f,nT)
-        _bte_accumulate_ref!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
+        _bte_accumulate_ref!(So,Si,epvals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
             μs,Ts,ηs,method,ωcut,nw,nw,nmodes,npairs,0)
         Sod=zdev(FT,n_i,nT); Sid=zdev(FT,n_i,n_f,nT)
-        EP.bte_window_accumulate!(Sod,Sid,arr(g2vals),arr(ωqmat),
+        EP.bte_window_accumulate!(Sod,Sid,arr(epvals),arr(ωqmat),
             arr(imap_i_at_k),arr(imap_f),arr(ikqs),
             arr(e_i),arr(e_f),arr(wf),
             arr(μs),arr(Ts),arr(ηs),method,ωcut,0)
@@ -102,15 +104,15 @@ function check_bte_accumulate_tile(arr, zdev)
     imap_f = [ (m+ (kq-1)*nw) % 7 == 0 ? 0 : (m + (kq-1)*nw) for m in 1:nw, kq in 1:npairs ]  # scatter some 0s
     n_f = nw*npairs
     e_i=0.01randn(n_i_global); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight
-    g2vals=abs.(randn(nw,nw,nmodes,npairs)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
+    epvals=randn(ComplexF64,nw,nw,nmodes,npairs).*0.03; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
     μs=FT[0.0]; Ts=FT[0.01]; ωcut=FT(1e-6)
     ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005]]
     for method in (1,5,6)
         So=zeros(n_i_global,nT); Si=zeros(ni,n_f,nT)
-        _bte_accumulate_ref!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
+        _bte_accumulate_ref!(So,Si,epvals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
             μs,Ts,ηs,method,ωcut,nw,nw,nmodes,npairs,i0)
         Sod=zdev(FT,n_i_global,nT); Sid=zdev(FT,ni,n_f,nT)
-        EP.bte_window_accumulate!(Sod,Sid,arr(g2vals),arr(ωqmat),
+        EP.bte_window_accumulate!(Sod,Sid,arr(epvals),arr(ωqmat),
             arr(imap_i_at_k),arr(imap_f),arr(ikqs),
             arr(e_i),arr(e_f),arr(wf),
             arr(μs),arr(Ts),arr(ηs),method,ωcut,i0)
@@ -149,12 +151,12 @@ end
     model = _load_model_from_artifacts("pb")   # nw=4, nmodes=3; loads the e-ph matrix
     eV = EP.unit_to_aru(:eV); K = EP.unit_to_aru(:K); meV = EP.unit_to_aru(:meV)
     μ = 11.68eV; window = (μ - 0.5eV, μ + 0.5eV)
-    mkcalc() = BoltzmannCalculator{Float64}(;
+    mkcalc(Si_format = :dense) = BoltzmannCalculator{Float64}(;
         occ = ElectronOccupationParams(; Tlist = [300.0 * K], nlist = 4.0, μlist = μ,
             volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac),
-        smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5)
-    runbte(grid, backend; n_inner_tile = nothing, n_outer_batch = 256) =
-        (c = mkcalc(); EP.run_eph_over_k_and_kq(model, grid, grid;
+        smearing_list = [SmearingType(:Gaussian, 100.0 * meV)], occupation_method = 5, Si_format)
+    runbte(grid, backend; n_inner_tile = nothing, n_outer_batch = 256, Si_format = :dense) =
+        (c = mkcalc(Si_format); EP.run_eph_over_k_and_kq(model, grid, grid;
             calculators = [c], symmetry = nothing, window_k = window, window_kq = window,
             backend, n_inner_tile, n_outer_batch,
             progress_print_step = 10^9, verbosity = 0); c)
@@ -198,5 +200,23 @@ end
         # Sᵢ IS bitwise reproducible). Measured CPU-vs-GPU at 6³: Sₒ 1.8e-13, Sᵢ 2.5e-13.
         @test stack(cg.Sₒ) ≈ stack(cc.Sₒ) rtol = 1e-9
         @test stack(cg.Sᵢ) ≈ stack(cc.Sᵢ) rtol = 1e-9
+    end
+
+    # Si_format = :csr stores the same Sᵢ, as the nonzeros of its transpose, over several tiles.
+    @testset "Si_format = :csr == :dense" begin
+        for backend in (_CUDA_OK ? (EP.CPUBackend(), EP.gpu_backend()) : (EP.CPUBackend(),))
+            c_dense = runbte((6, 6, 6), backend; n_outer_batch = 20)
+            c_csr = runbte((6, 6, 6), backend; n_outer_batch = 20, Si_format = :csr)
+            @test isempty(c_csr.Sᵢ) && size(c_csr.Sᵢᵀ[1]) == reverse(size(c_dense.Sᵢ[1]))
+            @test Matrix(transpose(c_csr.Sᵢᵀ[1])) == c_dense.Sᵢ[1]
+            @test nnz(c_csr.Sᵢᵀ[1]) == count(!iszero, c_dense.Sᵢ[1])
+            # The solver takes the CSR output as `transpose.(Sᵢᵀ)`: the same solve as on its dense
+            # form, with the same Sₒ (Sₒ is a device atomic fold, not bitwise across runs).
+            solve(scat_mat) = EP.solve_electron_bte(c_csr.el_i, c_csr.el_f, scat_mat, stack(c_csr.Sₒ),
+                                                    c_csr.occ; solver = :fixed_point)
+            r_csr, r_dense = solve(transpose.(c_csr.Sᵢᵀ)), solve(Matrix.(transpose.(c_csr.Sᵢᵀ)))
+            @test r_csr.σ ≈ r_dense.σ rtol = 1e-12
+            @test !(r_dense.σ ≈ r_dense.σ_serta)
+        end
     end
 end

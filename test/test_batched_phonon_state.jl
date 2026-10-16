@@ -94,8 +94,9 @@ end
               dst.vdiag[:, :, 1:4] == phs.vdiag[:, :, inds]
         @test_throws "cannot copy 7 q points" copy_batched_phonon_states!(dst, phs, 1:7)
         @test_throws BoundsError copy_batched_phonon_states!(dst, phs, [65])
-        @test_throws MethodError copy_batched_phonon_states!(BatchedPhononState(CPUBackend(), 3,
-            6, [:e, :u]), phs, inds)
+        # A quantity the destination does not hold is skipped.
+        @test (dst_eu = copy_batched_phonon_states!(BatchedPhononState(CPUBackend(), 3, 6, [:e, :u]),
+            phs, inds); dst_eu.vdiag === nothing && dst_eu.u[:, :, 1:4] == phs.u[:, :, inds])
     end
 
     @testset "GPU" begin

@@ -171,7 +171,8 @@ distinct f), so the scatter is overwrite-free.
 function run_calculator!(calc::G2Calculator, block::EPBlock{OuterKLoop}, ctx)
     (; ep, phs, ik, ikq) = block
     nm, npairs = size(ep, 3), size(ep, 4)
-    g2 = view(calc.g2_tile, :, :, :, 1:npairs, ctx.chunk)
+    # The block's extents: a block may be narrower than the containers' box.
+    g2 = reshape_buffer_view(view(calc.g2_tile, :, :, :, :, ctx.chunk), size(ep)...)
     g2 .= abs2.(ep) .* inv.(2 .* reshape(phs.e, 1, 1, nm, npairs))   # as `epstate_set_g2!`
     tile_dev = calc.tile_dev
     eph_window_scatter!(

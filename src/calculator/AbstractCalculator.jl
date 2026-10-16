@@ -9,8 +9,9 @@ context of the loop order, [`OuterKContext`](@ref) or [`OuterQContext`](@ref).
 Users subtype `AbstractCalculator` and implement:
 * `supports(calc, ::Type{<:LoopTag})` — the loop orders (`OuterKLoop`, `OuterQLoop`) it handles.
 * `required_el_quantities(calc)`, `required_ph_quantities(calc)` — the electron and phonon
-  quantities it reads beyond `e` and `u`, as `Symbol` field names of `BatchedElectronState` /
-  `BatchedPhononState`.
+  quantities it reads beyond the electrons' `e` and `u` and the phonons' `e`, as `Symbol` field
+  names of `BatchedElectronState` / `BatchedPhononState`; a calculator that reads `block.phs.u`
+  lists `:u`.
 * `setup_calculator!(calc, backend, els_k, els_kq, phs; order, sel_k, sel_kq, nchunks_threads,
   n_outer_batch, n_inner_tile, verbosity)` — run once, before the loop. `order` is the loop order
   of the run, `OuterKLoop()` or `OuterQLoop()`, for buffers only one order needs. `els_k`, `els_kq`, `phs` are
@@ -43,6 +44,7 @@ Optionally:
 * `calculator_bytes(calc, ::Type{<:EPBlock{Loop}}; kwargs...)` — device bytes the
   calculator holds, `(; persistent, per_outer, per_pair)`, for the loops' memory planning.
 * `allowed_eph_phonon_basis(calc)` — phonon bases the calculator accepts.
+* `allows_phonon_mode_truncation(calc)` — whether a run may drop the modes no pair can use.
 
 See `docs/writing_a_calculator.md` for a worked example. The public (unexported) API of the
 calculators, the drivers and the engines is the one `public` declaration at the bottom of this file.
@@ -103,7 +105,8 @@ Fields (pair axis `j`):
 - `ep` :: `(nband_max_kq, nband_max_k, nmodes, nb)` eigenbasis e-ph matrix, before `1/(2ω)`, in the
   run's phonon basis, the polar term included. Defined on each pair's windows only: entry
   `[m, n, ν, j]` is meaningful for `m ≤ els_kq.nband[j]` and `n ≤ els_k.nband[j]` (the shared side's
-  index is 1). `nband_max_kq == els_kq.nband_max`; with the k+q states solved per tile
+  index is 1). `nband_max_k == els_k.nband_max`: under `OuterKLoop` the outer k's own band count,
+  so the k side of a block has no padding. `nband_max_kq == els_kq.nband_max`; with the k+q states solved per tile
   (`run_eph_over_q_and_k`, `run_eph_over_k_and_q`) it is the block's largest k+q window, so it
   differs between blocks and is at most `nw`.
 - `dg` :: `(nband_max_kq, nband_max_k, nmodes, 3, nb)` covariant derivative of `ep` along the
@@ -111,14 +114,16 @@ Fields (pair axis `j`):
   `nothing`.
 - `els_k`, `els_kq` :: `BatchedElectronState` views at block extent; `els_k` has extent 1 under
   `OuterKLoop`.
-- `phs` :: `BatchedPhononState` view; extent 1 under `OuterQLoop`.
+- `phs` :: `BatchedPhononState` view; extent 1 under `OuterQLoop`. `phs.e` is always present;
+  `phs.u` is `nothing` when no calculator of the run lists `:u` in `required_ph_quantities` and
+  the rotation reads the eigenvectors elsewhere (a GPU run over a k+q grid in the eigenmode basis).
 - `wtk`, `wtq` :: the weights; the shared side's is a scalar, the pair side's a device vector.
 - `xk`, `xq` :: the momenta, `Vec3` on the shared side and a host vector on the pair side.
 - `xkmat` :: under `OuterQLoop`, `xk` as a `(3, nb)` matrix on the run's backend (a view of `xk` on
   the CPU); `nothing` under `OuterKLoop`.
 - `ik`, `ikq`, `iq` :: indices into the run's point sets: under `OuterKLoop` `ik::Int`, `ikq` into
-  the k+q container (a `UnitRange`, or a host vector when pairs were dropped) and `iq` a device
-  vector into the q set, or under `run_eph_over_k_and_q` `ikq === nothing` and `iq` the q tile (a
+  the k+q container (a `UnitRange`, or a vector on the run's backend when pairs were dropped) and
+  `iq` a device vector into the q set, or under `run_eph_over_k_and_q` `ikq === nothing` and `iq` the q tile (a
   `UnitRange`, or a host vector when pairs were dropped); under `OuterQLoop` `iq::Int`, `ik` into the k set (a `UnitRange` or a host
   vector) and `ikq` into the precomputed k+q container, or `nothing` when k+q is solved per tile.
 """
@@ -175,13 +180,28 @@ Return the list of phonon bases the calculator supports for e-ph matrix elements
 allowed_eph_phonon_basis(::AbstractCalculator) = [:eigenmode]
 
 """
+    allows_phonon_mode_truncation(calc::AbstractCalculator) -> Bool
+
+Whether the calculator accepts a run that keeps only the lowest phonon modes: with a finite
+`energy_conservation_tol`, `run_eph_over_k_and_kq` on a GPU may drop the modes with `|ω| > Ω` at
+every q, `Ω` the energy range of the resident states plus the tolerance, when every calculator
+allows it. Such a mode has no process inside the tolerance for any pair. `phs.nmodes` and
+`size(ep, 3)` are then below `model.nmodes`. The run may also build the phonons per outer batch:
+the `phs` handed to `setup_calculator!` then holds no q, the driver returns `phs = nothing`, and the
+blocks carry the pairs' phonons as always. Default `false`.
+"""
+allows_phonon_mode_truncation(::AbstractCalculator) = false
+
+"""
     required_el_quantities(calc) -> Vector{Symbol}
     required_ph_quantities(calc) -> Vector{Symbol}
 
 The electron (k and k+q side alike) and phonon quantities the calculator reads beyond the ones the
-loop always provides (the energies `e`, the eigenvectors `u` and the e-ph matrix elements), named
-as the fields of `BatchedElectronState` (`:vdiag`, `:v`, `:rbar`) and `BatchedPhononState`
-(`:vdiag`, `:eph_dipole_coeff`, ...). The loop builds the union. Default: none.
+loop always provides (the electrons' energies `e` and eigenvectors `u`, the phonon frequencies `e`
+and the e-ph matrix elements), named as the fields of `BatchedElectronState` (`:vdiag`, `:v`,
+`:rbar`) and `BatchedPhononState` (`:u`, `:vdiag`, `:eph_dipole_coeff`, ...). The loop builds the
+union. The phonon eigenvectors always enter the e-ph rotation, but `block.phs.u` is filled only
+when some calculator lists `:u`. Default: none.
 """
 required_el_quantities(::AbstractCalculator) = Symbol[]
 required_ph_quantities(::AbstractCalculator) = Symbol[]
@@ -240,7 +260,7 @@ public run_eph_over_k_and_kq, run_eph_over_k_and_q, run_eph_over_q_and_k,
     calculator_begin_batch!, calculator_end_batch!, OuterKLoop, OuterQLoop, EPBlock, OuterKContext, OuterQContext,
     AbstractBackend, CPUBackend, GPUBackend,
     gpu_backend, alloc, free_bytes, synchronize, batched_gemm!, eph_window_scatter!,
-    bte_window_accumulate!, calculator_bytes, allowed_eph_phonon_basis,
+    bte_window_accumulate!, calculator_bytes, allowed_eph_phonon_basis, allows_phonon_mode_truncation,
     required_el_quantities, required_ph_quantities, _indmap_to_device,
     TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array,
     tile_offset, tile_length, tile_stride, streamed_per_batch, is_allocated, should_stream_per_batch,
