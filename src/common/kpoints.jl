@@ -758,14 +758,8 @@ function unfold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
     ngrid = kpts.ngrid
     shift = kpts.shift
 
-    # For the unfolded kpts to be GridKpoints, all symmetry mapping of kpts.shift must be on the grid.
-    for symop in symmetry
-        s_shift = symop.is_tr ? -symop.S * shift : symop.S * shift
-        dk = s_shift - shift
-        if norm(dk - Vec3(round.(Int, dk.data .* ngrid) ./ ngrid)) > 10*eps(eltype(dk))
-            error("kpts.shift = $(kpts.shift) does not respect the symmetry $symop. Cannot unfold.")
-        end
-    end
+    # For the unfolded kpts to be GridKpoints, the symmetry must map the grid and its shift onto themselves.
+    _check_grid_symmetric(ngrid, shift, symmetry)
 
     # Unfold k points
     sk_hash_dict = Dict{Int, Int}()
@@ -818,6 +812,9 @@ function fold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
 
     ngrid = kpts.ngrid
     shift = kpts.shift
+
+    # Otherwise `_hash_xk` snaps an off-grid inv(S) * xk onto a wrong grid point.
+    _check_grid_symmetric(ngrid, shift, symmetry)
 
     hash_dict_irr = Dict{Int, Int}()
     vectors_irr = empty(kpts.vectors)
