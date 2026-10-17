@@ -229,8 +229,8 @@ end
         @test_throws ArgumentError phonon_index(ωph, iq_kk .+ Int32(nq), iks_i, iks_f, cutoff)
     end
     if WINDOW_SCATTER_GPU_AVAILABLE
-        # The grouping is host-only (as the phonon table is); the key `floor(Int64, ω / bin)` it uses is
-        # a broadcast, which must give the same Int64 on the device, edge values included.
+        # The grouping is host-only (as the phonon table is); no EP device code forms keys. This checks
+        # that CUDA's `floor(Int64, ω / bin)` broadcast agrees with the host key, edge values included.
         bin = 1e-12
         j = 3_000_000_000
         ω = vcat([j * bin, prevfloat(j * bin), nextfloat(j * bin), (j + 0.5) * bin,

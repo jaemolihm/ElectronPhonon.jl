@@ -135,7 +135,7 @@ order of the input or on which array is grouped, and the ids are in first-occurr
 `|ω - ωvals[idx]| <= bin/2 + eps(ω)`: this is a deliberate shift of the frequency, not
 round-off, and `ωq` itself (and any `g2` built from it) is not touched. A symmetric cluster
 straddling a bin edge stays two entries. `bin = 0` groups by exact equality and stores ω.
-`maximum(abs, ωq) / bin` must stay below `2^53` so that the key is exact.
+`maximum(abs, ωq) / bin` must stay below `2^52` so that the key and its bin centre are exact.
 
 Threaded in three phases: (1) parallel chunk-local grouping (local ids written into `idx`, offset
 by the sentinel), (2) serial in-order merge of the small chunk dictionaries into the global
@@ -150,8 +150,8 @@ function dedup_phonon_frequencies(ωq::AbstractArray{FT}, omega_cutoff; bin = om
         return _group_phonon_keys(ωq, ωq, omega_cutoff, bin)
     else
         # Binned path: the key is the integer bin index.
-        maximum(abs, ωq; init = zero(FT)) / bin < 2.0^53 || throw(ArgumentError(
-            "ω / bin reaches 2^53 (max ω $(maximum(abs, ωq)), bin $bin): the bin key is not exact"))
+        maximum(abs, ωq; init = zero(FT)) / bin < 2.0^52 || throw(ArgumentError(
+            "ω / bin reaches 2^52 (max ω $(maximum(abs, ωq)), bin $bin): the bin centre is not exact"))
         return _group_phonon_keys(ωq, floor.(Int64, Float64.(ωq) ./ bin), omega_cutoff, bin)
     end
 end
