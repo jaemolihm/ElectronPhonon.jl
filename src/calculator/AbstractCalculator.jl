@@ -43,6 +43,7 @@ Optionally:
 * `calculator_bytes(calc, ::Type{<:EPBlock{Loop}}; kwargs...)` — device bytes the
   calculator holds, `(; persistent, per_outer, per_pair)`, for the loops' memory planning.
 * `allowed_eph_phonon_basis(calc)` — phonon bases the calculator accepts.
+* `allows_phonon_mode_truncation(calc)` — whether a run may drop the modes no pair can use.
 
 See `docs/writing_a_calculator.md` for a worked example. The public (unexported) API of the
 calculators, the drivers and the engines is the one `public` declaration at the bottom of this file.
@@ -176,6 +177,19 @@ Return the list of phonon bases the calculator supports for e-ph matrix elements
 allowed_eph_phonon_basis(::AbstractCalculator) = [:eigenmode]
 
 """
+    allows_phonon_mode_truncation(calc::AbstractCalculator) -> Bool
+
+Whether the calculator accepts a run that keeps only the lowest phonon modes: with a finite
+`energy_conservation_tol`, `run_eph_over_k_and_kq` on a GPU may drop the modes with `|ω| > Ω` at
+every q, `Ω` the energy range of the resident states plus the tolerance, when every calculator
+allows it. Such a mode has no process inside the tolerance for any pair. `phs.nmodes` and
+`size(ep, 3)` are then below `model.nmodes`. The run may also build the phonons per outer batch:
+the `phs` handed to `setup_calculator!` then holds no q, and the blocks carry the pairs' phonons as
+always. A run that may truncate returns `phs = nothing`. Default `false`.
+"""
+allows_phonon_mode_truncation(::AbstractCalculator) = false
+
+"""
     required_el_quantities(calc) -> Vector{Symbol}
     required_ph_quantities(calc) -> Vector{Symbol}
 
@@ -241,7 +255,7 @@ public run_eph_over_k_and_kq, run_eph_over_k_and_q, run_eph_over_q_and_k,
     calculator_begin_batch!, calculator_end_batch!, OuterKLoop, OuterQLoop, EPBlock, OuterKContext, OuterQContext,
     AbstractBackend, CPUBackend, GPUBackend,
     gpu_backend, alloc, free_bytes, synchronize, batched_gemm!, eph_window_scatter!,
-    bte_window_accumulate!, calculator_bytes, allowed_eph_phonon_basis,
+    bte_window_accumulate!, calculator_bytes, allowed_eph_phonon_basis, allows_phonon_mode_truncation,
     required_el_quantities, required_ph_quantities, _indmap_to_device,
     TiledDeviceOutput, tile_begin!, tile_download!, tile_free!, device_array, host_array,
     tile_offset, tile_length, tile_stride, streamed_per_batch, is_allocated, should_stream_per_batch,
