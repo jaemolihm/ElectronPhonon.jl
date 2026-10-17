@@ -211,6 +211,25 @@ end
         test_index_equivalence(kpts)
     end
 
+    # A grid or shift the group does not map onto itself is an error, not a silent snap onto a wrong
+    # grid point. Td is cubic, so a (4, 4, 2) grid is not closed; the shifts (1/8, 0, 0) and
+    # (1/8, 1/8, 1/8) (`shifted`) are moved off the 1/4 grid by the group.
+    open_grid = GridKpoints(kpoints_grid((4, 4, 2)))
+    @test_throws ArgumentError fold_kpoints(open_grid, symmetry)
+    @test_throws "breaks the symmetry" fold_kpoints(open_grid, symmetry)
+    @test_throws ArgumentError unfold_kpoints(open_grid, symmetry)
+    open_shift = GridKpoints(kpoints_grid((N, N, N); shift = (1//2, 0//1, 0//1) ./ N))
+    for kpts in (open_shift, shifted)
+        @test_throws ArgumentError fold_kpoints(kpts, symmetry)
+        @test_throws ArgumentError unfold_kpoints(kpts, symmetry)
+    end
+    # Positive control with a genuinely shifted grid: under Td no nonzero shift is closed, so use a
+    # group of inversion and its time-reversal partner, which maps the half-step shift (1/8)^3 of the
+    # (4, 4, 4) grid onto the grid.
+    sym_inv = symmetry_operations(2.0 * [1 0 0.; 0 1 0.; 0 0 1.], ["A" => [[0.1, 0.2, 0.3], [-0.1, -0.2, -0.3]]])
+    closed_shift = GridKpoints(kpoints_grid((N, N, N); shift = (1//8, 1//8, 1//8)))
+    @test fold_kpoints(closed_shift, sym_inv)[1].n < closed_shift.n
+
     # An empty GridKpoints has NEITHER index; it is the one case where "exactly one" does not hold.
     # (The `GridKpoints{T}()` placeholder carries ngrid == (0,0,0), on which `_hash_xk` divides by
     # zero, so lookups are only meaningful on the empty-with-a-real-grid form.)

@@ -528,6 +528,29 @@ function bzmesh_ir_wedge(ngrid, symmetry::Symmetry; ignore_time_reversal=false)
 end
 
 """
+    _check_grid_symmetric(ngrid, shift, symmetry; ignore_time_reversal=false)
+Throw an `ArgumentError` unless every operation of `symmetry` maps the `ngrid` mesh shifted by
+`shift` (crystal coordinates) onto itself: it must map each grid basis vector `e ./ ngrid` onto the
+grid, and `S * shift - shift` must lie on the grid.
+"""
+function _check_grid_symmetric(ngrid, shift, symmetry; ignore_time_reversal=false)
+    for symop in symmetry
+        ignore_time_reversal && symop.is_tr && continue
+        # Grid basis vectors.
+        for e in (Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, 1))
+            Sk = apply_symop(symop, e .// Vec3(ngrid), :momentum)
+            all(isinteger, Sk .* ngrid) || throw(ArgumentError("The k-point grid breaks the symmetry"))
+        end
+        # Shift.
+        dk = apply_symop(symop, Vec3(shift), :momentum) - shift
+        if norm(dk - Vec3(round.(Int, dk.data .* ngrid) ./ ngrid)) > 10 * eps(eltype(dk))
+            throw(ArgumentError("The k-point grid shift $shift breaks the symmetry $symop"))
+        end
+    end
+    nothing
+end
+
+"""
     kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=false)
 Construct the irreducible wedge of a Γ-centered `n1 × n2 × n3` Brillouin zone mesh, with
 `ngrid = (n1, n2, n3)`. The mesh must be invariant under `symmetry` (e.g. `n1 = n2 = n3` for
@@ -546,14 +569,7 @@ function kpoints_grid_symmetry(ngrid, symmetry::Symmetry; ignore_time_reversal=f
     L = lcm(ngrid...)
     stride = Vec3{Int}(L .÷ ngrid)
 
-    # The grid is invariant under S iff S maps each grid basis vector e ./ ngrid onto the grid.
-    for symop in symmetry
-        ignore_time_reversal && symop.is_tr && continue
-        for e in (Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, 1))
-            Sk = apply_symop(symop, e .// Vec3(ngrid), :momentum)
-            all(isinteger, Sk .* ngrid) || error("The k-point grid breaks the symmetry")
-        end
-    end
+    _check_grid_symmetric(ngrid, zero(Vec3{Float64}), symmetry; ignore_time_reversal)
 
     # kz = i3 / ngrid[3] is the fastest index
     for (i3, i2, i1) in Iterators.product((0:n-1 for n in reverse(ngrid))...)
