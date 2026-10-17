@@ -94,6 +94,25 @@ using ElectronPhonon: spin_orbit_holstein_model, holstein_model
                 end
             end
         end
+
+        # Energies cannot tell C4v × T from another 16-element group (T already maps k → -k),
+        # so check the spin texture, an axial and T-odd vector:
+        # ⟨σ⟩ₙ(Sk) = (-1)^{is_tr} det(R) R ⟨σ⟩ₙ(k). Bands are nondegenerate at generic k.
+        model = spin_orbit_holstein_model(; params...)
+        spin_ops = [kron(σ₀, σ) for σ in (σx, σy, σz)]
+        function spin_texture(xk)
+            el = compute_electron_states(model, Kpoints(xk), ["eigenvalue", "eigenvector"])[1]
+            u = ElectronPhonon.no_offset_view(el.u)
+            [Vec3(ntuple(i -> real(u[:, n]' * spin_ops[i] * u[:, n]), 3)) for n in 1:4]
+        end
+        for xk in xks
+            s0 = spin_texture(xk)
+            for s in model.symmetry
+                sk = Vec3(s.is_tr ? -s.S * xk : s.S * xk)
+                sign = (s.is_tr ? -1 : 1) * det(s.Scart)
+                @test spin_texture(sk) ≈ [sign * s.Scart * v for v in s0] atol=1e-10
+            end
+        end
     end
 
     @testset "no SOC, no orbital splitting: four copies of the Holstein band" begin

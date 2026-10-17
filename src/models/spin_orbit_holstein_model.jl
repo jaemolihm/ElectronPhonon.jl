@@ -5,8 +5,6 @@
 # separate builder because the electron part (4×4 spinor Hamiltonian, symmetry group of the
 # Hamiltonian smaller than the lattice's) has nothing in common with the scalar Holstein band.
 
-using Printf
-
 public spin_orbit_holstein_model
 
 """
@@ -31,15 +29,9 @@ H(k) = ε(k) 𝟙 + M τ_z + λ_{int} τ_x (\\sin k_x σ_y - \\sin k_y σ_x)
      + α_R (\\sin k_y σ_x - \\sin k_x σ_y),   ε(k) = ε₀ - 2t (\\cos k_x + \\cos k_y)
 ```
 
-- `M τ_z`: the two orbitals are split by `2M`.
-- `λ_int`: intrinsic SOC between the two orbitals, even under inversion `P = τ_z` (orbital 1
-  even, orbital 2 odd, e.g. s and p_z) and time reversal `T = -iσ_y K`. It mixes the spins of
-  the two orbitals, with amplitude `~ λ_int sin k / 2M`, but keeps every band doubly degenerate.
-- `α_R`: Rashba SOC, breaks `P`, lifts the Kramers degeneracy (splitting `2α_R |sin k|` for
-  `λ_int = 0`).
-
-Nearest-neighbor hopping only: `H(R = ±a_x) = -t 𝟙 ± (λ_int τ_xσ_y - α_R σ_y) / 2i` and
-`H(R = ±a_y) = -t 𝟙 ± (α_R σ_x - λ_int τ_xσ_x) / 2i`, with `H(k) = ∑_R e^{ik·R} H(R)`.
+- `λ_int`: intrinsic SOC, even under `P = τ_z` (e.g. s and p_z orbitals) and `T = -iσ_y K`;
+  mixes spins between the orbitals and keeps every band doubly degenerate.
+- `α_R`: Rashba SOC, breaks `P` and lifts the Kramers degeneracy.
 
 The phonon and e-ph coupling are those of [`holstein_model`](@ref), with the scalar `g`
 replaced by an on-site matrix in orbital space:
@@ -48,18 +40,9 @@ replaced by an on-site matrix in orbital space:
 Ĥ_{e-ph} = ∑_R (b̂_R + b̂†_R) Ψ†_R (g₀ 𝟙 + g₁ τ_z) Ψ_R,   ω_q = ω₀
 ```
 
-so `g_{mn}(k, q) = ⟨m, k+q| g₀ 𝟙 + g₁ τ_z |n, k⟩`. `g₁` is half the difference of the two
-orbitals' couplings.
-
-# Keyword arguments
-- `t` : nearest-neighbor hopping (same for both orbitals and spins).
-- `M` : half the orbital splitting.
-- `λ_int` : intrinsic, inversion-symmetric SOC.
-- `α_R` : Rashba, inversion-breaking SOC.
-- `ω₀` : Einstein phonon frequency. Must be positive.
-- `g₀`, `g₁ = 0.0` : orbital-average and half-difference e-ph coupling.
-- `mass = 1.0`, `alat = 1.0`, `ε₀ = 0.0`, `epmat_outer_momentum = "el"`, `verbose = true` :
-  as in [`holstein_model`](@ref).
+so `g_{mn}(k, q) = ⟨m, k+q| g₀ 𝟙 + g₁ τ_z |n, k⟩`, with `g₁` half the difference of the two
+orbitals' couplings. `ω₀ > 0`; `mass`, `alat`, `ε₀`, `epmat_outer_momentum` and `verbose` are
+as in [`holstein_model`](@ref).
 
 # Representation inside the `Model`
 `nw = 4`, `nmodes = 1`, `dimension = 2`. Spin is part of the Wannier index, so downstream
