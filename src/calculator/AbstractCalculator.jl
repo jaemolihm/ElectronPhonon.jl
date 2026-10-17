@@ -183,9 +183,11 @@ Whether the calculator accepts a run that keeps only the lowest phonon modes: wi
 `energy_conservation_tol`, `run_eph_over_k_and_kq` on a GPU may drop the modes with `|ω| > Ω` at
 every q, `Ω` the energy range of the resident states plus the tolerance, when every calculator
 allows it. Such a mode has no process inside the tolerance for any pair. `phs.nmodes` and
-`size(ep, 3)` are then below `model.nmodes`. The run may also build the phonons per outer batch:
-the `phs` handed to `setup_calculator!` then holds no q, and the blocks carry the pairs' phonons as
-always. A run that may truncate returns `phs = nothing`. Default `false`.
+`size(ep, 3)` are then below `model.nmodes`. When the phonons of all q do not fit the free device
+memory, the run builds them per outer batch, for the q of that batch's kept pairs: the `phs` handed
+to `setup_calculator!` then holds no q, and the blocks carry the pairs' phonons as always. Both
+choices depend on the free device memory, so a run that may truncate returns `phs = nothing`.
+Default `false`.
 """
 allows_phonon_mode_truncation(::AbstractCalculator) = false
 

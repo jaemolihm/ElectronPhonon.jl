@@ -108,6 +108,7 @@ include("calculator/ep_element_calculator.jl")
 include("calculator/calculator_utils.jl")
 include("calculator/eph_engine.jl")
 include("calculator/run_eph.jl")
+include("calculator/phonon_truncation.jl")
 include("boltzmann/boltzmann_calculator.jl")
 
 export ElectronOccupationParams

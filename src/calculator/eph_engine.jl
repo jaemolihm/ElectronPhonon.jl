@@ -422,30 +422,6 @@ _uses_device_pair_selection(backend, inner_loop_kq, energy_conservation_tol) =
     inner_loop_kq && !(backend isa CPUBackend) && isfinite(energy_conservation_tol)
 
 """
-    _select_qs_per_outer_batch(backend, kpts, kqpts, qpts, els_k, els_kq, ω_all, n_outer_batch, tol)
-        -> Vector{Vector{Int32}}
-
-The q of the pairs `_select_kqpairs_on_device!` keeps in each outer batch
-`Iterators.partition(1:kpts.n, n_outer_batch)`, with the frequencies `ω_all`, in ascending order:
-the q whose phonons an engine with `phonons_per_batch` builds for that batch. Runs on its own
-selection buffers, one tile of every k+q point, dropped on return.
-"""
-function _select_qs_per_outer_batch(backend, kpts, kqpts, qpts, els_k, els_kq, ω_all, n_outer_batch, tol)
-    ck, ckq = _pair_grid_coords(kpts, kqpts, qpts)
-    selection = DevicePairSelection(backend, ckq, qpts, kqpts.n; compact = false)
-    q_marks = alloc(backend, Bool, qpts.n)
-    map(Iterators.partition(1:kpts.n, n_outer_batch)) do iks_batch
-        fill!(q_marks, false)
-        for ik in iks_batch
-            k_int = (ck[1, ik], ck[2, ik], ck[3, ik])
-            _mark_conserving_qs!(q_marks, selection, k_int, qpts.ngrid, view(els_k, ik:ik), els_kq,
-                                 1, kqpts.n, ω_all, tol)
-        end
-        Vector{Int32}(findall(Array(q_marks)))
-    end
-end
-
-"""
     OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kwargs...)
 
 Build the outer-k run's stage-1 buffers and one inner-tile workspace per thread chunk.

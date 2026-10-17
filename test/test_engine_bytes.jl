@@ -54,8 +54,8 @@ end
                 energy_conservation_tol = tol, phonon_storage, verbosity = 0)
             st = _setup_states(order, model, grid, grid, options)
             # Phonons per outer batch: the largest batch's q, and the engine's phonon solve.
-            iqs_per_batch = st.ω_all === nothing ? nothing : _select_qs_per_outer_batch(backend,
-                st.kpts, st.kqpts, st.qpts, st.els_k, st.els_kq, st.ω_all, nb, tol)
+            iqs_per_batch = st.phonon_batches === nothing ? nothing : _select_qs_per_outer_batch(backend,
+                st.kpts, st.kqpts, st.qpts, st.els_k, st.els_kq, st.phonon_batches.ω, nb, tol)
             nq_per_batch = iqs_per_batch === nothing ? nothing : maximum(length, iqs_per_batch)
             nbk = st.els_k.nband_max
             nbkq = st.els_kq === nothing ? model.nw : st.els_kq.nband_max
@@ -74,7 +74,8 @@ end
                     covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
                 eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = dg,
-                    energy_conservation_tol = tol, st.ω_all, iqs_per_batch, common...)
+                    energy_conservation_tol = tol, ω_all = st.phonon_batches === nothing ? nothing : st.phonon_batches.ω,
+                    iqs_per_batch, common...)
                 run1 = () -> stage1!(eng, 1:nb)
             else
                 bytes = engine_bytes(OuterQEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
@@ -90,7 +91,8 @@ end
             # The planner runs after resident states (and the frequencies of the per-batch pair
             # selection) are built: their bytes are already unavailable in free_bytes, so the engine
             # budget counts newly allocated scratch, not those aliases.
-            held = _device_bytes(eng) - _device_bytes((st.els_k, st.els_kq, st.phs, st.ω_all))
+            held = _device_bytes(eng) - _device_bytes((st.els_k, st.els_kq, st.phs,
+                                                   st.phonon_batches === nothing ? nothing : st.phonon_batches.ω))
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
             @info "engine_bytes" order mom dg tol phonon_storage held transient counted ratio = (held + transient) / counted
             # Everything the engine holds and its stage 1 allocates is counted (0.925-1.000 measured,

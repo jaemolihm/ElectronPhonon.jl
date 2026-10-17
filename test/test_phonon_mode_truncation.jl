@@ -172,7 +172,7 @@ struct _NoTruncation <: AbstractCalculator end
             _run_options(model; inner_loop_kq = true, backend, symmetry = nothing, calculators,
                          energy_conservation_tol = tol, phonon_storage, verbosity = 0))
         st_batch = setup([boltzmann], :per_batch)
-        @test st_batch.ω_all !== nothing && st_batch.phs.nq == 0 && st_batch.phs.nmodes == model.nmodes
+        @test st_batch.phonon_batches !== nothing && st_batch.phs.nq == 0 && st_batch.phs.nmodes == model.nmodes
         @test_throws ArgumentError setup([boltzmann, _NoTruncation()], :per_batch)
         # The eligibility of a run for the truncation.
         may_truncate(calculators; tol = tol, backend = backend) = _may_truncate_phonon_modes(OuterKLoop(),
@@ -216,7 +216,7 @@ end
             inner_loop_kq = true, backend, symmetry = nothing, window_k = window, window_kq,
             energy_conservation_tol = 6σ, phonon_storage = :per_batch, verbosity = 0))
         iqs_per_batch = _select_qs_per_outer_batch(backend, st.kpts, st.kqpts, st.qpts, st.els_k,
-            st.els_kq, st.ω_all, 1, 6σ)
+            st.els_kq, st.phonon_batches.ω, 1, 6σ)
         @test any(isempty, iqs_per_batch) && !all(isempty, iqs_per_batch)
         c_all, _ = runbte(:resident; window_kq, n_outer_batch = 1)
         c_per_batch, _ = runbte(:per_batch; window_kq, n_outer_batch = 1)
