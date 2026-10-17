@@ -23,12 +23,14 @@ function _reshape_buffer(buffer::AbstractVector{T}, dims::NTuple{N, Int}) where 
 end
 
 """
-    reshape_buffer_view(buffer, dims...) -> AbstractArray
+    reshape_buffer_view(buffer, dims...; offset = 0) -> AbstractArray
 
-View the first prod(dims) elements of a preallocated buffer with shape dims and dense strides.
-A smaller box uses consecutive storage rather than the original strides; no elements are moved.
-On a device this preserves the device array type required by batched GEMMs. The buffer must
-already have enough capacity. Unlike _reshape_buffer, this does not resize storage or force a
-Base.ReshapedArray wrapper.
+View the prod(dims) elements of a preallocated buffer after its first `offset` with shape dims and
+dense strides. A smaller box uses consecutive storage rather than the original strides; no elements
+are moved, and views at disjoint offsets are disjoint segments of one buffer. On a device this
+preserves the device array type required by batched GEMMs. The buffer must already have enough
+capacity. Unlike _reshape_buffer, this does not resize storage or force a Base.ReshapedArray
+wrapper.
 """
-reshape_buffer_view(buffer, dims...) = reshape(view(vec(buffer), 1:prod(dims)), dims)
+reshape_buffer_view(buffer, dims...; offset::Int = 0) =
+    reshape(view(vec(buffer), offset .+ (1:prod(dims))), dims)

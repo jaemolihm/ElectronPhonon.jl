@@ -122,6 +122,16 @@ end
         @test_throws "cannot copy 4 points" copy_batched_electron_states!(
             BatchedElectronState(CPUBackend(), 4, 4, 6, [:e, :u]), els, inds)
 
+        # A narrower destination takes the leading bands of points that fit it and refuses the others.
+        b = els.nband_max - 1
+        fits, wide = findall(<=(b), els.nband), findall(>(b), els.nband)
+        @test !isempty(fits) && !isempty(wide)
+        narrow = BatchedElectronState(CPUBackend(), 4, b, 6, [:e, :u])
+        copy_batched_electron_states!(narrow, els, fits[1:3])
+        @test isequal(narrow.e[:, 1:3], els.e[1:b, fits[1:3]]) &&
+              isequal(narrow.u[:, :, 1:3], els.u[:, 1:b, fits[1:3]])
+        @test_throws "more than els_dst.nband_max" copy_batched_electron_states!(narrow, els, wide[1:2])
+
         # Solved into a tile: the bands of the window, moved to local bands 1:nband, of the same
         # batched solve, in a box as wide as the largest window. Off-grid points, more tile than
         # points.

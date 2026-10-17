@@ -79,11 +79,12 @@ end
             held = _device_bytes(eng) - _device_bytes((eng.els_k, eng.els_kq, eng.phs))
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
             @info "engine_bytes" order mom dg held transient counted ratio = (held + transient) / counted
-            # Everything the engine holds and its stage 1 allocates is counted (0.991-1.000 measured,
+            # Everything the engine holds and its stage 1 allocates is counted (0.925-1.000 measured,
             # Pb, A100)...
             @test held + transient <= 1.02 * counted
-            # ...and the count is not a loose upper bound.
-            @test held + transient >= 0.95 * counted
+            # ...and the count is not a loose upper bound. The outer-k stage-1 rotation transients are
+            # counted at the box width, while each band class of the batch allocates at its own.
+            @test held + transient >= (order isa OuterKLoop ? 0.9 : 0.95) * counted
         end
     end
 end
