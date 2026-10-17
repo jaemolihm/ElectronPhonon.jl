@@ -55,7 +55,7 @@ GPU_AVAILABLE && CUDA.allowscalar(false)
 
 # Pb EPW model comes from a downloaded test artifact (see test/Artifacts.toml).
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
-isdefined(@__MODULE__, :pair_ω) || include("pair_frequencies.jl")
+isdefined(@__MODULE__, :contract_pair_sum) || include("calculator_contract_harness.jl")
 
 """
 Validate the batched e-ph drivers against the per-k/q reference (`compute_eph_RR_to_kR!` /
@@ -1037,7 +1037,6 @@ end
 # `G2Calculator` and `EPElementCalculator` on the GPU against the CPU run, including the
 # energy-window path (box storage + the box-coordinate imap scatter that skips the padding). Needs
 # the Pb model artifact.
-isdefined(@__MODULE__, :contract_pair_sum) || include("calculator_contract_harness.jl")
 
 function _cpu_gpu_pair(T, model, grid, win)
     cc = T{Float64}(; nmodes=model.nmodes)

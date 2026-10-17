@@ -237,7 +237,9 @@ concurrent writes.
 """
 function bte_window_accumulate!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
         e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff, i0::Int)
-    nbandkq, nbandk, nmodes, npairs = _scatter_extents(g2vals, ωqmat, ikqs, imap_i_at_k, imap_f)
+    nbandkq, nbandk, nmodes, npairs = _scatter_extents(g2vals, ikqs, imap_i_at_k, imap_f)
+    size(ωqmat) == (nmodes, npairs) ||
+        throw(DimensionMismatch("ωqmat is $(size(ωqmat)), the block values $(size(g2vals))"))
     nT = length(μs)
     @inbounds for ipair in 1:npairs, n in 1:nbandk, m in 1:nbandkq
         i = imap_i_at_k[n]         # outer (k) state index; 0 = out of window → skip

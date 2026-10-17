@@ -10,7 +10,6 @@ group in ("all", "core", "plotting") || error("Unknown test group $group; expect
 @info "Test group: $group"
 
 include("common_models_from_artifacts.jl")
-include("pair_frequencies.jl")
 
 @time @testset "ElectronPhonon.jl" begin
     if group in ("all", "core")

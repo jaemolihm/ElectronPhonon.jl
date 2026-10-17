@@ -8,7 +8,6 @@ using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, suppo
 # at entry, `calculators` as a keyword, and the screening-disabled error.
 
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
-isdefined(@__MODULE__, :pair_ω) || include("pair_frequencies.jl")
 
 # A minimal well-formed outer-k calculator that just counts run_calculator! calls.
 mutable struct _CountCalc <: AbstractCalculator
@@ -177,13 +176,15 @@ end
     entries = [
         (; name = "G2Calculator", orders = (OuterKLoop,),
            make = () -> ElectronPhonon.G2Calculator{Float64}(; nmodes),
+           # Also applied to the `reference` NamedTuple, whose `pair_ω` is its own `ωq`.
            outputs = c -> Dict("g2" => contract_pair_sum(c.g2, pair_ω(c),
                     contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)),
                     "ωq" => contract_physical_ω(pair_ω(c))),
            reference = g2_contract_reference),
         (; name = "EPElementCalculator", orders = (OuterKLoop,),
            make = () -> ElectronPhonon.EPElementCalculator{Float64}(; nmodes),
-           # The phase of `ep` is a gauge; `|ep|^2` summed over multiplets is not.
+           # The phase of `ep` is a gauge; `|ep|^2` summed over multiplets is not. Also applied to
+           # the `reference` NamedTuple, whose `pair_ω` is its own `ωq`.
            outputs = c -> Dict("abs2_ep" => contract_pair_sum(abs2.(c.ep), pair_ω(c),
                     contract_multiplet_ids(c.el_i), contract_multiplet_ids(c.el_f)),
                     "ωq" => contract_physical_ω(pair_ω(c))),

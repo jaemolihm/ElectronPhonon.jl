@@ -438,8 +438,10 @@ end
 # (m, n, j) over the batch, accumulating this batch's Sₒ/Sᵢ contributions into the device buffers.
 function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
         imap_i_at_k, imap_f, ikqs, e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff, i0::Int)
-    nbandkq, nbandk, nmodes, npairs = ElectronPhonon._scatter_extents(g2vals, ωqmat, ikqs,
-                                                                        imap_i_at_k, imap_f)
+    nbandkq, nbandk, nmodes, npairs = ElectronPhonon._scatter_extents(g2vals, ikqs, imap_i_at_k,
+                                                                        imap_f)
+    size(ωqmat) == (nmodes, npairs) ||
+        throw(DimensionMismatch("ωqmat is $(size(ωqmat)), the block values $(size(g2vals))"))
     nT = length(μs)
     N = nbandkq * nbandk * npairs
     threads = 256

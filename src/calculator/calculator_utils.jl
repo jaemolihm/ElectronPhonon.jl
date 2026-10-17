@@ -4,17 +4,9 @@
 # file holds the higher-level, calculator-facing helpers built on top of them.
 
 # The extents `(nbandkq, nbandk, nm, npairs)` of a scatter's block values `vals`, after checking
-# that the other block arrays agree: `ikqs` of length `npairs`, index maps with exactly the box rows
-# `nbandk` / `nbandkq`, and, in the five-argument form, the block frequencies `ωq` `(nm, npairs)`.
-# The scatters loop over these extents unchecked (the device kernels with no bounds checks at all),
-# so a mismatched array fails here instead.
-function _scatter_extents(vals, ωq, ikqs, imap_i_col, imap_f)
-    extents = _scatter_extents(vals, ikqs, imap_i_col, imap_f)
-    size(ωq) == extents[3:4] ||
-        throw(DimensionMismatch("ωq is $(size(ωq)), the block values $(size(vals))"))
-    extents
-end
-
+# that the other block arrays agree: `ikqs` of length `npairs` and index maps with exactly the box
+# rows `nbandk` / `nbandkq`. The scatters loop over these extents unchecked (the device kernels with
+# no bounds checks at all), so a mismatched array fails here instead.
 function _scatter_extents(vals, ikqs, imap_i_col, imap_f)
     nbandkq, nbandk, nm, npairs = size(vals)
     length(ikqs) == npairs ||

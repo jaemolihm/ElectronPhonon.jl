@@ -1,30 +1,21 @@
 using Test
 using ElectronPhonon
 using Random
-using ElectronPhonon: Vec3, _grid_coords_reduced, _wrap_reduced, _fill_iqs!, q_index_table
+using ElectronPhonon: _pair_grid_coords, _wrap_reduced, _fill_iqs!, q_index_table
 
 # The per-(k, k+q tile) `iq` index build of the outer-k loop (`_fill_iqs!`). The loop hashes
 # integer grid coordinates instead of calling `xk_to_ik` per pair, so the whole correctness story is
 # "the fast hash agrees with `xk_to_ik`". The build is pure host arithmetic, so this file tests the
 # hash in isolation and needs no backend at all; the loop runs end-to-end elsewhere.
 
-# Everything the build needs, assembled the way the `OuterKEngine` constructor assembles it. The outer k mesh
-# is always unshifted — the loop's `xks_int` does not subtract a shift, so a shifted k would not
-# land on integer grid coordinates at all. `shift` shifts the k+q mesh, which is what gives `qpts`
-# a nonzero shift for the k+q side to subtract.
-function _iq_build_fixture(ngrid; shift = (0, 0, 0))
-    kpts  = GridKpoints(kpoints_grid(ngrid))
-    kqpts = GridKpoints(kpoints_grid(ngrid; shift))
+# Everything the build needs, assembled the way the `OuterKEngine` constructor assembles it.
+# `shift_k` and `shift_kq` shift the k and k+q meshes; `qpts` then carries their difference.
+function _iq_build_fixture(ngrid; shift_k = (0, 0, 0), shift_kq = (0, 0, 0))
+    kpts  = GridKpoints(kpoints_grid(ngrid; shift = shift_k))
+    kqpts = GridKpoints(kpoints_grid(ngrid; shift = shift_kq))
     qpts  = ElectronPhonon.combine_kpoint_grids(kqpts, kpts, -, ngrid)
-    xkqs_int = Matrix{Int}(undef, 3, kqpts.n)
-    xks_int  = Matrix{Int}(undef, 3, kpts.n)
-    for ikq in 1:kqpts.n
-        xkqs_int[:, ikq] .= _grid_coords_reduced(kqpts.vectors[ikq], qpts.ngrid, qpts.shift)
-    end
-    for ik in 1:kpts.n
-        xks_int[:, ik] .= _grid_coords_reduced(kpts.vectors[ik], qpts.ngrid, zero(Vec3{Float64}))
-    end
-    (; kpts, kqpts, qpts, xkqs_int, xks_int)
+    ck, ckq = _pair_grid_coords(kpts, kqpts, qpts)
+    (; kpts, kqpts, qpts, ck, ckq)
 end
 
 # `xk_to_ik` on the actual difference vector — the independent oracle. It goes through the Float64
@@ -33,7 +24,7 @@ function _check_against_oracle(f, iks, nq)
     iqs = fill(-7, nq)
     ok = true
     for ik in iks
-        _fill_iqs!(iqs, f.qpts, f.xkqs_int, f.xks_int, ik, 1, nq)
+        _fill_iqs!(iqs, f.qpts, f.ck, f.ckq, ik, 1, nq)
         for j in 1:nq
             ok &= iqs[j] == xk_to_ik(f.kqpts.vectors[j] - f.kpts.vectors[ik], f.qpts)
         end
@@ -56,12 +47,26 @@ end
         @test _check_against_oracle(f, 1:f.kpts.n, f.kqpts.n)
     end
 
-    @testset "shifted grid" begin
-        # The q-grid shift is subtracted on the k+q side only (`_grid_coords_reduced(..., qpts.shift)`
-        # for k+q, a zero shift for k), because q = x_{k+q} - x_k - shift.
-        f = _iq_build_fixture((3, 4, 5); shift = (1//2, 0, 1//2))
-        @test iszero(f.kpts.shift) && !iszero(f.qpts.shift)
-        @test _check_against_oracle(f, 1:f.kpts.n, f.kqpts.n)
+    @testset "shifted grids" begin
+        # Half-step shifts, `1/(2 ng)`: a shift of 1/2 would fold back onto the unshifted grid on an
+        # even `ng`. The k+q mesh alone, the k mesh alone, both by the same shift (unshifted q grid,
+        # every k on a shifted node: the case an unshifted k reduction gets wrong), and both apart.
+        ngrid = (4, 6, 2)
+        half = 1 ./ (2 .* ngrid)
+        for (shift_k, shift_kq) in (((0, 0, 0), half), (half, (0, 0, 0)), (half, half),
+                                    ((0, half[2], half[3]), (half[1], 0, half[3])))
+            f = _iq_build_fixture(ngrid; shift_k, shift_kq)
+            @test f.qpts.shift ≈ mod.(f.kqpts.shift - f.kpts.shift, 1 ./ ngrid)
+            @test _check_against_oracle(f, 1:f.kpts.n, f.kqpts.n)
+        end
+    end
+
+    @testset "q grid shift inconsistent with the k and k+q shifts" begin
+        # A q grid whose shift is not the k+q shift minus the k shift holds no pair's q.
+        f = _iq_build_fixture((4, 4, 4); shift_k = (1/8, 0, 0))
+        qpts_unshifted = GridKpoints(kpoints_grid((4, 4, 4)))
+        @test_throws ArgumentError _pair_grid_coords(f.kpts, f.kqpts, qpts_unshifted)
+        @test_throws ArgumentError q_index_table(f.kpts, f.kqpts, qpts_unshifted)
     end
 
     @testset "[0,ng) reduction is exact" begin
@@ -89,7 +94,7 @@ end
         nq_max = f.kqpts.n
         for nq in (nq_max, 7, 1)
             iqs = fill(-7, nq_max)
-            _fill_iqs!(iqs, f.qpts, f.xkqs_int, f.xks_int, 2, 1, nq)
+            _fill_iqs!(iqs, f.qpts, f.ck, f.ckq, 2, 1, nq)
             @test all(iqs[1:nq] .>= 1)
             @test all(iqs[(nq + 1):end] .== -7)
         end
@@ -100,13 +105,13 @@ end
         f = _iq_build_fixture((4, 4, 4))
         nkq, ik = f.kqpts.n, 5
         whole = fill(-7, nkq)
-        _fill_iqs!(whole, f.qpts, f.xkqs_int, f.xks_int, ik, 1, nkq)
+        _fill_iqs!(whole, f.qpts, f.ck, f.ckq, ik, 1, nkq)
         tiled = fill(-7, nkq)
         qstart = 1
         while qstart <= nkq
             nq = min(25, nkq - qstart + 1)
             part = fill(-7, nq)
-            _fill_iqs!(part, f.qpts, f.xkqs_int, f.xks_int, ik, qstart, nq)
+            _fill_iqs!(part, f.qpts, f.ck, f.ckq, ik, qstart, nq)
             tiled[qstart:(qstart + nq - 1)] .= part
             qstart += nq
         end
@@ -121,15 +126,15 @@ end
         one_q = GridKpoints(Kpoints(1, f.qpts.vectors[2:2], f.qpts.weights[2:2], f.qpts.ngrid),
                             f.qpts.ngrid)
         iqs = fill(-7, f.kqpts.n)
-        @test_throws ArgumentError _fill_iqs!(iqs, one_q, f.xkqs_int, f.xks_int, 1, 1, f.kqpts.n)
-        # The same miss inside the threaded table build, wrapped by `@threads`.
-        @test_throws CompositeException q_index_table(f.kpts, f.kqpts, one_q)
+        @test_throws ArgumentError _fill_iqs!(iqs, one_q, f.ck, f.ckq, 1, 1, f.kqpts.n)
+        # The same miss in the threaded table build, raised after the threaded loop.
+        @test_throws ArgumentError q_index_table(f.kpts, f.kqpts, one_q)
     end
 
     @testset "q_index_table" begin
-        # The whole (k, k+q) table on a shifted non-cubic grid, with an outer subset of the k grid
+        # The whole (k, k+q) table on shifted non-cubic grids, with an outer subset of the k grid
         # (the IBZ shape: n_k < n_kq), against a k-vector search of `qpts` for q = x_{k+q} - x_k.
-        f = _iq_build_fixture((4, 3, 5); shift = (1//2, 0, 1//2))
+        f = _iq_build_fixture((4, 3, 5); shift_k = (1/8, 1/6, 0), shift_kq = (1//2, 0, 1//2))
         iks_sub = 3:4:f.kpts.n
         kpts = GridKpoints(Kpoints(length(iks_sub), f.kpts.vectors[iks_sub], f.kpts.weights[iks_sub],
                                    f.kpts.ngrid), f.kpts.ngrid)
