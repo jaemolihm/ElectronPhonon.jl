@@ -167,4 +167,19 @@ end
             end
         end
     end
+
+    @testset "binned frequency dedup reaches the irreducible-q count" begin
+        # Pb on the full 12^3 q grid has 72 irreducible q (96 symmetry operations incl. time reversal); the
+        # solver round-off makes equivalent q differ by ~1e-15 Ry, which the 1e-12 Ry bin absorbs.
+        # 206 distinct frequencies is the count of the table restricted to irreducible q, an independent
+        # bound; the exact count is several times larger. The binned count itself (195 with the artifact
+        # on the development machine) can move by an edge-straddling cluster, so only the bound is asserted.
+        qpts = GridKpoints(kpoints_grid((12, 12, 12)))
+        ωph = compute_phonon_states_batched(model_pb, qpts, [:e]).e
+        cutoff = ElectronPhonon.omega_acoustic
+        _, ωvals_exact = ElectronPhonon.dedup_phonon_frequencies(ωph, cutoff; bin = 0)
+        _, ωvals_bin = ElectronPhonon.dedup_phonon_frequencies(ωph, cutoff)
+        @test length(ωvals_bin) - 1 <= 206
+        @test 5 * (length(ωvals_bin) - 1) < length(ωvals_exact) - 1
+    end
 end

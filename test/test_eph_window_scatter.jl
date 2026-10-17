@@ -1,6 +1,7 @@
 using Test
 using ElectronPhonon
-using ElectronPhonon: eph_window_scatter!, eph_window_scatter_reim!, gather_pair_table!
+using ElectronPhonon: eph_window_scatter!, eph_window_scatter_reim!, gather_pair_table!,
+    dedup_phonon_frequencies, phonon_index
 using Random
 
 # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
@@ -167,4 +168,74 @@ end
                                                       iks_f)
     @test_throws DimensionMismatch gather_pair_table!(zeros(nm + 1, 5, 7), rand(nm, nq), iq_kk,
                                                       iks_i, iks_f)
+end
+
+# `dedup_phonon_frequencies` groups frequencies by the bin `floor(ω / bin)` and stores the bin centre.
+@testset "dedup_phonon_frequencies" begin
+    Random.seed!(12)
+    cutoff = 1e-6
+    @testset "bin edges" begin
+        # A power-of-two bin makes j*bin, its neighbours and the centre exactly representable, so the
+        # keys are known by hand: j*bin -> j, prevfloat -> j-1, nextfloat -> j, (j+1/2)*bin -> j.
+        bin = 2.0^-30
+        j = 5000
+        ω = [j * bin, prevfloat(j * bin), nextfloat(j * bin), (j + 0.5) * bin,
+             (j + 1) * bin, prevfloat((j + 1) * bin), 0.5 * cutoff]
+        idx, ωvals = dedup_phonon_frequencies(ω, cutoff; bin)
+        @test ωvals == [0.0, (j + 0.5) * bin, (j - 0.5) * bin, (j + 1.5) * bin]
+        @test idx == Int32[2, 3, 2, 2, 4, 2, 1]
+        # Values do not depend on the order of the input.
+        perm = randperm(length(ω))
+        _, ωvals_p = dedup_phonon_frequencies(ω[perm], cutoff; bin)
+        @test sort(ωvals_p) == sort(ωvals)
+    end
+    @testset "bin 1e-12: error bound, order independence, bin = 0" begin
+        # Clusters of near-equal frequencies (spread 1e-15) at 40 centres, repeated, plus sub-cutoff modes.
+        centres = 1e-4 .+ 4e-3 .* rand(40)
+        ωq = reshape([centres[rand(1:40)] + 1e-15 * randn() for _ in 1:3, _ in 1:500], 3, 500)
+        ωq[1, 1:10] .= 0.2cutoff
+        bin = 1e-12
+        idx, ωvals = dedup_phonon_frequencies(ωq, cutoff; bin)
+        above = ωq .>= cutoff
+        @test all(idx[.!above] .== 1) && all(idx[above] .>= 2)
+        @test maximum(abs.(ωvals[idx[above]] .- ωq[above])) <= bin / 2 + eps(maximum(ωq))
+        @test length(ωvals) - 1 <= 2 * length(centres)    # a cluster splits at most at one edge
+        @test length(ωvals) - 1 < length(unique(ωq[above]))
+        perm = randperm(length(ωq))
+        _, ωvals_p = dedup_phonon_frequencies(reshape(vec(ωq)[perm], size(ωq)), cutoff; bin)
+        @test sort(ωvals_p) == sort(ωvals)
+        # bin = 0 is the serial exact-equality grouping.
+        idx0, ωvals0 = dedup_phonon_frequencies(ωq, cutoff; bin = 0)
+        ref = unique(vec(ωq)[vec(above)])
+        @test ωvals0 == [0.0; ref]
+        @test all(ωvals0[idx0] .== ifelse.(above, ωq, 0.0))
+        @test_throws ArgumentError dedup_phonon_frequencies(ωq, cutoff; bin = -1e-12)
+        @test_throws ArgumentError dedup_phonon_frequencies([1e4], cutoff; bin = 1e-12)
+    end
+    @testset "phonon_index" begin
+        nm, nq, nk, nkq = 3, 9, 4, 6
+        ωph = 1e-4 .+ 4e-3 .* rand(nm, nq)
+        ωph[1, 3] = 0.1cutoff
+        iq_kk = Int32.(rand(1:nq, nk, nkq))
+        iks_i, iks_f = [1, 1, 3, 4, 2], [6, 2, 2, 5, 1, 3, 3]
+        idx, ωvals = phonon_index(ωph, iq_kk, iks_i, iks_f, cutoff)
+        pair_ω = zeros(nm, length(iks_i), length(iks_f))
+        gather_pair_table!(pair_ω, ωph, iq_kk, iks_i, iks_f)
+        _, ωvals_q = dedup_phonon_frequencies(ωph, cutoff)
+        @test ωvals == ωvals_q
+        @test maximum(abs.(ωvals[idx] .- ifelse.(pair_ω .>= cutoff, pair_ω, 0.0))) <= 0.5 * ElectronPhonon.omega_bin + eps()
+        idx0, ωvals0 = phonon_index(ωph, iq_kk, iks_i, iks_f, cutoff; bin = 0)
+        @test ωvals0[idx0] == ifelse.(pair_ω .>= cutoff, pair_ω, 0.0)
+        @test_throws ArgumentError phonon_index(ωph, iq_kk .+ Int32(nq), iks_i, iks_f, cutoff)
+    end
+    if WINDOW_SCATTER_GPU_AVAILABLE
+        # The grouping is host-only (as the phonon table is); the key `floor(Int64, ω / bin)` it uses is
+        # a broadcast, which must give the same Int64 on the device, edge values included.
+        bin = 1e-12
+        j = 3_000_000_000
+        ω = vcat([j * bin, prevfloat(j * bin), nextfloat(j * bin), (j + 0.5) * bin,
+                  prevfloat((j + 1) * bin)], 1e-4 .+ 4e-3 .* rand(10_000))
+        CUDA.allowscalar(false)
+        @test Array(floor.(Int64, CuArray(ω) ./ bin)) == floor.(Int64, ω ./ bin)
+    end
 end

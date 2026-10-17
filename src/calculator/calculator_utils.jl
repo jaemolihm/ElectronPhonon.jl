@@ -116,3 +116,115 @@ function gather_pair_table!(out, table, iq_kk, iks_i, iks_f)
     out .= getindex.(Ref(table), reshape(1:nm, :, 1, 1),
         getindex.(Ref(iq_kk), reshape(iks_i, 1, :, 1), reshape(iks_f, 1, 1, :)))
 end
+
+"""
+    dedup_phonon_frequencies(ωq, omega_cutoff; bin = omega_bin) -> (idx, ωvals)
+
+Group a phonon-frequency array of any shape (a per-pair `ωq[ν, i, f]`, or a phonon table
+`ωph[ν, iq]` as [`phonon_index`](@ref) passes it) into its distinct values above
+`omega_cutoff`. Returns `idx` (same shape as `ωq`, `Int32`) and `ωvals`, with the
+convention that `ωvals[1] = 0` is a reserved sentinel and `ωvals[2:]` are the distinct
+frequencies. Modes below the cutoff map to `idx = 1` (the sentinel), so a propagator
+table's first row can be zeroed and a per-slice interaction build needs no cutoff branch.
+Every other `idx` points at the matching `ωvals` entry (`≥ 2`).
+
+Frequencies are grouped by the bin `floor(Int64, ω / bin)`, so symmetry-equivalent q points, whose
+frequencies differ in the last bits, share an entry; `ωvals` holds the bin centre
+`(k + 1/2) * bin`. The centre is a function of the bin alone, so it does not depend on the
+order of the input or on which array is grouped, and the ids are in first-occurrence order.
+`|ω - ωvals[idx]| <= bin/2 + eps(ω)`: this is a deliberate shift of the frequency, not
+round-off, and `ωq` itself (and any `g2` built from it) is not touched. A symmetric cluster
+straddling a bin edge stays two entries. `bin = 0` groups by exact equality and stores ω.
+`maximum(abs, ωq) / bin` must stay below `2^53` so that the key is exact.
+
+Threaded in three phases: (1) parallel chunk-local grouping (local ids written into `idx`, offset
+by the sentinel), (2) serial in-order merge of the small chunk dictionaries into the global
+`ωvals`, (3) parallel remap of `idx` to the global ids. Because the chunks are CONTIGUOUS index
+ranges processed in order, the merged first-occurrence ordering, and therefore `idx` and
+`ωvals`, is IDENTICAL to the serial version's.
+"""
+function dedup_phonon_frequencies(ωq::AbstractArray{FT}, omega_cutoff; bin = omega_bin) where {FT}
+    bin >= 0 || throw(ArgumentError("bin must be non-negative, got $bin"))
+    if iszero(bin)
+        # Exact path: the key is ω itself and the stored value is ω.
+        return _group_phonon_keys(ωq, ωq, omega_cutoff, bin)
+    else
+        # Binned path: the key is the integer bin index.
+        maximum(abs, ωq; init = zero(FT)) / bin < 2.0^53 || throw(ArgumentError(
+            "ω / bin reaches 2^53 (max ω $(maximum(abs, ωq)), bin $bin): the bin key is not exact"))
+        return _group_phonon_keys(ωq, floor.(Int64, Float64.(ωq) ./ bin), omega_cutoff, bin)
+    end
+end
+
+# Three-phase grouping of `ωq` by `keys` (same shape); `bin = 0` stores the key, else its bin centre.
+function _group_phonon_keys(ωq::AbstractArray{FT}, keys::AbstractArray{K}, omega_cutoff, bin) where {FT,K}
+    idx = ones(Int32, size(ωq))      # default 1 => dropped (below cutoff)
+    ωqv = vec(ωq)
+    keysv = vec(keys)
+    idxv = vec(idx)
+    n = length(ωqv)
+    nch = clamp(cld(n, 1_000_000), 1, Threads.nthreads())
+    bounds = round.(Int, range(0, n; length = nch + 1))
+    chunk_keys = Vector{Vector{K}}(undef, nch)
+    # (1) chunk-local grouping: idx holds LOCAL first-occurrence ids, shifted by +1 so the
+    # dropped-mode sentinel (idx = 1) stays unambiguous.
+    Threads.@threads for c in 1:nch
+        d = Dict{K,Int32}()
+        ks = K[]
+        @inbounds for I in (bounds[c]+1):bounds[c+1]
+            ωqv[I] < omega_cutoff && continue  # leave idx[I] = 1 (sentinel)
+            key = keysv[I]
+            idxv[I] = get!(d, key) do
+                push!(ks, key)
+                Int32(length(ks) + 1)   # local id + sentinel shift, always >= 2
+            end
+        end
+        chunk_keys[c] = ks
+    end
+    # (2) in-order merge -> global ωvals (first-occurrence order == the serial pass's).
+    kindex = Dict{K,Int32}()
+    ωvals = FT[zero(FT)]              # row 1: reserved zero sentinel (dropped modes)
+    remaps = Vector{Vector{Int32}}(undef, nch)
+    for c in 1:nch
+        ks = chunk_keys[c]
+        remap = Vector{Int32}(undef, length(ks))
+        for (l, key) in enumerate(ks)
+            remap[l] = get!(kindex, key) do
+                push!(ωvals, iszero(bin) ? key : FT((key + 0.5) * bin))
+                Int32(length(ωvals))  # position in ωvals, always >= 2
+            end
+        end
+        remaps[c] = remap
+    end
+    # (3) local ids -> global ids.
+    Threads.@threads for c in 1:nch
+        remap = remaps[c]
+        @inbounds for I in (bounds[c]+1):bounds[c+1]
+            l = idxv[I]
+            l > 1 && (idxv[I] = remap[l - 1])
+        end
+    end
+    idx, ωvals
+end
+
+"""
+    phonon_index(ωph, iq_kk, iks_i, iks_f, omega_cutoff; bin = omega_bin) -> (idx, ωvals)
+
+The `(idx, ωvals)` of [`dedup_phonon_frequencies`](@ref) for every state pair `[ν, i, f]`, from a
+calculator's phonon table `ωph[ν, iq]` and q index `iq_kk[ik, ikq]` (see `G2Calculator`), for outer
+states at the k indices `iks_i` and inner states at `iks_f`. The table is deduplicated once and the
+per-q ids are gathered onto the pairs, so `ωvals[idx[ν, i, f]]` is the pair's frequency (to within
+`bin/2`), or the dropped-mode sentinel; the ids are numbered in table order.
+
+The one guard on the table's shape is here: a q index past the table is an `ArgumentError`, and a
+k index past `iq_kk` a `BoundsError` of the gather.
+"""
+function phonon_index(ωph::AbstractMatrix, iq_kk, iks_i, iks_f, omega_cutoff; bin = omega_bin)
+    nm, nq = size(ωph)
+    maximum(iq_kk; init = 0) <= nq || throw(ArgumentError(
+        "the q index reaches q point $(maximum(iq_kk)), the phonon table holds $nq"))
+    idq, ωvals = dedup_phonon_frequencies(ωph, omega_cutoff; bin)
+    idx = Array{Int32,3}(undef, nm, length(iks_i), length(iks_f))
+    gather_pair_table!(idx, idq, iq_kk, iks_i, iks_f)
+    idx, ωvals
+end

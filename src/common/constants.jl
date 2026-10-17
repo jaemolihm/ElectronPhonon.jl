@@ -3,6 +3,8 @@
 # Phonon modes with energy below omega_acoustic are ignored.
 # const omega_acoustic = 6.1992E-04 * unit_to_aru(:eV)
 const omega_acoustic = 0.01 * unit_to_aru(:meV)
+# Default bin (Ry) of dedup_phonon_frequencies; 0 groups by exact equality.
+const omega_bin = 1e-12
 const electron_degen_cutoff = 0.01 * unit_to_aru(:meV)
 
 # Alias
