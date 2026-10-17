@@ -2,9 +2,9 @@ using Test
 using LinearAlgebra
 using Random
 using ElectronPhonon
-using ElectronPhonon: spin_orbit_holstein_model, holstein_model
+using ElectronPhonon: rashba_holstein_model, holstein_model
 
-@testset "spin-orbit Holstein model" begin
+@testset "Rashba Holstein model" begin
     t, M, λ_int, α_R, ω₀, g₀, g₁, alat, ε₀ = 0.1, 0.3, 0.05, 0.02, 0.01, 0.02, 0.005, 5.0, 0.04
     params = (; t, M, λ_int, α_R, ω₀, g₀, g₁, alat, ε₀, verbose = false)
 
@@ -27,7 +27,7 @@ using ElectronPhonon: spin_orbit_holstein_model, holstein_model
     xqs = [Vec3(rand(2)..., 0.0) for _ in 1:5]
 
     @testset "bands, phonon and g2, epmat_outer_momentum = $outer" for outer in ("el", "ph")
-        model = spin_orbit_holstein_model(; params..., epmat_outer_momentum = outer)
+        model = rashba_holstein_model(; params..., epmat_outer_momentum = outer)
         @test model.nw == 4
         @test model.nmodes == 1
         @test model.dimension == 2
@@ -74,7 +74,7 @@ using ElectronPhonon: spin_orbit_holstein_model, holstein_model
     @testset "Kramers degeneracy iff α_R = 0" begin
         degenerate(e) = isapprox(e[1], e[2]; atol = 1e-12) && isapprox(e[3], e[4]; atol = 1e-12)
         for (α, expected) in ((0.0, true), (α_R, false))
-            model = spin_orbit_holstein_model(; params..., α_R = α)
+            model = rashba_holstein_model(; params..., α_R = α)
             el = compute_electron_states(model, Kpoints(xks), ["eigenvalue"])
             @test all(degenerate(el[ik].e) == expected for ik in eachindex(xks))
         end
@@ -82,7 +82,7 @@ using ElectronPhonon: spin_orbit_holstein_model, holstein_model
 
     @testset "symmetry: D4h × T for α_R = 0, C4v × T otherwise" begin
         for (α, nsym) in ((0.0, 32), (α_R, 16))
-            model = spin_orbit_holstein_model(; params..., α_R = α)
+            model = rashba_holstein_model(; params..., α_R = α)
             @test model.symmetry.nsym == nsym
             @test model.structure.symmetry.nsym == 32
             @test ElectronPhonon.check_group(model.symmetry)
@@ -98,7 +98,7 @@ using ElectronPhonon: spin_orbit_holstein_model, holstein_model
         # Energies cannot tell C4v × T from another 16-element group (T already maps k → -k),
         # so check the spin texture, an axial and T-odd vector:
         # ⟨σ⟩ₙ(Sk) = (-1)^{is_tr} det(R) R ⟨σ⟩ₙ(k). Bands are nondegenerate at generic k.
-        model = spin_orbit_holstein_model(; params...)
+        model = rashba_holstein_model(; params...)
         spin_ops = [kron(σ₀, σ) for σ in (σx, σy, σz)]
         function spin_texture(xk)
             el = compute_electron_states(model, Kpoints(xk), ["eigenvalue", "eigenvector"])[1]
@@ -116,8 +116,8 @@ using ElectronPhonon: spin_orbit_holstein_model, holstein_model
     end
 
     @testset "no SOC, no orbital splitting: four copies of the Holstein band" begin
-        model = spin_orbit_holstein_model(; t, M = 0.0, λ_int = 0.0, α_R = 0.0, ω₀, g₀,
-                                          alat, ε₀, verbose = false)
+        model = rashba_holstein_model(; t, M = 0.0, λ_int = 0.0, α_R = 0.0, ω₀, g₀,
+                                      alat, ε₀, verbose = false)
         holstein = holstein_model(; t, ω₀, g = g₀, alat, ε₀, dimension = 2, verbose = false)
         el = compute_electron_states(model, Kpoints(xks), ["eigenvalue"])
         el_ref = compute_electron_states(holstein, Kpoints(xks), ["eigenvalue"])

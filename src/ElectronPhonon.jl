@@ -100,7 +100,7 @@ include("postprocess/deformation_potential.jl")
 
 include("model_new.jl")
 include("models/holstein_model.jl")
-include("models/spin_orbit_holstein_model.jl")
+include("models/rashba_holstein_model.jl")
 include("calculator/AbstractCalculator.jl")
 include("calculator/tiled_device_output.jl")
 include("calculator/g2_calculator.jl")

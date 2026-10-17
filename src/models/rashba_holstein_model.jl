@@ -5,10 +5,10 @@
 # separate builder because the electron part (4×4 spinor Hamiltonian, symmetry group of the
 # Hamiltonian smaller than the lattice's) has nothing in common with the scalar Holstein band.
 
-public spin_orbit_holstein_model
+public rashba_holstein_model
 
 """
-    spin_orbit_holstein_model(; t, M, λ_int, α_R, ω₀, g₀, g₁ = 0.0, mass = 1.0, alat = 1.0,
+    rashba_holstein_model(; t, M, λ_int, α_R, ω₀, g₀, g₁ = 0.0, mass = 1.0, alat = 1.0,
                               ε₀ = 0.0, epmat_outer_momentum = "el", verbose = true) :: Model
 
 Build a [`Model`](@ref) for a two-orbital, spin-1/2 tight-binding model on a square lattice
@@ -56,7 +56,7 @@ Both orbitals are taken even under `C4v`. `el_sym` is `nothing`: the operations 
 and band energies, but Bloch states are never rotated as spinors, so spin-resolved quantities
 must be computed on the full Brillouin zone.
 """
-function spin_orbit_holstein_model(;
+function rashba_holstein_model(;
         t,
         M,
         λ_int,
@@ -82,7 +82,7 @@ function spin_orbit_holstein_model(;
     mass, alat, ε₀ = FT(mass), FT(alat), FT(ε₀)
 
     if verbose
-        println(@sprintf("Spin-orbit Holstein model: square lattice, alat = %g bohr", alat))
+        println(@sprintf("Rashba Holstein model: square lattice, alat = %g bohr", alat))
         println(@sprintf("  t = %g Ry, ε₀ = %g Ry, M = %g Ry, λ_int = %g Ry, α_R = %g Ry",
                          t, ε₀, M, λ_int, α_R))
         println(@sprintf("  ω₀ = %g Ry, mass = %g, g₀ = %g Ry, g₁ = %g Ry", ω₀, mass, g₀, g₁))
