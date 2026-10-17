@@ -272,7 +272,8 @@ function run_calculator!(calc::BoltzmannCalculator{FT}, block::EPBlock{OuterKLoo
     (; ep, phs, ik, ikq) = block
     dev = calc.dev
     nmodes, npairs = size(ep, 3), size(ep, 4)
-    g2 = view(dev.g2, :, :, :, 1:npairs, ctx.chunk)
+    # The block's extents: a block may be narrower than the containers' box.
+    g2 = reshape_buffer_view(view(dev.g2, :, :, :, :, ctx.chunk), size(ep)...)
     g2 .= abs2.(ep) .* inv.(2 .* reshape(phs.e, 1, 1, nmodes, npairs))   # as `epstate_set_g2!`
     tile_dev = calc.tile_dev
     bte_window_accumulate!(view(dev.Sₒ, :, :, ctx.chunk), device_array(tile_dev, 1), g2, phs.e,
