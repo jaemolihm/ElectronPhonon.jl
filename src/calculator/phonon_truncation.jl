@@ -150,10 +150,9 @@ function _setup_phonons(order, model::Model{FT}, kpts, kqpts, qpts, els_k, els_k
     # An empty container with the run's modes: the engine fills one per outer batch.
     phs = BatchedPhononState(backend, nmodes_kept, 0, ph_qty; FT, ndisp = model.nmodes)
     # The q of each batch's kept pairs, found before the widths are planned so that the plan holds the
-    # largest batch's phonons and their solve. Without the inference barrier (cause unknown), the GPU
-    # BTE test did not finish in 20 min (test_gpu_boltzmann_calculator.jl on an H100).
+    # largest batch's phonons and their solve.
     n_outer_batch = _outer_batch_width(order, backend, options.n_outer_batch, kpts.n)
-    iqs_per_batch = Base.inferencebarrier(_select_qs_per_outer_batch)(backend, kpts, kqpts, qpts,
+    iqs_per_batch = _select_qs_per_outer_batch(backend, kpts, kqpts, qpts,
         els_k, els_kq, ω_kept, n_outer_batch, energy_conservation_tol)::Vector{Vector{Int32}}
     reclaim_device_memory(backend)
     (; phs, phonon_batches = (; ω = ω_kept, iqs_per_batch, nq = qpts.n), return_phs = false)
