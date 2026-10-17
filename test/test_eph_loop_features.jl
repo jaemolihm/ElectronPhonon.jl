@@ -42,7 +42,7 @@ isdefined(@__MODULE__, :eph_reference) || include("eph_reference_loop.jl")
     # Energy conservation: an `energy_conservation_tol = 10σ` cut drops only pairs whose Gaussian-smeared BTE
     # contribution is below exp(-100), so Sₒ and Sᵢ match the uncut run, and it does drop pairs: the
     # pair recorder running alongside sees fewer of them. Measured 0.0 and 1.1e-45 relative on the
-    # per-point loop (Pb 6³, ±0.5 eV, σ = 20 meV).
+    # per-point loop (Pb 6³, ±0.5 eV, σ = 20 meV). On a device the pairs are selected there.
     @testset "energy conservation" begin
         model = _load_model_from_artifacts("pb")
         eV, K, meV = unit_to_aru(:eV), unit_to_aru(:K), unit_to_aru(:meV)
@@ -55,12 +55,15 @@ isdefined(@__MODULE__, :eph_reference) || include("eph_reference_loop.jl")
             run_eph_over_k_and_kq(model, (6, 6, 6), (6, 6, 6); calculators = [c, rec],
                 symmetry = nothing, window_k = window, window_kq = window,
                 progress_print_step = 10^9, verbosity = 0, kwargs...); (c, rec))
-        c_all, rec_all = runbte()
-        @test maximum(stack(c_all.Sₒ)) > 0 && length(rec_all.g2abs) > 0
-        @test ((c_cut, rec_cut) = runbte(; energy_conservation_tol = 10σ);
-            length(rec_cut.g2abs) < length(rec_all.g2abs) &&
-            isapprox(stack(c_cut.Sₒ), stack(c_all.Sₒ); rtol = 1e-12) &&
-            isapprox(stack(c_cut.Sᵢ), stack(c_all.Sᵢ); rtol = 1e-12))
+        backends = EPH_FEATURES_GPU_AVAILABLE ? Any[CPUBackend(), gpu_backend()] : Any[CPUBackend()]
+        for backend in backends
+            c_all, rec_all = runbte(; backend)
+            @test maximum(stack(c_all.Sₒ)) > 0 && length(rec_all.g2abs) > 0
+            @test ((c_cut, rec_cut) = runbte(; backend, energy_conservation_tol = 10σ);
+                length(rec_cut.g2abs) < length(rec_all.g2abs) &&
+                isapprox(stack(c_cut.Sₒ), stack(c_all.Sₒ); rtol = 1e-12) &&
+                isapprox(stack(c_cut.Sᵢ), stack(c_all.Sᵢ); rtol = 1e-12))
+        end
     end
 
     # Energy conservation on both orders, outer batch > 1, against the reference double loop with
@@ -80,10 +83,13 @@ isdefined(@__MODULE__, :eph_reference) || include("eph_reference_loop.jl")
         @test 0 < length(ref_cut.g2abs) < length(ref.g2abs)
         common = (; window_k = window, window_kq = window, energy_conservation_tol = tol,
                   n_outer_batch = 7, n_inner_tile = 30, nchunks_threads = 4, verbosity = 0)
-        for order in ("outer k", "outer q")
+        runs = Any[("outer k", CPUBackend()), ("outer q", CPUBackend())]
+        EPH_FEATURES_GPU_AVAILABLE && push!(runs, ("outer k", gpu_backend()))
+        for (order, backend) in runs
             rec = _PairRecorder()
             order == "outer k" ?
-                run_eph_over_k_and_kq(model_el, grid, grid; calculators = [rec], symmetry = nothing, common...) :
+                run_eph_over_k_and_kq(model_el, grid, grid; calculators = [rec], symmetry = nothing,
+                    backend, common...) :
                 run_eph_over_q_and_k(model_ph, grid, grid; calculators = [rec], symmetry = nothing, common...)
             dev = compare_with_reference(ref_cut, rec)
             @test keys(rec.g2abs) == keys(ref_cut.g2abs)

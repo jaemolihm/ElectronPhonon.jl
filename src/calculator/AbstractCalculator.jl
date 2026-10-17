@@ -117,8 +117,8 @@ Fields (pair axis `j`):
 - `xkmat` :: under `OuterQLoop`, `xk` as a `(3, nb)` matrix on the run's backend (a view of `xk` on
   the CPU); `nothing` under `OuterKLoop`.
 - `ik`, `ikq`, `iq` :: indices into the run's point sets: under `OuterKLoop` `ik::Int`, `ikq` into
-  the k+q container (a `UnitRange`, or a host vector when pairs were dropped) and `iq` a device
-  vector into the q set, or under `run_eph_over_k_and_q` `ikq === nothing` and `iq` the q tile (a
+  the k+q container (a `UnitRange`, or a vector on the run's backend when pairs were dropped) and
+  `iq` a device vector into the q set, or under `run_eph_over_k_and_q` `ikq === nothing` and `iq` the q tile (a
   `UnitRange`, or a host vector when pairs were dropped); under `OuterQLoop` `iq::Int`, `ik` into the k set (a `UnitRange` or a host
   vector) and `ikq` into the precomputed k+q container, or `nothing` when k+q is solved per tile.
 """
