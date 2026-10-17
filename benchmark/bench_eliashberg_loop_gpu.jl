@@ -68,7 +68,7 @@ function main()
         else
             tc = @elapsed (cc = run_cpu(g, window))
             relerr = maximum(abs, cc.g2 .- cg.g2) / maximum(abs, cc.g2)
-            @printf "%2d^3 : n_i=%-7d  CPU %8.2f s   GPU %8.2f s   speedup %5.2fx   relerr(g2)=%.1e  ωq=%s\n" g size(cc.g2,2) tc tg tc/tg relerr (cc.ωq == cg.ωq)
+            @printf "%2d^3 : n_i=%-7d  CPU %8.2f s   GPU %8.2f s   speedup %5.2fx   relerr(g2)=%.1e  ωph=%s\n" g size(cc.g2,2) tc tg tc/tg relerr (cc.ωph == cg.ωph)
         end
     end
 end

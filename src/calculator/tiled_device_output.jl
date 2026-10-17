@@ -5,7 +5,8 @@
 # the lazy device allocation from `ctx.backend`, the per-batch zeroing of the active tile region, and the
 # per-tile device→host download (a contiguous copy that avoids scalar-indexing strided device→host
 # copies). The calculator declares the output shape and which axis is tiled over outer-k states — any
-# dims, any tiled-axis position — and one instance holds N arrays of identical tiling (e.g. g2 and ωq).
+# dims, any tiled-axis position — and one instance holds N arrays of identical tiling (e.g. Re and
+# Im of ep).
 #
 # Strictly opt-in and composable: the scatter itself stays calculator-side (each calculator calls its
 # own `eph_window_scatter!` / `bte_window_accumulate!` into `device_array(t, k)` using `tile_offset`

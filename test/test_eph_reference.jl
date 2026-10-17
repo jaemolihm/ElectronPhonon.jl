@@ -80,6 +80,46 @@ include("eph_reference_loop.jl")
     end
 end
 
+# The outer-k loop on half-step shifted grids, given as prebuilt selections: k and k+q shifted alike
+# (unshifted q grid) and k alone (shifted q grid). The pairs are keyed on the doubled grid, where
+# the shifted nodes are integers. A wrong q index would hand a pair another q's phonons and e-ph
+# matrix, so `ω_dev` and `g2_reldev` both catch it; `G2Calculator`'s q index is checked against
+# `xk_to_ik` on the same run.
+@testset "outer k on shifted grids against the reference double loop" begin
+    model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
+    eV = unit_to_aru(:eV)
+    e_F = 11.68eV
+    window = (e_F - 0.5eV, e_F + 3eV)
+    grid = (6, 6, 6)
+    keygrid = 2 .* grid
+    half = 1 ./ (2 .* grid)
+    common = (; window_k = window, window_kq = window, progress_print_step = 10^9, verbosity = 0,
+              symmetry = nothing)
+    for (shift_k, shift_kq) in ((half, half), (half, (0, 0, 0)))
+        sel_k = filter_electron_states(grid, model.nw, model.el_ham, window; shift = shift_k)
+        sel_kq = filter_electron_states(grid, model.nw, model.el_ham, window; shift = shift_kq)
+        ref = eph_reference(model, GridKpoints(kpoints_grid(grid; shift = shift_k)),
+                            GridKpoints(kpoints_grid(grid; shift = shift_kq)), window, window;
+                            ngrid = keygrid)
+        @test !isempty(ref.g2abs)
+        arms = Any[("CPU", (; nchunks_threads = 4))]
+        EPH_REFERENCE_GPU_AVAILABLE && push!(arms, ("GPU", (; backend = gpu_backend())))
+        for (arm, kw) in arms
+            rec = _PairRecorder(keygrid)
+            c = ElectronPhonon.G2Calculator{Float64}(; nmodes = model.nmodes)
+            run_eph_over_k_and_kq(model, sel_k, sel_kq; calculators = [rec, c], common..., kw...)
+            dev = compare_with_reference(ref, rec)
+            @info "shifted outer k vs reference" shift_k shift_kq arm dev
+            @test dev.nmissing == 0 && dev.nextra == 0
+            @test dev.g2_reldev < 1e-11
+            @test dev.ω_dev < 1e-10
+            qpts = ElectronPhonon.combine_kpoint_grids(sel_kq.kpts, sel_k.kpts, -, grid)
+            @test c.iq_kk == [xk_to_ik(xkq - xk, qpts) for xk in sel_k.kpts.vectors,
+                                                            xkq in sel_kq.kpts.vectors]
+        end
+    end
+end
+
 # `run_eph_over_k_and_q` off the commensurate grids: k on a band path on no grid with q on a grid,
 # and k on a grid with q on a path (a q list with no grid). The pairs are keyed on coordinates
 # rounded to 1e-6 (`keygrid`), which both sides compute as the same `x_k + x_q`.
