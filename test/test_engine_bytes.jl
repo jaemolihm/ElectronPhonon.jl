@@ -55,8 +55,8 @@ end
             st = _setup_states(order, model, grid, grid, options)
             # Phonons per outer batch: the largest batch's q, and the engine's phonon solve.
             phonon_batches = st.phonon_batches === nothing ? nothing :
-                (; ω = st.phonon_batches.ω, nq = st.qpts.n, iqs_per_batch = _select_qs_per_outer_batch(
-                    backend, st.kpts, st.kqpts, st.qpts, st.els_k, st.els_kq, st.phonon_batches.ω, nb, tol))
+                (; ω_kept = st.phonon_batches.ω_kept, iqs_per_batch = _select_qs_per_outer_batch(
+                    backend, st.kpts, st.kqpts, st.qpts, st.els_k, st.els_kq, st.phonon_batches.ω_kept, nb, tol))
             nbk = st.els_k.nband_max
             nbkq = st.els_kq === nothing ? model.nw : st.els_kq.nband_max
             common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1,
@@ -86,7 +86,7 @@ end
             # selection) are built: their bytes are already unavailable in free_bytes, so the engine
             # budget counts newly allocated scratch, not those aliases.
             held = _device_bytes(eng) - _device_bytes((st.els_k, st.els_kq, st.phs,
-                                                   st.phonon_batches === nothing ? nothing : st.phonon_batches.ω))
+                                                   st.phonon_batches === nothing ? nothing : st.phonon_batches.ω_kept))
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
             @info "engine_bytes" order mom dg tol per_batch held transient counted ratio = (held + transient) / counted
             # Everything the engine holds and its stage 1 allocates is counted (0.925-1.000 measured,

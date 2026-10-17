@@ -553,7 +553,7 @@ function _setup_states(order, model::Model, kpts_input, second_input, options)
     end
 
     (; phs, phonon_batches, return_phs) = _setup_phonons(order, model, kpts, kqpts, qpts, els_k, els_kq,
-                                                        options)
+                                                        options, fourier_mode)
 
     if verbosity > 0 && mpi_isroot()
         @info "Number of k points = $(kpts.n)"

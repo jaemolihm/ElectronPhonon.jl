@@ -42,22 +42,22 @@ isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_fr
     plan(; free, nkq = 10, n_inner_tile = nothing, force_per_batch = false, table_bytes = 100) =
         _phonon_storage_plan(; table_bytes, committed = 50, per_pair = 7, free, nkq, n_inner_tile,
                              force_per_batch)
-    @test plan(; free = 250) == (; storage = :resident, min_tile = 10, needed = 250)
-    @test plan(; free = 249).storage == :per_batch && plan(; free = 249).needed == 250
+    @test plan(; free = 250) == (; per_batch = false, min_tile = 10, needed = 250)
+    @test plan(; free = 249).per_batch && plan(; free = 249).needed == 250
     # The default tile is the preferred width, and a user tile replaces it.
     @test plan(; free = 10^6, nkq = 10^7).min_tile == GPU_PHONONS_RESIDENT_MIN_TILE
-    @test plan(; free = 190, nkq = 10^7).storage == :per_batch
+    @test plan(; free = 190, nkq = 10^7).per_batch
     @test plan(; free = 190, nkq = 10^7, n_inner_tile = 4) ==
-          (; storage = :resident, min_tile = 4, needed = 190)
+          (; per_batch = false, min_tile = 4, needed = 190)
     # The override sets the storage, not the bytes needed.
     @test plan(; free = 10^6, force_per_batch = true) ==
-          (; storage = :per_batch, min_tile = 10, needed = 250)
+          (; per_batch = true, min_tile = 10, needed = 250)
     # Truncation decides the storage: all modes of all q do not fit, the two kept do.
     nq, nm = 1000, 3
     table(nk) = nq * _phonon_state_bytes(Float64, nk, (:e, :u); ndisp = nm)
     free = 50 + cld(7 * 10 * 10, 7) + table(2)
-    @test plan(; free, table_bytes = table(nm)).storage == :per_batch
-    @test plan(; free, table_bytes = table(_kept_phonon_modes(ω, Ω))).storage == :resident
+    @test plan(; free, table_bytes = table(nm)).per_batch
+    @test plan(; free, table_bytes = table(_kept_phonon_modes(ω, Ω))).per_batch == false
 end
 
 # Does not allow the phonon modes to be truncated (the default).
@@ -118,7 +118,7 @@ struct _NoTruncation <: AbstractCalculator end
         iqs_per_batch = _select_qs_per_outer_batch(backend, st.kpts, st.kqpts, st.qpts, st.els_k,
             st.els_kq, phs_part.e, 5, tol)
         phs_empty = ElectronPhonon.BatchedPhononState(backend, nkept, 0, [:e, :u]; ndisp = model.nmodes)
-        phonon_batches = (; ω = phs_part.e, iqs_per_batch, nq = st.qpts.n)
+        phonon_batches = (; ω_kept = phs_part.e, iqs_per_batch)
         eng_batch = OuterKEngine(model, backend, st.els_k, st.els_kq, phs_empty, [:e, :u], [:e, :u];
             energy_conservation_tol = tol, phonon_batches, common...)
         # The q sets are those of the engine's outer batches.
@@ -214,7 +214,7 @@ end
             inner_loop_kq = true, backend, symmetry = nothing, window_k = window, window_kq,
             energy_conservation_tol = 6σ, _force_phonons_per_batch = true, verbosity = 0))
         iqs_per_batch = _select_qs_per_outer_batch(backend, st.kpts, st.kqpts, st.qpts, st.els_k,
-            st.els_kq, st.phonon_batches.ω, 1, 6σ)
+            st.els_kq, st.phonon_batches.ω_kept, 1, 6σ)
         @test any(isempty, iqs_per_batch) && !all(isempty, iqs_per_batch)
         c_all, _ = runbte(false; window_kq, n_outer_batch = 1)
         c_per_batch, _ = runbte(true; window_kq, n_outer_batch = 1)

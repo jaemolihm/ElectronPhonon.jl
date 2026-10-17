@@ -148,13 +148,13 @@ end
     PhononsPerBatch
 
 The phonons of an outer-k run built per outer batch, for the q of the batch's kept pairs only:
-`ω_all` the kept modes' frequencies of every q, which select the pairs; `iqs_per_batch[b]` the q of
+`ω_kept` the kept modes' frequencies of every q, which select the pairs; `iqs_per_batch[b]` the q of
 batch b's kept pairs (`_select_qs_per_outer_batch`); `phs_capacity` the storage of the largest
 batch's phonons; `iq_to_ph_dev` the Int32 index of each q in the current batch's phonons (0: none)
 and `iqs_ph_dev` that of a tile's kept pairs.
 """
 struct PhononsPerBatch{W, P, VQ, VI}
-    ω_all         :: W
+    ω_kept         :: W
     iqs_per_batch :: Vector{Vector{Int32}}
     phs_capacity  :: P
     iq_to_ph_dev  :: VQ
@@ -347,12 +347,37 @@ end
 
 # ---- OuterKEngine ----------------------------------------------------------------------------
 
+# The device bytes the phonons per outer batch add to the outer-k engine (`engine_bytes`): the
+# storage of the largest batch's phonons, the q index and upload, and the transients of one batch's
+# phonon solve (`compute_phonon_states_batched` into the storage) in `persistent`; the pair's
+# `iqs_ph_dev` entry in `per_pair`.
+function _phonon_batches_bytes(model::Model{FT}, backend, phonon_batches) where {FT}
+    phonon_batches === nothing && return (; persistent = 0, per_pair = 0)
+    (; nmodes) = model
+    cx, rl = sizeof(Complex{FT}), sizeof(FT)
+    nq_max = maximum(length, phonon_batches.iqs_per_batch; init = 0)
+    # The solve's transients: the dynamical matrices with their R vectors, the interpolator's Fourier
+    # phase and output, the masses, and per Fourier block the D(q) stack, its eigenvalues and the
+    # staged q.
+    ph_solve = if nq_max == 0
+        0
+    else
+        nr_ph, ndata_ph = length(model.ph_dyn.irvec), model.ph_dyn.ndata
+        nblock = _default_batch_size(backend, nr_ph, ndata_ph; nk_hint = nq_max)
+        cx * length(model.ph_dyn.op_r) + rl * 3nr_ph + cx * nr_ph * nblock + cx * ndata_ph + rl * nmodes +
+            (cx * ndata_ph + rl * nmodes + rl * 3) * nblock
+    end
+    persistent = _phonon_state_bytes(FT, size(phonon_batches.ω_kept, 1), (:e, :u); ndisp = nmodes) * nq_max +
+        sizeof(Int32) * (size(phonon_batches.ω_kept, 2) + nq_max) + ph_solve
+    (; persistent, per_pair = sizeof(Int))
+end
+
 function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband_max_kq, nk, nkq,
         el_qty, ph_qty, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
         device_pair_selection = false, nq_grid = 0, nmodes_kept = model.nmodes,
         phonon_batches = nothing, backend = nothing) where {FT}
     (; nw, nmodes) = model
-    batch_ph = _phonon_batches_bytes(model, backend, phonon_batches, nmodes_kept)
+    batch_ph = _phonon_batches_bytes(model, backend, phonon_batches)
     cx, rl, iz = sizeof(Complex{FT}), sizeof(FT), sizeof(Int)
     nr_p = length(model.epmat.irvec_next)
     nr_e = length(model.epmat.irvec)
@@ -420,10 +445,9 @@ independent thread workspaces. `el_qty` / `ph_qty` select stored state fields.
 band window. `phs` may hold only the lowest `phs.nmodes` modes (`size(phs.u, 1) == model.nmodes`
 displacements), and the blocks then carry that many. `covariant_derivative_of_g` allocates the three derivative
 components; `eph_phonon_basis` selects eigenmode or cartesian phonons.
-With `phonon_batches = (; ω, iqs_per_batch, nq)` (`_setup_phonons`: the kept modes' frequencies of
+With `phonon_batches = (; ω_kept, iqs_per_batch)` (`_setup_phonons`: the kept modes' frequencies of
 every q, and the q of each outer batch), `stage1!` builds the phonons of each outer batch's q and
-`phs` is
-an empty container with the run's modes; this needs the device pair selection.
+`phs` is an empty container with the run's modes; this needs the device pair selection.
 """
 function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
         inner_loop_kq = els_kq !== nothing, n_outer_batch, n_inner_tile, nchunks,
@@ -482,7 +506,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     phonons_per_batch = if phonon_batches !== nothing
         # One storage for every batch, made before the loop's transients fragment the pool.
         nq_max = maximum(length, phonon_batches.iqs_per_batch; init = 0)
-        PhononsPerBatch(phonon_batches.ω, phonon_batches.iqs_per_batch,
+        PhononsPerBatch(phonon_batches.ω_kept, phonon_batches.iqs_per_batch,
             BatchedPhononState(backend, phs.nmodes, nq_max, [:e, :u]; FT, ndisp = nmodes),
             alloc(backend, Int32, qpts.n), alloc(backend, Int, n_inner_tile))
     end
@@ -714,7 +738,7 @@ end
         else
             # On the device. The kept pairs' q indices come back for the block's `xq`.
             (; ck, pair_selection, phonons_per_batch) = eng_fields
-            ω_q = phonons_per_batch === nothing ? phs.e : phonons_per_batch.ω_all
+            ω_q = phonons_per_batch === nothing ? phs.e : phonons_per_batch.ω_kept
             n_kept = _select_kqpairs_on_device!(tile_workspace.iqs_dev, pair_selection,
                 (ck[1, ik], ck[2, ik], ck[3, ik]), eng_fields.qpts.ngrid, els_k, els_kq,
                 first(ikqs_tile), n_tile, ω_q, tol)
