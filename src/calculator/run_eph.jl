@@ -9,8 +9,8 @@ Sweep the outer k points and, for each, the inner k+q points (on a grid commensu
 grid), handing each calculator the e-ph coupling as an [`EPBlock`](@ref)`{OuterKLoop}`: one outer k
 with a tile of k+q points. `kpts` and `kqpts` are grids: a grid size, a k-point set on a grid or a
 prebuilt `FilteredBandStates` of one (the phonons are built on the q grid the two span). Returns `(; kpts, qpts, els_k, els_kq, phs)`, the run's state containers
-(`BatchedElectronState`, `BatchedPhononState`); `phs = nothing` when the phonons were built per
-outer batch (below).
+(`BatchedElectronState`, `BatchedPhononState`); `phs = nothing` when the run may truncate the
+phonon modes (below).
 
 Requires a model loaded with `epmat_outer_momentum = "el"` so stage 1 contracts R_e.
 
@@ -31,10 +31,11 @@ Keywords:
   `run_eph_over_k_and_kq` takes a finite tolerance, and when every calculator
   `allows_phonon_mode_truncation` and the phonons of all q would take more than half of the free
   device memory, it also drops the modes with `|ω|` above the energy range of the resident states
-  plus the tolerance: the returned `phs` and the blocks then hold the lowest `phs.nmodes` modes.
-  When even those do not fit beside the loop's buffers at an inner tile of
-  `GPU_PHONONS_RESIDENT_MIN_TILE` points (or `n_inner_tile`), the phonons are built per outer
-  batch, for the q of its kept pairs, and the returned `phs` is `nothing`.
+  plus the tolerance: the blocks then hold the lowest `phs.nmodes` modes. When even those do not
+  fit beside the loop's buffers at an inner tile of `GPU_PHONONS_RESIDENT_MIN_TILE` points (or
+  `n_inner_tile`), the phonons are built per outer batch, for the q of its kept pairs. Since that
+  choice depends on the free device memory, such a run returns `phs = nothing` whenever it may
+  truncate, whatever it chose.
 * `covariant_derivative_of_g = false` — also compute the covariant derivative `block.dg`.
 * `eph_phonon_basis = :eigenmode` — or `:cartesian` (identity phonon rotation).
 * `fourier_mode = "gridopt"` — or `"normal"`: the interpolation of the setup-time state solves on a
@@ -179,7 +180,8 @@ function _allocate_engine(order, model, states, options)
 
     # Phonons per outer batch: the q of each batch's kept pairs, found before the widths are planned
     # so that the plan holds the largest batch's phonons and their solve.
-    # Without the inference barrier (cause unknown), inferring the GPU BTE test did not finish in 11 min.
+    # Without the inference barrier (cause unknown), the GPU BTE test did not finish in 20 min
+    # (test_gpu_boltzmann_calculator.jl on an H100).
     iqs_per_batch = if ω_all !== nothing
         iqs_per_batch = Base.inferencebarrier(_select_qs_per_outer_batch)(backend, kpts, kqpts, qpts,
             els_k, els_kq, ω_all, _outer_batch_width(order, backend, options.n_outer_batch, n_outer),
@@ -188,6 +190,7 @@ function _allocate_engine(order, model, states, options)
         iqs_per_batch
     end
 
+    phonon_u_by_index = _reads_phonon_u_by_index(backend, model, eph_phonon_basis, calculators, inner_loop_kq)
     # The widths the run uses, from the requested ones (`nothing`: the defaults).
     (; n_outer_batch, n_inner_tile, committed, bytes) = _plan_widths(order, model, backend, calculators;
         n_outer, n_inner, nk = kpts.n, nkq = order isa OuterKLoop ? inner_pts.n : 0, nchunks,
@@ -195,7 +198,8 @@ function _allocate_engine(order, model, states, options)
         inner_loop_kq, options.n_outer_batch, options.n_inner_tile, nband_max_k = els_k.nband_max,
         nband_max_kq = els_kq === nothing ? nw : els_kq.nband_max, els_k, els_kq, phs, el_qty, ph_qty,
         precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, nq = qpts.n,
-        nq_per_batch = iqs_per_batch === nothing ? nothing : maximum(length, iqs_per_batch; init = 0))
+        nq_per_batch = iqs_per_batch === nothing ? nothing : maximum(length, iqs_per_batch; init = 0),
+        phonon_u_by_index)
     if verbosity > 0 && mpi_isroot()
         @info "e-ph loop: committed = $(round(committed / 1e9, digits = 2)) GB, " *
               "$(round(bytes.per_pair / 1e3, digits = 1)) kB per pair; outer batch = $n_outer_batch, " *
@@ -207,8 +211,7 @@ function _allocate_engine(order, model, states, options)
         eng = OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
             n_outer_batch, n_inner_tile, nchunks,
             covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation_tol,
-            ω_all, iqs_per_batch, phonon_u_by_index = _reads_phonon_u_by_index(backend, model,
-                eph_phonon_basis, calculators, inner_loop_kq))
+            ω_all, iqs_per_batch, phonon_u_by_index)
     else
         eng = OuterQEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
             n_outer_batch, n_inner_tile, nchunks, eph_phonon_basis,
@@ -307,8 +310,8 @@ function _run_eph(order::LoopTag, model::Model, kpts_input, second_input; calcul
     for calculator in calculators
         postprocess_calculator!(calculator; eng.qpts, symmetry)
     end
-    # The phonons of every q, or none when they were built per outer batch.
-    phs = eng isa OuterKEngine && eng.phonons_per_batch !== nothing ? nothing : eng.phs
+    # No phonons from a run that may truncate them: their modes and storage depend on the free memory.
+    phs = _may_truncate_phonon_modes(order, model, eng.els_k, eng.els_kq, options) ? nothing : eng.phs
     (; eng.kpts, eng.qpts, eng.els_k, eng.els_kq, phs)
 end
 
@@ -334,7 +337,8 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
         nq_grid = 0, energy_conservation_tol = Inf, n_outer_batch, n_inner_tile, nband_max_k,
         nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
         precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
-        nq = nothing, nq_per_batch = nothing)
+        nq = nothing, nq_per_batch = nothing, phonon_u_by_index =
+            _reads_phonon_u_by_index(backend, model, eph_phonon_basis, calculators, inner_loop_kq))
     (; nw) = model
     # The modes of the run: `phs` may hold only the lowest ones (`_setup_states`).
     nmodes = phs === nothing ? model.nmodes : phs.nmodes
@@ -342,10 +346,9 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
     bytes = order isa OuterKLoop ?
         engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk, nkq, el_qty, ph_qty,
             covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
-            device_pair_selection = inner_loop_kq && !(backend isa CPUBackend) &&
-                isfinite(energy_conservation_tol), nq_grid, nmodes_kept = nmodes,
-            phonon_u_by_index = _reads_phonon_u_by_index(backend, model, eph_phonon_basis, calculators,
-                                                         inner_loop_kq), nq, nq_per_batch, backend) :
+            device_pair_selection = _uses_device_pair_selection(backend, inner_loop_kq,
+                energy_conservation_tol), nq_grid, nmodes_kept = nmodes, phonon_u_by_index, nq,
+            nq_per_batch, backend) :
         engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk, el_qty, ph_qty,
             precompute_el_kq, eph_phonon_basis)
     for c in calculators
@@ -662,8 +665,8 @@ _needed_bytes_at_tile(committed, per_pair, n_tile) = committed + cld(per_pair * 
 function _may_truncate_phonon_modes(order, model, els_k, els_kq, options)
     (; inner_loop_kq, energy_conservation_tol, backend, eph_phonon_basis, ph_qty, ph_eigenpairs,
        calculators) = options
-    order isa OuterKLoop && inner_loop_kq && isfinite(energy_conservation_tol) &&
-        !(backend isa CPUBackend) && eph_phonon_basis == :eigenmode && issubset(ph_qty, (:e, :u)) &&
+    order isa OuterKLoop && _uses_device_pair_selection(backend, inner_loop_kq, energy_conservation_tol) &&
+        eph_phonon_basis == :eigenmode && issubset(ph_qty, (:e, :u)) &&
         !model.polar_phonon.use && ph_eigenpairs === nothing && els_k.nk > 0 && els_kq.nk > 0 &&
         all(allows_phonon_mode_truncation, calculators)
 end

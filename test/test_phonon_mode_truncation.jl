@@ -173,6 +173,17 @@ struct _NoTruncation <: AbstractCalculator end
         @test maxdev <= 1e-12 * scale
         @test nblocks_tol > 0 && nmismatch == 0
         @test maxdev_batch <= 1e-12 * scale
+        # A kept pair whose q the batch's phonons lack is an error, not an index 0 in the rotation.
+        iqs_missing = [iqs[2:end] for iqs in iqs_per_batch]
+        eng_missing = OuterKEngine(model, backend, st.els_k, st.els_kq, phs_empty, [:e, :u], [:e, :u];
+            energy_conservation_tol = tol, ω_all = phs_part.e, iqs_per_batch = iqs_missing, common...)
+        @test !isempty(iqs_per_batch[1])
+        @test_throws "not among its outer batch's phonons" begin
+            stage1!(eng_missing, 1:5)
+            for ik in 1:5, tile in Iterators.partition(1:st.kqpts.n, 13)
+                stage2!(eng_missing, ik, tile)
+            end
+        end
 
         # Every calculator must allow the truncation, which forced per-batch phonons need.
         eV = unit_to_aru(:eV); μ = 11.68eV
@@ -234,7 +245,7 @@ end
                 phonon_storage, progress_print_step = 10^9, verbosity = 0); (c, out))
         c_all, out_all = runbte(:resident)
         c_per_batch, out_per_batch = runbte(:per_batch)
-        @test out_all.phs isa BatchedPhononState && out_per_batch.phs === nothing
+        @test out_all.phs === nothing && out_per_batch.phs === nothing
         @test maximum(stack(c_all.Sₒ)) > 0
         @test isapprox(stack(c_per_batch.Sᵢ), stack(c_all.Sᵢ); rtol = 1e-12)
         @test isapprox(stack(c_per_batch.Sₒ), stack(c_all.Sₒ); rtol = 1e-12)
@@ -252,5 +263,41 @@ end
         @test maximum(stack(c_all.Sₒ)) > 0
         @test isapprox(stack(c_per_batch.Sᵢ), stack(c_all.Sᵢ); rtol = 1e-12)
         @test isapprox(stack(c_per_batch.Sₒ), stack(c_all.Sₒ); rtol = 1e-12)
+    end
+end
+
+# End to end with fewer kept modes than nmodes: cubicBN without the polar terms, whose optical
+# branches (113-134 meV) lie above Ω = 80 meV of conduction-band window + tol = 30 meV at every q, so
+# 3 of the 6 modes are kept. The truncated run (per outer batch) gives the BTE kernel of the
+# untruncated one (resident, same tol) and of tol = Inf.
+@testset "phonon mode truncation end to end (GPU)" begin
+    if MODE_TRUNCATION_GPU
+        model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "el")
+        model.polar_phonon = model.polar_eph = ElectronPhonon.Polar(nothing)
+        model.use_polar_dipole = false
+        K, meV = unit_to_aru(:K), unit_to_aru(:meV)
+        cbm = 15.338470435789237 * unit_to_aru(:eV)   # at X, on the grid
+        σ = 5meV; window = (cbm - 5meV, cbm + 75meV); grid = (40, 40, 40)
+        backend = ElectronPhonon.gpu_backend()
+        newcalc() = BoltzmannCalculator{Float64}(; occ = ElectronOccupationParams(; Tlist = [300.0K],
+                nlist = 1.0, μlist = cbm, volume = model.volume, nelec = 0, spin_degeneracy = 2,
+                occ_type = :FermiDirac),
+            smearing_list = [SmearingType(:Gaussian, σ)], occupation_method = 5)
+        kwargs(phonon_storage, tol) = (; symmetry = nothing, window_k = window, window_kq = window,
+            energy_conservation_tol = tol, backend, phonon_storage, verbosity = 0)
+        st = _setup_states(OuterKLoop(), model, grid, grid, _run_options(model; inner_loop_kq = true,
+            calculators = [newcalc()], kwargs(:per_batch, 6σ)...))
+        @test st.phs.nmodes == 3 < model.nmodes
+        runbte(phonon_storage, tol) = (c = newcalc(); ElectronPhonon.run_eph_over_k_and_kq(model, grid,
+            grid; calculators = [c], progress_print_step = 10^9, kwargs(phonon_storage, tol)...); c)
+        c_trunc, c_full, c_inf = runbte(:per_batch, 6σ), runbte(:resident, 6σ), runbte(:auto, Inf)
+        Sᵢ_inf, Sₒ_inf = stack(c_inf.Sᵢ), stack(c_inf.Sₒ)
+        @test count(!iszero, Sᵢ_inf) > 100 && maximum(Sₒ_inf) > 0
+        for c in (c_trunc, c_full)
+            @test maximum(abs, stack(c.Sᵢ) - Sᵢ_inf) <= 1e-12 * maximum(abs, Sᵢ_inf)
+            @test maximum(abs, stack(c.Sₒ) - Sₒ_inf) <= 1e-12 * maximum(abs, Sₒ_inf)
+        end
+        @test maximum(abs, stack(c_trunc.Sᵢ) - stack(c_full.Sᵢ)) <= 1e-12 * maximum(abs, Sᵢ_inf)
+        @test maximum(abs, stack(c_trunc.Sₒ) - stack(c_full.Sₒ)) <= 1e-12 * maximum(abs, Sₒ_inf)
     end
 end

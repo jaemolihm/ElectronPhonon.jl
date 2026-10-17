@@ -50,15 +50,15 @@ end
 
 Accumulates the BTE scattering-out rates `Sₒ[iT]` (length `n_i`) and the scattering-in matrices of
 one pass of `run_eph_over_k_and_kq`, over the outer states `el_i` and inner states `el_f`. With
-`Si_format = :dense` the scattering-in matrix is `Sᵢ[iT]` `(n_i, n_f)`; with `:csr` only its nonzeros
-are kept, as `Sᵢᵀ[iT]`, the `SparseMatrixCSC` `(n_f, n_i)` of its transpose (Sᵢ in CSR), and `Sᵢ`
-is empty. Either goes to the solver as `scat_mat`:
+`Si_format = :dense` the scattering-in matrix is `Sᵢ[iT]` `(n_i, n_f)`; with `:sparse` only its
+nonzeros are kept, as `Sᵢᵀ[iT]`, the `SparseMatrixCSC` `(n_f, n_i)` of its transpose (Sᵢ in CSR),
+and `Sᵢ` is empty. Either goes to the solver as `scat_mat`:
 
     solve_electron_bte(calc.el_i, calc.el_f, calc.Sᵢ, stack(calc.Sₒ), occ, symmetry)                # :dense
-    solve_electron_bte(calc.el_i, calc.el_f, transpose.(calc.Sᵢᵀ), stack(calc.Sₒ), occ, symmetry)   # :csr
+    solve_electron_bte(calc.el_i, calc.el_f, transpose.(calc.Sᵢᵀ), stack(calc.Sₒ), occ, symmetry)   # :sparse
 
-`:csr` shrinks only the host storage: the device tile, the device-to-host transfer and the host scan
-of each tile are those of `:dense`.
+`:sparse` shrinks only the host storage: the device tile, the device-to-host transfer and the host
+scan of each tile are those of `:dense`.
 """
 Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # --- Parameters ---
@@ -73,7 +73,7 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
     # save the (large) Sᵢ host + tile storage.
     const scattering_method::Symbol = :BTE
     const omega_cutoff::FT = FT(omega_acoustic)           # skip modes below this (e.g. acoustic modes at Γ)
-    # :dense stores Sᵢ in `Sᵢ`; :csr stores only its nonzeros, in `Sᵢᵀ` (a CSC matrix of Sᵢ's
+    # :dense stores Sᵢ in `Sᵢ`; :sparse stores only its nonzeros, in `Sᵢᵀ` (a CSC matrix of Sᵢ's
     # transpose, i.e. Sᵢ in CSR), for runs whose dense Sᵢ does not fit host memory.
     const Si_format::Symbol = :dense
 
@@ -88,8 +88,8 @@ Base.@kwdef mutable struct BoltzmannCalculator{FT} <: AbstractCalculator
 
     # --- Host outputs (solver-facing) ---
     Sₒ::Vector{Vector{FT}} = Vector{Vector{FT}}()         # per iT, length n_i
-    Sᵢ::Vector{Matrix{FT}} = Vector{Matrix{FT}}()         # per iT, (n_i, n_f); empty with Si_format = :csr
-    Sᵢᵀ::Vector{SparseMatrixCSC{FT, Int}} = SparseMatrixCSC{FT, Int}[]  # per iT, (n_f, n_i), Si_format = :csr
+    Sᵢ::Vector{Matrix{FT}} = Vector{Matrix{FT}}()         # per iT, (n_i, n_f); empty with Si_format = :sparse
+    Sᵢᵀ::Vector{SparseMatrixCSC{FT, Int}} = SparseMatrixCSC{FT, Int}[]  # per iT, (n_f, n_i), Si_format = :sparse
 
     # --- Device buffers ---
     # Built once in `setup_calculator!`. See `BoltzmannDeviceBuffers`.
@@ -145,8 +145,8 @@ function setup_calculator!(calc::BoltzmannCalculator{FT}, backend::AbstractBacke
                             "FP32 support is not planned (transport accuracy)."))
     1 <= calc.occupation_method <= 6 ||
         throw(ArgumentError("occupation_method must be an integer in 1:6, got $(calc.occupation_method)"))
-    calc.Si_format ∈ (:dense, :csr) ||
-        throw(ArgumentError("Si_format must be :dense or :csr, got :$(calc.Si_format)"))
+    calc.Si_format ∈ (:dense, :sparse) ||
+        throw(ArgumentError("Si_format must be :dense or :sparse, got :$(calc.Si_format)"))
     calc.nchunks = nchunks_threads
 
     # The selections' states with their energies and velocities, so el_i/el_f carry the

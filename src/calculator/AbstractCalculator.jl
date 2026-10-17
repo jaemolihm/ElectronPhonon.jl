@@ -187,8 +187,8 @@ Whether the calculator accepts a run that keeps only the lowest phonon modes: wi
 every q, `Ω` the energy range of the resident states plus the tolerance, when every calculator
 allows it. Such a mode has no process inside the tolerance for any pair. `phs.nmodes` and
 `size(ep, 3)` are then below `model.nmodes`. The run may also build the phonons per outer batch:
-the `phs` handed to `setup_calculator!` then holds no q, the driver returns `phs = nothing`, and the
-blocks carry the pairs' phonons as always. Default `false`.
+the `phs` handed to `setup_calculator!` then holds no q, and the blocks carry the pairs' phonons as
+always. A run that may truncate returns `phs = nothing`. Default `false`.
 """
 allows_phonon_mode_truncation(::AbstractCalculator) = false
 

@@ -361,6 +361,12 @@ _electron_state_bytes(FT, nw, nb, qty) = 2sizeof(Int) +
 _phonon_state_bytes(FT, nm, qty; ndisp = nm) = sizeof(FT) * ((:e ∈ qty) * nm + (:vdiag ∈ qty) * 3nm) +
     sizeof(Complex{FT}) * ((:u ∈ qty) * ndisp * nm + (:eph_dipole_coeff ∈ qty) * nm + (:eph_r_coeff ∈ qty) * 3nm)
 
+# Whether an outer-k run selects the pairs of a k+q tile on the device (`_select_kqpairs_on_device!`):
+# over a k+q grid, on a device, with a finite `energy_conservation_tol`. With `Inf` the host's q index
+# overlaps the device's work.
+_uses_device_pair_selection(backend, inner_loop_kq, energy_conservation_tol) =
+    inner_loop_kq && !(backend isa CPUBackend) && isfinite(energy_conservation_tol)
+
 # Whether an outer-k run over a k+q grid reads each pair's phonon eigenmodes from the resident
 # `phs.u` by q index instead of gathering them into its tile, whatever `energy_conservation_tol`: on
 # a device whose fused rotation kernel takes them (`_fused_rotation_supported`, the gate of
@@ -474,9 +480,7 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     # The q index of a pair by integer grid hash. Not needed without a k+q grid.
     xks_int, xkqs_int = inner_loop_kq ? _reduced_grid_coords(kpts, kqpts, qpts) :
                                         (Matrix{Int}(undef, 3, 0), Matrix{Int}(undef, 3, 0))
-    # With a finite tolerance on a device, the pairs of a k+q tile are selected there
-    # (`_select_kqpairs_on_device!`). With `Inf` the host's q index overlaps the device's work.
-    device_pair_selection = inner_loop_kq && !(backend isa CPUBackend) && isfinite(energy_conservation_tol)
+    device_pair_selection = _uses_device_pair_selection(backend, inner_loop_kq, energy_conservation_tol)
     device_pair_selection && nchunks > 1 &&
         throw(ArgumentError("the device pair selection runs on one thread chunk, got nchunks = $nchunks"))
     pair_selection = device_pair_selection ? DevicePairSelection(backend, xkqs_int, qpts, n_inner_tile) : nothing
@@ -764,7 +768,10 @@ end
         else
             # Phonons per outer batch: the kept pairs' indices into the batch's.
             (; iqs_ph_dev, iq_to_ph_dev) = eng_fields.phonons_per_batch
-            iqs_ph_dev[1:n_kept] .= iq_to_ph_dev[iqs]
+            iqs_ph = iqs_ph_dev[1:n_kept] .= iq_to_ph_dev[iqs]
+            # Index 0 (a kept q missing from the batch's phonons) must not reach the rotation kernel.
+            minimum(iqs_ph) > 0 || error("a kept pair's q is not among its outer batch's phonons")
+            iqs_ph
         end
         phs_block = view(copy_batched_phonon_states!(tile_workspace.phs, phs, iqs_ph), 1:n_kept)
         xqs = eng_fields.qpts.vectors[iqs_host[1:n_kept]]
