@@ -178,9 +178,7 @@ function _allocate_engine(order, model, states, options)
         nq_grid = order isa OuterKLoop && inner_loop_kq ? prod(qpts.ngrid) : 0, energy_conservation_tol,
         inner_loop_kq, options.n_outer_batch, options.n_inner_tile, nband_max_k = els_k.nband_max,
         nband_max_kq = els_kq === nothing ? nw : els_kq.nband_max, els_k, els_kq, phs, el_qty, ph_qty,
-        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, nq = qpts.n,
-        nq_per_batch = phonon_batches === nothing ? nothing :
-            maximum(length, phonon_batches.iqs_per_batch; init = 0))
+        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, phonon_batches)
     if verbosity > 0 && mpi_isroot()
         @info "e-ph loop: committed = $(round(committed / 1e9, digits = 2)) GB, " *
               "$(round(bytes.per_pair / 1e3, digits = 1)) kB per pair; outer batch = $n_outer_batch, " *
@@ -192,8 +190,7 @@ function _allocate_engine(order, model, states, options)
         eng = OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
             n_outer_batch, n_inner_tile, nchunks,
             covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation_tol,
-            ω_all = phonon_batches === nothing ? nothing : phonon_batches.ω,
-            iqs_per_batch = phonon_batches === nothing ? nothing : phonon_batches.iqs_per_batch)
+            phonon_batches)
     else
         eng = OuterQEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
             n_outer_batch, n_inner_tile, nchunks, eph_phonon_basis,
@@ -311,14 +308,15 @@ const GPU_OUTER_Q_TILE_BYTES = 8 * 2^30
 # inner tile fills the free device memory left after the persistent and per-batch buffers
 # (`plan_batch` on `engine_bytes` plus each calculator's `calculator_bytes`, `per_pair`
 # once per chunk), capped at all inner points on a device (`GPU_OUTER_Q_TILE_BYTES` of tile under
-# `OuterQLoop`) and at a cache-sized 1024 per chunk on the CPU. `nq_per_batch` is the largest outer
-# batch's q count when the phonons are built per outer batch (`nothing`: resident), whose storage
-# and solve are then committed, with an error when they leave no room for an inner tile of 1.
+# `OuterQLoop`) and at a cache-sized 1024 per chunk on the CPU. `phonon_batches` (see
+# `_setup_phonons`; `nothing`: resident phonons) holds the q of each outer batch when the phonons are
+# built per outer batch, whose largest batch's storage and solve are then committed, with an error
+# when they leave no room for an inner tile of 1.
 function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, nkq, nchunks,
         nq_grid = 0, energy_conservation_tol = Inf, n_outer_batch, n_inner_tile, nband_max_k,
         nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
         precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
-        nq = nothing, nq_per_batch = nothing)
+        phonon_batches = nothing)
     (; nw) = model
     # The modes of the run: `phs` may hold only the lowest ones (`_setup_states`).
     nmodes = phs === nothing ? model.nmodes : phs.nmodes
@@ -327,8 +325,8 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
         engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk, nkq, el_qty, ph_qty,
             covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
             device_pair_selection = _uses_device_pair_selection(backend, inner_loop_kq,
-                energy_conservation_tol), nq_grid, nmodes_kept = nmodes, nq,
-            nq_per_batch, backend) :
+                energy_conservation_tol), nq_grid, nmodes_kept = nmodes,
+            phonon_batches, backend) :
         engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk, el_qty, ph_qty,
             precompute_el_kq, eph_phonon_basis)
     for c in calculators
@@ -341,7 +339,8 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
         max(1, GPU_OUTER_Q_TILE_BYTES ÷ bytes.per_pair)
     inner_cap = max(1, min(cld(n_inner, nchunks), something(n_inner_tile, inner_default)))
     committed = bytes.persistent + bytes.per_outer * n_outer_batch
-    if nq_per_batch !== nothing
+    if phonon_batches !== nothing
+        nq_per_batch = maximum(length, phonon_batches.iqs_per_batch; init = 0)
         free = free_bytes(backend)
         _needed_bytes_at_tile(committed, bytes.per_pair * nchunks, 1) <= free || error("phonons per outer batch: " *
             "the largest batch's phonons ($nq_per_batch q) and the loop's buffers " *

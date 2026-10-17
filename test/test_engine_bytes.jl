@@ -54,9 +54,9 @@ end
                 energy_conservation_tol = tol, phonon_storage, verbosity = 0)
             st = _setup_states(order, model, grid, grid, options)
             # Phonons per outer batch: the largest batch's q, and the engine's phonon solve.
-            iqs_per_batch = st.phonon_batches === nothing ? nothing : _select_qs_per_outer_batch(backend,
-                st.kpts, st.kqpts, st.qpts, st.els_k, st.els_kq, st.phonon_batches.ω, nb, tol)
-            nq_per_batch = iqs_per_batch === nothing ? nothing : maximum(length, iqs_per_batch)
+            phonon_batches = st.phonon_batches === nothing ? nothing :
+                (; ω = st.phonon_batches.ω, nq = st.qpts.n, iqs_per_batch = _select_qs_per_outer_batch(
+                    backend, st.kpts, st.kqpts, st.qpts, st.els_k, st.els_kq, st.phonon_batches.ω, nb, tol))
             nbk = st.els_k.nband_max
             nbkq = st.els_kq === nothing ? model.nw : st.els_kq.nband_max
             common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1,
@@ -65,17 +65,11 @@ end
                 bytes = engine_bytes(OuterKEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, nkq = st.kqpts.n, el_qty, ph_qty,
                     inner_loop_kq = true, device_pair_selection = isfinite(tol),
-                    nq_grid = prod(st.qpts.ngrid), nmodes_kept = st.phs.nmodes, nq_per_batch,
-                    nq = st.qpts.n, backend, covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
-                # The per-batch count needs the q set's size and the backend of the solve.
-                nq_per_batch === nothing || @test_throws ArgumentError engine_bytes(OuterKEngine, model;
-                    nband_max_k = nbk, nband_max_kq = nbkq, nk = st.kpts.n, nkq = st.kqpts.n, el_qty,
-                    ph_qty, inner_loop_kq = true, device_pair_selection = true, nq_per_batch,
-                    covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
+                    nq_grid = prod(st.qpts.ngrid), nmodes_kept = st.phs.nmodes, phonon_batches,
+                    backend, covariant_derivative_of_g = dg, eph_phonon_basis = :eigenmode)
                 eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = dg,
-                    energy_conservation_tol = tol, ω_all = st.phonon_batches === nothing ? nothing : st.phonon_batches.ω,
-                    iqs_per_batch, common...)
+                    energy_conservation_tol = tol, phonon_batches, common...)
                 run1 = () -> stage1!(eng, 1:nb)
             else
                 bytes = engine_bytes(OuterQEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,

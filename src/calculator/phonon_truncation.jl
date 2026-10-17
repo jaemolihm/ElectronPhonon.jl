@@ -164,6 +164,31 @@ function _setup_phonons(order, model::Model{FT}, kpts, kqpts, qpts, els_k, els_k
     (; phs, phonon_batches = (; ω = ω_kept, iqs_per_batch, nq = qpts.n), return_phs = false)
 end
 
+# The device bytes the phonons per outer batch add to the outer-k engine (`engine_bytes`): the
+# storage of the largest batch's phonons, the q index and upload, and the transients of one batch's
+# phonon solve (`compute_phonon_states_batched` into the storage) in `persistent`; the pair's
+# `iqs_ph_dev` entry in `per_pair`.
+function _phonon_batches_bytes(model::Model{FT}, backend, phonon_batches, nmodes_kept) where {FT}
+    phonon_batches === nothing && return (; persistent = 0, per_pair = 0)
+    (; nmodes) = model
+    cx, rl = sizeof(Complex{FT}), sizeof(FT)
+    nq_max = maximum(length, phonon_batches.iqs_per_batch; init = 0)
+    # The solve's transients: the dynamical matrices with their R vectors, the interpolator's Fourier
+    # phase and output, the masses, and per Fourier block the D(q) stack, its eigenvalues and the
+    # staged q.
+    ph_solve = if nq_max == 0
+        0
+    else
+        nr_ph, ndata_ph = length(model.ph_dyn.irvec), model.ph_dyn.ndata
+        nblock = _default_batch_size(backend, nr_ph, ndata_ph; nk_hint = nq_max)
+        cx * length(model.ph_dyn.op_r) + rl * 3nr_ph + cx * nr_ph * nblock + cx * ndata_ph + rl * nmodes +
+            (cx * ndata_ph + rl * nmodes + rl * 3) * nblock
+    end
+    persistent = _phonon_state_bytes(FT, nmodes_kept, (:e, :u); ndisp = nmodes) * nq_max +
+        sizeof(Int32) * (phonon_batches.nq + nq_max) + ph_solve
+    (; persistent, per_pair = sizeof(Int))
+end
+
 # The (minimum, maximum) energy of the states `els` within their bands.
 _window_energy_range(els) = (in_window = axes(els.e, 1) .<= reshape(els.nband, 1, :);
     (minimum(ifelse.(in_window, els.e, Inf)), maximum(ifelse.(in_window, els.e, -Inf))))

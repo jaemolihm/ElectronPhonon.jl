@@ -120,13 +120,13 @@ struct _NoTruncation <: AbstractCalculator end
         iqs_per_batch = _select_qs_per_outer_batch(backend, st.kpts, st.kqpts, st.qpts, st.els_k,
             st.els_kq, phs_part.e, 5, tol)
         phs_empty = ElectronPhonon.BatchedPhononState(backend, nkept, 0, [:e, :u]; ndisp = model.nmodes)
+        phonon_batches = (; ω = phs_part.e, iqs_per_batch, nq = st.qpts.n)
         eng_batch = OuterKEngine(model, backend, st.els_k, st.els_kq, phs_empty, [:e, :u], [:e, :u];
-            energy_conservation_tol = tol, ω_all = phs_part.e, iqs_per_batch, common...)
+            energy_conservation_tol = tol, phonon_batches, common...)
         # The q sets are those of the engine's outer batches.
         @test cld(st.kpts.n, 5) != cld(st.kpts.n, 7)
         @test_throws ArgumentError OuterKEngine(model, backend, st.els_k, st.els_kq, phs_empty, [:e, :u],
-            [:e, :u]; energy_conservation_tol = tol, ω_all = phs_part.e, iqs_per_batch, common...,
-            n_outer_batch = 7)
+            [:e, :u]; energy_conservation_tol = tol, phonon_batches, common..., n_outer_batch = 7)
         maxdev, maxdev_batch, scale, nwrong_shape, nblocks_tol, nmismatch = 0.0, 0.0, 0.0, 0, 0, 0
         for batch in Iterators.partition(1:st.kpts.n, 5)
             stage1!(eng_full, batch); stage1!(eng_part, batch)
@@ -153,7 +153,8 @@ struct _NoTruncation <: AbstractCalculator end
         # A kept pair whose q the batch's phonons lack is an error, not an index 0 in the rotation.
         iqs_missing = [iqs[2:end] for iqs in iqs_per_batch]
         eng_missing = OuterKEngine(model, backend, st.els_k, st.els_kq, phs_empty, [:e, :u], [:e, :u];
-            energy_conservation_tol = tol, ω_all = phs_part.e, iqs_per_batch = iqs_missing, common...)
+            energy_conservation_tol = tol, phonon_batches = (; phonon_batches..., iqs_per_batch = iqs_missing),
+            common...)
         @test !isempty(iqs_per_batch[1])
         @test_throws "not among its outer batch's phonons" begin
             stage1!(eng_missing, 1:5)
