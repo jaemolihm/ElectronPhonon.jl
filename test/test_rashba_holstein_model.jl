@@ -5,8 +5,8 @@ using ElectronPhonon
 using ElectronPhonon: rashba_holstein_model, holstein_model
 
 @testset "Rashba Holstein model" begin
-    t, M, λ_int, α_R, ω₀, g₀, g₁, alat, ε₀ = 0.1, 0.3, 0.05, 0.02, 0.01, 0.02, 0.005, 5.0, 0.04
-    params = (; t, M, λ_int, α_R, ω₀, g₀, g₁, alat, ε₀, verbose = false)
+    t, M, λ_soc, α_R, ω₀, g₀, g₁, alat, ε₀ = 0.1, 0.3, 0.05, 0.02, 0.01, 0.02, 0.005, 5.0, 0.04
+    params = (; t, M, λ_soc, α_R, ω₀, g₀, g₁, alat, ε₀, verbose = false)
 
     σ₀ = Matrix{ComplexF64}(I, 2, 2)
     σx = ComplexF64[0 1; 1 0]
@@ -14,10 +14,10 @@ using ElectronPhonon: rashba_holstein_model, holstein_model
     σz = ComplexF64[1 0; 0 -1]
 
     # H(k) of the docstring, with k in crystal coordinates.
-    function hamiltonian_k(xk; t, M, λ_int, α_R, ε₀)
+    function hamiltonian_k(xk; t, M, λ_soc, α_R, ε₀)
         skx, sky = sin(2π * xk[1]), sin(2π * xk[2])
         εk = ε₀ - 2t * (cos(2π * xk[1]) + cos(2π * xk[2]))
-        (εk * kron(σ₀, σ₀) + M * kron(σz, σ₀) + λ_int * kron(σx, skx * σy - sky * σx)
+        (εk * kron(σ₀, σ₀) + M * kron(σz, σ₀) + λ_soc * kron(σx, skx * σy - sky * σx)
          + α_R * kron(σ₀, sky * σx - skx * σy))
     end
     vertex = g₀ * kron(σ₀, σ₀) + g₁ * kron(σz, σ₀)
@@ -38,7 +38,7 @@ using ElectronPhonon: rashba_holstein_model, holstein_model
         el = compute_electron_states(model, Kpoints(xks), ["eigenvalue", "eigenvector"])
         for (ik, xk) in enumerate(xks)
             u = ElectronPhonon.no_offset_view(el[ik].u)
-            Hk = hamiltonian_k(xk; t, M, λ_int, α_R, ε₀)
+            Hk = hamiltonian_k(xk; t, M, λ_soc, α_R, ε₀)
             @test u' * Hk * u ≈ Diagonal(el[ik].e) atol=1e-12
         end
 
@@ -116,7 +116,7 @@ using ElectronPhonon: rashba_holstein_model, holstein_model
     end
 
     @testset "no SOC, no orbital splitting: four copies of the Holstein band" begin
-        model = rashba_holstein_model(; t, M = 0.0, λ_int = 0.0, α_R = 0.0, ω₀, g₀,
+        model = rashba_holstein_model(; t, M = 0.0, λ_soc = 0.0, α_R = 0.0, ω₀, g₀,
                                       alat, ε₀, verbose = false)
         holstein = holstein_model(; t, ω₀, g = g₀, alat, ε₀, dimension = 2, verbose = false)
         el = compute_electron_states(model, Kpoints(xks), ["eigenvalue"])

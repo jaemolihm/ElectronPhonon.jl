@@ -8,7 +8,7 @@
 public rashba_holstein_model
 
 """
-    rashba_holstein_model(; t, M, λ_int, α_R, ω₀, g₀, g₁ = 0.0, mass = 1.0, alat = 1.0,
+    rashba_holstein_model(; t, M, λ_soc, α_R, ω₀, g₀, g₁ = 0.0, mass = 1.0, alat = 1.0,
                               ε₀ = 0.0, epmat_outer_momentum = "el", verbose = true) :: Model
 
 Build a [`Model`](@ref) for a two-orbital, spin-1/2 tight-binding model on a square lattice
@@ -25,11 +25,11 @@ Wannier basis `(1↑, 1↓, 2↑, 2↓)`, i.e. `τ ⊗ σ` with `τ` the orbital
 matrices. With `kᵢ = k · aᵢ`,
 
 ```math
-H(k) = ε(k) 𝟙 + M τ_z + λ_{int} τ_x (\\sin k_x σ_y - \\sin k_y σ_x)
+H(k) = ε(k) 𝟙 + M τ_z + λ_{soc} τ_x (\\sin k_x σ_y - \\sin k_y σ_x)
      + α_R (\\sin k_y σ_x - \\sin k_x σ_y),   ε(k) = ε₀ - 2t (\\cos k_x + \\cos k_y)
 ```
 
-- `λ_int`: intrinsic SOC, even under `P = τ_z` (e.g. s and p_z orbitals) and `T = -iσ_y K`;
+- `λ_soc`: intrinsic SOC, even under `P = τ_z` (e.g. s and p_z orbitals) and `T = -iσ_y K`;
   mixes spins between the orbitals and keeps every band doubly degenerate.
 - `α_R`: Rashba SOC, breaks `P` and lifts the Kramers degeneracy.
 
@@ -59,7 +59,7 @@ must be computed on the full Brillouin zone.
 function rashba_holstein_model(;
         t,
         M,
-        λ_int,
+        λ_soc,
         α_R,
         ω₀,
         g₀,
@@ -78,13 +78,13 @@ function rashba_holstein_model(;
         "epmat_outer_momentum must be \"el\" or \"ph\", got $epmat_outer_momentum"))
 
     FT = Float64
-    t, M, λ_int, α_R, ω₀, g₀, g₁ = FT(t), FT(M), FT(λ_int), FT(α_R), FT(ω₀), FT(g₀), FT(g₁)
+    t, M, λ_soc, α_R, ω₀, g₀, g₁ = FT(t), FT(M), FT(λ_soc), FT(α_R), FT(ω₀), FT(g₀), FT(g₁)
     mass, alat, ε₀ = FT(mass), FT(alat), FT(ε₀)
 
     if verbose
         println(@sprintf("Rashba Holstein model: square lattice, alat = %g bohr", alat))
-        println(@sprintf("  t = %g Ry, ε₀ = %g Ry, M = %g Ry, λ_int = %g Ry, α_R = %g Ry",
-                         t, ε₀, M, λ_int, α_R))
+        println(@sprintf("  t = %g Ry, ε₀ = %g Ry, M = %g Ry, λ_soc = %g Ry, α_R = %g Ry",
+                         t, ε₀, M, λ_soc, α_R))
         println(@sprintf("  ω₀ = %g Ry, mass = %g, g₀ = %g Ry, g₁ = %g Ry", ω₀, mass, g₀, g₁))
     end
 
@@ -125,8 +125,8 @@ function rashba_holstein_model(;
 
     # sin(k·a) = (e^{ik·a} - e^{-ik·a}) / 2i, so the matrix X multiplying sin(k·a) sits on
     # R = ±a with weight ±X/2i.
-    sin_kx_coeff = λ_int * kron(τx, σy) - α_R * kron(τ₀, σy)
-    sin_ky_coeff = α_R * kron(τ₀, σx) - λ_int * kron(τx, σx)
+    sin_kx_coeff = λ_soc * kron(τx, σy) - α_R * kron(τ₀, σy)
+    sin_ky_coeff = α_R * kron(τ₀, σx) - λ_soc * kron(τx, σx)
     ham = zeros(Complex{FT}, nw, nw, length(irvec_el))
     for (ir, R) in enumerate(irvec_el)
         ham[:, :, ir] .= if iszero(R)
