@@ -9,7 +9,8 @@ Sweep the outer k points and, for each, the inner k+q points (on a grid commensu
 grid), handing each calculator the e-ph coupling as an [`EPBlock`](@ref)`{OuterKLoop}`: one outer k
 with a tile of k+q points. `kpts` and `kqpts` are grids: a grid size, a k-point set on a grid or a
 prebuilt `FilteredBandStates` of one (the phonons are built on the q grid the two span). Returns `(; kpts, qpts, els_k, els_kq, phs)`, the run's state containers
-(`BatchedElectronState`, `BatchedPhononState`).
+(`BatchedElectronState`, `BatchedPhononState`); `phs = nothing` when the run may truncate the
+phonon modes (see [`allows_phonon_mode_truncation`](@ref)).
 
 Requires a model loaded with `epmat_outer_momentum = "el"` so stage 1 contracts R_e.
 
@@ -23,7 +24,12 @@ Keywords:
   selection whatever `symmetry` is, and a k+q set is used as given.
 * `energy_conservation_tol = Inf` — a finite tolerance drops the point pairs with no process inside
   it (`|e_k - e_{k+q} ± ω_q| <= energy_conservation_tol` for some bands and mode) before the e-ph
-  matrix is computed. On a GPU only `run_eph_over_k_and_kq` takes a finite tolerance.
+  matrix is computed. It skips pairs and phonon modes only: every term of a kept pair reaches the
+  calculators, whose smearing decides its weight. With a Gaussian of width `η`, `tol = 6η` drops
+  terms below exp(-36) = 2.3e-16 of the Gaussian's peak; a Lorentzian of the same `η` is still
+  ~1/37 of its peak at `6η`, so it needs a much larger tol for the same accuracy. On a GPU only
+  `run_eph_over_k_and_kq` takes a finite tolerance, and then may keep only the lowest phonon modes
+  (see [`allows_phonon_mode_truncation`](@ref)).
 * `covariant_derivative_of_g = false` — also compute the covariant derivative `block.dg`.
 * `eph_phonon_basis = :eigenmode` — or `:cartesian` (identity phonon rotation).
 * `fourier_mode = "gridopt"` — or `"normal"`: the interpolation of the setup-time state solves on a
@@ -104,6 +110,8 @@ end
 # run_eph_over_k_and_q (inner q points, with k+q solved per tile) and under `OuterQLoop`.
 # `el_qty` / `ph_qty` are the state quantities of the run: those of the loop, of the caller
 # (`el_quantities` / `ph_quantities`) and of the calculators.
+# `_force_phonons_per_batch` is internal (tests): it builds the phonons of a run that may truncate
+# them per outer batch whatever the free memory (`_phonon_storage_plan`).
 function _run_options(model::Model;
         inner_loop_kq,
         calculators = [],
@@ -126,6 +134,7 @@ function _run_options(model::Model;
         el_k_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         el_kq_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         ph_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
+        _force_phonons_per_batch::Bool = false,
         verbosity::Int = 1,
     )
     nchunks_threads > 0 || throw(ArgumentError("nchunks_threads must be positive"))
@@ -136,14 +145,15 @@ function _run_options(model::Model;
     (; inner_loop_kq, calculators, el_qty, ph_qty, backend, window_k, window_kq, symmetry,
        precompute_el_kq, energy_conservation_tol, covariant_derivative_of_g,
        eph_phonon_basis, fourier_mode, screening_params, mpi_comm_k, n_outer_batch, n_inner_tile,
-       nchunks_threads, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, verbosity)
+       nchunks_threads, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, _force_phonons_per_batch,
+       verbosity)
 end
 
 # Plan the buffer widths and allocate the engine on the resident `states` of `_setup_states`
 # (`els_kq` is nothing for per-tile k+q solves).
 function _allocate_engine(order, model, states, options)
     # function barrier for allocation from concrete resident state containers.
-    (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq) = states
+    (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, phonon_batches) = states
     (; el_qty, ph_qty, calculators, backend, inner_loop_kq, precompute_el_kq, energy_conservation_tol,
        covariant_derivative_of_g, eph_phonon_basis, nchunks_threads, window_kq, verbosity) = options
     (; nw) = model
@@ -167,7 +177,7 @@ function _allocate_engine(order, model, states, options)
         nq_grid = order isa OuterKLoop && inner_loop_kq ? prod(qpts.ngrid) : 0, energy_conservation_tol,
         inner_loop_kq, options.n_outer_batch, options.n_inner_tile, nband_max_k = els_k.nband_max,
         nband_max_kq = els_kq === nothing ? nw : els_kq.nband_max, els_k, els_kq, phs, el_qty, ph_qty,
-        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis)
+        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, phonon_batches)
     if verbosity > 0 && mpi_isroot()
         @info "e-ph loop: committed = $(round(committed / 1e9, digits = 2)) GB, " *
               "$(round(bytes.per_pair / 1e3, digits = 1)) kB per pair; outer batch = $n_outer_batch, " *
@@ -178,7 +188,8 @@ function _allocate_engine(order, model, states, options)
     if order isa OuterKLoop
         eng = OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
             n_outer_batch, n_inner_tile, nchunks,
-            covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation_tol)
+            covariant_derivative_of_g, eph_phonon_basis, sel_k, sel_kq, window_kq, energy_conservation_tol,
+            phonon_batches)
     else
         eng = OuterQEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, qpts,
             n_outer_batch, n_inner_tile, nchunks, eph_phonon_basis,
@@ -277,7 +288,8 @@ function _run_eph(order::LoopTag, model::Model, kpts_input, second_input; calcul
     for calculator in calculators
         postprocess_calculator!(calculator; eng.qpts, symmetry)
     end
-    (; eng.kpts, eng.qpts, eng.els_k, eng.els_kq, eng.phs)
+    phs = states.return_phs ? eng.phs : nothing
+    (; eng.kpts, eng.qpts, eng.els_k, eng.els_kq, phs)
 end
 
 
@@ -295,19 +307,24 @@ const GPU_OUTER_Q_TILE_BYTES = 8 * 2^30
 # inner tile fills the free device memory left after the persistent and per-batch buffers
 # (`plan_batch` on `engine_bytes` plus each calculator's `calculator_bytes`, `per_pair`
 # once per chunk), capped at all inner points on a device (`GPU_OUTER_Q_TILE_BYTES` of tile under
-# `OuterQLoop`) and at a cache-sized 1024 per chunk on the CPU.
+# `OuterQLoop`) and at a cache-sized 1024 per chunk on the CPU. `phonon_batches` (see
+# `_setup_phonons`; `nothing`: resident phonons) holds the q of each outer batch when the phonons are
+# built per outer batch, whose largest batch's storage and solve are then committed.
 function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, nkq, nchunks,
         nq_grid = 0, energy_conservation_tol = Inf, n_outer_batch, n_inner_tile, nband_max_k,
         nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
-        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq)
-    (; nw, nmodes) = model
-    outer_default = order isa OuterKLoop ? 256 : backend isa CPUBackend ? 1 : 16
-    n_outer_batch = max(1, min(something(n_outer_batch, outer_default), n_outer))
+        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
+        phonon_batches = nothing)
+    (; nw) = model
+    # The modes of the run: `phs` may hold only the lowest ones (`_setup_phonons`).
+    nmodes = phs === nothing ? model.nmodes : phs.nmodes
+    n_outer_batch = _outer_batch_width(order, backend, n_outer_batch, n_outer)
     bytes = order isa OuterKLoop ?
         engine_bytes(OuterKEngine, model; nband_max_k, nband_max_kq, nk, nkq, el_qty, ph_qty,
             covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
             device_pair_selection = _uses_device_pair_selection(backend, inner_loop_kq,
-                energy_conservation_tol), nq_grid) :
+                energy_conservation_tol), nq_grid, nmodes_kept = nmodes,
+            phonon_batches, backend) :
         engine_bytes(OuterQEngine, model; nband_max_k, nband_max_kq, nk, el_qty, ph_qty,
             precompute_el_kq, eph_phonon_basis)
     for c in calculators
@@ -324,6 +341,11 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
                               what = order isa OuterKLoop ? "outer-k" : "outer-q")
     (; n_outer_batch, n_inner_tile, committed, bytes)
 end
+
+# The outer batch width: the requested one or the default (256 outer k; 16 q on a device and 1 on the
+# CPU), at most the number of outer points.
+_outer_batch_width(order, backend, n_outer_batch, n_outer) =
+    max(1, min(something(n_outer_batch, order isa OuterKLoop ? 256 : backend isa CPUBackend ? 1 : 16), n_outer))
 
 """
     plan_batch(backend, per_point, committed, cap; headroom_num = 7, headroom_den = 10, what = "",
@@ -347,7 +369,7 @@ function plan_batch(backend::AbstractBackend, per_point::Integer, committed::Int
     if free != typemax(Int) && committed > free
         error("batched $(what): committed device memory ($(round(committed / 1e9, digits = 2)) GB, " *
               "whole-run stacks) exceeds free device memory ($(round(free / 1e9, digits = 2)) GB). " *
-              "Reduce the batch cap or the grid size.")
+              "Reduce the batch cap, the grid size or n_outer_batch.")
     end
     nb_mem = free == typemax(Int) ? Int(cap) :
         max(1, ((free - committed) ÷ headroom_den * headroom_num) ÷ per_point)
@@ -451,9 +473,8 @@ _input_ngrid(x::AbstractKpoints) = x.ngrid
 # per tile: under `OuterQLoop`, or under `OuterKLoop` with `inner_loop_kq = false`), the q set and its
 # phonons, all on `backend`.
 function _setup_states(order, model::Model, kpts_input, second_input, options)
-    (; el_qty, ph_qty, inner_loop_kq, backend, window_k, window_kq, symmetry, precompute_el_kq,
-       eph_phonon_basis, mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs,
-       verbosity) = options
+    (; el_qty, inner_loop_kq, backend, window_k, window_kq, symmetry, precompute_el_kq,
+       mpi_comm_k, el_k_eigenpairs, el_kq_eigenpairs, verbosity) = options
     (; nw) = model
     # The host solves of a GPU run (q filter, polar phonons) keep the default interpolation.
     fourier_mode = backend isa CPUBackend ? options.fourier_mode : "gridopt"
@@ -531,17 +552,15 @@ function _setup_states(order, model::Model, kpts_input, second_input, options)
         end
     end
 
-    phs = maybe_time(verbosity) do
-        compute_phonon_states_batched(model, qpts, ph_qty; fourier_mode, eph_phonon_basis, backend,
-                                      eigenpairs = ph_eigenpairs)
-    end
+    (; phs, phonon_batches, return_phs) = _setup_phonons(order, model, kpts, kqpts, qpts, els_k, els_kq,
+                                                        options, fourier_mode)
 
     if verbosity > 0 && mpi_isroot()
         @info "Number of k points = $(kpts.n)"
         kqpts === nothing || @info "Number of k+q points = $(kqpts.n)"
         @info "Number of q points = $(qpts.n)"
     end
-    (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq)
+    (; els_k, els_kq, phs, kpts, kqpts, qpts, sel_k, sel_kq, phonon_batches, return_phs)
 end
 
 
