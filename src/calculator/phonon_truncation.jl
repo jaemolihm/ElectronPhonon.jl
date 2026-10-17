@@ -15,7 +15,7 @@
 # `per_pair` bytes needs, at `plan_batch`'s default 7/10 headroom.
 _needed_bytes_at_tile(committed, per_pair, n_tile) = committed + cld(per_pair * n_tile * 10, 7)
 
-# Whether a run may keep only the lowest phonon modes (`_setup_states`): an outer-k run over a k+q
+# Whether a run may keep only the lowest phonon modes (`_setup_phonons`): an outer-k run over a k+q
 # grid on a device with a finite `energy_conservation_tol`, eigenmode phonons with `e` and `u` only
 # from a non-polar model and no eigenpair cache, states on both sides, and every calculator
 # `allows_phonon_mode_truncation`.
@@ -28,7 +28,7 @@ function _may_truncate_phonon_modes(order, model, els_k, els_kq, options)
         all(allows_phonon_mode_truncation, calculators)
 end
 
-# The ω pass of `_setup_states` (a value-only phonon solve over all q) runs only when the phonons of
+# The ω pass of `_setup_phonons` (a value-only phonon solve over all q) runs only when the phonons of
 # all q would take more than 1/PHONON_MODE_PASS_FREE_DIVISOR of the free device memory. A
 # performance preference, not a measured threshold: the pass costs setup time (+3.2 s for SrVO3,
 # 10 K, nk = 240, A100-SXM4-80GB at 225 W, commit 8985613) that a run whose phonons fit easily need
@@ -49,22 +49,19 @@ _kept_phonon_modes(ω, Ω) =
     minimum(ω) >= -Ω ? max(1, Int(maximum(sum(ω .<= Ω; dims = 1)))) : size(ω, 1)
 
 """
-    _phonon_storage_plan(; table_bytes, committed, per_pair, free, nkq, n_inner_tile, phonon_storage)
-        -> (; storage, fit, min_tile, needed)
+    _phonon_storage_plan(; table_bytes, committed, per_pair, free, nkq, n_inner_tile, force_per_batch)
+        -> (; storage, min_tile, needed)
 
 Where the phonons of a run that may build them per outer batch live: `:resident` when the kept modes
 of all q (`table_bytes`), the loop's committed buffers and an inner tile of
 `min_tile = min(nkq, something(n_inner_tile, GPU_PHONONS_RESIDENT_MIN_TILE))` points of `per_pair`
-bytes, at `plan_batch`'s 7/10 headroom, need no more than `free` (`needed`); `:per_batch` otherwise.
-`fit` is `:fits`, `:narrow_tile` (fits only with a narrower tile) or `:no_fit` (not even at a tile
-of 1). `phonon_storage = :resident` or `:per_batch` forces `storage`; `:auto` decides by `fit`.
+bytes, at `plan_batch`'s 7/10 headroom, need no more than `free` (`needed`); `:per_batch` otherwise,
+or when `force_per_batch`.
 """
-function _phonon_storage_plan(; table_bytes, committed, per_pair, free, nkq, n_inner_tile, phonon_storage)
+function _phonon_storage_plan(; table_bytes, committed, per_pair, free, nkq, n_inner_tile, force_per_batch)
     min_tile = min(nkq, something(n_inner_tile, GPU_PHONONS_RESIDENT_MIN_TILE))
-    needed_at(n_tile) = _needed_bytes_at_tile(table_bytes + committed, per_pair, n_tile)
-    fit = needed_at(min_tile) <= free ? :fits : needed_at(1) <= free ? :narrow_tile : :no_fit
-    storage = phonon_storage == :auto ? (fit == :fits ? :resident : :per_batch) : phonon_storage
-    (; storage, fit, min_tile, needed = needed_at(min_tile))
+    needed = _needed_bytes_at_tile(table_bytes + committed, per_pair, min_tile)
+    (; storage = force_per_batch || needed > free ? :per_batch : :resident, min_tile, needed)
 end
 
 """
@@ -98,16 +95,17 @@ end
 # whether the driver may hand `phs` back.
 function _setup_phonons(order, model::Model{FT}, kpts, kqpts, qpts, els_k, els_kq, options) where {FT}
     (; el_qty, ph_qty, backend, eph_phonon_basis, ph_eigenpairs, energy_conservation_tol, calculators,
-       inner_loop_kq, precompute_el_kq, covariant_derivative_of_g, phonon_storage, verbosity) = options
+       inner_loop_kq, precompute_el_kq, covariant_derivative_of_g, _force_phonons_per_batch,
+       verbosity) = options
     # The host solves of a GPU run (polar phonons) keep the default interpolation.
     fourier_mode = backend isa CPUBackend ? options.fourier_mode : "gridopt"
     truncation_allowed = _may_truncate_phonon_modes(order, model, els_k, els_kq, options)
-    (phonon_storage != :per_batch || truncation_allowed) || throw(ArgumentError(
-        "phonon_storage = :per_batch needs a run that may truncate the phonon modes"))
+    (!_force_phonons_per_batch || truncation_allowed) || throw(ArgumentError(
+        "_force_phonons_per_batch needs a run that may truncate the phonon modes"))
     nmodes_kept, storage, ω_kept = model.nmodes, :resident, nothing
     # `free_bytes` reads the driver, which does not see the pool's cached memory.
     truncation_allowed && reclaim_device_memory(backend)
-    if truncation_allowed && (phonon_storage == :per_batch || qpts.n * _phonon_state_bytes(FT, model.nmodes,
+    if truncation_allowed && (_force_phonons_per_batch || qpts.n * _phonon_state_bytes(FT, model.nmodes,
             ph_qty) > free_bytes(backend) ÷ PHONON_MODE_PASS_FREE_DIVISOR)
         # The kept modes, from a value-only solve over all q.
         (emin_k, emax_k), (emin_kq, emax_kq) = _window_energy_range(els_k), _window_energy_range(els_kq)
@@ -132,17 +130,14 @@ function _setup_phonons(order, model::Model{FT}, kpts, kqpts, qpts, els_k, els_k
         table_bytes = qpts.n * _phonon_state_bytes(FT, nmodes_kept, ph_qty; ndisp = model.nmodes)
         free = free_bytes(backend)
         plan = _phonon_storage_plan(; table_bytes, loop.committed, loop.bytes.per_pair, free,
-            nkq = kqpts.n, options.n_inner_tile, phonon_storage)
+            nkq = kqpts.n, options.n_inner_tile, force_per_batch = _force_phonons_per_batch)
         storage = plan.storage
         if storage == :per_batch && verbosity > 0 && mpi_isroot()
             GB(x) = round(x / 1e9, digits = 1)
-            @info "Phonons built per outer batch: " * (
-                plan.fit == :fits ? "phonon_storage = :per_batch" :
-                plan.fit == :narrow_tile ? "the kept modes of all q ($(GB(table_bytes)) GB) fit " *
-                    "the free device memory ($(GB(free)) GB) only with an inner tile below " *
-                    "$(plan.min_tile) points" :
-                "the kept modes of all q ($(GB(table_bytes)) GB) and the loop's buffers do not fit " *
-                    "the free device memory ($(GB(free)) GB)")
+            @info "Phonons built per outer batch: " * (plan.needed > free ?
+                "the kept modes of all q ($(GB(table_bytes)) GB) and the loop's buffers need " *
+                "$(GB(plan.needed)) GB at an inner tile of $(plan.min_tile) points, but " *
+                "$(GB(free)) GB are free" : "_force_phonons_per_batch")
         end
     end
     if storage == :resident

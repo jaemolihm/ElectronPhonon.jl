@@ -41,17 +41,17 @@ end
         grid = (6, 6, 6)
         el_qty, ph_qty = [:u, :e], [:u, :e]
         nb, ntile = 7, 40
-        # (measured, counted) of the device-selection cases, by phonon storage.
-        selection_cases = Dict{Symbol, Tuple{Int, Int}}()
+        # (measured, counted) of the device-selection cases, by whether the phonons are per batch.
+        selection_cases = Dict{Bool, Tuple{Int, Int}}()
         # The last two cases select the pairs on the device (a finite energy_conservation_tol), the
         # last with the phonons built per outer batch.
-        for (order, mom, dg, tol, phonon_storage) in ((OuterKLoop(), "el", false, Inf, :auto),
-                (OuterKLoop(), "el", true, Inf, :auto), (OuterQLoop(), "ph", false, Inf, :auto),
-                (OuterKLoop(), "el", false, 1e-3, :auto), (OuterKLoop(), "el", false, 1e-3, :per_batch))
+        for (order, mom, dg, tol, per_batch) in ((OuterKLoop(), "el", false, Inf, false),
+                (OuterKLoop(), "el", true, Inf, false), (OuterQLoop(), "ph", false, Inf, false),
+                (OuterKLoop(), "el", false, 1e-3, false), (OuterKLoop(), "el", false, 1e-3, true))
             model = _load_model_from_artifacts("pb"; epmat_outer_momentum = mom)
             options = _run_options(model; inner_loop_kq = order isa OuterKLoop, backend,
                 window_k = window, window_kq = window, symmetry = nothing,
-                energy_conservation_tol = tol, phonon_storage, verbosity = 0)
+                energy_conservation_tol = tol, _force_phonons_per_batch = per_batch, verbosity = 0)
             st = _setup_states(order, model, grid, grid, options)
             # Phonons per outer batch: the largest batch's q, and the engine's phonon solve.
             phonon_batches = st.phonon_batches === nothing ? nothing :
@@ -88,19 +88,19 @@ end
             held = _device_bytes(eng) - _device_bytes((st.els_k, st.els_kq, st.phs,
                                                    st.phonon_batches === nothing ? nothing : st.phonon_batches.ω))
             counted = bytes.persistent + bytes.per_outer * nb + bytes.per_pair * ntile
-            @info "engine_bytes" order mom dg tol phonon_storage held transient counted ratio = (held + transient) / counted
+            @info "engine_bytes" order mom dg tol per_batch held transient counted ratio = (held + transient) / counted
             # Everything the engine holds and its stage 1 allocates is counted (0.925-1.000 measured,
             # Pb, A100)...
             @test held + transient <= 1.02 * counted
             # ...and the count is not a loose upper bound. The outer-k stage-1 rotation transients are
             # counted at the box width, while each band class of the batch allocates at its own.
             @test held + transient >= (order isa OuterKLoop ? 0.9 : 0.95) * counted
-            isfinite(tol) && (selection_cases[phonon_storage] = (held + transient, counted))
+            isfinite(tol) && (selection_cases[per_batch] = (held + transient, counted))
         end
         # What the per-batch phonons add (their storage, index buffers and per-batch solve) is counted
         # on its own, not hidden by the rest of the engine. The first batch's solve stands in for the
         # largest batch's, which the count holds.
-        Δmeasured, Δcounted = selection_cases[:per_batch] .- selection_cases[:auto]
+        Δmeasured, Δcounted = selection_cases[true] .- selection_cases[false]
         @info "engine_bytes, per-batch phonons" Δmeasured Δcounted ratio = Δmeasured / Δcounted
         @test 0.95 * Δcounted <= Δmeasured <= 1.02 * Δcounted
     end

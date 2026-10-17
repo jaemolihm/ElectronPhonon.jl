@@ -110,8 +110,8 @@ end
 # run_eph_over_k_and_q (inner q points, with k+q solved per tile) and under `OuterQLoop`.
 # `el_qty` / `ph_qty` are the state quantities of the run: those of the loop, of the caller
 # (`el_quantities` / `ph_quantities`) and of the calculators.
-# `phonon_storage` is internal (tests): `:resident` or `:per_batch` forces where the phonons of a run
-# that may build them per outer batch live (`_phonon_storage_plan`); `:auto` decides by memory.
+# `_force_phonons_per_batch` is internal (tests): it builds the phonons of a run that may truncate
+# them per outer batch whatever the free memory (`_phonon_storage_plan`).
 function _run_options(model::Model;
         inner_loop_kq,
         calculators = [],
@@ -134,12 +134,10 @@ function _run_options(model::Model;
         el_k_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         el_kq_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         ph_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
-        phonon_storage::Symbol = :auto,
+        _force_phonons_per_batch::Bool = false,
         verbosity::Int = 1,
     )
     nchunks_threads > 0 || throw(ArgumentError("nchunks_threads must be positive"))
-    phonon_storage ∈ (:auto, :resident, :per_batch) ||
-        throw(ArgumentError("phonon_storage must be :auto, :resident or :per_batch, got :$phonon_storage"))
     (n_outer_batch === nothing || n_outer_batch > 0) || throw(ArgumentError("n_outer_batch must be positive"))
     (n_inner_tile === nothing || n_inner_tile > 0) || throw(ArgumentError("n_inner_tile must be positive"))
     el_qty = union(loop_el_quantities(), el_quantities, required_el_quantities.(calculators)...)
@@ -147,7 +145,8 @@ function _run_options(model::Model;
     (; inner_loop_kq, calculators, el_qty, ph_qty, backend, window_k, window_kq, symmetry,
        precompute_el_kq, energy_conservation_tol, covariant_derivative_of_g,
        eph_phonon_basis, fourier_mode, screening_params, mpi_comm_k, n_outer_batch, n_inner_tile,
-       nchunks_threads, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, phonon_storage, verbosity)
+       nchunks_threads, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, _force_phonons_per_batch,
+       verbosity)
 end
 
 # Plan the buffer widths and allocate the engine on the resident `states` of `_setup_states`
@@ -310,15 +309,14 @@ const GPU_OUTER_Q_TILE_BYTES = 8 * 2^30
 # once per chunk), capped at all inner points on a device (`GPU_OUTER_Q_TILE_BYTES` of tile under
 # `OuterQLoop`) and at a cache-sized 1024 per chunk on the CPU. `phonon_batches` (see
 # `_setup_phonons`; `nothing`: resident phonons) holds the q of each outer batch when the phonons are
-# built per outer batch, whose largest batch's storage and solve are then committed, with an error
-# when they leave no room for an inner tile of 1.
+# built per outer batch, whose largest batch's storage and solve are then committed.
 function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, nkq, nchunks,
         nq_grid = 0, energy_conservation_tol = Inf, n_outer_batch, n_inner_tile, nband_max_k,
         nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
         precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
         phonon_batches = nothing)
     (; nw) = model
-    # The modes of the run: `phs` may hold only the lowest ones (`_setup_states`).
+    # The modes of the run: `phs` may hold only the lowest ones (`_setup_phonons`).
     nmodes = phs === nothing ? model.nmodes : phs.nmodes
     n_outer_batch = _outer_batch_width(order, backend, n_outer_batch, n_outer)
     bytes = order isa OuterKLoop ?
@@ -339,14 +337,6 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
         max(1, GPU_OUTER_Q_TILE_BYTES ÷ bytes.per_pair)
     inner_cap = max(1, min(cld(n_inner, nchunks), something(n_inner_tile, inner_default)))
     committed = bytes.persistent + bytes.per_outer * n_outer_batch
-    if phonon_batches !== nothing
-        nq_per_batch = maximum(length, phonon_batches.iqs_per_batch; init = 0)
-        free = free_bytes(backend)
-        _needed_bytes_at_tile(committed, bytes.per_pair * nchunks, 1) <= free || error("phonons per outer batch: " *
-            "the largest batch's phonons ($nq_per_batch q) and the loop's buffers " *
-            "($(round(committed / 1e9, digits = 2)) GB committed) do not fit the free device memory " *
-            "($(round(free / 1e9, digits = 2)) GB) even at an inner tile of 1: pass a smaller n_outer_batch")
-    end
     n_inner_tile = plan_batch(backend, bytes.per_pair * nchunks, committed, inner_cap;
                               what = order isa OuterKLoop ? "outer-k" : "outer-q")
     (; n_outer_batch, n_inner_tile, committed, bytes)
@@ -379,7 +369,7 @@ function plan_batch(backend::AbstractBackend, per_point::Integer, committed::Int
     if free != typemax(Int) && committed > free
         error("batched $(what): committed device memory ($(round(committed / 1e9, digits = 2)) GB, " *
               "whole-run stacks) exceeds free device memory ($(round(free / 1e9, digits = 2)) GB). " *
-              "Reduce the batch cap or the grid size.")
+              "Reduce the batch cap, the grid size or n_outer_batch.")
     end
     nb_mem = free == typemax(Int) ? Int(cap) :
         max(1, ((free - committed) ÷ headroom_den * headroom_num) ÷ per_point)

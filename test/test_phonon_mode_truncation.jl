@@ -7,7 +7,7 @@ using ElectronPhonon: OuterKEngine, stage1!, stage2!, compute_phonon_states_batc
 
 # A run with a finite energy_conservation_tol on a GPU may keep only the lowest phonon modes
 # (`nmodes_kept`, `allows_phonon_mode_truncation`), and build them per outer batch when even those do
-# not fit (`phonon_storage`). Pb has no mode that is high at every q, so the policy is checked on
+# not fit (`_force_phonons_per_batch`). Pb has no mode that is high at every q, so the policy is checked on
 # synthetic numbers, and the truncation is forced on Pb at nmodes_kept = 2 of 3.
 
 const MODE_TRUNCATION_GPU = try
@@ -39,21 +39,19 @@ isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_fr
     @test _kept_phonon_modes(fill(1.0, 3, 2), Ω) == 1
 
     # The storage: needed = table + committed + per_pair * min_tile at the 7/10 headroom.
-    plan(; free, nkq = 10, n_inner_tile = nothing, phonon_storage = :auto, table_bytes = 100) =
+    plan(; free, nkq = 10, n_inner_tile = nothing, force_per_batch = false, table_bytes = 100) =
         _phonon_storage_plan(; table_bytes, committed = 50, per_pair = 7, free, nkq, n_inner_tile,
-                             phonon_storage)
-    @test plan(; free = 250) == (; storage = :resident, fit = :fits, min_tile = 10, needed = 250)
-    @test plan(; free = 249).storage == :per_batch && plan(; free = 249).fit == :narrow_tile
-    @test plan(; free = 160).fit == :narrow_tile && plan(; free = 159).fit == :no_fit
+                             force_per_batch)
+    @test plan(; free = 250) == (; storage = :resident, min_tile = 10, needed = 250)
+    @test plan(; free = 249).storage == :per_batch && plan(; free = 249).needed == 250
     # The default tile is the preferred width, and a user tile replaces it.
     @test plan(; free = 10^6, nkq = 10^7).min_tile == GPU_PHONONS_RESIDENT_MIN_TILE
     @test plan(; free = 190, nkq = 10^7).storage == :per_batch
     @test plan(; free = 190, nkq = 10^7, n_inner_tile = 4) ==
-          (; storage = :resident, fit = :fits, min_tile = 4, needed = 190)
-    # The override sets the storage, not the fit.
-    @test plan(; free = 10^6, phonon_storage = :per_batch) ==
-          (; storage = :per_batch, fit = :fits, min_tile = 10, needed = 250)
-    @test plan(; free = 0, phonon_storage = :resident).storage == :resident
+          (; storage = :resident, min_tile = 4, needed = 190)
+    # The override sets the storage, not the bytes needed.
+    @test plan(; free = 10^6, force_per_batch = true) ==
+          (; storage = :per_batch, min_tile = 10, needed = 250)
     # Truncation decides the storage: all modes of all q do not fit, the two kept do.
     nq, nm = 1000, 3
     table(nk) = nq * _phonon_state_bytes(Float64, nk, (:e, :u); ndisp = nm)
@@ -169,12 +167,12 @@ struct _NoTruncation <: AbstractCalculator end
             occ = ElectronOccupationParams(; Tlist = [300.0 * unit_to_aru(:K)], nlist = 4.0, μlist = μ,
                 volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac),
             smearing_list = [SmearingType(:Gaussian, 0.01eV)])
-        setup(calculators, phonon_storage) = _setup_states(OuterKLoop(), model, grid, grid,
+        setup(calculators, _force_phonons_per_batch) = _setup_states(OuterKLoop(), model, grid, grid,
             _run_options(model; inner_loop_kq = true, backend, symmetry = nothing, calculators,
-                         energy_conservation_tol = tol, phonon_storage, verbosity = 0))
-        st_batch = setup([boltzmann], :per_batch)
+                         energy_conservation_tol = tol, _force_phonons_per_batch, verbosity = 0))
+        st_batch = setup([boltzmann], true)
         @test st_batch.phonon_batches !== nothing && st_batch.phs.nq == 0 && st_batch.phs.nmodes == model.nmodes
-        @test_throws ArgumentError setup([boltzmann, _NoTruncation()], :per_batch)
+        @test_throws ArgumentError setup([boltzmann, _NoTruncation()], true)
         # The eligibility of a run for the truncation.
         may_truncate(calculators; tol = tol, backend = backend) = _may_truncate_phonon_modes(OuterKLoop(),
             model, st.els_k, st.els_kq, _run_options(model; inner_loop_kq = true, backend, calculators,
@@ -183,7 +181,6 @@ struct _NoTruncation <: AbstractCalculator end
         @test !may_truncate([boltzmann, _NoTruncation()])
         @test !may_truncate([boltzmann]; tol = Inf)
         @test !may_truncate([boltzmann]; backend = ElectronPhonon.CPUBackend())
-        @test_throws ArgumentError _run_options(model; inner_loop_kq = true, phonon_storage = :host)
     end
 end
 
@@ -196,16 +193,16 @@ end
         model = _load_model_from_artifacts("pb")
         eV, K, meV = unit_to_aru(:eV), unit_to_aru(:K), unit_to_aru(:meV)
         μ = 11.68eV; window = (μ - 0.5eV, μ + 0.5eV); σ = 20meV
-        runbte(phonon_storage; window_kq = window, n_outer_batch = 20) = (c = BoltzmannCalculator{Float64}(;
+        runbte(_force_phonons_per_batch; window_kq = window, n_outer_batch = 20) = (c = BoltzmannCalculator{Float64}(;
                 occ = ElectronOccupationParams(; Tlist = [300.0K], nlist = 4.0, μlist = μ,
                     volume = model.volume, nelec = 0, spin_degeneracy = 2, occ_type = :FermiDirac),
                 smearing_list = [SmearingType(:Gaussian, σ)], occupation_method = 5);
             out = ElectronPhonon.run_eph_over_k_and_kq(model, (6, 6, 6), (6, 6, 6); calculators = [c],
                 symmetry = nothing, window_k = window, window_kq, n_outer_batch,
                 energy_conservation_tol = 6σ, backend = ElectronPhonon.gpu_backend(),
-                phonon_storage, progress_print_step = 10^9, verbosity = 0); (c, out))
-        c_all, out_all = runbte(:resident)
-        c_per_batch, out_per_batch = runbte(:per_batch)
+                _force_phonons_per_batch, progress_print_step = 10^9, verbosity = 0); (c, out))
+        c_all, out_all = runbte(false)
+        c_per_batch, out_per_batch = runbte(true)
         @test out_all.phs === nothing && out_per_batch.phs === nothing
         @test maximum(stack(c_all.Sₒ)) > 0
         @test isapprox(stack(c_per_batch.Sᵢ), stack(c_all.Sᵢ); rtol = 1e-12)
@@ -215,12 +212,12 @@ end
         backend = ElectronPhonon.gpu_backend()
         st = _setup_states(OuterKLoop(), model, (6, 6, 6), (6, 6, 6), _run_options(model;
             inner_loop_kq = true, backend, symmetry = nothing, window_k = window, window_kq,
-            energy_conservation_tol = 6σ, phonon_storage = :per_batch, verbosity = 0))
+            energy_conservation_tol = 6σ, _force_phonons_per_batch = true, verbosity = 0))
         iqs_per_batch = _select_qs_per_outer_batch(backend, st.kpts, st.kqpts, st.qpts, st.els_k,
             st.els_kq, st.phonon_batches.ω, 1, 6σ)
         @test any(isempty, iqs_per_batch) && !all(isempty, iqs_per_batch)
-        c_all, _ = runbte(:resident; window_kq, n_outer_batch = 1)
-        c_per_batch, _ = runbte(:per_batch; window_kq, n_outer_batch = 1)
+        c_all, _ = runbte(false; window_kq, n_outer_batch = 1)
+        c_per_batch, _ = runbte(true; window_kq, n_outer_batch = 1)
         @test maximum(stack(c_all.Sₒ)) > 0
         @test isapprox(stack(c_per_batch.Sᵢ), stack(c_all.Sᵢ); rtol = 1e-12)
         @test isapprox(stack(c_per_batch.Sₒ), stack(c_all.Sₒ); rtol = 1e-12)
@@ -244,14 +241,14 @@ end
                 nlist = 1.0, μlist = cbm, volume = model.volume, nelec = 0, spin_degeneracy = 2,
                 occ_type = :FermiDirac),
             smearing_list = [SmearingType(:Gaussian, σ)], occupation_method = 5)
-        kwargs(phonon_storage, tol) = (; symmetry = nothing, window_k = window, window_kq = window,
-            energy_conservation_tol = tol, backend, phonon_storage, verbosity = 0)
+        kwargs(_force_phonons_per_batch, tol) = (; symmetry = nothing, window_k = window, window_kq = window,
+            energy_conservation_tol = tol, backend, _force_phonons_per_batch, verbosity = 0)
         st = _setup_states(OuterKLoop(), model, grid, grid, _run_options(model; inner_loop_kq = true,
-            calculators = [newcalc()], kwargs(:per_batch, 6σ)...))
+            calculators = [newcalc()], kwargs(true, 6σ)...))
         @test st.phs.nmodes == 3 < model.nmodes
-        runbte(phonon_storage, tol) = (c = newcalc(); ElectronPhonon.run_eph_over_k_and_kq(model, grid,
-            grid; calculators = [c], progress_print_step = 10^9, kwargs(phonon_storage, tol)...); c)
-        c_trunc, c_full, c_inf = runbte(:per_batch, 6σ), runbte(:resident, 6σ), runbte(:auto, Inf)
+        runbte(_force_phonons_per_batch, tol) = (c = newcalc(); ElectronPhonon.run_eph_over_k_and_kq(model, grid,
+            grid; calculators = [c], progress_print_step = 10^9, kwargs(_force_phonons_per_batch, tol)...); c)
+        c_trunc, c_full, c_inf = runbte(true, 6σ), runbte(false, 6σ), runbte(false, Inf)
         Sᵢ_inf, Sₒ_inf = stack(c_inf.Sᵢ), stack(c_inf.Sₒ)
         @test count(!iszero, Sᵢ_inf) > 100 && maximum(Sₒ_inf) > 0
         for c in (c_trunc, c_full)
