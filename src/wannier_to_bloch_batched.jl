@@ -205,17 +205,18 @@ end
                                   ukqs; g=nothing, tmp=nothing)
 
 Batched over a list of q-points (for a fixed k). `ukqs` is `(nw, nbandkq, nq)` and
-`u_phs` is `(nmodes, nmodes, nq)`. Writes `ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nq)`.
+`u_phs` is `(ndisp, nmodes, nq)`: the phonon basis, `nmodes ≤ ndisp` of its columns. Writes
+`ep_kq_all`, shape `(nbandkq, nbandk, nmodes, nq)`.
 
 One batched Fourier over `R_ep`, then two `batched_gemm!`s for the per-q rotations
 (`ukq(q)'` on the left, `u_ph(q)` on the right).
 
-The three inputs are the kR intermediate `g(k, R_p)` as `ep_kR`, `(nw*nbandk*nmodes, nr)`; the
+The three inputs are the kR intermediate `g(k, R_p)` as `ep_kR`, `(nw*nbandk*ndisp, nr)`; the
 Fourier phase `exp(2πi R_p · x_q)` as `phase`, `(nr, nq)`; and the rotations. Taking the phase
 rather than a q-list is what lets a caller build it once and reuse it over many `k` — the outer-k
 engine does that via the k+q convention of [`eph_rotate_kR_batched!`](@ref).
 
-`g` `(nw*nbandk*nmodes, nq)` and `tmp` `(nbandkq, nbandk*nmodes, nq)` are the scratch at exactly
+`g` `(nw*nbandk*ndisp, nq)` and `tmp` `(nbandkq, nbandk*ndisp, nq)` are the scratch at exactly
 this `nq`, reused across calls; `nothing` allocates them.
 """
 function compute_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
@@ -223,19 +224,20 @@ function compute_eph_kR_to_kq_batched!(ep_kq_all::AbstractArray{Complex{T},4},
                                    g=nothing, tmp=nothing) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
-    ndata = nw * nbandk * nmodes
+    ndisp = size(u_phs, 1)
+    ndata = nw * nbandk * ndisp
     @assert size(ukqs) == (nw, nbandkq, nq)
-    @assert size(u_phs) == (nmodes, nmodes, nq)
+    @assert size(u_phs) == (ndisp, nmodes, nq)
     @assert size(ep_kR, 1) == ndata
     @assert size(phase) == (size(ep_kR, 2), nq)
 
     g = g === nothing ? similar(ep_kR, Complex{T}, ndata, nq) : g
-    tmp = tmp === nothing ? similar(ep_kR, Complex{T}, nbandkq, nbandk * nmodes, nq) : tmp
+    tmp = tmp === nothing ? similar(ep_kR, Complex{T}, nbandkq, nbandk * ndisp, nq) : tmp
     @assert size(g) == (ndata, nq)
-    @assert size(tmp) == (nbandkq, nbandk * nmodes, nq)
+    @assert size(tmp) == (nbandkq, nbandk * ndisp, nq)
 
-    mul!(g, ep_kR, phase)                                              # (nw*nbandk*nmodes, nq)
-    eph_apply_rotations!(ep_kq_all, reshape(g, nw, nbandk, nmodes, nq), ukqs, u_phs, tmp)
+    mul!(g, ep_kR, phase)                                              # (nw*nbandk*ndisp, nq)
+    eph_apply_rotations!(ep_kq_all, reshape(g, nw, nbandk, ndisp, nq), ukqs, u_phs, tmp)
     ep_kq_all
 end
 
@@ -324,9 +326,9 @@ end
 """
     eph_apply_rotations!(ep_kq_all, g, ukqs, u_phs, tmp)
 
-Apply the two e-ph gauge rotations to the Fourier-interpolated `g` `(nw, nbandk, nmodes, nq)`,
+Apply the two e-ph gauge rotations to the Fourier-interpolated `g` `(nw, nbandk, ndisp, nq)`,
 writing the eigenbasis e-ph matrix `ep_kq_all`
-`(nbandkq, nbandk, nmodes, nq)` = `ukq(q)' * g(q) * u_ph(q)`.
+`(nbandkq, nbandk, nmodes, nq)` = `ukq(q)' * g(q) * u_ph(q)`, with `u_phs` `(ndisp, nmodes, nq)`.
 
 The two-GEMM paths merge `g`'s band and mode axes with a `reshape`, so they require a dense `g`
 (asserted); the CUDA extension's fused path indexes `g` elementwise and takes any strided view.
@@ -340,10 +342,11 @@ function eph_apply_rotations!(ep_kq_all::AbstractArray{Complex{T},4}, g::Abstrac
                               ukqs, u_phs, tmp) where {T}
     nbandkq, nbandk, nmodes, nq = size(ep_kq_all)
     nw = size(ukqs, 1)
-    @assert size(g) == (nw, nbandk, nmodes, nq)
+    ndisp = size(u_phs, 1)
+    @assert size(g) == (nw, nbandk, ndisp, nq)
     @assert _is_dense(g) "the two-GEMM rotation path needs a dense g; a strided g is only supported by the CUDA fused kernel"
-    batched_gemm!('C', 'N', ukqs, reshape(g, nw, nbandk * nmodes, nq), tmp)   # ukq(q)' * g(q)
-    batched_gemm!('N', 'N', reshape(tmp, nbandkq * nbandk, nmodes, nq), u_phs,
+    batched_gemm!('C', 'N', ukqs, reshape(g, nw, nbandk * ndisp, nq), tmp)    # ukq(q)' * g(q)
+    batched_gemm!('N', 'N', reshape(tmp, nbandkq * nbandk, ndisp, nq), u_phs,
                   reshape(ep_kq_all, nbandkq * nbandk, nmodes, nq))           # * u_ph(q)
     ep_kq_all
 end

@@ -156,6 +156,16 @@ branch.
 free_bytes(::CPUBackend) = typemax(Int)
 
 """
+    device_budget(backend, max_device_bytes) -> Int
+
+The device bytes a plan may use: `free_bytes(backend)`, at most `max_device_bytes` (`nothing`: no cap).
+`CPUBackend` keeps the `typemax(Int)` sentinel of `free_bytes`, whatever the cap.
+"""
+device_budget(backend, max_device_bytes) =
+    min(free_bytes(backend), something(max_device_bytes, typemax(Int)))
+device_budget(::CPUBackend, _) = typemax(Int)
+
+"""
     reclaim_device_memory(backend)
 
 Return `backend`'s cached-but-unused device memory to the driver, so that the next `free_bytes`

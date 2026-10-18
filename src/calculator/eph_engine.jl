@@ -49,9 +49,6 @@ end
 Scratch for one thread chunk's inner tiles. `ind_kept_kqpairs` lists the kept pairs of a tile,
 `ikqs` and `iqs` their indices (`iqs_dev` on the backend), and `els_kq`, `phs`, `wtqs`, `xkqs` and
 `P_kq` hold their gathered k+q states, phonons, weights, k+q coordinates and Fourier phase.
-With the pairs selected on a device (`OuterKEngine.qtable_dev`), `keep_dev`, `pos_dev` and
-`iqs_tile_dev` hold each pair's keep flag, its running count and its q index, `ikqs_dev` the kept
-pairs' k+q indices, and `n_kept_host` the count read back; all are `nothing` otherwise.
 `itp_el_ham`, `hk` and `kqs` solve k+q per tile for an inner q grid, and are `nothing` for an inner
 k+q grid.
 `u_ph_id` holds the cartesian phonon basis, `dg` and `dg_d` serve covariant derivatives, and
@@ -63,11 +60,6 @@ Base.@kwdef struct OuterKTileWorkspace
     ikqs
     iqs
     iqs_dev
-    keep_dev
-    pos_dev
-    iqs_tile_dev
-    ikqs_dev
-    n_kept_host
     els_kq
     phs
     wtqs
@@ -121,6 +113,55 @@ Base.@kwdef struct OuterQTileWorkspace
 end
 
 """
+    DevicePairSelection
+
+The buffers of `_select_kqpairs_on_device!`, which selects the (k, k+q) pairs of an outer-k run
+over a k+q grid on the device: `ckq_dev` the k+q grid coordinates (`_pair_grid_coords`) and
+`qtable_dev` the Int32 q index of each grid hash (0: none), for the whole run; per pair of a tile,
+`keep_dev` its keep flag, `pos_dev` the running count and `iqs_tile_dev` its q index; `ikqs_dev`
+the kept pairs' k+q indices and `n_kept_host` their number read back. One per engine: a device run
+has one thread chunk. `compact = false` leaves `pos_dev` and `ikqs_dev` empty, for a selection that
+only marks the kept q (`_mark_conserving_qs!`).
+"""
+struct DevicePairSelection{MI, VQ, VI}
+    ckq_dev      :: MI
+    qtable_dev   :: VQ
+    keep_dev     :: VI
+    pos_dev      :: VI
+    iqs_tile_dev :: VI
+    ikqs_dev     :: VI
+    n_kept_host  :: Vector{Int}
+end
+
+function DevicePairSelection(backend, ckq, qpts, n_tile; compact = true)
+    qtable = zeros(Int32, prod(qpts.ngrid))
+    for (iq, xq) in enumerate(qpts.vectors)
+        qtable[_hash_xk(xq, qpts.ngrid, qpts.shift) + 1] = iq
+    end
+    n_compact = compact ? n_tile : 0
+    DevicePairSelection(to_device_copy(backend, ckq), to_device_copy(backend, qtable),
+        alloc(backend, Int, n_tile), alloc(backend, Int, n_compact), alloc(backend, Int, n_tile),
+        alloc(backend, Int, n_compact), Vector{Int}(undef, 1))
+end
+
+"""
+    PhononsPerBatch
+
+The phonons of an outer-k run built per outer batch, for the q of the batch's kept pairs only:
+`ω_kept` the kept modes' frequencies of every q, which select the pairs; `iqs_per_batch[b]` the q of
+batch b's kept pairs (`_select_qs_per_outer_batch`); `phs_capacity` the storage of the largest
+batch's phonons; `iq_to_ph_dev` the Int32 index of each q in the current batch's phonons (0: none)
+and `iqs_ph_dev` that of a tile's kept pairs.
+"""
+struct PhononsPerBatch{W, P, VQ, VI}
+    ω_kept         :: W
+    iqs_per_batch :: Vector{Vector{Int32}}
+    phs_capacity  :: P
+    iq_to_ph_dev  :: VQ
+    iqs_ph_dev    :: VI
+end
+
+"""
     OuterKEngine
 
 The `OuterKLoop` engine: g(k, R_p) for an outer-k batch (stage 1), then g(k, k+q) for one k and a
@@ -138,7 +179,7 @@ Base.@kwdef mutable struct OuterKEngine
     model        :: Model
     els_k        :: BatchedElectronState
     els_kq       :: Union{Nothing, BatchedElectronState}
-    phs          :: BatchedPhononState
+    phs          :: BatchedPhononState  # every q, or the current outer batch's (`phonons_per_batch`)
     kpts         :: AbstractKpoints
     kqpts        :: Union{Nothing, AbstractKpoints}
     qpts         :: AbstractKpoints
@@ -159,9 +200,8 @@ Base.@kwdef mutable struct OuterKEngine
     wtkqs                         # (nkq,) their weights
     ck           :: Matrix{Int}     # (3, nk) k coordinates on the q grid (`_pair_grid_coords`)
     ckq          :: Matrix{Int}     # (3, nkq) k+q coordinates on the q grid
-    ckq_dev                       # `ckq` on the device, or `nothing`
-    qtable_dev                    # (prod(qpts.ngrid),) Int32 q index of each grid hash (0: none) on
-                                  # the device, or `nothing`: the pairs are selected on the host
+    pair_selection                # a `DevicePairSelection`, or `nothing`: the pairs are selected on the host
+    phonons_per_batch             # a `PhononsPerBatch`, or `nothing`: `phs` holds every q
     P_mk                          # (nr_p, n_outer_batch) exp(-2πi R_p · x_k)
     ep_kR                         # stage-1 output, one (nw b nmodes, nr_p, n_b) segment per band class b
     dg_kR                         # the same, (nw b nmodes, nr_p, 3, n_b) segments, or `nothing`
@@ -307,16 +347,37 @@ end
 
 # ---- OuterKEngine ----------------------------------------------------------------------------
 
-# Whether an outer-k run selects the pairs of a k+q tile on the device (`_select_kqpairs_on_device!`):
-# over a k+q grid, on a device, with a finite `energy_conservation_tol`. With `Inf` the host's q index
-# overlaps the device's work.
-_uses_device_pair_selection(backend, inner_loop_kq, energy_conservation_tol) =
-    inner_loop_kq && !(backend isa CPUBackend) && isfinite(energy_conservation_tol)
+# The device bytes the phonons per outer batch add to the outer-k engine (`engine_bytes`): the
+# storage of the largest batch's phonons, the q index and upload, and the transients of one batch's
+# phonon solve (`compute_phonon_states_batched` into the storage) in `persistent`; the pair's
+# `iqs_ph_dev` entry in `per_pair`.
+function _phonon_batches_bytes(model::Model{FT}, backend, phonon_batches) where {FT}
+    phonon_batches === nothing && return (; persistent = 0, per_pair = 0)
+    (; nmodes) = model
+    cx, rl = sizeof(Complex{FT}), sizeof(FT)
+    nq_max = maximum(length, phonon_batches.iqs_per_batch; init = 0)
+    # The solve's transients: the dynamical matrices with their R vectors, the interpolator's Fourier
+    # phase and output, the masses, and per Fourier block the D(q) stack, its eigenvalues and the
+    # staged q.
+    ph_solve = if nq_max == 0
+        0
+    else
+        nr_ph, ndata_ph = length(model.ph_dyn.irvec), model.ph_dyn.ndata
+        nblock = _default_batch_size(backend, nr_ph, ndata_ph; nk_hint = nq_max)
+        cx * length(model.ph_dyn.op_r) + rl * 3nr_ph + cx * nr_ph * nblock + cx * ndata_ph + rl * nmodes +
+            (cx * ndata_ph + rl * nmodes + rl * 3) * nblock
+    end
+    persistent = _phonon_state_bytes(FT, size(phonon_batches.ω_kept, 1), (:e, :u); ndisp = nmodes) * nq_max +
+        sizeof(Int32) * (size(phonon_batches.ω_kept, 2) + nq_max) + ph_solve
+    (; persistent, per_pair = sizeof(Int))
+end
 
 function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband_max_kq, nk, nkq,
         el_qty, ph_qty, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
-        device_pair_selection = false, nq_grid = 0) where {FT}
+        device_pair_selection = false, nq_grid = 0, nmodes_kept = model.nmodes,
+        phonon_batches = nothing, backend = nothing) where {FT}
     (; nw, nmodes) = model
+    batch_ph = _phonon_batches_bytes(model, backend, phonon_batches)
     cx, rl, iz = sizeof(Complex{FT}), sizeof(FT), sizeof(Int)
     nr_p = length(model.epmat.irvec_next)
     nr_e = length(model.epmat.irvec)
@@ -331,7 +392,8 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
         cx * nrows + (covariant_derivative_of_g ? cx * 3nrows : 0) +  # interpolator outputs
         rl * 3 * nkq + rl * nkq +                               # xkqs, wtkqs
         (inner_loop_kq ? 0 : cx * length(model.el_ham.op_r)) +    # el_ham
-        (device_pair_selection ? iz * 3nkq + sizeof(Int32) * nq_grid : 0)  # ckq_dev, qtable_dev
+        (device_pair_selection ? iz * 3nkq + sizeof(Int32) * nq_grid : 0) +  # ckq_dev, qtable_dev
+        batch_ph.persistent                                     # phonons per outer batch
     per_outer =
         cx * ndata * nr_p * nd +                                # ep_kR (+ dg_kR)
         cx * nr_p + 2rl * 3 +                                   # P_mk, xks, mxks
@@ -339,15 +401,16 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
         cx * nrows_max +                                        # g_fourier
         cx * (nrows + 2 * nband_max_k * nrows ÷ nw) * nd +      # transients of eph_rotate_kR_batched!
         sum(b -> _electron_state_bytes(FT, nw, b, el_qty), 1:nband_max_k; init = 0)  # els_k_classes
-    nbox = nband_max_kq * nband_max_k * nmodes
+    nbox = nband_max_kq * nband_max_k * nmodes_kept             # ep box, in the modes the run keeps
     per_pair =
         cx * nbox * (covariant_derivative_of_g ? 5 : 1) +       # ep (+ dg and its per-direction scratch)
-        cx * ndata + cx * nbox +                                # stage-2 scratch g, tmp
+        cx * ndata + cx * nband_max_kq * nband_max_k * nmodes + # stage-2 scratch g, tmp
         cx * nr_p +                                             # P_kq
         _electron_state_bytes(FT, nw, nband_max_kq, el_qty) +   # k+q tile
-        _phonon_state_bytes(FT, nmodes, ph_qty) +               # phs tile
+        _phonon_state_bytes(FT, nmodes_kept, ph_qty; ndisp = nmodes) +  # phs tile
         4iz + rl + 3rl +                                        # kept pairs, ikqs, iqs, iqs_dev, wtqs, x_{k+q}
         (device_pair_selection ? 4iz : 0) +                     # keep, pos, iqs_tile, ikqs on the device
+        batch_ph.per_pair +                                     # iqs_ph_dev
         (inner_loop_kq ? 0 :
             cx * length(model.el_ham.irvec) + cx * nw^2 * 3) +  # k+q Fourier phase, H and eigensolve
         (eph_phonon_basis == :cartesian ? cx * nmodes^2 : 0) +  # identity basis
@@ -358,8 +421,14 @@ end
 _electron_state_bytes(FT, nw, nb, qty) = 2sizeof(Int) +
     sizeof(FT) * ((:e ∈ qty) * nb + (:vdiag ∈ qty) * 3nb) +
     sizeof(Complex{FT}) * ((:u ∈ qty) * nw * nb + ((:v ∈ qty) + (:rbar ∈ qty)) * 3nb^2)
-_phonon_state_bytes(FT, nm, qty) = sizeof(FT) * ((:e ∈ qty) * nm + (:vdiag ∈ qty) * 3nm) +
-    sizeof(Complex{FT}) * ((:u ∈ qty) * nm^2 + (:eph_dipole_coeff ∈ qty) * nm + (:eph_r_coeff ∈ qty) * 3nm)
+_phonon_state_bytes(FT, nm, qty; ndisp = nm) = sizeof(FT) * ((:e ∈ qty) * nm + (:vdiag ∈ qty) * 3nm) +
+    sizeof(Complex{FT}) * ((:u ∈ qty) * ndisp * nm + (:eph_dipole_coeff ∈ qty) * nm + (:eph_r_coeff ∈ qty) * 3nm)
+
+# Whether an outer-k run selects the pairs of a k+q tile on the device (`_select_kqpairs_on_device!`):
+# over a k+q grid, on a device, with a finite `energy_conservation_tol`. With `Inf` the host's q index
+# overlaps the device's work.
+_uses_device_pair_selection(backend, inner_loop_kq, energy_conservation_tol) =
+    inner_loop_kq && !(backend isa CPUBackend) && isfinite(energy_conservation_tol)
 
 """
     OuterKEngine(model, backend, els_k, els_kq, phs, el_qty, ph_qty; kwargs...)
@@ -373,14 +442,18 @@ tile. It defaults to `els_kq !== nothing`; a contradicting value is an `Argument
 `n_outer_batch` and `n_inner_tile` set the buffer capacities; `nchunks` sets the number of
 independent thread workspaces. `el_qty` / `ph_qty` select stored state fields.
 `energy_conservation_tol` skips point pairs (`_kqpairs_conserving_energy!`); it does not change any
-band window or phonon-mode selection. `covariant_derivative_of_g` allocates the three derivative
+band window. `phs` may hold only the lowest `phs.nmodes` modes (`size(phs.u, 1) == model.nmodes`
+displacements), and the blocks then carry that many. `covariant_derivative_of_g` allocates the three derivative
 components; `eph_phonon_basis` selects eigenmode or cartesian phonons.
+With `phonon_batches = (; ω_kept, iqs_per_batch)` (`_setup_phonons`: the kept modes' frequencies of
+every q, and the q of each outer batch), `stage1!` builds the phonons of each outer batch's q and
+`phs` is an empty container with the run's modes; this needs the device pair selection.
 """
 function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_qty; kpts, kqpts, qpts,
         inner_loop_kq = els_kq !== nothing, n_outer_batch, n_inner_tile, nchunks,
         covariant_derivative_of_g,
         eph_phonon_basis, sel_k = nothing, sel_kq = nothing, window_kq = (-Inf, Inf),
-        energy_conservation_tol = Inf) where {FT}
+        energy_conservation_tol = Inf, phonon_batches = nothing) where {FT}
     # Validate the model layout and prepare the stage-1 interpolators for the selected inner loop.
     (; nw, nmodes) = model
     _require_epmat_layout(OuterKLoop(), model)
@@ -420,18 +493,22 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     # The q index of a pair by integer grid hash (`_fill_iqs!`). Not needed without a k+q grid.
     ck, ckq = inner_loop_kq ? _pair_grid_coords(kpts, kqpts, qpts) :
         (Matrix{Int}(undef, 3, 0), Matrix{Int}(undef, 3, 0))
-
-    # With a finite tolerance on a device, the pairs of a k+q tile are selected there
-    # (`_select_kqpairs_on_device!`), from the k+q coordinates and a dense table of the q index of
-    # each grid hash, both uploaded once. With `Inf` the host's q index overlaps the device's work.
     device_pair_selection = _uses_device_pair_selection(backend, inner_loop_kq, energy_conservation_tol)
-    ckq_dev = device_pair_selection ? to_device_copy(backend, ckq) : nothing
-    qtable_dev = if device_pair_selection
-        qtable = zeros(Int32, prod(qpts.ngrid))
-        for (iq, xq) in enumerate(qpts.vectors)
-            qtable[_hash_xk(xq, qpts.ngrid, qpts.shift) + 1] = iq
-        end
-        to_device_copy(backend, qtable)
+    device_pair_selection && nchunks > 1 &&
+        throw(ArgumentError("the device pair selection runs on one thread chunk, got nchunks = $nchunks"))
+    pair_selection = device_pair_selection ? DevicePairSelection(backend, ckq, qpts, n_inner_tile) : nothing
+    (phonon_batches === nothing || device_pair_selection) ||
+        throw(ArgumentError("phonons per outer batch need the device pair selection"))
+    (phonon_batches === nothing || length(phonon_batches.iqs_per_batch) == cld(kpts.n, n_outer_batch)) ||
+        throw(ArgumentError("iqs_per_batch holds $(length(phonon_batches.iqs_per_batch)) outer " *
+            "batches, but n_outer_batch = $n_outer_batch makes $(cld(kpts.n, n_outer_batch)) of " *
+            "$(kpts.n) outer k"))
+    phonons_per_batch = if phonon_batches !== nothing
+        # One storage for every batch, made before the loop's transients fragment the pool.
+        nq_max = maximum(length, phonon_batches.iqs_per_batch; init = 0)
+        PhononsPerBatch(phonon_batches.ω_kept, phonon_batches.iqs_per_batch,
+            BatchedPhononState(backend, phs.nmodes, nq_max, [:e, :u]; FT, ndisp = nmodes),
+            alloc(backend, Int32, qpts.n), alloc(backend, Int, n_inner_tile))
     end
     el_ham = inner_loop_kq ? nothing : to_device(backend, model.el_ham)
     # A partial last batch operates on views of the leading columns of the maximum-capacity buffers.
@@ -453,24 +530,19 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
             ikqs = Vector{Int}(undef, n_inner_tile),
             iqs = Vector{Int}(undef, n_inner_tile),
             iqs_dev = alloc(backend, Int, n_inner_tile),
-            keep_dev = device_pair_selection ? alloc(backend, Int, n_inner_tile) : nothing,
-            pos_dev = device_pair_selection ? alloc(backend, Int, n_inner_tile) : nothing,
-            iqs_tile_dev = device_pair_selection ? alloc(backend, Int, n_inner_tile) : nothing,
-            ikqs_dev = device_pair_selection ? alloc(backend, Int, n_inner_tile) : nothing,
-            n_kept_host = device_pair_selection ? Vector{Int}(undef, 1) : nothing,
             els_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
-            phs = BatchedPhononState(backend, nmodes, n_inner_tile, ph_qty; FT),
+            phs = BatchedPhononState(backend, phs.nmodes, n_inner_tile, ph_qty; FT, ndisp = nmodes),
             wtqs = alloc(backend, FT, n_inner_tile),
             itp_el_ham, hk, kqs,
             xkqs = alloc(backend, FT, 3, n_inner_tile),
             P_kq = alloc(backend, Complex{FT}, nr_p, n_inner_tile),
             u_ph_id = eph_phonon_basis == :cartesian ? to_device_copy(backend,
                 repeat(Matrix{Complex{FT}}(I, nmodes, nmodes), 1, 1, n_inner_tile)) : nothing,
-            ep = alloc(backend, Complex{FT}, nbkq * nbk * nmodes * n_inner_tile),
+            ep = alloc(backend, Complex{FT}, nbkq * nbk * phs.nmodes * n_inner_tile),
             g = alloc(backend, Complex{FT}, ndata, n_inner_tile),
             tmp = alloc(backend, Complex{FT}, nbkq * nbk * nmodes * n_inner_tile),
-            dg = covariant_derivative_of_g ? alloc(backend, Complex{FT}, nbkq * nbk * nmodes * 3 * n_inner_tile) : nothing,
-            dg_d = covariant_derivative_of_g ? alloc(backend, Complex{FT}, nbkq * nbk * nmodes * n_inner_tile) : nothing,
+            dg = covariant_derivative_of_g ? alloc(backend, Complex{FT}, nbkq * nbk * phs.nmodes * 3 * n_inner_tile) : nothing,
+            dg_d = covariant_derivative_of_g ? alloc(backend, Complex{FT}, nbkq * nbk * phs.nmodes * n_inner_tile) : nothing,
             uk_polar = model.polar_eph.use ? alloc(backend, Complex{FT}, nw * nbk * n_inner_tile) : nothing,
             mmat_buffer = model.polar_eph.use ? alloc(backend, Complex{FT}, nbkq * nbk * n_inner_tile) : nothing,
         )
@@ -482,8 +554,8 @@ function OuterKEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
         energy_conservation_tol, eph_phonon_basis, inner_loop_kq, iks_batch = 1:0,
         backend, epmat, itp_epmat, itp_epmat_R,
         irvecp_mat = _irvec_to_device_matrix(backend, irvec_p, FT), mxks = alloc(backend, FT, 3, n_outer_batch), xkqs,
-        wtkqs = to_device_copy(backend, collect(FT, inner_pts.weights)), ck, ckq, ckq_dev, qtable_dev,
-        P_mk,
+        wtkqs = to_device_copy(backend, collect(FT, inner_pts.weights)), ck, ckq,
+        pair_selection, phonons_per_batch, P_mk,
         ep_kR = alloc(backend, Complex{FT}, ndata, nr_p, n_outer_batch),
         dg_kR = covariant_derivative_of_g ? alloc(backend, Complex{FT}, ndata, nr_p, 3, n_outer_batch) : nothing,
         nband_k_host = Array(els_k.nband),
@@ -508,6 +580,24 @@ function stage1!(eng::OuterKEngine, iks_batch::UnitRange{Int})
     isempty(iks_batch) && throw(ArgumentError("stage1! needs a nonempty outer batch"))
     _check_outer_batch(iks_batch, eng.kpts.n, eng.n_outer_batch)
     eng.iks_batch = iks_batch
+    ppb = eng.phonons_per_batch
+    if ppb !== nothing
+        # Phonons per outer batch: those of the q the batch's kept pairs use, and the index of each
+        # q in them.
+        b, r = divrem(first(iks_batch) - 1, eng.n_outer_batch)
+        (r == 0 && last(iks_batch) == min(first(iks_batch) + eng.n_outer_batch - 1, eng.kpts.n)) ||
+            throw(ArgumentError("with phonons per outer batch, stage1! takes the batches of the loop"))
+        iqs = ppb.iqs_per_batch[b + 1]
+        eng.phs = if isempty(iqs)
+            # No pair of the batch is kept.
+            view(ppb.phs_capacity, 1:0)
+        else
+            compute_phonon_states_batched(eng.model, Kpoints(eng.qpts.vectors[iqs]), [:e, :u];
+                backend = eng.backend, nmodes_kept = eng.phs.nmodes, phs_out = view(ppb.phs_capacity, 1:length(iqs)))
+        end
+        fill!(ppb.iq_to_ph_dev, 0)
+        view(ppb.iq_to_ph_dev, to_device_copy(eng.backend, iqs)) .= Int32(1):Int32(length(iqs))
+    end
     # function barrier for the outer-k stage-1 buffers.
     _stage1!(OuterKLoop(), _workspace_fields(eng), iks_batch)
     eng
@@ -549,6 +639,7 @@ end
     # the covariant derivative, direction d: dg_ijad(R_e, R_p) -> dg_inad(k, R_p) into `dg_kR`.
     nw, nmodes, nr_p = eng_fields.model.nw, eng_fields.model.nmodes, size(eng_fields.P_mk, 1)
     for (b, cols) in classes
+        # Class b holds the k with exactly b bands (`nband_k_host`), into a box of width b.
         copy_batched_electron_states!(eng_fields.els_k_classes[b], eng_fields.els_k, iks_sorted[cols])
     end
     for (itp, out, iout) in ((eng_fields.itp_epmat, eng_fields.ep_kR, 1),
@@ -613,7 +704,7 @@ end
         offset = eng_fields.class_offsets[2, b] + 3 * nrows * nr_p * (j - 1))
     tol = eng_fields.energy_conservation_tol
     (; ind_kept_kqpairs) = tile_workspace
-    (; phs) = eng_fields
+    (; phs, phonons_per_batch) = eng_fields
 
     if eng_fields.inner_loop_kq
         # Inner k+q points (run_eph_over_k_and_kq): the k+q states are resident, and each has a
@@ -623,7 +714,7 @@ end
         ikqs_tile = inner_indices
         (; els_kq) = eng_fields
         iqs_host = tile_workspace.iqs
-        if eng_fields.qtable_dev === nothing
+        if eng_fields.pair_selection === nothing
             # On the host.
             _fill_iqs!(iqs_host, eng_fields.qpts, eng_fields.ck, eng_fields.ckq, ik, first(ikqs_tile), n_tile)
             n_kept = if isinf(tol)
@@ -646,10 +737,13 @@ end
             copyto!(tile_workspace.iqs_dev, 1, iqs_host, 1, n_kept)
         else
             # On the device. The kept pairs' q indices come back for the block's `xq`.
-            n_kept = _select_kqpairs_on_device!(tile_workspace, eng_fields, els_k, ik, first(ikqs_tile),
-                                                n_tile, tol)
+            (; ck, pair_selection) = eng_fields
+            ω_q = phonons_per_batch === nothing ? phs.e : phonons_per_batch.ω_kept
+            n_kept = _select_kqpairs_on_device!(tile_workspace.iqs_dev, pair_selection,
+                (ck[1, ik], ck[2, ik], ck[3, ik]), eng_fields.qpts.ngrid, els_k, els_kq,
+                first(ikqs_tile), n_tile, ω_q, tol)
             n_kept == 0 && return nothing
-            ikqs_kept = tile_workspace.ikqs_dev[1:n_kept]
+            ikqs_kept = pair_selection.ikqs_dev[1:n_kept]
             copyto!(iqs_host, 1, tile_workspace.iqs_dev, 1, n_kept)
             all(>(0), iqs_host[1:n_kept]) ||
                 throw(ArgumentError("kq - k = q point not found in precomputed qpts"))
@@ -676,9 +770,21 @@ end
             build_fourier_phase!(phase, eng_fields.irvecp_mat, xkqs)
         end
 
-        # Gather the kept pairs' phonons.
+        # Gather the kept pairs' phonons, by their index in `phs`: the q index, or the index in the
+        # batch's phonons when those are built per outer batch.
         iqs = tile_workspace.iqs_dev[1:n_kept]
-        phs_block = view(copy_batched_phonon_states!(tile_workspace.phs, phs, iqs), 1:n_kept)
+        iqs_ph = if phonons_per_batch === nothing
+            # Every q is resident.
+            iqs
+        else
+            # Phonons per outer batch: the kept pairs' indices into the batch's.
+            (; iqs_ph_dev, iq_to_ph_dev) = phonons_per_batch
+            iqs_ph = iqs_ph_dev[1:n_kept] .= iq_to_ph_dev[iqs]
+            # Index 0 (a kept q missing from the batch's phonons) must not reach the rotation kernel.
+            minimum(iqs_ph) > 0 || error("a kept pair's q is not among its outer batch's phonons")
+            iqs_ph
+        end
+        phs_block = view(copy_batched_phonon_states!(tile_workspace.phs, phs, iqs_ph), 1:n_kept)
         xqs = eng_fields.qpts.vectors[iqs_host[1:n_kept]]
     else
         # Inner q points (run_eph_over_k_and_q): the phonons are resident. Solve the electron
@@ -752,7 +858,7 @@ end
     nbkq, nbk, nmodes, npairs = size(block.ep)
     g = reshape_buffer_view(tile_workspace.g, size(ep_kR, 1), npairs)
     u_ph = tile_workspace.u_ph_id === nothing ? block.phs.u : tile_workspace.u_ph_id[:, :, 1:npairs]
-    tmp = reshape_buffer_view(tile_workspace.tmp, nbkq, nbk * nmodes, npairs)
+    tmp = reshape_buffer_view(tile_workspace.tmp, nbkq, nbk * size(u_ph, 1), npairs)
     compute_eph_kR_to_kq_batched!(block.ep, ep_kR, phase, u_ph,
                                   block.els_kq.u; g, tmp)
 
@@ -1152,17 +1258,27 @@ end
 end
 
 """
-    _select_kqpairs_on_device!(tile_workspace, eng_fields, els_k, ik, ikq_first, n_tile, tol) -> n_kept
+    _select_kqpairs_on_device!(iqs_dev, selection::DevicePairSelection, k_int, ngrid, els_k, els_kq,
+                               ikq_first, n_tile, ω_q, tol) -> n_kept
 
-The device counterpart of `_fill_iqs!` followed by `_kqpairs_conserving_energy!`, for outer k `ik`
-(`els_k` its one-point view) and the k+q tile `ikq_first .+ (0:n_tile-1)` of an `OuterKEngine` with
-`qtable_dev`: the q index of each pair from the same integer grid hash, and the same test
-`|e_k - e_{k+q} ± ω_q| <= tol` over the window bands and every mode. Writes the kept pairs' q and k+q
-indices, in tile order, to the front of `iqs_dev` and `ikqs_dev`, and returns their number, read
-back with one device-to-host copy. A pair whose q is missing from `qpts` is kept with q index 0, for
-the caller to refuse. Defined by the CUDA extension.
+The device counterpart of `_fill_iqs!` followed by `_kqpairs_conserving_energy!`, for one outer k
+(`els_k` its one-point view, `k_int` its reduced grid coordinates) and the k+q tile
+`ikq_first .+ (0:n_tile-1)` of `els_kq`, on the q grid `ngrid`: the q index of each pair from the
+same integer grid hash, and the same test `|e_k - e_{k+q} ± ω_q| <= tol` over the window bands and
+every mode of `ω_q` `(nmodes, nq)`. Writes the kept pairs' q and k+q indices, in tile order, to the
+front of `iqs_dev` and `selection.ikqs_dev`, and returns their number, read back with one
+device-to-host copy. A pair whose q is missing from the q set is kept with q index 0, for the caller
+to refuse. Defined by the CUDA extension.
 """
 function _select_kqpairs_on_device! end
+
+"""
+    _mark_conserving_qs!(q_marks, selection, k_int, ngrid, els_k, els_kq, ikq_first, n_tile, ω_q, tol)
+
+Set `q_marks[iq] = true` for the q of every pair `_select_kqpairs_on_device!` keeps with the same
+arguments. Defined by the CUDA extension.
+"""
+function _mark_conserving_qs! end
 
 """
     eph_engine_add_longrange!(block, tile_workspace, model)

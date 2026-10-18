@@ -1223,6 +1223,11 @@ end
 @testset "plan_batch memory-adaptive sizing + fail-early" begin
     # CPU backend: free is unbounded ⇒ batch = cap.
     @test plan_batch(CPUBackend(), 1600, 1600, 42; what = "cpu") == 42
+    # max_device_bytes leaves the CPU sentinel alone, and caps a device budget.
+    @test plan_batch(CPUBackend(), 1600, 1600, 42; what = "cpu", max_device_bytes = 1000) == 42
+    @test ElectronPhonon.device_budget(_StubBackend(5000), 3000) == 3000
+    @test ElectronPhonon.device_budget(_StubBackend(5000), nothing) == 5000
+    @test_throws ErrorException plan_batch(_StubBackend(10^9), 1600, 16000, 100; max_device_bytes = 1000)
 
     # Stub backend, tight memory: (free - committed) ÷ 10 * 7 ÷ per_point clamps the width.
     per_point, committed, free = 1600, 1600, 1_000_000
