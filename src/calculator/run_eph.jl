@@ -22,21 +22,21 @@ Keywords:
   full grid. Symmetry reduces only a point set given as a grid size: a k-point set
   (`AbstractKpoints`, `FilteredBandStates`) is never reduced. A k+q grid size gives the full-BZ
   selection whatever `symmetry` is, and a k+q set is used as given.
-* `energy_conservation_tol = Inf` — a finite tolerance drops the point pairs with no process inside
-  it (`|e_k - e_{k+q} ± ω_q| <= energy_conservation_tol` for some bands and mode) before the e-ph
-  matrix is computed. It skips pairs and phonon modes only: every term of a kept pair reaches the
-  calculators, whose smearing decides its weight. With a Gaussian of width `η`, `tol = 6η` drops
-  terms below exp(-36) = 2.3e-16 of the Gaussian's peak; a Lorentzian of the same `η` is still
-  ~1/37 of its peak at `6η`, so it needs a much larger tol for the same accuracy. On a GPU only
-  `run_eph_over_k_and_kq` takes a finite tolerance, and then may keep only the lowest phonon modes
-  (see [`allows_phonon_mode_truncation`](@ref)).
+* `energy_conservation_tol = Inf` — keeps only the processes with
+  `|e_k - e_{k+q} ± ω_q| <= energy_conservation_tol`: a finite tolerance drops the point pairs with
+  none before the e-ph matrix is computed, and, on a GPU, the phonon modes with `|ω|` above the
+  window energy range plus the tolerance (see [`allows_phonon_mode_truncation`](@ref)). On a GPU only
+  `run_eph_over_k_and_kq` takes a finite tolerance.
+* `max_device_bytes = nothing` — cap on the device memory of three plans of the run: the outer and
+  inner batch widths, the phonon-mode pass, and resident or per-batch phonons. `nothing`: all free
+  device memory. The residency of a calculator's output (`TiledDeviceOutput`) is not capped.
 * `covariant_derivative_of_g = false` — also compute the covariant derivative `block.dg`.
 * `eph_phonon_basis = :eigenmode` — or `:cartesian` (identity phonon rotation).
 * `fourier_mode = "gridopt"` — or `"normal"`: the interpolation of the setup-time state solves on a
   `CPUBackend` (any other value is an `ArgumentError`; a GPU backend ignores it). The e-ph matrix
   always uses the batched interpolator.
 * `n_outer_batch = 256` — outer k points per stage-1 batch and per calculator bracket.
-* `n_inner_tile` — k+q points per block: as many as fit the free device memory on a GPU, at most
+* `n_inner_tile` — k+q points per block: as many as fit the device budget on a GPU, at most
   1024 per thread chunk on the CPU.
 * `nchunks_threads = nthreads()` — CPU thread chunks over the k+q points (1 on a GPU).
 * `el_k_eigenpairs`, `el_kq_eigenpairs`, `ph_eigenpairs` — caches from
@@ -110,8 +110,6 @@ end
 # run_eph_over_k_and_q (inner q points, with k+q solved per tile) and under `OuterQLoop`.
 # `el_qty` / `ph_qty` are the state quantities of the run: those of the loop, of the caller
 # (`el_quantities` / `ph_quantities`) and of the calculators.
-# `_force_phonons_per_batch` is internal (tests): it builds the phonons of a run that may truncate
-# them per outer batch whatever the free memory (`_phonon_storage_plan`).
 function _run_options(model::Model;
         inner_loop_kq,
         calculators = [],
@@ -134,18 +132,20 @@ function _run_options(model::Model;
         el_k_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         el_kq_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
         ph_eigenpairs::Union{Nothing, Eigenpairs} = nothing,
-        _force_phonons_per_batch::Bool = false,
+        max_device_bytes::Union{Nothing, Integer} = nothing,
         verbosity::Int = 1,
     )
     nchunks_threads > 0 || throw(ArgumentError("nchunks_threads must be positive"))
     (n_outer_batch === nothing || n_outer_batch > 0) || throw(ArgumentError("n_outer_batch must be positive"))
     (n_inner_tile === nothing || n_inner_tile > 0) || throw(ArgumentError("n_inner_tile must be positive"))
+    (max_device_bytes === nothing || max_device_bytes > 0) ||
+        throw(ArgumentError("max_device_bytes must be positive"))
     el_qty = union(loop_el_quantities(), el_quantities, required_el_quantities.(calculators)...)
     ph_qty = union(loop_ph_quantities(model), ph_quantities, required_ph_quantities.(calculators)...)
     (; inner_loop_kq, calculators, el_qty, ph_qty, backend, window_k, window_kq, symmetry,
        precompute_el_kq, energy_conservation_tol, covariant_derivative_of_g,
        eph_phonon_basis, fourier_mode, screening_params, mpi_comm_k, n_outer_batch, n_inner_tile,
-       nchunks_threads, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, _force_phonons_per_batch,
+       nchunks_threads, el_k_eigenpairs, el_kq_eigenpairs, ph_eigenpairs, max_device_bytes,
        verbosity)
 end
 
@@ -177,7 +177,8 @@ function _allocate_engine(order, model, states, options)
         nq_grid = order isa OuterKLoop && inner_loop_kq ? prod(qpts.ngrid) : 0, energy_conservation_tol,
         inner_loop_kq, options.n_outer_batch, options.n_inner_tile, nband_max_k = els_k.nband_max,
         nband_max_kq = els_kq === nothing ? nw : els_kq.nband_max, els_k, els_kq, phs, el_qty, ph_qty,
-        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, phonon_batches)
+        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, phonon_batches,
+        options.max_device_bytes)
     if verbosity > 0 && mpi_isroot()
         @info "e-ph loop: committed = $(round(committed / 1e9, digits = 2)) GB, " *
               "$(round(bytes.per_pair / 1e3, digits = 1)) kB per pair; outer batch = $n_outer_batch, " *
@@ -304,7 +305,7 @@ const GPU_OUTER_Q_TILE_BYTES = 8 * 2^30
 # The widths of a run and the device bytes behind them, for `_run_eph` and `estimate_device_memory`
 # alike, from the requested `n_outer_batch` / `n_inner_tile` (`nothing`: the default). The outer
 # batch is a fixed default (256 outer k; 16 q on a device and 1 on the CPU). The
-# inner tile fills the free device memory left after the persistent and per-batch buffers
+# inner tile fills the device budget left after the persistent and per-batch buffers
 # (`plan_batch` on `engine_bytes` plus each calculator's `calculator_bytes`, `per_pair`
 # once per chunk), capped at all inner points on a device (`GPU_OUTER_Q_TILE_BYTES` of tile under
 # `OuterQLoop`) and at a cache-sized 1024 per chunk on the CPU. `phonon_batches` (see
@@ -314,7 +315,7 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
         nq_grid = 0, energy_conservation_tol = Inf, n_outer_batch, n_inner_tile, nband_max_k,
         nband_max_kq, els_k, els_kq, phs, el_qty, ph_qty,
         precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
-        phonon_batches = nothing)
+        phonon_batches = nothing, max_device_bytes)
     (; nw) = model
     # The modes of the run: `phs` may hold only the lowest ones (`_setup_phonons`).
     nmodes = phs === nothing ? model.nmodes : phs.nmodes
@@ -337,7 +338,7 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
         max(1, GPU_OUTER_Q_TILE_BYTES ÷ bytes.per_pair)
     inner_cap = max(1, min(cld(n_inner, nchunks), something(n_inner_tile, inner_default)))
     committed = bytes.persistent + bytes.per_outer * n_outer_batch
-    n_inner_tile = plan_batch(backend, bytes.per_pair * nchunks, committed, inner_cap;
+    n_inner_tile = plan_batch(backend, bytes.per_pair * nchunks, committed, inner_cap; max_device_bytes,
                               what = order isa OuterKLoop ? "outer-k" : "outer-q")
     (; n_outer_batch, n_inner_tile, committed, bytes)
 end
@@ -349,14 +350,15 @@ _outer_batch_width(order, backend, n_outer_batch, n_outer) =
 
 """
     plan_batch(backend, per_point, committed, cap; headroom_num = 7, headroom_den = 10, what = "",
-               warn = true) -> nbatch
+               warn = true, max_device_bytes = nothing) -> nbatch
 
-Size a batched e-ph loop's batch to free device memory:
-`nbatch = min(cap, (free - committed) · headroom ÷ per_point)`, clamped to at least 1, where
-`per_point` / `committed` are the per-(batched-inner index) and whole-run device-byte counts. On a
-CPU backend `free_bytes` is `typemax(Int)`, so `nbatch = cap`. Errors if the whole-run commitments
-alone exceed free device memory (a clear early failure instead of an OOM mid-loop); `what` names the
-loop in that message. `headroom_num / headroom_den` is the usable fraction of free memory (default
+Size a batched e-ph loop's batch to the device budget (free device memory, at most
+`max_device_bytes`, see [`run_eph_over_k_and_kq`](@ref)):
+`nbatch = min(cap, (free - committed) · headroom ÷ per_point)`, clamped to at least 1, where `free`
+is the budget and `per_point` / `committed` are the per-(batched-inner index) and whole-run device-byte
+counts. On a CPU backend the budget is `typemax(Int)`, so `nbatch = cap`. Errors if the whole-run
+commitments alone exceed the budget (a clear early failure instead of an OOM mid-loop); `what` names
+the loop in that message. `headroom_num / headroom_den` is the usable fraction of free memory (default
 `7/10`, i.e. a 30% headroom for the batched drivers' recycled temporaries), applied in integer
 arithmetic as `x ÷ den * num`. Pass `warn = false`
 for a counterfactual query ("how wide would the batch be at a different `per_point`?"), which must
@@ -364,24 +366,23 @@ not tell the user their batch was reduced.
 """
 function plan_batch(backend::AbstractBackend, per_point::Integer, committed::Integer, cap::Integer;
         headroom_num::Integer = 7, headroom_den::Integer = 10, what::AbstractString = "",
-        warn::Bool = true)
-    free = free_bytes(backend)
+        warn::Bool = true, max_device_bytes = nothing)
+    free = device_budget(backend, max_device_bytes)
     if free != typemax(Int) && committed > free
         error("batched $(what): committed device memory ($(round(committed / 1e9, digits = 2)) GB, " *
-              "whole-run stacks) exceeds free device memory ($(round(free / 1e9, digits = 2)) GB). " *
-              "Reduce the batch cap, the grid size or n_outer_batch.")
+              "whole-run stacks) exceeds the device budget ($(round(free / 1e9, digits = 2)) GB, free memory capped by " *
+              "max_device_bytes). Reduce the batch cap, the grid size or n_outer_batch, or raise max_device_bytes.")
     end
     nb_mem = free == typemax(Int) ? Int(cap) :
         max(1, ((free - committed) ÷ headroom_den * headroom_num) ÷ per_point)
     nbatch = min(Int(cap), nb_mem)
     if warn && free != typemax(Int) && nb_mem < cap
         @warn "WARNING : batch width reduced from the requested cap $(Int(cap)) to $nbatch to fit " *
-            "free device memory in plan_batch$(isempty(what) ? "" : " ($what)"). Performance may " *
+            "the device budget in plan_batch$(isempty(what) ? "" : " ($what)"). Performance may " *
             "degrade compared to smaller calculations."
     end
     nbatch
 end
-
 
 # Every refusal of the loop, before any state is built.
 function _check_run(order, model, kpts_input, second_input, options)
@@ -683,7 +684,7 @@ function estimate_device_memory(model::Model{FT}; nk::Integer, nkq::Integer, n_o
         nchunks = backend isa CPUBackend ? nchunks_threads : 1, n_outer_batch, n_inner_tile,
         nband_max_k = model.nw, nband_max_kq = model.nw, els_k = nothing, els_kq = nothing, phs = nothing,
         el_qty, ph_qty, precompute_el_kq = false, covariant_derivative_of_g = false,
-        eph_phonon_basis = :eigenmode, inner_loop_kq = outer_k)
+        eph_phonon_basis = :eigenmode, inner_loop_kq = outer_k, max_device_bytes = nothing)
     (; loop = outer_k ? :outer_k : :outer_q, plan.committed, plan.bytes.per_pair,
        batch = plan.n_inner_tile, free = free_bytes(backend))
 end

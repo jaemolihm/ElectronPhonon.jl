@@ -4,11 +4,12 @@
 # calculators all `allows_phonon_mode_truncation`, may keep only the modes that can conserve energy:
 # a mode with |ω| > Ω = (E_max - E_min) + tol, E over the resident states of both sides, has no
 # process inside the tolerance for any pair. The ω pass that finds them (a value-only solve over all
-# q) runs when the phonons of all q would take more than 1/PHONON_MODE_PASS_FREE_DIVISOR of the free
-# device memory. The kept modes then live resident, or per outer batch (`_phonon_storage_plan`),
-# for the q of that batch's kept pairs (`_select_qs_per_outer_batch`).
+# q) runs when the phonons of all modes and q would take more than 1/PHONON_MODE_PASS_BUDGET_DIVISOR
+# of the device budget (`device_budget`) left after the loop's buffers. The kept modes then live
+# resident, or per outer batch (`_phonon_storage_plan`), for the q of that batch's kept pairs
+# (`_select_qs_per_outer_batch`).
 #
-# Both choices depend on the free device memory, so a run that may truncate returns no phonons
+# Both choices depend on the device budget, so a run that may truncate returns no phonons
 # (`return_phs = false`): their modes and storage are not a property of the inputs.
 
 # Whether a run may keep only the lowest phonon modes (`_setup_phonons`): an outer-k run over a k+q
@@ -25,17 +26,17 @@ function _may_truncate_phonon_modes(order, model, els_k, els_kq, options)
 end
 
 # The ω pass of `_setup_phonons` (a value-only phonon solve over all q) runs only when the phonons of
-# all q would take more than 1/PHONON_MODE_PASS_FREE_DIVISOR of the free device memory. A
-# performance preference, not a measured threshold: the pass costs setup time (+3.2 s for SrVO3,
-# 10 K, nk = 240, A100-SXM4-80GB at 225 W, commit 8985613) that a run whose phonons fit easily need
-# not pay.
-const PHONON_MODE_PASS_FREE_DIVISOR = 2
+# all modes and q would take more than 1/PHONON_MODE_PASS_BUDGET_DIVISOR of the device budget
+# (`device_budget`) left after the loop's committed buffers. The factor 2 is a guess, not tuned: the
+# pass costs setup time (+3.2 s for SrVO3, 10 K, nk = 240, A100-SXM4-80GB at 225 W, commit 8985613)
+# that a run whose phonons fit easily need not pay.
+const PHONON_MODE_PASS_BUDGET_DIVISOR = 2
 
 # The smallest inner tile a run over a k+q grid keeps before it builds the phonons per outer batch
-# (`_phonon_storage_plan`). A performance preference, not a measured optimum: per-batch phonons
-# rebuild the q of every batch (SrVO3, 10 K, nk = 400, A100-SXM4-80GB at 225 W, commit 7d5f68a: the
-# whole BTE pass took 558.6 s with per-batch phonons vs 231.9 s resident), so a narrower tile with
-# resident phonons is preferred down to here.
+# (`_phonon_storage_plan`). Per-batch phonons rebuild the q of every batch (SrVO3, 10 K, nk = 400,
+# A100-SXM4-80GB at 225 W, commit 7d5f68a: the whole BTE pass took 558.6 s with per-batch phonons
+# vs 231.9 s resident), so resident phonons with a narrower tile are preferred down to this tile.
+# The value 2^16 is a guess, not tuned.
 const GPU_PHONONS_RESIDENT_MIN_TILE = 2^16
 
 # The number of phonon modes a run keeps from the frequencies `ω` `(nmodes, nq)`: those with
@@ -45,19 +46,19 @@ _kept_phonon_modes(ω, Ω) =
     minimum(ω) >= -Ω ? max(1, Int(maximum(sum(ω .<= Ω; dims = 1)))) : size(ω, 1)
 
 """
-    _phonon_storage_plan(; table_bytes, committed, per_pair, free, nkq, n_inner_tile, force_per_batch)
+    _phonon_storage_plan(; table_bytes, committed, per_pair, budget, nkq, n_inner_tile)
         -> (; per_batch, min_tile, needed)
 
 Whether the phonons of a run that may build them per outer batch are built per batch: the kept modes
 of all q (`table_bytes`), the loop's committed buffers and an inner tile of
 `min_tile = min(nkq, something(n_inner_tile, GPU_PHONONS_RESIDENT_MIN_TILE))` points of `per_pair`
-bytes, at `plan_batch`'s default 7/10 headroom, need `needed` bytes. `per_batch` when `needed > free`
-or `force_per_batch`.
+bytes, at `plan_batch`'s default 7/10 headroom, need `needed` bytes. `per_batch` when `needed > budget`
+(the device budget).
 """
-function _phonon_storage_plan(; table_bytes, committed, per_pair, free, nkq, n_inner_tile, force_per_batch)
+function _phonon_storage_plan(; table_bytes, committed, per_pair, budget, nkq, n_inner_tile)
     min_tile = min(nkq, something(n_inner_tile, GPU_PHONONS_RESIDENT_MIN_TILE))
     needed = table_bytes + committed + cld(per_pair * min_tile * 10, 7)
-    (; per_batch = force_per_batch || needed > free, min_tile, needed)
+    (; per_batch = needed > budget, min_tile, needed)
 end
 
 """
@@ -84,6 +85,19 @@ function _select_qs_per_outer_batch(backend, kpts, kqpts, qpts, els_k, els_kq, �
     end
 end
 
+# The loop's widths and committed bytes at an inner tile of 1, with the phonon container `phs` (of
+# no q) fixing the modes. Valid before the engine exists because a device run has one chunk.
+function _plan_loop_without_phonon_table(order, model, kpts, kqpts, qpts, els_k, els_kq, options, phs)
+    (; el_qty, ph_qty, backend, eph_phonon_basis, energy_conservation_tol, calculators, inner_loop_kq,
+       precompute_el_kq, covariant_derivative_of_g, max_device_bytes) = options
+    _plan_widths(order, model, backend, calculators; n_outer = kpts.n, n_inner = kqpts.n,
+        nk = kpts.n, nkq = kqpts.n, nchunks = 1, nq_grid = prod(qpts.ngrid), energy_conservation_tol,
+        options.n_outer_batch, n_inner_tile = 1, nband_max_k = els_k.nband_max,
+        nband_max_kq = els_kq.nband_max, els_k, els_kq, phs, el_qty, ph_qty,
+        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq,
+        max_device_bytes)
+end
+
 # The phonons of a run, from its resident electron states `els_k`, `els_kq` and q set `qpts`. Returns
 # `(; phs, phonon_batches, return_phs)`: `phs` the resident table (or an empty container with the
 # run's modes when they are built per outer batch), `phonon_batches` `nothing` or the per-batch
@@ -91,25 +105,33 @@ end
 # whether the driver may hand `phs` back.
 function _setup_phonons(order, model::Model{FT}, kpts, kqpts, qpts, els_k, els_kq, options,
                         fourier_mode) where {FT}
-    (; el_qty, ph_qty, backend, eph_phonon_basis, ph_eigenpairs, energy_conservation_tol, calculators,
-       inner_loop_kq, precompute_el_kq, covariant_derivative_of_g, _force_phonons_per_batch,
+    (; ph_qty, backend, eph_phonon_basis, ph_eigenpairs, energy_conservation_tol, max_device_bytes,
        verbosity) = options
     truncation_allowed = _may_truncate_phonon_modes(order, model, els_k, els_kq, options)
-    (!_force_phonons_per_batch || truncation_allowed) || throw(ArgumentError(
-        "_force_phonons_per_batch needs a run that may truncate the phonon modes"))
+    resident_phonons(nmodes_kept) = maybe_time(verbosity) do
+        compute_phonon_states_batched(model, qpts, ph_qty; fourier_mode, eph_phonon_basis, backend,
+                                      eigenpairs = ph_eigenpairs, nmodes_kept)
+    end
+    if !truncation_allowed
+        return (; phs = resident_phonons(model.nmodes), phonon_batches = nothing, return_phs = true)
+    end
     # `free_bytes` reads the driver, which does not see the pool's cached memory.
-    truncation_allowed && reclaim_device_memory(backend)
-    if !truncation_allowed || !(_force_phonons_per_batch ||
-            qpts.n * _phonon_state_bytes(FT, model.nmodes, ph_qty) > free_bytes(backend) ÷ PHONON_MODE_PASS_FREE_DIVISOR)
+    reclaim_device_memory(backend)
+    # The loop's buffers with the phonons of all modes and none of the q, which bound what is left for
+    # the phonon table.
+    phs_empty_all = BatchedPhononState(backend, model.nmodes, 0, ph_qty; FT, ndisp = model.nmodes)
+    loop_all = _plan_loop_without_phonon_table(order, model, kpts, kqpts, qpts, els_k, els_kq, options,
+                                               phs_empty_all)
+    left = device_budget(backend, max_device_bytes) - loop_all.committed
+    if qpts.n * _phonon_state_bytes(FT, model.nmodes, ph_qty) <= left ÷ PHONON_MODE_PASS_BUDGET_DIVISOR
         # All modes of all q resident, with no ω pass.
-        phs = maybe_time(verbosity) do
-            compute_phonon_states_batched(model, qpts, ph_qty; fourier_mode, eph_phonon_basis, backend,
-                                          eigenpairs = ph_eigenpairs, nmodes_kept = model.nmodes)
-        end
-        return (; phs, phonon_batches = nothing, return_phs = !truncation_allowed)
+        return (; phs = resident_phonons(model.nmodes), phonon_batches = nothing, return_phs = false)
     end
     # The kept modes, from a value-only solve over all q.
     (emin_k, emax_k), (emin_kq, emax_kq) = _window_energy_range(els_k), _window_energy_range(els_kq)
+    # Ω is the window energy range plus the tolerance. Modes are dropped only when it is below the
+    # top phonon frequency: a narrow window at low T with a small tolerance, where often only the
+    # acoustic modes remain.
     Ω = max(emax_k, emax_kq) - min(emin_k, emin_kq) + energy_conservation_tol
     ω = compute_phonon_states_batched(model, qpts, [:e]; backend).e
     nmodes_kept = _kept_phonon_modes(ω, Ω)
@@ -123,29 +145,22 @@ function _setup_phonons(order, model::Model{FT}, kpts, kqpts, qpts, els_k, els_k
 
     # Where they live: all q resident, or per outer batch, for the q of its kept pairs, selected with
     # the value-only frequencies `ω_kept`. An empty container with the run's modes sizes the plan.
-    phs_empty = BatchedPhononState(backend, nmodes_kept, 0, ph_qty; FT, ndisp = model.nmodes)
-    loop = _plan_widths(order, model, backend, calculators; n_outer = kpts.n, n_inner = kqpts.n,
-        nk = kpts.n, nkq = kqpts.n, nchunks = 1, nq_grid = prod(qpts.ngrid), energy_conservation_tol,
-        options.n_outer_batch, n_inner_tile = 1, nband_max_k = els_k.nband_max,
-        nband_max_kq = els_kq.nband_max, els_k, els_kq, phs = phs_empty, el_qty, ph_qty,
-        precompute_el_kq, covariant_derivative_of_g, eph_phonon_basis, inner_loop_kq)
+    phs_empty = nmodes_kept == model.nmodes ? phs_empty_all :
+        BatchedPhononState(backend, nmodes_kept, 0, ph_qty; FT, ndisp = model.nmodes)
+    loop = nmodes_kept == model.nmodes ? loop_all :
+        _plan_loop_without_phonon_table(order, model, kpts, kqpts, qpts, els_k, els_kq, options, phs_empty)
     table_bytes = qpts.n * _phonon_state_bytes(FT, nmodes_kept, ph_qty; ndisp = model.nmodes)
-    free = free_bytes(backend)
-    plan = _phonon_storage_plan(; table_bytes, loop.committed, loop.bytes.per_pair, free,
-        nkq = kqpts.n, options.n_inner_tile, force_per_batch = _force_phonons_per_batch)
+    budget = device_budget(backend, max_device_bytes)
+    plan = _phonon_storage_plan(; table_bytes, loop.committed, loop.bytes.per_pair, budget,
+        nkq = kqpts.n, options.n_inner_tile)
     if !plan.per_batch
-        phs = maybe_time(verbosity) do
-            compute_phonon_states_batched(model, qpts, ph_qty; fourier_mode, eph_phonon_basis, backend,
-                                          eigenpairs = ph_eigenpairs, nmodes_kept)
-        end
-        return (; phs, phonon_batches = nothing, return_phs = false)
+        return (; phs = resident_phonons(nmodes_kept), phonon_batches = nothing, return_phs = false)
     end
     if verbosity > 0 && mpi_isroot()
         GB(x) = round(x / 1e9, digits = 1)
-        @info "Phonons built per outer batch: " * (plan.needed > free ?
-            "the kept modes of all q ($(GB(table_bytes)) GB) and the loop's buffers need " *
-            "$(GB(plan.needed)) GB at an inner tile of $(plan.min_tile) points, but " *
-            "$(GB(free)) GB are free" : "_force_phonons_per_batch")
+        @info "Phonons built per outer batch: the kept modes of all q ($(GB(table_bytes)) GB) and " *
+            "the loop's buffers need $(GB(plan.needed)) GB at an inner tile of $(plan.min_tile) " *
+            "points, but $(GB(budget)) GB are available"
     end
     # The q of each batch's kept pairs, found before the widths are planned so that the plan holds the
     # largest batch's phonons and their solve. Without the inference barrier, compiling the GPU BTE

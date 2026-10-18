@@ -704,7 +704,7 @@ end
         offset = eng_fields.class_offsets[2, b] + 3 * nrows * nr_p * (j - 1))
     tol = eng_fields.energy_conservation_tol
     (; ind_kept_kqpairs) = tile_workspace
-    (; phs) = eng_fields
+    (; phs, phonons_per_batch) = eng_fields
 
     if eng_fields.inner_loop_kq
         # Inner k+q points (run_eph_over_k_and_kq): the k+q states are resident, and each has a
@@ -737,7 +737,7 @@ end
             copyto!(tile_workspace.iqs_dev, 1, iqs_host, 1, n_kept)
         else
             # On the device. The kept pairs' q indices come back for the block's `xq`.
-            (; ck, pair_selection, phonons_per_batch) = eng_fields
+            (; ck, pair_selection) = eng_fields
             ω_q = phonons_per_batch === nothing ? phs.e : phonons_per_batch.ω_kept
             n_kept = _select_kqpairs_on_device!(tile_workspace.iqs_dev, pair_selection,
                 (ck[1, ik], ck[2, ik], ck[3, ik]), eng_fields.qpts.ngrid, els_k, els_kq,
@@ -773,12 +773,12 @@ end
         # Gather the kept pairs' phonons, by their index in `phs`: the q index, or the index in the
         # batch's phonons when those are built per outer batch.
         iqs = tile_workspace.iqs_dev[1:n_kept]
-        iqs_ph = if eng_fields.phonons_per_batch === nothing
+        iqs_ph = if phonons_per_batch === nothing
             # Every q is resident.
             iqs
         else
             # Phonons per outer batch: the kept pairs' indices into the batch's.
-            (; iqs_ph_dev, iq_to_ph_dev) = eng_fields.phonons_per_batch
+            (; iqs_ph_dev, iq_to_ph_dev) = phonons_per_batch
             iqs_ph = iqs_ph_dev[1:n_kept] .= iq_to_ph_dev[iqs]
             # Index 0 (a kept q missing from the batch's phonons) must not reach the rotation kernel.
             minimum(iqs_ph) > 0 || error("a kept pair's q is not among its outer batch's phonons")

@@ -1,7 +1,7 @@
 using Test
 using ElectronPhonon
 using ElectronPhonon: OuterKLoop, OuterQLoop, OuterKEngine, OuterQEngine, engine_bytes, stage1!,
-    _run_options, _setup_states, unit_to_aru, _select_qs_per_outer_batch
+    _run_options, _setup_states, unit_to_aru, _select_qs_per_outer_batch, _phonon_state_bytes
 
 # `engine_bytes` is what `plan_batch` sizes the inner tile from, before the engine exists: it must
 # cover the device arrays the engine constructor allocates (summed `sizeof`) and what one `stage1!`
@@ -20,15 +20,25 @@ _device_allocated(f) = @eval CUDA.@allocated $f()
 
 isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
 
-# Bytes of every device array reachable from `x` (fields, tuples, vectors), each array once.
-function _device_bytes(x, seen = IdDict{Any, Nothing}())
-    (isbits(x) || x isa Module || x isa DataType || haskey(seen, x)) && return 0
+# Bytes of the device memory reachable from `x` (fields, tuples, vectors). A view of a CuArray is a
+# CuArray at the same pointer, so a buffer is counted once, at the largest size it is reached with.
+function _collect_device_buffers!(buffers, seen, x)
+    (isbits(x) || x isa Module || x isa DataType || haskey(seen, x)) && return buffers
     seen[x] = nothing
-    x isa CuArray && return sizeof(x)
-    x isa Array && return eltype(x) <: Number ? 0 : sum(y -> _device_bytes(y, seen), x; init = 0)
-    x isa AbstractArray && return _device_bytes(parent(x), seen)
-    sum(i -> isdefined(x, i) ? _device_bytes(getfield(x, i), seen) : 0, 1:nfields(x); init = 0)
+    if x isa CuArray
+        buffers[UInt(pointer(x))] = max(get(buffers, UInt(pointer(x)), 0), sizeof(x))
+    elseif x isa Array
+        eltype(x) <: Number || foreach(y -> _collect_device_buffers!(buffers, seen, y), x)
+    elseif x isa AbstractArray
+        _collect_device_buffers!(buffers, seen, parent(x))
+    else
+        for i in 1:nfields(x)
+            isdefined(x, i) && _collect_device_buffers!(buffers, seen, getfield(x, i))
+        end
+    end
+    buffers
 end
+_device_bytes(x) = sum(values(_collect_device_buffers!(Dict{UInt, Int}(), IdDict{Any, Nothing}(), x)); init = 0)
 
 @testset "engine_bytes against the engines' device allocations" begin
     if !ENGINE_BYTES_GPU
@@ -49,14 +59,24 @@ end
                 (OuterKLoop(), "el", true, Inf, false), (OuterQLoop(), "ph", false, Inf, false),
                 (OuterKLoop(), "el", false, 1e-3, false), (OuterKLoop(), "el", false, 1e-3, true))
             model = _load_model_from_artifacts("pb"; epmat_outer_momentum = mom)
-            options = _run_options(model; inner_loop_kq = order isa OuterKLoop, backend,
-                window_k = window, window_kq = window, symmetry = nothing,
-                energy_conservation_tol = tol, _force_phonons_per_batch = per_batch, verbosity = 0)
-            st = _setup_states(order, model, grid, grid, options)
-            # Phonons per outer batch: the largest batch's q, and the engine's phonon solve.
-            phonon_batches = st.phonon_batches === nothing ? nothing :
-                (; ω_kept = st.phonon_batches.ω_kept, iqs_per_batch = _select_qs_per_outer_batch(
-                    backend, st.kpts, st.kqpts, st.qpts, st.els_k, st.els_kq, st.phonon_batches.ω_kept, nb, tol))
+            # The device-selection cases run on a finer k+q grid, whose table of all modes outgrows
+            # the loop's buffers.
+            grid_kq = isfinite(tol) ? (24, 24, 24) : grid
+            run_options(max_device_bytes) = _run_options(model; inner_loop_kq = order isa OuterKLoop,
+                backend, window_k = window, window_kq = window, symmetry = nothing,
+                energy_conservation_tol = tol, n_outer_batch = nb, max_device_bytes, verbosity = 0)
+            st = _setup_states(order, model, grid, grid_kq, run_options(nothing))
+            if per_batch
+                # A cap just under twice the table of all modes sends the run through the ω pass.
+                cap = 2 * st.qpts.n * _phonon_state_bytes(Float64, model.nmodes, run_options(nothing).ph_qty) - 1
+                st = _setup_states(order, model, grid, grid_kq, run_options(cap))
+                @test st.phonon_batches !== nothing
+            end
+            # The q of each outer batch's kept pairs: the phonons per outer batch, and the batch with
+            # the most of them, whose stage 1 the count holds in either case.
+            iqs_per_batch = isfinite(tol) ? _select_qs_per_outer_batch(backend, st.kpts, st.kqpts,
+                st.qpts, st.els_k, st.els_kq, per_batch ? st.phonon_batches.ω_kept : st.phs.e, nb, tol) : nothing
+            phonon_batches = per_batch ? (; ω_kept = st.phonon_batches.ω_kept, iqs_per_batch) : nothing
             nbk = st.els_k.nband_max
             nbkq = st.els_kq === nothing ? model.nw : st.els_kq.nband_max
             common = (; n_outer_batch = nb, n_inner_tile = ntile, nchunks = 1,
@@ -70,7 +90,8 @@ end
                 eng = OuterKEngine(model, backend, st.els_k, st.els_kq, st.phs, el_qty, ph_qty;
                     st.kpts, st.kqpts, st.qpts, covariant_derivative_of_g = dg,
                     energy_conservation_tol = tol, phonon_batches, common...)
-                run1 = () -> stage1!(eng, 1:nb)
+                ib = iqs_per_batch === nothing ? 1 : argmax(length.(iqs_per_batch))
+                run1 = () -> stage1!(eng, (ib - 1) * nb + 1:min(ib * nb, st.kpts.n))
             else
                 bytes = engine_bytes(OuterQEngine, model; nband_max_k = nbk, nband_max_kq = nbkq,
                     nk = st.kpts.n, el_qty, ph_qty,
@@ -98,8 +119,7 @@ end
             isfinite(tol) && (selection_cases[per_batch] = (held + transient, counted))
         end
         # What the per-batch phonons add (their storage, index buffers and per-batch solve) is counted
-        # on its own, not hidden by the rest of the engine. The first batch's solve stands in for the
-        # largest batch's, which the count holds.
+        # on its own, not hidden by the rest of the engine.
         Δmeasured, Δcounted = selection_cases[true] .- selection_cases[false]
         @info "engine_bytes, per-batch phonons" Δmeasured Δcounted ratio = Δmeasured / Δcounted
         @test 0.95 * Δcounted <= Δmeasured <= 1.02 * Δcounted
