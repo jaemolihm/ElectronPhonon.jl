@@ -319,18 +319,17 @@
     end
     ElectronPhonon.postprocess_calculator!(c::_RecordCalcOuterQ; kwargs...) = c
     # `sum` of a device broadcast expression reduces on-device and returns a host scalar without any
-    # scalar indexing (allowed under CUDA.allowscalar(false)). Entries past a window are padding, so the
-    # reduction selects with `ifelse`.
+    # scalar indexing (allowed under CUDA.allowscalar(false)).
     function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.EPBlock{ElectronPhonon.OuterQLoop}, ctx)
-        (; wtk) = p
-        nbkq, nbk, nkc = p.seg_host[ElectronPhonon.SEG_BKQ, 1], p.seg_host[ElectronPhonon.SEG_BK, 1],
-            p.seg_host[ElectronPhonon.SEG_NPAIRS, 1]
-        ep = reshape(p.ep, nbkq, nbk, :, nkc)
-        inwin = (reshape(1:nbkq, nbkq, 1, 1, 1) .<= reshape(p.els_kq.nband, 1, 1, 1, nkc)) .&
-                (reshape(1:nbk, 1, nbk, 1, 1) .<= reshape(p.els_k.nband, 1, 1, 1, nkc))
-        val = sum(ifelse.(inwin, abs2.(ep), 0.0) .* reshape(wtk, 1, 1, 1, nkc))
-        ib = p.iq - first(ctx.iqs_batch) + 1
-        view(c.Adev, ib:ib, ctx.chunk) .+= val
+        # The weighted sum of each pair of every class, then of the pairs of each q of the tile (pairs of several q).
+        for s in ElectronPhonon.eachsegment(p)
+            per_pair = Array(vec(sum(abs2.(s.ep); dims = (1, 2, 3))) .* view(p.wtk, s.pairs))
+            iqs = Array(p.iq)[s.pairs]
+            for iq in unique(iqs)
+                ib = iq - first(ctx.iqs_batch) + 1
+                view(c.Adev, ib:ib, ctx.chunk) .+= sum(per_pair[iqs .== iq])
+            end
+        end
         c
     end
 

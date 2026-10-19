@@ -97,7 +97,7 @@ end
 The e-ph matrix of one tile as a flat list of items `(m, n, ν, j)`: band `m` at k+q, band `n` at k, mode `ν`,
 pair `j` (a (k, k+q) combination of the tile, in class order), on the run's backend. Pairs are split by band
 class `(b_kq, b_k)`; a class's items are stored back to back (`m` fastest, then `n`, `ν`, pair), so under
-`OuterKLoop` no padding is an item (the `OuterQLoop` tile is one box-wide class). Decode an item with
+no padding is an item. Decode an item with
 [`item_indices`](@ref), an entry (a band pair with the mode sum inside) with [`entry_indices`](@ref), on the
 host with [`eachitem`](@ref) / [`eachentry`](@ref) / [`eachsegment`](@ref); [`device_tile`](@ref) gives the
 accessors' arrays to a kernel. The arrays borrow the chunk's storage: consume the tile in `run_calculator!`.
@@ -107,12 +107,11 @@ Fields (`n_items` items, `n_pairs` pairs, `nmodes` modes):
 - `dg` :: `(n_items, 3)` covariant derivative of `ep` (`OuterKLoop` with `covariant_derivative_of_g`), else `nothing`.
 - `phs` :: `BatchedPhononState` of the pairs (`phs.e[ν, j]`, polar coefficients if requested), `phs.nmodes`
   modes (the kept modes if the run truncates them). Under `OuterQLoop` no eigenvectors `u` are gathered.
-- `wtk`, `wtq` :: weights: a scalar for the outer point, a vector for the other side.
-- `xk`, `xq` :: momenta: `Vec3` for the outer point, a host vector for the other side; `xkmat` is `xk` as a
-  `(3, n_pairs)` matrix under `OuterQLoop`, else `nothing`.
-- `ik`, `ikq`, `iq` :: point indices. `OuterKLoop`: `ik::Int`; `ikq` per pair (`nothing` when k+q is solved per
-  tile) and `iq` per pair, on the backend. `OuterQLoop`: `iq::Int`, `ik` per pair (a k can repeat), `ikq`
-  precomputed k+q indices or `nothing`.
+- `wtk`, `wtq` :: weights, per pair on the backend, except `wtk::Float64` under `OuterKLoop`.
+- `xk`, `xq` :: momenta, per pair in host vectors, except `xk::Vec3` under `OuterKLoop`; `xkmat` is `xk` as a
+  `(3, n_pairs)` matrix on the backend under `OuterQLoop`, else `nothing`.
+- `ik`, `ikq`, `iq` :: point indices, per pair on the backend (a k or a q can repeat under `OuterQLoop`), except
+  the outer point's `ik::Int` under `OuterKLoop`; `ikq` is `nothing` when k+q is solved per tile.
 - `seg`, `seg_host` :: segment table, one column per class (at most `nw²`), on the backend and the host. Rows:
   item offset, pair offset, number of pairs, `b_kq`, `b_k`, point and band-slot offsets of the class's states in
   `els_kq` and `els_k`, and 1 if the class shares one k point.

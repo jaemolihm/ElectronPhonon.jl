@@ -24,13 +24,8 @@
         false
     end
 
-    # Assertions the engine does not meet yet, as (route, flag): the k+q side of outer k (the k+q
-    # padding enters the rotations, the polar term and the calculators' `abs2`) and both sides of
-    # outer q. `finite` is absent for
-    # the inner-q route, whose k+q padding is a clamped copy of real bands and so is finite whether or
-    # not it is computed on.
-    const BROKEN = Set([(:q_k_pre, :k_box), (:q_k_pre, :kq_box), (:q_k_pre, :finite),
-                        (:q_k_solved, :k_box), (:q_k_solved, :kq_box), (:q_k_solved, :finite)])
+    # Assertions the engine does not meet yet, as (route, flag); none.
+    const BROKEN = Set{Tuple{Symbol, Symbol}}()
 
     # Overwrite every entry of `els` with `n > nband[k]` (any band index of the field) by NaN.
     function _poison_padding!(els::BatchedElectronState)
@@ -119,7 +114,7 @@
             if kq_energies !== nothing
                 slot0 = tile.seg_host[ElectronPhonon.SEG_KQ_SLOT, s.c]
                 first_slot = slot0 + (jj - 1) * s.b_kq
-                push!(kq_e, (tile.xk[j] + tile.xq, kq_energies[first_slot + 1:first_slot + nbkq[jkq]]))
+                push!(kq_e, (tile.xk[j] + (tile.xq isa ElectronPhonon.Vec3 ? tile.xq : tile.xq[j]), kq_energies[first_slot + 1:first_slot + nbkq[jkq]]))
             end
         end
         for s in ElectronPhonon.eachsegment(tile; ep = Array(tile.ep))
@@ -133,6 +128,11 @@
             append!(c.kq_energies, kq_e)
         end
     end
+
+    # A calculator that asks for the pairs' phonon eigenvectors, which an outer-q block does not carry.
+    struct _WantsU <: ElectronPhonon.AbstractCalculator end
+    ElectronPhonon.supports(::_WantsU, ::Type{OuterQLoop}) = true
+    ElectronPhonon.required_ph_quantities(::_WantsU) = [:u]
 
     # The outputs to compare: the pairs' |g|^2 (and the covariant derivative sums).
     function _check_rule(rule, route; poison)
@@ -164,7 +164,9 @@
         calcs = Any[pair, rule]
         dgrec = dg ? _DgRecorder() : nothing
         dg && push!(calcs, dgrec)
-        common = (; calculators = calcs, backend, window_k = window, window_kq = window, n_inner_tile = 16,
+        # Outer q: tiles of several q (3 per batch, 400 pairs), so a tile holds pairs of more than one q.
+        sizes = route in (:k_kq, :k_q) ? (; n_inner_tile = 16) : (; n_inner_tile = 400, n_outer_batch = 3)
+        common = (; calculators = calcs, backend, window_k = window, window_kq = window, sizes...,
                   progress_print_step = 10^9, verbosity = 0, symmetry = nothing, kwargs...)
         if route === :k_kq
             run_eph_over_k_and_kq(models.el, grid, grid; common..., covariant_derivative_of_g = dg)
@@ -186,8 +188,9 @@
         Engine = outer_k ? OuterKEngine : OuterQEngine
         extra = route === :k_kq ? (; inner_loop_kq = true, covariant_derivative_of_g = dg) :
                 route === :k_q ? (; covariant_derivative_of_g = dg) : (; precompute_el_kq = route === :q_k_pre)
+        sizes = outer_k ? (; n_outer_batch = 2, n_inner_tile = 16) : (; n_outer_batch = 3, n_inner_tile = 400)
         eng = Engine(outer_k ? models.el : models.ph, grid, grid; backend, calculators = calcs, window_k = window,
-            window_kq = window, n_outer_batch = 2, n_inner_tile = 16, verbosity = 0, extra..., kwargs...)
+            window_kq = window, sizes..., verbosity = 0, extra..., kwargs...)
         for c in calcs
             setup_calculator!(c, eng.backend, eng.els_k, eng.els_kq, eng.phs;
                 order = outer_k ? OuterKLoop() : OuterQLoop(), eng.sel_k, eng.sel_kq, nchunks_threads = 1,
@@ -202,7 +205,9 @@
             for c in calcs
                 calculator_begin_batch!(c, ctx)
             end
-            for iout in batch, tile in Iterators.partition(1:inner_pts.n, eng.n_inner_tile)
+            # Outer k: one k per tile. Outer q: every q of the batch in one tile, over k ranges that fit.
+            nk_tile = outer_k ? eng.n_inner_tile : eng.n_inner_tile ÷ length(batch)
+            for iout in (outer_k ? batch : (batch,)), tile in Iterators.partition(1:inner_pts.n, nk_tile)
                 poison && _poison_scratch!(eng; stage1 = false)
                 tl = stage2!(eng, iout, tile)
                 tl === nothing && continue
@@ -263,6 +268,11 @@ end
             run = _run_route(route, models, grid, window; backend, poison = true)
             _check_rule(run.rule, route; poison = true)
             @test _same_outputs(ref, run)
+            # Outer q: the multi-q tiles against one q per tile (the shape of a tile without the q grouping).
+            if route in (:q_k_pre, :q_k_solved)
+                one_q = _run_route(route, models, grid, window; backend, poison = false, n_inner_tile = 16, n_outer_batch = 1)
+                @test _close_failure(ref, one_q) === nothing
+            end
             # Through the engine API, with the tile and stage-1 scratch poisoned as well.
             eref = _run_engine(route, models, grid, window; backend, poison = false)
             erun = _run_engine(route, models, grid, window; backend, poison = true)
@@ -296,4 +306,7 @@ end
             @test _same_outputs(ref, run)
         end
     end
+    # Outer q refuses a calculator that lists :u in required_ph_quantities, at the start of the run.
+    @test_throws "eigenvectors" run_eph_over_q_and_k(pb.ph, (2, 2, 2), (2, 2, 2); calculators = [_WantsU()],
+        symmetry = nothing, verbosity = 0)
 end
