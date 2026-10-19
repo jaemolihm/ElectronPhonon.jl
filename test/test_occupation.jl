@@ -1,8 +1,8 @@
-using Test
-using Random
-using ElectronPhonon
+@testsnippet Occupation begin
+    using Random
+end
 
-@testset "Smearing functions" begin
+@testitem "Smearing functions" setup = [Occupation] begin
     e = 0.04
     T = 0.02
     δ = 1e-8
@@ -22,7 +22,7 @@ using ElectronPhonon
     @test occ_boson(1e-8, T) + occ_boson(-1e-8, T) ≈ -1
 end
 
-@testset "Chemical potential" begin
+@testitem "Chemical potential" setup = [Occupation] begin
     using ElectronPhonon: compute_ncarrier, compute_ncarrier_hole
     using ElectronPhonon: find_chemical_potential, find_chemical_potential_semiconductor
 

@@ -1,5 +1,33 @@
-using Test
-using ElectronPhonon
+@testsnippet CalculatorGuide begin
+    const CALCULATOR_GUIDE_GPU = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+
+    # Extract the fenced Julia code between the doc-example sentinels.
+    function _extract_doc_example(md_path; tag = "doc-example")
+        text = read(md_path, String)
+        b = findfirst("<!-- $tag:begin -->", text)
+        e = findfirst("<!-- $tag:end -->", text)
+        (b === nothing || e === nothing) && error("doc-example sentinels not found in $md_path")
+        block = text[last(b)+1 : first(e)-1]
+        # Drop the ```julia … ``` fences, keep the code between them.
+        lines = split(block, '\n')
+        code = String[]
+        infence = false
+        for ln in lines
+            s = strip(ln)
+            if startswith(s, "```")
+                infence = !infence
+                continue
+            end
+            infence && push!(code, ln)
+        end
+        join(code, '\n')
+    end
+end
 
 # The "writing your own calculator" guide (docs/writing_a_calculator.md) contains the complete
 # example calculator between the <!-- doc-example:begin --> / <!-- doc-example:end --> sentinels,
@@ -8,38 +36,7 @@ using ElectronPhonon
 # This test extracts those blocks VERBATIM and evaluates them on the Pb artifact model, so the
 # documented examples cannot rot.
 
-isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
-
-const CALCULATOR_GUIDE_GPU = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
-end
-
-# Extract the fenced Julia code between the doc-example sentinels.
-function _extract_doc_example(md_path; tag = "doc-example")
-    text = read(md_path, String)
-    b = findfirst("<!-- $tag:begin -->", text)
-    e = findfirst("<!-- $tag:end -->", text)
-    (b === nothing || e === nothing) && error("doc-example sentinels not found in $md_path")
-    block = text[last(b)+1 : first(e)-1]
-    # Drop the ```julia … ``` fences, keep the code between them.
-    lines = split(block, '\n')
-    code = String[]
-    infence = false
-    for ln in lines
-        s = strip(ln)
-        if startswith(s, "```")
-            infence = !infence
-            continue
-        end
-        infence && push!(code, ln)
-    end
-    join(code, '\n')
-end
-
-@testset "writing_a_calculator.md example" begin
+@testitem "writing_a_calculator.md example" setup = [Common, CalculatorGuide] begin
     guide = joinpath(@__DIR__, "..", "docs", "writing_a_calculator.md")
     @test isfile(guide)
     code = _extract_doc_example(guide)

@@ -1,9 +1,9 @@
-using Test
-using LinearAlgebra
-using StaticArrays
-using ElectronPhonon
+@testsnippet Longrange begin
+    using LinearAlgebra
+    using StaticArrays
+end
 
-@testset "box_quadratic_minimum and Polar2D Glist" begin
+@testitem "box_quadratic_minimum and Polar2D Glist" setup = [Longrange] begin
     using ElectronPhonon: box_quadratic_minimum, get_Glist, Polar2D, Structure, Vec3, Mat3
 
     # Diagonal A: min = Σ a_i dist(0, [l_i, u_i])², boxes on both sides of and around 0.

@@ -1,15 +1,15 @@
-using Test
-using ElectronPhonon
-using LinearAlgebra
+@testsnippet QeStructureKpath begin
+    using LinearAlgebra
 
-# QE pw.x input (namelists + cards) for the tests below.
-function _write_qe_input(dir, name, system, cards)
-    path = joinpath(dir, name)
-    write(path, "&CONTROL\n    calculation = 'scf', prefix = 'x'\n/\n&SYSTEM\n$system\n/\n&ELECTRONS\n/\n$cards")
-    path
+    # QE pw.x input (namelists + cards) for the tests below.
+    function _write_qe_input(dir, name, system, cards)
+        path = joinpath(dir, name)
+        write(path, "&CONTROL\n    calculation = 'scf', prefix = 'x'\n/\n&SYSTEM\n$system\n/\n&ELECTRONS\n/\n$cards")
+        path
+    end
 end
 
-@testset "load_structure_from_qe + write_kpath_files" begin
+@testitem "load_structure_from_qe + write_kpath_files" setup = [Common, QeStructureKpath] begin
     model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
     kpts_ref, xdata_ref = high_symmetry_kpath(model; kline_density = 10)
 

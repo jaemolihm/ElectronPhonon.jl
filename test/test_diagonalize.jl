@@ -1,9 +1,9 @@
-using ElectronPhonon
-using Test
-using Random
-using LinearAlgebra
+@testsnippet Diagonalize begin
+    using Random
+    using LinearAlgebra
+end
 
-@testset "diagonalize" begin
+@testitem "diagonalize" setup = [Diagonalize] begin
     Random.seed!(123)
     A = randn(ComplexF64, 5, 5)
     A .+= A'

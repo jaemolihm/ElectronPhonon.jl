@@ -1,38 +1,38 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: gpu_backend, on_backend, Vec3, CPUBackend, copy_batched_electron_states!,
-    solve_electron_bands_batched, copy_window_bands!, unit_to_aru, BatchedWannierInterpolator,
-    get_fourier_batched!, eigen_batched!, inside_window
-using OffsetArrays: no_offset_view
+@testsnippet BatchedElectronState begin
+    using ElectronPhonon: gpu_backend, on_backend, Vec3, CPUBackend, copy_batched_electron_states!,
+        solve_electron_bands_batched, copy_window_bands!, unit_to_aru, BatchedWannierInterpolator,
+        get_fourier_batched!, eigen_batched!, inside_window
+    using OffsetArrays: no_offset_view
 
-const BATCHED_ELECTRON_GPU_AVAILABLE = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
-end
+    const BATCHED_ELECTRON_GPU_AVAILABLE = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
 
-# Every quantity of `els` at its in-window bands against the `ElectronState`s `ref`, with
-# `isequal`; returns the number of k points that differ. Box entries past `nband` are undefined and not read.
-function _batched_electron_mismatches(els, ref)
-    off, nband = Array(els.iband_offset), Array(els.nband)
-    count(eachindex(ref)) do ik
-        el = ref[ik]; nb = el.nband
-        ok = nband[ik] == nb && (nb == 0 || off[ik] == first(el.rng) - 1)
-        els.e === nothing || (ok &= isequal(Array(els.e)[1:nb, ik], collect(el.e)))
-        els.u === nothing || (ok &= isequal(Array(els.u)[:, 1:nb, ik], collect(no_offset_view(el.u))))
-        els.vdiag === nothing || (ok &= isequal(Array(els.vdiag)[:, 1:nb, ik],
-                                              reshape(reinterpret(Float64, collect(el.vdiag)), 3, nb)))
-        for (x, y) in ((els.v, el.v), (els.rbar, el.rbar))
-            x === nothing && continue
-            ok &= isequal(Array(x)[:, 1:nb, 1:nb, ik],
-                          reshape(reinterpret(ComplexF64, collect(no_offset_view(y))), 3, nb, nb))
+    # Every quantity of `els` at its in-window bands against the `ElectronState`s `ref`, with
+    # `isequal`; returns the number of k points that differ. Box entries past `nband` are undefined and not read.
+    function _batched_electron_mismatches(els, ref)
+        off, nband = Array(els.iband_offset), Array(els.nband)
+        count(eachindex(ref)) do ik
+            el = ref[ik]; nb = el.nband
+            ok = nband[ik] == nb && (nb == 0 || off[ik] == first(el.rng) - 1)
+            els.e === nothing || (ok &= isequal(Array(els.e)[1:nb, ik], collect(el.e)))
+            els.u === nothing || (ok &= isequal(Array(els.u)[:, 1:nb, ik], collect(no_offset_view(el.u))))
+            els.vdiag === nothing || (ok &= isequal(Array(els.vdiag)[:, 1:nb, ik],
+                                                  reshape(reinterpret(Float64, collect(el.vdiag)), 3, nb)))
+            for (x, y) in ((els.v, el.v), (els.rbar, el.rbar))
+                x === nothing && continue
+                ok &= isequal(Array(x)[:, 1:nb, 1:nb, ik],
+                              reshape(reinterpret(ComplexF64, collect(no_offset_view(y))), 3, nb, nb))
+            end
+            !ok
         end
-        !ok
     end
 end
 
-@testset "BatchedElectronState" begin
+@testitem "BatchedElectronState" setup = [Common, BatchedElectronState] begin
     model_pb = _load_model_from_artifacts("pb"; load_epmat = false)
     # Nonzero position matrix elements, which the pb model does not have.
     model_bn = _load_model_from_artifacts("cubicBN"; load_epmat = false)

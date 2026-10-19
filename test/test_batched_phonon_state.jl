@@ -1,18 +1,18 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: phonon_eigenpairs, gpu_backend, on_backend, to_device, Vec3, CPUBackend,
-    copy_batched_phonon_states!
+@testsnippet BatchedPhononState begin
+    using ElectronPhonon: phonon_eigenpairs, gpu_backend, on_backend, to_device, Vec3, CPUBackend,
+        copy_batched_phonon_states!
 
-# CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
-# tests when it is unavailable or non-functional (e.g. CPU-only CI).
-const BATCHED_PHONON_GPU_AVAILABLE = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
+    # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
+    # tests when it is unavailable or non-functional (e.g. CPU-only CI).
+    const BATCHED_PHONON_GPU_AVAILABLE = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
 end
 
-@testset "BatchedPhononState" begin
+@testitem "BatchedPhononState" setup = [Common, BatchedPhononState] begin
     kpts = GridKpoints(kpoints_grid((4, 4, 4)))
     model_pb = _load_model_from_artifacts("pb"; load_epmat = false)
     # Polar. Its e-ph dipole coefficients are zero unless the e-ph data is loaded too.

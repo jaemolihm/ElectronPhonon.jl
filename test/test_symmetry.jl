@@ -1,10 +1,10 @@
-using StaticArrays
-using LinearAlgebra
-using ElectronPhonon
-using Random
-using Test
+@testsnippet Symmetry begin
+    using StaticArrays
+    using LinearAlgebra
+    using Random
+end
 
-@testset "symmetry" begin
+@testitem "symmetry" setup = [Common, Symmetry] begin
     # Silicon structure
     lattice = 2.0 * [[0 1 1.];
                      [1 0 1.];
@@ -91,7 +91,7 @@ using Test
     @test kpoints_grid((5, 5, 7); symmetry).n == 24
 end
 
-@testset "small group of q" begin
+@testitem "small group of q" setup = [Common, Symmetry] begin
     # Silicon (diamond) structure: full cubic point group + time reversal.
     lattice = 2.0 * [[0 1 1.];
                      [1 0 1.];
@@ -153,7 +153,7 @@ end
     end
 end
 
-@testset "symmetrize" begin
+@testitem "symmetrize" setup = [Common, Symmetry] begin
     Random.seed!(123)
 
     lattice = 2.0 * [[0 1 1.]; [1 0 1.]; [1 1 0.]];
@@ -211,7 +211,7 @@ end
     @test symmetrize(v, symmetry, axial=true) ≈ v
 end
 
-@testset "symmetry subset" begin
+@testitem "symmetry subset" setup = [Common, Symmetry] begin
     lattice = 2.0 * [[0 1 1.];
                      [1 0 1.];
                      [1 1 0.]]

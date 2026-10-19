@@ -1,7 +1,4 @@
-using Test
-using ElectronPhonon
-
-@testset "cubicBN spectral" begin
+@testitem "cubicBN spectral" setup = [Common] begin
     BASE_FOLDER = dirname(dirname(pathof(ElectronPhonon)))
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 

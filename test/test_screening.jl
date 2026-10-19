@@ -1,9 +1,7 @@
-using Test
-
 # TODO: Add test for finite temperature
 # TODO: Add test for multivalley
 
-@testset "screening Lindhard" begin
+@testitem "screening Lindhard" begin
     using LinearAlgebra
     using ElectronPhonon: epsilon_lindhard
     using ElectronPhonon: epsilon_lindhard_finite_temperature, _epsilon_lindhard

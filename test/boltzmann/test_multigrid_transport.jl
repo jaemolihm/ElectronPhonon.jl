@@ -1,8 +1,15 @@
-using Test
-using ElectronPhonon
-const EP = ElectronPhonon
-using ElectronPhonon: FilteredBandStates, state_xks
-using LinearAlgebra
+@testsnippet MultigridTransport begin
+    const EP = ElectronPhonon
+    using ElectronPhonon: FilteredBandStates, state_xks
+    using LinearAlgebra
+
+    const _CUDA_OK = (get(ENV, "EP_TEST_CUDA", "1") == "1") && try
+        @eval import CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+end
 
 # Multigrid BTE transport: end-to-end validation on the Pb artifact model (portable fixture; the
 # heavy production numbers are measured on Cu). The multigrid is a
@@ -16,17 +23,7 @@ using LinearAlgebra
 #   5. auto-μ succeeds on the windowed multigrid selection (no bracket failure).
 # All solved with interpolate=false (unfold-only δf feedback, exact on the shared multigrid spec).
 
-isdefined(@__MODULE__, :_load_model_from_artifacts) ||
-    include(joinpath(@__DIR__, "..", "common_models_from_artifacts.jl"))
-
-const _CUDA_OK = (get(ENV, "EP_TEST_CUDA", "1") == "1") && try
-    @eval import CUDA
-    CUDA.functional()
-catch
-    false
-end
-
-@testset "Multigrid BTE transport (Pb)" begin
+@testitem "Multigrid BTE transport (Pb)" setup = [Common, MultigridTransport] begin
     model = _load_model_from_artifacts("pb")
     model.el_velocity_mode = :BerryConnection
     eV = EP.unit_to_aru(:eV); K = EP.unit_to_aru(:K); meV = EP.unit_to_aru(:meV)
@@ -152,7 +149,7 @@ end
 # Chemical-potential solve on a prebuilt WINDOWED multigrid selection. Auto-μ (nlist-based, no μlist)
 # reads `nstates_base`; the selection carries the correct coarse-window below-window count, so the μ
 # bisection brackets normally — no override kwarg, no bracket failure.
-@testset "Multigrid μ-solve succeeds on the selection (Pb)" begin
+@testitem "Multigrid μ-solve succeeds on the selection (Pb)" setup = [Common, MultigridTransport] begin
     model = _load_model_from_artifacts("pb")
     model.el_velocity_mode = :BerryConnection
     eV = EP.unit_to_aru(:eV); K = EP.unit_to_aru(:K); meV = EP.unit_to_aru(:meV)
@@ -193,7 +190,7 @@ end
 # that `bte_compute_μ!` produces. This guards it with hardcoded golden values: on a uniform windowed
 # Pb selection, the below-window carrier count `nstates_base` and the solved metal μ are fixed
 # regression targets (recompute + update deliberately if the μ convention ever changes).
-@testset "auto-μ solve pinned values (Pb, uniform)" begin
+@testitem "auto-μ solve pinned values (Pb, uniform)" setup = [Common, MultigridTransport] begin
     model = _load_model_from_artifacts("pb")
     eV = EP.unit_to_aru(:eV); K = EP.unit_to_aru(:K)
     e_fermi = 11.594123 * eV

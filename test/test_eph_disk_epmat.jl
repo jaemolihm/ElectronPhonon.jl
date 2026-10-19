@@ -1,22 +1,21 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: CPUBackend, gpu_backend, unit_to_aru, run_eph_over_k_and_kq, run_eph_over_q_and_k
+@testsnippet EphDiskEpmat begin
+    using ElectronPhonon: CPUBackend, gpu_backend, unit_to_aru, run_eph_over_k_and_kq, run_eph_over_q_and_k
+
+    const DISK_EPMAT_GPU = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+    DISK_EPMAT_GPU && CUDA.allowscalar(false)
+
+    isdefined(@__MODULE__, :_PairRecorder) || include("eph_reference_loop.jl")
+end
 
 # A disk epmat is a memory-mapped `op_r` of the same type as the in-memory one, so every path runs
 # the same code on the same bits: compared with `==` against the in-memory epmat of the same model.
 
-const DISK_EPMAT_GPU = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
-end
-DISK_EPMAT_GPU && CUDA.allowscalar(false)
-
-isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
-isdefined(@__MODULE__, :_PairRecorder) || include("eph_reference_loop.jl")
-
-@testset "disk-backed epmat against the in-memory one" begin
+@testitem "disk-backed epmat against the in-memory one" setup = [Common, EphDiskEpmat] begin
     eV = unit_to_aru(:eV); e_F = 11.68eV
     window = (e_F - 0.5eV, e_F + 3eV)
     grid = (6, 6, 6)

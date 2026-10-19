@@ -1,35 +1,35 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: Vec3, electron_degen_cutoff, electron_eigenpairs, phonon_eigenpairs,
-    gpu_backend, to_device, on_backend,
-    AbstractBackend, CPUBackend, inside_window, state_xks
-using LinearAlgebra
+@testsnippet Eigenpairs begin
+    using ElectronPhonon: Vec3, electron_degen_cutoff, electron_eigenpairs, phonon_eigenpairs,
+        gpu_backend, to_device, on_backend,
+        AbstractBackend, CPUBackend, inside_window, state_xks
+    using LinearAlgebra
 
-# CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
-# tests when it is unavailable or non-functional (e.g. CPU-only CI).
-const EIGENPAIRS_GPU_AVAILABLE = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
-end
+    # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
+    # tests when it is unavailable or non-functional (e.g. CPU-only CI).
+    const EIGENPAIRS_GPU_AVAILABLE = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
 
-# The `quantities == ["eigenvalue"]` branch is the one case that cannot be bitwise equal to its
-# no-cache counterpart: without a cache it runs the value-only LAPACK driver, while a cache holds
-# the eigenvalues of the full eigensolve, and the two agree only to round-off. What the cache branch
-# must do exactly is copy the cached column and leave `u_full` alone.
-function _eigenpairs_valueonly_consistent(new, ref, cache)
-    e_cache = Array(cache.e_full)  # the cache may be device-resident; compare on the host
-    all(eachindex(new)) do ik
-        el, el_ref = new[ik], ref[ik]
-        el.xk == el_ref.xk && el.rng == el_ref.rng && el.nband == el_ref.nband &&
-            el.e_full == e_cache[:, xk_to_ik(el.xk, cache.kpts)] &&
-            all(iszero, el.u_full) &&
-            maximum(abs, el.e_full - el_ref.e_full) < 1e-13
+    # The `quantities == ["eigenvalue"]` branch is the one case that cannot be bitwise equal to its
+    # no-cache counterpart: without a cache it runs the value-only LAPACK driver, while a cache holds
+    # the eigenvalues of the full eigensolve, and the two agree only to round-off. What the cache branch
+    # must do exactly is copy the cached column and leave `u_full` alone.
+    function _eigenpairs_valueonly_consistent(new, ref, cache)
+        e_cache = Array(cache.e_full)  # the cache may be device-resident; compare on the host
+        all(eachindex(new)) do ik
+            el, el_ref = new[ik], ref[ik]
+            el.xk == el_ref.xk && el.rng == el_ref.rng && el.nband == el_ref.nband &&
+                el.e_full == e_cache[:, xk_to_ik(el.xk, cache.kpts)] &&
+                all(iszero, el.u_full) &&
+                maximum(abs, el.e_full - el_ref.e_full) < 1e-13
+        end
     end
 end
 
-@testset "Eigenpairs" begin
+@testitem "Eigenpairs" setup = [Common, Eigenpairs] begin
     model = _load_model_from_artifacts("pb"; load_epmat = false)
     kpts = GridKpoints(kpoints_grid((4, 4, 4)))
 

@@ -1,85 +1,22 @@
-using ElectronPhonon
-using Test
+using TestItemRunner
 
-# Test group, selected by `Pkg.test(; test_args=["plotting"])`. "plotting" is the only group that
-# loads PyPlot; "core" is everything else and is the default because it is safe to run
-# multithreaded. "all" runs both in one process, which is not safe with more than one thread: a
-# PyCall finalizer running on a Julia worker thread crashes the process (#49).
-const group = isempty(ARGS) ? "core" : only(ARGS)
-group in ("all", "core", "plotting") || error("Unknown test group $group; expected one of \"all\", \"core\", \"plotting\"")
-@info "Test group: $group"
-
-include("common_models_from_artifacts.jl")
-
-@time @testset "ElectronPhonon.jl" begin
-    if group in ("all", "core")
-        # Basic tests
-        include("test_occupation.jl")
-        include("test_smearing.jl")
-        include("test_kpoints.jl")
-        include("test_band_states.jl")  # (k, band) selection: indexing, filter_states, symmetry stars
-        include("test_iq_build.jl")  # outer-k loop's `iq` index build (`_fill_iqs!`, host arithmetic)
-        include("test_symmetry.jl")
-        include("test_wannier.jl")
-        include("test_holstein_model.jl")  # analytic Holstein Model builder (no artifacts needed)
-        include("test_rashba_holstein_model.jl")
-        include("test_gpu.jl")  # skips gracefully when CUDA is unavailable
-        include("test_phonon_mode_truncation.jl")  # phonons kept below the energy range; GPU only
-        include("test_engine_bytes.jl")  # engine_bytes against the engines' device allocations (GPU)
-        include("test_backend_alloc.jl")  # alloc_zeros / to_device_copy / is_host; GPU arm skips w/o CUDA
-        include("test_mpi_wrappers.jl")  # the mpi_* wrappers on the `comm === nothing` serial path
-        include("test_diagonalize.jl")
-        include("test_iterativesolvers.jl")
-        # include("test_symmetry_operator.jl")
-        # include("test_unfold.jl")
-        include("test_velocity.jl")
-        include("test_filter_electron_states.jl")  # unified filter primitive: MPI (COMM_SELF) + shift
-        include("test_epmat.jl")
-        include("test_longrange.jl")  # exact box QP behind the polar Glist; Polar2D Glist
-        include("test_ElectronState.jl")
-        include("test_eigenpairs.jl")  # shared full-band eigenpair cache; GPU part skips w/o CUDA
-        include("test_batched_phonon_state.jl")  # dense phonon stacks; GPU part skips w/o CUDA
-        include("test_batched_electron_state.jl")  # box-stored electron stacks; GPU part skips w/o CUDA
-        include("test_eph_precomputed_states.jl")  # the eigenpair cache through the e-ph drivers
-        include("test_eph_reference.jl")  # every e-ph loop against the reference double loop
-        include("test_eph_engine_api.jl")  # direct engine stages and single-pair calculator calls
-        include("test_eph_incommensurate_grids.jl")  # outer-k refuses incommensurate grids at entry
-        include("test_eph_loop_features.jl")  # outer-k polar, energy conservation, dg (#72)
-        include("test_eph_disk_epmat.jl")  # memory-mapped epmat bitwise vs in-memory; GPU part skips w/o CUDA
-        include("test_eph_window_scatter.jl")  # calculator-facing scatter; GPU part skips w/o CUDA
-        include("test_high_symmetry_kpath.jl")
-        include("test_qe_structure_kpath.jl")  # QE scf.in -> Structure -> k path files
-        include("test_postprocess_compute.jl")
-        # include("test_check_model_symmetry.jl")
-        include("test_screening.jl")
-        include("test_calculator_guide.jl")  # runs the docs/writing_a_calculator.md example
-        include("test_calculator_contract.jl")  # supports trait + driver fail-early checks
-
-        # Integration tests
-        include("test_cubicBN_eigenvalues.jl")
-        include("test_cubicBN_spectral.jl")
-        include("test_cubicBN_selfen.jl")
-        # include("test_transport.jl")
-
-        # Boltzmann routines
-        include("boltzmann/test_hdf5.jl")
-        include("boltzmann/test_BTStates.jl")  # states_index_map, incl. the symmetry-star keys
-        include("boltzmann/test_QMEVector.jl")
-        include("boltzmann/test_gpu_boltzmann_calculator.jl")  # GPU BTE scatter; GPU part skips w/o CUDA
-        include("boltzmann/test_multigrid_weights.jl")  # multigrid k-sampling: pure-BZ quadrature check
-        include("boltzmann/test_multigrid_transport.jl")  # multigrid BTE transport; GPU part skips w/o CUDA
-        # include("boltzmann/test_QMEModel.jl")
-        # include("boltzmann/test_covariant_derivative.jl")
-        # include("boltzmann/test_el_constant_rta.jl")
-        # include("boltzmann/test_el_transport_semiconductor.jl")
-        # include("boltzmann/test_el_transport_metal.jl")
-        # include("boltzmann/test_el_master_equation.jl")
-        # include("boltzmann/test_el_transport_screening.jl")
-        # include("boltzmann/test_el_ac_conductivity.jl")
-        # include("boltzmann/test_el_hall_conductivity.jl")
-        # include("boltzmann/test_el_transport_finite_efield.jl")
-    end
-    if group in ("all", "plotting")
-        include("test_plotting.jl")
-    end
+# `Pkg.test(; test_args = ["test_kpoints.jl", "boltzmann/test_hdf5.jl", ...])` runs only the test
+# items in the named files (paths relative to test/). Without arguments it runs every item except
+# those tagged `:plotting`: they load PyPlot, and a PyCall finalizer running on a Julia worker
+# thread crashes a multithreaded process (#49), so run them alone, single-threaded, with
+# `test_args = ["test_plotting.jl"]`. The items tagged `:gpu` run only when CUDA is functional (CI
+# drops it from the test target).
+for file in ARGS
+    isfile(joinpath(@__DIR__, file)) || error("unknown test file $file")
 end
+const HAVE_CUDA = try
+    @eval using CUDA
+    CUDA.functional()
+catch
+    false
+end
+HAVE_CUDA || @info "CUDA not functional: skipping the test items tagged :gpu"
+
+@run_package_tests filter = ti ->
+    (isempty(ARGS) ? :plotting ∉ ti.tags : relpath(ti.filename, @__DIR__) in ARGS) &&
+    (HAVE_CUDA || :gpu ∉ ti.tags)

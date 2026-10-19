@@ -1,11 +1,11 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: mpi_nprocs, mpi_isroot, mpi_myrank, mpi_sum, mpi_sum!, mpi_min, mpi_min!,
-    mpi_max, mpi_max!, mpi_mean, mpi_mean!, mpi_reduce, mpi_bcast, mpi_bcast!, mpi_gather,
-    mpi_allgather, mpi_scatter, mpi_split_iterator, mpi_gather_and_scatter,
-    Vec3, Kpoints, GridKpoints, BandStates
-using OffsetArrays: OffsetArray
-import MPI
+@testsnippet MpiWrappers begin
+    using ElectronPhonon: mpi_nprocs, mpi_isroot, mpi_myrank, mpi_sum, mpi_sum!, mpi_min, mpi_min!,
+        mpi_max, mpi_max!, mpi_mean, mpi_mean!, mpi_reduce, mpi_bcast, mpi_bcast!, mpi_gather,
+        mpi_allgather, mpi_scatter, mpi_split_iterator, mpi_gather_and_scatter,
+        Vec3, Kpoints, GridKpoints, BandStates
+    using OffsetArrays: OffsetArray
+    import MPI
+end
 
 # The wrappers of src/common/mpi.jl, every contract checked on BOTH communicator types: `nothing`
 # (the serial process, where each wrapper is the identity) and `MPI.COMM_SELF` (one rank). A
@@ -16,7 +16,7 @@ import MPI
 # What one rank cannot show: every reduction is the identity there, so a dropped `Allreduce`, or
 # one with the wrong operator, passes unnoticed. Cross-rank arithmetic needs a real multi-rank
 # launcher; this file is the contract, not the reduction.
-@testset "mpi_* wrappers" begin
+@testitem "mpi_* wrappers" setup = [MpiWrappers] begin
     MPI.Initialized() || MPI.Init()
     comms = (nothing, MPI.COMM_SELF)
 

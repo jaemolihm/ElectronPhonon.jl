@@ -1,61 +1,61 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: electron_eigenpairs, phonon_eigenpairs, gpu_backend, CPUBackend, AbstractBackend, xk_to_ik,
-    xk_to_ik_unsafe, AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock
+@testsnippet EphPrecomputedStates begin
+    using ElectronPhonon: electron_eigenpairs, phonon_eigenpairs, gpu_backend, CPUBackend, AbstractBackend, xk_to_ik,
+        xk_to_ik_unsafe, AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock
 
-# CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
-# tests when it is unavailable or non-functional (e.g. CPU-only CI).
-const PRECOMPUTED_STATES_GPU_AVAILABLE = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
-end
-
-# The e-ph loops require at least one calculator, so this probe declares both loop orders. It
-# records nothing: what this file asserts is the states a driver's setup produces (the run's
-# containers, returned by the driver), not the coupling its loop computes.
-struct _PrecomputedStatesProbe <: AbstractCalculator end
-ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{OuterKLoop}) = true
-ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{OuterQLoop}) = true
-# The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator
-# reads, so it defines no `required_el_quantities` / `required_ph_quantities`.
-ElectronPhonon.calculator_begin_batch!(::_PrecomputedStatesProbe, ctx) = nothing
-ElectronPhonon.calculator_end_batch!(::_PrecomputedStatesProbe, ctx) = nothing
-ElectronPhonon.setup_calculator!(c::_PrecomputedStatesProbe, backend, els_k, els_kq, phs; kwargs...) = c
-ElectronPhonon.postprocess_calculator!(c::_PrecomputedStatesProbe; kwargs...) = c
-ElectronPhonon.run_calculator!(c::_PrecomputedStatesProbe, ::EPBlock, ctx) = c
-
-# The runs here use the full window, so every container holds all `nw` bands of every point and
-# its `e`/`u` are the full-band eigenpairs. Comparisons on host copies, point by point (the two
-# runs must share a point list).
-_host(b) = (; e = Array(b.e), u = Array(b.u), off = Array(b.iband_offset), nband = Array(b.nband))
-_states_equal(a, b) = _host(a) == _host(b)
-_u_deviation(a, b) = maximum(abs, _host(a).u - _host(b).u)
-_e_deviation(a, b) = maximum(abs, _host(a).e - _host(b).e)
-# Per q point, whether two phonon containers hold the same eigenpair.
-function _ph_equal_per_q(a, b)
-    ea, ua, eb, ub = Array(a.e), Array(a.u), Array(b.e), Array(b.u)
-    [ea[:, iq] == eb[:, iq] && ua[:, :, iq] == ub[:, :, iq] for iq in 1:a.nq]
-end
-
-# Whether two runs agree on `u` at every outer k point they both visit, and how many those are
-# (pinned by the caller so the comparison cannot be vacuous).
-function _shared_outer_u_agree(run_a, run_b)
-    ok, nshared = true, 0
-    ua, ub = _host(run_a.els_k).u, _host(run_b.els_k).u
-    for (ika, xk) in enumerate(run_a.kpts.vectors)
-        # `xk` is a node of both runs' grid but need not be in `run_b`'s selection, so a miss is a
-        # legitimate answer here and the unchecked lookup is the right one.
-        ikb = xk_to_ik_unsafe(xk, run_b.kpts)
-        ikb === nothing && continue
-        nshared += 1
-        ok &= ua[:, :, ika] == ub[:, :, ikb]
+    # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
+    # tests when it is unavailable or non-functional (e.g. CPU-only CI).
+    const PRECOMPUTED_STATES_GPU_AVAILABLE = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
     end
-    (ok, nshared)
+
+    # The e-ph loops require at least one calculator, so this probe declares both loop orders. It
+    # records nothing: what this file asserts is the states a driver's setup produces (the run's
+    # containers, returned by the driver), not the coupling its loop computes.
+    struct _PrecomputedStatesProbe <: AbstractCalculator end
+    ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{OuterKLoop}) = true
+    ElectronPhonon.supports(::_PrecomputedStatesProbe, ::Type{OuterQLoop}) = true
+    # The loop always provides `e`, `u` and the e-ph matrix elements, which is all this calculator
+    # reads, so it defines no `required_el_quantities` / `required_ph_quantities`.
+    ElectronPhonon.calculator_begin_batch!(::_PrecomputedStatesProbe, ctx) = nothing
+    ElectronPhonon.calculator_end_batch!(::_PrecomputedStatesProbe, ctx) = nothing
+    ElectronPhonon.setup_calculator!(c::_PrecomputedStatesProbe, backend, els_k, els_kq, phs; kwargs...) = c
+    ElectronPhonon.postprocess_calculator!(c::_PrecomputedStatesProbe; kwargs...) = c
+    ElectronPhonon.run_calculator!(c::_PrecomputedStatesProbe, ::EPBlock, ctx) = c
+
+    # The runs here use the full window, so every container holds all `nw` bands of every point and
+    # its `e`/`u` are the full-band eigenpairs. Comparisons on host copies, point by point (the two
+    # runs must share a point list).
+    _host(b) = (; e = Array(b.e), u = Array(b.u), off = Array(b.iband_offset), nband = Array(b.nband))
+    _states_equal(a, b) = _host(a) == _host(b)
+    _u_deviation(a, b) = maximum(abs, _host(a).u - _host(b).u)
+    _e_deviation(a, b) = maximum(abs, _host(a).e - _host(b).e)
+    # Per q point, whether two phonon containers hold the same eigenpair.
+    function _ph_equal_per_q(a, b)
+        ea, ua, eb, ub = Array(a.e), Array(a.u), Array(b.e), Array(b.u)
+        [ea[:, iq] == eb[:, iq] && ua[:, :, iq] == ub[:, :, iq] for iq in 1:a.nq]
+    end
+
+    # Whether two runs agree on `u` at every outer k point they both visit, and how many those are
+    # (pinned by the caller so the comparison cannot be vacuous).
+    function _shared_outer_u_agree(run_a, run_b)
+        ok, nshared = true, 0
+        ua, ub = _host(run_a.els_k).u, _host(run_b.els_k).u
+        for (ika, xk) in enumerate(run_a.kpts.vectors)
+            # `xk` is a node of both runs' grid but need not be in `run_b`'s selection, so a miss is a
+            # legitimate answer here and the unchecked lookup is the right one.
+            ikb = xk_to_ik_unsafe(xk, run_b.kpts)
+            ikb === nothing && continue
+            nshared += 1
+            ok &= ua[:, :, ika] == ub[:, :, ikb]
+        end
+        (ok, nshared)
+    end
 end
 
-@testset "e-ph drivers with precomputed electron and phonon states" begin
+@testitem "e-ph drivers with precomputed electron and phonon states" setup = [Common, EphPrecomputedStates] begin
     grid = (4, 4, 4)
     kgrid = GridKpoints(kpoints_grid(grid))
     # Two outer k selections that differ but overlap: 24 of the 64 k points are in both.

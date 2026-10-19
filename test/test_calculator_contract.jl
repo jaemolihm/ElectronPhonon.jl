@@ -1,36 +1,56 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, supports,
-    OuterKContext, OuterQContext, CPUBackend, calculator_begin_batch!, calculator_end_batch!, to_device,
-    setup_calculator!, calculator_bytes
+@testsnippet CalculatorContract begin
+    using ElectronPhonon: AbstractCalculator, OuterKLoop, OuterQLoop, EPBlock, supports,
+        OuterKContext, OuterQContext, CPUBackend, calculator_begin_batch!, calculator_end_batch!, to_device,
+        setup_calculator!, calculator_bytes
+
+    # A minimal well-formed outer-k calculator that just counts run_calculator! calls.
+    mutable struct _CountCalc <: AbstractCalculator
+        n :: Threads.Atomic{Int}
+        _CountCalc() = new(Threads.Atomic{Int}(0))
+    end
+    ElectronPhonon.supports(::_CountCalc, ::Type{OuterKLoop}) = true
+    ElectronPhonon.setup_calculator!(c::_CountCalc, backend, els_k, els_kq, phs; kwargs...) = c
+    ElectronPhonon.postprocess_calculator!(c::_CountCalc; kwargs...) = c
+    ElectronPhonon.run_calculator!(c::_CountCalc, ::EPBlock, ctx) = (Threads.atomic_add!(c.n, 1); c)
+    ElectronPhonon.calculator_begin_batch!(::_CountCalc, ctx) = nothing
+    ElectronPhonon.calculator_end_batch!(::_CountCalc, ctx) = nothing
+
+    # `_CountCalc` reading the band velocities, which `run_eph_over_k_and_q` cannot provide at k+q.
+    struct _VdiagCountCalc <: AbstractCalculator end
+    ElectronPhonon.supports(::_VdiagCountCalc, ::Type{OuterKLoop}) = true
+    ElectronPhonon.required_el_quantities(::_VdiagCountCalc) = [:vdiag]
+
+    # An outer-q calculator, for the outer-q entry checks.
+    struct _QCountCalc <: AbstractCalculator end
+    ElectronPhonon.supports(::_QCountCalc, ::Type{OuterQLoop}) = true
+
+    # One bracket per outer batch, with no default: a calculator that defines none fails loudly.
+    mutable struct _NoBracketCalc <: AbstractCalculator end
+
+    const CONTRACT_GPU_AVAILABLE = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+    CONTRACT_GPU_AVAILABLE && CUDA.allowscalar(false)
+    include("calculator_contract_harness.jl")
+
+    # `|ep|^2 / (2ω)` of each state pair from the reference double loop, in `G2Calculator`'s layout.
+    function g2_contract_reference(c, ref)
+        g2 = zero(c.g2); ωq = zero(c.g2)
+        contract_foreach_reference_pair(ref, c.el_i, c.el_f) do i, j, ep, ω, _...
+            g2[:, i, j] .= abs2.(ep) ./ (2 .* ω)
+            ωq[:, i, j] .= ω
+        end
+        (; c.el_i, c.el_f, g2, ωq)
+    end
+end
 
 # Calculator-contract checks (CPU-only): the `supports` trait, the fail-early checks the drivers do
 # at entry, `calculators` as a keyword, and the screening-disabled error.
 
-isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
-
-# A minimal well-formed outer-k calculator that just counts run_calculator! calls.
-mutable struct _CountCalc <: AbstractCalculator
-    n :: Threads.Atomic{Int}
-    _CountCalc() = new(Threads.Atomic{Int}(0))
-end
-ElectronPhonon.supports(::_CountCalc, ::Type{OuterKLoop}) = true
-ElectronPhonon.setup_calculator!(c::_CountCalc, backend, els_k, els_kq, phs; kwargs...) = c
-ElectronPhonon.postprocess_calculator!(c::_CountCalc; kwargs...) = c
-ElectronPhonon.run_calculator!(c::_CountCalc, ::EPBlock, ctx) = (Threads.atomic_add!(c.n, 1); c)
-ElectronPhonon.calculator_begin_batch!(::_CountCalc, ctx) = nothing
-ElectronPhonon.calculator_end_batch!(::_CountCalc, ctx) = nothing
-
-# `_CountCalc` reading the band velocities, which `run_eph_over_k_and_q` cannot provide at k+q.
-struct _VdiagCountCalc <: AbstractCalculator end
-ElectronPhonon.supports(::_VdiagCountCalc, ::Type{OuterKLoop}) = true
-ElectronPhonon.required_el_quantities(::_VdiagCountCalc) = [:vdiag]
-
-# An outer-q calculator, for the outer-q entry checks.
-struct _QCountCalc <: AbstractCalculator end
-ElectronPhonon.supports(::_QCountCalc, ::Type{OuterQLoop}) = true
-
-@testset "supports contract" begin
+@testitem "supports contract" setup = [Common, CalculatorContract] begin
     c = _CountCalc()
     # Type arguments: declared true, undeclared default false.
     @test supports(c, OuterKLoop) == true
@@ -41,7 +61,7 @@ ElectronPhonon.supports(::_QCountCalc, ::Type{OuterQLoop}) = true
     @test_throws ErrorException supports(c, 5)
 end
 
-@testset "driver contract checks (CPU)" begin
+@testitem "driver contract checks (CPU)" setup = [Common, CalculatorContract] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
     grid = (4, 4, 4)
 
@@ -81,7 +101,7 @@ end
         ElectronPhonon.electron_eigenpairs(model, kpoints_grid(grid)))
 end
 
-@testset "fourier_mode on a CPU backend" begin
+@testitem "fourier_mode on a CPU backend" setup = [Common, CalculatorContract] begin
     model_el = ElectronPhonon.holstein_model(; t = 0.1, ω₀ = 0.01, g = 0.02, alat = 5.0, ε₀ = 0.05,
         dimension = 3, epmat_outer_momentum = "el", verbose = false)
     grid = (2, 2, 2)
@@ -91,10 +111,7 @@ end
         calculators = [_CountCalc()], fourier_mode = "batched")
 end
 
-# One bracket per outer batch, with no default: a calculator that defines none fails loudly.
-mutable struct _NoBracketCalc <: AbstractCalculator end
-
-@testset "loop context and the one bracket" begin
+@testitem "loop context and the one bracket" setup = [Common, CalculatorContract] begin
     ctx = OuterKContext(CPUBackend(), 3:5, 1)
     @test ctx isa OuterKContext{CPUBackend}
     @test (ctx.iks_batch, ctx.chunk) == (3:5, 1)
@@ -115,27 +132,8 @@ mutable struct _NoBracketCalc <: AbstractCalculator end
     @test to_device(CPUBackend(), v) === v
 end
 
-const CONTRACT_GPU_AVAILABLE = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
-end
-CONTRACT_GPU_AVAILABLE && CUDA.allowscalar(false)
-include("calculator_contract_harness.jl")
-
-# `|ep|^2 / (2ω)` of each state pair from the reference double loop, in `G2Calculator`'s layout.
-function g2_contract_reference(c, ref)
-    g2 = zero(c.g2); ωq = zero(c.g2)
-    contract_foreach_reference_pair(ref, c.el_i, c.el_f) do i, j, ep, ω, _...
-        g2[:, i, j] .= abs2.(ep) ./ (2 .* ω)
-        ωq[:, i, j] .= ω
-    end
-    (; c.el_i, c.el_f, g2, ωq)
-end
-
 # Every ElectronPhonon.jl calculator through the generic contract harness.
-@testset "calculator contract harness" begin
+@testitem "calculator contract harness" setup = [Common, CalculatorContract] begin
     models = (; el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el"),
                 ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph"))
     e_F = contract_fixtures().narrow.e_F
@@ -202,7 +200,7 @@ end
 
 # The reference pins which mode carries the coupling: swapping two non-degenerate physical modes
 # at one state pair must fail it, while the multiplet sums leave a basis change inside one alone.
-@testset "calculator contract harness: a mode swap fails the reference" begin
+@testitem "calculator contract harness: a mode swap fails the reference" setup = [Common, CalculatorContract] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
     fixture = contract_fixtures().narrow
     c = run_contract(
@@ -228,7 +226,7 @@ end
 # the selection owns the per-state BZ weights (non-uniform for a multigrid selection) and the exact
 # `(k, band)` list. Driven with an explicit `FilteredBandStates` whose weights are deliberately
 # perturbed away from `kpts.weights[ik]`, so the uniform fallback is detectable. CPU only.
-@testset "calculator consumes the selection" begin
+@testitem "calculator consumes the selection" setup = [Common, CalculatorContract] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
     win = (0.87 - 0.2, 0.87 + 0.2)
     sel0 = ElectronPhonon.filter_electron_states((4, 4, 4), model.nw, model.el_ham, win;
@@ -269,7 +267,7 @@ end
 # `calculator_bytes` declares what `setup_calculator!` allocates on the backend, on a one-state
 # fixture whose boxes equal the index-map extents: the two index maps (`persistent`) and, for
 # `G2Calculator`, the per-tile g2 scratch (`per_pair`). Without containers the maps are not counted.
-@testset "calculator_bytes matches the setup allocations" begin
+@testitem "calculator_bytes matches the setup allocations" setup = [Common, CalculatorContract] begin
     nm = 2
     kpts = ElectronPhonon.GridKpoints(kpoints_grid((1, 1, 1)))
     sel = ElectronPhonon.FilteredBandStates(kpts, [1], [1]; nw = 2)

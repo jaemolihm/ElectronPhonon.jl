@@ -1,7 +1,4 @@
-using Test
-using ElectronPhonon
-
-@testset "ElectronState" begin
+@testitem "ElectronState" setup = [Common] begin
     model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
     window = (10.0, 25.0) .* unit_to_aru(:eV)
 
