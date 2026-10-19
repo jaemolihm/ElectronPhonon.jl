@@ -1,36 +1,36 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: eph_window_scatter!, eph_window_scatter_reim!, gather_pair_table!,
-    dedup_phonon_frequencies, phonon_index
-using Random
+@testsnippet EphWindowScatter begin
+    using ElectronPhonon: eph_window_scatter!, eph_window_scatter_reim!, gather_pair_table!,
+        dedup_phonon_frequencies, phonon_index
+    using Random
 
-# CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
-# tests when it is unavailable or non-functional (e.g. CPU-only CI).
-const WINDOW_SCATTER_GPU_AVAILABLE = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
-end
-
-# Independent reference for both scatters: the same window lookup written as a dense
-# (nm, n_i, n_f) write, without the linear-index arithmetic the implementations use, and the mask
-# of the slots it writes.
-function _scatter_reference(ep, imap_i_col, imap_f, ikqs, n_i, n_f, i0)
-    nbandkq, nbandk, nm, npairs = size(ep)
-    re = zeros(nm, n_i, n_f); im_out = zeros(nm, n_i, n_f); written = falses(nm, n_i, n_f)
-    for j in 1:npairs, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
-        i = imap_i_col[n]
-        f = imap_f[m, ikqs[j]]
-        (i > 0 && f > 0) || continue
-        re[ν, i - i0, f] = real(ep[m, n, ν, j])
-        im_out[ν, i - i0, f] = imag(ep[m, n, ν, j])
-        written[ν, i - i0, f] = true
+    # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
+    # tests when it is unavailable or non-functional (e.g. CPU-only CI).
+    const WINDOW_SCATTER_GPU_AVAILABLE = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
     end
-    (re, im_out, written)
+
+    # Independent reference for both scatters: the same window lookup written as a dense
+    # (nm, n_i, n_f) write, without the linear-index arithmetic the implementations use, and the mask
+    # of the slots it writes.
+    function _scatter_reference(ep, imap_i_col, imap_f, ikqs, n_i, n_f, i0)
+        nbandkq, nbandk, nm, npairs = size(ep)
+        re = zeros(nm, n_i, n_f); im_out = zeros(nm, n_i, n_f); written = falses(nm, n_i, n_f)
+        for j in 1:npairs, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
+            i = imap_i_col[n]
+            f = imap_f[m, ikqs[j]]
+            (i > 0 && f > 0) || continue
+            re[ν, i - i0, f] = real(ep[m, n, ν, j])
+            im_out[ν, i - i0, f] = imag(ep[m, n, ν, j])
+            written[ν, i - i0, f] = true
+        end
+        (re, im_out, written)
+    end
 end
 
-@testset "eph_window_scatter_reim!" begin
+@testitem "eph_window_scatter_reim!" setup = [EphWindowScatter] begin
     Random.seed!(7)
     nbandkq, nbandk, nm, nkq, npairs = 3, 2, 4, 7, 5
     # One outer band in the window and one outside it, so the `i > 0` branch is exercised.
@@ -43,7 +43,7 @@ end
     n_f = 0
     for j in eachindex(imap_f)
         if rand() < 0.75
-            n_f += 1
+            global n_f += 1  # the item body is module top level
             imap_f[j] = n_f
         end
     end
@@ -127,7 +127,7 @@ end
 # The scatters loop over the extents of their block values unchecked (`@inbounds` on the host, no
 # bounds checks in the device kernels). A block value buffer at its full width, handed over with
 # the k+q list and frequencies of fewer points, must be refused rather than read past the block.
-@testset "scatters refuse block arrays of mismatched extent" begin
+@testitem "scatters refuse block arrays of mismatched extent" setup = [EphWindowScatter] begin
     nbandkq, nbandk, nm, npairs, nkq = 3, 2, 2, 4, 6
     imap_i_col, imap_f = [1, 2], reshape(collect(1:nbandkq * nkq), nbandkq, nkq)
     ikqs, ωq = collect(1:npairs), fill(0.01, nm, npairs)
@@ -146,7 +146,7 @@ end
 # against a plain triple loop: a Float64 table (frequencies) and an Int32 one (ME's frequency ids),
 # a rectangular q index (IBZ outer k, full inner k+q) and k indices with repeats (several bands of
 # one k point).
-@testset "gather_pair_table!" begin
+@testitem "gather_pair_table!" setup = [EphWindowScatter] begin
     Random.seed!(11)
     nm, nq, nk, nkq = 3, 9, 4, 6
     iq_kk = Int32.(rand(1:nq, nk, nkq))
@@ -171,7 +171,7 @@ end
 end
 
 # `dedup_phonon_frequencies` groups frequencies by the bin `floor(ω / bin)` and stores the bin centre.
-@testset "dedup_phonon_frequencies" begin
+@testitem "dedup_phonon_frequencies" setup = [EphWindowScatter] begin
     Random.seed!(12)
     cutoff = 1e-6
     @testset "bin edges" begin

@@ -1,10 +1,10 @@
-using Test
-using LinearAlgebra
-using Random
-using ElectronPhonon
-using ElectronPhonon: holstein_model, Structure, restrict_symmetry_to_dimension
+@testsnippet HolsteinModel begin
+    using LinearAlgebra
+    using Random
+    using ElectronPhonon: holstein_model, Structure, restrict_symmetry_to_dimension
+end
 
-@testset "Holstein model" begin
+@testitem "Holstein model" setup = [HolsteinModel] begin
     t, ω₀, g, alat, ε₀ = 0.1, 0.01, 0.02, 5.0, 0.05
 
     @testset "dim = $dim, epmat_outer_momentum = $outer" for dim in 1:3, outer in ("el", "ph")

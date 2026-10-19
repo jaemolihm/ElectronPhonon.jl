@@ -1,7 +1,7 @@
-using Test
-using ElectronPhonon
-const EP = ElectronPhonon
-using ElectronPhonon: state_weights, state_xks, FilteredBandStates
+@testsnippet MultigridWeights begin
+    const EP = ElectronPhonon
+    using ElectronPhonon: state_weights, state_xks, FilteredBandStates
+end
 
 # Pure-BZ (e-ph-independent) quadrature check for the multigrid double-grid weights. Grounds the
 # per-(k,band) weight correctness before trusting transport numbers: the per-state
@@ -10,10 +10,7 @@ using ElectronPhonon: state_weights, state_xks, FilteredBandStates
 # narrow window1 at the fine weight, plus coarse-grid states inside the wide window2 (but not the
 # narrow window) at the coarse weight, deduping the k-points on the fine grid.
 
-isdefined(@__MODULE__, :_load_model_from_artifacts) ||
-    include(joinpath(@__DIR__, "..", "common_models_from_artifacts.jl"))
-
-@testset "Multigrid k-point weights (pure BZ quadrature)" begin
+@testitem "Multigrid k-point weights (pure BZ quadrature)" setup = [Common, MultigridWeights] begin
     model = _load_model_from_artifacts("pb")
     sym = model.symmetry
     eV = EP.unit_to_aru(:eV)

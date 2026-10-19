@@ -1,17 +1,15 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: AbstractCalculator, OuterKLoop
+@testsnippet EphIncommensurateGrids begin
+    using ElectronPhonon: AbstractCalculator, OuterKLoop
+
+    struct _NeverRunCalc <: AbstractCalculator end
+    ElectronPhonon.supports(::_NeverRunCalc, ::Type{OuterKLoop}) = true
+end
 
 # `run_eph_over_k_and_kq` builds its phonons on the q grid the k and k+q grids span, so it needs the
 # two grids commensurate, and refuses other grids at entry. A q off the k grid is the case of
 # `run_eph_over_k_and_q` and `run_eph_over_q_and_k`.
 
-isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
-
-struct _NeverRunCalc <: AbstractCalculator end
-ElectronPhonon.supports(::_NeverRunCalc, ::Type{OuterKLoop}) = true
-
-@testset "run_eph_over_k_and_kq refuses incommensurate grids" begin
+@testitem "run_eph_over_k_and_kq refuses incommensurate grids" setup = [Common, EphIncommensurateGrids] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
     # (2, 2, 2) and (3, 3, 3): neither divides the other. The refusal comes before any state is
     # built, so the calculator has no methods beyond `supports`.

@@ -1,9 +1,19 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: OuterKEngine, stage1!, stage2!, compute_phonon_states_batched, unit_to_aru,
-    eph_apply_rotations!, _run_options, _setup_states, OuterKLoop, _kept_phonon_modes,
-    _phonon_storage_plan, _phonon_state_bytes, _select_qs_per_outer_batch, AbstractCalculator,
-    GPU_PHONONS_RESIDENT_MIN_TILE, _may_truncate_phonon_modes
+@testsnippet PhononModeTruncation begin
+    using ElectronPhonon: OuterKEngine, stage1!, stage2!, compute_phonon_states_batched, unit_to_aru,
+        eph_apply_rotations!, _run_options, _setup_states, OuterKLoop, _kept_phonon_modes,
+        _phonon_storage_plan, _phonon_state_bytes, _select_qs_per_outer_batch, AbstractCalculator,
+        GPU_PHONONS_RESIDENT_MIN_TILE, _may_truncate_phonon_modes
+
+    const MODE_TRUNCATION_GPU = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+
+    # Does not allow the phonon modes to be truncated (the default).
+    struct _NoTruncation <: AbstractCalculator end
+end
 
 # A run with a finite energy_conservation_tol on a GPU may keep only the lowest phonon modes
 # (`nmodes_kept`, `allows_phonon_mode_truncation`), and build them per outer batch when even those do
@@ -11,16 +21,7 @@ using ElectronPhonon: OuterKEngine, stage1!, stage2!, compute_phonon_states_batc
 # the per-batch path is reached on Pb by a `max_device_bytes` below twice the phonon table of all modes,
 # on a k+q grid that makes the table larger than the loop's fixed buffers.
 
-const MODE_TRUNCATION_GPU = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
-end
-
-isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
-
-@testset "phonon modes kept and their storage (policy)" begin
+@testitem "phonon modes kept and their storage (policy)" setup = [Common, PhononModeTruncation] begin
     # Two acoustic modes below Ω and a gapped optical branch above it at every q.
     Ω = 0.05
     ω = [0.0   0.01  0.02  0.015
@@ -57,10 +58,7 @@ isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_fr
     @test plan(; budget, table_bytes = table(_kept_phonon_modes(ω, Ω))).per_batch == false
 end
 
-# Does not allow the phonon modes to be truncated (the default).
-struct _NoTruncation <: AbstractCalculator end
-
-@testset "phonon storage policy (GPU)" begin
+@testitem "phonon storage policy (GPU)" setup = [Common, PhononModeTruncation] begin
     if !MODE_TRUNCATION_GPU
         @info "CUDA not available/functional — skipping phonon mode truncation test"
     else
@@ -129,16 +127,16 @@ struct _NoTruncation <: AbstractCalculator end
             for ik in batch, tile in Iterators.partition(1:st.kqpts.n, 13)
                 ep_full = Array(stage2!(eng_full, ik, tile).ep)
                 block = stage2!(eng_part, ik, tile)
-                nwrong_shape += !(size(block.ep, 3) == nkept && block.phs.nmodes == nkept)
-                maxdev = max(maxdev, maximum(abs, Array(block.ep) - ep_full[:, :, 1:nkept, :]))
-                scale = max(scale, maximum(abs, ep_full))
+                global nwrong_shape += !(size(block.ep, 3) == nkept && block.phs.nmodes == nkept)
+                global maxdev = max(maxdev, maximum(abs, Array(block.ep) - ep_full[:, :, 1:nkept, :]))
+                global scale = max(scale, maximum(abs, ep_full))
                 block_tol, block_batch = stage2!(eng_part_tol, ik, tile), stage2!(eng_batch, ik, tile)
-                nmismatch += (block_tol === nothing) != (block_batch === nothing)
+                global nmismatch += (block_tol === nothing) != (block_batch === nothing)
                 block_tol === nothing && continue
-                nblocks_tol += 1
-                nmismatch += Array(block_tol.iq) != Array(block_batch.iq)
-                nmismatch += Array(block_tol.phs.e) != Array(block_batch.phs.e)
-                maxdev_batch = max(maxdev_batch, maximum(abs, Array(block_tol.ep) - Array(block_batch.ep)))
+                global nblocks_tol += 1
+                global nmismatch += Array(block_tol.iq) != Array(block_batch.iq)
+                global nmismatch += Array(block_tol.phs.e) != Array(block_batch.phs.e)
+                global maxdev_batch = max(maxdev_batch, maximum(abs, Array(block_tol.ep) - Array(block_batch.ep)))
             end
         end
         @test nwrong_shape == 0
@@ -193,7 +191,7 @@ end
 # of all modes, on a k+q grid whose table outgrows the loop's buffers): the BTE kernel is the one of
 # the run with all phonons resident, and the driver returns no phonons. One-k batches whose k has no
 # state within reach of the k+q window keep no pair.
-@testset "phonons per outer batch (GPU)" begin
+@testitem "phonons per outer batch (GPU)" setup = [Common, PhononModeTruncation] begin
     if MODE_TRUNCATION_GPU
         model = _load_model_from_artifacts("pb")
         eV, K, meV = unit_to_aru(:eV), unit_to_aru(:K), unit_to_aru(:meV)
@@ -252,7 +250,7 @@ end
 # under those buffers plus twice the table opens the ω pass. The truncated run (capped) gives the BTE
 # kernel of the untruncated one (same tol) and of tol = Inf, as does a run that builds the 3 kept modes
 # per outer batch (one outer k per batch, a cap just under the kept table plus the loop's buffers).
-@testset "phonon mode truncation end to end (GPU)" begin
+@testitem "phonon mode truncation end to end (GPU)" setup = [Common, PhononModeTruncation] begin
     if MODE_TRUNCATION_GPU
         model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "el")
         model.polar_phonon = model.polar_eph = ElectronPhonon.Polar(nothing)

@@ -1,10 +1,10 @@
-using Test
-using LinearAlgebra
-using Random
-using ElectronPhonon
-using ElectronPhonon: rashba_holstein_model, holstein_model
+@testsnippet RashbaHolsteinModel begin
+    using LinearAlgebra
+    using Random
+    using ElectronPhonon: rashba_holstein_model, holstein_model
+end
 
-@testset "Rashba Holstein model" begin
+@testitem "Rashba Holstein model" setup = [RashbaHolsteinModel] begin
     t, M, λ_soc, α_R, ω₀, g₀, g₁, alat, ε₀ = 0.1, 0.3, 0.05, 0.02, 0.01, 0.02, 0.005, 5.0, 0.04
     params = (; t, M, λ_soc, α_R, ω₀, g₀, g₁, alat, ε₀, verbose = false)
 

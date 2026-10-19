@@ -1,23 +1,36 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: AbstractBackend, CPUBackend, alloc, alloc_zeros, is_host, to_device,
-    to_device_copy, gpu_backend, free_bytes, reclaim_device_memory, backend_from
-using SparseArrays: sparse, SparseMatrixCSC, nnz
-using LinearAlgebra: mul!
+@testsnippet BackendAlloc begin
+    using ElectronPhonon: AbstractBackend, CPUBackend, alloc, alloc_zeros, is_host, to_device,
+        to_device_copy, gpu_backend, free_bytes, reclaim_device_memory, backend_from
+    using SparseArrays: sparse, SparseMatrixCSC, nnz
+    using LinearAlgebra: mul!
 
-# CUDA is a weak dependency, so load it defensively and run the device arm only when it works.
-const BACKEND_ALLOC_GPU = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
+    # CUDA is a weak dependency, so load it defensively and run the device arm only when it works.
+    const BACKEND_ALLOC_GPU = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+
+    # `reclaim_device_memory`'s contract, which a residency decision reading `free_bytes` depends on.
+    #
+    # The allocation happens in a function, not inline: a `@testset begin … end` body is one top-level
+    # thunk, and a device array dropped by top-level code stays reachable from that thunk's frame, so
+    # no GC collects it and the test below would measure nothing.
+    _alloc_and_drop_device(nbytes) = (fill!(CUDA.CuArray{Float64}(undef, nbytes ÷ sizeof(Float64)),
+                                           1.0); nothing)
+
+    # A backend EP has never seen, standing in for a future one: `is_host` is `true` on a known list
+    # and `false` by fallback, so such a backend takes the generic (device) route, not the host-only
+    # one.
+    struct UnknownBackend <: AbstractBackend end
 end
 
 # The two allocators that pair with `alloc` and `to_device`. Each exists because its sibling
 # cannot be used for a buffer that will be written: `alloc` returns `undef`, and `to_device` is
 # the identity on `CPUBackend`. The element type is the CALLER's, not the backend prototype's,
 # which `alloc`'s `similar(proto, T, dims...)` is what provides.
-@testset "alloc_zeros / to_device_copy" begin
+@testitem "alloc_zeros / to_device_copy" setup = [BackendAlloc] begin
     backends = BACKEND_ALLOC_GPU ? (CPUBackend(), gpu_backend()) : (CPUBackend(),)
     BACKEND_ALLOC_GPU || @info "CUDA not functional — skipping the GPUBackend arm"
 
@@ -59,15 +72,7 @@ end
     end
 end
 
-# `reclaim_device_memory`'s contract, which a residency decision reading `free_bytes` depends on.
-#
-# The allocation happens in a function, not inline: a `@testset begin … end` body is one top-level
-# thunk, and a device array dropped by top-level code stays reachable from that thunk's frame, so
-# no GC collects it and the test below would measure nothing.
-_alloc_and_drop_device(nbytes) = (fill!(CUDA.CuArray{Float64}(undef, nbytes ÷ sizeof(Float64)),
-                                       1.0); nothing)
-
-@testset "reclaim_device_memory" begin
+@testitem "reclaim_device_memory" setup = [BackendAlloc] begin
     # The host contract is that this is FREE, not merely harmless: `free_bytes(::CPUBackend)` is
     # `typemax`, so a decision always says resident and there is no pool to trim — a `GC.gc(true)`
     # hoisted into the generic method would be pure cost on every CPU run.
@@ -120,7 +125,7 @@ end
 # specialization worth having is that `mul!` on the result then runs cuSPARSE SpMM instead of a
 # scalar-indexing fallback — including when the dense operand is a `transpose` view, which
 # LinearAlgebra unwraps into cuSPARSE's `transb` flag rather than materializing a copy.
-@testset "sparse to_device / mul!" begin
+@testitem "sparse to_device / mul!" setup = [BackendAlloc] begin
     n_f, n_i, r = 4000, 200, 12
     S = sparse(1:n_f, rand(1:n_i, n_f), rand(n_f), n_f, n_i)
     St = SparseMatrixCSC(transpose(S))                 # (n_i × n_f)
@@ -164,12 +169,7 @@ end
     end
 end
 
-# A backend EP has never seen, standing in for a future one: `is_host` is `true` on a known list
-# and `false` by fallback, so such a backend takes the generic (device) route, not the host-only
-# one.
-struct UnknownBackend <: AbstractBackend end
-
-@testset "is_host" begin
+@testitem "is_host" setup = [BackendAlloc] begin
     @test is_host(CPUBackend())
     @test !is_host(UnknownBackend())
     if BACKEND_ALLOC_GPU
@@ -178,7 +178,7 @@ struct UnknownBackend <: AbstractBackend end
 end
 
 # The only `Bool` -> backend mapping in the stack; a driver script's `use_gpu` is consumed here.
-@testset "backend_from" begin
+@testitem "backend_from" setup = [BackendAlloc] begin
     @test backend_from(false) === CPUBackend()
     if BACKEND_ALLOC_GPU
         @test typeof(backend_from(true)) === typeof(gpu_backend())

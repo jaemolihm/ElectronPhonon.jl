@@ -1,9 +1,6 @@
-using Test
-using ElectronPhonon
-
 # The `(k, band)`-selection machinery: per-state indexing, `state_index` in all three forms,
 # `filter_states`, and the two symmetry-star lookups. Model-free — the states are built by hand.
-@testset "BandStates: selection utilities" begin
+@testitem "BandStates: selection utilities" begin
     using ElectronPhonon: Vec3, GridKpoints, Kpoints, FilteredBandStates, BandStates,
         filter_states, state_index, state_index_in_star, state_indices_full_star,
         state_weights, ind_range_for_k_range, band_range, symmetry_operations, apply_symop,

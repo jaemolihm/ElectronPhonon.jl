@@ -1,8 +1,8 @@
-using Test
-using Random
-using ElectronPhonon
+@testsnippet Kpoints begin
+    using Random
+end
 
-@testset "kpoints: grid" begin
+@testitem "kpoints: grid" setup = [Kpoints] begin
     using ElectronPhonon: get_filtered_kpoints, kpoints_grid, kpoints_create_subgrid, kpoints_grid_range
 
     nk1 = 2
@@ -51,7 +51,7 @@ using ElectronPhonon
     @test kpts2.vectors[19] ≈ kpts.vectors[1] .+ ( 1/4,  0/6,  1/8) ./ (2, 2, 2)
 end
 
-@testset "kpoints: array, sort" begin
+@testitem "kpoints: array, sort" setup = [Kpoints] begin
     xks = zeros(3, 4)
     xks[:, 1] = [0.2, 0.2, 0.9]
     xks[:, 2] = [0.0, 0.9, 0.9]
@@ -83,7 +83,7 @@ end
     end
 end
 
-@testset "kpoints: GridKpoints" begin
+@testitem "kpoints: GridKpoints" setup = [Kpoints] begin
     using ElectronPhonon: get_filtered_kpoints, kpoints_grid
 
     Random.seed!(111)
@@ -114,7 +114,7 @@ end
     @test all([k isa GridKpoints for k in kpts_split])
 end
 
-@testset "kpoints: GridKpoints shift" begin
+@testitem "kpoints: GridKpoints shift" setup = [Kpoints] begin
     using ElectronPhonon: get_filtered_kpoints, kpoints_grid
 
     # 29/400 * 400 == 28.999999999999996. Taken naively, `mod(x * n, 1) / n` is one grid step, and
@@ -138,7 +138,7 @@ end
     @test iszero(get_filtered_kpoints(gamma, [ik > 29 for ik in 1:n]).shift)
 end
 
-@testset "kpoints: GridKpoints sortperm" begin
+@testitem "kpoints: GridKpoints sortperm" setup = [Kpoints] begin
     using ElectronPhonon: shift_center!
     # The packed-key sort must be the stable sort on the integer-coordinate tuples, ties included:
     # folded and unfolded points, repeats, odd/even/non-cubic grids, shifts, and a spread whose
@@ -162,7 +162,7 @@ end
     @test isempty(sortperm(GridKpoints{Float64}()))
 end
 
-@testset "kpoints: dense inverse index" begin
+@testitem "kpoints: dense inverse index" setup = [Kpoints] begin
     using ElectronPhonon: get_filtered_kpoints, kpoints_grid, combine_kpoint_grids, unfold_kpoints,
         fold_kpoints, _hash_xk, _ik_from_hash, _use_dense_index
 
@@ -270,8 +270,8 @@ end
 
     # Both branches of `sort!`'s index renumbering.
     for index in (:dense, :dict)
-        inds = randperm(full.n)
-        mixed = GridKpoints(Kpoints(full.n, full.vectors[inds], full.weights[inds], full.ngrid),
+        local inds = randperm(full.n)
+        local mixed = GridKpoints(Kpoints(full.n, full.vectors[inds], full.weights[inds], full.ngrid),
                             full.ngrid; index)
         sort!(mixed)
         test_index_equivalence(mixed; dense = index === :dense)
@@ -335,7 +335,7 @@ end
     @test mixed.vectors ≈ full.vectors
 end
 
-@testset "kpoints: xk_to_ik checked vs unsafe" begin
+@testitem "kpoints: xk_to_ik checked vs unsafe" setup = [Kpoints] begin
     using ElectronPhonon: kpoints_grid, Vec3
 
     N = 4
@@ -384,7 +384,7 @@ end
           xk_to_ik(full.vectors[7], full)
 end
 
-@testset "kpoints: combine_kpoint_grids" begin
+@testitem "kpoints: combine_kpoint_grids" setup = [Kpoints] begin
     using ElectronPhonon: kpoints_grid, combine_kpoint_grids, add_two_kpoint_grids
 
     # Check that op(k, q) for all (k, q) pairs is found in the combined grid, and that
@@ -515,7 +515,7 @@ end
     @test_throws ArgumentError combine_kpoint_grids(single, single, +, (10^7, 10^7, 10^7))
 end
 
-@testset "kpoints: mpi_scatter return type" begin
+@testitem "kpoints: mpi_scatter return type" setup = [Kpoints] begin
     using ElectronPhonon: kpoints_grid, mpi_scatter, mpi_gather_and_scatter
     MPI = ElectronPhonon.MPI
     MPI.Initialized() || MPI.Init()

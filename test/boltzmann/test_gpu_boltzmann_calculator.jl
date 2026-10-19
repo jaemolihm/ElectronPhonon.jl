@@ -1,9 +1,105 @@
-using Test
-using ElectronPhonon
-const EP = ElectronPhonon
-using Random
+@testsnippet GpuBoltzmannCalculator begin
+    const EP = ElectronPhonon
+    using Random
 
-@testset "bte_scattering_increments (shared core) pinned values" begin
+    # Both `bte_window_accumulate!` methods — the generic host one (which serves a run on
+    # a CPU backend) and the CUDA kernel — against an independent CPU reference. The reference
+    # is a self-contained per-(m, n, iq) loop over the same shared `bte_scattering_increments`; it is
+    # deliberately NOT the implementation under test on either backend, so it independently pins both to
+    # ~machine eps, block-tile `i0` and out-of-window `imap == 0` included.
+    const _CUDA_OK = try
+        @eval import CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+
+    # Independent CPU reference for the Sₒ/Sᵢ accumulation (NOT a production method, and deliberately not
+    # shared with `src`: keeping it duplicated is what makes it an oracle for the generic host method that
+    # now lives in src/boltzmann/boltzmann_calculator.jl as well as for the CUDA kernel).
+    function _bte_accumulate_ref!(So, Si, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
+            μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, npairs, i0)
+        nT = length(μs)
+        for ipair in 1:npairs, n in 1:nbandk, m in 1:nbandkq
+            i = imap_i_at_k[n]; i > 0 || continue
+            ikq = ikqs[ipair]; f = imap_f[m, ikq]; f > 0 || continue
+            ek = e_i[i]; ekq = e_f[f]; wtq = wf[f]   # per-final-state weight
+            for iT in 1:nT
+                sₒ = 0.0; sᵢ = 0.0
+                for ν in 1:nmodes
+                    ωq = ωqmat[ν, ipair]; ωq < ω_cutoff && continue
+                    sₒ_ν, sᵢ_ν = EP.bte_scattering_increments(method, ek, ekq, ωq,
+                        g2vals[m, n, ν, ipair], wtq, μs[iT], Ts[iT], ηs[iT])
+                    sₒ += sₒ_ν; sᵢ += sᵢ_ν
+                end
+                So[i, iT] += sₒ
+                Si[i - i0, f, iT] = sᵢ
+            end
+        end
+        (So, Si)
+    end
+
+    # The two accumulate fixtures below run on either backend: `arr` moves an input array onto it
+    # (`identity` for the host, `CUDA.CuArray` for the device) and `zdev(T, dims...)` allocates the zeroed
+    # output buffers there. Both fixtures compare against `_bte_accumulate_ref!` above.
+    function check_bte_accumulate_methods(arr, zdev)
+        Random.seed!(7)
+        FT=Float64; nw=4; nmodes=3; npairs=6; nT=2
+        ikqs = collect(1:npairs)
+        imap_i_at_k = collect(1:nw)
+        imap_f = reshape(collect(1:nw*npairs), nw, npairs)
+        n_i=nw; n_f=nw*npairs
+        e_i=0.01randn(n_i); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight
+        g2vals=abs.(randn(nw,nw,nmodes,npairs)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
+        μs=FT[0.0,0.002]; Ts=FT[0.01,0.02]; ωcut=FT(1e-6)
+        ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005, 0.005]]
+        for method in 1:6
+            So=zeros(n_i,nT); Si=zeros(n_i,n_f,nT)
+            _bte_accumulate_ref!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
+                μs,Ts,ηs,method,ωcut,nw,nw,nmodes,npairs,0)
+            Sod=zdev(FT,n_i,nT); Sid=zdev(FT,n_i,n_f,nT)
+            EP.bte_window_accumulate!(Sod,Sid,arr(g2vals),arr(ωqmat),
+                arr(imap_i_at_k),arr(imap_f),arr(ikqs),
+                arr(e_i),arr(e_f),arr(wf),
+                arr(μs),arr(Ts),arr(ηs),method,ωcut,0)
+            @test Array(Sod) ≈ So rtol=1e-10
+            @test Array(Sid) ≈ Si rtol=1e-10
+        end
+    end
+
+    function check_bte_accumulate_tile(arr, zdev)
+        Random.seed!(11)
+        FT=Float64; nw=4; nmodes=2; npairs=4; nT=1
+        ikqs = collect(1:npairs)
+        # Some bands out-of-window (imap==0); in-window outer states live in a tile i0+1:i0+ni.
+        i0=3; ni=4                          # global outer states 4..7 land in tile rows 1..4
+        imap_i_at_k = [0, 4, 6, 7]           # band 1 out-of-window; others in-tile (global i)
+        n_i_global = 10
+        imap_f = [ (m+ (kq-1)*nw) % 7 == 0 ? 0 : (m + (kq-1)*nw) for m in 1:nw, kq in 1:npairs ]  # scatter some 0s
+        n_f = nw*npairs
+        e_i=0.01randn(n_i_global); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight
+        g2vals=abs.(randn(nw,nw,nmodes,npairs)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
+        μs=FT[0.0]; Ts=FT[0.01]; ωcut=FT(1e-6)
+        ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005]]
+        for method in (1,5,6)
+            So=zeros(n_i_global,nT); Si=zeros(ni,n_f,nT)
+            _bte_accumulate_ref!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
+                μs,Ts,ηs,method,ωcut,nw,nw,nmodes,npairs,i0)
+            Sod=zdev(FT,n_i_global,nT); Sid=zdev(FT,ni,n_f,nT)
+            EP.bte_window_accumulate!(Sod,Sid,arr(g2vals),arr(ωqmat),
+                arr(imap_i_at_k),arr(imap_f),arr(ikqs),
+                arr(e_i),arr(e_f),arr(wf),
+                arr(μs),arr(Ts),arr(ηs),method,ωcut,i0)
+            @test Array(Sod) ≈ So rtol=1e-10
+            @test Array(Sid) ≈ Si rtol=1e-10
+            # out-of-window outer band 1 contributes nowhere; global rows 1..3,8..10 stay zero
+            @test all(So[setdiff(1:n_i_global, 4:7), :] .== 0)
+        end
+    end
+
+end
+
+@testitem "bte_scattering_increments (shared core) pinned values" setup = [Common, GpuBoltzmannCalculator] begin
     # (sₒ, sᵢ) for methods 1..6 at a fixed in-window input, pinned from the validated
     # implementation as a regression guard. Input: ek, ekq, ωq, g2, wtq, μ, T, η =
     #   0.01, -0.005, 0.008, 1e-3, 0.5, 0.002, 0.01, 0.005  (atomic units).
@@ -26,114 +122,15 @@ using Random
     @test all(isfinite, s) && s == (0.0, 0.0)
 end
 
-# Both `bte_window_accumulate!` methods — the generic host one (which serves a run on
-# a CPU backend) and the CUDA kernel — against an independent CPU reference. The reference
-# is a self-contained per-(m, n, iq) loop over the same shared `bte_scattering_increments`; it is
-# deliberately NOT the implementation under test on either backend, so it independently pins both to
-# ~machine eps, block-tile `i0` and out-of-window `imap == 0` included.
-const _CUDA_OK = (get(ENV, "EP_TEST_CUDA", "1") == "1") && try
-    @eval import CUDA
-    CUDA.functional()
-catch
-    false
-end
-
-# Independent CPU reference for the Sₒ/Sᵢ accumulation (NOT a production method, and deliberately not
-# shared with `src`: keeping it duplicated is what makes it an oracle for the generic host method that
-# now lives in src/boltzmann/boltzmann_calculator.jl as well as for the CUDA kernel).
-function _bte_accumulate_ref!(So, Si, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
-        μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, npairs, i0)
-    nT = length(μs)
-    for ipair in 1:npairs, n in 1:nbandk, m in 1:nbandkq
-        i = imap_i_at_k[n]; i > 0 || continue
-        ikq = ikqs[ipair]; f = imap_f[m, ikq]; f > 0 || continue
-        ek = e_i[i]; ekq = e_f[f]; wtq = wf[f]   # per-final-state weight
-        for iT in 1:nT
-            sₒ = 0.0; sᵢ = 0.0
-            for ν in 1:nmodes
-                ωq = ωqmat[ν, ipair]; ωq < ω_cutoff && continue
-                sₒ_ν, sᵢ_ν = EP.bte_scattering_increments(method, ek, ekq, ωq,
-                    g2vals[m, n, ν, ipair], wtq, μs[iT], Ts[iT], ηs[iT])
-                sₒ += sₒ_ν; sᵢ += sᵢ_ν
-            end
-            So[i, iT] += sₒ
-            Si[i - i0, f, iT] = sᵢ
-        end
-    end
-    (So, Si)
-end
-
-# The two accumulate fixtures below run on either backend: `arr` moves an input array onto it
-# (`identity` for the host, `CUDA.CuArray` for the device) and `zdev(T, dims...)` allocates the zeroed
-# output buffers there. Both fixtures compare against `_bte_accumulate_ref!` above.
-function check_bte_accumulate_methods(arr, zdev)
-    Random.seed!(7)
-    FT=Float64; nw=4; nmodes=3; npairs=6; nT=2
-    ikqs = collect(1:npairs)
-    imap_i_at_k = collect(1:nw)
-    imap_f = reshape(collect(1:nw*npairs), nw, npairs)
-    n_i=nw; n_f=nw*npairs
-    e_i=0.01randn(n_i); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight
-    g2vals=abs.(randn(nw,nw,nmodes,npairs)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
-    μs=FT[0.0,0.002]; Ts=FT[0.01,0.02]; ωcut=FT(1e-6)
-    ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005, 0.005]]
-    for method in 1:6
-        So=zeros(n_i,nT); Si=zeros(n_i,n_f,nT)
-        _bte_accumulate_ref!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
-            μs,Ts,ηs,method,ωcut,nw,nw,nmodes,npairs,0)
-        Sod=zdev(FT,n_i,nT); Sid=zdev(FT,n_i,n_f,nT)
-        EP.bte_window_accumulate!(Sod,Sid,arr(g2vals),arr(ωqmat),
-            arr(imap_i_at_k),arr(imap_f),arr(ikqs),
-            arr(e_i),arr(e_f),arr(wf),
-            arr(μs),arr(Ts),arr(ηs),method,ωcut,0)
-        @test Array(Sod) ≈ So rtol=1e-10
-        @test Array(Sid) ≈ Si rtol=1e-10
-    end
-end
-
-function check_bte_accumulate_tile(arr, zdev)
-    Random.seed!(11)
-    FT=Float64; nw=4; nmodes=2; npairs=4; nT=1
-    ikqs = collect(1:npairs)
-    # Some bands out-of-window (imap==0); in-window outer states live in a tile i0+1:i0+ni.
-    i0=3; ni=4                          # global outer states 4..7 land in tile rows 1..4
-    imap_i_at_k = [0, 4, 6, 7]           # band 1 out-of-window; others in-tile (global i)
-    n_i_global = 10
-    imap_f = [ (m+ (kq-1)*nw) % 7 == 0 ? 0 : (m + (kq-1)*nw) for m in 1:nw, kq in 1:npairs ]  # scatter some 0s
-    n_f = nw*npairs
-    e_i=0.01randn(n_i_global); e_f=0.01randn(n_f); wf=abs.(0.1randn(n_f)).+0.01  # per-final-state weight
-    g2vals=abs.(randn(nw,nw,nmodes,npairs)).*1e-3; ωqmat=(0.5 .+ abs.(randn(nmodes,npairs))).*1e-2
-    μs=FT[0.0]; Ts=FT[0.01]; ωcut=FT(1e-6)
-    ηs = [SmearingType(:Gaussian, FT(x)) for x in [0.005]]
-    for method in (1,5,6)
-        So=zeros(n_i_global,nT); Si=zeros(ni,n_f,nT)
-        _bte_accumulate_ref!(So,Si,g2vals,ωqmat,imap_i_at_k,imap_f,ikqs,e_i,e_f,wf,
-            μs,Ts,ηs,method,ωcut,nw,nw,nmodes,npairs,i0)
-        Sod=zdev(FT,n_i_global,nT); Sid=zdev(FT,ni,n_f,nT)
-        EP.bte_window_accumulate!(Sod,Sid,arr(g2vals),arr(ωqmat),
-            arr(imap_i_at_k),arr(imap_f),arr(ikqs),
-            arr(e_i),arr(e_f),arr(wf),
-            arr(μs),arr(Ts),arr(ηs),method,ωcut,i0)
-        @test Array(Sod) ≈ So rtol=1e-10
-        @test Array(Sid) ≈ Si rtol=1e-10
-        # out-of-window outer band 1 contributes nowhere; global rows 1..3,8..10 stay zero
-        @test all(So[setdiff(1:n_i_global, 4:7), :] .== 0)
-    end
-end
-
 # Host method: no CUDA needed. This is the method a run on a CPU backend uses.
-@testset "bte_window_accumulate! host method vs CPU reference" begin
+@testitem "bte_window_accumulate! host method vs CPU reference" setup = [Common, GpuBoltzmannCalculator] begin
     check_bte_accumulate_methods(identity, (T, dims...) -> zeros(T, dims...))
     check_bte_accumulate_tile(identity, (T, dims...) -> zeros(T, dims...))
 end
 
-if _CUDA_OK
-    @testset "bte_window_accumulate! CUDA kernel vs CPU reference" begin
-        check_bte_accumulate_methods(CUDA.CuArray, CUDA.zeros)
-        check_bte_accumulate_tile(CUDA.CuArray, CUDA.zeros)
-    end
-else
-    @info "CUDA not functional — skipping GPU bte_window_accumulate! test"
+@testitem "bte_window_accumulate! CUDA kernel vs CPU reference" tags = [:gpu] setup = [Common, GpuBoltzmannCalculator] begin
+    check_bte_accumulate_methods(CUDA.CuArray, CUDA.zeros)
+    check_bte_accumulate_tile(CUDA.CuArray, CUDA.zeros)
 end
 
 # End-to-end BoltzmannCalculator: the same calculator over a full pass of run_eph_over_k_and_kq must
@@ -145,7 +142,7 @@ end
 # none of the CUDA kernels (`_bte_window_accumulate_kernel!`, `_window_scatter_kernel!`, the fused
 # rotation kernel, `CUBLAS.gemm_strided_batched!`, the cuSOLVER batched eigensolve). Those are only
 # covered by the `_CUDA_OK` arms.
-@testset "end-to-end BTE: CPU tilings and GPU (Pb)" begin
+@testitem "end-to-end BTE: CPU tilings and GPU (Pb)" setup = [Common, GpuBoltzmannCalculator] begin
     model = _load_model_from_artifacts("pb")   # nw=4, nmodes=3; loads the e-ph matrix
     eV = EP.unit_to_aru(:eV); K = EP.unit_to_aru(:K); meV = EP.unit_to_aru(:meV)
     μ = 11.68eV; window = (μ - 0.5eV, μ + 0.5eV)

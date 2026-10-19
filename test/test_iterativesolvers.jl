@@ -1,8 +1,9 @@
-using IterativeSolvers
-using ElectronPhonon
-using Test
+@testsnippet Iterativesolvers begin
+    using IterativeSolvers
+    using LinearAlgebra
+end
 
-@testset "iterative solvers" begin
+@testitem "iterative solvers" setup = [Iterativesolvers] begin
     # Test resetting iterable struct implementation of iterative solver
     N = 5
     reltol = 1e-8

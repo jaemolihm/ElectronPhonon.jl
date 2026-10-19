@@ -1,7 +1,7 @@
-using Test
-using ElectronPhonon
-const EP = ElectronPhonon
-using ElectronPhonon: filter_electron_states, band_range, state_xks
+@testsnippet FilterElectronStates begin
+    const EP = ElectronPhonon
+    using ElectronPhonon: filter_electron_states, band_range, state_xks
+end
 
 # Unit tests for the unified `filter_electron_states` primitive: the MPI construction (redistributing
 # the kept k-points and per-k band ranges together so they stay aligned) and the `shift` kwarg on the
@@ -9,10 +9,7 @@ using ElectronPhonon: filter_electron_states, band_range, state_xks
 # gather/scatter redistribution path and asserts it reproduces the serial result; a genuine
 # multi-rank alignment check needs `mpiexec -n N` (see the repo's test_kpoints TODO).
 
-isdefined(@__MODULE__, :_load_model_from_artifacts) ||
-    include(joinpath(@__DIR__, "common_models_from_artifacts.jl"))
-
-@testset "filter_electron_states" begin
+@testitem "filter_electron_states" setup = [Common, FilterElectronStates] begin
     model = _load_model_from_artifacts("pb")
     eV = EP.unit_to_aru(:eV)
     ef = 11.594123 * eV
@@ -74,7 +71,7 @@ isdefined(@__MODULE__, :_load_model_from_artifacts) ||
     end
 end
 
-@testset "filter_electron_states: shift of a window that excludes Γ" begin
+@testitem "filter_electron_states: shift of a window that excludes Γ" setup = [Common, FilterElectronStates] begin
     # 1d band ε₀ - 2t cos(2πk). The window's lower edge lies between the energies at k = 28/400
     # and 29/400, so the first kept point is 29/400, where `29/400 * 400` rounds to just below 29.
     t, ε₀, n = 0.1, 0.05, 400

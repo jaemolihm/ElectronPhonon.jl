@@ -1,8 +1,8 @@
-using ElectronPhonon
-using Test
-using OffsetArrays: no_offset_view
+@testsnippet Velocity begin
+    using OffsetArrays: no_offset_view
+end
 
-@testset "velocity" begin
+@testitem "velocity" setup = [Common, Velocity] begin
     using ElectronPhonon: compute_el_velocity_diag_berry_connection!
 
     model = _load_model_from_artifacts("cubicBN"; load_epmat = false)

@@ -1,8 +1,8 @@
-using Test
-using ElectronPhonon
-using PyPlot
+@testsnippet Plotting begin
+    using PyPlot
+end
 
-@testset "plotting" begin
+@testitem "plotting" tags = [:plotting] setup = [Common, Plotting] begin
     model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "el")
     model_ph = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph")
 

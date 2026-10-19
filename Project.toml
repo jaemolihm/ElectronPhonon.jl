@@ -53,6 +53,7 @@ OhMyThreads = "0.7, 0.8"
 PrecompileTools = "1"
 PyPlot = "2"
 Spglib = "0.8"
+TestItemRunner = "1"
 TimerOutputs = "1"
 julia = "1.11"
 
@@ -62,6 +63,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 NPZ = "15e1cf62-19b3-5cfa-8e77-841668bca605"
 PyPlot = "d330b81b-6aea-500a-939a-2ce795aea3ee"
+TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [targets]
-test = ["CUDA", "Test", "Pkg", "NPZ", "PyPlot"]
+test = ["CUDA", "Test", "Pkg", "NPZ", "PyPlot", "TestItemRunner"]

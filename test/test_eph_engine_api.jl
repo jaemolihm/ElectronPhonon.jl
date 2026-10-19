@@ -1,29 +1,28 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: OuterKEngine, OuterQEngine, OuterKLoop, OuterQLoop, EPBlock, OuterKContext, OuterQContext,
-    stage1!, stage2!, setup_calculator!, run_calculator!, calculator_begin_batch!, calculator_end_batch!,
-    postprocess_calculator!, CPUBackend, gpu_backend, unit_to_aru
+@testsnippet EphEngineApi begin
+    using ElectronPhonon: OuterKEngine, OuterQEngine, OuterKLoop, OuterQLoop, EPBlock, OuterKContext, OuterQContext,
+        stage1!, stage2!, setup_calculator!, run_calculator!, calculator_begin_batch!, calculator_end_batch!,
+        postprocess_calculator!, CPUBackend, gpu_backend, unit_to_aru
 
-isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
-isdefined(@__MODULE__, :eph_reference) || include("eph_reference_loop.jl")
+    include("eph_reference_loop.jl")
 
-const EPH_ENGINE_API_GPU = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
+    const EPH_ENGINE_API_GPU = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+
+    # The calculator setup of the drivers, on a prepared engine.
+    _setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, eng.els_kq, eng.phs;
+        order = eng isa OuterKEngine ? OuterKLoop() : OuterQLoop(), eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles),
+        eng.n_outer_batch, eng.n_inner_tile, verbosity = 0)
+
+    # The outer batch of either context.
+    _outer_batch(ctx::OuterKContext) = ctx.iks_batch
+    _outer_batch(ctx::OuterQContext) = ctx.iqs_batch
 end
 
-# The calculator setup of the drivers, on a prepared engine.
-_setup_on_engine!(calc, eng) = setup_calculator!(calc, eng.backend, eng.els_k, eng.els_kq, eng.phs;
-    order = eng isa OuterKEngine ? OuterKLoop() : OuterQLoop(), eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles),
-    eng.n_outer_batch, eng.n_inner_tile, verbosity = 0)
-
-# The outer batch of either context.
-_outer_batch(ctx::OuterKContext) = ctx.iks_batch
-_outer_batch(ctx::OuterQContext) = ctx.iqs_batch
-
-@testset "direct e-ph engine and calculator API" begin
+@testitem "direct e-ph engine and calculator API" setup = [Common, EphEngineApi] begin
     keygrid = (10^6, 10^6, 10^6)
     kpts = Kpoints(Vec3(0.2513, 0.2487, 0.0129))
     qpts = Kpoints(Vec3(0.071, 0.023, 0.019))
@@ -42,7 +41,7 @@ _outer_batch(ctx::OuterQContext) = ctx.iqs_batch
             ((OuterKEngine, model_el, OuterKLoop, OuterKContext),
              (OuterQEngine, model_ph, OuterQLoop, OuterQContext))
         calc = _PairRecorder(keygrid)
-        eng = Engine(model, kpts, qpts; backend, calculators = [calc], window_k = window,
+        local eng = Engine(model, kpts, qpts; backend, calculators = [calc], window_k = window,
             window_kq = window, verbosity = 0)
         @test isempty(calc.g2abs) && calc.nw == 0  # construction runs no calculator hooks
         @test_throws ArgumentError stage2!(eng, 1, 1:1)
@@ -104,7 +103,7 @@ _outer_batch(ctx::OuterQContext) = ctx.iqs_batch
     @test_throws BoundsError OuterKContext(eng_new; iks_batch = 1:2)
 end
 
-@testset "direct stage2 completes polar, derivative and phonon-basis options" begin
+@testitem "direct stage2 completes polar, derivative and phonon-basis options" setup = [Common, EphEngineApi] begin
     kpts = Kpoints(Vec3(0.2513, 0.2487, 0.0129))
     qpts = Kpoints(Vec3(0.071, 0.023, 0.019))
     model_el = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "el")
@@ -124,7 +123,7 @@ end
     end
 end
 
-@testset "engine stage capacities, batch offsets and independent chunks" begin
+@testitem "engine stage capacities, batch offsets and independent chunks" setup = [Common, EphEngineApi] begin
     grid = (3, 3, 3)
     backends = EPH_ENGINE_API_GPU ? Any[CPUBackend(), gpu_backend()] : Any[CPUBackend()]
     for backend in backends, (Engine, momentum, Order, Context) in

@@ -1,8 +1,8 @@
-using ElectronPhonon
-using Test
-using Random
+@testsnippet Wannier begin
+    using Random
+end
 
-@testset "wannier interpolation" begin
+@testitem "wannier interpolation" setup = [Wannier] begin
     using ElectronPhonon: WannierObject
 
     irvec = [Vec3{Int}([0, 0, 0]), Vec3{Int}([1, -2, 1]),
@@ -13,7 +13,7 @@ using Random
     op_r = randn(ComplexF64, 6, nr)
 
     # Constructor should throw error if irvec is not sorted
-    @test_throws ErrorException obj = WannierObject(irvec, op_r)
+    @test_throws ErrorException WannierObject(irvec, op_r)
 
     ind = sortperm(irvec, by=x->reverse(x))
     irvec = irvec[ind]
@@ -56,7 +56,7 @@ using Random
     @test op_k_normal ≈ op_k_normal_2
 end
 
-@testset "wannier interpolation - batched" begin
+@testitem "wannier interpolation - batched" setup = [Wannier] begin
     using ElectronPhonon: WannierObject, register_kpoints!, clear_registered_kpoints!
 
     # Create test WannierObject
@@ -147,8 +147,8 @@ end
     end
 end
 
-@testset "backend-dependent batch_size default" begin
-    using ElectronPhonon: _default_batch_size, CPUBackend
+@testitem "backend-dependent batch_size default" setup = [Wannier] begin
+    using ElectronPhonon: WannierObject, _default_batch_size, CPUBackend
     irvec = [Vec3{Int}([0, 0, 0]), Vec3{Int}([1, 0, 0])]
     obj = WannierObject(irvec, randn(ComplexF64, 6, length(irvec)))
 

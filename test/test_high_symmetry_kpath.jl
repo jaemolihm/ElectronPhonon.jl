@@ -1,8 +1,8 @@
-using Test
-using ElectronPhonon
-using LinearAlgebra
+@testsnippet HighSymmetryKpath begin
+    using LinearAlgebra
+end
 
-@testset "high-symmetry kpath" begin
+@testitem "high-symmetry kpath" setup = [Common, HighSymmetryKpath] begin
     model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
 
     ref_kcoords = [

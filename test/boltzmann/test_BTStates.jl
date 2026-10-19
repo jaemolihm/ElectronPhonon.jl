@@ -1,13 +1,10 @@
-using Test
-using ElectronPhonon
-
 # `states_index_map`'s optional `symmetry` argument: each state must also be reachable through
 # every point of the star of its k-point. Model-free -- the states are built by hand on an
 # IBZ-reduced grid, whose stars tile the full grid exactly once. Two point groups, because they
 # constrain the transform differently: fcc (Oh, centrosymmetric) pins the collapse of the rotation
 # part, zincblende (Td, non-centrosymmetric) pins the sign of the time-reversal part, whose star
 # points are not reachable by any rotation alone.
-@testset "states_index_map with symmetry" begin
+@testitem "states_index_map with symmetry" begin
     using ElectronPhonon: Vec3, BTStates, kpoints_grid, symmetry_operations, apply_symop,
         states_index_map, CI
 

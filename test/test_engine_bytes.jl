@@ -1,46 +1,44 @@
-using Test
-using ElectronPhonon
-using ElectronPhonon: OuterKLoop, OuterQLoop, OuterKEngine, OuterQEngine, engine_bytes, stage1!,
-    _run_options, _setup_states, unit_to_aru, _select_qs_per_outer_batch, _phonon_state_bytes
+@testsnippet EngineBytes begin
+    using ElectronPhonon: OuterKLoop, OuterQLoop, OuterKEngine, OuterQEngine, engine_bytes, stage1!,
+        _run_options, _setup_states, unit_to_aru, _select_qs_per_outer_batch, _phonon_state_bytes
+
+    const ENGINE_BYTES_GPU = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+
+    # `CUDA.@allocated f()`, expanded at run time: the macro needs `CUDA` when the file is lowered, which
+    # fails where CUDA is not installed (CI) even though the GPU branch never runs there.
+    _device_allocated(f) = @eval CUDA.@allocated $f()
+
+    # Bytes of the device memory reachable from `x` (fields, tuples, vectors). A view of a CuArray is a
+    # CuArray at the same pointer, so a buffer is counted once, at the largest size it is reached with.
+    function _collect_device_buffers!(buffers, seen, x)
+        (isbits(x) || x isa Module || x isa DataType || haskey(seen, x)) && return buffers
+        seen[x] = nothing
+        if x isa CuArray
+            buffers[UInt(pointer(x))] = max(get(buffers, UInt(pointer(x)), 0), sizeof(x))
+        elseif x isa Array
+            eltype(x) <: Number || foreach(y -> _collect_device_buffers!(buffers, seen, y), x)
+        elseif x isa AbstractArray
+            _collect_device_buffers!(buffers, seen, parent(x))
+        else
+            for i in 1:nfields(x)
+                isdefined(x, i) && _collect_device_buffers!(buffers, seen, getfield(x, i))
+            end
+        end
+        buffers
+    end
+    _device_bytes(x) = sum(values(_collect_device_buffers!(Dict{UInt, Int}(), IdDict{Any, Nothing}(), x)); init = 0)
+end
 
 # `engine_bytes` is what `plan_batch` sizes the inner tile from, before the engine exists: it must
 # cover the device arrays the engine constructor allocates (summed `sizeof`) and what one `stage1!`
 # allocates (`CUDA.@allocated`), without overstating them by much.
 
-const ENGINE_BYTES_GPU = try
-    @eval using CUDA
-    CUDA.functional()
-catch
-    false
-end
-
-# `CUDA.@allocated f()`, expanded at run time: the macro needs `CUDA` when the file is lowered, which
-# fails where CUDA is not installed (CI) even though the GPU branch never runs there.
-_device_allocated(f) = @eval CUDA.@allocated $f()
-
-isdefined(@__MODULE__, :_load_model_from_artifacts) || include("common_models_from_artifacts.jl")
-
-# Bytes of the device memory reachable from `x` (fields, tuples, vectors). A view of a CuArray is a
-# CuArray at the same pointer, so a buffer is counted once, at the largest size it is reached with.
-function _collect_device_buffers!(buffers, seen, x)
-    (isbits(x) || x isa Module || x isa DataType || haskey(seen, x)) && return buffers
-    seen[x] = nothing
-    if x isa CuArray
-        buffers[UInt(pointer(x))] = max(get(buffers, UInt(pointer(x)), 0), sizeof(x))
-    elseif x isa Array
-        eltype(x) <: Number || foreach(y -> _collect_device_buffers!(buffers, seen, y), x)
-    elseif x isa AbstractArray
-        _collect_device_buffers!(buffers, seen, parent(x))
-    else
-        for i in 1:nfields(x)
-            isdefined(x, i) && _collect_device_buffers!(buffers, seen, getfield(x, i))
-        end
-    end
-    buffers
-end
-_device_bytes(x) = sum(values(_collect_device_buffers!(Dict{UInt, Int}(), IdDict{Any, Nothing}(), x)); init = 0)
-
-@testset "engine_bytes against the engines' device allocations" begin
+@testitem "engine_bytes against the engines' device allocations" setup = [Common, EngineBytes] begin
     if !ENGINE_BYTES_GPU
         @info "CUDA not available/functional — skipping engine_bytes test"
     else
@@ -129,7 +127,7 @@ end
 # `stage2!` runs once per block, on the tile's preallocated scratch: with resident k+q states (no
 # per-tile eigensolve) it allocates no array of the block's size, on the CPU or on a device. On a
 # device the outer-q k list is staged per call (24 bytes per point).
-@testset "stage2! allocates no scratch" begin
+@testitem "stage2! allocates no scratch" setup = [Common, EngineBytes] begin
     using ElectronPhonon: stage2!
     eV = unit_to_aru(:eV); e_F = 11.68eV
     window = (e_F - 0.5eV, e_F + 3eV)

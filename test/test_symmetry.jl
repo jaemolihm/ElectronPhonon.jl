@@ -1,10 +1,10 @@
-using StaticArrays
-using LinearAlgebra
-using ElectronPhonon
-using Random
-using Test
+@testsnippet Symmetry begin
+    using StaticArrays
+    using LinearAlgebra
+    using Random
+end
 
-@testset "symmetry" begin
+@testitem "symmetry" setup = [Common, Symmetry] begin
     # Silicon structure
     lattice = 2.0 * [[0 1 1.];
                      [1 0 1.];
@@ -91,7 +91,7 @@ using Test
     @test kpoints_grid((5, 5, 7); symmetry).n == 24
 end
 
-@testset "small group of q" begin
+@testitem "small group of q" setup = [Common, Symmetry] begin
     # Silicon (diamond) structure: full cubic point group + time reversal.
     lattice = 2.0 * [[0 1 1.];
                      [1 0 1.];
@@ -142,6 +142,7 @@ end
     # Returned indices are consistent and the result is a genuine subgroup.
     for xq in (Vec3(0., 0., 0.), Vec3(0.5, 0., 0.5), Vec3(0.13, 0.27, 0.41))
         for keep_trs in (false, true)
+            local small, inds
             small, inds = symmetry_small_group_of_q(symmetry, xq; keep_trs)
             @test small.S == symmetry.S[inds]
             @test small.is_tr == symmetry.is_tr[inds]
@@ -153,7 +154,7 @@ end
     end
 end
 
-@testset "symmetrize" begin
+@testitem "symmetrize" setup = [Common, Symmetry] begin
     Random.seed!(123)
 
     lattice = 2.0 * [[0 1 1.]; [1 0 1.]; [1 1 0.]];
@@ -211,7 +212,7 @@ end
     @test symmetrize(v, symmetry, axial=true) ≈ v
 end
 
-@testset "symmetry subset" begin
+@testitem "symmetry subset" setup = [Common, Symmetry] begin
     lattice = 2.0 * [[0 1 1.];
                      [1 0 1.];
                      [1 1 0.]]

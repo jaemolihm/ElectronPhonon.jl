@@ -1,8 +1,8 @@
-using Test
-using ElectronPhonon
-const EP = ElectronPhonon
+@testsnippet Smearing begin
+    const EP = ElectronPhonon
+end
 
-@testset "SmearingType" begin
+@testitem "SmearingType" setup = [Smearing] begin
     η = 0.01
 
     # Gaussian: normalized exp(-(Δe/η)^2) / (√π η)

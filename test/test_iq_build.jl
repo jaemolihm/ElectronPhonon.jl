@@ -1,39 +1,39 @@
-using Test
-using ElectronPhonon
-using Random
-using ElectronPhonon: _pair_grid_coords, _wrap_reduced, _fill_iqs!, q_index_table
+@testsnippet IqBuild begin
+    using Random
+    using ElectronPhonon: _pair_grid_coords, _wrap_reduced, _fill_iqs!, q_index_table
+
+    # Everything the build needs, assembled the way the `OuterKEngine` constructor assembles it.
+    # `shift_k` and `shift_kq` shift the k and k+q meshes; `qpts` then carries their difference.
+    function _iq_build_fixture(ngrid; shift_k = (0, 0, 0), shift_kq = (0, 0, 0))
+        kpts  = GridKpoints(kpoints_grid(ngrid; shift = shift_k))
+        kqpts = GridKpoints(kpoints_grid(ngrid; shift = shift_kq))
+        qpts  = ElectronPhonon.combine_kpoint_grids(kqpts, kpts, -, ngrid)
+        ck, ckq = _pair_grid_coords(kpts, kqpts, qpts)
+        (; kpts, kqpts, qpts, ck, ckq)
+    end
+
+    # `xk_to_ik` on the actual difference vector — the independent oracle. It goes through the Float64
+    # `_hash_xk` path, so agreeing with it also pins the integer shortcut's rounding.
+    function _check_against_oracle(f, iks, nq)
+        iqs = fill(-7, nq)
+        ok = true
+        for ik in iks
+            _fill_iqs!(iqs, f.qpts, f.ck, f.ckq, ik, 1, nq)
+            for j in 1:nq
+                ok &= iqs[j] == xk_to_ik(f.kqpts.vectors[j] - f.kpts.vectors[ik], f.qpts)
+            end
+            ok &= all(1 .<= iqs .<= f.qpts.n)   # every pair resolved; no sentinel left behind
+        end
+        ok
+    end
+end
 
 # The per-(k, k+q tile) `iq` index build of the outer-k loop (`_fill_iqs!`). The loop hashes
 # integer grid coordinates instead of calling `xk_to_ik` per pair, so the whole correctness story is
 # "the fast hash agrees with `xk_to_ik`". The build is pure host arithmetic, so this file tests the
 # hash in isolation and needs no backend at all; the loop runs end-to-end elsewhere.
 
-# Everything the build needs, assembled the way the `OuterKEngine` constructor assembles it.
-# `shift_k` and `shift_kq` shift the k and k+q meshes; `qpts` then carries their difference.
-function _iq_build_fixture(ngrid; shift_k = (0, 0, 0), shift_kq = (0, 0, 0))
-    kpts  = GridKpoints(kpoints_grid(ngrid; shift = shift_k))
-    kqpts = GridKpoints(kpoints_grid(ngrid; shift = shift_kq))
-    qpts  = ElectronPhonon.combine_kpoint_grids(kqpts, kpts, -, ngrid)
-    ck, ckq = _pair_grid_coords(kpts, kqpts, qpts)
-    (; kpts, kqpts, qpts, ck, ckq)
-end
-
-# `xk_to_ik` on the actual difference vector — the independent oracle. It goes through the Float64
-# `_hash_xk` path, so agreeing with it also pins the integer shortcut's rounding.
-function _check_against_oracle(f, iks, nq)
-    iqs = fill(-7, nq)
-    ok = true
-    for ik in iks
-        _fill_iqs!(iqs, f.qpts, f.ck, f.ckq, ik, 1, nq)
-        for j in 1:nq
-            ok &= iqs[j] == xk_to_ik(f.kqpts.vectors[j] - f.kpts.vectors[ik], f.qpts)
-        end
-        ok &= all(1 .<= iqs .<= f.qpts.n)   # every pair resolved; no sentinel left behind
-    end
-    ok
-end
-
-@testset "iq build" begin
+@testitem "iq build" setup = [IqBuild] begin
     @testset "build == xk_to_ik oracle" begin
         f = _iq_build_fixture((4, 4, 4))
         @test _check_against_oracle(f, 1:f.kpts.n, f.kqpts.n)

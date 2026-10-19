@@ -1,0 +1,2 @@
+# Test items live in test/ only (not in .claude/worktrees, examples/ or benchmark/).
+include = ["test/**"]

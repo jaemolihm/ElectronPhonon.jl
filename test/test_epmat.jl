@@ -1,8 +1,8 @@
-using Test
-using ElectronPhonon
-using OffsetArrays: no_offset_view
+@testsnippet Epmat begin
+    using OffsetArrays: no_offset_view
+end
 
-@testset "cubicBN epmat" begin
+@testitem "cubicBN epmat" setup = [Common, Epmat] begin
     using ElectronPhonon: WannierObject
     using ElectronPhonon: compute_eph_RR_to_Rq!, compute_eph_Rq_to_kq!
     using ElectronPhonon: compute_eph_RR_to_kR!, compute_eph_kR_to_kq!
@@ -46,7 +46,7 @@ using OffsetArrays: no_offset_view
     for fourier_mode in ["normal", "gridopt"]
         for model in [model_ph, model_el]
         # for model in [model_ph, model_ph_disk, model_el, model_el_disk]
-            i += 1
+            global i += 1  # the item body is module top level
             epstate = EPState(nw, nmodes, nband)
             epstate.ph = ph
             epstate.el_k = el_k

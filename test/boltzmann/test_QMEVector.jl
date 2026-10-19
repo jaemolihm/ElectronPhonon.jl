@@ -1,8 +1,8 @@
-using Test
-using ElectronPhonon
-using LinearAlgebra
+@testsnippet QMEVector begin
+    using LinearAlgebra
+end
 
-@testset "QMEStates" begin
+@testitem "QMEStates" setup = [Common, QMEVector] begin
     model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph")
 
     # Setup QMEVector

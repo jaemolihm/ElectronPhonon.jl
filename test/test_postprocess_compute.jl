@@ -1,7 +1,4 @@
-using Test
-using ElectronPhonon
-
-@testset "compute bandstructure" begin
+@testitem "compute bandstructure" setup = [Common] begin
     model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
 
     # The numerics behind plot_bandstructure. Since we use a band path, gridopt is not useful.
@@ -16,7 +13,7 @@ using ElectronPhonon
     @test all(isfinite, e_ph)
 end
 
-@testset "compute deformation pot." begin
+@testitem "compute deformation pot." setup = [Common] begin
     model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "el")
     model_ph = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph")
 

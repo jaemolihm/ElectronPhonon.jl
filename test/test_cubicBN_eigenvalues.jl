@@ -1,8 +1,8 @@
-using Test
-using ElectronPhonon
-using LinearAlgebra
+@testsnippet CubicBNEigenvalues begin
+    using LinearAlgebra
+end
 
-@testset "cubicBN eigenvalues" begin
+@testitem "cubicBN eigenvalues" setup = [Common, CubicBNEigenvalues] begin
     # Test routines that calculate eigenvalues
     model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
 
