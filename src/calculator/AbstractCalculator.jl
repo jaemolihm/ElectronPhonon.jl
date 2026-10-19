@@ -18,7 +18,8 @@ Users subtype `AbstractCalculator` and implement:
   (the selected states and their weights: `BandStates(els_k, sel_k)`); `els_kq` and `sel_kq` are
   `nothing` when k+q is solved per tile. `n_outer_batch` and `n_inner_tile` are the widths the
   loop chose, which per-batch and per-tile buffers are sized to.
-* `run_calculator!(calc, block::EPBlock{Loop}, ctx)` — one method per supported loop order `Loop`.
+* `run_calculator!(calc, tile::EPBlock{Loop}, ctx)` — one method per supported loop order `Loop`, once per
+  tile.
 * `calculator_begin_batch!(calc, ctx)` / `calculator_end_batch!(calc, ctx)` — around every outer batch
   (`ctx.iks_batch` or `ctx.iqs_batch`, never empty). There is no default; a calculator with nothing
   to do defines `= nothing`.
@@ -27,15 +28,14 @@ Users subtype `AbstractCalculator` and implement:
 The contract:
 * **Any batch width.** Every batch length ≥ 1 must work; a per-outer-point reduction loops over
   `ctx.iks_batch` (or `ctx.iqs_batch`) in the brackets.
-* **Writes.** On the CPU the blocks of different thread chunks run concurrently. Writes indexed by
-  an inner-tile point are disjoint across blocks; every other write, and every per-tile scratch,
+* **Writes.** On the CPU the tiles of different thread chunks run concurrently. Writes indexed by
+  an inner-tile point are disjoint across tiles; every other write, and every per-tile scratch,
   is per `ctx.chunk` (`nchunks_threads` at setup), with partials reduced in `calculator_end_batch!`
   (`ctx.chunk` is 1 on the device).
-* **Extents.** Every array of a block holds exactly the block's points. Band `n` of a block's
-  electron side is physical band `iband_offset[j] + n` only for `n ≤ nband[j]`; entries past it
-  (including box columns past band `nw`) are undefined. Loop over `1:nband[j]` or through an index
-  map that is 0 past it (`_indmap_to_device`); a reduction over the whole box selects with `ifelse`
-  on `n ≤ nband[j]`, never by multiplying with a mask.
+* **Extents.** The tile is a flat list of items `(m, n, ν, j)` holding only real bands: no padding is
+  an item. Read it through `item_indices` / `entry_indices` (device) or `eachitem` / `eachentry` /
+  `eachsegment` (host), and the states through `state_k`, `state_kq`, `e_k`, `e_kq`, `u_k`, `u_kq`;
+  the raw `els_k` / `els_kq` hold class segments at different strides.
 * **No allocation in `run_calculator!`**: size buffers at setup from `n_outer_batch` /
   `n_inner_tile`, and declare their bytes in `calculator_bytes`.
 
@@ -94,38 +94,34 @@ end
 """
     EPBlock{Loop <: LoopTag, ...}
 
-The e-ph matrix of one block: one outer point with a tile of inner points, on the run's backend.
-Order-agnostic code broadcasts over the pair axis (the last axis of `ep` and of the tile-shaped
-fields); the side shared by the whole block has extent 1 along it and a scalar index.
-An engine's `stage2!` returns a fully computed block, with states and output arrays borrowing
-that chunk's reusable storage. Consume it before the next stage call, or copy arrays to retain them.
+The e-ph matrix of one tile as a flat list of items `(m, n, ν, j)`: band `m` at k+q, band `n` at k, mode `ν`,
+pair `j` (a (k, k+q) combination of the tile, in class order), on the run's backend. Pairs are split by band
+class `(b_kq, b_k)`; a class's items are stored back to back (`m` fastest, then `n`, `ν`, pair), so under
+`OuterKLoop` no padding is an item (the `OuterQLoop` tile is one box-wide class). Decode an item with
+[`item_indices`](@ref), an entry (a band pair with the mode sum inside) with [`entry_indices`](@ref), on the
+host with [`eachitem`](@ref) / [`eachentry`](@ref) / [`eachsegment`](@ref); [`device_tile`](@ref) gives the
+accessors' arrays to a kernel. The arrays borrow the chunk's storage: consume the tile in `run_calculator!`.
 
-Fields (pair axis `j`):
-- `ep` :: `(nband_max_kq, nband_max_k, nmodes, nb)` eigenbasis e-ph matrix, before `1/(2ω)`, in the
-  run's phonon basis, the polar term included. Defined on each pair's windows only: entry
-  `[m, n, ν, j]` is meaningful for `m ≤ els_kq.nband[j]` and `n ≤ els_k.nband[j]` (the shared side's
-  index is 1). `nband_max_k == els_k.nband_max`: under `OuterKLoop` the outer k's own band count,
-  so the k side of a block has no padding. `nband_max_kq == els_kq.nband_max`; with the k+q states solved per tile
-  (`run_eph_over_q_and_k`, `run_eph_over_k_and_q`) it is the block's largest k+q window, so it
-  differs between blocks and is at most `nw`.
-- `dg` :: `(nband_max_kq, nband_max_k, nmodes, 3, nb)` covariant derivative of `ep` along the
-  Cartesian direction `d` (`OuterKLoop` with `covariant_derivative_of_g`, no polar term), else
-  `nothing`.
-- `els_k`, `els_kq` :: `BatchedElectronState` views at block extent; `els_k` has extent 1 under
-  `OuterKLoop`.
-- `phs` :: `BatchedPhononState` view; extent 1 under `OuterQLoop`.
-- `wtk`, `wtq` :: the weights; the shared side's is a scalar, the pair side's a device vector.
-- `xk`, `xq` :: the momenta, `Vec3` on the shared side and a host vector on the pair side.
-- `xkmat` :: under `OuterQLoop`, `xk` as a `(3, nb)` matrix on the run's backend (a view of `xk` on
-  the CPU); `nothing` under `OuterKLoop`.
-- `ik`, `ikq`, `iq` :: indices into the run's point sets: under `OuterKLoop` `ik::Int`, `ikq` into
-  the k+q container (a `UnitRange`, or a vector on the run's backend when pairs were dropped) and
-  `iq` a device vector into the q set, or under `run_eph_over_k_and_q` `ikq === nothing` and `iq` the q tile (a
-  `UnitRange`, or a host vector when pairs were dropped); under `OuterQLoop` `iq::Int`, `ik` into the k set (a `UnitRange` or a host
-  vector) and `ikq` into the precomputed k+q container, or `nothing` when k+q is solved per tile.
+Fields (`n_items` items, `n_pairs` pairs, `nmodes` modes):
+- `ep` :: `(n_items,)` eigenbasis e-ph matrix, before `1/(2ω)`, in the run's phonon basis, polar term included.
+- `dg` :: `(n_items, 3)` covariant derivative of `ep` (`OuterKLoop` with `covariant_derivative_of_g`), else `nothing`.
+- `phs` :: `BatchedPhononState` of the pairs (`phs.e[ν, j]`, polar coefficients if requested), `phs.nmodes`
+  modes (the kept modes if the run truncates them). Under `OuterQLoop` no eigenvectors `u` are gathered.
+- `wtk`, `wtq` :: weights: a scalar for the outer point, a vector for the other side.
+- `xk`, `xq` :: momenta: `Vec3` for the outer point, a host vector for the other side; `xkmat` is `xk` as a
+  `(3, n_pairs)` matrix under `OuterQLoop`, else `nothing`.
+- `ik`, `ikq`, `iq` :: point indices. `OuterKLoop`: `ik::Int`; `ikq` per pair (`nothing` when k+q is solved per
+  tile) and `iq` per pair, on the backend. `OuterQLoop`: `iq::Int`, `ik` per pair (a k can repeat), `ikq`
+  precomputed k+q indices or `nothing`.
+- `seg`, `seg_host` :: segment table, one column per class (at most `nw²`), on the backend and the host. Rows:
+  item offset, pair offset, number of pairs, `b_kq`, `b_k`, point and band-slot offsets of the class's states in
+  `els_kq` and `els_k`, and 1 if the class shares one k point.
+- `els_k`, `els_kq` :: the gathered states in class segments; read them with `e_k`, `e_kq`, `u_k`, `u_kq`.
+- `imap_k`, `imap_kq` :: `[band, point]` state indices in the run's selections (0: not a state), or `nothing`
+  without a selection; read them with `state_k`, `state_kq`.
 """
 struct EPBlock{Loop <: LoopTag, AT, DGT, EK <: BatchedElectronState, EKQ <: BatchedElectronState,
-               PH <: BatchedPhononState, WK, WQ, XK, XKM, XQ, IK, IKQ, IQ}
+               PH <: BatchedPhononState, WK, WQ, XK, XKM, XQ, IK, IKQ, IQ, SG, SGH, MK, MKQ}
     ep    :: AT
     dg    :: DGT
     els_k  :: EK
@@ -139,13 +135,18 @@ struct EPBlock{Loop <: LoopTag, AT, DGT, EK <: BatchedElectronState, EKQ <: Batc
     ik    :: IK
     ikq   :: IKQ
     iq    :: IQ
+    seg   :: SG
+    seg_host :: SGH
+    imap_k  :: MK
+    imap_kq :: MKQ
 end
 
 function EPBlock{Loop}(; ep::AT, dg::DGT, els_k::EK, els_kq::EKQ, phs::PH, wtk::WK, wtq::WQ, xk::XK,
-        xkmat::XKM = nothing, xq::XQ, ik::IK, ikq::IKQ,
-        iq::IQ) where {Loop <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XKM, XQ, IK, IKQ, IQ}
-    EPBlock{Loop, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XKM, XQ, IK, IKQ, IQ}(ep, dg, els_k, els_kq, phs, wtk, wtq,
-                                                                      xk, xkmat, xq, ik, ikq, iq)
+        xkmat::XKM = nothing, xq::XQ, ik::IK, ikq::IKQ, iq::IQ, seg::SG, seg_host::SGH,
+        imap_k::MK = nothing, imap_kq::MKQ = nothing) where {Loop <: LoopTag, AT, DGT, EK, EKQ, PH, WK, WQ,
+        XK, XKM, XQ, IK, IKQ, IQ, SG, SGH, MK, MKQ}
+    EPBlock{Loop, AT, DGT, EK, EKQ, PH, WK, WQ, XK, XKM, XQ, IK, IKQ, IQ, SG, SGH, MK, MKQ}(ep, dg, els_k, els_kq,
+        phs, wtk, wtq, xk, xkmat, xq, ik, ikq, iq, seg, seg_host, imap_k, imap_kq)
 end
 
 
@@ -182,10 +183,9 @@ allowed_eph_phonon_basis(::AbstractCalculator) = [:eigenmode]
 Whether the calculator accepts a run that keeps only the lowest phonon modes: with a finite
 `energy_conservation_tol`, `run_eph_over_k_and_kq` on a GPU may drop the modes with `|ω| > Ω` at
 every q, `Ω` the energy range of the resident states plus the tolerance, when every calculator
-allows it. Such a mode has no process inside the tolerance for any pair. `phs.nmodes` and
-`size(ep, 3)` are then below `model.nmodes`. When the phonons of all q do not fit the device
+allows it. Such a mode has no process inside the tolerance for any pair. `phs.nmodes` is then below `model.nmodes`. When the phonons of all q do not fit the device
 budget, the run builds them per outer batch, for the q of that batch's kept pairs: the `phs` handed
-to `setup_calculator!` then holds no q, and the blocks carry the pairs' phonons as always. Both
+to `setup_calculator!` then holds no q, and the tiles carry the pairs' phonons as always. Both
 choices depend on the device budget, so a run that may truncate returns `phs = nothing`.
 Default `false`.
 """
@@ -254,7 +254,8 @@ calculator_bytes(::AbstractCalculator, ::Type{<:EPBlock}; kwargs...) =
 public run_eph_over_k_and_kq, run_eph_over_k_and_q, run_eph_over_q_and_k,
     OuterKEngine, OuterQEngine, stage1!, stage2!,
     AbstractCalculator, supports, setup_calculator!, run_calculator!, postprocess_calculator!,
-    calculator_begin_batch!, calculator_end_batch!, OuterKLoop, OuterQLoop, EPBlock, OuterKContext, OuterQContext,
+    calculator_begin_batch!, calculator_end_batch!, OuterKLoop, OuterQLoop, EPBlock,
+    item_indices, entry_indices, state_k, state_kq, e_k, e_kq, u_k, u_kq, device_tile, eachsegment, eachitem, eachentry, OuterKContext, OuterQContext,
     AbstractBackend, CPUBackend, GPUBackend,
     gpu_backend, alloc, free_bytes, synchronize, batched_gemm!, eph_window_scatter!,
     bte_window_accumulate!, calculator_bytes, allowed_eph_phonon_basis, allows_phonon_mode_truncation,

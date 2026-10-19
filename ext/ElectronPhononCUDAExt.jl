@@ -312,114 +312,94 @@ end
 
 # ---- device-resident scatter (calculator keeps g2 on the device, no host streaming) -----------
 #
-# One thread per (m,n,ν,j) entry: look up i = imap_i_col[n], f = imap_f[m, ikqs[j]]; if both
-# in-window, write the value straight into the flat device g2_out at the mode-fastest
-# linear slot. The target `lin` indices are unique across the whole run (distinct k → distinct i,
-# distinct k+q → distinct f), so the writes never collide — no atomics, no compaction. Removes the
+# One thread per item `l = (m, n, ν, j)` of the tile (`ElectronPhonon._item_indices`): look up the state
+# indices i, f of its bands; if both are states, write the value straight into the flat device g2_out at the
+# mode-fastest linear slot. The target `lin` indices are unique across the whole run (distinct k → distinct
+# i, distinct k+q → distinct f), so the writes never collide — no atomics, no compaction. Removes the
 # per-batch D2H + host scatter (the calculator's g2 stays resident on the device).
 # `ni_stride` = the output buffer's outer-k (i) extent, `i0` = its global-i offset, so global state
 # i writes to local row (i - i0): full buffer → ni_stride = n_i, i0 = 0; per-batch buffer →
 # ni_stride = batch i-extent, i0 = batch offset. See `eph_window_scatter!` in calculator/calculator_utils.jl.
 
-# Decode a 1-based flat index into its column-major subscripts, given the axis lengths. @inline and
-# non-allocating (tuple recursion) so it is device-safe inside a kernel:
-#   m, n, ν, ipair = _unroll_index(ind, (nbandkq, nbandk, nm, npairs))
-@inline _unroll_index(ind::Integer, ::Tuple{}) = ()
-@inline function _unroll_index(ind::Integer, dims::NTuple{N, Integer}) where {N}
-    d = dims[1]
-    ((ind - 1) % d + 1, _unroll_index((ind - 1) ÷ d + 1, Base.tail(dims))...)
-end
-
-function _window_scatter_kernel!(g2_out, g2vals, imap_i_col, imap_f,
-                                 ikqs, nbandkq, nbandk, nm, npairs, ni_stride, i0)
-    ind_mnνq = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    N = nbandkq * nbandk * nm * npairs
-    ind_mnνq <= N || return
+function _window_scatter_kernel!(g2_out, ep, dt, ni_stride, i0)
+    l = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    l <= length(ep) || return
     @inbounds begin
-        m, n, ν, ipair = _unroll_index(ind_mnνq, (nbandkq, nbandk, nm, npairs))
-        i = imap_i_col[n]
-        f = imap_f[m, ikqs[ipair]]
+        m, n, ν, j = ElectronPhonon.item_indices(dt, l)
+        i = ElectronPhonon.state_k(dt, n, j)
+        f = ElectronPhonon.state_kq(dt, m, j)
         if i > 0 && f > 0
+            nm = dt.phs.nmodes
             lin = ν + nm * (i - i0 - 1) + nm * ni_stride * (f - 1)
-            g2_out[lin] = g2vals[m, n, ν, ipair]
+            g2_out[lin] = abs2(ep[l]) * inv(2 * dt.phs.e[ν, j])
         end
     end
     return
 end
 
-# Dispatch on the device-resident output arrays only. The inputs arrive as device VIEWS (e.g.
-# `view(dev.g2, :, :, :, 1:npairs, chunk)`, `view(imap_i_dev, :, ik)`) whose type depends on the index
-# pattern: a CONTIGUOUS view of a `CuArray` is a `CuArray`, a strided one is a `SubArray` of one,
-# and both work here (cudaconvert handles either) only because they are left unannotated. So a host
-# argument cannot be caught by an annotation; `CUDA.allowscalar(false)` instead makes an accidental
-# host array a hard error inside the kernel. The output is annotated, so a strided output
+# One thread per item of the tile. The tile's arrays arrive as device views whose type depends on the
+# index pattern (a contiguous view of a `CuArray` is a `CuArray`, a strided one a `SubArray`), which
+# cudaconvert handles either way, so they are left unannotated; `CUDA.allowscalar(false)` makes an
+# accidental host array a hard error inside the kernel. The output is annotated, so a strided output
 # `SubArray` would miss this method and fall through to the generic one.
-function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, g2vals,
-        imap_i_col, imap_f, ikqs, ni_stride::Int, i0::Int)
-    nbandkq, nbandk, nm, npairs = ElectronPhonon._scatter_extents(g2vals, ikqs, imap_i_col, imap_f)
-    N = nbandkq * nbandk * nm * npairs
+function ElectronPhonon.eph_window_scatter!(g2_out::CuArray, tile::ElectronPhonon.EPBlock, ni_stride::Int, i0::Int)
+    N = length(tile.ep)
     threads = 256
     blocks = cld(N, threads)
-    @cuda threads=threads blocks=blocks _window_scatter_kernel!(
-        g2_out, g2vals, imap_i_col, imap_f, ikqs,
-        nbandkq, nbandk, nm, npairs, ni_stride, i0)
+    @cuda threads=threads blocks=blocks _window_scatter_kernel!(g2_out, tile.ep, ElectronPhonon.device_tile(tile),
+        ni_stride, i0)
     nothing
 end
 
 # Complex sibling of the above: writes Re/Im of the raw matrix element. See
 # `eph_window_scatter_reim!` in calculator/calculator_utils.jl.
-function _window_scatter_reim_kernel!(re_out, im_out, epvals, imap_i_col, imap_f,
-                                      ikqs, nbandkq, nbandk, nm, npairs, ni_stride, i0)
-    ind_mnνq = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    N = nbandkq * nbandk * nm * npairs
-    ind_mnνq <= N || return
-    m, n, ν, ipair = _unroll_index(ind_mnνq, (nbandkq, nbandk, nm, npairs))
-    i = imap_i_col[n]
-    f = imap_f[m, ikqs[ipair]]
+function _window_scatter_reim_kernel!(re_out, im_out, ep_all, dt, ni_stride, i0)
+    l = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    l <= length(ep_all) || return
+    m, n, ν, j = ElectronPhonon.item_indices(dt, l)
+    i = ElectronPhonon.state_k(dt, n, j)
+    f = ElectronPhonon.state_kq(dt, m, j)
     if i > 0 && f > 0
+        nm = dt.phs.nmodes
         lin = ν + nm * (i - i0 - 1) + nm * ni_stride * (f - 1)
-        ep = epvals[m, n, ν, ipair]
+        ep = ep_all[l]
         re_out[lin] = real(ep)
         im_out[lin] = imag(ep)
     end
     return
 end
 
-function ElectronPhonon.eph_window_scatter_reim!(re_out::CuArray, im_out::CuArray, epvals,
-        imap_i_col, imap_f, ikqs, ni_stride::Int, i0::Int)
-    nbandkq, nbandk, nm, npairs = ElectronPhonon._scatter_extents(epvals, ikqs, imap_i_col, imap_f)
-    N = nbandkq * nbandk * nm * npairs
+function ElectronPhonon.eph_window_scatter_reim!(re_out::CuArray, im_out::CuArray, tile::ElectronPhonon.EPBlock,
+        ni_stride::Int, i0::Int)
+    N = length(tile.ep)
     threads = 256
     blocks = cld(N, threads)
-    @cuda threads=threads blocks=blocks _window_scatter_reim_kernel!(
-        re_out, im_out, epvals, imap_i_col, imap_f, ikqs,
-        nbandkq, nbandk, nm, npairs, ni_stride, i0)
+    @cuda threads=threads blocks=blocks _window_scatter_reim_kernel!(re_out, im_out, tile.ep,
+        ElectronPhonon.device_tile(tile), ni_stride, i0)
     nothing
 end
 
 # ---- device BTE accumulate kernel (BoltzmannCalculator; CuArray method of bte_window_accumulate!) -
 #
-# GPU implementation of `bte_window_accumulate!`: one thread per (m, n, j) — m = k+q band, n = k
-# band, j = q index within the batch. It looks up the outer/inner states i, f; sums the shared
-# per-mode physics (`bte_scattering_increments` — the SAME function the CPU path calls) over the
-# nmodes modes for each temperature; atomic-adds the scattering-out term into Sₒ (many (m,j) share an
-# i) and writes the scattering-in term into Sᵢ (each (i,f) is hit by a unique thread across the whole
-# run → no atomic). See the generic method's docstring for the full accumulation semantics.
-function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs,
-        e_i, e_f, wf, μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, npairs, nT, i0)
-    # Flat thread index ind_mnq ∈ 1:N over the (m, n, ipair) grid (N = nbandkq·nbandk·npairs).
-    # TODO: the CUDA index intrinsics are Int32, so this overflows if N ≥ 2^31. Unreachable today (a
-    # grid that large would exceed device memory), and systemic to all kernels in this extension;
-    # widen to Int (or chunk the launch) if a case ever approaches 2^31 threads.
-    ind_mnq = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    N = nbandkq * nbandk * npairs
-    ind_mnq <= N || return
+# GPU implementation of `bte_window_accumulate!`: one thread per entry (m, n, j) of the tile — m = k+q
+# band, n = k band, j = pair. It looks up the outer/inner states i, f; sums the shared per-mode physics
+# (`bte_scattering_increments` — the SAME function the CPU path calls, on g2 formed here from `ep` and the
+# pair's frequencies) over the nmodes modes for each temperature; atomic-adds the scattering-out term into
+# Sₒ (many (m,j) share an i) and writes the scattering-in term into Sᵢ (each (i,f) is hit by a unique thread
+# across the whole run → no atomic). See the generic method's docstring for the full accumulation semantics.
+function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, ep, dt,
+        e_i, e_f, wf, μs, Ts, ηs, method, ω_cutoff, nT, i0)
+    # TODO: the CUDA index intrinsics are Int32, so this overflows if the number of entries ≥ 2^31.
+    # Unreachable today (a tile that large would exceed device memory), and systemic to all kernels in this
+    # extension; widen to Int (or chunk the launch) if a case ever approaches 2^31 threads.
+    e = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    e <= length(ep) ÷ dt.phs.nmodes || return
     @inbounds begin
-        m, n, ipair = _unroll_index(ind_mnq, (nbandkq, nbandk, npairs))
-        i = imap_i_at_k[n]         # outer (k) state index; 0 = out of window → skip
+        nmodes, phs_e = dt.phs.nmodes, dt.phs.e
+        m, n, j, item0, stride = ElectronPhonon.entry_indices(dt, e)
+        i = ElectronPhonon.state_k(dt, n, j)   # outer (k) state index; 0 = out of window → skip
         i > 0 || return
-        ikq = ikqs[ipair]       # k+q point of this pair
-        f = imap_f[m, ikq]         # inner (k+q) state index; 0 = out of window → skip
+        f = ElectronPhonon.state_kq(dt, m, j)         # inner (k+q) state index; 0 = out of window → skip
         f > 0 || return
         ek = e_i[i]; ekq = e_f[f]; wtq = wf[f]   # per-final-state weight
         il = i - i0                # tile-local outer row (i0 = the current Sᵢ tile's global offset)
@@ -427,10 +407,10 @@ function _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap
             μ = μs[iT]; T = Ts[iT]; η = ηs[iT]
             sₒ = zero(eltype(Sₒ_out)); sᵢ = sₒ
             for ν in 1:nmodes
-                ωq = ωqmat[ν, ipair]
+                ωq = phs_e[ν, j]
                 ωq < ω_cutoff && continue
-                sₒ_ν, sᵢ_ν = ElectronPhonon.bte_scattering_increments(
-                    method, ek, ekq, ωq, g2vals[m, n, ν, ipair], wtq, μ, T, η)
+                g2 = abs2(ep[item0 + (ν - 1) * stride]) * inv(2 * ωq)
+                sₒ_ν, sᵢ_ν = ElectronPhonon.bte_scattering_increments(method, ek, ekq, ωq, g2, wtq, μ, T, η)
                 sₒ += sₒ_ν; sᵢ += sᵢ_ν
             end
             CUDA.@atomic Sₒ_out[i, iT] += sₒ
@@ -442,20 +422,16 @@ end
 
 # CuArray method of `bte_window_accumulate!` (generic method + full docstring in
 # src/boltzmann/boltzmann_calculator.jl): launches `_bte_window_accumulate_kernel!` with one thread per
-# (m, n, j) over the batch, accumulating this batch's Sₒ/Sᵢ contributions into the device buffers.
-function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, g2vals, ωqmat,
-        imap_i_at_k, imap_f, ikqs, e_i, e_f, wf, μs, Ts, ηs, method::Int, ω_cutoff, i0::Int)
-    nbandkq, nbandk, nmodes, npairs = ElectronPhonon._scatter_extents(g2vals, ikqs, imap_i_at_k,
-                                                                        imap_f)
-    size(ωqmat) == (nmodes, npairs) ||
-        throw(DimensionMismatch("ωqmat is $(size(ωqmat)), the block values $(size(g2vals))"))
-    nT = length(μs)
-    N = nbandkq * nbandk * npairs
+# entry of the tile, accumulating its Sₒ/Sᵢ contributions into the device buffers.
+function ElectronPhonon.bte_window_accumulate!(Sₒ_out::CuArray, Sᵢ_out::CuArray, tile::ElectronPhonon.EPBlock, e_i, e_f,
+        wf, μs, Ts, ηs, method::Int, ω_cutoff, i0::Int)
+    nmodes = tile.phs.nmodes
+    N = length(tile.ep) ÷ nmodes
     threads = 256
     blocks = cld(N, threads)
-    @cuda threads=threads blocks=blocks _bte_window_accumulate_kernel!(
-        Sₒ_out, Sᵢ_out, g2vals, ωqmat, imap_i_at_k, imap_f, ikqs, e_i, e_f, wf,
-        μs, Ts, ηs, method, ω_cutoff, nbandkq, nbandk, nmodes, npairs, nT, i0)
+    @cuda threads=threads blocks=blocks _bte_window_accumulate_kernel!(Sₒ_out, Sᵢ_out, tile.ep,
+        ElectronPhonon.device_tile(tile), e_i, e_f, wf,
+        μs, Ts, ηs, method, ω_cutoff, length(μs), i0)
     nothing
 end
 

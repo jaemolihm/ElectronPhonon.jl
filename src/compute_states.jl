@@ -718,7 +718,7 @@ Move the window bands of the solved points `points` of `bands`
 [`BatchedElectronState`](@ref) with `nband_max = nw` and fields `e` and/or `u`. `points` is a range
 or a host vector of at most `els.nk` points. Returns the `length(points)` points as a container
 whose box is the largest `nband` of them (at least 1), stored in the leading elements of `els`'s
-arrays (`reshape_buffer_view`), so the blocks built on it shrink with the window.
+arrays (`reshape_buffer_view`), so the tiles built on it shrink with the window.
 
 `nband_host`: a host copy of `bands.nband`, if the caller holds one. The box width is then read
 from it rather than reduced on the backend, which on a GPU costs a device-to-host sync.

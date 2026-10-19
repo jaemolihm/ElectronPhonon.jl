@@ -3,32 +3,195 @@
 # backend/device primitives (`to_device`, `batched_gemm!`, …) live in `common/gpu_utils.jl`; this
 # file holds the higher-level, calculator-facing helpers built on top of them.
 
-# The extents `(nbandkq, nbandk, nm, npairs)` of a scatter's block values `vals`, after checking
-# that the other block arrays agree: `ikqs` of length `npairs` and index maps with at least the
-# block's rows `nbandk` / `nbandkq` (a block may be narrower than the containers' box). The scatters
-# loop over these extents unchecked (the device kernels with no bounds checks at all), so a
-# mismatched array fails here instead.
-function _scatter_extents(vals, ikqs, imap_i_col, imap_f)
-    nbandkq, nbandk, nm, npairs = size(vals)
-    length(ikqs) == npairs ||
-        throw(DimensionMismatch("$(length(ikqs)) k+q indices for $npairs block points"))
-    length(imap_i_col) >= nbandk ||
-        throw(DimensionMismatch("the outer index map has $(length(imap_i_col)) rows, the block $nbandk"))
-    size(imap_f, 1) >= nbandkq ||
-        throw(DimensionMismatch("the inner index map has $(size(imap_f, 1)) rows, the block $nbandkq"))
-    (nbandkq, nbandk, nm, npairs)
+# ---- the tile's flat item list ------------------------------------------------------------------
+#
+# The segment table `seg` of an `EPBlock` has one column per band class; rows (1-based):
+const SEG_ITEM, SEG_PAIR, SEG_NPAIRS, SEG_BKQ, SEG_BK, SEG_KQ_PT, SEG_KQ_SLOT, SEG_K_PT, SEG_K_SLOT, SEG_K_SHARED =
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+const SEG_ROWS = 10
+
+# The column of `seg` holding item (or pair) number `x` (1-based), by the offsets in row `row`: the last
+# segment that starts before `x`. A scan for the few classes a tile has (at most `nw²`), a bisection
+# above 16.
+@inline function _segment_column(seg, nseg, row, x)
+    if nseg <= 16
+        c = 1
+        while c < nseg && x > seg[row, c + 1]
+            c += 1
+        end
+        return c
+    end
+    lo, hi = 1, nseg
+    while lo < hi
+        mid = (lo + hi + 1) >> 1
+        if x > seg[row, mid]
+            lo = mid
+        else
+            hi = mid - 1
+        end
+    end
+    lo
+end
+
+# `(m, n, ν, j)` of item `l` of a tile with `nm` modes and segment table `seg`.
+@inline function _item_indices(seg, nseg, nm, l)
+    c = _segment_column(seg, nseg, SEG_ITEM, l)
+    bkq, bk = seg[SEG_BKQ, c], seg[SEG_BK, c]
+    l0 = l - 1 - seg[SEG_ITEM, c]
+    m = l0 % bkq + 1
+    l1 = l0 ÷ bkq
+    n = l1 % bk + 1
+    l2 = l1 ÷ bk
+    ν = l2 % nm + 1
+    (m, n, ν, seg[SEG_PAIR, c] + l2 ÷ nm + 1)
+end
+
+# `(m, n, j, first_item, stride)` of entry `e` (a band pair of a pair, `n_items ÷ nm` of them): its mode `ν`
+# is item `first_item + (ν - 1) * stride`.
+@inline function _entry_indices(seg, nseg, nm, e)
+    c = _segment_column(seg, nseg, SEG_ITEM, (e - 1) * nm + 1)
+    bkq, bk = seg[SEG_BKQ, c], seg[SEG_BK, c]
+    stride = bkq * bk
+    e0 = e - 1 - seg[SEG_ITEM, c] ÷ nm
+    pb = e0 % stride
+    jj = e0 ÷ stride
+    (pb % bkq + 1, pb ÷ bkq + 1, seg[SEG_PAIR, c] + jj + 1, seg[SEG_ITEM, c] + pb + stride * nm * jj + 1, stride)
 end
 
 """
-    eph_window_scatter!(g2_out, g2vals, imap_i_col, imap_f, ikqs, ni_stride, i0)
+    item_indices(tile, l) -> (m, n, ν, j)
 
-Device-resident scatter for a calculator that keeps `g2` on the device (no per-batch host
-streaming). For every `(m, n, ν, ipair)` entry of `g2vals` `(nbandkq, nbandk, nm, npairs)`, look
-up the state indices `i = imap_i_col[n]` (in-window outer-k state) and `f = imap_f[m, ikqs[j]]`
-(in-window k+q state); if both are in-window (`> 0`), write the value into the mode-fastest linear
-slot `lin = ν + nm·(i-i0-1) + nm·ni_stride·(f-1)` of the flat `g2_out`. The extents are those of
-`g2vals`; `ikqs` (length `npairs`) and the index maps (`nbandk` / `nbandkq` rows) must agree with
-them, or a `DimensionMismatch` is thrown.
+Band at k+q, band at k, phonon mode and pair of item `l` of the tile's flat list (`1 ≤ l ≤ length(tile.ep)`).
+`@inline`, allocation-free, and usable inside a device kernel on `device_tile(tile)`.
+"""
+@inline item_indices(tile, l) = _item_indices(tile.seg, size(tile.seg, 2), tile.phs.nmodes, l)
+
+"""
+    entry_indices(tile, e) -> (m, n, j, first_item, stride)
+
+The band pair `(m, n)` of pair `j` that is entry `e` of the tile (`length(tile.ep) ÷ nmodes` entries), for a
+calculator that sums over the modes: mode `ν` of the entry is item `first_item + (ν - 1) * stride`.
+"""
+@inline entry_indices(tile, e) = _entry_indices(tile.seg, size(tile.seg, 2), tile.phs.nmodes, e)
+
+"""
+    device_tile(tile::EPBlock) -> NamedTuple
+
+The arrays the accessors read (`seg`, the state maps, the frequencies `phs.e`, the energies and eigenvectors of the
+gathered states, and `ik`, `ikq`), as a `NamedTuple` that a kernel or a device broadcast can capture (`Ref(device_tile(tile))`):
+`item_indices`, `entry_indices`, `state_k`, `state_kq`, `e_k`, `e_kq`, `u_k` and `u_kq` take it in place of
+the tile.
+"""
+function device_tile(tile::EPBlock)
+    (; tile.seg, tile.imap_k, tile.imap_kq, phs = (; tile.phs.nmodes, tile.phs.e),
+       els_k = (; tile.els_k.e, tile.els_k.u, tile.els_k.nw),
+       els_kq = (; tile.els_kq.e, tile.els_kq.u, tile.els_kq.nw), tile.ik, tile.ikq)
+end
+
+# The shared outer point of a one-sided index: `ik::Int` under outer k, a per-pair vector under outer q.
+@inline _pair_index(ik::Integer, j) = ik
+@inline _pair_index(ik, j) = ik[j]
+
+"""
+    state_k(tile, n, j), state_kq(tile, m, j) -> Int
+
+The index in the run's selection (`BandStates(els_k, sel_k)`, `BandStates(els_kq, sel_kq)`) of band `n` at k
+or `m` at k+q of pair `j`: 0 if that band is not a state. Through `tile.imap_k` / `tile.imap_kq`.
+"""
+@inline state_k(tile, n, j) = tile.imap_k[n, _pair_index(tile.ik, j)]
+@inline state_kq(tile, m, j) = tile.imap_kq[m, tile.ikq[j]]
+
+# The segment column of pair `j`, and the 0-based position of `j` in it.
+@inline function _pair_segment(tile, j)
+    c = _segment_column(tile.seg, size(tile.seg, 2), SEG_PAIR, j)
+    (c, j - 1 - tile.seg[SEG_PAIR, c])
+end
+
+"""
+    e_k(tile, n, j), e_kq(tile, m, j), u_k(tile, a, n, j), u_kq(tile, a, m, j)
+
+Energy of band `n` at k, `m` at k+q, and component `a` (Wannier function) of the eigenvector of that band,
+for pair `j`, read from the tile's gathered states through the segment table.
+"""
+@inline function e_k(tile, n, j)
+    c, jj = _pair_segment(tile, j)
+    seg = tile.seg
+    slot = seg[SEG_K_SLOT, c] + (seg[SEG_K_SHARED, c] == 1 ? 0 : jj * seg[SEG_BK, c]) + n
+    tile.els_k.e[slot]
+end
+@inline function e_kq(tile, m, j)
+    c, jj = _pair_segment(tile, j)
+    tile.els_kq.e[tile.seg[SEG_KQ_SLOT, c] + jj * tile.seg[SEG_BKQ, c] + m]
+end
+@inline function u_k(tile, a, n, j)
+    c, jj = _pair_segment(tile, j)
+    seg = tile.seg
+    slot = seg[SEG_K_SLOT, c] + (seg[SEG_K_SHARED, c] == 1 ? 0 : jj * seg[SEG_BK, c]) + n
+    tile.els_k.u[a + tile.els_k.nw * (slot - 1)]
+end
+@inline function u_kq(tile, a, m, j)
+    c, jj = _pair_segment(tile, j)
+    slot = tile.seg[SEG_KQ_SLOT, c] + jj * tile.seg[SEG_BKQ, c] + m
+    tile.els_kq.u[a + tile.els_kq.nw * (slot - 1)]
+end
+
+"""
+    eachsegment(tile; ep = tile.ep, dg = tile.dg) -> iterator of (; c, items, pairs, b_kq, b_k, kq_pt, k_pt, k_shared, ep, dg)
+
+Host iteration over the band classes of a tile (its segment table is on the host): the item range, the pair
+range, the band counts, the point offsets of the class's pairs in `tile.els_kq` and `tile.els_k` (a shared
+k point is `k_pt + 1` for every pair, else the pair `jj` of the class is `k_pt + jj`), and `ep` (and `dg`)
+as `(b_kq, b_k, nmodes, n_pairs)` (`(…, 3)`) arrays of the class. Pass host copies as `ep` / `dg` for a tile
+on a device.
+"""
+function eachsegment(tile::EPBlock; ep = tile.ep, dg = tile.dg)
+    seg, nm = tile.seg_host, tile.phs.nmodes
+    nseg = size(seg, 2)
+    (begin
+        l0, np, bkq, bk = seg[SEG_ITEM, c], seg[SEG_NPAIRS, c], seg[SEG_BKQ, c], seg[SEG_BK, c]
+        items = l0 + 1:l0 + bkq * bk * nm * np
+        (; c, items, pairs = seg[SEG_PAIR, c] + 1:seg[SEG_PAIR, c] + np, b_kq = bkq, b_k = bk,
+           kq_pt = seg[SEG_KQ_PT, c], k_pt = seg[SEG_K_PT, c], k_shared = seg[SEG_K_SHARED, c] == 1,
+           ep = reshape(view(ep, items), bkq, bk, nm, np),
+           dg = dg === nothing ? nothing : reshape(view(dg, items, :), bkq, bk, nm, np, 3))
+    end for c in 1:nseg)
+end
+
+"""
+    eachitem(tile), eachentry(tile)
+
+Host iteration, on a `CPUBackend`, over `(l, m, n, ν, j)` of every item in order, or over
+`(e, m, n, j, first_item, stride)` of every entry. The loops run over the classes outside and the bands
+inside, so nothing is decoded.
+"""
+function eachitem(tile::EPBlock)
+    nm = tile.phs.nmodes
+    Iterators.flatten(
+        ((first(s.items) - 1 + m + s.b_kq * ((n - 1) + s.b_k * ((ν - 1) + nm * (jj - 1))), m, n, ν,
+          first(s.pairs) + jj - 1)
+         for jj in 1:length(s.pairs) for ν in 1:nm for n in 1:s.b_k for m in 1:s.b_kq)
+        for s in eachsegment(tile))
+end
+
+function eachentry(tile::EPBlock)
+    nm = tile.phs.nmodes
+    Iterators.flatten(
+        (let pb = (m - 1) + s.b_kq * (n - 1), stride = s.b_kq * s.b_k
+             ((first(s.items) - 1) ÷ nm + pb + stride * (jj - 1) + 1, m, n, first(s.pairs) + jj - 1,
+              first(s.items) + pb + stride * nm * (jj - 1), stride)
+         end
+         for jj in 1:length(s.pairs) for n in 1:s.b_k for m in 1:s.b_kq)
+        for s in eachsegment(tile))
+end
+
+"""
+    eph_window_scatter!(g2_out, tile::EPBlock, ni_stride, i0)
+
+Device-resident scatter for a calculator that keeps `g2` on the device (no per-batch host streaming). For
+every item `l = (m, n, ν, j)` of the tile, look up the state indices `i = state_k(tile, n, j)` and
+`f = state_kq(tile, m, j)`; if both are states (`> 0`), write `g2 = |ep|²/(2ω)` (`ω = phs.e[ν, j]`, formed
+here, as `epstate_set_g2!` does) into the mode-fastest linear slot `lin = ν + nm·(i-i0-1) + nm·ni_stride·(f-1)`
+of the flat `g2_out`.
 
 The output buffer indexes outer-k states along `i`, and there are two ways to size it:
 - **Full buffer** — holds all `n_i` outer states at once: pass `ni_stride = n_i`, `i0 = 0`.
@@ -38,51 +201,45 @@ The output buffer indexes outer-k states along `i`, and there are two ways to si
   `n_i`: pass `ni_stride =` that extent and `i0 =` the batch's global-i offset, so global state `i`
   writes to local row `i - i0`.
 
-The target `lin` indices are unique across the run (distinct k → distinct i, distinct k+q →
-distinct f), so the writes never collide (no atomics needed). Generic (CPU/fallback) method; the
-CUDA extension provides a one-kernel `CuArray` method.
-
-Called from a device-resident calculator's `run_calculator!(calc, ::EPBlock{OuterKLoop}, ctx)`
-(`G2Calculator`) to scatter each block's `g2` into its window-mapped device output, with
-`imap_i_col` / `imap_f` in the containers' box coordinates (see `_indmap_to_device`). The
-"Scatter round-trip" testset of `test/test_gpu.jl` checks the non-collision invariant and the
-CPU/CUDA agreement.
+The target `lin` indices are unique across the run (distinct k → distinct i, distinct k+q → distinct f),
+so the writes never collide (no atomics needed). Generic (CPU/fallback) method; the CUDA extension
+provides a one-kernel `CuArray` method, one thread per item. Called from a device-resident calculator's
+`run_calculator!(calc, ::EPBlock{OuterKLoop}, ctx)` (`G2Calculator`).
 """
-function eph_window_scatter!(g2_out, g2vals, imap_i_col, imap_f, ikqs, ni_stride::Int, i0::Int)
-    nbandkq, nbandk, nm, npairs = _scatter_extents(g2vals, ikqs, imap_i_col, imap_f)
-    @inbounds for ipair in 1:npairs, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
-        i = imap_i_col[n]
-        f = imap_f[m, ikqs[ipair]]
+function eph_window_scatter!(g2_out, tile::EPBlock, ni_stride::Int, i0::Int)
+    (; phs) = tile
+    nm = phs.nmodes
+    for s in eachsegment(tile), j in s.pairs, ν in 1:nm, n in 1:s.b_k, m in 1:s.b_kq
+        i = state_k(tile, n, j)
+        f = state_kq(tile, m, j)
         if i > 0 && f > 0
-            # global outer state `i` lands at local row `i - i0` (see docstring for i0/ni_stride).
             lin = ν + nm * (i - i0 - 1) + nm * ni_stride * (f - 1)
-            g2_out[lin] = g2vals[m, n, ν, ipair]
+            g2_out[lin] = abs2(s.ep[m, n, ν, j - first(s.pairs) + 1]) * inv(2 * phs.e[ν, j])
         end
     end
     nothing
 end
 
 """
-    eph_window_scatter_reim!(re_out, im_out, epvals, imap_i_col, imap_f, ikqs, ni_stride, i0)
+    eph_window_scatter_reim!(re_out, im_out, tile::EPBlock, ni_stride, i0)
 
-Complex sibling of [`eph_window_scatter!`](@ref): same window lookup and same linear slot, but it
-writes `real(ep)` and `imag(ep)` of the raw matrix element `epvals` `(nbandkq, nbandk, nm,
-npairs)` into two real arrays instead of `|g|²/(2ω)` into one. A calculator needs this when the
-*phase* of `g` enters, not only its magnitude -- a four-channel Nambu vertex, where the `1/(2ω)` is
-applied downstream, once, as the channels are combined.
+Complex sibling of [`eph_window_scatter!`](@ref): same lookup and same linear slot, but it writes `real(ep)`
+and `imag(ep)` of the raw matrix element into two real arrays instead of `|g|²/(2ω)` into one. A calculator
+needs this when the *phase* of `g` enters, not only its magnitude -- a four-channel Nambu vertex, where the
+`1/(2ω)` is applied downstream, once, as the channels are combined.
 
 Generic (CPU/fallback) method; the CUDA extension provides a one-kernel `CuArray` method. See
 [`eph_window_scatter!`](@ref) for `ni_stride`/`i0` and for why the target slots never collide.
 """
-function eph_window_scatter_reim!(re_out, im_out, epvals, imap_i_col, imap_f, ikqs,
-                                  ni_stride::Int, i0::Int)
-    nbandkq, nbandk, nm, npairs = _scatter_extents(epvals, ikqs, imap_i_col, imap_f)
-    for ipair in 1:npairs, ν in 1:nm, n in 1:nbandk, m in 1:nbandkq
-        i = imap_i_col[n]
-        f = imap_f[m, ikqs[ipair]]
+function eph_window_scatter_reim!(re_out, im_out, tile::EPBlock, ni_stride::Int, i0::Int)
+    (; phs) = tile
+    nm = phs.nmodes
+    for s in eachsegment(tile), j in s.pairs, ν in 1:nm, n in 1:s.b_k, m in 1:s.b_kq
+        i = state_k(tile, n, j)
+        f = state_kq(tile, m, j)
         if i > 0 && f > 0
             lin = ν + nm * (i - i0 - 1) + nm * ni_stride * (f - 1)
-            ep = epvals[m, n, ν, ipair]
+            ep = s.ep[m, n, ν, j - first(s.pairs) + 1]
             re_out[lin] = real(ep)
             im_out[lin] = imag(ep)
         end

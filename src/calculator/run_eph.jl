@@ -215,8 +215,8 @@ Window, cache, energy-conservation, phonon-basis and capacity keywords match the
 states and selections are available as `eng.els_k`, `eng.els_kq`, `eng.phs`, `eng.sel_k` and
 `eng.sel_kq`.
 
-Call `stage1!(eng, outer_indices)`, then `stage2!(eng, outer_index, inner_indices)` to obtain an
-`EPBlock` for `run_calculator!`. Indices refer to the selected `eng.kpts` / `eng.kqpts` /
+Call `stage1!(eng, outer_indices)`, then `stage2!(eng, outer_index, inner_indices)`, which returns
+the tile (an `EPBlock`, or `nothing` if no pair is kept) to pass to `run_calculator!`. Indices refer to the selected `eng.kpts` / `eng.kqpts` /
 `eng.qpts`, which can differ from the input point sets after window and symmetry filtering.
 """
 function OuterKEngine(model::Model, kpts, second_pts; inner_loop_kq = false,
@@ -232,7 +232,7 @@ end
 
 Prepare an outer-q engine without running calculators, for a model loaded with
 `epmat_outer_momentum = "ph"`, from k and q point sets. State, capacity and lifecycle options
-follow [`OuterKEngine`](@ref); `stage2!(eng, iq, k_indices)` returns a complete block.
+follow [`OuterKEngine`](@ref); `stage2!(eng, iq, k_indices)` returns the tile's complete `EPBlock`.
 """
 function OuterQEngine(model::Model, kpts, qpts; symmetry = nothing, nchunks_threads = 1, kwargs...)
     options = _run_options(model; inner_loop_kq = false, symmetry, nchunks_threads, kwargs...)
@@ -259,7 +259,7 @@ function _run_eph(order::LoopTag, model::Model, kpts_input, second_input; calcul
             eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles), eng.n_outer_batch, eng.n_inner_tile, verbosity)
     end
 
-    # Explicitly bracket each outer batch; each chunk consumes its blocks before buffers are reused.
+    # Explicitly bracket each outer batch; each chunk consumes its tiles before buffers are reused.
     # The outer points and their batches are k under OuterKEngine and q under OuterQEngine.
     outer_pts = eng isa OuterKEngine ? eng.kpts : eng.qpts
     for outer_batch in Iterators.partition(1:outer_pts.n, eng.n_outer_batch)
@@ -567,7 +567,7 @@ end
 
 # ---- Explicit outer-k sweep -------------------------------------------------------------------
 
-# The blocks of the engine's current stage-1 batch of outer k points.
+# The tiles of the engine's current stage-1 batch of outer k points.
 function _loop_outer_k!(eng::OuterKEngine, calculators)
     # Partition the inner k+q or q points into independent chunks.
     inner_pts = eng.inner_loop_kq ? eng.kqpts : eng.qpts
@@ -593,22 +593,15 @@ function _loop_outer_k_chunk!(eng_fields, tile_workspace, calculators; chunk, in
     ctx = OuterKContext(eng_fields.backend, eng_fields.iks_batch, chunk)
 
     for inner_indices_tile in Iterators.partition(inner_indices, eng_fields.n_inner_tile)
-        # A resident k+q tile shares its Fourier phase across all outer k points, unless the
-        # energy-conservation tolerance keeps different pairs for each k.
-        phase = nothing
-        if eng_fields.inner_loop_kq && isinf(eng_fields.energy_conservation_tol)
-            phase = view(tile_workspace.P_kq, :, 1:length(inner_indices_tile))
-            @views build_fourier_phase!(phase, eng_fields.irvecp_mat, eng_fields.xkqs[:, inner_indices_tile])
-        end
+        # A resident k+q tile shares its band classes, k+q states and Fourier phase across all outer k
+        # points, unless the energy-conservation tolerance keeps different pairs for each k.
+        shared = eng_fields.inner_loop_kq && isinf(eng_fields.energy_conservation_tol) ?
+            _prepare_shared_kq_tile!(eng_fields, tile_workspace, inner_indices_tile) : nothing
 
         for ik in eng_fields.iks_batch
             # The same stage-2 worker also serves standalone stage2!(eng, ik, inner_indices).
-            block = _stage2!(OuterKLoop(), eng_fields, tile_workspace, ik, inner_indices_tile; phase)
-            block === nothing && continue
-
-            for calculator in calculators
-                run_calculator!(calculator, block, ctx)
-            end
+            tile = _stage2!(OuterKLoop(), eng_fields, tile_workspace, ik, inner_indices_tile; shared)
+            tile === nothing || _run_calculators!(calculators, tile, ctx)
         end
     end
     nothing
@@ -616,7 +609,7 @@ end
 
 # ---- Explicit outer-q sweep -------------------------------------------------------------------
 
-# The blocks of the engine's current stage-1 batch of outer q points. The chunks only read the
+# The tiles of the engine's current stage-1 batch of outer q points. The chunks only read the
 # stage-1 output and own all writable scratch.
 function _loop_outer_q!(eng::OuterQEngine, calculators)
     eng.els_k.nk == 0 && return nothing
@@ -640,18 +633,22 @@ function _loop_outer_q!(eng::OuterQEngine, calculators)
     nothing
 end
 
+# Function barrier: the tile's type depends on the tile's routes (resident or gathered k+q states), so it is
+# dispatched on once here and `run_calculator!` is static inside.
+function _run_calculators!(calculators, tile, ctx)
+    for calculator in calculators
+        run_calculator!(calculator, tile, ctx)
+    end
+end
+
 function _loop_outer_q_chunk!(eng_fields, tile_workspace, calculators; chunk, iks, iq)
     # function barrier for one chunk's concrete state containers and Fourier/rotation scratch.
     ctx = OuterQContext(eng_fields.backend, eng_fields.iqs_batch, chunk)
 
     for iks_tile in Iterators.partition(iks, eng_fields.n_inner_tile)
-        # The same stage-2 worker gathers/solves states and returns a complete block for direct calls.
-        block = _stage2!(OuterQLoop(), eng_fields, tile_workspace, iq, iks_tile)
-        block === nothing && continue
-
-        for calculator in calculators
-            run_calculator!(calculator, block, ctx)
-        end
+        # The same stage-2 worker gathers/solves states and emits complete tiles for direct calls.
+        tile = _stage2!(OuterQLoop(), eng_fields, tile_workspace, iq, iks_tile)
+        tile === nothing || _run_calculators!(calculators, tile, ctx)
     end
     nothing
 end

@@ -53,14 +53,6 @@ Base.@kwdef mutable struct G2Calculator{FT} <: AbstractCalculator
     el_i::Union{Nothing,BandStates{FT,GridKpoints{FT}}} = nothing
     el_f::Union{Nothing,BandStates{FT,GridKpoints{FT}}} = nothing
 
-    # --- Device buffers for the batched loop (`run_eph_over_k_and_kq`, `backend = gpu_backend()`) ---
-    # The (band, k) state-index maps are kept device-resident (small, reused across all chunks);
-    # built at setup on the batched path via `_indmap_to_device`. Typed `Any` to avoid a CUDA
-    # dependency: only device indexing and views are used.
-    imap_i_dev::Any = nothing   # (nband_max_k, n_k) state index for (box band, k); device Int matrix
-    imap_f_dev::Any = nothing   # (nband_max_kq, n_kq) state index for (box band, k+q); device Int matrix
-    g2_tile::Any = nothing      # (nband_max_kq, nband_max_k, nmodes, n_inner_tile, nchunks) per-tile scratch
-
     # Device-resident g2 output (full or streamed per batch, chosen from free device memory).
     # Owned by the shared `TiledDeviceOutput` helper: it holds g2 (array 1, tiled over the outer-k
     # state axis = axis 2), the residency decision, tile ranges, per-batch zeroing, and the
@@ -79,17 +71,11 @@ supports(::G2Calculator, ::Type{OuterKLoop}) = true
 # the band velocities of both sides (`BandStates`).
 required_el_quantities(::G2Calculator) = [:vdiag]
 
-# What `setup_calculator!` allocates on the backend: the two index maps, bounded by the containers'
-# boxes (nothing without containers, in `estimate_device_memory`), and the per-tile g2 scratch. The
-# tiled output is not counted: on the first batch it chooses full or streamed residency from the
-# memory then free. `ωph` and `iq_kk` are host arrays.
-function calculator_bytes(::G2Calculator{FT}, ::Type{<:EPBlock{OuterKLoop}}; nmodes,
-        nband_max_k, nband_max_kq, els_k = nothing, els_kq = nothing, kwargs...) where {FT}
-    per_pair = sizeof(FT) * nband_max_kq * nband_max_k * nmodes                     # g2_tile
-    persistent = els_k === nothing || els_kq === nothing ? 0 :
-        sizeof(Int) * (els_k.nband_max * els_k.nk + els_kq.nband_max * els_kq.nk)  # imap_i, imap_f
-    (; persistent, per_outer = 0, per_pair)
-end
+# `setup_calculator!` allocates nothing on the backend: the state index maps are the engine's, and g2 is
+# formed inside the scatter kernel. The tiled output is not counted: on the first batch it chooses full or
+# streamed residency from the memory then free. `ωph` and `iq_kk` are host arrays.
+calculator_bytes(::G2Calculator, ::Type{<:EPBlock{OuterKLoop}}; kwargs...) =
+    (; persistent = 0, per_outer = 0, per_pair = 0)
 
 function setup_calculator!(calc::G2Calculator{FT}, backend, els_k, els_kq, phs;
         sel_k, sel_kq, nchunks_threads, n_outer_batch, n_inner_tile, kwargs...) where {FT}
@@ -112,13 +98,6 @@ function setup_calculator!(calc::G2Calculator{FT}, backend, els_k, els_kq, phs;
     # buffers alloc'd lazily on the first batch.
     calc.tile_dev = TiledDeviceOutput{FT}((calc.nmodes, n_i, n_f), 2, calc.el_i,
         n_outer_batch; narr = 1, force_stream_per_batch = calc.force_stream_per_batch)
-    # The (band, k) → state-index maps on `backend`, in the containers' box coordinates (0 for a band
-    # that is not a state, and on the box padding).
-    calc.imap_i_dev = _indmap_to_device(backend, calc.el_i)
-    calc.imap_f_dev = _indmap_to_device(backend, calc.el_f)
-    # The per-tile g2 = |ep|²/(2ω), formed from each block before the scatter.
-    calc.g2_tile = alloc(backend, FT, els_kq.nband_max, els_k.nband_max, calc.nmodes, n_inner_tile,
-                         nchunks_threads)
     calc
 end
 
@@ -156,33 +135,22 @@ function postprocess_calculator!(calc::G2Calculator; kwargs...)
         end
         tile_free!(tile_dev)
     end
-    calc.imap_i_dev = nothing
-    calc.imap_f_dev = nothing
-    calc.g2_tile = nothing
     calc.done = true
     calc
 end
 
 """
-One block: one outer k-point `ik` with a tile of k+q points `ikq[j]`. Forms `g2 = |ep|²/(2ω)` in the
-per-tile scratch of the block's thread chunk and writes it into the device-resident output
-at the `[ν, i, f]` slots, with `i = imap_i[n, ik]` and `f = imap_f[m, ikq[j]]` in the containers' box
-coordinates. The `TiledDeviceOutput` helper's `tile_stride`/`tile_offset`
-select the linear-index layout, so the same call serves the full and the streamed residency
-(see `force_stream_per_batch`).
+One tile: one outer k-point `ik` with its (k, k+q) pairs in band-class order. One scatter over the tile's items
+forms `g2 = |ep|²/(2ω)` and writes it into the device-resident output at the `[ν, i, f]` slots, with
+`i = state_k(tile, n, j)` and `f = state_kq(tile, m, j)`. The `TiledDeviceOutput` helper's
+`tile_stride`/`tile_offset` select the linear-index layout, so the same call serves the full and the
+streamed residency (see `force_stream_per_batch`).
 
-A band that is not a state, and the box padding, have `imap == 0` and are dropped. The target
-`(ν, i, f)` slots are unique across the whole run (distinct k → distinct i, distinct k+q →
-distinct f), so the scatter is overwrite-free.
+A band that is not a state has index 0 and is dropped. The target `(ν, i, f)` slots are unique across the
+whole run (distinct k → distinct i, distinct k+q → distinct f), so the scatter is overwrite-free.
 """
-function run_calculator!(calc::G2Calculator, block::EPBlock{OuterKLoop}, ctx)
-    (; ep, phs, ik, ikq) = block
-    nm, npairs = size(ep, 3), size(ep, 4)
-    # The block's extents: a block may be narrower than the containers' box.
-    g2 = reshape_buffer_view(view(calc.g2_tile, :, :, :, :, ctx.chunk), size(ep)...)
-    g2 .= abs2.(ep) .* inv.(2 .* reshape(phs.e, 1, 1, nm, npairs))   # as `epstate_set_g2!`
+function run_calculator!(calc::G2Calculator, tile::EPBlock{OuterKLoop}, ctx)
     tile_dev = calc.tile_dev
-    eph_window_scatter!(device_array(tile_dev, 1), g2, view(calc.imap_i_dev, :, ik),
-        calc.imap_f_dev, ikq, tile_stride(tile_dev), tile_offset(tile_dev))
+    eph_window_scatter!(device_array(tile_dev, 1), tile, tile_stride(tile_dev), tile_offset(tile_dev))
     calc
 end

@@ -54,8 +54,9 @@ end
         @test block isa EPBlock{Order}
         @test block.els_k isa BatchedElectronState && block.els_kq isa BatchedElectronState
         @test block.phs isa BatchedPhononState
-        @test block.els_k.nk == block.els_kq.nk == block.phs.nq == size(block.ep, 4) == 1
-        @test size(block.ep) == (block.els_kq.nband_max, block.els_k.nband_max, model.nmodes, 1)
+        @test block.phs.nq == 1 && size(block.seg_host, 2) >= 1 && block.seg_host[ElectronPhonon.SEG_NPAIRS, 1] == 1
+        @test length(block.ep) == block.seg_host[ElectronPhonon.SEG_BKQ, 1] * block.seg_host[ElectronPhonon.SEG_BK, 1] *
+            model.nmodes
         @test block.dg === nothing
         # Outer q: the tile's k points also as a (3, nb) matrix on the run's backend.
         @test Order === OuterKLoop ? block.xkmat === nothing :
@@ -115,7 +116,7 @@ end
         stage1!(ek, 1:1); stage1!(eq, 1:1)
         bk, bq = stage2!(ek, 1, 1:1), stage2!(eq, 1, 1:1)
         @test sum(abs2, Array(bk.ep)) ≈ sum(abs2, Array(bq.ep)) rtol = 1e-11
-        @test size(bk.dg) == (model_el.nw, model_el.nw, model_el.nmodes, 3, 1)
+        @test size(bk.dg) == (length(bk.ep), 3)
         @test all(isfinite, Array(bk.dg)) && sum(abs2, Array(bk.dg)) > 0
         @test bq.dg === nothing
     end
@@ -149,8 +150,7 @@ end
             end
         else
             for i in 3:4
-                block = stage2!(eng, i, 1:2)
-                run_calculator!(calc, block, ctx)
+                run_calculator!(calc, stage2!(eng, i, 1:2), ctx)
             end
         end
         # Compare the directly produced blocks against the independent scalar reference.

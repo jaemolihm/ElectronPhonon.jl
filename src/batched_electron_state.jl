@@ -135,25 +135,33 @@ The points `inds` of `els` as a `BatchedElectronState` of views (no copy), with 
 end
 
 """
-    reshape_view_batched_electron_states(els, nband_max, nk) -> BatchedElectronState
+    reshape_view_batched_electron_states(els, nband_max, nk; offset = (0, 0, 0)) -> BatchedElectronState
 
 A container of box width `nband_max ≤ els.nband_max` and `nk ≤ els.nk` points on the memory of
-`els`, as `Base.reshape` is for an array: each quantity is the dense leading elements of `els`'s
-array taken at the new dimensions (`reshape_buffer_view`), so the contents are reinterpreted, not moved.
+`els`, as `Base.reshape` is for an array: each quantity is the dense elements of `els`'s array taken
+at the new dimensions (`reshape_buffer_view`), so the contents are reinterpreted, not moved.
 When `nband_max` shrinks, point `k` of the result is not point `k` of `els`: write the contents
-through the result before reading them. `iband_offset` and `nband` are views of the first `nk`
-points of `els`'s, and `kpts = nothing`.
+through the result before reading them. `iband_offset` and `nband` are views of `nk` points of `els`'s,
+and `kpts = nothing`.
+
+`offset = (points, bands, band_pairs)` places the result after earlier segments of the same memory:
+`points` points, `bands` band slots (the sum of points times box width of the segments) and
+`band_pairs` band-pair slots (points times box width squared, for `v` and `rbar`) are skipped.
+Segments of widths `b_c` over `n_c` points fit when `Σ n_c b_c ≤ els.nk · els.nband_max`.
 """
-function reshape_view_batched_electron_states(els::BatchedElectronState{T}, nband_max, nk) where {T}
-    nband_max <= els.nband_max && nk <= els.nk || throw(ArgumentError(
-        "a box of $nband_max bands and $nk points does not fit $els"))
-    reshape_if_held(x, dims...) = x === nothing ? nothing : reshape_buffer_view(x, dims...)
+function reshape_view_batched_electron_states(els::BatchedElectronState{T}, nband_max, nk;
+        offset::NTuple{3, Int} = (0, 0, 0)) where {T}
+    npoints, nbands, nbandpairs = offset
+    nband_max <= els.nband_max && npoints + nk <= els.nk || throw(ArgumentError(
+        "a box of $nband_max bands and $nk points at offset $offset does not fit $els"))
+    reshape_if_held(x, n_per_slot, dims...; slots) =
+        x === nothing ? nothing : reshape_buffer_view(x, dims...; offset = n_per_slot * slots)
     BatchedElectronState{T}(els.nw, nband_max, nk, nothing,
-        view(els.iband_offset, 1:nk),
-        view(els.nband, 1:nk),
-        reshape_if_held(els.e, nband_max, nk),
-        reshape_if_held(els.u, els.nw, nband_max, nk),
-        reshape_if_held(els.vdiag, 3, nband_max, nk),
-        reshape_if_held(els.v, 3, nband_max, nband_max, nk),
-        reshape_if_held(els.rbar, 3, nband_max, nband_max, nk))
+        view(els.iband_offset, npoints .+ (1:nk)),
+        view(els.nband, npoints .+ (1:nk)),
+        reshape_if_held(els.e, 1, nband_max, nk; slots = nbands),
+        reshape_if_held(els.u, els.nw, els.nw, nband_max, nk; slots = nbands),
+        reshape_if_held(els.vdiag, 3, 3, nband_max, nk; slots = nbands),
+        reshape_if_held(els.v, 3, 3, nband_max, nband_max, nk; slots = nbandpairs),
+        reshape_if_held(els.rbar, 3, 3, nband_max, nband_max, nk; slots = nbandpairs))
 end
