@@ -9,7 +9,7 @@
     end
     DISK_EPMAT_GPU && CUDA.allowscalar(false)
 
-    isdefined(@__MODULE__, :_PairRecorder) || include("eph_reference_loop.jl")
+    include("eph_reference_loop.jl")
 end
 
 # A disk epmat is a memory-mapped `op_r` of the same type as the in-memory one, so every path runs

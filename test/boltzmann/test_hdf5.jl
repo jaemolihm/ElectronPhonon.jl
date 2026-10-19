@@ -39,21 +39,21 @@ end
     Random.seed!(123)
     # Test simple types
     for T in [Int64, Float64, Float32, ComplexF64]
-        x = rand(T)
+        local x = rand(T)
         @inferred test_hdf_io(x)
     end
     # Test Arrays
     for elT in [Int64, Float64, Float32, ComplexF64]
         for dims in [(1,), (2, 1), (1, 2, 3)]
             T = Array{elT, length(dims)}
-            x = rand(elT, dims)
+            local x = rand(elT, dims)
             @inferred test_hdf_io(x)
         end
     end
     # Test StaticArray
     for elT in [Int64, Float64, Float32, ComplexF64]
         for T in [SVector{3, elT}, SMatrix{2, 3, elT, 6}]
-            x = rand(T)
+            local x = rand(T)
             @inferred test_hdf_io(x)
         end
     end
@@ -62,7 +62,7 @@ end
         for sarrT in [SVector{3, elT}, SMatrix{2, 3, elT, 6}]
             for dims in [(1,), (2, 1), (1, 2, 3)]
                 T = Array{sarrT, length(dims)}
-                x = reshape([rand(sarrT) for _ in 1:prod(dims)], dims)
+                local x = reshape([rand(sarrT) for _ in 1:prod(dims)], dims)
                 @inferred test_hdf_io(x)
             end
         end

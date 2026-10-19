@@ -270,8 +270,8 @@ end
 
     # Both branches of `sort!`'s index renumbering.
     for index in (:dense, :dict)
-        inds = randperm(full.n)
-        mixed = GridKpoints(Kpoints(full.n, full.vectors[inds], full.weights[inds], full.ngrid),
+        local inds = randperm(full.n)
+        local mixed = GridKpoints(Kpoints(full.n, full.vectors[inds], full.weights[inds], full.ngrid),
                             full.ngrid; index)
         sort!(mixed)
         test_index_equivalence(mixed; dense = index === :dense)

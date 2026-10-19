@@ -9,7 +9,7 @@
         false
     end
 
-    isdefined(@__MODULE__, :eph_reference) || include("eph_reference_loop.jl")
+    include("eph_reference_loop.jl")
 end
 
 # Features the per-point loops of the previous release had, on the e-ph loop (ElectronPhonon.jl

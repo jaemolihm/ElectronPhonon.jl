@@ -127,16 +127,16 @@ end
             for ik in batch, tile in Iterators.partition(1:st.kqpts.n, 13)
                 ep_full = Array(stage2!(eng_full, ik, tile).ep)
                 block = stage2!(eng_part, ik, tile)
-                nwrong_shape += !(size(block.ep, 3) == nkept && block.phs.nmodes == nkept)
-                maxdev = max(maxdev, maximum(abs, Array(block.ep) - ep_full[:, :, 1:nkept, :]))
-                scale = max(scale, maximum(abs, ep_full))
+                global nwrong_shape += !(size(block.ep, 3) == nkept && block.phs.nmodes == nkept)
+                global maxdev = max(maxdev, maximum(abs, Array(block.ep) - ep_full[:, :, 1:nkept, :]))
+                global scale = max(scale, maximum(abs, ep_full))
                 block_tol, block_batch = stage2!(eng_part_tol, ik, tile), stage2!(eng_batch, ik, tile)
-                nmismatch += (block_tol === nothing) != (block_batch === nothing)
+                global nmismatch += (block_tol === nothing) != (block_batch === nothing)
                 block_tol === nothing && continue
-                nblocks_tol += 1
-                nmismatch += Array(block_tol.iq) != Array(block_batch.iq)
-                nmismatch += Array(block_tol.phs.e) != Array(block_batch.phs.e)
-                maxdev_batch = max(maxdev_batch, maximum(abs, Array(block_tol.ep) - Array(block_batch.ep)))
+                global nblocks_tol += 1
+                global nmismatch += Array(block_tol.iq) != Array(block_batch.iq)
+                global nmismatch += Array(block_tol.phs.e) != Array(block_batch.phs.e)
+                global maxdev_batch = max(maxdev_batch, maximum(abs, Array(block_tol.ep) - Array(block_batch.ep)))
             end
         end
         @test nwrong_shape == 0

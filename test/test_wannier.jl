@@ -13,7 +13,7 @@ end
     op_r = randn(ComplexF64, 6, nr)
 
     # Constructor should throw error if irvec is not sorted
-    @test_throws ErrorException obj = WannierObject(irvec, op_r)
+    @test_throws ErrorException WannierObject(irvec, op_r)
 
     ind = sortperm(irvec, by=x->reverse(x))
     irvec = irvec[ind]

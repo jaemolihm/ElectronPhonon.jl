@@ -142,6 +142,7 @@ end
     # Returned indices are consistent and the result is a genuine subgroup.
     for xq in (Vec3(0., 0., 0.), Vec3(0.5, 0., 0.5), Vec3(0.13, 0.27, 0.41))
         for keep_trs in (false, true)
+            local small, inds
             small, inds = symmetry_small_group_of_q(symmetry, xq; keep_trs)
             @test small.S == symmetry.S[inds]
             @test small.is_tr == symmetry.is_tr[inds]

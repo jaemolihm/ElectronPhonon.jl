@@ -6,8 +6,10 @@ using TestItemRunner
 # thread crashes a multithreaded process (#49), so run them alone, single-threaded, with
 # `test_args = ["test_plotting.jl"]`. The items tagged `:gpu` run only when CUDA is functional (CI
 # drops it from the test target).
-for file in ARGS
+const TEST_FILES = normpath.(ARGS)
+for file in TEST_FILES
     isfile(joinpath(@__DIR__, file)) || error("unknown test file $file")
+    occursin(r"^@testitem"m, read(joinpath(@__DIR__, file), String)) || error("no @testitem in $file")
 end
 const HAVE_CUDA = try
     @eval using CUDA
@@ -18,5 +20,5 @@ end
 HAVE_CUDA || @info "CUDA not functional: skipping the test items tagged :gpu"
 
 @run_package_tests filter = ti ->
-    (isempty(ARGS) ? :plotting ∉ ti.tags : relpath(ti.filename, @__DIR__) in ARGS) &&
+    (isempty(TEST_FILES) ? :plotting ∉ ti.tags : relpath(ti.filename, @__DIR__) in TEST_FILES) &&
     (HAVE_CUDA || :gpu ∉ ti.tags)

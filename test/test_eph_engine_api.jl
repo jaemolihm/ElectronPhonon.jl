@@ -3,7 +3,7 @@
         stage1!, stage2!, setup_calculator!, run_calculator!, calculator_begin_batch!, calculator_end_batch!,
         postprocess_calculator!, CPUBackend, gpu_backend, unit_to_aru
 
-    isdefined(@__MODULE__, :eph_reference) || include("eph_reference_loop.jl")
+    include("eph_reference_loop.jl")
 
     const EPH_ENGINE_API_GPU = try
         @eval using CUDA
@@ -41,7 +41,7 @@ end
             ((OuterKEngine, model_el, OuterKLoop, OuterKContext),
              (OuterQEngine, model_ph, OuterQLoop, OuterQContext))
         calc = _PairRecorder(keygrid)
-        eng = Engine(model, kpts, qpts; backend, calculators = [calc], window_k = window,
+        local eng = Engine(model, kpts, qpts; backend, calculators = [calc], window_k = window,
             window_kq = window, verbosity = 0)
         @test isempty(calc.g2abs) && calc.nw == 0  # construction runs no calculator hooks
         @test_throws ArgumentError stage2!(eng, 1, 1:1)

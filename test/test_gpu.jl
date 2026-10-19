@@ -53,7 +53,7 @@
     GPU_AVAILABLE && CUDA.allowscalar(false)
 
     # Pb EPW model comes from a downloaded test artifact (see test/Artifacts.toml).
-    isdefined(@__MODULE__, :contract_pair_sum) || include("calculator_contract_harness.jl")
+    include("calculator_contract_harness.jl")
 
     """
     Validate the batched e-ph drivers against the per-k/q reference (`compute_eph_RR_to_kR!` /
@@ -584,7 +584,7 @@ end
         @test ext.JACOBI_NW_MAX == 12
         for nw2 in (13, 40)
             nk2 = 4
-            H = CUDA.rand(ComplexF64, nw2, nw2, nk2)
+            local H = CUDA.rand(ComplexF64, nw2, nw2, nk2)
             for k in 1:nk2; @views H[:, :, k] .= (H[:, :, k] + H[:, :, k]') / 2; end
             Hh = Array(H)   # the batched solvers overwrite their input, so snapshot it first
             Ebig = Array(eigvals_batched!(copy(H)))
@@ -601,7 +601,7 @@ end
         for (nw2, nk2) in ((13, 1000), (40, ext.heevj_batch_max(40) + 5))
             A3 = CUDA.randn(ComplexF64, nw2, nw2, nk2)
             H3 = A3 .+ permutedims(conj.(A3), (2, 1, 3))
-            E_ref = similar(H3, Float64, nw2, nk2); U_ref = similar(H3); V_ref = similar(E_ref)
+            local E_ref = similar(H3, Float64, nw2, nk2); U_ref = similar(H3); V_ref = similar(E_ref)
             for c in Iterators.partition(1:nk2, ext.heevj_batch_max(nw2))
                 W, Uc = CUDA.cuSOLVER.heevjBatched!('V', 'U', H3[:, :, c])
                 E_ref[:, c] .= W; U_ref[:, :, c] .= Uc
@@ -623,7 +623,7 @@ end
             for k in 1:10:nk2
                 Hh[:, :, k] .= Q * Diagonal(Float64[max(i - 1, 1) for i in 1:nw2]) * Q'
             end
-            H = CuArray(Hh)
+            local H = CuArray(Hh)
             Ej, Uj = eigen_batched!(H)
             @test Uj === H                                   # eigenvectors overwrite the input
             @test eigvals_batched!(CuArray(Hh)) == Ej         # bitwise the same eigenvalues
@@ -635,7 +635,7 @@ end
         # --- a NaN eigenvalue throws: Jacobi (nw = 3) on NaN or Inf input, cuSOLVER (nw = 13) on
         #     Inf input (a single NaN entry can come back from cuSOLVER as finite eigenvalues) ---
         for (nw2, x) in ((3, NaN), (3, Inf), (13, Inf))
-            Hn = CUDA.randn(ComplexF64, nw2, nw2, 5)
+            local Hn = CUDA.randn(ComplexF64, nw2, nw2, 5)
             Hn .= (Hn .+ permutedims(conj.(Hn), (2, 1, 3))) ./ 2
             Hn[1:1, 2:2, 4:4] .= x
             @test_throws ErrorException eigen_batched!(copy(Hn))
@@ -1041,8 +1041,8 @@ end
         for ik in 1:nk
             el = els_c[ik]
             for jb in el.rng, ib in el.rng, idir in 1:3
-                gm = max(gm, abs(el.v[ib, jb][idir] - v_anchor[ib, jb, idir, ik]))
-                gs = max(gs, abs(el.v[ib, jb][idir]))
+                global gm = max(gm, abs(el.v[ib, jb][idir] - v_anchor[ib, jb, idir, ik]))
+                global gs = max(gs, abs(el.v[ib, jb][idir]))
             end
         end
         @test gm < 1e-11 * gs
@@ -1055,9 +1055,9 @@ end
             el = els_c[ik]; e = el.e_full
             for i in el.rng
                 any(j -> j != i && abs(e[j] - e[i]) < 1e-6, el.rng) && continue
-                n_nondeg += 1
-                vmax = max(vmax, maximum(abs, els_c[ik].vdiag[i] .- els_g[ik].vdiag[i]))
-                vscale = max(vscale, maximum(abs, els_c[ik].vdiag[i]))
+                global n_nondeg += 1
+                global vmax = max(vmax, maximum(abs, els_c[ik].vdiag[i] .- els_g[ik].vdiag[i]))
+                global vscale = max(vscale, maximum(abs, els_c[ik].vdiag[i]))
             end
         end
         @test n_nondeg > 0
@@ -1071,7 +1071,7 @@ end
         els_cd = ElectronPhonon.compute_electron_states(model, kpts, qd, (-Inf, Inf); fourier_mode="gridopt")
         ddiag = 0.0
         for ik in 1:nk, i in els_g[ik].rng
-            ddiag = max(ddiag, maximum(abs, els_gd[ik].vdiag[i] .- els_g[ik].vdiag[i]))
+            global ddiag = max(ddiag, maximum(abs, els_gd[ik].vdiag[i] .- els_g[ik].vdiag[i]))
         end
         @test ddiag < 1e-13  # identical to real(diag(v)) of the full-velocity path
         vdm = vds = 0.0
@@ -1079,8 +1079,8 @@ end
             el = els_cd[ik]; e = el.e_full
             for i in el.rng
                 any(j -> j != i && abs(e[j] - e[i]) < 1e-6, el.rng) && continue
-                vdm = max(vdm, maximum(abs, els_cd[ik].vdiag[i] .- els_gd[ik].vdiag[i]))
-                vds = max(vds, maximum(abs, els_cd[ik].vdiag[i]))
+                global vdm = max(vdm, maximum(abs, els_cd[ik].vdiag[i] .- els_gd[ik].vdiag[i]))
+                global vds = max(vds, maximum(abs, els_cd[ik].vdiag[i]))
             end
         end
         @test vdm < 1e-8 * vds
@@ -1121,10 +1121,10 @@ end
 
     if GPU_AVAILABLE
         for (ni_stride, i0) in ((n_i, 0), (5, 1))       # full buffer, then a per-tile buffer
-            len = nm * ni_stride * n_f
-            g2c = zeros(FT, len)
+            local len = nm * ni_stride * n_f
+            local g2c = zeros(FT, len)
             ElectronPhonon.eph_window_scatter!(g2c, g2vals, imap_i_col, imap_f, ikqs, ni_stride, i0)
-            g2g = CUDA.zeros(FT, len)
+            local g2g = CUDA.zeros(FT, len)
             ElectronPhonon.eph_window_scatter!(g2g, CUDA.CuArray(g2vals),
                 CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), CUDA.CuArray(ikqs), ni_stride, i0)
             @test Array(g2g) == g2c                     # same integer indexing + copy ⇒ bit-identical
@@ -1202,7 +1202,7 @@ end
 # The estimate plans with the loop's own byte counts; on a CPU backend the tile is the cap.
 @testitem "estimate_device_memory" setup = [Common, Gpu] begin
     for (mom, loop) in (("el", :outer_k), ("ph", :outer_q))
-        est = ElectronPhonon.estimate_device_memory(_load_model_from_artifacts("pb";
+        local est = ElectronPhonon.estimate_device_memory(_load_model_from_artifacts("pb";
             epmat_outer_momentum = mom); nk = 64, nkq = 64, nchunks_threads = 1)
         @test est.loop == loop && est.committed > 0 && est.per_pair > 0 && est.batch == 64
     end

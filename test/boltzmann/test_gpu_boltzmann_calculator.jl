@@ -7,7 +7,7 @@
     # is a self-contained per-(m, n, iq) loop over the same shared `bte_scattering_increments`; it is
     # deliberately NOT the implementation under test on either backend, so it independently pins both to
     # ~machine eps, block-tile `i0` and out-of-window `imap == 0` included.
-    const _CUDA_OK = (get(ENV, "EP_TEST_CUDA", "1") == "1") && try
+    const _CUDA_OK = try
         @eval import CUDA
         CUDA.functional()
     catch

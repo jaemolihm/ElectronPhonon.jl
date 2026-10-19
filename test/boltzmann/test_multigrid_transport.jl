@@ -3,7 +3,7 @@
     using ElectronPhonon: FilteredBandStates, state_xks
     using LinearAlgebra
 
-    const _CUDA_OK = (get(ENV, "EP_TEST_CUDA", "1") == "1") && try
+    const _CUDA_OK = try
         @eval import CUDA
         CUDA.functional()
     catch
