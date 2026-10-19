@@ -270,16 +270,21 @@
         c
     end
     ElectronPhonon.postprocess_calculator!(c::_RecordCalc; kwargs...) = c
-    function ElectronPhonon.run_calculator!(c::_RecordCalc, p::ElectronPhonon.EPBlock{ElectronPhonon.OuterKLoop}, ctx)
-        (; ep, phs, ik, ikq) = p
-        g2h = Array(abs2.(ep) ./ (2 .* reshape(phs.e, 1, 1, size(ep, 3), size(ep, 4))))
+    function ElectronPhonon.run_calculator!(c::_RecordCalc, tile::ElectronPhonon.EPBlock{ElectronPhonon.OuterKLoop}, ctx)
+        (; phs, ik) = tile
+        ikq, iq = Array(tile.ikq), Array(tile.iq)
         ωh = Array(phs.e)
-        c.iq[ik, ikq] .= Array(p.iq)
-        offk, nbk = Array(p.els_k.iband_offset)[1], Array(p.els_k.nband)[1]
-        offkq, nbkq = Array(p.els_kq.iband_offset), Array(p.els_kq.nband)
-        for (j, ikq_j) in enumerate(ikq), ν in axes(ep, 3), n in 1:nbk, m in 1:nbkq[j]
-            c.g2[offkq[j] + m, offk + n, ν, ik, ikq_j] = g2h[m, n, ν, j]
-            c.ωq[offkq[j] + m, offk + n, ν, ik, ikq_j] = ωh[ν, j]
+        ep = Array(tile.ep)
+        offk, nbk = Array(tile.els_k.iband_offset)[1], Array(tile.els_k.nband)[1]
+        offkq, nbkq = Array(tile.els_kq.iband_offset), Array(tile.els_kq.nband)
+        c.iq[ik, ikq] .= iq
+        for s in ElectronPhonon.eachsegment(tile; ep), j in s.pairs
+            jj = j - first(s.pairs) + 1
+            jkq = s.kq_pt + jj
+            for ν in axes(s.ep, 3), n in 1:nbk, m in 1:nbkq[jkq]
+                c.g2[offkq[jkq] + m, offk + n, ν, ik, ikq[j]] = abs2(s.ep[m, n, ν, jj]) / (2 * ωh[ν, j])
+                c.ωq[offkq[jkq] + m, offk + n, ν, ik, ikq[j]] = ωh[ν, j]
+            end
         end
         c
     end
@@ -317,8 +322,10 @@
     # scalar indexing (allowed under CUDA.allowscalar(false)). Entries past a window are padding, so the
     # reduction selects with `ifelse`.
     function ElectronPhonon.run_calculator!(c::_RecordCalcOuterQ, p::ElectronPhonon.EPBlock{ElectronPhonon.OuterQLoop}, ctx)
-        (; ep, wtk) = p
-        nbkq, nbk, _, nkc = size(ep)
+        (; wtk) = p
+        nbkq, nbk, nkc = p.seg_host[ElectronPhonon.SEG_BKQ, 1], p.seg_host[ElectronPhonon.SEG_BK, 1],
+            p.seg_host[ElectronPhonon.SEG_NPAIRS, 1]
+        ep = reshape(p.ep, nbkq, nbk, :, nkc)
         inwin = (reshape(1:nbkq, nbkq, 1, 1, 1) .<= reshape(p.els_kq.nband, 1, 1, 1, nkc)) .&
                 (reshape(1:nbk, 1, nbk, 1, 1) .<= reshape(p.els_k.nband, 1, 1, 1, nkc))
         val = sum(ifelse.(inwin, abs2.(ep), 0.0) .* reshape(wtk, 1, 1, 1, nkc))
@@ -764,13 +771,16 @@ end
             for batch in Iterators.partition(1:eng.kpts.n, 5)
                 ElectronPhonon.stage1!(eng, batch)
                 for ik in batch, tile in Iterators.partition(1:eng.kqpts.n, 7)
-                    block = ElectronPhonon.stage2!(eng, ik, tile)
                     iqs, ind = zeros(Int, length(tile)), collect(eachindex(tile))
                     ElectronPhonon._fill_iqs!(iqs, eng.qpts, eng.ck, eng.ckq, ik, first(tile), length(tile))
                     n = ElectronPhonon._kqpairs_conserving_energy!(ind, length(tile), tol,
                         view(ek, :, ik:ik), view(nbk, ik:ik), 1, ekq, nothing, nbkq, tile, ωq, iqs)
-                    got = block === nothing ? (Int[], Int[]) : (collect(Array(block.ikq)), Array(block.iq))
-                    nmismatch += got != (tile[ind[1:n]], iqs[ind[1:n]])
+                    got = (Int[], Int[])
+                    ElectronPhonon.stage2!(eng, ik, tile) do tl
+                        got = (vcat(got[1], collect(Array(tl.ikq))), vcat(got[2], Array(tl.iq)))
+                    end
+                    # the tile lists its pairs grouped by band class, so compare the kept pairs as a set
+                    nmismatch += sort(collect(zip(got...))) != sort(collect(zip(tile[ind[1:n]], iqs[ind[1:n]])))
                     nkept += n
                 end
             end
@@ -1054,63 +1064,6 @@ end
             end
         end
         @test vdm < 1e-8 * vds
-    end
-end
-
-# Scatter round-trip: the device-resident scatter `eph_window_scatter!` (used by
-# G2Calculator's device path) must (1) write COLLISION-FREE — its non-collision invariant
-# (distinct k → distinct outer state i, distinct k+q → distinct inner state f, so every target linear
-# index is unique across the run) is what makes the atomic-free device writes correct — and (2) agree
-# bit-for-bit between the generic (CPU) method and the CUDA kernel. Builds window-aware imaps (some
-# out-of-window entries == 0) mimicking a small run and checks both the full-buffer (i0=0,
-# ni_stride=n_i) and per-tile buffer (i0≠0, ni_stride=tile extent) addressings.
-@testitem "eph_window_scatter! round-trip (collision-free + CPU==CUDA)" setup = [Common, Gpu, GpuHelpers] begin
-    using Random
-    Random.seed!(20260717)
-    FT = Float64
-    nw = 4; nbandk = 3; nm = 2; nqc = 5; nkq = 8
-    # Distinct positive global state indices, with some 0 (out-of-window) entries.
-    imap_i_col = [0, 5, 2]                              # outer states for the nbandk projected bands
-    n_i = 6
-    imap_f = reshape(collect(1:nw*nkq), nw, nkq)        # distinct global inner states, all in-window
-    imap_f[1, 2] = 0; imap_f[3, 5] = 0                  # a couple out-of-window
-    n_f = nw * nkq
-    ikqs = [2, 5, 7, 8, 3]                              # this chunk's (distinct) k+q indices
-
-    # (1) Collision-free: the target linear indices of the in-window writes are all distinct.
-    lins = Int[]
-    for j in 1:nqc, ν in 1:nm, n in 1:nbandk, m in 1:nw
-        i = imap_i_col[n]; f = imap_f[m, ikqs[j]]
-        (i > 0 && f > 0) || continue
-        push!(lins, ν + nm * (i - 1) + nm * n_i * (f - 1))
-    end
-    @test !isempty(lins)
-    @test allunique(lins)
-
-    g2vals = abs.(randn(nw, nbandk, nm, nqc))
-
-    if GPU_AVAILABLE
-        for (ni_stride, i0) in ((n_i, 0), (5, 1))       # full buffer, then a per-tile buffer
-            local len = nm * ni_stride * n_f
-            local g2c = zeros(FT, len)
-            ElectronPhonon.eph_window_scatter!(g2c, g2vals, imap_i_col, imap_f, ikqs, ni_stride, i0)
-            local g2g = CUDA.zeros(FT, len)
-            ElectronPhonon.eph_window_scatter!(g2g, CUDA.CuArray(g2vals),
-                CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), CUDA.CuArray(ikqs), ni_stride, i0)
-            @test Array(g2g) == g2c                     # same integer indexing + copy ⇒ bit-identical
-        end
-
-        # The outer-k driver always hands a contiguous k+q tile, so `ikqs` reaches the kernel as a
-        # `UnitRange` (isbits, passed in the launch parameters) rather than a device array. Same
-        # values, same result — but it is a different argument type through `cudaconvert`.
-        rng_ikqs = 2:6
-        len = nm * n_i * n_f
-        g2c = zeros(FT, len)
-        ElectronPhonon.eph_window_scatter!(g2c, g2vals, imap_i_col, imap_f, rng_ikqs, n_i, 0)
-        g2g = CUDA.zeros(FT, len)
-        ElectronPhonon.eph_window_scatter!(g2g, CUDA.CuArray(g2vals),
-            CUDA.CuArray(imap_i_col), CUDA.CuArray(imap_f), rng_ikqs, n_i, 0)
-        @test Array(g2g) == g2c
     end
 end
 

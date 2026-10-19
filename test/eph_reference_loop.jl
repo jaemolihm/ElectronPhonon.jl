@@ -190,8 +190,10 @@ mutable struct _PairRecorder <: AbstractCalculator
     ngrid::NTuple{3, Int}
     g2abs::Dict{NTuple{6, Int}, Array{Float64, 3}}
     ωq::Dict{NTuple{6, Int}, Vector{Float64}}
+    e_k::Dict{NTuple{6, Int}, Vector{Float64}}    # energies of the window bands by physical band, NaN outside
+    e_kq::Dict{NTuple{6, Int}, Vector{Float64}}
     lock::ReentrantLock
-    _PairRecorder(ngrid = (0, 0, 0)) = new(0, 0, ngrid, Dict(), Dict(), ReentrantLock())
+    _PairRecorder(ngrid = (0, 0, 0)) = new(0, 0, ngrid, Dict(), Dict(), Dict(), Dict(), ReentrantLock())
 end
 ElectronPhonon.supports(::_PairRecorder, ::Type{OuterKLoop}) = true
 ElectronPhonon.supports(::_PairRecorder, ::Type{OuterQLoop}) = true
@@ -206,22 +208,31 @@ function ElectronPhonon.setup_calculator!(c::_PairRecorder, backend, els_k, els_
     c
 end
 
-# Both orders: the side shared by the block has extent 1 along the pair axis.
-function ElectronPhonon.run_calculator!(c::_PairRecorder, p::EPBlock, ctx)
-    ep = Array(p.ep); ω = Array(p.phs.e)
-    offk, nbk = Array(p.els_k.iband_offset), Array(p.els_k.nband)
-    offkq, nbkq = Array(p.els_kq.iband_offset), Array(p.els_kq.nband)
-    for j in axes(ep, 4)
-        jk, jkq = min(j, length(nbk)), min(j, length(nbkq))
-        xk = p.xk isa Vec3 ? p.xk : p.xk[j]
-        xq = p.xq isa Vec3 ? p.xq : p.xq[j]
+# Both orders: the pairs of every class of the tile; a side shared by the tile has one point per segment.
+function ElectronPhonon.run_calculator!(c::_PairRecorder, tile::EPBlock, ctx)
+    ω = Array(tile.phs.e)
+    offk, nbk = Array(tile.els_k.iband_offset), Array(tile.els_k.nband)
+    offkq, nbkq = Array(tile.els_kq.iband_offset), Array(tile.els_kq.nband)
+    e_k, e_kq = Array(tile.els_k.e), Array(tile.els_kq.e)
+    seg = tile.seg_host
+    for s in ElectronPhonon.eachsegment(tile; ep = Array(tile.ep)), j in s.pairs
+        jj = j - first(s.pairs) + 1
+        jk, jkq = s.k_pt + (s.k_shared ? 1 : jj), s.kq_pt + jj
+        xk = tile.xk isa Vec3 ? tile.xk : tile.xk[j]
+        xq = tile.xq isa Vec3 ? tile.xq : tile.xq[j]
         nn, mm = 1:nbk[jk], 1:nbkq[jkq]
         a = zeros(c.nw, c.nw, c.nmodes)
-        a[offkq[jkq] .+ mm, offk[jk] .+ nn, :] .= abs2.(ep[mm, nn, :, j])
+        a[offkq[jkq] .+ mm, offk[jk] .+ nn, :] .= abs2.(s.ep[mm, nn, :, jj])
+        slot_k = seg[ElectronPhonon.SEG_K_SLOT, s.c] + (s.k_shared ? 0 : (jj - 1) * s.b_k)
+        slot_kq = seg[ElectronPhonon.SEG_KQ_SLOT, s.c] + (jj - 1) * s.b_kq
+        ek = fill(NaN, c.nw); ek[offk[jk] .+ nn] .= e_k[slot_k .+ nn]
+        ekq = fill(NaN, c.nw); ekq[offkq[jkq] .+ mm] .= e_kq[slot_kq .+ mm]
         lock(c.lock) do
             key = _pair_key(xk, xk + xq, c.ngrid)
             c.g2abs[key] = a
             c.ωq[key] = ω[:, min(j, size(ω, 2))]
+            c.e_k[key] = ek
+            c.e_kq[key] = ekq
         end
     end
 end
@@ -240,11 +251,10 @@ ElectronPhonon.calculator_end_batch!(::_DgRecorder, ctx) = nothing
 ElectronPhonon.postprocess_calculator!(c::_DgRecorder; kwargs...) = c
 ElectronPhonon.setup_calculator!(c::_DgRecorder, backend, els_k, els_kq, phs; kwargs...) =
     (c.ngrid = els_k.kpts.ngrid; c)
-function ElectronPhonon.run_calculator!(c::_DgRecorder, block::EPBlock{OuterKLoop}, ctx)
-    dg = Array(block.dg)   # (m, n, ν, d, j)
-    nbk, nbkq = Array(block.els_k.nband)[1], Array(block.els_kq.nband)
-    for (j, xq) in enumerate(block.xq)
-        s = [sum(abs2, dg[1:nbkq[j], 1:nbk, :, d, j]) for d in 1:3]
-        lock(() -> c.sums[_pair_key(block.xk, block.xk + xq, c.ngrid)] = s, c.lock)
+function ElectronPhonon.run_calculator!(c::_DgRecorder, tile::EPBlock{OuterKLoop}, ctx)
+    for s in ElectronPhonon.eachsegment(tile; ep = Array(tile.ep), dg = Array(tile.dg)), j in s.pairs
+        jj = j - first(s.pairs) + 1
+        sums = [sum(abs2, s.dg[:, :, :, jj, d]) for d in 1:3]
+        lock(() -> c.sums[_pair_key(tile.xk, tile.xk + tile.xq[j], c.ngrid)] = sums, c.lock)
     end
 end

@@ -263,9 +263,8 @@ end
     @test cnc.el_i.iks == selnc.iks
 end
 
-# `calculator_bytes` declares what `setup_calculator!` allocates on the backend, on a one-state
-# fixture whose boxes equal the index-map extents: the two index maps (`persistent`) and, for
-# `G2Calculator`, the per-tile g2 scratch (`per_pair`). Without containers the maps are not counted.
+# `calculator_bytes` declares what `setup_calculator!` allocates on the backend: nothing for the
+# in-repo extraction calculators, whose state-index maps and `g2` are the engine's and the kernel's.
 @testitem "calculator_bytes matches the setup allocations" setup = [Common, CalculatorContract] begin
     nm = 2
     kpts = ElectronPhonon.GridKpoints(kpoints_grid((1, 1, 1)))
@@ -279,9 +278,6 @@ end
         setup_calculator!(calc, CPUBackend(), els, els, phs; order = OuterKLoop(), sel_k = sel,
             sel_kq = sel, n_outer_batch = 1, n_inner_tile = 1, nchunks_threads = 1)
         bytes = calculator_bytes(calc, EPBlock{OuterKLoop}; sizes..., els_k = els, els_kq = els, phs)
-        scratch = calc isa ElectronPhonon.G2Calculator ? sizeof(calc.g2_tile) : 0
-        @test bytes == (; persistent = sizeof(calc.imap_i_dev) + sizeof(calc.imap_f_dev), per_outer = 0,
-                          per_pair = scratch)
-        @test calculator_bytes(calc, EPBlock{OuterKLoop}; sizes...).persistent == 0
+        @test bytes == (; persistent = 0, per_outer = 0, per_pair = 0)
     end
 end

@@ -13,6 +13,26 @@
 
     # Does not allow the phonon modes to be truncated (the default).
     struct _NoTruncation <: AbstractCalculator end
+
+    # The tile of a stage-2 call, or `nothing` if no pair is kept; it borrows the engine's buffers until that
+    # engine's next call.
+    function _one_block(eng, ik, tile)
+        out = Any[]
+        stage2!(tl -> push!(out, tl), eng, ik, tile)
+        isempty(out) ? nothing : only(out)
+    end
+
+    # The largest deviation of the lowest `nkept` modes of the tile `full` (all modes) from `part` (those modes),
+    # and the largest |ep| of `full`, over the band classes of the tile.
+    function _mode_deviation(full, part, nkept)
+        dev = scale = 0.0
+        for (sf, sp) in zip(ElectronPhonon.eachsegment(full; ep = Array(full.ep)),
+                            ElectronPhonon.eachsegment(part; ep = Array(part.ep)))
+            dev = max(dev, maximum(abs, sp.ep - sf.ep[:, :, 1:nkept, :]))
+            scale = max(scale, maximum(abs, sf.ep))
+        end
+        (dev, scale)
+    end
 end
 
 # A run with a finite energy_conservation_tol on a GPU may keep only the lowest phonon modes
@@ -125,12 +145,13 @@ end
             stage1!(eng_full, batch); stage1!(eng_part, batch)
             stage1!(eng_part_tol, batch); stage1!(eng_batch, batch)
             for ik in batch, tile in Iterators.partition(1:st.kqpts.n, 13)
-                ep_full = Array(stage2!(eng_full, ik, tile).ep)
-                block = stage2!(eng_part, ik, tile)
-                global nwrong_shape += !(size(block.ep, 3) == nkept && block.phs.nmodes == nkept)
-                global maxdev = max(maxdev, maximum(abs, Array(block.ep) - ep_full[:, :, 1:nkept, :]))
-                global scale = max(scale, maximum(abs, ep_full))
-                block_tol, block_batch = stage2!(eng_part_tol, ik, tile), stage2!(eng_batch, ik, tile)
+                block_full, block = _one_block(eng_full, ik, tile), _one_block(eng_part, ik, tile)
+                global nwrong_shape += !(length(block.ep) * model.nmodes == length(block_full.ep) * nkept &&
+                                         block.phs.nmodes == nkept)
+                dev, sc = _mode_deviation(block_full, block, nkept)
+                global maxdev = max(maxdev, dev)
+                global scale = max(scale, sc)
+                block_tol, block_batch = _one_block(eng_part_tol, ik, tile), _one_block(eng_batch, ik, tile)
                 global nmismatch += (block_tol === nothing) != (block_batch === nothing)
                 block_tol === nothing && continue
                 global nblocks_tol += 1
@@ -152,7 +173,7 @@ end
         @test_throws "not among its outer batch's phonons" begin
             stage1!(eng_missing, 1:5)
             for ik in 1:5, tile in Iterators.partition(1:st.kqpts.n, 13)
-                stage2!(eng_missing, ik, tile)
+                stage2!(identity, eng_missing, ik, tile)
             end
         end
 
