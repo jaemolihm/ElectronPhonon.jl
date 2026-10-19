@@ -40,7 +40,7 @@ On the GPU:
   (`epmat_on_disk`) epmat is memory-mapped and uploaded whole like an in-memory one.
 - **Energy windows as box storage.** The state containers hold each point's in-window bands in its
   first columns (a box of the largest window's width), so every batched GEMM keeps one uniform shape
-  and the calculators skip the box padding through their index maps. See the design note.
+  and the engine's e-ph tile (a flat item list) holds no padding. See the design note.
 - **The GPU path is fully GPU — no silent fallback.** On every backend the drivers hand the
   calculators device-resident `EPBlock`s; a calculator that does not support the loop order fails
   at the driver entry, and nothing falls back to a per-`(k,q)` host loop.
@@ -172,7 +172,7 @@ arrays.
 ### Calculator integration
 
 The calculators receive one `EPBlock` per (outer point, inner tile): `run_calculator!(calc,
-block::EPBlock{OuterKLoop|OuterQLoop}, ctx::OuterKContext|OuterQContext)`, one method per loop order, on every
+tile::EPBlock{OuterKLoop|OuterQLoop}, ctx::OuterKContext|OuterQContext)`, one method per loop order, on every
 backend. The full spec is in the docstrings of `src/calculator/AbstractCalculator.jl`, and
 `docs/writing_a_calculator.md` is the tutorial. This section covers the device side.
 
@@ -184,12 +184,12 @@ backend. The full spec is in the docstrings of `src/calculator/AbstractCalculato
   `backend = ElectronPhonon.gpu_backend()` for a GPU run; `model.epmat` is uploaded once per run and
   the backend is carried in the context (`OuterKContext` / `OuterQContext`) as `ctx.backend`.
 - `n_outer_batch` — outer points per stage-1 batch and per calculator bracket; `n_inner_tile` —
-  inner points per block, sized to free device memory on a GPU.
+  inner points per tile, sized to free device memory on a GPU.
 
 The loop holds no device-specific code, so it runs on host arrays on a `CPUBackend`, where the
 inner points are split into `nchunks_threads` thread chunks, each with its own tile buffers
 (`eng.tiles[chunk]`); a device run uses one chunk on the calling task. A CPU run does **not** cover
-the CUDA kernels (`_bte_window_accumulate_kernel!`, `_window_scatter_kernel!`, the fused rotation
+the CUDA kernels (`_bte_window_accumulate_kernel!`, `_window_scatter_kernel!` (item and entry kernels), the fused rotation
 kernels, `CUBLAS.gemm_strided_batched!`, the cuSOLVER batched eigensolve): those need the GPU box.
 
 Each order is two stages. **Outer k:** stage 1 is one batched Fourier transform over R_e
@@ -197,20 +197,25 @@ and one `eph_rotate_kR_batched!` over the outer batch, which stores the kR inter
 **k+q convention**
 (`g̃(k, R_p) = conj(exp(2πi R_p·x_k)) · g(k, R_p)`, folded in via `additional_phase`), so the
 stage-2 Fourier phase `exp(2πi R_p·x_{k+q})` of a k+q tile is the same for every k of the batch:
-the loop is `k-batch -> k+q tile (phase built once) -> k -> block`, and stage 2 is one
-`compute_eph_kR_to_kq_batched!` per block with the phonon basis fused into its right rotation.
+the loop is `k-batch -> k+q tile (phase built once) -> k -> tile`, and stage 2 is one Fourier
+transform per tile and one `eph_apply_rotations!` per band class of the tile, with the phonon basis fused
+into its right rotation.
 **Outer q:** stage 1 is `g(R_e, q)` for the outer batch on the device (one GEMM over the q batch,
 then the phonon-basis rotation as a batched GEMM), stage 2 one Fourier transform over R_e and one
 `eph_apply_rotations_rqkq!` per `(q, k tile)` after the k+q states of the tile are solved
-(`solve_electron_bands_batched` and `copy_window_bands!`, into the leading `maximum(nband)` columns of the tile buffers, so the block's k+q box is its widest
+(`solve_electron_bands_batched` and `copy_window_bands!`, into the leading `maximum(nband)` columns of the tile buffers, so the tile's k+q box is its widest
 window). The model's `epmat_outer_momentum` must match the order (`"el"` for outer k, `"ph"` for
 outer q), so stage 1 always contracts the column R of `epmat`. The polar
-dipole term is added on the block for both orders (`eph_engine_add_longrange!`).
+dipole term is added on the tile for both orders (`eph_engine_add_longrange!`).
 
-A block is `ep` `(nband_max_kq, nband_max_k, nmodes, nb)` with the states, phonons, weights and
-indices of its pairs; the side shared by the block has extent 1 (see `EPBlock`). Under outer k a
+A tile is a flat list of items `(m, n, ν, j)` (band at k+q, band at k, mode, pair) with the states,
+phonons, weights and indices of its pairs; see `EPBlock`. Under outer k the engine sorts the kept pairs of
+a tile by the band count of their k+q point and stores each class's `b_kq × b_k` bands back to back
+(`ep` is `(n_items,)`, with a small segment table, `seg`, of one column per class), so no padding is
+ever an item or read: a kernel decodes an item with `item_indices` / `entry_indices`. Under outer k a
 k's k+q tiles are not contiguous (the tile loop is outside the k loop), so a per-k reduction is
-done in the brackets around the outer batch (`ctx.iks_batch`).
+done in the brackets around the outer batch (`ctx.iks_batch`). The outer-q tile is still one box-wide
+class.
 
 Memory: `engine_bytes` counts the engine's buffers next to their `alloc` calls, each calculator
 adds its `calculator_bytes` triple `(; persistent, per_outer, per_pair)`, and
@@ -220,7 +225,7 @@ nk, nkq, …)` reports the same counts ahead of a run. Actual device usage start
 higher** because of a fixed CUDA library context/workspace floor (cuBLAS etc.) allocated lazily on
 the first kernel launch.
 
-A calculator implements its block method backend-generically (only `alloc(ctx.backend, …)` /
+A calculator implements its tile method backend-generically (only `alloc(ctx.backend, …)` /
 `similar`/`copyto!`/broadcast/scatter-assignment) and adds no CUDA dependency of its own.
 
 ### Full-band interpolation on the GPU, with energy windows (design note)
@@ -228,15 +233,13 @@ A calculator implements its block method backend-generically (only `alloc(ctx.ba
 The list-batched drivers need one uniform band width per batch: a per-k variable `nband` would break
 the single large GEMMs that make the GPU fast. The state containers therefore store a **box**: each
 point's in-window bands in its first `nband[j]` columns (physical band `iband_offset[j] + n`), padded
-to the container's `nband_max`. Every e-ph matrix inherits the box on both electron sides, so a
-narrow window shrinks every per-(k, q) object by `nw / nband_max` on each side. The padding is
-undefined; the calculators build their state-index maps in box coordinates (`_indmap_to_device(backend,
-states)` on the selection the containers were built from, 0 on the padding), so the existing scatter
-kernels skip it with no window code. Array bounds cannot catch a read of the band padding, so every
-reader is bounded by `nband` or by such a map. On the point axis every array a block hands over has
-exactly the block's points, so a reader takes its extents from the arrays themselves and a size
-mismatch between them is detectable; the scatter kernels check the sizes of their inputs on entry,
-since neither their `@inbounds` host loops nor the device kernels check bounds.
+to the container's `nband_max`. The padding is undefined, and the engine never computes on it: the
+Wannier-to-Bloch rotations run per band class at the class's own widths (the k+q states of a tile are
+gathered into per-class segments), and the e-ph matrix a calculator receives is the flat item list of the
+`EPBlock` (outer k; the outer-q tile still carries its box padding). The engine builds the state-index maps of
+the run's selections in box coordinates (`_indmap_to_device`, 0 on the padding); calculators read them
+through `state_k` / `state_kq`. A narrow window shrinks every per-(k, q)
+object by `nw / nband` on each side.
 Full-band runs are the special case `nband_max = nw`, `iband_offset = 0`.
 
 ## Abandoned (tried, decided against)

@@ -37,8 +37,6 @@ Base.@kwdef mutable struct EPElementCalculator{FT} <: AbstractCalculator
 
     # (band, k) → state index in the containers' box coordinates, on the loop backend; read by the
     # scatter kernel. Typed `Any` to avoid a CUDA dependency.
-    imap_i_dev::Any = nothing
-    imap_f_dev::Any = nothing
     # Tiled device output, real arrays: Re(ep) = array 1, Im(ep) = array 2.
     tile_dev::Union{Nothing,TiledDeviceOutput{FT}} = nothing
     done::Bool = false
@@ -50,16 +48,12 @@ supports(::EPElementCalculator, ::Type{OuterKLoop}) = true
 # the band velocities of both sides (`BandStates`).
 required_el_quantities(::EPElementCalculator) = [:vdiag]
 
-# What `setup_calculator!` allocates on the backend: the two index maps, bounded by the containers'
-# boxes; without containers (`estimate_device_memory`) nothing. `run_calculator!` scatters `block.ep`
-# directly, so there is no per-pair scratch. The tiled output is not counted: on the first batch it
-# chooses full or streamed residency from the memory then free. `ωph` and `iq_kk` are host arrays.
-function calculator_bytes(::EPElementCalculator, ::Type{<:EPBlock{OuterKLoop}};
-        els_k = nothing, els_kq = nothing, kwargs...)
-    (els_k === nothing || els_kq === nothing) && return (; persistent = 0, per_outer = 0, per_pair = 0)
-    persistent = sizeof(Int) * (els_k.nband_max * els_k.nk + els_kq.nband_max * els_kq.nk)  # imap_i, imap_f
-    (; persistent, per_outer = 0, per_pair = 0)
-end
+# `setup_calculator!` allocates nothing on the backend: the state index maps are the engine's, and
+# `run_calculator!` scatters the tile's `ep` directly, so there is no per-pair scratch. The tiled output is
+# not counted: on the first batch it chooses full or streamed residency from the memory then free. `ωph`
+# and `iq_kk` are host arrays.
+calculator_bytes(::EPElementCalculator, ::Type{<:EPBlock{OuterKLoop}}; kwargs...) =
+    (; persistent = 0, per_outer = 0, per_pair = 0)
 
 function setup_calculator!(calc::EPElementCalculator{FT}, backend, els_k, els_kq, phs;
         sel_k, sel_kq, n_outer_batch, n_inner_tile, kwargs...) where {FT}
@@ -82,10 +76,6 @@ function setup_calculator!(calc::EPElementCalculator{FT}, backend, els_k, els_kq
     # full-vs-streamed residency decision. Device buffers alloc'd lazily on the first batch.
     calc.tile_dev = TiledDeviceOutput{FT}((calc.nmodes, n_i, n_f), 2, calc.el_i,
         n_outer_batch; narr = 2, force_stream_per_batch = calc.force_stream_per_batch)
-    # The (band, k) → state-index maps on `backend`, in the containers' box coordinates (0 for a band
-    # that is not a state, and on the box padding).
-    calc.imap_i_dev = _indmap_to_device(backend, calc.el_i)
-    calc.imap_f_dev = _indmap_to_device(backend, calc.el_f)
     calc
 end
 
@@ -125,25 +115,20 @@ function postprocess_calculator!(calc::EPElementCalculator; kwargs...)
         end
         tile_free!(tile_dev)
     end
-    calc.imap_i_dev = nothing
-    calc.imap_f_dev = nothing
     calc.done = true
     calc
 end
 
 """
-One block: one outer k-point `ik` with a tile of k+q points `ikq[j]`. Writes `real(ep)` and
-`imag(ep)` of the RAW matrix element `p.ep[m, n, ν, j]` into the device-resident output
-at the `[ν, i, f]` slots, with `i = imap_i[n, ik]` and `f = imap_f[m, ikq[j]]` in the containers'
-box coordinates; a band that is not a state, and the box padding, have `imap == 0` and are dropped.
-One `eph_window_scatter_reim!` kernel serves the full and the streamed residency (see
+One tile: one outer k-point `ik` with its (k, k+q) pairs in band-class order. Writes `real(ep)` and
+`imag(ep)` of the RAW matrix element of every item into the device-resident output at the `[ν, i, f]` slots,
+with `i = state_k(tile, n, j)` and `f = state_kq(tile, m, j)`; a band that is not a state has index 0 and
+is dropped. One `eph_window_scatter_reim!` kernel serves the full and the streamed residency (see
 `G2Calculator`'s `force_stream_per_batch`).
 """
-function run_calculator!(calc::EPElementCalculator, block::EPBlock{OuterKLoop}, ctx)
-    (; ep, ik, ikq) = block
+function run_calculator!(calc::EPElementCalculator, tile::EPBlock{OuterKLoop}, ctx)
     tile_dev = calc.tile_dev
-    eph_window_scatter_reim!(device_array(tile_dev, 1), device_array(tile_dev, 2),
-        ep, view(calc.imap_i_dev, :, ik), calc.imap_f_dev, ikq,
+    eph_window_scatter_reim!(device_array(tile_dev, 1), device_array(tile_dev, 2), tile,
         tile_stride(tile_dev), tile_offset(tile_dev))
     calc
 end
