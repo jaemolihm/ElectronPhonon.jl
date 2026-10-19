@@ -58,7 +58,8 @@
         to_dev = x -> EP.to_device(backend, x)
         ntiles = 0
         for inner in Iterators.partition(1:eng.kqpts.n, eng.n_inner_tile), method in (1, 5, 6)
-            EP.stage2!(eng, 1, inner) do tile
+            let tile = EP.stage2!(eng, 1, inner)
+                tile === nothing && continue
                 h = _tile_host(tile)
                 is_k = filter(>(0), h.imap_k[:, h.ik])
                 # the full buffer, then the rows of this k only (a batch offset)

@@ -15,13 +15,6 @@
         order = eng isa OuterKEngine ? OuterKLoop() : OuterQLoop(), eng.sel_k, eng.sel_kq, nchunks_threads = length(eng.tiles),
         eng.n_outer_batch, eng.n_inner_tile, verbosity = 0)
 
-    # The tile of one stage-2 call (`nothing` if no pair is kept); valid until the chunk's next stage call.
-    function _tile(eng, outer, inner; chunk = 1)
-        out = Any[]
-        stage2!(tile -> push!(out, tile), eng, outer, inner; chunk)
-        isempty(out) ? nothing : only(out)
-    end
-
     # The outer batch of either context.
     _outer_batch(ctx::OuterKContext) = ctx.iks_batch
     _outer_batch(ctx::OuterQContext) = ctx.iqs_batch
@@ -49,7 +42,7 @@ end
         local eng = Engine(model, kpts, qpts; backend, calculators = [calc], window_k = window,
             window_kq = window, verbosity = 0)
         @test isempty(calc.g2abs) && calc.nw == 0  # construction runs no calculator hooks
-        @test_throws ArgumentError stage2!(identity, eng, 1, 1:1)
+        @test_throws ArgumentError stage2!(eng, 1, 1:1)
         @test_throws ArgumentError Context(eng)
         _setup_on_engine!(calc, eng)
         @test calc.nw == model.nw && eng.sel_k !== nothing
@@ -57,7 +50,7 @@ end
         ctx = Context(eng)
         @test ctx isa Context && _outer_batch(ctx) == 1:1 && ctx.chunk == 1
         calculator_begin_batch!(calc, ctx)
-        block = _tile(eng, 1, 1:1)
+        block = stage2!(eng, 1, 1:1)
         @test block isa EPBlock{Order}
         @test block.els_k isa BatchedElectronState && block.els_kq isa BatchedElectronState
         @test block.phs isa BatchedPhononState
@@ -74,10 +67,10 @@ end
         dev = compare_with_reference(ref, calc)
         @test dev.nmissing == dev.nextra == 0
         @test dev.g2_reldev < 1e-11 && dev.ω_dev < 1e-10
-        @test_throws ArgumentError stage2!(identity, eng, 2, 1:1)
-        @test_throws BoundsError stage2!(identity, eng, 1, 1:1; chunk = 2)
-        @test_throws ArgumentError stage2!(identity, eng, 1, 1:0)
-        @test_throws BoundsError stage2!(identity, eng, 1, 0:1)
+        @test_throws ArgumentError stage2!(eng, 2, 1:1)
+        @test_throws BoundsError stage2!(eng, 1, 1:1; chunk = 2)
+        @test_throws ArgumentError stage2!(eng, 1, 1:0)
+        @test_throws BoundsError stage2!(eng, 1, 0:1)
         @test_throws BoundsError Context(eng; chunk = 0)
         @test_throws ArgumentError stage1!(eng, 1:0)
         @test_throws BoundsError stage1!(eng, 0:1)
@@ -87,7 +80,7 @@ end
     eng = OuterKEngine(model_el, kpts, qpts; window_k = window, window_kq = window,
         energy_conservation_tol = 0.0, verbosity = 0)
     stage1!(eng, 1:1)
-    @test _tile(eng, 1, 1:1) === nothing
+    @test stage2!(eng, 1, 1:1) === nothing
     @test_throws ArgumentError OuterKEngine(model_el, kpts, qpts; n_outer_batch = 0)
     @test_throws ArgumentError OuterKEngine(model_el, kpts, qpts; n_inner_tile = 0)
     @test_throws ArgumentError OuterKEngine(model_el, kpts, qpts; nchunks_threads = 0)
@@ -121,7 +114,7 @@ end
             covariant_derivative_of_g = true, verbosity = 0)
         eq = OuterQEngine(model_ph, kpts, qpts; backend, eph_phonon_basis = basis, verbosity = 0)
         stage1!(ek, 1:1); stage1!(eq, 1:1)
-        bk, bq = _tile(ek, 1, 1:1), _tile(eq, 1, 1:1)
+        bk, bq = stage2!(ek, 1, 1:1), stage2!(eq, 1, 1:1)
         @test sum(abs2, Array(bk.ep)) ≈ sum(abs2, Array(bq.ep)) rtol = 1e-11
         @test size(bk.dg) == (length(bk.ep), 3)
         @test all(isfinite, Array(bk.dg)) && sum(abs2, Array(bk.dg)) > 0
@@ -144,12 +137,12 @@ end
         stage1!(eng, 3:4)  # nonzero offset, shorter than allocated stage-1 capacity
         ctx = Context(eng)
         @test _outer_batch(ctx) == 3:4
-        @test_throws ArgumentError stage2!(identity, eng, 2, 1:1)
-        @test_throws ArgumentError stage2!(identity, eng, 3, 1:3)
+        @test_throws ArgumentError stage2!(eng, 2, 1:1)
+        @test_throws ArgumentError stage2!(eng, 3, 1:3)
         # Different outer q points can safely read different stage-1 slices on different chunks.
         # On a GPU the single chunk remains on the caller's stream.
         if backend isa CPUBackend
-            tasks = [Threads.@spawn _tile(eng, i, 1:2; chunk) for (chunk, i) in enumerate(3:4)]
+            tasks = [Threads.@spawn stage2!(eng, i, 1:2; chunk) for (chunk, i) in enumerate(3:4)]
             blocks = fetch.(tasks)
             @test !Base.mightalias(blocks[1].ep, blocks[2].ep)
             for (chunk, block) in enumerate(blocks)
@@ -157,7 +150,7 @@ end
             end
         else
             for i in 3:4
-                stage2!(tile -> run_calculator!(calc, tile, ctx), eng, i, 1:2)
+                run_calculator!(calc, stage2!(eng, i, 1:2), ctx)
             end
         end
         # Compare the directly produced blocks against the independent scalar reference.
@@ -177,6 +170,6 @@ end
         # Stage-1 batch replacement is explicit and invalidates the previous outer indices.
         stage1!(eng, 5:5)
         @test _outer_batch(Context(eng)) == 5:5
-        @test_throws ArgumentError stage2!(identity, eng, 3, 1:1)
+        @test_throws ArgumentError stage2!(eng, 3, 1:1)
     end
 end

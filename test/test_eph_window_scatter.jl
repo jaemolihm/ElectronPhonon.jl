@@ -34,7 +34,8 @@ end
         n_i = maximum(Array(eng.imap_k)); n_f = maximum(Array(eng.imap_kq))
         nclasses = 0
         for inner in Iterators.partition(1:eng.kqpts.n, eng.n_inner_tile)
-            stage2!(eng, 1, inner) do tile
+            let tile = stage2!(eng, 1, inner)
+                tile === nothing && continue
                 h = _tile_host(tile)
                 nclasses = max(nclasses, size(h.seg, 2))
                 items = _items_by_loops(h.seg, h.nm)

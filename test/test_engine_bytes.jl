@@ -157,8 +157,8 @@ end
         tile_workspace = ElectronPhonon._workspace_fields(eng.tiles[1])
         eng_fields = ElectronPhonon._workspace_fields(eng)
         nclasses = Ref(0)
-        run2 = () -> ElectronPhonon._stage2!(tile -> (nclasses[] = size(tile.seg_host, 2); nothing), order, eng_fields,
-            tile_workspace, 1, 1:ntile)
+        run2 = () -> (tile = ElectronPhonon._stage2!(order, eng_fields, tile_workspace, 1, 1:ntile);
+                      nclasses[] = size(tile.seg_host, 2); nothing)
         run2()
         nbytes = if backend isa ElectronPhonon.CPUBackend
             @allocated run2()

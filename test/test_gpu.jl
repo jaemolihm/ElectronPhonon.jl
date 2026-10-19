@@ -776,9 +776,8 @@ end
                     n = ElectronPhonon._kqpairs_conserving_energy!(ind, length(tile), tol,
                         view(ek, :, ik:ik), view(nbk, ik:ik), 1, ekq, nothing, nbkq, tile, ωq, iqs)
                     got = (Int[], Int[])
-                    ElectronPhonon.stage2!(eng, ik, tile) do tl
-                        got = (vcat(got[1], collect(Array(tl.ikq))), vcat(got[2], Array(tl.iq)))
-                    end
+                    tl = ElectronPhonon.stage2!(eng, ik, tile)
+                    tl === nothing || (got = (collect(Array(tl.ikq)), Array(tl.iq)))
                     # the tile lists its pairs grouped by band class, so compare the kept pairs as a set
                     nmismatch += sort(collect(zip(got...))) != sort(collect(zip(tile[ind[1:n]], iqs[ind[1:n]])))
                     nkept += n

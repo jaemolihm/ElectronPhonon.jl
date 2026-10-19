@@ -748,28 +748,27 @@ end
 end
 
 """
-    stage2!(f, eng::OuterKEngine, ik, inner_indices; chunk=1)
+    stage2!(eng::OuterKEngine, ik, inner_indices; chunk=1) -> EPBlock or nothing
 
-Call `f(tile)` once on the calculator-ready [`EPBlock`](@ref) of outer k point `ik` and a tile of inner
+Return the calculator-ready [`EPBlock`](@ref) of outer k point `ik` and a tile of inner
 points: gather the resident k+q states and their phonons (inner k+q points) or solve the k+q states (inner q
 points) for the pairs to compute, split the pairs by the band count of their k+q point, compute their
 e-ph matrix (and requested derivatives) class by class into the tile's flat item list, and add polar
-corrections. `f` is not called if no pair is kept. Call `stage1!` first; `ik` must be in its current batch.
+corrections. Returns `nothing` if no pair is kept. Call `stage1!` first; `ik` must be in its current batch.
 
 The tile borrows this chunk's buffers: its arrays are valid until that chunk's next `stage2!` or the next
-`stage1!`. Consume it in `f` or copy the arrays you need to retain. Calls on different CPU chunks may run
+`stage1!`. Consume it before then or copy the arrays you need to retain. Calls on different CPU chunks may run
 concurrently, but `stage1!` must wait for all of them to finish.
 
 - `ik`: Index into `eng.kpts`, not a batch-local index.
 - `inner_indices`: Nonempty contiguous range into `eng.kqpts` (inner k+q) or `eng.qpts` (inner q).
 - `chunk`: Independent workspace slot for CPU threading; use 1 for serial calls and GPU calls.
 """
-function stage2!(f::F, eng::OuterKEngine, ik::Int, inner_indices::UnitRange{Int}; chunk::Int = 1) where {F}
+function stage2!(eng::OuterKEngine, ik::Int, inner_indices::UnitRange{Int}; chunk::Int = 1)
     inner_pts = eng.inner_loop_kq ? eng.kqpts : eng.qpts
     _check_stage2(eng, ik, eng.iks_batch, inner_indices, chunk, inner_pts.n)
     # function barrier for the concrete resident states, engine buffers, and chunk scratch.
-    _stage2!(f, OuterKLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), ik, inner_indices)
-    nothing
+    _stage2!(OuterKLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), ik, inner_indices)
 end
 
 # The k+q side of a tile of resident k+q points in class order: the states of each class (the resident states
@@ -861,8 +860,7 @@ end
 # `phase` is the Fourier phase of the whole tile, shared by the outer k points of a batch, or
 # `nothing` to build it here for the kept pairs (always so when pairs can be skipped).
 # The state containers are sliced with an explicit `view`: `@views` covers arrays only.
-@views function _stage2!(f::F, ::OuterKLoop, eng_fields, tile_workspace, ik, inner_indices;
-        shared = nothing) where {F}
+@views function _stage2!(::OuterKLoop, eng_fields, tile_workspace, ik, inner_indices; shared = nothing)
     n_tile = length(inner_indices)
     # The stage-1 output of `ik`: its states at its own band count `b` (a one-point container of box
     # width `b`), and its `(nw b nmodes, nr_p)` slice of `ep_kR` (and `(…, 3)` slice of `dg_kR`).
@@ -1049,8 +1047,7 @@ end
         els_k, els_kq = els_kq_tile, phs = phs_tile, wtk = eng_fields.kpts.weights[ik], wtq = wtqs,
         xk = eng_fields.kpts.vectors[ik], xq = xqs, ik, ikq, iq, seg = seg_dev, seg_host,
         imap_k = eng_fields.imap_k, imap_kq = eng_fields.imap_kq)
-    f(tile)
-    nothing
+    tile
 end
 
 # The e-ph matrix of a tile, class by class: one Fourier transform over R_p of all pairs into `g`
@@ -1258,30 +1255,29 @@ end
 end
 
 """
-    stage2!(f, eng::OuterQEngine, iq, iks_tile; chunk=1)
+    stage2!(eng::OuterQEngine, iq, iks_tile; chunk=1) -> EPBlock or nothing
 
-Call `f(tile)` once on the calculator-ready [`EPBlock`](@ref) of outer q point `iq` and a tile of k points: solve
+Return the calculator-ready [`EPBlock`](@ref) of outer q point `iq` and a tile of k points: solve
 the k+q states or look them up in the precomputed container, gather the states of the pairs to
-compute, compute their e-ph matrix, and add polar corrections. `f` is not called if no pair is kept.
+compute, compute their e-ph matrix, and add polar corrections. Returns `nothing` if no pair is kept.
 Call `stage1!` first; `iq` must be in its current batch.
 
 The tile borrows this chunk's buffers: its arrays are valid until that chunk's next `stage2!`
-or the next `stage1!`. Consume it in `f` or copy the arrays you need to retain. Calls on
+or the next `stage1!`. Consume it before then or copy the arrays you need to retain. Calls on
 different CPU chunks may run concurrently, but `stage1!` must wait for all of them to finish.
 
 - `iq`: Index into `eng.qpts`, not a batch-local index.
 - `iks_tile`: Nonempty contiguous range into `eng.kpts`.
 - `chunk`: Independent workspace slot for CPU threading; use 1 for serial calls and GPU calls.
 """
-function stage2!(f::F, eng::OuterQEngine, iq::Int, iks_tile::UnitRange{Int}; chunk::Int = 1) where {F}
+function stage2!(eng::OuterQEngine, iq::Int, iks_tile::UnitRange{Int}; chunk::Int = 1)
     _check_stage2(eng, iq, eng.iqs_batch, iks_tile, chunk, eng.kpts.n)
     # function barrier for the concrete resident states, engine buffers, and chunk scratch.
-    _stage2!(f, OuterQLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), iq, iks_tile)
-    nothing
+    _stage2!(OuterQLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), iq, iks_tile)
 end
 
 # The state containers are sliced with an explicit `view`: `@views` covers arrays only.
-@views function _stage2!(f::F, ::OuterQLoop, eng_fields, tile_workspace, iq, iks_tile) where {F}
+@views function _stage2!(::OuterQLoop, eng_fields, tile_workspace, iq, iks_tile)
     n_tile = length(iks_tile)
     tol = eng_fields.energy_conservation_tol
     (; ind_kept_kqpairs) = tile_workspace
@@ -1362,16 +1358,15 @@ end
     end
 
     # function barrier for the concrete types of the kept pairs' states and indices.
-    _compute_eph_for_pairs!(f, OuterQLoop(), eng_fields, tile_workspace, els_k_block, els_kq_block,
+    _compute_eph_for_pairs!(OuterQLoop(), eng_fields, tile_workspace, els_k_block, els_kq_block,
         iks, ikqs, iq, wtks, xks)
-    nothing
 end
 
 # The outer-q tile is one segment at the box widths of its states (the k+q box is the largest window of
 # the tile): the band padding of a smaller window is items of the list, which the rule of this engine
 # excludes only on the outer-k side.
-@views function _compute_eph_for_pairs!(f::F, ::OuterQLoop, eng_fields, tile_workspace, els_k, els_kq, iks, ikqs, iq,
-        wtks, xks) where {F}
+@views function _compute_eph_for_pairs!(::OuterQLoop, eng_fields, tile_workspace, els_k, els_kq, iks, ikqs, iq,
+        wtks, xks)
     xkmat = _kpoints_to_device_matrix(eng_fields.backend, xks)
     nbkq, nbk, nmodes = els_kq.nband_max, els_k.nband_max, eng_fields.phs.nmodes
     npairs = els_k.nk
@@ -1397,11 +1392,10 @@ end
     seg = tile_workspace.seg_host
     seg[:, 1] .= (0, 0, npairs, nbkq, nbk, 0, 0, 0, 0, 0)
     seg_dev, seg_host = _upload_segments!(tile_workspace, 1)
-    f(EPBlock{OuterQLoop}(; ep = reshape_buffer_view(tile_workspace.ep, length(ep)), dg = nothing,
+    EPBlock{OuterQLoop}(; ep = reshape_buffer_view(tile_workspace.ep, length(ep)), dg = nothing,
         els_k, els_kq, phs, wtk = wtks, wtq = eng_fields.qpts.weights[iq], xk = xks, xkmat,
         xq = eng_fields.qpts.vectors[iq], ik = iks, ikq = ikqs, iq, seg = seg_dev, seg_host,
-        imap_k = eng_fields.imap_k, imap_kq = eng_fields.imap_kq))
-    nothing
+        imap_k = eng_fields.imap_k, imap_kq = eng_fields.imap_kq)
 end
 
 

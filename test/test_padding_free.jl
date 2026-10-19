@@ -204,10 +204,10 @@
             end
             for iout in batch, tile in Iterators.partition(1:inner_pts.n, eng.n_inner_tile)
                 poison && _poison_scratch!(eng; stage1 = false)
-                stage2!(eng, iout, tile) do tl
-                    for c in calcs
-                        run_calculator!(c, tl, ctx)
-                    end
+                tl = stage2!(eng, iout, tile)
+                tl === nothing && continue
+                for c in calcs
+                    run_calculator!(c, tl, ctx)
                 end
             end
             for c in calcs

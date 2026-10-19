@@ -344,7 +344,7 @@ calc_gpu.g2_avg ≈ calc.g2_avg
 ## Run one k, q pair yourself
 
 The engine stages used by the drivers are also public (unexported) API. An engine prepares the
-states and reusable buffers; `stage2!` calls a function on the complete tile (an `EPBlock`), including polar corrections.
+states and reusable buffers; `stage2!` returns the complete tile (an `EPBlock`), including polar corrections.
 There is no separate single-point calculation path or tile-getter function. With the calculator
 defined above and a model loaded with `epmat_outer_momentum = "el"`:
 
@@ -372,10 +372,9 @@ ctx = OuterKContext(eng)
 # Open the batch: the calculator clears its per-batch buffers.
 calculator_begin_batch!(calc, ctx)
 
-# Stage 2 for outer k 1 and inner q points 1:1: `f` runs on the tile, and never if the pair is skipped.
-stage2!(eng, 1, 1:1) do tile
-    run_calculator!(calc, tile, ctx)
-end
+# Stage 2 for outer k 1 and inner q points 1:1: the tile, or `nothing` if the pair is skipped.
+tile = stage2!(eng, 1, 1:1)
+tile === nothing || run_calculator!(calc, tile, ctx)
 
 # Close the batch: the calculator reduces its per-batch buffers into the result (here the
 # per-chunk sums of the outer k into `g2_per_k`).
@@ -399,9 +398,9 @@ Use `backend = ElectronPhonon.gpu_backend()` for device buffers and
 
 Point indices are into the engine's selected `eng.kpts`, `eng.kqpts` and `eng.qpts`, not necessarily
 the original lists: energy windows and symmetry can change the selection. `stage1!` records the
-current outer range; `stage2!(f, eng, ...)` requires its outer index to belong to it, calls `f(tile)`
-once per tile, and never when every pair is skipped. The tile of a call borrows reusable storage: consume
-it in `f`, or copy the arrays to retain them past the next stage call on that chunk. Different CPU chunks have
+current outer range; `stage2!(eng, ...)` requires its outer index to belong to it and returns the tile,
+or `nothing` when every pair is skipped. The tile of a call borrows reusable storage: consume
+it before the next stage call on that chunk, or copy the arrays to retain them. Different CPU chunks have
 independent writable storage; use matching `chunk` in `stage2!` and `OuterKContext(eng; chunk)` /
 `OuterQContext(eng; chunk)`. A context can also be built before the batch's stage 1, as the drivers
 do, by passing the batch: `OuterKContext(eng; iks_batch = 1:1)`.
