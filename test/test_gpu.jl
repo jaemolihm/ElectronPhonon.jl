@@ -2,14 +2,13 @@
 # the ElectronPhonon methods specialised on them compile once instead of in every test item.
 @testmodule GpuHelpers begin
     using Test, ElectronPhonon
-    using ElectronPhonon: WannierObject, Vec3, compute_eph_RR_to_kR!, compute_eph_kR_to_kq!, compute_eph_Rq_to_kq!, to_device
-    # Batched drivers / primitives are internal (unexported); import the ones the tests use.
-    using ElectronPhonon: eigvals_batched!, eigen_batched!, compute_el_eigen_batched, compute_el_eigen_valueonly_batched,
-        compute_el_velocity_direct_batched, compute_eph_kR_to_kq_batched!, eph_rotate_kR_batched!,
-        eph_apply_rotations!, eph_apply_rotations_rqkq!, batched_gemm!, get_fourier_batched!
+    # Batched drivers / primitives are internal (unexported); import the ones the helpers use.
+    using ElectronPhonon: WannierObject, Vec3, compute_eph_RR_to_kR!, compute_eph_kR_to_kq!, compute_eph_Rq_to_kq!,
+        compute_eph_kR_to_kq_batched!, eph_apply_rotations!, eph_apply_rotations_rqkq!, eph_rotate_kR_batched!,
+        get_fourier_batched!, to_device
     using LinearAlgebra
 
-    # CUDA is a weak dependency (not a test dependency); `CuArray` is only reached when it is functional.
+    # CUDA is a weak dependency that CI drops from the test target; `CuArray` is only reached when it is functional.
     try
         @eval using CUDA
     catch
@@ -345,21 +344,19 @@
     end
     ElectronPhonon.free_bytes(b::_StubBackend) = b.free
 
-    export RR_to_kR_from_ks!, Rq_to_kq_from_ks!, _QOnlyCalc, _RecordCalc, _RecordCalcOuterQ, _StubBackend,
-        _cpu_gpu_pair, check_eph_batched, check_eph_kq_convention, check_eph_partial_view,
-        check_fourier_phase, eigenpair_errors, kR_to_kq_from_qs!
+    export _QOnlyCalc, _RecordCalc, _RecordCalcOuterQ, _StubBackend, _cpu_gpu_pair, check_eph_batched,
+        check_eph_kq_convention, check_eph_partial_view, check_fourier_phase, eigenpair_errors
 end
 
 @testsnippet Gpu begin
-    using ElectronPhonon: WannierObject, Vec3, compute_eph_RR_to_kR!, compute_eph_kR_to_kq!, compute_eph_Rq_to_kq!, to_device
-    # Batched drivers / primitives are internal (unexported); import the ones the tests use.
-    using ElectronPhonon: eigvals_batched!, eigen_batched!, compute_el_eigen_batched, compute_el_eigen_valueonly_batched,
-        compute_el_velocity_direct_batched, compute_eph_kR_to_kq_batched!, eph_rotate_kR_batched!,
-        eph_apply_rotations!, eph_apply_rotations_rqkq!, batched_gemm!, get_fourier_batched!
+    # Batched drivers / primitives are internal (unexported); import the ones the items use.
+    using ElectronPhonon: WannierObject, Vec3, compute_el_eigen_batched, compute_el_eigen_valueonly_batched,
+        compute_eph_kR_to_kq_batched!, eigen_batched!, eigvals_batched!, eph_apply_rotations!,
+        eph_apply_rotations_rqkq!, get_fourier_batched!, to_device
     using LinearAlgebra
 
-    # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
-    # tests when it is unavailable or non-functional (e.g. CPU-only CI).
+    # CUDA is a weak dependency that CI drops from the test target, so load it defensively and skip
+    # the GPU tests when it is unavailable or non-functional.
     const GPU_AVAILABLE = try
         @eval using CUDA
         CUDA.functional()
@@ -370,52 +367,6 @@ end
     # A mis-dispatch (a device view falling back to the generic scalar `batched_gemm!` instead of the
     # GPU method) must fail loudly rather than silently limp — forbid scalar indexing on the device.
     GPU_AVAILABLE && CUDA.allowscalar(false)
-
-    # The raw band-pair-resolved `g2[ν,i,f] = |ep_{mn,ν}|²/(2ω)` is NOT a valid elementwise regression
-    # target: within a degenerate subspace the CPU (LAPACK) and GPU (cuSOLVER) diagonalizations pick
-    # different—equally valid—eigenvectors, which unitarily mixes the per-band matrix elements among
-    # degenerate partners. The decisive subspace here is the PHONON mode multiplet, not the electron band
-    # one — partitioned by mode degeneracy the spread on this fixture is 0.92 (full band) / 0.98
-    # (windowed) of max on the mode-degenerate `(ν,i,f)` and 2.3e-8 / 4.1e-8 off them (worsened by the
-    # 1/ω blow-up at Pb's near-zero acoustic modes), while partitioning by electron multiplet puts O(1)
-    # entries on BOTH sides and so separates nothing. So this asserts the partition itself, so that the
-    # reason for not comparing g2 elementwise stays a measured claim rather than prose, plus the
-    # gauge-invariant electron energies and the phonon frequencies. The gauge-invariant multiplet sums
-    # of g2 are compared by the contract harness (test_calculator_contract.jl).
-    function _assert_cpu_gpu_match(cc::ElectronPhonon.G2Calculator, cg)
-        # The scale is a signed `g2` max on Pb (the ω ≤ 0 modes make entries negative), so take abs.
-        nm = cc.nmodes
-        ωq_c, ωq_g = pair_ω(cc), pair_ω(cg)
-        mdeg = [minimum(abs(ωq_c[ν, i, f] - ωq_c[μ, i, f]) for μ in 1:nm if μ != ν) < 1e-8
-                for ν in 1:nm, i in 1:cc.el_i.n, f in 1:cc.el_f.n]
-        dg = abs.(cc.g2 .- cg.g2); sc = maximum(abs, cc.g2)
-        @test count(mdeg) > 0 && count(.!mdeg) > 0   # the partition is not vacuous
-        @test maximum(dg[.!mdeg]) < 1e-6 * sc
-        # The claim the paragraph rests on is the line above; this one only records that the spread
-        # it excludes is real. It asserts the two backends DISAGREE, so it would go red if the device
-        # phonon eigensolve ever started pinning the multiplet basis — an improvement. Delete it then,
-        # do not chase it.
-        spread_on_mode_degenerate_entries = maximum(dg[mdeg]) / sc
-        @test spread_on_mode_degenerate_entries > 0.1
-        # Electron energies are gauge-invariant: must match to eigensolver precision.
-        @test maximum(abs, cc.el_i.es .- cg.el_i.es) < 1e-10
-        # Phonon frequencies depend only on q (not the electron gauge): elementwise match, with a
-        # tolerance for the near-zero acoustic modes where LAPACK/cuSOLVER differ at ~1e-12.
-        @test maximum(abs, ωq_c .- ωq_g) < 1e-8
-    end
-
-    # The phase of `ep` is the electron gauge, which the two eigensolvers fix independently, so raw `ep`
-    # is not comparable (relative 2-norm difference 1.4 on the windowed fixture). Per element,
-    # `|ep|^2` there agrees to 1e-14 of max off the mode- and electron-degenerate pairs but differs by
-    # 0.46 of max on pairs with a level split below `electron_degen_cutoff` (1.3e-8 Ry at the worst
-    # entry), so this compares `|ep|^2` summed over both multiplets, the contract harness's reduction.
-    function _assert_cpu_gpu_match(cc::ElectronPhonon.EPElementCalculator, cg)
-        pair_sum(c) = contract_pair_sum(abs2.(c.ep), pair_ω(c), contract_multiplet_ids(c.el_i),
-                                        contract_multiplet_ids(c.el_f))
-        @test pair_sum(cg) ≈ pair_sum(cc)
-        @test maximum(abs, cc.el_i.es .- cg.el_i.es) < 1e-10
-        @test maximum(abs, pair_ω(cc) .- pair_ω(cg)) < 1e-8
-    end
 
     # --- plan_batch: memory-adaptive sizing (CPU-only) ---------------------------------------------
     using ElectronPhonon: plan_batch, CPUBackend
@@ -1168,6 +1119,52 @@ end
 # the Pb model artifact.
 
 @testitem "GPU G2Calculator and EPElementCalculator (full-band + windowed)" setup = [Common, Gpu, GpuHelpers, EphReferenceLoop, CalculatorContractHarness] begin
+    # The raw band-pair-resolved `g2[ν,i,f] = |ep_{mn,ν}|²/(2ω)` is NOT a valid elementwise regression
+    # target: within a degenerate subspace the CPU (LAPACK) and GPU (cuSOLVER) diagonalizations pick
+    # different—equally valid—eigenvectors, which unitarily mixes the per-band matrix elements among
+    # degenerate partners. The decisive subspace here is the PHONON mode multiplet, not the electron band
+    # one — partitioned by mode degeneracy the spread on this fixture is 0.92 (full band) / 0.98
+    # (windowed) of max on the mode-degenerate `(ν,i,f)` and 2.3e-8 / 4.1e-8 off them (worsened by the
+    # 1/ω blow-up at Pb's near-zero acoustic modes), while partitioning by electron multiplet puts O(1)
+    # entries on BOTH sides and so separates nothing. So this asserts the partition itself, so that the
+    # reason for not comparing g2 elementwise stays a measured claim rather than prose, plus the
+    # gauge-invariant electron energies and the phonon frequencies. The gauge-invariant multiplet sums
+    # of g2 are compared by the contract harness (test_calculator_contract.jl).
+    function _assert_cpu_gpu_match(cc::ElectronPhonon.G2Calculator, cg)
+        # The scale is a signed `g2` max on Pb (the ω ≤ 0 modes make entries negative), so take abs.
+        nm = cc.nmodes
+        ωq_c, ωq_g = pair_ω(cc), pair_ω(cg)
+        mdeg = [minimum(abs(ωq_c[ν, i, f] - ωq_c[μ, i, f]) for μ in 1:nm if μ != ν) < 1e-8
+                for ν in 1:nm, i in 1:cc.el_i.n, f in 1:cc.el_f.n]
+        dg = abs.(cc.g2 .- cg.g2); sc = maximum(abs, cc.g2)
+        @test count(mdeg) > 0 && count(.!mdeg) > 0   # the partition is not vacuous
+        @test maximum(dg[.!mdeg]) < 1e-6 * sc
+        # The claim the paragraph rests on is the line above; this one only records that the spread
+        # it excludes is real. It asserts the two backends DISAGREE, so it would go red if the device
+        # phonon eigensolve ever started pinning the multiplet basis — an improvement. Delete it then,
+        # do not chase it.
+        spread_on_mode_degenerate_entries = maximum(dg[mdeg]) / sc
+        @test spread_on_mode_degenerate_entries > 0.1
+        # Electron energies are gauge-invariant: must match to eigensolver precision.
+        @test maximum(abs, cc.el_i.es .- cg.el_i.es) < 1e-10
+        # Phonon frequencies depend only on q (not the electron gauge): elementwise match, with a
+        # tolerance for the near-zero acoustic modes where LAPACK/cuSOLVER differ at ~1e-12.
+        @test maximum(abs, ωq_c .- ωq_g) < 1e-8
+    end
+
+    # The phase of `ep` is the electron gauge, which the two eigensolvers fix independently, so raw `ep`
+    # is not comparable (relative 2-norm difference 1.4 on the windowed fixture). Per element,
+    # `|ep|^2` there agrees to 1e-14 of max off the mode- and electron-degenerate pairs but differs by
+    # 0.46 of max on pairs with a level split below `electron_degen_cutoff` (1.3e-8 Ry at the worst
+    # entry), so this compares `|ep|^2` summed over both multiplets, the contract harness's reduction.
+    function _assert_cpu_gpu_match(cc::ElectronPhonon.EPElementCalculator, cg)
+        pair_sum(c) = contract_pair_sum(abs2.(c.ep), pair_ω(c), contract_multiplet_ids(c.el_i),
+                                        contract_multiplet_ids(c.el_f))
+        @test pair_sum(cg) ≈ pair_sum(cc)
+        @test maximum(abs, cc.el_i.es .- cg.el_i.es) < 1e-10
+        @test maximum(abs, pair_ω(cc) .- pair_ω(cg)) < 1e-8
+    end
+
     if !GPU_AVAILABLE
         @info "CUDA not functional — skipping GPU G2Calculator and EPElementCalculator test"
     else
