@@ -8,8 +8,6 @@
     catch
         false
     end
-
-    include("eph_reference_loop.jl")
 end
 
 # Every (loop order, backend, loop shape) of the current drivers against the reference double
@@ -18,7 +16,7 @@ end
 # ending at band nw with the box reaching past it). `|g|^2` is summed over degenerate multiplets,
 # so the device eigensolves, which pick their own basis inside a multiplet, are compared on the
 # same footing as the host ones.
-@testitem "e-ph loops against the reference double loop" setup = [Common, EphReference] begin
+@testitem "e-ph loops against the reference double loop" setup = [Common, EphReference, EphReferenceLoop] begin
     model_el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
     model_ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
     eV = unit_to_aru(:eV)
@@ -85,7 +83,7 @@ end
 # the shifted nodes are integers. A wrong q index would hand a pair another q's phonons and e-ph
 # matrix, so `ω_dev` and `g2_reldev` both catch it; `G2Calculator`'s q index is checked against
 # `xk_to_ik` on the same run.
-@testitem "outer k on shifted grids against the reference double loop" setup = [Common, EphReference] begin
+@testitem "outer k on shifted grids against the reference double loop" setup = [Common, EphReference, EphReferenceLoop] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
     eV = unit_to_aru(:eV)
     e_F = 11.68eV
@@ -123,7 +121,7 @@ end
 # `run_eph_over_k_and_q` off the commensurate grids: k on a band path on no grid with q on a grid,
 # and k on a grid with q on a path (a q list with no grid). The pairs are keyed on coordinates
 # rounded to 1e-6 (`keygrid`), which both sides compute as the same `x_k + x_q`.
-@testitem "run_eph_over_k_and_q against the reference double loop" setup = [Common, EphReference] begin
+@testitem "run_eph_over_k_and_q against the reference double loop" setup = [Common, EphReference, EphReferenceLoop] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
     eV = unit_to_aru(:eV)
     e_F = 11.68eV

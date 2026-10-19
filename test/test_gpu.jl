@@ -1,4 +1,7 @@
-@testsnippet Gpu begin
+# A @testmodule, not a @testsnippet: evaluated once per process, so the recorder calculators and
+# the ElectronPhonon methods specialised on them compile once instead of in every test item.
+@testmodule GpuHelpers begin
+    using Test, ElectronPhonon
     using ElectronPhonon: WannierObject, Vec3, compute_eph_RR_to_kR!, compute_eph_kR_to_kq!, compute_eph_Rq_to_kq!, to_device
     # Batched drivers / primitives are internal (unexported); import the ones the tests use.
     using ElectronPhonon: eigvals_batched!, eigen_batched!, compute_el_eigen_batched, compute_el_eigen_valueonly_batched,
@@ -6,13 +9,10 @@
         eph_apply_rotations!, eph_apply_rotations_rqkq!, batched_gemm!, get_fourier_batched!
     using LinearAlgebra
 
-    # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
-    # tests when it is unavailable or non-functional (e.g. CPU-only CI).
-    const GPU_AVAILABLE = try
+    # CUDA is a weak dependency (not a test dependency); `CuArray` is only reached when it is functional.
+    try
         @eval using CUDA
-        CUDA.functional()
     catch
-        false
     end
 
     # `compute_eph_kR_to_kq_batched!` takes the Fourier phase, not a q-list, because the driver builds
@@ -47,13 +47,6 @@
         eph_apply_rotations_rqkq!(ep_kq_all, g, uks, ukqs, similar(op_r, ComplexF64, nbandkq, nw * nmodes, nk),
                                   similar(op_r, ComplexF64, nw, nbandk, nmodes * nk))
     end
-
-    # A mis-dispatch (a device view falling back to the generic scalar `batched_gemm!` instead of the
-    # GPU method) must fail loudly rather than silently limp — forbid scalar indexing on the device.
-    GPU_AVAILABLE && CUDA.allowscalar(false)
-
-    # Pb EPW model comes from a downloaded test artifact (see test/Artifacts.toml).
-    include("calculator_contract_harness.jl")
 
     """
     Validate the batched e-ph drivers against the per-k/q reference (`compute_eph_RR_to_kR!` /
@@ -345,6 +338,39 @@
         (cc, cg)
     end
 
+    # A stub backend with a settable free-memory budget, to drive the adaptive-width / fail-early paths
+    # on the CPU (no CUDA needed).
+    struct _StubBackend <: ElectronPhonon.AbstractBackend
+        free::Int
+    end
+    ElectronPhonon.free_bytes(b::_StubBackend) = b.free
+
+    export RR_to_kR_from_ks!, Rq_to_kq_from_ks!, _QOnlyCalc, _RecordCalc, _RecordCalcOuterQ, _StubBackend,
+        _cpu_gpu_pair, check_eph_batched, check_eph_kq_convention, check_eph_partial_view,
+        check_fourier_phase, eigenpair_errors, kR_to_kq_from_qs!
+end
+
+@testsnippet Gpu begin
+    using ElectronPhonon: WannierObject, Vec3, compute_eph_RR_to_kR!, compute_eph_kR_to_kq!, compute_eph_Rq_to_kq!, to_device
+    # Batched drivers / primitives are internal (unexported); import the ones the tests use.
+    using ElectronPhonon: eigvals_batched!, eigen_batched!, compute_el_eigen_batched, compute_el_eigen_valueonly_batched,
+        compute_el_velocity_direct_batched, compute_eph_kR_to_kq_batched!, eph_rotate_kR_batched!,
+        eph_apply_rotations!, eph_apply_rotations_rqkq!, batched_gemm!, get_fourier_batched!
+    using LinearAlgebra
+
+    # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
+    # tests when it is unavailable or non-functional (e.g. CPU-only CI).
+    const GPU_AVAILABLE = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+
+    # A mis-dispatch (a device view falling back to the generic scalar `batched_gemm!` instead of the
+    # GPU method) must fail loudly rather than silently limp — forbid scalar indexing on the device.
+    GPU_AVAILABLE && CUDA.allowscalar(false)
+
     # The raw band-pair-resolved `g2[ν,i,f] = |ep_{mn,ν}|²/(2ω)` is NOT a valid elementwise regression
     # target: within a degenerate subspace the CPU (LAPACK) and GPU (cuSOLVER) diagonalizations pick
     # different—equally valid—eigenvectors, which unitarily mixes the per-band matrix elements among
@@ -393,28 +419,21 @@
 
     # --- plan_batch: memory-adaptive sizing (CPU-only) ---------------------------------------------
     using ElectronPhonon: plan_batch, CPUBackend
-
-    # A stub backend with a settable free-memory budget, to drive the adaptive-width / fail-early paths
-    # on the CPU (no CUDA needed).
-    struct _StubBackend <: ElectronPhonon.AbstractBackend
-        free::Int
-    end
-    ElectronPhonon.free_bytes(b::_StubBackend) = b.free
 end
 
-@testitem "batched e-ph drivers (CPU)" setup = [Common, Gpu] begin
+@testitem "batched e-ph drivers (CPU)" setup = [Common, Gpu, GpuHelpers] begin
     check_eph_batched(ElectronPhonon.CPUBackend(); rtol=1e-10)
 end
 
-@testitem "build_fourier_phase! (CPU)" setup = [Common, Gpu] begin
+@testitem "build_fourier_phase! (CPU)" setup = [Common, Gpu, GpuHelpers] begin
     check_fourier_phase(ElectronPhonon.CPUBackend())
 end
 
-@testitem "k+q convention identity (CPU)" setup = [Common, Gpu] begin
+@testitem "k+q convention identity (CPU)" setup = [Common, Gpu, GpuHelpers] begin
     check_eph_kq_convention(ElectronPhonon.CPUBackend(); rtol=1e-13)
 end
 
-@testitem "Rq→kq rotation: GPU cuBLAS fallback (large nw²·nmodes)" setup = [Common, Gpu] begin
+@testitem "Rq→kq rotation: GPU cuBLAS fallback (large nw²·nmodes)" setup = [Common, Gpu, GpuHelpers] begin
     # check_eph_batched exercises the FUSED rqkq kernel (nw²·nmodes ≤ _FUSED_RQKQ_MAX_NW2NM);
     # here nw=8, nmodes=12 ⇒ 768 > 512 forces the `invoke`-to-generic (cuBLAS two-GEMM) branch of
     # the CUDA `eph_apply_rotations_rqkq!`. Compare it to the generic CPU method (ground truth).
@@ -436,7 +455,7 @@ end
     end
 end
 
-@testitem "batched eigensolve (CPU)" setup = [Common, Gpu] begin
+@testitem "batched eigensolve (CPU)" setup = [Common, Gpu, GpuHelpers] begin
     # CPU eigen_batched!: U must be eigenvectors of H — check eigenvalues vs LAPACK and the
     # gauge-invariant reconstruction H ≈ U·diag(E)·U† at a few k-points. (The GPU counterpart is
     # in "GPU batched Wannier interpolation".)
@@ -451,7 +470,7 @@ end
     end
 end
 
-@testitem "Jacobi eigensolver (CPU)" setup = [Common, Gpu] begin
+@testitem "Jacobi eigensolver (CPU)" setup = [Common, Gpu, GpuHelpers] begin
     # The device solver for nw ≤ JACOBI_NW_MAX, run on the host against LAPACK. The extension
     # loads whenever CUDA does, with or without a GPU.
     ext = Base.get_extension(ElectronPhonon, :ElectronPhononCUDAExt)
@@ -486,7 +505,7 @@ end
     end
 end
 
-@testitem "GPU batch_size budget" setup = [Common, Gpu] begin
+@testitem "GPU batch_size budget" setup = [Common, Gpu, GpuHelpers] begin
     if GPU_AVAILABLE
         using ElectronPhonon: _default_batch_size, GPU_FOURIER_BATCH_BYTES
         gpu = ElectronPhonon.gpu_backend()
@@ -510,7 +529,7 @@ end
     end
 end
 
-@testitem "GPU batched Wannier interpolation" setup = [Common, Gpu] begin
+@testitem "GPU batched Wannier interpolation" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU tests"
     else
@@ -664,7 +683,7 @@ end
     end
 end
 
-@testitem "GPU partial q-batch (views into max-width buffers)" setup = [Common, Gpu] begin
+@testitem "GPU partial q-batch (views into max-width buffers)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU partial-batch test"
     else
@@ -674,7 +693,7 @@ end
     end
 end
 
-@testitem "GPU eph_apply_rotations! vs the generic method (fused and cuBLAS branches)" setup = [Common, Gpu] begin
+@testitem "GPU eph_apply_rotations! vs the generic method (fused and cuBLAS branches)" setup = [Common, Gpu, GpuHelpers] begin
     # The fused kernel (nw = 3, nmodes = 15) and the cuBLAS branch (nw = 8, nmodes = 15) against the
     # generic two-GEMM method on the host, with nbandk < nbandkq = nw.
     if !GPU_AVAILABLE
@@ -694,7 +713,7 @@ end
     end
 end
 
-@testitem "eph_apply_rotations! rejects a non-dense g" setup = [Common, Gpu] begin
+@testitem "eph_apply_rotations! rejects a non-dense g" setup = [Common, Gpu, GpuHelpers] begin
     # The two-GEMM rotation paths merge `g`'s band and mode axes with a `reshape`, so a strided `g`
     # is only readable by the CUDA fused kernel. The generic method must say so rather than silently
     # reshaping into a `ReshapedArray` the batched GEMMs cannot take a pointer to.
@@ -709,7 +728,7 @@ end
     end
 end
 
-@testitem "kR→kq workspaces must have the block's exact extent" setup = [Common, Gpu] begin
+@testitem "kR→kq workspaces must have the block's exact extent" setup = [Common, Gpu, GpuHelpers] begin
     # A workspace array at a wider batch than the block (the full buffer rather than a view of its
     # leading columns) fails the size assertion instead of being used past the block.
     let nw = 3, nband = 3, nmodes = 2, nr = 4, nq = 5
@@ -722,7 +741,7 @@ end
     end
 end
 
-@testitem "batched calculator loop (run_eph_over_k_and_kq)" setup = [Common, Gpu] begin
+@testitem "batched calculator loop (run_eph_over_k_and_kq)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU calculator-loop test"
     else
@@ -817,7 +836,7 @@ end
 # The batched outer-k loop holds no device-specific code, so it runs on a `CPUBackend` with any
 # tiling: the CUDA-free coverage of the block construction, the k+q-convention phase build and the
 # q-tiling.
-@testitem "outer-k CPU: default widths == small tiles (_RecordCalc)" setup = [Common, Gpu] begin
+@testitem "outer-k CPU: default widths == small tiles (_RecordCalc)" setup = [Common, Gpu, GpuHelpers] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
     grid = (4, 4, 4)
 
@@ -845,7 +864,7 @@ end
 # outer batch, on the host and on the GPU. The q index itself is compared with the block's: on this
 # square run a transposed table would still give the same frequencies (ω(-q) = ω(q)), but not the
 # same indices.
-@testitem "pair frequencies are bitwise the loop's" setup = [Common, Gpu] begin
+@testitem "pair frequencies are bitwise the loop's" setup = [Common, Gpu, GpuHelpers, EphReferenceLoop, CalculatorContractHarness] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
     grid, win = (4, 4, 4), (0.87 - 0.2, 0.87 + 0.2)
     backends = GPU_AVAILABLE ? (ElectronPhonon.CPUBackend(), ElectronPhonon.gpu_backend()) :
@@ -870,7 +889,7 @@ end
     end
 end
 
-@testitem "run_eph_over_q_and_k CPU vs GPU equivalence" setup = [Common, Gpu] begin
+@testitem "run_eph_over_q_and_k CPU vs GPU equivalence" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping run_eph_over_q_and_k CPU-vs-GPU test"
     else
@@ -895,7 +914,7 @@ end
 
 # The outer-q loop has no CUDA-only callee either, so it runs on a `CPUBackend` with any k-batch
 # width.
-@testitem "run_eph_over_q_and_k CPU: default width == partial k-batch" setup = [Common, Gpu] begin
+@testitem "run_eph_over_q_and_k CPU: default width == partial k-batch" setup = [Common, Gpu, GpuHelpers] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
     grid = (4, 4, 4)
 
@@ -920,7 +939,7 @@ end
 # A PARTIAL outer-q k tile (small n_inner_tile), so the block is a real trim to the tile's width, not
 # the identity trim of the single-tile test above. nk=64, n_inner_tile=10 ⇒ 7 tiles, the last of
 # width 4.
-@testitem "run_eph_over_q_and_k partial k tile (CPU vs GPU)" setup = [Common, Gpu] begin
+@testitem "run_eph_over_q_and_k partial k tile (CPU vs GPU)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping run_eph_over_q_and_k partial-batch test"
     else
@@ -943,7 +962,7 @@ end
     end
 end
 
-@testitem "GPU filter_kpoints with symmetry (IBZ reduction × backend)" setup = [Common, Gpu] begin
+@testitem "GPU filter_kpoints with symmetry (IBZ reduction × backend)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU filter_kpoints symmetry test"
     else
@@ -974,7 +993,7 @@ end
     end
 end
 
-@testitem "GPU compute_electron_states on the IBZ set (windowed)" setup = [Common, Gpu] begin
+@testitem "GPU compute_electron_states on the IBZ set (windowed)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU IBZ compute_electron_states test"
     else
@@ -1002,7 +1021,7 @@ end
     end
 end
 
-@testitem "compute_electron_states velocity (GPU backend)" setup = [Common, Gpu] begin
+@testitem "compute_electron_states velocity (GPU backend)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU compute_electron_states velocity test"
     else
@@ -1094,7 +1113,7 @@ end
 # bit-for-bit between the generic (CPU) method and the CUDA kernel. Builds window-aware imaps (some
 # out-of-window entries == 0) mimicking a small run and checks both the full-buffer (i0=0,
 # ni_stride=n_i) and per-tile buffer (i0≠0, ni_stride=tile extent) addressings.
-@testitem "eph_window_scatter! round-trip (collision-free + CPU==CUDA)" setup = [Common, Gpu] begin
+@testitem "eph_window_scatter! round-trip (collision-free + CPU==CUDA)" setup = [Common, Gpu, GpuHelpers] begin
     using Random
     Random.seed!(20260717)
     FT = Float64
@@ -1148,7 +1167,7 @@ end
 # energy-window path (box storage + the box-coordinate imap scatter that skips the padding). Needs
 # the Pb model artifact.
 
-@testitem "GPU G2Calculator and EPElementCalculator (full-band + windowed)" setup = [Common, Gpu] begin
+@testitem "GPU G2Calculator and EPElementCalculator (full-band + windowed)" setup = [Common, Gpu, GpuHelpers, EphReferenceLoop, CalculatorContractHarness] begin
     if !GPU_AVAILABLE
         @info "CUDA not functional — skipping GPU G2Calculator and EPElementCalculator test"
     else
@@ -1189,7 +1208,7 @@ end
     end
 end
 
-@testitem "plan_batch memory-bound warning is opt-out" setup = [Common, Gpu] begin
+@testitem "plan_batch memory-bound warning is opt-out" setup = [Common, Gpu, GpuHelpers] begin
     # A batch narrowed by free memory tells the user; a counterfactual query ("how wide would
     # the batch be at a different `per_point`?") must stay quiet.
     per_point, committed, cap = 1000, 10^6, 500
@@ -1200,7 +1219,7 @@ end
 end
 
 # The estimate plans with the loop's own byte counts; on a CPU backend the tile is the cap.
-@testitem "estimate_device_memory" setup = [Common, Gpu] begin
+@testitem "estimate_device_memory" setup = [Common, Gpu, GpuHelpers] begin
     for (mom, loop) in (("el", :outer_k), ("ph", :outer_q))
         local est = ElectronPhonon.estimate_device_memory(_load_model_from_artifacts("pb";
             epmat_outer_momentum = mom); nk = 64, nkq = 64, nchunks_threads = 1)
@@ -1216,7 +1235,7 @@ end
     end
 end
 
-@testitem "plan_batch memory-adaptive sizing + fail-early" setup = [Common, Gpu] begin
+@testitem "plan_batch memory-adaptive sizing + fail-early" setup = [Common, Gpu, GpuHelpers] begin
     # CPU backend: free is unbounded ⇒ batch = cap.
     @test plan_batch(CPUBackend(), 1600, 1600, 42; what = "cpu") == 42
     # max_device_bytes leaves the CPU sentinel alone, and caps a device budget.

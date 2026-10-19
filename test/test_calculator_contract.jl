@@ -34,7 +34,6 @@
         false
     end
     CONTRACT_GPU_AVAILABLE && CUDA.allowscalar(false)
-    include("calculator_contract_harness.jl")
 
     # `|ep|^2 / (2ω)` of each state pair from the reference double loop, in `G2Calculator`'s layout.
     function g2_contract_reference(c, ref)
@@ -133,7 +132,7 @@ end
 end
 
 # Every ElectronPhonon.jl calculator through the generic contract harness.
-@testitem "calculator contract harness" setup = [Common, CalculatorContract] begin
+@testitem "calculator contract harness" setup = [Common, CalculatorContract, EphReferenceLoop, CalculatorContractHarness] begin
     models = (; el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el"),
                 ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph"))
     e_F = contract_fixtures().narrow.e_F
@@ -200,7 +199,7 @@ end
 
 # The reference pins which mode carries the coupling: swapping two non-degenerate physical modes
 # at one state pair must fail it, while the multiplet sums leave a basis change inside one alone.
-@testitem "calculator contract harness: a mode swap fails the reference" setup = [Common, CalculatorContract] begin
+@testitem "calculator contract harness: a mode swap fails the reference" setup = [Common, CalculatorContract, EphReferenceLoop, CalculatorContractHarness] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
     fixture = contract_fixtures().narrow
     c = run_contract(
