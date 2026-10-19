@@ -8,14 +8,12 @@
         false
     end
     DISK_EPMAT_GPU && CUDA.allowscalar(false)
-
-    include("eph_reference_loop.jl")
 end
 
 # A disk epmat is a memory-mapped `op_r` of the same type as the in-memory one, so every path runs
 # the same code on the same bits: compared with `==` against the in-memory epmat of the same model.
 
-@testitem "disk-backed epmat against the in-memory one" setup = [Common, EphDiskEpmat] begin
+@testitem "disk-backed epmat against the in-memory one" setup = [Common, EphDiskEpmat, EphReferenceLoop] begin
     eV = unit_to_aru(:eV); e_F = 11.68eV
     window = (e_F - 0.5eV, e_F + 3eV)
     grid = (6, 6, 6)

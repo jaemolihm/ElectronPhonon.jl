@@ -1,18 +1,17 @@
-@testsnippet Gpu begin
-    using ElectronPhonon: WannierObject, Vec3, compute_eph_RR_to_kR!, compute_eph_kR_to_kq!, compute_eph_Rq_to_kq!, to_device
-    # Batched drivers / primitives are internal (unexported); import the ones the tests use.
-    using ElectronPhonon: eigvals_batched!, eigen_batched!, compute_el_eigen_batched, compute_el_eigen_valueonly_batched,
-        compute_el_velocity_direct_batched, compute_eph_kR_to_kq_batched!, eph_rotate_kR_batched!,
-        eph_apply_rotations!, eph_apply_rotations_rqkq!, batched_gemm!, get_fourier_batched!
+# A @testmodule, not a @testsnippet: evaluated once per process, so the recorder calculators and
+# the ElectronPhonon methods specialised on them compile once instead of in every test item.
+@testmodule GpuHelpers begin
+    using Test, ElectronPhonon
+    # Batched drivers / primitives are internal (unexported); import the ones the helpers use.
+    using ElectronPhonon: WannierObject, Vec3, compute_eph_RR_to_kR!, compute_eph_kR_to_kq!, compute_eph_Rq_to_kq!,
+        compute_eph_kR_to_kq_batched!, eph_apply_rotations!, eph_apply_rotations_rqkq!, eph_rotate_kR_batched!,
+        get_fourier_batched!, to_device
     using LinearAlgebra
 
-    # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
-    # tests when it is unavailable or non-functional (e.g. CPU-only CI).
-    const GPU_AVAILABLE = try
+    # CUDA is a weak dependency that CI drops from the test target; `CuArray` is only reached when it is functional.
+    try
         @eval using CUDA
-        CUDA.functional()
     catch
-        false
     end
 
     # `compute_eph_kR_to_kq_batched!` takes the Fourier phase, not a q-list, because the driver builds
@@ -47,13 +46,6 @@
         eph_apply_rotations_rqkq!(ep_kq_all, g, uks, ukqs, similar(op_r, ComplexF64, nbandkq, nw * nmodes, nk),
                                   similar(op_r, ComplexF64, nw, nbandk, nmodes * nk))
     end
-
-    # A mis-dispatch (a device view falling back to the generic scalar `batched_gemm!` instead of the
-    # GPU method) must fail loudly rather than silently limp — forbid scalar indexing on the device.
-    GPU_AVAILABLE && CUDA.allowscalar(false)
-
-    # Pb EPW model comes from a downloaded test artifact (see test/Artifacts.toml).
-    include("calculator_contract_harness.jl")
 
     """
     Validate the batched e-ph drivers against the per-k/q reference (`compute_eph_RR_to_kR!` /
@@ -345,76 +337,54 @@
         (cc, cg)
     end
 
-    # The raw band-pair-resolved `g2[ν,i,f] = |ep_{mn,ν}|²/(2ω)` is NOT a valid elementwise regression
-    # target: within a degenerate subspace the CPU (LAPACK) and GPU (cuSOLVER) diagonalizations pick
-    # different—equally valid—eigenvectors, which unitarily mixes the per-band matrix elements among
-    # degenerate partners. The decisive subspace here is the PHONON mode multiplet, not the electron band
-    # one — partitioned by mode degeneracy the spread on this fixture is 0.92 (full band) / 0.98
-    # (windowed) of max on the mode-degenerate `(ν,i,f)` and 2.3e-8 / 4.1e-8 off them (worsened by the
-    # 1/ω blow-up at Pb's near-zero acoustic modes), while partitioning by electron multiplet puts O(1)
-    # entries on BOTH sides and so separates nothing. So this asserts the partition itself, so that the
-    # reason for not comparing g2 elementwise stays a measured claim rather than prose, plus the
-    # gauge-invariant electron energies and the phonon frequencies. The gauge-invariant multiplet sums
-    # of g2 are compared by the contract harness (test_calculator_contract.jl).
-    function _assert_cpu_gpu_match(cc::ElectronPhonon.G2Calculator, cg)
-        # The scale is a signed `g2` max on Pb (the ω ≤ 0 modes make entries negative), so take abs.
-        nm = cc.nmodes
-        ωq_c, ωq_g = pair_ω(cc), pair_ω(cg)
-        mdeg = [minimum(abs(ωq_c[ν, i, f] - ωq_c[μ, i, f]) for μ in 1:nm if μ != ν) < 1e-8
-                for ν in 1:nm, i in 1:cc.el_i.n, f in 1:cc.el_f.n]
-        dg = abs.(cc.g2 .- cg.g2); sc = maximum(abs, cc.g2)
-        @test count(mdeg) > 0 && count(.!mdeg) > 0   # the partition is not vacuous
-        @test maximum(dg[.!mdeg]) < 1e-6 * sc
-        # The claim the paragraph rests on is the line above; this one only records that the spread
-        # it excludes is real. It asserts the two backends DISAGREE, so it would go red if the device
-        # phonon eigensolve ever started pinning the multiplet basis — an improvement. Delete it then,
-        # do not chase it.
-        spread_on_mode_degenerate_entries = maximum(dg[mdeg]) / sc
-        @test spread_on_mode_degenerate_entries > 0.1
-        # Electron energies are gauge-invariant: must match to eigensolver precision.
-        @test maximum(abs, cc.el_i.es .- cg.el_i.es) < 1e-10
-        # Phonon frequencies depend only on q (not the electron gauge): elementwise match, with a
-        # tolerance for the near-zero acoustic modes where LAPACK/cuSOLVER differ at ~1e-12.
-        @test maximum(abs, ωq_c .- ωq_g) < 1e-8
-    end
-
-    # The phase of `ep` is the electron gauge, which the two eigensolvers fix independently, so raw `ep`
-    # is not comparable (relative 2-norm difference 1.4 on the windowed fixture). Per element,
-    # `|ep|^2` there agrees to 1e-14 of max off the mode- and electron-degenerate pairs but differs by
-    # 0.46 of max on pairs with a level split below `electron_degen_cutoff` (1.3e-8 Ry at the worst
-    # entry), so this compares `|ep|^2` summed over both multiplets, the contract harness's reduction.
-    function _assert_cpu_gpu_match(cc::ElectronPhonon.EPElementCalculator, cg)
-        pair_sum(c) = contract_pair_sum(abs2.(c.ep), pair_ω(c), contract_multiplet_ids(c.el_i),
-                                        contract_multiplet_ids(c.el_f))
-        @test pair_sum(cg) ≈ pair_sum(cc)
-        @test maximum(abs, cc.el_i.es .- cg.el_i.es) < 1e-10
-        @test maximum(abs, pair_ω(cc) .- pair_ω(cg)) < 1e-8
-    end
-
-    # --- plan_batch: memory-adaptive sizing (CPU-only) ---------------------------------------------
-    using ElectronPhonon: plan_batch, CPUBackend
-
     # A stub backend with a settable free-memory budget, to drive the adaptive-width / fail-early paths
     # on the CPU (no CUDA needed).
     struct _StubBackend <: ElectronPhonon.AbstractBackend
         free::Int
     end
     ElectronPhonon.free_bytes(b::_StubBackend) = b.free
+
+    export _QOnlyCalc, _RecordCalc, _RecordCalcOuterQ, _StubBackend, _cpu_gpu_pair, check_eph_batched,
+        check_eph_kq_convention, check_eph_partial_view, check_fourier_phase, eigenpair_errors
 end
 
-@testitem "batched e-ph drivers (CPU)" setup = [Common, Gpu] begin
+@testsnippet Gpu begin
+    # Batched drivers / primitives are internal (unexported); import the ones the items use.
+    using ElectronPhonon: WannierObject, Vec3, compute_el_eigen_batched, compute_el_eigen_valueonly_batched,
+        compute_eph_kR_to_kq_batched!, eigen_batched!, eigvals_batched!, eph_apply_rotations!,
+        eph_apply_rotations_rqkq!, get_fourier_batched!, to_device
+    using LinearAlgebra
+
+    # CUDA is a weak dependency that CI drops from the test target, so load it defensively and skip
+    # the GPU tests when it is unavailable or non-functional.
+    const GPU_AVAILABLE = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+
+    # A mis-dispatch (a device view falling back to the generic scalar `batched_gemm!` instead of the
+    # GPU method) must fail loudly rather than silently limp — forbid scalar indexing on the device.
+    GPU_AVAILABLE && CUDA.allowscalar(false)
+
+    # --- plan_batch: memory-adaptive sizing (CPU-only) ---------------------------------------------
+    using ElectronPhonon: plan_batch, CPUBackend
+end
+
+@testitem "batched e-ph drivers (CPU)" setup = [Common, Gpu, GpuHelpers] begin
     check_eph_batched(ElectronPhonon.CPUBackend(); rtol=1e-10)
 end
 
-@testitem "build_fourier_phase! (CPU)" setup = [Common, Gpu] begin
+@testitem "build_fourier_phase! (CPU)" setup = [Common, Gpu, GpuHelpers] begin
     check_fourier_phase(ElectronPhonon.CPUBackend())
 end
 
-@testitem "k+q convention identity (CPU)" setup = [Common, Gpu] begin
+@testitem "k+q convention identity (CPU)" setup = [Common, Gpu, GpuHelpers] begin
     check_eph_kq_convention(ElectronPhonon.CPUBackend(); rtol=1e-13)
 end
 
-@testitem "Rq→kq rotation: GPU cuBLAS fallback (large nw²·nmodes)" setup = [Common, Gpu] begin
+@testitem "Rq→kq rotation: GPU cuBLAS fallback (large nw²·nmodes)" setup = [Common, Gpu, GpuHelpers] begin
     # check_eph_batched exercises the FUSED rqkq kernel (nw²·nmodes ≤ _FUSED_RQKQ_MAX_NW2NM);
     # here nw=8, nmodes=12 ⇒ 768 > 512 forces the `invoke`-to-generic (cuBLAS two-GEMM) branch of
     # the CUDA `eph_apply_rotations_rqkq!`. Compare it to the generic CPU method (ground truth).
@@ -436,7 +406,7 @@ end
     end
 end
 
-@testitem "batched eigensolve (CPU)" setup = [Common, Gpu] begin
+@testitem "batched eigensolve (CPU)" setup = [Common, Gpu, GpuHelpers] begin
     # CPU eigen_batched!: U must be eigenvectors of H — check eigenvalues vs LAPACK and the
     # gauge-invariant reconstruction H ≈ U·diag(E)·U† at a few k-points. (The GPU counterpart is
     # in "GPU batched Wannier interpolation".)
@@ -451,7 +421,7 @@ end
     end
 end
 
-@testitem "Jacobi eigensolver (CPU)" setup = [Common, Gpu] begin
+@testitem "Jacobi eigensolver (CPU)" setup = [Common, Gpu, GpuHelpers] begin
     # The device solver for nw ≤ JACOBI_NW_MAX, run on the host against LAPACK. The extension
     # loads whenever CUDA does, with or without a GPU.
     ext = Base.get_extension(ElectronPhonon, :ElectronPhononCUDAExt)
@@ -486,7 +456,7 @@ end
     end
 end
 
-@testitem "GPU batch_size budget" setup = [Common, Gpu] begin
+@testitem "GPU batch_size budget" setup = [Common, Gpu, GpuHelpers] begin
     if GPU_AVAILABLE
         using ElectronPhonon: _default_batch_size, GPU_FOURIER_BATCH_BYTES
         gpu = ElectronPhonon.gpu_backend()
@@ -510,7 +480,7 @@ end
     end
 end
 
-@testitem "GPU batched Wannier interpolation" setup = [Common, Gpu] begin
+@testitem "GPU batched Wannier interpolation" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU tests"
     else
@@ -664,7 +634,7 @@ end
     end
 end
 
-@testitem "GPU partial q-batch (views into max-width buffers)" setup = [Common, Gpu] begin
+@testitem "GPU partial q-batch (views into max-width buffers)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU partial-batch test"
     else
@@ -674,7 +644,7 @@ end
     end
 end
 
-@testitem "GPU eph_apply_rotations! vs the generic method (fused and cuBLAS branches)" setup = [Common, Gpu] begin
+@testitem "GPU eph_apply_rotations! vs the generic method (fused and cuBLAS branches)" setup = [Common, Gpu, GpuHelpers] begin
     # The fused kernel (nw = 3, nmodes = 15) and the cuBLAS branch (nw = 8, nmodes = 15) against the
     # generic two-GEMM method on the host, with nbandk < nbandkq = nw.
     if !GPU_AVAILABLE
@@ -694,7 +664,7 @@ end
     end
 end
 
-@testitem "eph_apply_rotations! rejects a non-dense g" setup = [Common, Gpu] begin
+@testitem "eph_apply_rotations! rejects a non-dense g" setup = [Common, Gpu, GpuHelpers] begin
     # The two-GEMM rotation paths merge `g`'s band and mode axes with a `reshape`, so a strided `g`
     # is only readable by the CUDA fused kernel. The generic method must say so rather than silently
     # reshaping into a `ReshapedArray` the batched GEMMs cannot take a pointer to.
@@ -709,7 +679,7 @@ end
     end
 end
 
-@testitem "kR→kq workspaces must have the block's exact extent" setup = [Common, Gpu] begin
+@testitem "kR→kq workspaces must have the block's exact extent" setup = [Common, Gpu, GpuHelpers] begin
     # A workspace array at a wider batch than the block (the full buffer rather than a view of its
     # leading columns) fails the size assertion instead of being used past the block.
     let nw = 3, nband = 3, nmodes = 2, nr = 4, nq = 5
@@ -722,7 +692,7 @@ end
     end
 end
 
-@testitem "batched calculator loop (run_eph_over_k_and_kq)" setup = [Common, Gpu] begin
+@testitem "batched calculator loop (run_eph_over_k_and_kq)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU calculator-loop test"
     else
@@ -817,7 +787,7 @@ end
 # The batched outer-k loop holds no device-specific code, so it runs on a `CPUBackend` with any
 # tiling: the CUDA-free coverage of the block construction, the k+q-convention phase build and the
 # q-tiling.
-@testitem "outer-k CPU: default widths == small tiles (_RecordCalc)" setup = [Common, Gpu] begin
+@testitem "outer-k CPU: default widths == small tiles (_RecordCalc)" setup = [Common, Gpu, GpuHelpers] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
     grid = (4, 4, 4)
 
@@ -845,7 +815,7 @@ end
 # outer batch, on the host and on the GPU. The q index itself is compared with the block's: on this
 # square run a transposed table would still give the same frequencies (ω(-q) = ω(q)), but not the
 # same indices.
-@testitem "pair frequencies are bitwise the loop's" setup = [Common, Gpu] begin
+@testitem "pair frequencies are bitwise the loop's" setup = [Common, Gpu, GpuHelpers, EphReferenceLoop, CalculatorContractHarness] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum="el")
     grid, win = (4, 4, 4), (0.87 - 0.2, 0.87 + 0.2)
     backends = GPU_AVAILABLE ? (ElectronPhonon.CPUBackend(), ElectronPhonon.gpu_backend()) :
@@ -870,7 +840,7 @@ end
     end
 end
 
-@testitem "run_eph_over_q_and_k CPU vs GPU equivalence" setup = [Common, Gpu] begin
+@testitem "run_eph_over_q_and_k CPU vs GPU equivalence" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping run_eph_over_q_and_k CPU-vs-GPU test"
     else
@@ -895,7 +865,7 @@ end
 
 # The outer-q loop has no CUDA-only callee either, so it runs on a `CPUBackend` with any k-batch
 # width.
-@testitem "run_eph_over_q_and_k CPU: default width == partial k-batch" setup = [Common, Gpu] begin
+@testitem "run_eph_over_q_and_k CPU: default width == partial k-batch" setup = [Common, Gpu, GpuHelpers] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
     grid = (4, 4, 4)
 
@@ -920,7 +890,7 @@ end
 # A PARTIAL outer-q k tile (small n_inner_tile), so the block is a real trim to the tile's width, not
 # the identity trim of the single-tile test above. nk=64, n_inner_tile=10 ⇒ 7 tiles, the last of
 # width 4.
-@testitem "run_eph_over_q_and_k partial k tile (CPU vs GPU)" setup = [Common, Gpu] begin
+@testitem "run_eph_over_q_and_k partial k tile (CPU vs GPU)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping run_eph_over_q_and_k partial-batch test"
     else
@@ -943,7 +913,7 @@ end
     end
 end
 
-@testitem "GPU filter_kpoints with symmetry (IBZ reduction × backend)" setup = [Common, Gpu] begin
+@testitem "GPU filter_kpoints with symmetry (IBZ reduction × backend)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU filter_kpoints symmetry test"
     else
@@ -974,7 +944,7 @@ end
     end
 end
 
-@testitem "GPU compute_electron_states on the IBZ set (windowed)" setup = [Common, Gpu] begin
+@testitem "GPU compute_electron_states on the IBZ set (windowed)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU IBZ compute_electron_states test"
     else
@@ -1002,7 +972,7 @@ end
     end
 end
 
-@testitem "compute_electron_states velocity (GPU backend)" setup = [Common, Gpu] begin
+@testitem "compute_electron_states velocity (GPU backend)" setup = [Common, Gpu, GpuHelpers] begin
     if !GPU_AVAILABLE
         @info "CUDA not available/functional — skipping GPU compute_electron_states velocity test"
     else
@@ -1094,7 +1064,7 @@ end
 # bit-for-bit between the generic (CPU) method and the CUDA kernel. Builds window-aware imaps (some
 # out-of-window entries == 0) mimicking a small run and checks both the full-buffer (i0=0,
 # ni_stride=n_i) and per-tile buffer (i0≠0, ni_stride=tile extent) addressings.
-@testitem "eph_window_scatter! round-trip (collision-free + CPU==CUDA)" setup = [Common, Gpu] begin
+@testitem "eph_window_scatter! round-trip (collision-free + CPU==CUDA)" setup = [Common, Gpu, GpuHelpers] begin
     using Random
     Random.seed!(20260717)
     FT = Float64
@@ -1148,7 +1118,53 @@ end
 # energy-window path (box storage + the box-coordinate imap scatter that skips the padding). Needs
 # the Pb model artifact.
 
-@testitem "GPU G2Calculator and EPElementCalculator (full-band + windowed)" setup = [Common, Gpu] begin
+@testitem "GPU G2Calculator and EPElementCalculator (full-band + windowed)" setup = [Common, Gpu, GpuHelpers, EphReferenceLoop, CalculatorContractHarness] begin
+    # The raw band-pair-resolved `g2[ν,i,f] = |ep_{mn,ν}|²/(2ω)` is NOT a valid elementwise regression
+    # target: within a degenerate subspace the CPU (LAPACK) and GPU (cuSOLVER) diagonalizations pick
+    # different—equally valid—eigenvectors, which unitarily mixes the per-band matrix elements among
+    # degenerate partners. The decisive subspace here is the PHONON mode multiplet, not the electron band
+    # one — partitioned by mode degeneracy the spread on this fixture is 0.92 (full band) / 0.98
+    # (windowed) of max on the mode-degenerate `(ν,i,f)` and 2.3e-8 / 4.1e-8 off them (worsened by the
+    # 1/ω blow-up at Pb's near-zero acoustic modes), while partitioning by electron multiplet puts O(1)
+    # entries on BOTH sides and so separates nothing. So this asserts the partition itself, so that the
+    # reason for not comparing g2 elementwise stays a measured claim rather than prose, plus the
+    # gauge-invariant electron energies and the phonon frequencies. The gauge-invariant multiplet sums
+    # of g2 are compared by the contract harness (test_calculator_contract.jl).
+    function _assert_cpu_gpu_match(cc::ElectronPhonon.G2Calculator, cg)
+        # The scale is a signed `g2` max on Pb (the ω ≤ 0 modes make entries negative), so take abs.
+        nm = cc.nmodes
+        ωq_c, ωq_g = pair_ω(cc), pair_ω(cg)
+        mdeg = [minimum(abs(ωq_c[ν, i, f] - ωq_c[μ, i, f]) for μ in 1:nm if μ != ν) < 1e-8
+                for ν in 1:nm, i in 1:cc.el_i.n, f in 1:cc.el_f.n]
+        dg = abs.(cc.g2 .- cg.g2); sc = maximum(abs, cc.g2)
+        @test count(mdeg) > 0 && count(.!mdeg) > 0   # the partition is not vacuous
+        @test maximum(dg[.!mdeg]) < 1e-6 * sc
+        # The claim the paragraph rests on is the line above; this one only records that the spread
+        # it excludes is real. It asserts the two backends DISAGREE, so it would go red if the device
+        # phonon eigensolve ever started pinning the multiplet basis — an improvement. Delete it then,
+        # do not chase it.
+        spread_on_mode_degenerate_entries = maximum(dg[mdeg]) / sc
+        @test spread_on_mode_degenerate_entries > 0.1
+        # Electron energies are gauge-invariant: must match to eigensolver precision.
+        @test maximum(abs, cc.el_i.es .- cg.el_i.es) < 1e-10
+        # Phonon frequencies depend only on q (not the electron gauge): elementwise match, with a
+        # tolerance for the near-zero acoustic modes where LAPACK/cuSOLVER differ at ~1e-12.
+        @test maximum(abs, ωq_c .- ωq_g) < 1e-8
+    end
+
+    # The phase of `ep` is the electron gauge, which the two eigensolvers fix independently, so raw `ep`
+    # is not comparable (relative 2-norm difference 1.4 on the windowed fixture). Per element,
+    # `|ep|^2` there agrees to 1e-14 of max off the mode- and electron-degenerate pairs but differs by
+    # 0.46 of max on pairs with a level split below `electron_degen_cutoff` (1.3e-8 Ry at the worst
+    # entry), so this compares `|ep|^2` summed over both multiplets, the contract harness's reduction.
+    function _assert_cpu_gpu_match(cc::ElectronPhonon.EPElementCalculator, cg)
+        pair_sum(c) = contract_pair_sum(abs2.(c.ep), pair_ω(c), contract_multiplet_ids(c.el_i),
+                                        contract_multiplet_ids(c.el_f))
+        @test pair_sum(cg) ≈ pair_sum(cc)
+        @test maximum(abs, cc.el_i.es .- cg.el_i.es) < 1e-10
+        @test maximum(abs, pair_ω(cc) .- pair_ω(cg)) < 1e-8
+    end
+
     if !GPU_AVAILABLE
         @info "CUDA not functional — skipping GPU G2Calculator and EPElementCalculator test"
     else
@@ -1189,7 +1205,7 @@ end
     end
 end
 
-@testitem "plan_batch memory-bound warning is opt-out" setup = [Common, Gpu] begin
+@testitem "plan_batch memory-bound warning is opt-out" setup = [Common, Gpu, GpuHelpers] begin
     # A batch narrowed by free memory tells the user; a counterfactual query ("how wide would
     # the batch be at a different `per_point`?") must stay quiet.
     per_point, committed, cap = 1000, 10^6, 500
@@ -1200,7 +1216,7 @@ end
 end
 
 # The estimate plans with the loop's own byte counts; on a CPU backend the tile is the cap.
-@testitem "estimate_device_memory" setup = [Common, Gpu] begin
+@testitem "estimate_device_memory" setup = [Common, Gpu, GpuHelpers] begin
     for (mom, loop) in (("el", :outer_k), ("ph", :outer_q))
         local est = ElectronPhonon.estimate_device_memory(_load_model_from_artifacts("pb";
             epmat_outer_momentum = mom); nk = 64, nkq = 64, nchunks_threads = 1)
@@ -1216,7 +1232,7 @@ end
     end
 end
 
-@testitem "plan_batch memory-adaptive sizing + fail-early" setup = [Common, Gpu] begin
+@testitem "plan_batch memory-adaptive sizing + fail-early" setup = [Common, Gpu, GpuHelpers] begin
     # CPU backend: free is unbounded ⇒ batch = cap.
     @test plan_batch(CPUBackend(), 1600, 1600, 42; what = "cpu") == 42
     # max_device_bytes leaves the CPU sentinel alone, and caps a device budget.

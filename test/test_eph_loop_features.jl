@@ -8,15 +8,13 @@
     catch
         false
     end
-
-    include("eph_reference_loop.jl")
 end
 
 # Features the per-point loops of the previous release had, on the e-ph loop (ElectronPhonon.jl
 # issue #72): the outer-k polar term, energy conservation and the covariant derivative. Each
 # assertion was checked to hold on the per-point loop of the previous release.
 
-@testitem "outer-k polar, energy conservation, covariant derivative (#72)" setup = [Common, EphLoopFeatures] begin
+@testitem "outer-k polar, energy conservation, covariant derivative (#72)" setup = [Common, EphLoopFeatures, EphReferenceLoop] begin
     # Outer-k polar: on a polar model (cubicBN), Σ |ep|² over every pair, band and mode, which does
     # not depend on the electron or phonon basis on a full window, agrees with the outer-q loop.
     # Measured 3.3e-16 relative on the per-point loops, 3³ grids.
@@ -121,7 +119,7 @@ end
 # A pair whose k+q has no state in the window is skipped by every driver, on both backends, whether
 # the k+q states are resident or solved per tile. Pb 6³, E_F ± 0.1 eV: 24 of the 216 points have a
 # state in the window, so most tiles of 30 lose pairs and some lose all of them.
-@testitem "k+q without a state in the window is skipped" setup = [Common, EphLoopFeatures] begin
+@testitem "k+q without a state in the window is skipped" setup = [Common, EphLoopFeatures, EphReferenceLoop] begin
     model_el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
     model_ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
     eV = unit_to_aru(:eV)
@@ -148,7 +146,7 @@ end
     end
 end
 
-@testitem "outer q: empty k window, precomputed k+q off the q grid" setup = [Common, EphLoopFeatures] begin
+@testitem "outer q: empty k window, precomputed k+q off the q grid" setup = [Common, EphLoopFeatures, EphReferenceLoop] begin
     model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
     eV = unit_to_aru(:eV)
     # No k state in the window: the inner set is empty, on 16 thread chunks.
@@ -164,7 +162,7 @@ end
 
 # Symmetry reduces the outer point set given as a grid size (k under outer k, q under outer q) and
 # nothing else; every q point is kept, also one with no k+q state in the window.
-@testitem "symmetry reduces the outer grid, q points are never filtered" setup = [Common, EphLoopFeatures] begin
+@testitem "symmetry reduces the outer grid, q points are never filtered" setup = [Common, EphLoopFeatures, EphReferenceLoop] begin
     model_el = _load_model_from_artifacts("pb"; epmat_outer_momentum = "el")
     model_ph = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
     eV = unit_to_aru(:eV)
