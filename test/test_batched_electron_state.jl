@@ -161,6 +161,32 @@ end
             @test _batched_electron_mismatches(els, compute_electron_states(model_pb, kpts,
                 per_point([:e, :u, :vdiag]), window_wide; backend, eigenpairs = cache)) == 0
 
+            # The device filler writes only the valid entries: NaN-filled fields keep NaN past `nband`,
+            # and the valid entries equal the builder's.
+            nbad = 0
+            for mode in (:Direct, :BerryConnection)
+                model_pb.el_velocity_mode = mode
+                els = compute_electron_states_batched(model_pb, kpts, [:e, :u, :vdiag], window_wide; backend)
+                off_h, nb_h = Array(els.iband_offset), Array(els.nband)
+                @test minimum(nb_h) < els.nband_max
+                els_nan = BatchedElectronState(backend, model_pb.nw, els.nband_max, kpts.n, [:e, :u, :vdiag]; kpts)
+                foreach(x -> fill!(x, NaN), (els_nan.e, els_nan.u, els_nan.vdiag))
+                copyto!(els_nan.iband_offset, off_h); copyto!(els_nan.nband, nb_h)
+                itp = ElectronPhonon.get_interpolator(ElectronPhonon.to_device(backend, model_pb.el_ham);
+                                                      fourier_mode = "batched", backend, nk_hint = kpts.n)
+                E, U = ElectronPhonon.compute_el_eigen_batched(itp, kpts.vectors)
+                ElectronPhonon._fill_electron_states_batched_device!(els_nan, model_pb, E, U, off_h, nb_h,
+                                                                      backend)
+                e_h, u_h, vdiag_h = Array(els_nan.e), Array(els_nan.u), Array(els_nan.vdiag)
+                for ik in 1:kpts.n, n in (nb_h[ik] + 1):els.nband_max
+                    nbad += !(isnan(e_h[n, ik]) && all(isnan, u_h[:, n, ik]) && all(isnan, vdiag_h[:, n, ik]))
+                end
+                nbad += _batched_electron_mismatches(els_nan, compute_electron_states(model_pb, kpts,
+                    per_point([:e, :u, :vdiag]), window_wide; backend))
+            end
+            model_pb.el_velocity_mode = :Direct
+            @test nbad == 0
+
             # A host container streamed into a device tile, and a device one copied in place.
             b_host = compute_electron_states_batched(model_pb, kpts, [:e, :u], window_wide)
             inds = [5, 2, 64, 17]

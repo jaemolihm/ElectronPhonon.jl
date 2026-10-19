@@ -1066,7 +1066,7 @@ end
 end
 
 # `G2Calculator` and `EPElementCalculator` on the GPU against the CPU run, including the
-# energy-window path (box storage + the box-coordinate imap scatter that skips the padding). Needs
+# energy-window path (box storage, read through the tile's state maps). Needs
 # the Pb model artifact.
 
 @testitem "GPU G2Calculator and EPElementCalculator (full-band + windowed)" setup = [Common, Gpu, GpuHelpers, EphReferenceLoop, CalculatorContractHarness] begin
