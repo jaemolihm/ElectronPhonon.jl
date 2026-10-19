@@ -205,7 +205,7 @@ ElectronPhonon.calculator_begin_batch!(c::EphG2SumCalculator, ::OuterQContext) =
 #
 #               outer             pair j                             weight of pair j
 #   OuterKLoop  k: tile.ik        k+q_j: tile.ikq[j], q_j: phs[:, j]   tile.wtq[j]
-#   OuterQLoop  q: tile.iq        k_j: tile.ik[j]; q: phs[:, 1]        tile.wtq (the q weight)
+#   OuterQLoop  (none)            k_j: tile.ik[j], q_j: phs[:, j]      tile.wtq[j]
 #
 # A GPU cannot read a device array one element at a time (an error under `CUDA.allowscalar(false)`),
 # so the methods below form the summand of a whole class with one broadcast and reduce it with `sum`;
@@ -215,17 +215,12 @@ ElectronPhonon.calculator_begin_batch!(c::EphG2SumCalculator, ::OuterQContext) =
 # the class's `ep`, written into the scratch `g2_scratch`. The factors are reshaped so that their axes
 # line up with ep[m, n, ν, j] (a reshape copies no data), and one fused broadcast forms it. Modes below
 # omega_acoustic are set to 0 with `ifelse`, not by multiplying with a mask, which could give NaN.
-@views function class_g2!(c::EphG2SumCalculator, tile::EPBlock{OuterKLoop}, s, chunk)
+@views function class_g2!(c::EphG2SumCalculator, tile::EPBlock, s, chunk)
     np = length(s.pairs)
     ω = reshape(tile.phs.e[:, s.pairs], 1, 1, tile.phs.nmodes, np)
     w = reshape(tile.wtq[s.pairs], 1, 1, 1, np)
     g2 = reshape(c.g2_scratch[chunk][1:length(s.ep)], size(s.ep))
     g2 .= ifelse.(ω .>= omega_acoustic, w .* abs2.(s.ep) ./ (2 .* ω), 0.0)
-end
-@views function class_g2!(c::EphG2SumCalculator, tile::EPBlock{OuterQLoop}, s, chunk)
-    ω = reshape(tile.phs.e[:, 1], 1, 1, tile.phs.nmodes, 1)   # the outer q, the tile's only q point
-    g2 = reshape(c.g2_scratch[chunk][1:length(s.ep)], size(s.ep))
-    g2 .= ifelse.(ω .>= omega_acoustic, tile.wtq .* abs2.(s.ep) ./ (2 .* ω), 0.0)
 end
 
 # Outer k. The whole tile adds to one number, the sum of the outer k. Tiles of other chunks add to the
@@ -245,14 +240,14 @@ function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, tile::EPBlock{Out
 end
 
 # Outer q. Each pair adds to its own k point, `tile.ik[j]`. No other tile writes these k at the same time
-# (the chunks split the k points, and the q points of a batch run one after another), so the sums go
-# straight into the result. Per class:
+# (the chunks split the k points, and one chunk runs its tiles one after another), so the sums go
+# straight into the result. The same k appears in the pairs of different q. Per class:
 #
 # 1. `class_g2!` forms the summand of its items on the backend.
 # 2. `sum!` reduces it over (m, n, ν) into one sum per pair, still on the backend. `sum!` reduces over
 #    the axes where its output has extent 1.
-# 3. The sums are copied to the host in one transfer and added to their k points `tile.ik`, which is a
-#    host index list.
+# 3. The sums are copied to the host in one transfer and added to their k points, `tile.ik` copied to the
+#    host. A k point can repeat in that list, so the sums are added one by one, not by one broadcast.
 # 4. The k-weighted sum for `g2_avg` is a `dot` of the sums with the k weights `tile.wtk` on the
 #    backend, one host number.
 function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, tile::EPBlock{OuterQLoop},
@@ -263,7 +258,9 @@ function ElectronPhonon.run_calculator!(c::EphG2SumCalculator, tile::EPBlock{Out
         sums_dev = view(c.pair_sums_dev[ctx.chunk], 1:np)
         sum!(reshape(sums_dev, 1, 1, 1, np), g2)
         copyto!(c.pair_sums[ctx.chunk], 1, sums_dev, 1, np)
-        view(c.g2_per_k, view(tile.ik, s.pairs)) .+= view(c.pair_sums[ctx.chunk], 1:np)
+        for (jj, k) in enumerate(Array(tile.ik)[s.pairs])
+            c.g2_per_k[k] += c.pair_sums[ctx.chunk][jj]
+        end
         c.g2_avg_buffer[ctx.chunk] += dot(sums_dev, view(tile.wtk, s.pairs))
     end
     c
@@ -422,21 +419,21 @@ the modes summed inside) with `entry_indices(tile, e)`; on the host loop with `e
 Under `OuterKLoop`: `ik::Int`, `wtk::Float64`, `ikq` the k+q indices of the pairs on the run's backend
 (`nothing` under `run_eph_over_k_and_q`, where the k+q states are solved per tile), `iq` the q indices,
 `wtq` the k+q weights, `phs.e[ν, j]` the frequencies of the pairs; `dg` is `(n_items, 3)` when the run
-asks for the covariant derivative. Under `OuterQLoop` the roles swap: `iq::Int`, `ik` the k indices of the
-pairs, `phs` a single column and `ikq === nothing` when k+q is solved per tile. `ep` is the e-ph matrix
+asks for the covariant derivative. Under `OuterQLoop` the tile holds the `(q, k)` pairs of one or several
+q: `phs` (the frequencies, not the eigenvectors `u`: the e-ph matrix is already in the phonon basis, so read
+the run's phonons at `iq` and do not list `:u` in `required_ph_quantities`, which an outer-q run refuses),
+`iq`, `ik`, `wtq` and `xq` are per pair (vectors on the backend, `xq` on the host), so the same k can appear in several pairs, and
+`ikq === nothing` when k+q is solved per tile. `ep` is the e-ph matrix
 before the `1/(2ω)`; a calculator that needs `|g|²/(2ω)` forms it. The field list is in the `EPBlock`
 docstring.
-
-**Outer q, for now.** The outer-q tile is still one box-wide class: with a window that leaves some pairs fewer
-bands than the box, the entries past a pair's `nband` of `els_k` / `els_kq` are padding, not items, and a
-calculator must skip them. The outer-k tile has no padding.
 
 ## The threading and batch contract
 
 - **Any batch width.** The loop chooses `n_outer_batch` and `n_inner_tile` at runtime and passes
   them to `setup_calculator!`; size per-batch buffers to the first and per-tile scratch to the
   second. Every batch length ≥ 1 (`length(ctx.iks_batch)`, `length(ctx.iqs_batch)`) must work.
-- **Writes.** Writes indexed by an inner-tile point are disjoint across tiles. Every other write
+- **Writes.** Writes indexed by an inner-tile point are disjoint across the tiles that run at the same
+  time (an outer-q tile can repeat a k point in pairs of different q; reduce those within the tile). Every other write
   (indexed by the outer point, or a reduction over the inner points) goes to a per-`ctx.chunk`
   partial, reduced in `calculator_end_batch!`, as in the example. Per-tile scratch is per chunk too: on
   the CPU the tiles of different chunks run concurrently. `ctx.chunk` is 1 on a device. Data of the

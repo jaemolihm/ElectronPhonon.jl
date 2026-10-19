@@ -336,7 +336,9 @@ function _plan_widths(order, model, backend, calculators; n_outer, n_inner, nk, 
     end
     inner_default = backend isa CPUBackend ? 1024 : order isa OuterKLoop ? n_inner :
         max(1, GPU_OUTER_Q_TILE_BYTES ÷ bytes.per_pair)
-    inner_cap = max(1, min(cld(n_inner, nchunks), something(n_inner_tile, inner_default)))
+    # An outer-q tile holds the (q, k) pairs of several q of the batch: up to `n_outer_batch` times the k points.
+    n_pairs_max = order isa OuterQLoop ? n_inner * n_outer_batch : n_inner
+    inner_cap = max(1, min(cld(n_pairs_max, nchunks), something(n_inner_tile, inner_default)))
     committed = bytes.persistent + bytes.per_outer * n_outer_batch
     n_inner_tile = plan_batch(backend, bytes.per_pair * nchunks, committed, inner_cap; max_device_bytes,
                               what = order isa OuterKLoop ? "outer-k" : "outer-q")
@@ -391,6 +393,9 @@ function _check_run(order, model, kpts_input, second_input, options)
        el_k_eigenpairs, el_kq_eigenpairs, symmetry, inner_loop_kq) = options
     Order = typeof(order)
     for calc in calculators
+        (order isa OuterQLoop && :u ∈ required_ph_quantities(calc)) && throw(ArgumentError(
+            "$calc asks for the phonon eigenvectors `:u` of the pairs, which an outer-q block does not carry: " *
+            "read the run's phonons at `block.iq` instead (see `required_ph_quantities`)."))
         supports(calc, Order) || throw(ArgumentError("$calc does not support the " *
             (order isa OuterKLoop ? "outer-k loop. Use run_eph_over_q_and_k instead." :
                                     "outer-q loop. Use run_eph_over_k_and_kq instead.")))
@@ -616,21 +621,28 @@ function _loop_outer_q!(eng::OuterQEngine, calculators)
     eng_fields = _workspace_fields(eng)
     (; iqs_batch) = eng
 
-    # Visit each q explicitly and complete its k chunks before calculator_end_batch! or the next batch.
-    for iq in iqs_batch
-        if length(eng.tiles) == 1
-            # One chunk: GPU and serial runs remain on the caller's task and CUDA stream.
-            _loop_outer_q_chunk!(eng_fields, _workspace_fields(eng.tiles[1]), calculators;
-                chunk = 1, iks = 1:eng.els_k.nk, iq)
-        else
-            # Several chunks: one task per chunk of k points, each on its own tile workspace.
-            inner_chunks = collect(enumerate(index_chunks(1:eng.els_k.nk; n = min(length(eng.tiles), eng.els_k.nk))))
-            @threads for (chunk, iks) in inner_chunks
-                _loop_outer_q_chunk!(eng_fields, _workspace_fields(eng.tiles[chunk]), calculators; chunk, iks, iq)
-            end
+    # Every q of the batch is visited, in tiles of (q, k) pairs, before calculator_end_batch! or the next batch.
+    if length(eng.tiles) == 1
+        # One chunk: GPU and serial runs remain on the caller's task and CUDA stream.
+        _loop_outer_q_chunk!(eng_fields, _workspace_fields(eng.tiles[1]), calculators;
+            chunk = 1, iks = 1:eng.els_k.nk, iqs = iqs_batch)
+    else
+        # Several chunks: one task per chunk of k points, each on its own tile workspace.
+        inner_chunks = collect(enumerate(index_chunks(1:eng.els_k.nk; n = min(length(eng.tiles), eng.els_k.nk))))
+        @threads for (chunk, iks) in inner_chunks
+            _loop_outer_q_chunk!(eng_fields, _workspace_fields(eng.tiles[chunk]), calculators; chunk, iks, iqs = iqs_batch)
         end
     end
     nothing
+end
+
+# The tiles of one chunk: ranges of q (of the stage-1 batch) and of k whose product has at most
+# `capacity` pairs, k fastest. A chunk with more k than the capacity gets one q per tile.
+function _outer_q_tiles(iqs, iks, capacity)
+    nk_tile = min(length(iks), capacity)
+    # The tail k range (fewer k than the others) takes more q per tile.
+    ((iq_range, ik_range) for ik_range in Iterators.partition(iks, nk_tile)
+                          for iq_range in Iterators.partition(iqs, max(1, capacity ÷ length(ik_range))))
 end
 
 # Function barrier: the tile's type depends on the tile's routes (resident or gathered k+q states), so it is
@@ -641,13 +653,13 @@ function _run_calculators!(calculators, tile, ctx)
     end
 end
 
-function _loop_outer_q_chunk!(eng_fields, tile_workspace, calculators; chunk, iks, iq)
+function _loop_outer_q_chunk!(eng_fields, tile_workspace, calculators; chunk, iks, iqs)
     # function barrier for one chunk's concrete state containers and Fourier/rotation scratch.
     ctx = OuterQContext(eng_fields.backend, eng_fields.iqs_batch, chunk)
 
-    for iks_tile in Iterators.partition(iks, eng_fields.n_inner_tile)
+    for (iqs_tile, iks_tile) in _outer_q_tiles(iqs, iks, eng_fields.n_inner_tile)
         # The same stage-2 worker gathers/solves states and emits complete tiles for direct calls.
-        tile = _stage2!(OuterQLoop(), eng_fields, tile_workspace, iq, iks_tile)
+        tile = _stage2!(OuterQLoop(), eng_fields, tile_workspace, iqs_tile, iks_tile)
         tile === nothing || _run_calculators!(calculators, tile, ctx)
     end
     nothing

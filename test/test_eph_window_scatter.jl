@@ -1,6 +1,6 @@
 @testsnippet EphWindowScatter begin
     using ElectronPhonon: OuterKEngine, OuterKLoop, CPUBackend, gpu_backend, stage1!, stage2!, setup_calculator!,
-        gather_pair_table!, dedup_phonon_frequencies, phonon_index, unit_to_aru
+        gather_pair_table!, dedup_phonon_frequencies, phonon_index, unit_to_aru, OuterQEngine, OuterQLoop, compute_electron_states, Kpoints
     using Random
 
     # CUDA is a weak dependency (not a test dependency), so load it defensively and skip the GPU
@@ -73,6 +73,61 @@ end
             end
         end
         # vacuity guard: the fixture's tiles have more than one band class
+        @test nclasses > 1
+    end
+end
+
+# The accessors on the outer-q tile (per-pair `ik` / `iq` on the backend, several q per tile, k+q solved per
+# tile) through device broadcasts: the energies of the gathered states against `compute_electron_states` at the
+# pair's k and k+q, the eigenvectors normalized, and the state maps against the engine's.
+@testitem "outer-q tile accessors" setup = [Common, EphWindowScatter] begin
+    eV = unit_to_aru(:eV)
+    model = _load_model_from_artifacts("pb"; epmat_outer_momentum = "ph")
+    window = (11.68eV - 0.5eV, 11.68eV + 3eV); grid = (4, 4, 4)
+    backends = Any[CPUBackend()]
+    WINDOW_SCATTER_GPU_AVAILABLE && push!(backends, gpu_backend())
+    for backend in backends
+        calc = _TileCollector()
+        eng = ElectronPhonon.OuterQEngine(model, grid, grid; backend, calculators = [calc], window_k = window,
+            window_kq = window, n_inner_tile = 48, n_outer_batch = 4, verbosity = 0, symmetry = nothing)
+        setup_calculator!(calc, eng.backend, eng.els_k, eng.els_kq, eng.phs; order = ElectronPhonon.OuterQLoop(),
+            eng.sel_k, eng.sel_kq, nchunks_threads = 1, eng.n_outer_batch, eng.n_inner_tile, verbosity = 0)
+        stage1!(eng, 1:4)
+        to_dev = x -> ElectronPhonon.to_device(backend, x)
+        nclasses = 0
+        let tile = stage2!(eng, 1:4, 1:12)
+            nclasses = size(tile.seg_host, 2)
+            seg, nm = tile.seg_host, tile.phs.nmodes
+            n_pairs = size(tile.xkmat, 2)
+            xks, xqs = tile.xk, tile.xq
+            iks = Array(tile.ik)
+            @test length(unique(Array(tile.iq))) > 1
+            dt = Ref(ElectronPhonon.device_tile(tile))
+            # every (n, j) of the tile's classes, as the loops of the segment table list them
+            bands = [(j, n, m) for c in axes(seg, 2) for jj in 1:seg[ElectronPhonon.SEG_NPAIRS, c]
+                     for j in (seg[ElectronPhonon.SEG_PAIR, c] + jj,)
+                     for n in 1:seg[ElectronPhonon.SEG_BK, c] for m in 1:seg[ElectronPhonon.SEG_BKQ, c]]
+            js, ns, ms = to_dev([b[1] for b in bands]), to_dev([b[2] for b in bands]), to_dev([b[3] for b in bands])
+            e_k, e_kq = Array(ElectronPhonon.e_k.(dt, ns, js)), Array(ElectronPhonon.e_kq.(dt, ms, js))
+            u_k = Array(ElectronPhonon.u_k.(dt, reshape(to_dev(collect(1:model.nw)), :, 1), reshape(ns, 1, :),
+                reshape(js, 1, :)))
+            u_kq = Array(ElectronPhonon.u_kq.(dt, reshape(to_dev(collect(1:model.nw)), :, 1), reshape(ms, 1, :),
+                reshape(js, 1, :)))
+            @test all(x -> isapprox(x, 1; atol = 1e-12), vec(sum(abs2, u_k; dims = 1)))
+            @test all(x -> isapprox(x, 1; atol = 1e-12), vec(sum(abs2, u_kq; dims = 1)))
+            # the energies of the pair's states, band by band of its window
+            ref_k = compute_electron_states(model, Kpoints(n_pairs, collect(xks), ones(n_pairs), (1, 1, 1)),
+                ["eigenvalue"], window; fourier_mode = "normal")
+            ref_kq = compute_electron_states(model, Kpoints(n_pairs, [xks[j] + xqs[j] for j in 1:n_pairs],
+                ones(n_pairs), (1, 1, 1)), ["eigenvalue"], window; fourier_mode = "normal")
+            @test all(eachindex(bands)) do i
+                j, n, m = bands[i]
+                abs(e_k[i] - ref_k[j].e_full[ref_k[j].rng][n]) < 1e-9 &&
+                    abs(e_kq[i] - ref_kq[j].e_full[ref_kq[j].rng][m]) < 1e-9
+            end
+            # the state maps: the pair's own k, and no k+q selection here
+            @test Array(ElectronPhonon.state_k.(dt, ns, js)) == [Array(tile.imap_k)[b[2], iks[b[1]]] for b in bands]
+        end
         @test nclasses > 1
     end
 end

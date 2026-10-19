@@ -203,8 +203,7 @@ into its right rotation.
 **Outer q:** stage 1 is `g(R_e, q)` for the outer batch on the device (one GEMM over the q batch,
 then the phonon-basis rotation as a batched GEMM), stage 2 one Fourier transform over R_e and one
 `eph_apply_rotations_rqkq!` per `(q, k tile)` after the k+q states of the tile are solved
-(`solve_electron_bands_batched` and `copy_window_bands!`, into the leading `maximum(nband)` columns of the tile buffers, so the tile's k+q box is its widest
-window). The model's `epmat_outer_momentum` must match the order (`"el"` for outer k, `"ph"` for
+(`solve_electron_bands_batched`, then one gather of the window bands of each class into its segment of the tile buffers). The model's `epmat_outer_momentum` must match the order (`"el"` for outer k, `"ph"` for
 outer q), so stage 1 always contracts the column R of `epmat`. The polar
 dipole term is added on the tile for both orders (`eph_engine_add_longrange!`).
 

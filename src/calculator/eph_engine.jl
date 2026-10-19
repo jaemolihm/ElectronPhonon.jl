@@ -95,10 +95,19 @@ end
 """
     OuterQTileWorkspace
 
-Scratch for one thread chunk's k tiles in the outer-q loop. `ind_kept_kqpairs` lists the kept
-pairs of a tile, `iks` and `ikqs` their indices (`iks_dev`, `ikqs_dev` on the backend), and `els_k`,
-`els_kq`, `wtks` and `xks` hold their gathered states, weights and coordinates. `P_k` is their
-stage-2 Fourier phase `exp(2πi R_e · x_k)`.
+Scratch for one thread chunk's tiles in the outer-q loop. A tile holds the `(q, k)` pairs of a range of
+q and a range of k, q-major, at most `n_inner_tile` of them. `iks_of_pair` and `iqs_of_pair` give each
+tile pair's k and q, `ind_kept_kqpairs` lists the kept pairs and `ikqs_in_tile` the resident k+q index
+of each tile pair (0: absent; precomputed k+q only). The kept pairs are ordered by band class
+(`class_key`, `class_order`, `class_start`, `_class_order!`): `tile_pos_by_class` holds their tile
+positions in that order, `iks_by_class`, `ikqs_by_class` and `iqs_by_class` their indices
+(`iks_dev`, `ikqs_dev`, `iqs_dev`, `tile_pos_by_class_dev`, `class_order_dev` on the backend),
+`wtks`, `wtqs`, `xks` and `xqs` their weights and coordinates, and `els_k`, `els_kq` and `phs` their
+states, the electron states in one segment per class at the class's own band widths.
+`xks_qmajor` holds the kept pairs' k coordinates in q-major order and `xkmat` the same (3, n) on the backend, in
+class order.
+`P_k` is the Fourier phase `exp(2πi R_e · x_k)` of the kept pairs in q-major order and `g_qmajor` their
+Fourier transform; `g` holds it in class order (unused when the tile is one class).
 `kqs` holds the tile's k+q coordinates; `itp_el_ham` and `hk` solve k+q per tile, and are `nothing`
 with precomputed k+q states.
 `uk_rep` is scratch of the electron rotations (`eph_apply_rotations_rqkq!`), and `uk_polar` and
@@ -106,20 +115,39 @@ with precomputed k+q states.
 tile's segment table.
 """
 Base.@kwdef struct OuterQTileWorkspace
+    iks_of_pair
+    iqs_of_pair
     ind_kept_kqpairs
-    iks
-    ikqs
+    ikqs_in_tile
+    slot_col
+    iks_by_class
+    ikqs_by_class
+    iqs_by_class
+    class_key
+    class_order
+    class_order_dev
+    tile_pos_by_class
+    tile_pos_by_class_dev
+    class_start
     iks_dev
     ikqs_dev
+    iqs_dev
     els_k
     els_kq
+    phs
     wtks
+    wtqs
+    wtqs_host
     xks
+    xqs
+    xks_qmajor
+    xkmat
     P_k
     itp_el_ham
     hk
     kqs
     ep
+    g_qmajor
     g
     tmp
     uk_rep
@@ -263,6 +291,9 @@ Base.@kwdef mutable struct OuterQEngine
     energy_conservation_tol :: Float64
     eph_phonon_basis :: Symbol
     precompute_el_kq :: Bool      # the k+q states are resident (`els_kq`); false: solved per tile
+    nband_k_host :: Vector{Int}   # (nk,) the k points' band counts, on the host
+    nband_kq_host :: Vector{Int}  # (nkq,) the resident k+q points' band counts; empty when solved per tile
+    phs_no_u     :: BatchedPhononState  # `phs` without the eigenvectors: the source of the per-pair phonon gather
     iqs_batch    :: UnitRange{Int} # the outer q points of the current stage 1
     backend      :: AbstractBackend
     epmat        :: WannierObject  # model.epmat on the backend
@@ -279,8 +310,8 @@ Base.@kwdef mutable struct OuterQEngine
     tiles        :: Vector{OuterQTileWorkspace}
 end
 
-# The stable order of points by integer class key in `0:kmax` (a band count) by counting sort, into
-# `order`; `start` has `kmax + 2` entries. Returns the classes `[(key, range)]` with `key >= 1`: the
+# The stable order of points by integer class key in `0:kmax` (a band count, or two counts combined
+# by `_class_key`) by counting sort, into `order`; `start` has `kmax + 2` entries. Returns the classes `[(key, range)]` with `key >= 1`: the
 # points of a class are `order[range]`, in their original order. The points of key 0 come first in
 # `order` and belong to no class.
 function _class_order!(order, start, keys)
@@ -299,6 +330,11 @@ function _class_order!(order, start, keys)
     end
     [(key, start[key]:start[key + 1] - 1) for key in 1:length(start) - 2 if start[key + 1] > start[key]]
 end
+
+# The class key of a pair with `nb_k` bands at k and `nb_kq` at k+q (at most `nb_kq_max`), and its
+# decoding.
+_class_key(nb_k, nb_kq, nb_kq_max) = nb_k * (nb_kq_max + 1) + nb_kq
+_class_bands(key, nb_kq_max) = divrem(key, nb_kq_max + 1)
 
 # The segment table of a tile on the host (`seg_host`, one column per band class) and its device copy, as the
 # views `EPBlock` carries: columns `1:nseg` of the chunk's `seg_host` / `seg_dev`.
@@ -1114,11 +1150,12 @@ function engine_bytes(::Type{OuterQEngine}, model::Model{FT}; nband_max_k, nband
         rl * 3                                                  # xqs
     per_pair =
         cx * nbkq * nband_max_k * nmodes +                      # ep
-        cx * ndata + cx * nbkq * nw * nmodes + cx * nw * nband_max_k * nmodes +   # g, tmp, uk_rep
+        2cx * ndata + cx * nbkq * nw * nmodes + cx * nw * nband_max_k * nmodes +   # g_qmajor, g, tmp, uk_rep
         _electron_state_bytes(FT, nw, nband_max_k, el_qty) +    # k tile
         _electron_state_bytes(FT, nw, nbkq, el_qty) +           # k+q tile
+        _phonon_state_bytes(FT, nmodes, filter(!=(:u), ph_qty)) +   # phonon tile (no eigenvectors)
         cx * nr_e +                                             # stage-2 Fourier phase
-        5iz + rl + 3rl +                                        # kept pairs, iks, ikqs (+ on the backend), wtks, xks
+        (10 + max(nband_max_k, nbkq)) * iz + 2rl + 6rl + 3rl +  # pair, kept and class indices (+ on the backend), slot columns, weights, coordinates, xkmat
         (precompute_el_kq ? 0 : cx * length(model.el_ham.irvec)) +   # k+q Fourier phase
         (precompute_el_kq ? 0 : cx * nw^2 * 3) +                # k+q Hamiltonian and its eigensolve
         (model.polar_eph.use ? cx * (nw * nband_max_k + nbkq * nband_max_k) : 0)   # polar scratch
@@ -1158,28 +1195,43 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
     # Allocate independent k-tile states, interpolators, and scratch for each thread chunk.
     tiles = map(1:nchunks) do _
         # Each chunk owns its Fourier phase; the stage-1 output is read-only in stage 2.
+        ints() = Vector{Int}(undef, n_inner_tile)
+        # The class key of a pair is nband_k * (nbkq + 1) + nband_kq, at most `nbk * (nbkq + 1) + nbkq`.
         OuterQTileWorkspace(;
-            ind_kept_kqpairs = Vector{Int}(undef, n_inner_tile),
-            iks = Vector{Int}(undef, n_inner_tile),
-            ikqs = Vector{Int}(undef, n_inner_tile),    # 0: k+q absent from the precomputed states
+            iks_of_pair = ints(), iqs_of_pair = ints(), ind_kept_kqpairs = ints(),
+            ikqs_in_tile = ints(),      # 0: k+q absent from the precomputed states
+            iks_by_class = ints(), ikqs_by_class = ints(), iqs_by_class = ints(),
+            class_key = ints(), class_order = ints(), class_order_dev = alloc(backend, Int, n_inner_tile),
+            tile_pos_by_class = ints(), tile_pos_by_class_dev = alloc(backend, Int, n_inner_tile),
+            class_start = zeros(Int, _class_key(nbk, nbkq, nbkq) + 2),
             iks_dev = alloc(backend, Int, n_inner_tile),
             ikqs_dev = alloc(backend, Int, n_inner_tile),
+            iqs_dev = alloc(backend, Int, n_inner_tile),
             els_k = BatchedElectronState(backend, nw, nbk, n_inner_tile, el_qty; FT),
             els_kq = BatchedElectronState(backend, nw, nbkq, n_inner_tile, el_qty; FT),
+            # The pairs' phonon eigenvectors are not gathered: ep is already in the eigenmode basis, and a
+            # calculator that wants `u` indexes the run's phonons by `iq` (7 kB per pair at 21 modes).
+            phs = BatchedPhononState(backend, nmodes, n_inner_tile, filter(!=(:u), ph_qty); FT),
             wtks = alloc(backend, FT, n_inner_tile),
+            wtqs = alloc(backend, FT, n_inner_tile), wtqs_host = Vector{FT}(undef, n_inner_tile),
             xks = Vector{Vec3{FT}}(undef, n_inner_tile),
+            xqs = Vector{Vec3{FT}}(undef, n_inner_tile),
+            xks_qmajor = Vector{Vec3{FT}}(undef, n_inner_tile),
+            xkmat = alloc(backend, FT, 3, n_inner_tile),
             P_k = alloc(backend, Complex{FT}, nr_e, n_inner_tile),
             itp_el_ham = precompute_el_kq ? nothing :
                 BatchedWannierInterpolator(el_ham; backend, batch_size = n_inner_tile),
             hk = precompute_el_kq ? nothing : alloc(backend, Complex{FT}, nw^2, n_inner_tile),
             kqs = Vector{Vec3{FT}}(undef, n_inner_tile),
             ep = alloc(backend, Complex{FT}, nbkq * nbk * nmodes * n_inner_tile),
+            g_qmajor = alloc(backend, Complex{FT}, ndata, n_inner_tile),
             g = alloc(backend, Complex{FT}, ndata, n_inner_tile),
             tmp = alloc(backend, Complex{FT}, nbkq * nw * nmodes * n_inner_tile),
             uk_rep = alloc(backend, Complex{FT}, nw, nbk, nmodes * n_inner_tile),
             uk_polar = model.polar_eph.use ? alloc(backend, Complex{FT}, nw * nbk * n_inner_tile) : nothing,
             mmat_buffer = model.polar_eph.use ? alloc(backend, Complex{FT}, nbkq * nbk * n_inner_tile) : nothing,
-            seg_host = zeros(Int, SEG_ROWS, 1), seg_dev = alloc(backend, Int, SEG_ROWS, 1),
+            slot_col = alloc(backend, Int, max(nbk, nbkq) * n_inner_tile),
+            seg_host = zeros(Int, SEG_ROWS, nbk * nbkq), seg_dev = alloc(backend, Int, SEG_ROWS, nbk * nbkq),
         )
     end
 
@@ -1188,6 +1240,10 @@ function OuterQEngine(model::Model{FT}, backend, els_k, els_kq, phs, el_qty, ph_
         imap_k = sel_k === nothing ? nothing : _indmap_to_device(backend, sel_k),
         imap_kq = sel_kq === nothing ? nothing : _indmap_to_device(backend, sel_kq),
         energy_conservation_tol, eph_phonon_basis, precompute_el_kq, iqs_batch = 1:0, backend, epmat,
+        nband_k_host = Array(els_k.nband), nband_kq_host = precompute_el_kq ? Array(els_kq.nband) : Int[],
+        phs_no_u = let (; nmodes, nq, e, vdiag, eph_dipole_coeff, eph_r_coeff) = phs
+            BatchedPhononState{FT}(nmodes, nq, nothing, e, nothing, vdiag, eph_dipole_coeff, eph_r_coeff)
+        end,
         itp_epmat, irvece_mat = _irvec_to_device_matrix(backend, irvec_e, FT),
         g_q = alloc(backend, Complex{FT}, ndata, nr_e, n_outer_batch),
         g_rot = eph_phonon_basis == :cartesian ? nothing : alloc(backend, Complex{FT}, nw^2, nr_e, nmodes, n_outer_batch),
@@ -1255,147 +1311,261 @@ end
 end
 
 """
-    stage2!(eng::OuterQEngine, iq, iks_tile; chunk=1) -> EPBlock or nothing
+    stage2!(eng::OuterQEngine, iqs_tile, iks_tile; chunk=1) -> EPBlock or nothing
+    stage2!(eng::OuterQEngine, iq::Int, iks_tile; chunk=1)
 
-Return the calculator-ready [`EPBlock`](@ref) of outer q point `iq` and a tile of k points: solve
-the k+q states or look them up in the precomputed container, gather the states of the pairs to
-compute, compute their e-ph matrix, and add polar corrections. Returns `nothing` if no pair is kept.
-Call `stage1!` first; `iq` must be in its current batch.
+Return the calculator-ready [`EPBlock`](@ref) of the `(q, k)` pairs of the outer q points
+`iqs_tile` and the k points `iks_tile`, q-major: solve the k+q states or look them up in the precomputed
+container, keep the pairs to compute, compute their e-ph matrix, and add polar corrections. The kept pairs
+are split by band class (`nband` at k, `nband` at k+q) into the segments of the tile, whose two electron
+sides have exactly that many bands, so no band padding is an item. The pairs of a class may belong to
+several q: `iq`, `phs`, `wtq` and `xq` are per pair. Returns `nothing` if no pair is kept. Call `stage1!`
+first; `iqs_tile` must be in its current batch.
 
-The tile borrows this chunk's buffers: its arrays are valid until that chunk's next `stage2!`
-or the next `stage1!`. Consume it before then or copy the arrays you need to retain. Calls on
+The tile borrows this chunk's buffers: its arrays are valid until that chunk's next
+`stage2!` or the next `stage1!`. Consume it before then or copy the arrays you need to retain. Calls on
 different CPU chunks may run concurrently, but `stage1!` must wait for all of them to finish.
 
-- `iq`: Index into `eng.qpts`, not a batch-local index.
-- `iks_tile`: Nonempty contiguous range into `eng.kpts`.
+- `iqs_tile`: Nonempty contiguous range into `eng.qpts` inside the current batch (`iq`: one point).
+- `iks_tile`: Nonempty contiguous range into `eng.kpts`; the tile has at most `eng.n_inner_tile` pairs.
 - `chunk`: Independent workspace slot for CPU threading; use 1 for serial calls and GPU calls.
 """
-function stage2!(eng::OuterQEngine, iq::Int, iks_tile::UnitRange{Int}; chunk::Int = 1)
-    _check_stage2(eng, iq, eng.iqs_batch, iks_tile, chunk, eng.kpts.n)
+function stage2!(eng::OuterQEngine, iqs_tile::UnitRange{Int}, iks_tile::UnitRange{Int}; chunk::Int = 1)
+    isempty(iqs_tile) && throw(ArgumentError("stage2! needs a nonempty outer q range"))
+    (first(iqs_tile) ∈ eng.iqs_batch && last(iqs_tile) ∈ eng.iqs_batch) || throw(ArgumentError(
+        "outer points $iqs_tile are not in the current stage1! batch $(eng.iqs_batch)"))
+    _check_stage2(eng, first(iqs_tile), eng.iqs_batch, iks_tile, chunk, eng.kpts.n; n_pairs = length(iqs_tile) * length(iks_tile))
     # function barrier for the concrete resident states, engine buffers, and chunk scratch.
-    _stage2!(OuterQLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), iq, iks_tile)
+    _stage2!(OuterQLoop(), _workspace_fields(eng), _workspace_fields(eng.tiles[chunk]), iqs_tile, iks_tile)
 end
+stage2!(eng::OuterQEngine, iq::Int, iks_tile::UnitRange{Int}; chunk::Int = 1) =
+    stage2!(eng, iq:iq, iks_tile; chunk)
 
 # The state containers are sliced with an explicit `view`: `@views` covers arrays only.
-@views function _stage2!(::OuterQLoop, eng_fields, tile_workspace, iq, iks_tile)
-    n_tile = length(iks_tile)
+@views function _stage2!(::OuterQLoop, eng_fields, tile_workspace, iqs_tile, iks_tile)
+    nk_tile = length(iks_tile)
+    n_pairs = length(iqs_tile) * nk_tile
     tol = eng_fields.energy_conservation_tol
-    (; ind_kept_kqpairs) = tile_workspace
-    (; els_k, phs) = eng_fields
-    for (j, ik) in enumerate(iks_tile)
-        tile_workspace.kqs[j] = eng_fields.kpts.vectors[ik] + eng_fields.qpts.vectors[iq]
+    (; ind_kept_kqpairs, ikqs_in_tile, iks_of_pair, iqs_of_pair, class_key, class_order,
+       tile_pos_by_class, class_start) = tile_workspace
+    (; els_k, phs, phs_no_u, nband_k_host, nband_kq_host, precompute_el_kq) = eng_fields
+    nw = eng_fields.model.nw
+    # Pair p = (iq_index - 1) * nk_tile + ik_index: q-major, k fastest.
+    for (a, iq) in enumerate(iqs_tile), (j, ik) in enumerate(iks_tile)
+        p = (a - 1) * nk_tile + j
+        iks_of_pair[p] = ik
+        iqs_of_pair[p] = iq
+        tile_workspace.kqs[p] = eng_fields.kpts.vectors[ik] + eng_fields.qpts.vectors[iq]
     end
-
-    if eng_fields.precompute_el_kq
+    if precompute_el_kq
         # k+q precomputed: look up each k+q in the resident states. One with no state in the window
         # is absent from them (index 0).
         (; els_kq) = eng_fields
-        ikqs_host = tile_workspace.ikqs
-        for j in 1:n_tile
-            ikqs_host[j] = something(xk_to_ik_unsafe(tile_workspace.kqs[j], eng_fields.kqpts), 0)
+        for p in 1:n_pairs
+            ikqs_in_tile[p] = something(xk_to_ik_unsafe(tile_workspace.kqs[p], eng_fields.kqpts), 0)
         end
 
         # Keep the pairs whose k+q has a state in the window, and of those the pairs with a process
         # inside the energy-conservation tolerance.
-        n_kept = _kqpairs_in_window!(ind_kept_kqpairs, ikqs_host[1:n_tile])
+        n_selected = _kqpairs_in_window!(ind_kept_kqpairs, ikqs_in_tile[1:n_pairs])
         if isfinite(tol)
-            n_kept = _kqpairs_conserving_energy!(ind_kept_kqpairs, n_kept, tol,
-                els_k.e, els_k.nband, iks_tile, els_kq.e, nothing, els_kq.nband, ikqs_host, phs.e, iq)
+            n_selected = _kqpairs_conserving_energy!(ind_kept_kqpairs, n_selected, tol,
+                els_k.e, els_k.nband, iks_of_pair, els_kq.e, nothing, els_kq.nband, ikqs_in_tile, phs.e, iqs_of_pair)
         end
-        n_kept == 0 && return nothing
-
-        # Gather the kept pairs' k+q states, through their indices on the backend. The lookup
-        # returned indices of the resident states, so the gather needs no bounds check.
-        for (i, j) in enumerate(ind_kept_kqpairs[1:n_kept])
-            ikqs_host[i] = ikqs_host[j]
-        end
-        ikqs = ikqs_host[1:n_kept]
-        copyto!(tile_workspace.ikqs_dev, 1, ikqs_host, 1, n_kept)
-        els_kq_block = view(copy_batched_electron_states!(tile_workspace.els_kq, els_kq,
-            tile_workspace.ikqs_dev[1:n_kept]), 1:n_kept)
+        n_selected == 0 && return nothing
+        nb_kq_max = els_kq.nband_max
+        # Tile pair p has nband_kq_table[nband_kq_index[p]] bands at k+q.
+        nband_kq_table, nband_kq_index = nband_kq_host, ikqs_in_tile
     else
-        # k+q solved per tile: solve the electron bands at k+q for this q and k tile.
+        # k+q solved per tile: solve the electron bands at the k+q of every pair at once.
         bands_kq = solve_electron_bands_batched(tile_workspace.itp_el_ham, tile_workspace.hk,
-            eng_fields.model, tile_workspace.kqs[1:n_tile], eng_fields.window_kq;
+            eng_fields.model, tile_workspace.kqs[1:n_pairs], eng_fields.window_kq;
             eigenvectors = tile_workspace.els_kq.u !== nothing)
 
         # Keep the pairs whose k+q has a state in the window, and of those the pairs with a process
         # inside the energy-conservation tolerance.
         nbands_kq = Array(bands_kq.nband)
-        n_kept = _kqpairs_in_window!(ind_kept_kqpairs, nbands_kq)
+        n_selected = _kqpairs_in_window!(ind_kept_kqpairs, nbands_kq)
         if isfinite(tol)
-            n_kept = _kqpairs_conserving_energy!(ind_kept_kqpairs, n_kept, tol,
-                els_k.e, els_k.nband, iks_tile, bands_kq.E, bands_kq.offset, nbands_kq, 1:n_tile, phs.e, iq)
+            n_selected = _kqpairs_conserving_energy!(ind_kept_kqpairs, n_selected, tol,
+                els_k.e, els_k.nband, iks_of_pair, bands_kq.E, bands_kq.offset, nbands_kq, 1:n_pairs, phs.e, iqs_of_pair)
         end
-        n_kept == 0 && return nothing
-
-        # Move the kept pairs' window bands at k+q into the tile.
-        els_kq_block = copy_window_bands!(tile_workspace.els_kq, bands_kq,
-            n_kept == n_tile ? (1:n_tile) : ind_kept_kqpairs[1:n_kept]; nband_host = nbands_kq)
-        ikqs = nothing
+        n_selected == 0 && return nothing
+        nb_kq_max = nw
+        nband_kq_table, nband_kq_index = nbands_kq, 1:n_pairs
     end
 
-    if n_kept == n_tile
-        # Every pair is kept: the resident k states, weights and coordinates as they are. The
-        # resident containers are read-only for the whole run, so the block may alias them.
-        iks = iks_tile
-        els_k_block = view(els_k, iks_tile)
-        wtks = eng_fields.wtks[iks_tile]
-        xks = eng_fields.kpts.vectors[iks_tile]
+    # Order the selected pairs by band class. A pair with no band on either side has no state and is
+    # dropped; `ind_kept_kqpairs[1:n_kept]` are the tile positions of the others, still q-major.
+    n_kept = 0
+    for i in 1:n_selected
+        p = ind_kept_kqpairs[i]
+        nb_k, nb_kq = nband_k_host[iks_of_pair[p]], nband_kq_table[nband_kq_index[p]]
+        (nb_k > 0 && nb_kq > 0) || continue
+        n_kept += 1
+        ind_kept_kqpairs[n_kept] = p
+        class_key[n_kept] = _class_key(nb_k, nb_kq, nb_kq_max)
+    end
+    n_kept == 0 && return nothing
+    classes = _class_order!(class_order[1:n_kept], class_start, class_key[1:n_kept])
+    for i in 1:n_kept
+        tile_pos_by_class[i] = ind_kept_kqpairs[class_order[i]]
+    end
+
+    # A single class with every pair of a one-q tile kept, at the resident width of the k states, keeps
+    # the tile as it is: the k side is a view of the resident states, with no copy. The resident
+    # containers are read-only for the whole run, so the block may alias them.
+    one_class = length(classes) == 1
+    nb_k_first, _ = _class_bands(first(classes)[1], nb_kq_max)
+    k_in_place = one_class && length(iqs_tile) == 1 && n_kept == n_pairs && nb_k_first == els_k.nband_max
+    # The kept pairs' indices, weights and coordinates in class order, and their coordinates in q-major
+    # order (the order of the Fourier transform).
+    for i in 1:n_kept
+        p = tile_pos_by_class[i]
+        ik, iq = iks_of_pair[p], iqs_of_pair[p]
+        tile_workspace.iks_by_class[i] = ik
+        tile_workspace.iqs_by_class[i] = iq
+        tile_workspace.xks[i] = eng_fields.kpts.vectors[ik]
+        tile_workspace.xqs[i] = eng_fields.qpts.vectors[iq]
+        tile_workspace.wtqs_host[i] = eng_fields.qpts.weights[iq]
+        tile_workspace.xks_qmajor[i] = eng_fields.kpts.vectors[iks_of_pair[ind_kept_kqpairs[i]]]
+    end
+    precompute_el_kq && for i in 1:n_kept
+        tile_workspace.ikqs_by_class[i] = ikqs_in_tile[tile_pos_by_class[i]]
+    end
+    iks_kept, iqs_kept = tile_workspace.iks_by_class[1:n_kept], tile_workspace.iqs_by_class[1:n_kept]
+    xks, xqs = tile_workspace.xks[1:n_kept], tile_workspace.xqs[1:n_kept]
+
+    # Every host-to-device upload of the tile, before any GEMM is queued: behind queued GEMMs a pageable
+    # upload blocks the host once about 2 MB is staged. The kept points are in the tile, so the gathers
+    # by these indices need no bounds check.
+    xkmat_qmajor = _kpoints_to_device_matrix(eng_fields.backend, tile_workspace.xks_qmajor[1:n_kept])
+    copyto!(tile_workspace.iqs_dev, 1, tile_workspace.iqs_by_class, 1, n_kept)
+    copyto!(tile_workspace.wtqs, 1, tile_workspace.wtqs_host, 1, n_kept)
+    copyto!(tile_workspace.iks_dev, 1, tile_workspace.iks_by_class, 1, n_kept)
+    if precompute_el_kq
+        copyto!(tile_workspace.ikqs_dev, 1, tile_workspace.ikqs_by_class, 1, n_kept)
     else
-        # Some pairs are skipped: gather the kept pairs' k states, weights and coordinates. The
-        # kept k points are in the tile, so the gather needs no bounds check.
-        for (i, j) in enumerate(ind_kept_kqpairs[1:n_kept])
-            tile_workspace.iks[i] = iks_tile[j]
-            tile_workspace.xks[i] = eng_fields.kpts.vectors[iks_tile[j]]
+        # The solved k+q points of each class on the backend, for the state gather.
+        copyto!(tile_workspace.tile_pos_by_class_dev, 1, tile_pos_by_class, 1, n_kept)
+    end
+    one_class || copyto!(tile_workspace.class_order_dev, 1, class_order, 1, n_kept)
+
+    # Fourier-transform R_e of each q's stage-1 output at the kept k points, q-major:
+    # g_ijν(R_e, q) -> g_ijν(k, q). There is no band axis and the phase depends on k only, so one phase
+    # build serves the tile and each q is one GEMM over its run of pairs, into `g_qmajor`.
+    phase = tile_workspace.P_k[:, 1:n_kept]
+    build_fourier_phase!(phase, eng_fields.irvece_mat, xkmat_qmajor)
+    i_first = 1
+    while i_first <= n_kept
+        iq = iqs_of_pair[ind_kept_kqpairs[i_first]]
+        i_last = i_first
+        while i_last < n_kept && iqs_of_pair[ind_kept_kqpairs[i_last + 1]] == iq
+            i_last += 1
         end
-        iks = tile_workspace.iks[1:n_kept]
-        copyto!(tile_workspace.iks_dev, 1, tile_workspace.iks, 1, n_kept)
-        iks_dev = tile_workspace.iks_dev[1:n_kept]
-        els_k_block = view(copy_batched_electron_states!(tile_workspace.els_k, els_k, iks_dev), 1:n_kept)
-        wtks = _copy_last_axis!(tile_workspace.wtks, eng_fields.wtks, iks_dev)[1:n_kept]
-        xks = tile_workspace.xks[1:n_kept]
+        iq_batch = iq - first(eng_fields.iqs_batch) + 1
+        mul!(tile_workspace.g_qmajor[:, i_first:i_last], eng_fields.ep_Rq[:, :, iq_batch], phase[:, i_first:i_last])
+        i_first = i_last + 1
+    end
+    # A tile of one class keeps the q-major order; otherwise the columns of g and the k coordinates are
+    # permuted into class order.
+    ndata = size(tile_workspace.g, 1)
+    if one_class
+        g_all, xkmat = tile_workspace.g_qmajor, xkmat_qmajor
+    else
+        _copy_last_axis!(tile_workspace.g, tile_workspace.g_qmajor, tile_workspace.class_order_dev[1:n_kept])
+        _copy_last_axis!(tile_workspace.xkmat, xkmat_qmajor, tile_workspace.class_order_dev[1:n_kept])
+        g_all, xkmat = tile_workspace.g, tile_workspace.xkmat[:, 1:n_kept]
     end
 
-    # function barrier for the concrete types of the kept pairs' states and indices.
-    _compute_eph_for_pairs!(OuterQLoop(), eng_fields, tile_workspace, els_k_block, els_kq_block,
-        iks, ikqs, iq, wtks, xks)
-end
-
-# The outer-q tile is one segment at the box widths of its states (the k+q box is the largest window of
-# the tile): the band padding of a smaller window is items of the list, which the rule of this engine
-# excludes only on the outer-k side.
-@views function _compute_eph_for_pairs!(::OuterQLoop, eng_fields, tile_workspace, els_k, els_kq, iks, ikqs, iq,
-        wtks, xks)
-    xkmat = _kpoints_to_device_matrix(eng_fields.backend, xks)
-    nbkq, nbk, nmodes = els_kq.nband_max, els_k.nband_max, eng_fields.phs.nmodes
-    npairs = els_k.nk
-    ep = reshape_buffer_view(tile_workspace.ep, nbkq, nbk, nmodes, npairs)
-
-    # Fourier-transform R_e of this q's stage-1 output at the tile's k points:
-    # g_ijν(R_e, q) -> g_ijν(k, q).
-    iq_batch = iq - first(eng_fields.iqs_batch) + 1
-    nw = els_k.nw
-    g = tile_workspace.g[:, 1:npairs]
-    phase = tile_workspace.P_k[:, 1:npairs]
-    _fourier_batched!(g, eng_fields.ep_Rq[:, :, iq_batch], phase, eng_fields.irvece_mat, xkmat)
-
-    # Rotate by u_k and u_{k+q}: g_ijν(k, q) -> g_mnν(k, q), with m, n the bands of k+q and k.
-    tmp = reshape_buffer_view(tile_workspace.tmp, nbkq, nw * nmodes, npairs)
-    uk_rep = reshape_buffer_view(tile_workspace.uk_rep, nw, nbk, nmodes * npairs)
-    eph_apply_rotations_rqkq!(ep, g, els_k.u, els_kq.u, tmp, uk_rep)
-
-    phs = view(eng_fields.phs, iq:iq)
-    if eng_fields.model.polar_eph.use
-        eph_engine_add_longrange!(ep, phs.eph_dipole_coeff, els_k.u, els_kq.u, tile_workspace, eng_fields.model)
+    # The weights, the phonons and the band counts of the kept pairs, by their indices.
+    wtqs = tile_workspace.wtqs[1:n_kept]
+    copy_batched_phonon_states!(tile_workspace.phs, phs_no_u, tile_workspace.iqs_dev[1:n_kept])
+    phs_tile = view(tile_workspace.phs, 1:n_kept)
+    if k_in_place
+        wtks = eng_fields.wtks[iks_tile]
+    else
+        wtks = _copy_last_axis!(tile_workspace.wtks, eng_fields.wtks, tile_workspace.iks_dev[1:n_kept])[1:n_kept]
+        # The band counts of all kept k points at once.
+        _copy_last_axis!(tile_workspace.els_k.iband_offset, els_k.iband_offset, tile_workspace.iks_dev[1:n_kept])
+        _copy_last_axis!(tile_workspace.els_k.nband, els_k.nband, tile_workspace.iks_dev[1:n_kept])
     end
+    if precompute_el_kq
+        _copy_last_axis!(tile_workspace.els_kq.iband_offset, eng_fields.els_kq.iband_offset, tile_workspace.ikqs_dev[1:n_kept])
+        _copy_last_axis!(tile_workspace.els_kq.nband, eng_fields.els_kq.nband, tile_workspace.ikqs_dev[1:n_kept])
+    else
+        pos = tile_workspace.tile_pos_by_class_dev[1:n_kept]
+        nb_pts = view(tile_workspace.els_kq.nband, 1:n_kept)
+        nb_pts .= getindex.(Ref(bands_kq.nband), pos)
+        view(tile_workspace.els_kq.iband_offset, 1:n_kept) .= ifelse.(nb_pts .> 0, getindex.(Ref(bands_kq.offset), pos), 0)
+    end
+
+    # The segment table: one column per band class, with the class's k+q and k segments of the gathered
+    # states (the resident k states are used in place for a one-class one-q tile).
+    nm = phs.nmodes
     seg = tile_workspace.seg_host
-    seg[:, 1] .= (0, 0, npairs, nbkq, nbk, 0, 0, 0, 0, 0)
-    seg_dev, seg_host = _upload_segments!(tile_workspace, 1)
-    EPBlock{OuterQLoop}(; ep = reshape_buffer_view(tile_workspace.ep, length(ep)), dg = nothing,
-        els_k, els_kq, phs, wtk = wtks, wtq = eng_fields.qpts.weights[iq], xk = xks, xkmat,
-        xq = eng_fields.qpts.vectors[iq], ik = iks, ikq = ikqs, iq, seg = seg_dev, seg_host,
-        imap_k = eng_fields.imap_k, imap_kq = eng_fields.imap_kq)
+    segment_k, segment_kq, item = (0, 0, 0), (0, 0, 0), 0
+    for (c, (key, r)) in enumerate(classes)
+        nb_k, nb_kq = _class_bands(key, nb_kq_max)
+        seg[SEG_ITEM, c] = item
+        seg[SEG_PAIR, c] = first(r) - 1
+        seg[SEG_NPAIRS, c] = length(r)
+        seg[SEG_BKQ, c] = nb_kq
+        seg[SEG_BK, c] = nb_k
+        seg[SEG_KQ_PT, c] = segment_kq[1]
+        seg[SEG_KQ_SLOT, c] = segment_kq[2]
+        seg[SEG_K_PT, c] = k_in_place ? 0 : segment_k[1]
+        seg[SEG_K_SLOT, c] = k_in_place ? 0 : segment_k[2]
+        seg[SEG_K_SHARED, c] = 0
+        item += length(r) * nb_kq * nb_k * nm
+        segment_k = _after_segment(segment_k, length(r), nb_k)
+        segment_kq = _after_segment(segment_kq, length(r), nb_kq)
+    end
+    seg_dev, seg_host = _upload_segments!(tile_workspace, length(classes))
+
+    # The class states of both sides, one gather per field for the whole tile.
+    if k_in_place
+        els_k_tile = view(els_k, iks_tile)
+    else
+        _gather_slots!(tile_workspace.els_k, els_k.e, els_k.u, els_k.vdiag, tile_workspace.slot_col, seg_dev,
+            SEG_K_SLOT, SEG_BK, tile_workspace.iks_dev, nothing, els_k.nband_max, segment_k[2])
+        els_k_tile = tile_workspace.els_k
+    end
+    if precompute_el_kq
+        _gather_slots!(tile_workspace.els_kq, eng_fields.els_kq.e, eng_fields.els_kq.u, eng_fields.els_kq.vdiag,
+            tile_workspace.slot_col, seg_dev, SEG_KQ_SLOT, SEG_BKQ, tile_workspace.ikqs_dev, nothing,
+            eng_fields.els_kq.nband_max, segment_kq[2])
+    else
+        _gather_slots!(tile_workspace.els_kq, bands_kq.E, bands_kq.U, nothing, tile_workspace.slot_col, seg_dev,
+            SEG_KQ_SLOT, SEG_BKQ, tile_workspace.tile_pos_by_class_dev, bands_kq.offset, nw, segment_kq[2])
+    end
+
+    # Rotate each class by its u_k and u_{k+q} into its items of `ep`, g_ijν(k, q) -> g_mnν(k, q), and add the
+    # polar term.
+    item, segment_k, segment_kq = 0, (0, 0, 0), (0, 0, 0)
+    for (c, (key, r)) in enumerate(classes)
+        n_c = length(r)
+        nb_k, nb_kq = _class_bands(key, nb_kq_max)
+        els_k_c = k_in_place ? els_k_tile : reshape_view_batched_electron_states(els_k_tile, nb_k, n_c; offset = segment_k)
+        els_kq_c = reshape_view_batched_electron_states(tile_workspace.els_kq, nb_kq, n_c; offset = segment_kq)
+        segment_k = _after_segment(segment_k, n_c, nb_k)
+        segment_kq = _after_segment(segment_kq, n_c, nb_kq)
+        g_c = reshape_buffer_view(g_all, ndata, n_c; offset = ndata * (first(r) - 1))
+        ep_c = reshape_buffer_view(tile_workspace.ep, nb_kq, nb_k, nm, n_c; offset = item)
+        tmp = reshape_buffer_view(tile_workspace.tmp, nb_kq, nw * nm, n_c)
+        uk_rep = reshape_buffer_view(tile_workspace.uk_rep, nw, nb_k, nm * n_c)
+        eph_apply_rotations_rqkq!(ep_c, g_c, els_k_c.u, els_kq_c.u, tmp, uk_rep)
+        if eng_fields.model.polar_eph.use
+            eph_engine_add_longrange!(ep_c, view(phs_tile.eph_dipole_coeff, :, r), els_k_c.u, els_kq_c.u,
+                tile_workspace, eng_fields.model)
+        end
+        item += n_c * nb_kq * nb_k * nm
+    end
+    EPBlock{OuterQLoop}(; ep = reshape_buffer_view(tile_workspace.ep, item), dg = nothing,
+        els_k = els_k_tile, els_kq = tile_workspace.els_kq,
+        phs = phs_tile, wtk = wtks, wtq = wtqs, xk = xks, xkmat, xq = xqs, ik = tile_workspace.iks_dev[1:n_kept],
+        ikq = precompute_el_kq ? tile_workspace.ikqs_dev[1:n_kept] : nothing, iq = tile_workspace.iqs_dev[1:n_kept],
+        seg = seg_dev, seg_host, imap_k = eng_fields.imap_k, imap_kq = eng_fields.imap_kq)
 end
 
 
@@ -1410,14 +1580,15 @@ function _check_outer_batch(outer_batch, npoints, capacity)
     nothing
 end
 
-function _check_stage2(eng, outer_index, outer_batch, inner_indices, chunk, n_inner)
+function _check_stage2(eng, outer_index, outer_batch, inner_indices, chunk, n_inner;
+        n_pairs = length(inner_indices))
     outer_index ∈ outer_batch || throw(ArgumentError(
         "outer point $outer_index is not in the current stage1! batch $outer_batch"))
     1 <= chunk <= length(eng.tiles) || throw(BoundsError(eng.tiles, chunk))
     isempty(inner_indices) && throw(ArgumentError("stage2! needs a nonempty inner tile"))
     (first(inner_indices) >= 1 && last(inner_indices) <= n_inner) || throw(BoundsError(1:n_inner, inner_indices))
-    length(inner_indices) <= eng.n_inner_tile || throw(ArgumentError(
-        "inner tile exceeds the engine's capacity $(eng.n_inner_tile)"))
+    n_pairs <= eng.n_inner_tile || throw(ArgumentError(
+        "the tile's $n_pairs pairs exceed the engine's capacity $(eng.n_inner_tile)"))
     nothing
 end
 

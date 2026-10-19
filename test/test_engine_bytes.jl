@@ -157,7 +157,8 @@ end
         tile_workspace = ElectronPhonon._workspace_fields(eng.tiles[1])
         eng_fields = ElectronPhonon._workspace_fields(eng)
         nclasses = Ref(0)
-        run2 = () -> (tile = ElectronPhonon._stage2!(order, eng_fields, tile_workspace, 1, 1:ntile);
+        run2 = () -> (tile = ElectronPhonon._stage2!(order, eng_fields, tile_workspace,
+                          order isa OuterQLoop ? (1:1) : 1, 1:ntile);
                       nclasses[] = size(tile.seg_host, 2); nothing)
         run2()
         nbytes = if backend isa ElectronPhonon.CPUBackend
@@ -168,7 +169,7 @@ end
         @info "stage2! allocations" order backend = nameof(typeof(backend)) nbytes
         # Only small view/dispatch wrappers and the staged k list may be allocated; the rotation
         # scratch alone would be O(1e5) bytes for this fixture. On the host each band class of the tile adds
-        # the views of its rotation (1.04 kB per class measured on Julia 1.11, 1.2 kB on 1.13 for outer k).
-        @test nbytes <= 24 * ntile + 2048 + (backend isa ElectronPhonon.CPUBackend ? 1500 * nclasses[] : 0)
+        # the views of its rotation (1.1 kB per class on Julia 1.11 and 2 kB on 1.13, outer q).
+        @test nbytes <= 24 * ntile + 2048 + (backend isa ElectronPhonon.CPUBackend ? 2000 * nclasses[] : 0)
     end
 end

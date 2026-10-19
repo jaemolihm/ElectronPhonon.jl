@@ -1,6 +1,6 @@
 @testsnippet BatchedElectronState begin
     using ElectronPhonon: gpu_backend, on_backend, Vec3, CPUBackend, copy_batched_electron_states!,
-        solve_electron_bands_batched, copy_window_bands!, unit_to_aru, BatchedWannierInterpolator,
+        solve_electron_bands_batched, unit_to_aru, BatchedWannierInterpolator,
         get_fourier_batched!, eigen_batched!, inside_window
     using OffsetArrays: no_offset_view
 
@@ -131,68 +131,6 @@ end
         @test isequal(narrow.e[:, 1:3], els.e[1:b, fits[1:3]]) &&
               isequal(narrow.u[:, :, 1:3], els.u[:, 1:b, fits[1:3]])
         @test_throws "more than els_dst.nband_max" copy_batched_electron_states!(narrow, els, wide[1:2])
-
-        # Solved into a tile: the bands of the window, moved to local bands 1:nband, of the same
-        # batched solve, in a box as wide as the largest window. Off-grid points, more tile than
-        # points.
-        xks = kpts.vectors[1:50] .+ Ref(Vec3(0.013, 0.02, -0.01))
-        backends = Any[CPUBackend()]
-        BATCHED_ELECTRON_GPU_AVAILABLE && push!(backends, gpu_backend())
-        for backend in backends, window in (window_wide, window_narrow, (-Inf, Inf))
-            nw = model_pb.nw
-            tile = BatchedElectronState(backend, nw, nw, 53, [:e, :u])
-            itp = BatchedWannierInterpolator(ElectronPhonon.to_device(backend, model_pb.el_ham);
-                                             backend, batch_size = tile.nk)
-            bands = solve_electron_bands_batched(itp, ElectronPhonon.alloc(backend, ComplexF64,
-                nw^2, tile.nk), model_pb, xks, window; eigenvectors = true)
-            out = copy_window_bands!(tile, bands, eachindex(xks))
-            hk = ElectronPhonon.alloc(backend, ComplexF64, nw^2, length(xks))
-            get_fourier_batched!(hk, itp, xks)
-            E, U = Array.(eigen_batched!(reshape(hk, nw, nw, :)))
-            e, u = Array(out.e), Array(out.u)
-            off, nband = Array(out.iband_offset), Array(out.nband)
-            @test out.nk == length(xks) && out.nband_max == max(maximum(nband), 1)
-            # The box is the leading memory of the tile's buffers.
-            @test vec(Array(out.u)) == vec(Array(tile.u))[1:length(out.u)]
-            @test all(eachindex(xks)) do j
-                r = inside_window(E[:, j], window...)
-                issorted(E[:, j]) && nband[j] == length(r) && (isempty(r) || off[j] == first(r) - 1) &&
-                    e[1:nband[j], j] == E[r, j] && u[:, 1:nband[j], j] == U[:, r, j]
-            end
-            # A chosen subset of the solved points, in the given order.
-            points = [7, 3, 50, 21]
-            sub = copy_window_bands!(tile, bands, points)
-            nband_sub = Array(sub.nband)
-            @test sub.nk == length(points) && sub.nband_max == max(maximum(nband_sub), 1)
-            @test nband_sub == nband[points] && Array(sub.iband_offset) == off[points]
-            @test all(eachindex(points)) do i
-                r = inside_window(E[:, points[i]], window...)
-                Array(sub.e)[1:nband_sub[i], i] == E[r, points[i]] &&
-                    Array(sub.u)[:, 1:nband_sub[i], i] == U[:, r, points[i]]
-            end
-            # The box width read from a host copy of `nband` gives the same container. `sub` shares
-            # the tile's buffers, so its values are copied first.
-            e_sub, u_sub = Array(sub.e), Array(sub.u)
-            sub_host = copy_window_bands!(tile, bands, points; nband_host = Array(bands.nband))
-            @test sub_host.nband_max == sub.nband_max && Array(sub_host.e) == e_sub &&
-                Array(sub_host.u) == u_sub && Array(sub_host.nband) == nband_sub
-            # A window ending inside band 2 holds 1 or more bands per point. The box of the points
-            # with the fewest bands, read from the host copy, is narrower than the widest point's.
-            window_2 = (-Inf, (minimum(E[2, :]) + maximum(E[2, :])) / 2)
-            bands_2 = solve_electron_bands_batched(itp, ElectronPhonon.alloc(backend, ComplexF64,
-                nw^2, tile.nk), model_pb, xks, window_2; eigenvectors = true)
-            nband_2 = Array(bands_2.nband)
-            points_narrow = findall(==(minimum(nband_2)), nband_2)
-            @test 1 <= minimum(nband_2) < maximum(nband_2)
-            @test copy_window_bands!(tile, bands_2, points_narrow; nband_host = nband_2).nband_max ==
-                minimum(nband_2)
-            @test copy_window_bands!(tile, bands, 1:0).nk == 0
-        end
-        itp = BatchedWannierInterpolator(model_pb.el_ham; batch_size = 6)
-        bands = solve_electron_bands_batched(itp, zeros(ComplexF64, 16, 6), model_pb, xks[1:2],
-            window_wide; eigenvectors = true)
-        @test_throws "nband_max = nw = 4" copy_window_bands!(
-            BatchedElectronState(CPUBackend(), 4, 2, 6, [:e, :u]), bands, 1:2)
     end
 
     @testset "GPU" begin
