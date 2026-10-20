@@ -25,8 +25,9 @@ direction, `k` k point.
 physical band `iband_offset[k] + n`, with `iband_offset[k]` the first in-window band minus one,
 never clamped. The band axes have width `nband_max` (the largest `nband`, or `nw` when the window is
 not known before the solve). Entries at `n > nband[k]` are undefined, including box columns past
-physical band `nw`: reading them is a bug in the reader, and a reduction over the whole box selects
-with `ifelse` on `n ≤ nband[k]` rather than multiplying by a 0/1 mask.
+physical band `nw`. No calculation reads them. A reduction over the whole box selects with `ifelse`
+on `n ≤ nband[k]` (a select, never a multiply by a 0/1 mask). Whole-array copies (`Array`,
+`copy_batched_electron_states!`) carry them along as undefined values.
 
 The arrays, `iband_offset` and `nband` live on the backend that built them. `kpts` stays on the
 host, and is `nothing` for a per-batch buffer, whose `nk` is the buffer width.

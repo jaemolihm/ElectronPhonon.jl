@@ -190,7 +190,7 @@ The loop holds no device-specific code, so it runs on host arrays on a `CPUBacke
 inner points are split into `nchunks_threads` thread chunks, each with its own tile buffers
 (`eng.tiles[chunk]`); a device run uses one chunk on the calling task. A CPU run does **not** cover
 the CUDA kernels (`_bte_window_accumulate_kernel!`, `_window_scatter_kernel!` (item and entry kernels), the fused rotation
-kernels, `CUBLAS.gemm_strided_batched!`, the cuSOLVER batched eigensolve): those need the GPU box.
+kernels, `CUBLAS.gemm_strided_batched!`, the cuSOLVER batched eigensolve): those need a GPU node.
 
 Each order is two stages. **Outer k:** stage 1 is one batched Fourier transform over R_e
 and one `eph_rotate_kR_batched!` over the outer batch, which stores the kR intermediate in the
@@ -213,8 +213,7 @@ a tile by the band count of their k+q point and stores each class's `b_kq × b_k
 (`ep` is `(n_items,)`, with a small segment table, `seg`, of one column per class), so no padding is
 ever an item or read: a kernel decodes an item with `item_indices` / `entry_indices`. Under outer k a
 k's k+q tiles are not contiguous (the tile loop is outside the k loop), so a per-k reduction is
-done in the brackets around the outer batch (`ctx.iks_batch`). The outer-q tile is still one box-wide
-class.
+done in the brackets around the outer batch (`ctx.iks_batch`).
 
 Memory: `engine_bytes` counts the engine's buffers next to their `alloc` calls, each calculator
 adds its `calculator_bytes` triple `(; persistent, per_outer, per_pair)`, and
@@ -235,7 +234,7 @@ point's in-window bands in its first `nband[j]` columns (physical band `iband_of
 to the container's `nband_max`. The padding is undefined, and the engine never computes on it: the
 Wannier-to-Bloch rotations run per band class at the class's own widths (the k+q states of a tile are
 gathered into per-class segments), and the e-ph matrix a calculator receives is the flat item list of the
-`EPBlock` (outer k; the outer-q tile still carries its box padding). The engine builds the state-index maps of
+`EPBlock` (both orders). The engine builds the state-index maps of
 the run's selections in box coordinates (`_indmap_to_device`, 0 on the padding); calculators read them
 through `state_k` / `state_kq`. A narrow window shrinks every per-(k, q)
 object by `nw / nband` on each side.

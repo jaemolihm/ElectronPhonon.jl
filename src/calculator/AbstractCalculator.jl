@@ -96,8 +96,8 @@ end
 
 The e-ph matrix of one tile as a flat list of items `(m, n, ν, j)`: band `m` at k+q, band `n` at k, mode `ν`,
 pair `j` (a (k, k+q) combination of the tile, in class order), on the run's backend. Pairs are split by band
-class `(b_kq, b_k)`; a class's items are stored back to back (`m` fastest, then `n`, `ν`, pair), so under
-no padding is an item. Decode an item with
+class `(b_kq, b_k)`; a class's items are stored back to back (`m` fastest, then `n`, `ν`, pair), so no padding
+is an item. Decode an item with
 [`item_indices`](@ref), an entry (a band pair with the mode sum inside) with [`entry_indices`](@ref), on the
 host with [`eachitem`](@ref) / [`eachentry`](@ref) / [`eachsegment`](@ref); [`device_tile`](@ref) gives the
 accessors' arrays to a kernel. The arrays borrow the chunk's storage: consume the tile in `run_calculator!`.

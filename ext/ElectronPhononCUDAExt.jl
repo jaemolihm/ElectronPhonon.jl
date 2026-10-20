@@ -183,7 +183,7 @@ end
 # strided-batched runs far below FP64 peak. A single fused kernel (both rotations from registers)
 # is faster. Above a threshold the matmuls are large enough that cuBLAS wins, so we fall back to
 # the two GEMMs. The gate constants live in `src`, next to the generic method they select against.
-# Assumes nbandk, nbandkq ≤ nw (true in the full-band loop).
+# `nbandk`, `nbandkq` are a band class's widths (≤ nw).
 
 # g : (nw, nbandk, ndisp, nq) ; ukq : (nw, nbandkq, nq) ; uph : (ndisp, nmodes, nq)
 # ep : (nbandkq, nbandk, nmodes, nq), nmodes ≤ ndisp.
@@ -223,10 +223,9 @@ function _fused_eph_rot_kernel!(ep, g, ukq, uph, ::Val{NDISP}, nw, nbkq, nbk, nm
     return
 end
 
-# `DenseCuArray` (not `CuArray`): the e-ph loop passes contiguous device VIEWS of a tile's
-# buffers for a block narrower than the tile. The fused kernel takes
-# them through `@cuda` (cudaconvert handles strided views) and the cuBLAS path takes their
-# reshapes (strided), so no padding to a fixed batch width is needed. `g` alone may be any strided
+# `DenseCuArray` (not `CuArray`): the e-ph loop passes contiguous device VIEWS of one band
+# class's segment of the tile buffers. The fused kernel takes them through `@cuda` (cudaconvert
+# handles strided views) and the cuBLAS path takes their reshapes (strided). `g` alone may be any strided
 # device array: only the fused branch accepts that, hence the density assert on the cuBLAS branch.
 function ElectronPhonon.eph_apply_rotations!(ep_kq_all::DenseCuArray{Complex{T},4},
         g::AnyCuArray{Complex{T},4},
