@@ -662,29 +662,27 @@ end
 #   e:     dst = n + nband_max (ik-1)                     src = b + nw (ik-1)
 #   u:     dst column n + nband_max (ik-1)                src column b + nw (ik-1)
 #   vdiag: dst = d + 3(n-1) + 3 nband_max (ik-1)          src = b + nw (b-1) + nw^2 (d-1) + 3 nw^2 (ik-1)
-function _fill_electron_states_batched_device!(els, model, E, U, offset_h, nband_h, backend)
+@views function _fill_electron_states_batched_device!(els, model, E, U, offset_h, nband_h, backend)
     (; nw) = model
     (; nk, nband_max, kpts) = els
     valid = [(n, ik) for ik in 1:nk for n in 1:nband_h[ik]]
     isempty(valid) && return nothing
     dst_col = to_device_copy(backend, [n + nband_max * (ik - 1) for (n, ik) in valid])
     src_col = to_device_copy(backend, [offset_h[ik] + n + nw * (ik - 1) for (n, ik) in valid])
-    @inbounds begin
-        els.e === nothing || (view(vec(els.e), dst_col) .= view(vec(E), src_col))
-        U === nothing && return nothing
-        els.u === nothing || (view(reshape(els.u, nw, :), :, dst_col) .= view(reshape(U, nw, :), :, src_col))
-        if els.vdiag !== nothing
-            Mop = model.el_velocity_mode === :Direct ? model.el_vel :
-                  model.el_velocity_mode === :BerryConnection ? model.el_ham_R :
-                  throw(ArgumentError("unknown el_velocity_mode $(model.el_velocity_mode)"))
-            itp_vel = get_interpolator(to_device(backend, Mop); fourier_mode = "batched", backend, nk_hint = nk)
-            vel = compute_el_velocity_direct_batched(itp_vel, kpts.vectors, U)   # (nw, nw, 3, nk)
-            dst_v = to_device_copy(backend, [d + 3 * (n - 1) + 3 * nband_max * (ik - 1)
-                                             for d in 1:3, (n, ik) in valid])
-            src_v = to_device_copy(backend, [offset_h[ik] + n + nw * (offset_h[ik] + n - 1) +
-                nw^2 * (d - 1) + 3nw^2 * (ik - 1) for d in 1:3, (n, ik) in valid])
-            view(vec(els.vdiag), vec(dst_v)) .= real.(view(vec(vel), vec(src_v)))
-        end
+    els.e === nothing || (vec(els.e)[dst_col] .= vec(E)[src_col])
+    U === nothing && return nothing
+    els.u === nothing || (reshape(els.u, nw, :)[:, dst_col] .= reshape(U, nw, :)[:, src_col])
+    if els.vdiag !== nothing
+        Mop = model.el_velocity_mode === :Direct ? model.el_vel :
+              model.el_velocity_mode === :BerryConnection ? model.el_ham_R :
+              throw(ArgumentError("unknown el_velocity_mode $(model.el_velocity_mode)"))
+        itp_vel = get_interpolator(to_device(backend, Mop); fourier_mode = "batched", backend, nk_hint = nk)
+        vel = compute_el_velocity_direct_batched(itp_vel, kpts.vectors, U)   # (nw, nw, 3, nk)
+        dst_v = to_device_copy(backend, [d + 3 * (n - 1) + 3 * nband_max * (ik - 1)
+                                         for d in 1:3, (n, ik) in valid])
+        src_v = to_device_copy(backend, [offset_h[ik] + n + nw * (offset_h[ik] + n - 1) +
+            nw^2 * (d - 1) + 3nw^2 * (ik - 1) for d in 1:3, (n, ik) in valid])
+        vec(els.vdiag)[vec(dst_v)] .= real.(vec(vel)[vec(src_v)])
     end
     nothing
 end

@@ -6,7 +6,7 @@
 
     # The rule of the padding-free e-ph engine: no arithmetic on the box padding of a
     # `BatchedElectronState` (local band `n > nband[k]`). Every block must be exact (`nband[j] ==
-    # nband_max` on both electron sides), and nothing may read the padding. Two checks per route:
+    # nband_max` on both electron sides), and no calculation may use the padding. Two checks per route:
     # * structural: a recorder asserts the extents of every block it is handed;
     # * poison: the recorder overwrites the padding of the resident states with NaN, and the engine
     #   API run also fills every stage-1 buffer with NaN before `stage1!` and every tile buffer before
