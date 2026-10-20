@@ -4,3 +4,12 @@ codecov:
     after_n_builds: 2
 comment:
   after_n_builds: 2
+coverage:
+  status:
+    # GPU-only code runs on no CI runner, so coverage is reported but never fails a PR.
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
