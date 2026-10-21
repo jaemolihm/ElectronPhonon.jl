@@ -165,7 +165,7 @@ end
 function _mul_static_vectors(S::Matrix, x::AbstractVector{ST}) where {FT, ST <: StaticVector{<:Any, FT}}
     X = reshape(reinterpret(FT, x), length(ST), :)
     Y = Matrix{FT}(undef, length(ST), size(S, 1))
-    blocks = collect(Iterators.partition(axes(S, 1), cld(size(S, 1), Threads.nthreads())))
+    blocks = collect(Iterators.partition(axes(S, 1), max(1, cld(size(S, 1), Threads.nthreads()))))
     @views Threads.@threads for rows in blocks
         mul!(Y[:, rows], X, transpose(S[rows, :]))
     end
