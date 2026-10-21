@@ -677,6 +677,22 @@ function symmetrize(mat::StaticMatrix, symmetry::Symmetry; tr_odd=false, axial=f
     mat_symm
 end
 
+function symmetrize(arr::StaticArray{Tuple{3, 3, 3}}, symmetry::Symmetry; tr_odd=false, axial=false)
+    arr_symm = zero(SVector{27, eltype(arr)})
+    for (S, is_inv, is_tr) in zip(symmetry.Scart, symmetry.is_inv, symmetry.is_tr)
+        sign_coeff = 1
+        if axial && is_inv
+            sign_coeff *= -1
+        end
+        if tr_odd && is_tr
+            sign_coeff *= -1
+        end
+        # arr'[a, b, c] = ∑ S[a', a] S[b', b] S[c', c] arr[a', b', c'], as `S' * mat * S` above
+        arr_symm += sign_coeff * kron(S', S', S') * vec(arr)
+    end
+    SArray{Tuple{3, 3, 3}}(Tuple(arr_symm / symmetry.nsym))
+end
+
 """
     symmetrize_array(arr::AbstractArray{T}, symmetry; order, tr_odd=false, axial=false)
 Symmetrize a tensor by applying all the symmetry and forming the average.
@@ -699,6 +715,10 @@ function symmetrize_array(arr::AbstractArray{T}, symmetry; order, tr_odd=false, 
     elseif order == 2
         for ind in CartesianIndices(size(arr)[order+1:end])
             arr_sym[:, :, ind] .= symmetrize(SMatrix{3, 3}(arr[:, :, ind]), symmetry; tr_odd, axial)
+        end
+    elseif order == 3
+        for ind in CartesianIndices(size(arr)[order+1:end])
+            arr_sym[:, :, :, ind] .= symmetrize(SArray{Tuple{3, 3, 3}}(arr[:, :, :, ind]), symmetry; tr_odd, axial)
         end
     else
         error("Order $order not implemented")

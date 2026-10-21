@@ -106,13 +106,14 @@ end
 """
     compute_hall_factor(σ, σ_hall)
 ``r[a, b, c] = ∑_{d,e} inv(σ)[a, d] * σ_hall[d, e, c] * inv(σ)[e, b]``
+`σ` may be a leading block of the full tensor (a model of lower dimension).
 Reference: Eq. (13) of S. Poncé et al, Phys. Rev. Research 3, 043022 (2021)
 (Note that the carrier density is not multiplied in this function.)
 """
 function compute_hall_factor(σ, σ_hall)
-    r = zeros(3, 3, 3)
+    r = zeros(size(σ, 1), size(σ, 2), size(σ_hall, 3))
     σinv = inv(σ)
-    for a in 1:3, b in 1:3, c in 1:3, d in 1:3, e in 1:3
+    for a in axes(r, 1), b in axes(r, 2), c in axes(r, 3), d in axes(σinv, 2), e in axes(σinv, 1)
         r[a, b, c] += real(σinv[a, d] * σ_hall[d, e, c] * σinv[e, b])
     end
     r

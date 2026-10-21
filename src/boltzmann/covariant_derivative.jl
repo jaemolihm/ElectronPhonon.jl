@@ -130,6 +130,49 @@ function _compute_A(bvecs_cart)
     SVector(A[1, 1], A[2, 1], A[3, 1], A[2, 2], A[3, 2], A[3, 3])
 end
 
+# Finite-difference gradient of a band-diagonal field, for the BandStates BTE path (not the QME
+# covariant derivative below, which needs QMEStates and the overlaps between k and k+b):
+# `(∂_α F)[i] = ∑_b wb bᵅ F[j(i, b)]`, where `j(i, b)` is the state of `el_f` at `k_i + b` with the band
+# index of `i`. The `-F(k) ∑_b wb b` term of the Wannier90 form vanishes because every shell holds
+# ±b. A neighbour that `el_f` does not hold contributes 0. A direction along which `k + b` and
+# `k - b` are the same grid node (`ngrid` 1 or 2) gets a gradient of exactly 0.
+# Returns `NTuple{3, SparseMatrixCSC}` of size `el_i.n × el_f.n`, one per Cartesian direction;
+# `el_f.kpts` must be a `GridKpoints` holding the nodes `k_i + b`.
+function _finite_difference_gradient(el_i::BandStates{FT}, el_f::BandStates, stencil) where {FT}
+    (; bvecs, bvecs_cart, wbs) = stencil
+    rows = Int[]
+    cols = Int[]
+    vals = [FT[] for _ in 1:3]
+    for i in 1:el_i.n
+        xk = el_i.kpts.vectors[el_i.iks[i]]
+        for (b, b_cart, wb) in zip(bvecs, bvecs_cart, wbs)
+            j = state_index(el_f, xk + b, el_i.ibands[i])
+            j == 0 && continue
+            push!(rows, i)
+            push!(cols, j)
+            for α in 1:3
+                push!(vals[α], wb * b_cart[α])
+            end
+        end
+    end
+    ntuple(α -> sparse(rows, cols, vals[α], el_i.n, el_f.n), 3)
+end
+
+# Error unless every operation of `symmetry` maps the stencil onto itself with the same weights,
+# `σ R b` (`R = Scart`, `σ = -1` for time reversal) being a stencil vector `b'` with `wb' = wb`. Then
+# the gradient commutes with the symmetry unfolding of a field.
+function _assert_stencil_closed(stencil, symmetry)
+    (; bvecs_cart, wbs) = stencil
+    tol = sqrt(eps(eltype(wbs))) * maximum(norm, bvecs_cart)
+    for (Scart, is_tr) in zip(symmetry.Scart, symmetry.is_tr), (b, wb) in zip(bvecs_cart, wbs)
+        Sb = (is_tr ? -Scart : Scart) * b
+        j = findfirst(b_other -> norm(b_other - Sb) < tol, bvecs_cart)
+        (j !== nothing && wbs[j] ≈ wb) || error("the finite-difference stencil is not closed " *
+            "under the symmetry operations (the grid is too skewed for whole |b| shells): " *
+            "$b is mapped to $Sb")
+    end
+end
+
 """
 Construct a vector of sparse matrices `∇` that maps a quantity defined on `el` to its
 covariant derivative:
