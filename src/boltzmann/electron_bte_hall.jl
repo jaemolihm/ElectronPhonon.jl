@@ -65,7 +65,7 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
         symmetry.is_tr == out_bte.symmetry.is_tr && symmetry.Scart ≈ out_bte.symmetry.Scart)
     same_symmetry || throw(ArgumentError("out_bte was computed with a different symmetry"))
 
-    stencil = finite_difference_vectors(model.recip_lattice, ngrid; order)
+    stencil = finite_difference_vectors(model.recip_lattice, ngrid; order, dimension = model.dimension)
     symmetry === nothing || _assert_stencil_closed(stencil, symmetry)
     grad = _finite_difference_gradient(el_i, el_f, stencil)
 

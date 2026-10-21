@@ -106,7 +106,7 @@ end
     # D v against the analytic ∂_α v_b: the error ratio between nk and 2nk is 4 (order 1), 16 (order 2).
     function gradient_error(nk, order)
         el_i, el_f = quiet(() -> hall_states(nk, (-Inf, Inf), model.symmetry))
-        stencil = quiet(() -> EP.finite_difference_vectors(model.recip_lattice, el_i.kpts.ngrid; order))
+        stencil = quiet(() -> EP.finite_difference_vectors(model.recip_lattice, el_i.kpts.ngrid; order, dimension = model.dimension))
         EP._assert_stencil_closed(stencil, model.symmetry)
         D = EP._finite_difference_gradient(el_i, el_f, stencil)
         ks = 2π .* EP.state_xks(el_i)
@@ -127,12 +127,50 @@ end
 
     # The stencil of the 3D Holstein (cubic, 96 operations) is closed too.
     model3 = holstein_model(; t = t_hop, ω₀ = 0.02, g = 0.01, alat, dimension = 3, verbose = false)
-    EP._assert_stencil_closed(quiet(() -> EP.finite_difference_vectors(model3.recip_lattice, (6, 6, 6); order = 2)),
+    EP._assert_stencil_closed(quiet(() -> EP.finite_difference_vectors(model3.recip_lattice, (6, 6, 6); order = 2, dimension = 3)),
         model3.symmetry)
     # A stencil missing a vector of a shell is not.
     (; bvecs_cart, wbs) = quiet(() -> EP.finite_difference_vectors(model3.recip_lattice, (6, 6, 6)))
     @test_throws ErrorException EP._assert_stencil_closed(
         (; bvecs_cart = bvecs_cart[1:end-1], wbs = wbs[1:end-1]), model3.symmetry)
+end
+
+@testitem "BTE Hall: stencil of a 2D model whose cell has c = 100a" setup = [BteHall] begin
+    # |b_z| = 2π/(100a) coincides with the length of the in-plane shell at nk = 100 and, as a
+    # multiple, at nk = 200. Imposing completeness along z then merged a z vector into an in-plane shell
+    # (weight 1.5e-12 on the nearest neighbours at nk = 200, duplicates at order 2). With
+    # `dimension = 2` the stencil is the in-plane one at every nk.
+    for nk in (100, 200), order in (1, 2)
+        stencil = quiet(() -> EP.finite_difference_vectors(model.recip_lattice, (nk, nk, 1);
+            order, dimension = model.dimension))
+        steps = [Tuple(round.(Int, b .* (nk, nk, 1))) for b in stencil.bvecs]
+        @test length(unique(steps)) == length(steps)
+        @test all(step -> step[3] == 0, steps)
+        @test count(step -> abs(step[1]) + abs(step[2]) == 1, steps) == 4
+        @test count(step -> abs(step[1]) + abs(step[2]) == 2 && 0 in step, steps) == (order == 2 ? 4 : 0)
+        @test length(steps) == 4 * order
+        EP._assert_stencil_closed(stencil, model.symmetry)
+    end
+
+    # Order 1 gradient of v at the interior of a band-bottom window: the error falls by 4 from nk = 100 to 200.
+    function gradient_error(nk)
+        el_i, el_f = quiet(() -> hall_states(nk, (-4t_hop - 1e-9, -4t_hop + 0.05), model.symmetry))
+        stencil = quiet(() -> EP.finite_difference_vectors(model.recip_lattice, el_i.kpts.ngrid;
+            order = 1, dimension = model.dimension))
+        D = EP._finite_difference_gradient(el_i, el_f, stencil)
+        ks = 2π .* EP.state_xks(el_i)
+        interior = findall(<(-4t_hop + 0.025), el_i.es)
+        err = 0.0
+        for α in 1:3
+            dv = D[α] * el_f.vs
+            for i in interior, b in 1:3
+                exact = (α == b && b <= 2) ? 2t_hop * alat^2 * cos(ks[i][b]) : 0.0
+                err = max(err, abs(dv[i][b] - exact))
+            end
+        end
+        err
+    end
+    @test gradient_error(100) / gradient_error(200) ≈ 4 rtol = 0.15
 end
 
 @testitem "BTE Hall: rank-3 symmetrize" setup = [BteHall] begin
@@ -225,7 +263,7 @@ end
     # without det R or without the time-reversal sign does not.
     function unfolded_field(c, symmetry, law)
         (; el_i, el_f, Sᵢ, inv_τ, out) = c
-        stencil = quiet(() -> EP.finite_difference_vectors(model.recip_lattice, el_i.kpts.ngrid; order = 2))
+        stencil = quiet(() -> EP.finite_difference_vectors(model.recip_lattice, el_i.kpts.ngrid; order = 2, dimension = model.dimension))
         grad = EP._finite_difference_gradient(el_i, el_f, stencil)
         map_1 = EP.vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
         map_2 = EP.vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry, law)
