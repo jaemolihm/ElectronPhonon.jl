@@ -58,7 +58,7 @@ using HDF5
         mpi_comm_k !== nothing && error("for run_for_qme==true, mpi_comm_k not implemented")
         kgrid != qgrid && error("for run_for_qme==true, kgrid and qgrid must be the same (otherwise not implemented)")
         shift_q != (0, 0, 0) && error("for run_for_qme==true, shift_q not implemented")
-        use_irr_k && model.el_sym === nothing && error("model.el_sym must be set to use symmetry in QME. (Pass load_symmetry_operators=true to load_model).")
+        use_irr_k && model.el_sym === nothing && error("model.el_sym is not set; no loader currently reads symmetry operators, so the QME cannot use symmetry.")
     end
 
     if use_irr_k && symmetry === nothing
