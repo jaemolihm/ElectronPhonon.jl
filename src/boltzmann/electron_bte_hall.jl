@@ -92,11 +92,11 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
         σ_hall[:, :, :, iT] .= _hall_conductivity(sol.δf, el_i, params, symmetry)
 
         # Hall factor, on the block `1:model.dimension`.
-        density = params.nlist[iT] / params.volume
+        carrier_density = params.nlist[iT] / params.volume
         r_hall_serta[inds, inds, :, iT] .= compute_hall_factor(out_bte.σ_serta[inds, inds, iT],
-            σ_hall_serta[inds, inds, :, iT]) .* density
+            σ_hall_serta[inds, inds, :, iT], carrier_density)
         r_hall[inds, inds, :, iT] .= compute_hall_factor(out_bte.σ[inds, inds, iT],
-            σ_hall[inds, inds, :, iT]) .* density
+            σ_hall[inds, inds, :, iT], carrier_density)
     end
     (; out_bte.σ_serta, out_bte.σ, σ_hall_serta, σ_hall, r_hall_serta, r_hall)
 end

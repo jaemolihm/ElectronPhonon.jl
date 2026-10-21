@@ -60,7 +60,7 @@ function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEMode
         end
 
         @views r_hall_serta[:, :, :, iT] = compute_hall_factor(out_linear.σ_serta[:, :, iT],
-            σ_hall_serta[:, :, :, iT]) .* transport_params.nlist[iT] ./ transport_params.volume
+            σ_hall_serta[:, :, :, iT], transport_params.nlist[iT] / transport_params.volume)
 
         if Sᵢ_irr !== nothing
             # IBTE: Solve scatmap * δᴱᴮρ = (I + Sₒ⁻¹ Sᵢ) δᴱᴮρ = δᴱᴮρ_serta using GMRES
@@ -101,24 +101,24 @@ function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEMode
             @info "Total $(g.mv_products) matrix-vector products used"
 
             @views r_hall[:, :, :, iT] = compute_hall_factor(out_linear.σ[:, :, iT],
-                σ_hall[:, :, :, iT]) .* transport_params.nlist[iT] ./ transport_params.volume
+                σ_hall[:, :, :, iT], transport_params.nlist[iT] / transport_params.volume)
         end
     end
     (; σ_hall_serta, r_hall_serta, σ_hall, r_hall)
 end
 
 """
-    compute_hall_factor(σ, σ_hall)
-``r[a, b, c] = ∑_{d,e} inv(σ)[a, d] * σ_hall[d, e, c] * inv(σ)[e, b]``
+    compute_hall_factor(σ, σ_hall, carrier_density)
+Hall factor ``r[a, b, c] = n ∑_{d,e} inv(σ)[a, d] * σ_hall[d, e, c] * inv(σ)[e, b]``, with
+`n = carrier_density` (carriers per unit volume, e.g. `params.nlist[iT] / params.volume`).
 `σ` may be a leading block of the full tensor (a model of lower dimension).
 Reference: Eq. (13) of S. Poncé et al, Phys. Rev. Research 3, 043022 (2021)
-(Note that the carrier density is not multiplied in this function.)
 """
-function compute_hall_factor(σ, σ_hall)
+function compute_hall_factor(σ, σ_hall, carrier_density)
     r = zeros(size(σ, 1), size(σ, 2), size(σ_hall, 3))
     σinv = inv(σ)
     for a in axes(r, 1), b in axes(r, 2), c in axes(r, 3), d in axes(σinv, 2), e in axes(σinv, 1)
         r[a, b, c] += real(σinv[a, d] * σ_hall[d, e, c] * σinv[e, b])
     end
-    r
+    r .*= carrier_density
 end
