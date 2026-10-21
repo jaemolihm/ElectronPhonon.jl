@@ -153,7 +153,7 @@ function _compute_A(bvecs_cart)
     SVector(A[1, 1], A[2, 1], A[3, 1], A[2, 2], A[3, 2], A[3, 3])
 end
 
-# Finite-difference gradient of a band-diagonal field, for the BandStates BTE path (not the QME
+# Sparse matrices of the finite-difference gradient operator of a band-diagonal field, for the BandStates BTE path (not the QME
 # covariant derivative below, which needs QMEStates and the overlaps between k and k+b):
 # `(∂_α F)[i] = ∑_b wb bᵅ F[j(i, b)]`, where `j(i, b)` is the state of `el_f` at `k_i + b` with the band
 # index of `i`. The `-F(k) ∑_b wb b` term of the Wannier90 form vanishes because every shell holds
@@ -161,7 +161,7 @@ end
 # `k - b` are the same grid node (`ngrid` 1 or 2) gets a gradient of exactly 0.
 # Returns `NTuple{3, SparseMatrixCSC}` of size `el_i.n × el_f.n`, one per Cartesian direction;
 # `el_f.kpts` must be a `GridKpoints` holding the nodes `k_i + b`.
-function _finite_difference_gradient(el_i::BandStates{FT}, el_f::BandStates, stencil) where {FT}
+function _finite_difference_gradient_matrices(el_i::BandStates{FT}, el_f::BandStates, stencil) where {FT}
     (; bvecs, bvecs_cart, wbs) = stencil
     rows = Int[]
     cols = Int[]

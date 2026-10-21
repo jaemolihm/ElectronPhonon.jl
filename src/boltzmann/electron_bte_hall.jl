@@ -58,7 +58,7 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
     end
 
     # `out_bte` must belong to the same temperatures, chemical potentials and symmetry.
-    (out_bte.Tlist == params.Tlist && out_bte.μlist == params.μlist) ||
+    (out_bte.params.Tlist == params.Tlist && out_bte.params.μlist == params.μlist) ||
         throw(ArgumentError("out_bte was computed with different Tlist or μlist than params"))
     same_symmetry = symmetry === out_bte.symmetry || (symmetry !== nothing &&
         out_bte.symmetry !== nothing && symmetry.S == out_bte.symmetry.S &&
@@ -67,11 +67,11 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
 
     stencil = finite_difference_vectors(model.recip_lattice, ngrid; order, dimension = model.dimension)
     symmetry === nothing || _assert_stencil_closed(stencil, symmetry)
-    grad = _finite_difference_gradient(el_i, el_f, stencil)
+    grad = _finite_difference_gradient_matrices(el_i, el_f, stencil)
 
     map_1 = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry; interpolate = false)
     map_2 = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry,
-        _rank2_polar_axial_tr_odd_law; interpolate = false)
+        _hall_occupation_law; interpolate = false)
 
     σ_hall_serta = zeros(FT, 3, 3, 3, nT)
     σ_hall = zeros(FT, 3, 3, 3, nT)
@@ -102,16 +102,16 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
 end
 
 # Source of the Hall equation on `el_i`, as the 9-vector `X[b + 3 (c - 1)]` of the matrix `X[b, c]`:
-# `X[b, c] = (v[c1] (∂_c2 F_b) - v[c2] (∂_c1 F_b)) / τ⁻¹`, `(c, c1, c2)` cyclic, with `F` the
-# first-order field on `el_f` and `grad` the gradient from `el_f` to `el_i`.
-function _hall_source(grad, F::AbstractVector{Vec3{FT}}, vs, inv_τ) where {FT}
-    dF = map(∂ -> ∂ * F, grad)
+# `X[b, c] = (v[c1] (∂_c2 δᴱf_b) - v[c2] (∂_c1 δᴱf_b)) / τ⁻¹`, `(c, c1, c2)` cyclic, with `δᴱf` the
+# first-order occupation on `el_f` and `grad` the three gradient matrices from `el_f` to `el_i`.
+function _hall_source(grad, δᴱf::AbstractVector{Vec3{FT}}, vs, inv_τ) where {FT}
+    ∂δᴱf = map(∂ -> ∂ * δᴱf, grad)
     X = Vector{SVector{9, FT}}(undef, length(vs))
     for i in eachindex(vs)
         X[i] = SVector{9, FT}(ntuple(9) do k
             b, c = mod1(k, 3), (k - 1) ÷ 3 + 1
             c1, c2 = mod1(c + 1, 3), mod1(c + 2, 3)
-            (vs[i][c1] * dF[c2][i][b] - vs[i][c2] * dF[c1][i][b]) / inv_τ[i]
+            (vs[i][c1] * ∂δᴱf[c2][i][b] - vs[i][c2] * ∂δᴱf[c1][i][b]) / inv_τ[i]
         end)
     end
     X

@@ -196,7 +196,7 @@ scat_mat is a rectangular matrix, mapping states in `el_f` to states in `el_i`.
 δf[j] is the occupations for states `el_f` and is calculated by unfolding `δf_i`.
 `solver` is `:gmres` (default) or `:fixed_point`; see `_solve_bte`. `σ_iter`, the conductivity
 of every fixed-point iterate (first row SERTA), is returned only for `solver = :fixed_point` and
-is `nothing` for GMRES. The output also carries `Tlist`, `μlist` and `symmetry` of the solve.
+is `nothing` for GMRES. The output also carries `params` (the object itself, so a later change of it is not seen) and `symmetry`.
 """
 function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; solver = :gmres, max_iter=100, rtol=1e-10, mixing = 1.0, interpolate = false) where {FT}
     output = (σ_serta = zeros(FT, 3, 3, length(params.Tlist)),
@@ -205,7 +205,7 @@ function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, 
               δf_i = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
               σ_iter = solver === :fixed_point ? fill(FT(NaN), (max_iter+1, 3, 3, length(params.Tlist))) : nothing,
               # The conditions the solution belongs to, checked by `solve_electron_bte_hall`.
-              Tlist = copy(params.Tlist), μlist = copy(params.μlist), symmetry,
+              params, symmetry,
     )
 
     map_i_to_f = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry; interpolate)
@@ -239,24 +239,26 @@ end
 
 # Transformation laws for `unfold_data_map`: the matrix that takes the data at `k` to the data at
 # `k' = σ R k`, with `R = Scart` and `σ = -1` for a time-reversal operation, else `+1`.
-# Polar vector odd under time reversal (velocity, δᴱf): `F(k') = σ R F(k)`. The default of
-# `unfold_data_map`, used by `solve_electron_bte` on both the BTStates and the BandStates path.
-_polar_tr_odd_law(is_tr, Scart) = is_tr ? -Scart : Scart
+# `_efield_occupation_law`: occupation δᴱf perturbed by the electric field, and the velocity, i.e. a
+# polar vector odd under time reversal: `F(k') = σ R F(k)`. The default of `unfold_data_map`, used by
+# `solve_electron_bte` on both the BTStates and the BandStates path.
+_efield_occupation_law(is_tr, Scart) = is_tr ? -Scart : Scart
 
-# Used by the BandStates-only `solve_electron_bte_hall`. Rank-2 tensor `X[b, c]` with `b` polar, `c` axial and the whole field odd under time reversal
+# `_hall_occupation_law`: occupation δᴱᴮf at linear order in the magnetic field, used by the BandStates-only
+# `solve_electron_bte_hall`. Rank-2 tensor `X[b, c]` with `b` polar, `c` axial and the whole field odd under time reversal
 # (the linear-in-B Hall field): `X(k') = σ det(R) R X(k) Rᵀ`. On the 9-vector `vec(X)`, `b` fastest,
 # this is `σ det(R) kron(R, R)`.
-_rank2_polar_axial_tr_odd_law(is_tr, Scart) =
+_hall_occupation_law(is_tr, Scart) =
     (is_tr ? -1 : 1) * sign(det(Scart)) * kron(Scart, Scart)
 
 """
-    unfold_data_map(state, symmetry, law = _polar_tr_odd_law) -> (map_unfold, indmap)
+    unfold_data_map(state, symmetry, law = _efield_occupation_law) -> (map_unfold, indmap)
 Construct a sparse matrix that unfolds a field defined on `state` using `symmetry`.
 `law(is_tr, Scart)` gives the matrix that takes the field at `k` to its value at the image of `k`;
 the default treats the field as a polar vector odd under time reversal.
 For the unfolded states, `indmap[(xk_int..., iband)] = i` holds.
 """
-function unfold_data_map(state::BTorBandStates{FT}, symmetry, law = _polar_tr_odd_law) where {FT}
+function unfold_data_map(state::BTorBandStates{FT}, symmetry, law = _efield_occupation_law) where {FT}
     inds_i = Int[]
     inds_unfold = Int[]
     values = typeof(law(false, one(Mat3{FT})))[]
@@ -293,7 +295,7 @@ function unfold_data_map(state::BTorBandStates{FT}, symmetry, law = _polar_tr_od
     sparse(inds_unfold, inds_i, values), indmap
 end
 
-function unfold_data_map(state::BTorBandStates{FT}, ::Nothing, law = _polar_tr_odd_law) where {FT}
+function unfold_data_map(state::BTorBandStates{FT}, ::Nothing, law = _efield_occupation_law) where {FT}
     # Special case where no symmetry is used. Unfolding matrix is identity.
     # One just needs to compute indmap.
     indmap = Dictionary{CI{4}, Int}()
@@ -311,7 +313,7 @@ function unfold_data_map(state::BTorBandStates{FT}, ::Nothing, law = _polar_tr_o
 end
 
 """
-    vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry, law = _polar_tr_odd_law;
+    vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry, law = _efield_occupation_law;
                                             interpolate=false) -> map_i_to_f
 Construct a sparse matrix that unfolds and interpolates a vector field defined on states
 in `el_i` to states in `el_f`. For unfolding, use `symmetry`. By default (`law`, see
@@ -328,7 +330,7 @@ vector field treated as zero silently. For
 genuinely different el_i/el_f grids (e.g. a much wider `window_kq`) pass `interpolate=true`.
 """
 function vector_field_unfold_and_interpolate_map(el_i::BTorBandStates{FT}, el_f, symmetry,
-        law = _polar_tr_odd_law; interpolate::Bool=false) where FT
+        law = _efield_occupation_law; interpolate::Bool=false) where FT
     map_unfold, indmap_unfold = unfold_data_map(el_i, symmetry, law)
 
     ngrid = bt_ngrid(el_i)

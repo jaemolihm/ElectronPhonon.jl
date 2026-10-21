@@ -108,7 +108,7 @@ end
         el_i, el_f = quiet(() -> hall_states(nk, (-Inf, Inf), model.symmetry))
         stencil = quiet(() -> EP.finite_difference_vectors(model.recip_lattice, el_i.kpts.ngrid; order, dimension = model.dimension))
         EP._assert_stencil_closed(stencil, model.symmetry)
-        D = EP._finite_difference_gradient(el_i, el_f, stencil)
+        D = EP._finite_difference_gradient_matrices(el_i, el_f, stencil)
         ks = 2π .* EP.state_xks(el_i)
         err = 0.0
         for α in 1:3
@@ -157,7 +157,7 @@ end
         el_i, el_f = quiet(() -> hall_states(nk, (-4t_hop - 1e-9, -4t_hop + 0.05), model.symmetry))
         stencil = quiet(() -> EP.finite_difference_vectors(model.recip_lattice, el_i.kpts.ngrid;
             order = 1, dimension = model.dimension))
-        D = EP._finite_difference_gradient(el_i, el_f, stencil)
+        D = EP._finite_difference_gradient_matrices(el_i, el_f, stencil)
         ks = 2π .* EP.state_xks(el_i)
         interior = findall(<(-4t_hop + 0.025), el_i.es)
         err = 0.0
@@ -264,17 +264,17 @@ end
     function unfolded_field(c, symmetry, law)
         (; el_i, el_f, Sᵢ, inv_τ, out) = c
         stencil = quiet(() -> EP.finite_difference_vectors(model.recip_lattice, el_i.kpts.ngrid; order = 2, dimension = model.dimension))
-        grad = EP._finite_difference_gradient(el_i, el_f, stencil)
+        grad = EP._finite_difference_gradient_matrices(el_i, el_f, stencil)
         map_1 = EP.vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
         map_2 = EP.vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry, law)
         source = EP._hall_source(grad, map_1 * out.δf_i[:, 1], el_i.vs, inv_τ[:, 1])
         map_2 * EP._solve_bte(source, Sᵢ[1], map_2, inv_τ[:, 1]; rtol = 1e-13).δf
     end
-    X_full = quiet(() -> unfolded_field(b, nothing, EP._rank2_polar_axial_tr_odd_law))
+    X_full = quiet(() -> unfolded_field(b, nothing, EP._hall_occupation_law))
     perm = [EP.state_index(b.el_f, a.el_f[f]) for f in 1:a.el_f.n]
     relmiss(law) = maximum(norm.(quiet(() -> unfolded_field(a, model.symmetry, law)) .- X_full[perm])) /
                    maximum(norm.(X_full))
-    @test relmiss(EP._rank2_polar_axial_tr_odd_law) < 1e-10
+    @test relmiss(EP._hall_occupation_law) < 1e-10
     @test relmiss((is_tr, Scart) -> (is_tr ? -1 : 1) * kron(Scart, Scart)) > 1e-3
     @test relmiss((is_tr, Scart) -> sign(det(Scart)) * kron(Scart, Scart)) > 1e-3
 end
