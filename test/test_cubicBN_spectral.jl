@@ -3,7 +3,6 @@
     folder = joinpath(BASE_FOLDER, "test", "data_cubicBN")
 
     model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph")
-    # model_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder)
 
     μ = 25.0 * unit_to_aru(:eV)
     Tlist = [200.0, 300.0] .* unit_to_aru(:K)

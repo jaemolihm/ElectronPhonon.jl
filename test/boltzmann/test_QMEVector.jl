@@ -108,8 +108,6 @@ end
 #     folder_tmp = joinpath(folder, "tmp")
 #     mkpath(folder_tmp)
 
-#     model = load_model(folder, epmat_outer_momentum="el", load_symmetry_operators=true)
-
 #     nk = 20
 #     nq = 20
 #     window_k  = (10.5, 11.0) .* unit_to_aru(:eV)

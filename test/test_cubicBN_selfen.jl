@@ -7,7 +7,6 @@ end
 @testitem "cubicBN self-energy" setup = [Common, CubicBNSelfen] begin
     folder = _artifact_folder("cubicBN")
     model = _load_model_from_artifacts("cubicBN"; epmat_outer_momentum = "ph")
-    # model_disk = load_model(folder; epmat_on_disk=true, tmpdir=folder)
 
     # Load reference data (calculated from EPW)
     ek_ref = npzread(joinpath(folder, "el_energy.npy")) * unit_to_aru(:eV)

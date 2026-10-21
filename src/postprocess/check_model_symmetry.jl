@@ -19,7 +19,7 @@ symmetry operation involves translation and shift of Wannier functions. So we us
 matrix computed using the Berry curvature method as an indirect check of position matrix.
 """
 function check_electron_symmetry_of_model(model::Model{FT}, ngrid; fourier_mode="gridopt") where FT
-    model.el_sym === nothing && error("model.el_sym must be set. Pass load_symmetry_operators=true in load_model.")
+    model.el_sym === nothing && error("model.el_sym is not set; no loader currently reads symmetry operators.")
 
     error_keys = [:Energy, :SymMatrixUnitarity, :Hamiltonian, :Velocity_Direct, :Velocity_BerryConnection]
     max_errors = Dict(key => 0.0 for key in error_keys)
