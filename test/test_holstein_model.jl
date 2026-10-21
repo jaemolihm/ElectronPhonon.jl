@@ -264,6 +264,7 @@ end
 
     @test occursin("dimension = 2", sprint(show, MIME("text/plain"), model.structure))
     @test occursin("nsym = $(model.symmetry.nsym)", sprint(show, MIME("text/plain"), model))
+    @test occursin("polar: phonon none, eph none", sprint(show, MIME("text/plain"), model))
 
     # crystal.fmt of the cubicBN artifact with the lattice, the 2D flag and L patched. Line 4/5 is
     # at/bg, line 12 is do_cutoff_2D_epw and line 14 is L.

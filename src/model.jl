@@ -90,9 +90,9 @@ function Base.show(io::IO, ::MIME"text/plain", model::Model)
     println(io, typeof(model))
     println(io, "  structure: ", length(model.atom_pos), " atoms, dimension = ", model.dimension)
     println(io, "  nw = ", model.nw, ", nmodes = ", model.nmodes, ", nsym = ", model.symmetry.nsym)
-    println(io, "  polar: ", model.polar_phonon.use ? "yes" : "no")
-    print(io, "  epmat: ", typeof(model.epmat))
-    model.epmat === nothing || print(io, ", outer momentum \"", model.epmat_outer_momentum, "\"")
+    polar_name(polar) = polar.use ? nameof(typeof(polar.method)) : "none"
+    println(io, "  polar: phonon ", polar_name(model.polar_phonon), ", eph ", polar_name(model.polar_eph))
+    print(io, "  epmat: ", model.epmat === nothing ? "none" : "outer momentum \"$(model.epmat_outer_momentum)\"")
 end
 
 function load_symmetry_operators_from_epw(folder)
