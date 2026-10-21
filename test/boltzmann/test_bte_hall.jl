@@ -261,20 +261,20 @@ end
 
     # Field level: the IBZ solution unfolded by U⁽²⁾ reproduces the full-BZ solution on el_f; a map
     # without det R or without the time-reversal sign does not.
-    function unfolded_field(c, symmetry, law)
+    function unfolded_field(c, symmetry, mapping)
         (; el_i, el_f, Sᵢ, inv_τ, out) = c
         stencil = quiet(() -> EP.finite_difference_vectors(model.recip_lattice, el_i.kpts.ngrid; order = 2, dimension = model.dimension))
         grad = EP._finite_difference_gradient_matrices(el_i, el_f, stencil)
         map_1 = EP.vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
-        map_2 = EP.vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry, law)
+        map_2 = EP.vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry, mapping)
         source = EP._hall_source(grad, map_1 * out.δf_i[:, 1], el_i.vs, inv_τ[:, 1])
         map_2 * EP._solve_bte(source, Sᵢ[1], map_2, inv_τ[:, 1]; rtol = 1e-13).δf
     end
-    X_full = quiet(() -> unfolded_field(b, nothing, EP._hall_occupation_law))
+    X_full = quiet(() -> unfolded_field(b, nothing, EP._hall_occupation_mapping))
     perm = [EP.state_index(b.el_f, a.el_f[f]) for f in 1:a.el_f.n]
-    relmiss(law) = maximum(norm.(quiet(() -> unfolded_field(a, model.symmetry, law)) .- X_full[perm])) /
+    relmiss(mapping) = maximum(norm.(quiet(() -> unfolded_field(a, model.symmetry, mapping)) .- X_full[perm])) /
                    maximum(norm.(X_full))
-    @test relmiss(EP._hall_occupation_law) < 1e-10
+    @test relmiss(EP._hall_occupation_mapping) < 1e-10
     @test relmiss((is_tr, Scart) -> (is_tr ? -1 : 1) * kron(Scart, Scart)) > 1e-3
     @test relmiss((is_tr, Scart) -> sign(det(Scart)) * kron(Scart, Scart)) > 1e-3
 end

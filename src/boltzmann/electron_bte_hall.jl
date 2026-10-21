@@ -71,7 +71,7 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
 
     map_1 = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry; interpolate = false)
     map_2 = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry,
-        _hall_occupation_law; interpolate = false)
+        _hall_occupation_mapping; interpolate = false)
 
     σ_hall_serta = zeros(FT, 3, 3, 3, nT)
     σ_hall = zeros(FT, 3, 3, 3, nT)
@@ -105,20 +105,20 @@ end
 # `X[b, c] = (v[c1] (∂_c2 δᴱf_b) - v[c2] (∂_c1 δᴱf_b)) / τ⁻¹`, `(c, c1, c2)` cyclic, with `δᴱf` the
 # first-order occupation on `el_f` and `grad` the three gradient matrices from `el_f` to `el_i`.
 function _hall_source(grad, δᴱf::AbstractVector{Vec3{FT}}, vs, inv_τ) where {FT}
-    ∂δᴱf = map(∂ -> ∂ * δᴱf, grad)
+    ∇δᴱf = map(∇ -> ∇ * δᴱf, grad)   # gradient along x, y and z
     X = Vector{SVector{9, FT}}(undef, length(vs))
     for i in eachindex(vs)
         X[i] = SVector{9, FT}(ntuple(9) do k
             b, c = mod1(k, 3), (k - 1) ÷ 3 + 1
             c1, c2 = mod1(c + 1, 3), mod1(c + 2, 3)
-            (vs[i][c1] * ∂δᴱf[c2][i][b] - vs[i][c2] * ∂δᴱf[c1][i][b]) / inv_τ[i]
+            (vs[i][c1] * ∇δᴱf[c2][i][b] - vs[i][c2] * ∇δᴱf[c1][i][b]) / inv_τ[i]
         end)
     end
     X
 end
 
 # `σ_hall[a, b, c] = (g_s / V) ∑_i w_i v_i[a] X_i[b, c]` over the states of `el_i`, symmetrized with the
-# rank-3 law of a tensor with polar `a`, `b` and axial `c` (even under time reversal: `v` and `X` are odd).
+# rank-3 transformation of a tensor with polar `a`, `b` and axial `c` (even under time reversal: `v` and `X` are odd).
 function _hall_conductivity(X, el_i::BandStates{FT}, params, symmetry) where {FT}
     w = state_weights(el_i)
     σ_hall = zeros(FT, 3, 3, 3)
