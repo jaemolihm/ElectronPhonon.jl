@@ -334,3 +334,13 @@ end
     @test a.σ_hall ≈ b.σ_hall rtol = 1e-10
     @test b.σ_hall ≈ b.σ_hall_serta rtol = 1e-10     # exact for Holstein: Sᵢ X_odd = 0
 end
+
+@testitem "BTE: threaded dense Sᵢ product" begin
+    using StaticArrays
+    # More rows than threads (several blocks), fewer rows than threads, and an empty Sᵢ.
+    for (ni, nf) in ((101, 57), (2, 5), (0, 4)), ST in (SVector{3, Float64}, SVector{9, Float64})
+        S = rand(ni, nf)
+        x = rand(ST, nf)
+        @test ElectronPhonon._mul_static_vectors(S, x) ≈ S * x
+    end
+end
