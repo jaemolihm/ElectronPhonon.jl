@@ -270,11 +270,11 @@ end
         source = EP._hall_source(grad, map_1 * out.δf_i[:, 1], el_i.vs, inv_τ[:, 1])
         map_2 * EP._solve_bte(source, Sᵢ[1], map_2, inv_τ[:, 1]; rtol = 1e-13).δf
     end
-    X_full = quiet(() -> unfolded_field(b, nothing, EP._hall_occupation_mapping))
+    X_full = quiet(() -> unfolded_field(b, nothing, EP._hall_transport_mapping))
     perm = [EP.state_index(b.el_f, a.el_f[f]) for f in 1:a.el_f.n]
     relmiss(mapping) = maximum(norm.(quiet(() -> unfolded_field(a, model.symmetry, mapping)) .- X_full[perm])) /
                    maximum(norm.(X_full))
-    @test relmiss(EP._hall_occupation_mapping) < 1e-10
+    @test relmiss(EP._hall_transport_mapping) < 1e-10
     @test relmiss((is_tr, Scart) -> (is_tr ? -1 : 1) * kron(Scart, Scart)) > 1e-3
     @test relmiss((is_tr, Scart) -> sign(det(Scart)) * kron(Scart, Scart)) > 1e-3
 end

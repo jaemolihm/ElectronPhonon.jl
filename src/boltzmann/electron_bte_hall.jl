@@ -71,7 +71,7 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
 
     map_1 = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry; interpolate = false)
     map_2 = vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry,
-        _hall_occupation_mapping; interpolate = false)
+        _hall_transport_mapping; interpolate = false)
 
     σ_hall_serta = zeros(FT, 3, 3, 3, nT)
     σ_hall = zeros(FT, 3, 3, 3, nT)
