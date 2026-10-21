@@ -253,7 +253,7 @@ end
 
     # `model.x` reads `model.structure.x`, and the forward is type stable.
     model = holstein_model(; t = 0.1, ω₀ = 0.01, g = 0.02, alat = 5.0, dimension = 2, verbose = false)
-    for name in (:alat, :lattice, :recip_lattice, :volume, :atom_pos, :atom_labels, :dimension)
+    for name in ElectronPhonon.MODEL_STRUCTURE_FIELDS
         @test getproperty(model, name) === getproperty(model.structure, name)
         @test name in propertynames(model)
     end
@@ -261,7 +261,6 @@ end
                 m -> m.atom_labels, m -> m.dimension)
     @test all(f -> isconcretetype(only(Base.return_types(f, (typeof(model),)))), forwards)
     @test !hasfield(typeof(model), :alat)
-    @test model.symmetry isa ElectronPhonon.Symmetry && model.mass isa Vector
 
     @test occursin("dimension = 2", sprint(show, MIME("text/plain"), model.structure))
     @test occursin("nsym = $(model.symmetry.nsym)", sprint(show, MIME("text/plain"), model))

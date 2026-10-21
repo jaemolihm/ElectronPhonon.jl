@@ -72,9 +72,10 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
 end
 
 # Fields of `structure` read as `model.x`. Literal names fold to a single `getfield` chain.
+const MODEL_STRUCTURE_FIELDS = (:alat, :lattice, :recip_lattice, :volume, :atom_pos, :atom_labels, :dimension)
+
 @inline function Base.getproperty(model::Model, name::Symbol)
-    if name === :alat || name === :lattice || name === :recip_lattice || name === :volume ||
-       name === :atom_pos || name === :atom_labels || name === :dimension
+    if name in MODEL_STRUCTURE_FIELDS
         getfield(getfield(model, :structure), name)
     else
         getfield(model, name)
@@ -82,7 +83,7 @@ end
 end
 
 Base.propertynames(::Model, private::Bool = false) =
-    (fieldnames(Model)..., :alat, :lattice, :recip_lattice, :volume, :atom_pos, :atom_labels, :dimension)
+    (fieldnames(Model)..., MODEL_STRUCTURE_FIELDS...)
 
 function Base.show(io::IO, ::MIME"text/plain", model::Model)
     println(io, typeof(model))
