@@ -12,6 +12,10 @@ Use GMRES itertive solver for IBTE.
 - `qme_model::AbstractQMEModel`
 
 FIXME: Currently assumes that only degenerate bands are included.
+
+The sign of `r_hall` is opposite to that of `solve_electron_bte_hall`: here `r_hall[1, 2, 3] = -1`
+for a parabolic band with constant τ, there `+1` (`δᴱᴮρ = Sₒ⁻¹ (v×∇) δᴱρ` with `Sₒ < 0`, against
+`X = +(v×∇) δᴱf / τ⁻¹`).
 """
 function solve_electron_hall_conductivity(out_linear, qme_model::AbstractQMEModel; kwargs...)
     # Function barrier because some fields of qme_model are not typed

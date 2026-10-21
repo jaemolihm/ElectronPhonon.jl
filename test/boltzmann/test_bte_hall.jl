@@ -26,11 +26,13 @@
     end
 
     # Band-bottom window and constant τ⁻¹ = 0.01, no scattering in: CRTA of one nearly parabolic band.
-    function crta_hall(nk, kT_over_t, order; nlist, symmetry = model.symmetry)
+    # `holes = true`: window at the band top, the band is the valence band (nelec = 2) and nlist < 0.
+    function crta_hall(nk, kT_over_t, order; nlist, symmetry = model.symmetry, holes = false)
         T = kT_over_t * t_hop
-        el_i, el_f = hall_states(nk, (-4t_hop - 1e-9, -4t_hop + 15T), symmetry)
-        occ = ElectronOccupationParams(; Tlist = [T], nlist, volume = model.volume, nelec = 0,
-            spin_degeneracy = 2, type = :Semiconductor)
+        window = holes ? (4t_hop - 15T, 4t_hop + 1e-9) : (-4t_hop - 1e-9, -4t_hop + 15T)
+        el_i, el_f = hall_states(nk, window, symmetry)
+        occ = ElectronOccupationParams(; Tlist = [T], nlist, volume = model.volume,
+            nelec = holes ? 2 : 0, spin_degeneracy = 2, type = :Semiconductor)
         EP.bte_compute_μ!(occ, el_i; do_print = false)
         inv_τ = fill(0.01, el_i.n, 1)
         Sᵢ = [zeros(el_i.n, el_f.n)]
@@ -134,7 +136,7 @@ end
 end
 
 @testitem "BTE Hall: rank-3 symmetrize" setup = [BteHall] begin
-    # σ[a, b, c] = ∑_d ε_{cde}... : the Levi-Civita tensor is invariant under proper rotations and
+    # The Levi-Civita tensor ε[a, b, c] is invariant under proper rotations and
     # changes sign under improper ones, so it is invariant when `axial = true` and killed otherwise.
     levi = zeros(3, 3, 3)
     for (a, b, c) in ((1, 2, 3), (2, 3, 1), (3, 1, 2))
@@ -173,6 +175,11 @@ end
         abs(r.h.r_hall_serta[1, 2, 3, 1] - 1)
     end
     @test errors[2] < errors[1]
+
+    # Holes (band top, nlist < 0): the same signs, so that r_hall[1, 2, 3] = r_H > 0.
+    r = quiet(() -> crta_hall(128, 0.02, 2; nlist = -4e-4, holes = true))
+    @test r.h.r_hall_serta[1, 2, 3, 1] ≈ 1 rtol = 0.02
+    @test r.h.r_hall_serta[2, 1, 3, 1] ≈ -1 rtol = 0.02
 end
 
 @testitem "BTE Hall: CRTA σ_hall against the analytic derivative" setup = [BteHall] begin
@@ -251,29 +258,28 @@ end
     # multigrid: an el_f state with a coarse weight
     el_f_mg = deepcopy(el_f)
     el_f_mg.weights[1] *= 2
-    @test_throws ArgumentError hall(out, el_i, el_f_mg, occ, sym)
+    @test_throws "multigrids are not supported" hall(out, el_i, el_f_mg, occ, sym)
 
     # shifted grid
     sel_shift = filter_electron_states((8, 8, 1), model, (-Inf, Inf); shift = (0.5 / 8, 0, 0))
     el_shift = BandStates(compute_electron_states(model, sel_shift,
         ["eigenvalue", "eigenvector", "velocity_diagonal"]), sel_shift)
-    @test_throws ArgumentError hall(out, el_shift, el_shift, occ, nothing)
+    @test_throws "shifted grids" hall(out, el_shift, el_shift, occ, nothing)
 
     # window_kq smaller than window_k: unfolded el_i states missing from el_f
     full = quiet(() -> synthetic_case(nothing))
     el_narrow = hall_states(8, (-4t_hop - 1e-9, -3t_hop), nothing)[1]
-    @test_throws ArgumentError quiet(() -> EP.solve_electron_bte_hall(full.out, full.el_i, el_narrow,
+    @test_throws "window_kq must contain window_k" quiet(() -> EP.solve_electron_bte_hall(full.out, full.el_i, el_narrow,
         full.Sᵢ, full.inv_τ, full.occ, model, nothing))
 end
 
 @testitem "BTE Hall: BoltzmannCalculator end to end" setup = [BteHall] begin
-    # Plumbing only: with Holstein e-ph, Sᵢ U⁽²⁾ X = 0 (see the symmetric-kernel argument in the plan).
+    # Plumbing only: with Holstein e-ph, Sᵢ U⁽²⁾ X = 0 (Sᵢ depends on the energies only).
     function run_hall(symmetry)
-        K = EP.unit_to_aru(:K)
-        occ = ElectronOccupationParams(; Tlist = [300.0 * K], nlist = 1.0, μlist = -0.1,
+        occ = ElectronOccupationParams(; Tlist = [0.04], nlist = 1.0, μlist = -0.1,
             model.volume, nelec = 0, spin_degeneracy = 2, type = :Metal)
         calc = BoltzmannCalculator{Float64}(; occ,
-            smearing_list = [SmearingType(:Gaussian, 0.04)], occupation_method = 5)
+            smearing_list = [SmearingType(:Gaussian, 0.05)], occupation_method = 5)
         EP.run_eph_over_k_and_kq(model, (6, 6, 1), (6, 6, 1); calculators = [calc], symmetry,
             window_k = (-Inf, Inf), window_kq = (-Inf, Inf), progress_print_step = 10^9, verbosity = 0)
         Sₒ = stack(calc.Sₒ)
@@ -284,9 +290,9 @@ end
     a = quiet(() -> run_hall(model.symmetry))
     b = quiet(() -> run_hall(nothing))
     @test norm(b.σ_hall) > 0
+    # kT = 0.04 Ry and μ off the band center (a particle-hole symmetric μ = 0 gives σ_hall = 0)
+    # keep τ⁻¹ in 1.1e-3 ... 6.9e-3 Ry, so Sᵢ X_odd = 0 holds to round-off.
     @test a.σ_hall_serta ≈ b.σ_hall_serta rtol = 1e-10
-    # The full-BZ run (U = I) does not project out the sector even under k -> -k, where Sᵢ nearly
-    # conserves the occupation (I - Sₒ⁻¹ Sᵢ nearly singular), so round-off in the source is amplified
-    # (1.7e-7 absolute on 6.8e-2 measured). The IBZ run enforces the odd sector through U⁽²⁾.
-    @test a.σ_hall ≈ b.σ_hall rtol = 1e-4
+    @test a.σ_hall ≈ b.σ_hall rtol = 1e-10
+    @test b.σ_hall ≈ b.σ_hall_serta rtol = 1e-10     # exact for Holstein: Sᵢ X_odd = 0
 end

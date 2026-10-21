@@ -238,12 +238,12 @@ function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, 
 end
 
 # Transformation laws for `unfold_data_map`: the matrix that takes the data at `k` to the data at
-# `k' = σ R k`, with `R = Scart` and `σ = -1` for a time-reversal operation, else `+1`. Both laws
-# are used by the BandStates path only (`solve_electron_bte`, `solve_electron_bte_hall`).
-# Polar vector odd under time reversal (velocity, δᴱf): `F(k') = σ R F(k)`.
+# `k' = σ R k`, with `R = Scart` and `σ = -1` for a time-reversal operation, else `+1`.
+# Polar vector odd under time reversal (velocity, δᴱf): `F(k') = σ R F(k)`. The default of
+# `unfold_data_map`, used by `solve_electron_bte` on both the BTStates and the BandStates path.
 _polar_tr_odd_law(is_tr, Scart) = is_tr ? -Scart : Scart
 
-# Rank-2 tensor `X[b, c]` with `b` polar, `c` axial and the whole field odd under time reversal
+# Used by the BandStates-only `solve_electron_bte_hall`. Rank-2 tensor `X[b, c]` with `b` polar, `c` axial and the whole field odd under time reversal
 # (the linear-in-B Hall field): `X(k') = σ det(R) R X(k) Rᵀ`. On the 9-vector `vec(X)`, `b` fastest,
 # this is `σ det(R) kron(R, R)`.
 _rank2_polar_axial_tr_odd_law(is_tr, Scart) =

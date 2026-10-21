@@ -39,14 +39,6 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
         rtol = 1e-10) where {FT}
     nT = length(params.Tlist)
 
-    # `out_bte` must belong to the same temperatures, chemical potentials and symmetry.
-    (out_bte.Tlist == params.Tlist && out_bte.μlist == params.μlist) ||
-        throw(ArgumentError("out_bte was computed with different Tlist or μlist than params"))
-    same_symmetry = symmetry === out_bte.symmetry || (symmetry !== nothing &&
-        out_bte.symmetry !== nothing && symmetry.S == out_bte.symmetry.S &&
-        symmetry.is_tr == out_bte.symmetry.is_tr && symmetry.Scart ≈ out_bte.symmetry.Scart)
-    same_symmetry || throw(ArgumentError("out_bte was computed with a different symmetry"))
-
     # Uniform Γ-centred grids only: a multigrid carries the coarse weights on its coarse states.
     (el_i.kpts isa GridKpoints && el_f.kpts isa GridKpoints) ||
         throw(ArgumentError("el_i and el_f must carry GridKpoints"))
@@ -64,6 +56,14 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
             throw(ArgumentError("the unfolded el_i state at grid point $(Tuple(key)[1:3]), band $(key[4]) " *
                 "is not in el_f: window_kq must contain window_k"))
     end
+
+    # `out_bte` must belong to the same temperatures, chemical potentials and symmetry.
+    (out_bte.Tlist == params.Tlist && out_bte.μlist == params.μlist) ||
+        throw(ArgumentError("out_bte was computed with different Tlist or μlist than params"))
+    same_symmetry = symmetry === out_bte.symmetry || (symmetry !== nothing &&
+        out_bte.symmetry !== nothing && symmetry.S == out_bte.symmetry.S &&
+        symmetry.is_tr == out_bte.symmetry.is_tr && symmetry.Scart ≈ out_bte.symmetry.Scart)
+    same_symmetry || throw(ArgumentError("out_bte was computed with a different symmetry"))
 
     stencil = finite_difference_vectors(model.recip_lattice, ngrid; order)
     symmetry === nothing || _assert_stencil_closed(stencil, symmetry)
