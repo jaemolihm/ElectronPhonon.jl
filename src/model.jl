@@ -9,8 +9,6 @@ using Mmap
 # S = W' = S_QE
 # τ = -W^-1 * w = S_QE^T^-1 * τ_QE.
 
-# TODO: Implement Base.show(model::Model)
-
 fortran_read_bool(f) = Bool(abs(read(f, Int32))) # In fortran file, 0 is false, -1 or +1 is true
 
 struct SymmetryOperators{FT <: AbstractFloat, WannType <: AbstractWannierObject{FT}}
@@ -21,34 +19,16 @@ end
 "Tight-binding model for electron, phonon, and electron-phonon coupling.
 All data is in coarse real-space grid."
 Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing, AbstractWannierObject{FT}}}
-    # TODO: Remove redundant fields (alat, lattice, recip_lattice, volume, symmetry, mass,
-    #       atom_pos, atom_labels) and use `structure` instead. Not done because breaking.
+    # Crystal structure: lattice, atoms and `dimension`. `alat`, `lattice`, `recip_lattice`,
+    # `volume`, `atom_pos`, `atom_labels` and `dimension` are read through it, e.g. `model.alat`.
+    structure::Structure
 
-    # Lattice information
-    alat::FT # Lattice parameter
-    # Lattice vector in Bohr. lattice[:, i] is the i-th lattice vector.
-    lattice::Mat3{FT}
-    recip_lattice::Mat3{FT}
-    volume::FT
-
-    # Spatial dimension of the system (1, 2 or 3), as declared by whoever built the model. The
-    # lattice is always 3d; `dimension < 3` means the remaining directions are decoupled vacuum.
-    # Only `holstein_model` sets this today — the EPW loaders leave it at the default, so a
-    # model read from EPW reports 3 even for a genuinely 2d material. Treat it as the builder's
-    # declaration, not a derived property, and do not branch on it without checking that the
-    # model's own constructor set it.
-    dimension::Int = 3
-
-    # Symmetries
+    # Symmetry group of the Hamiltonian, used for k-reduction. It is a subgroup of
+    # `symmetry_operations(structure)`, the group of the lattice and atoms.
     symmetry::Symmetry{FT}
 
-    # Atom information
+    # Phonon mass in Rydberg units, one entry per phonon mode (length `nmodes`).
     mass::Vector{FT}
-    atom_pos::Vector{Vec3{FT}} # Atom position in alat units, Cartesian coordinates
-    atom_labels::Vector{String}
-
-    # Crystal structure (lightweight container for lattice + atoms + symmetry)
-    structure::Structure
 
     nw::Int
     nmodes::Int
@@ -89,6 +69,30 @@ Base.@kwdef mutable struct Model{FT <: AbstractFloat, WannType <: Union{Nothing,
 
     # Symmetry operators for Wannier functions
     el_sym::Union{SymmetryOperators{FT, HostWannierObject{FT}}, Nothing} = nothing
+end
+
+# Fields of `structure` read as `model.x`. Literal names fold to a single `getfield` chain.
+const MODEL_STRUCTURE_FIELDS = (:alat, :lattice, :recip_lattice, :volume, :atom_pos, :atom_labels, :dimension)
+
+@inline function Base.getproperty(model::Model, name::Symbol)
+    if name in MODEL_STRUCTURE_FIELDS
+        getfield(getfield(model, :structure), name)
+    else
+        getfield(model, name)
+    end
+end
+
+# Lists the forwarded names too, for `propertynames(model)` and REPL tab completion.
+Base.propertynames(::Model, private::Bool = false) =
+    (fieldnames(Model)..., MODEL_STRUCTURE_FIELDS...)
+
+function Base.show(io::IO, ::MIME"text/plain", model::Model)
+    println(io, typeof(model))
+    println(io, "  structure: ", length(model.atom_pos), " atoms, dimension = ", model.dimension)
+    println(io, "  nw = ", model.nw, ", nmodes = ", model.nmodes, ", nsym = ", model.symmetry.nsym)
+    polar_name(polar) = polar.use ? nameof(typeof(polar.method)) : "none"
+    println(io, "  polar: phonon ", polar_name(model.polar_phonon), ", eph ", polar_name(model.polar_eph))
+    print(io, "  epmat: ", model.epmat === nothing ? "none" : "outer momentum \"$(model.epmat_outer_momentum)\"")
 end
 
 function load_symmetry_operators_from_epw(folder)

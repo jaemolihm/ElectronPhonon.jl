@@ -1,14 +1,15 @@
 """
-    Structure(alat, lattice, mass, atom_pos, atom_labels; compute_symmetry = true, dimension = 3)
+    Structure(alat, lattice, mass, atom_pos, atom_labels; dimension = 3)
 
-Lattice, atoms and symmetry of a crystal. `mass` and `atom_pos` are per atom; the stored
+Lattice and atoms of a crystal. `mass` and `atom_pos` are per atom; the stored
 `mass` is expanded to three entries per atom (one per Cartesian displacement).
 
-- `compute_symmetry = false` skips spglib and stores the identity operation only.
-- `dimension < 3` keeps only the symmetry operations that do not mix the first `dimension`
-  lattice directions with the rest (see [`restrict_symmetry_to_dimension`](@ref)), for a cell
-  that is periodic in 3d but whose Hamiltonian is lower-dimensional. It does not change the
-  lattice, and errors if the lattice mixes the two blocks.
+`dimension` (1, 2 or 3) is the number of periodic directions of the Hamiltonian, for a cell
+that is periodic in 3d but whose Hamiltonian is lower-dimensional (a chain or sheet padded
+with vacuum). It does not change the lattice. The constructor errors if the lattice mixes
+the first `dimension` directions with the rest (see [`restrict_symmetry_to_dimension`](@ref)).
+
+The symmetry group of the structure is `symmetry_operations(structure)`.
 """
 struct Structure
     # Lattice information
@@ -17,40 +18,41 @@ struct Structure
     recip_lattice :: Mat3{Float64}  # recip_lattice[:, i] is the i-th reciprocal lattice vector in 1/Bohr.
     volume        :: Float64        # Cell volume in Bohr^3. (=det(lattice))
 
+    # Number of periodic directions of the Hamiltonian (1, 2 or 3). The lattice is always 3d.
+    dimension :: Int
+
     # Atom information
     mass        :: Vector{Float64}        # Atom mass in Rydberg units. (1 amu = 911.444)
     atom_pos    :: Vector{Vec3{Float64}}  # Atom position in alat units, Cartesian coordinates
     atom_labels :: Vector{String}
 
-    # Symmetries
-    symmetry :: Symmetry{Float64}
-
-    function Structure(alat, lattice, mass, atom_pos, atom_labels; compute_symmetry = true,
-                       dimension = 3)
+    function Structure(alat, lattice, mass, atom_pos, atom_labels; dimension = 3)
         if length(mass) != length(atom_pos)
             error("Length of mass and atom_pos must be the same.")
         end
         if length(mass) != length(atom_labels)
             error("Length of mass and atom_labels must be the same.")
         end
+        dimension ∈ (1, 2, 3) || throw(ArgumentError("dimension must be 1, 2 or 3, got $dimension"))
+        for i in 1:3, j in 1:3
+            if ((i <= dimension) != (j <= dimension)) && !iszero(lattice[i, j])
+                throw(ArgumentError("lattice must not mix the first $dimension directions with " *
+                    "the rest, but lattice[$i, $j] = $(lattice[i, j]) is nonzero"))
+            end
+        end
 
         recip_lattice = inv(lattice') * 2π
         volume = abs(det(lattice))
 
-        if compute_symmetry
-            # Compute symmetry operations using Spglib
-            atom_pos_crystal = Ref(lattice) .\ (atom_pos * alat)
-            atoms_spglib = [label => [x for (l, x) in zip(atom_labels, atom_pos_crystal) if l == label] for label in atom_labels]
-            symmetry = symmetry_operations(lattice, atoms_spglib; dimension)
-
-        else
-            # Trivial symmetry only.
-            symmetry = identity_symmetry()
-        end
-
-        new(alat, lattice, recip_lattice, volume, repeat(mass, inner=3), atom_pos, atom_labels, symmetry)
+        new(alat, lattice, recip_lattice, volume, dimension, repeat(mass, inner=3), atom_pos, atom_labels)
     end
 end
 
 # Null structure
-Structure(::Nothing) = Structure(1, I(3), [], [], []; compute_symmetry = false)
+Structure(::Nothing) = Structure(1, I(3), [], [], [])
+
+function Base.show(io::IO, ::MIME"text/plain", structure::Structure)
+    println(io, "Structure: ", length(structure.atom_pos), " atoms ", structure.atom_labels)
+    print(io, "  alat = ", structure.alat, " bohr, dimension = ", structure.dimension,
+          ", volume = ", structure.volume, " bohr^3")
+end

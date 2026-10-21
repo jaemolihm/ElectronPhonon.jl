@@ -1,7 +1,7 @@
 @testsnippet HolsteinModel begin
     using LinearAlgebra
     using Random
-    using ElectronPhonon: holstein_model, Structure, restrict_symmetry_to_dimension
+    using ElectronPhonon: holstein_model, Structure, restrict_symmetry_to_dimension, symmetry_operations
 end
 
 @testitem "Holstein model" setup = [HolsteinModel] begin
@@ -12,7 +12,7 @@ end
 
         @test model.nw == 1
         @test model.nmodes == 1
-        @test model.dimension == dim
+        @test model.structure.dimension == dim
         @test length(model.mass) == model.nmodes
         @test model.volume ≈ 100^(3 - dim) * alat^3
         @test !model.use_polar_dipole
@@ -71,7 +71,8 @@ end
                     end
                 end
             end
-            @test model.symmetry === model.structure.symmetry  # Structure applies it itself
+            lattice_symmetry = symmetry_operations(model.structure)
+            @test model.symmetry.nsym == lattice_symmetry.nsym && model.symmetry.S == lattice_symmetry.S
             @test ElectronPhonon.check_group(model.symmetry)
         end
 
@@ -80,21 +81,22 @@ end
         # pass just because the filter does nothing.
         cube = Mat3{Float64}(I(3))
         cubic = Structure(1.0, cube, [1.0], [zero(Vec3{Float64})], ["A"])
-        @test cubic.symmetry.nsym == 96
+        cubic_symmetry = symmetry_operations(cubic)
+        @test cubic_symmetry.nsym == 96
         for (dim, nsym) in ((1, 32), (2, 32), (3, 96))
-            restricted = restrict_symmetry_to_dimension(cubic.symmetry, dim, cube)
+            restricted = restrict_symmetry_to_dimension(cubic_symmetry, dim, cube)
             @test restricted.nsym == nsym
             @test ElectronPhonon.check_group(restricted)
             # Same thing through the Structure keyword.
-            @test Structure(1.0, cube, [1.0], [zero(Vec3{Float64})], ["A"];
-                            dimension = dim).symmetry.nsym == nsym
+            @test symmetry_operations(Structure(1.0, cube, [1.0], [zero(Vec3{Float64})], ["A"];
+                                                dimension = dim)).nsym == nsym
         end
 
         # The block-diagonal test is read off S in crystal coordinates, so it is only
         # meaningful if the lattice does not mix the blocks itself.
         skewed = Mat3{Float64}([1 0 0.3; 0 1 0; 0 0 10])
-        @test_throws ArgumentError restrict_symmetry_to_dimension(cubic.symmetry, 2, skewed)
-        @test_throws ArgumentError restrict_symmetry_to_dimension(cubic.symmetry, 0, cube)
+        @test_throws ArgumentError restrict_symmetry_to_dimension(cubic_symmetry, 2, skewed)
+        @test_throws ArgumentError restrict_symmetry_to_dimension(cubic_symmetry, 0, cube)
     end
 
     @testset "symmetry is consistent with the dim-dimensional band" begin
@@ -234,4 +236,65 @@ end
         # g with a flat band is allowed: g alone fixes the model, and λ is reported as Inf.
         @test holstein_model(; t = 0.0, ω₀, g, verbose = false) isa ElectronPhonon.Model
     end
+end
+
+@testitem "Structure dimension" setup = [Common, HolsteinModel] begin
+    cube = Mat3{Float64}(I(3))
+    atom = ([1.0], [zero(Vec3{Float64})], ["A"])
+
+    # A 2D sheet in a cell padded with vacuum along z.
+    sheet = Structure(1.0, Mat3{Float64}(Diagonal(Vec3(1.0, 1.0, 100.0))), atom...; dimension = 2)
+    @test sheet.dimension == 2
+    @test Structure(1.0, cube, atom...).dimension == 3
+
+    # The lattice must not mix the periodic block with the rest, and `dimension` is 1, 2 or 3.
+    @test_throws ArgumentError Structure(1.0, Mat3{Float64}([1 0 0.3; 0 1 0; 0 0 100]), atom...; dimension = 2)
+    @test_throws ArgumentError Structure(1.0, cube, atom...; dimension = 4)
+
+    # `model.x` reads `model.structure.x`, and the forward is type stable.
+    model = holstein_model(; t = 0.1, ω₀ = 0.01, g = 0.02, alat = 5.0, dimension = 2, verbose = false)
+    for name in ElectronPhonon.MODEL_STRUCTURE_FIELDS
+        @test getproperty(model, name) === getproperty(model.structure, name)
+        @test name in propertynames(model)
+    end
+    forwards = (m -> m.alat, m -> m.lattice, m -> m.recip_lattice, m -> m.volume, m -> m.atom_pos,
+                m -> m.atom_labels, m -> m.dimension)
+    @test all(f -> isconcretetype(only(Base.return_types(f, (typeof(model),)))), forwards)
+    @test !hasfield(typeof(model), :alat)
+
+    @test occursin("dimension = 2", sprint(show, MIME("text/plain"), model.structure))
+    @test occursin("nsym = $(model.symmetry.nsym)", sprint(show, MIME("text/plain"), model))
+    @test occursin("polar: phonon none, eph none", sprint(show, MIME("text/plain"), model))
+
+    # crystal.fmt of the cubicBN artifact with the lattice, the 2D flag and L patched. Line 4/5 is
+    # at/bg, line 12 is do_cutoff_2D_epw and line 14 is L.
+    folder = _artifact_folder("cubicBN")
+    lines = readlines(joinpath(folder, "crystal.fmt"))
+    @test strip(lines[12]) == "F" && parse(Float64, lines[14]) == 0
+    function parse_dimension(; sheet_lattice, cutoff, L, dimension = nothing)
+        patched = copy(lines)
+        if sheet_lattice
+            patched[4] = "1 0 0 0 1 0 0 0 3"
+            patched[5] = "1 0 0 0 1 0 0 0 $(1 / 3)"
+        end
+        patched[12] = cutoff ? " T" : " F"
+        patched[14] = " $L"
+        mktempdir() do dir
+            write(joinpath(dir, "crystal.fmt"), join(patched, "\n") * "\n")
+            ElectronPhonon.epw_parse_structure(dir; dimension)[1].dimension
+        end
+    end
+    @test parse_dimension(sheet_lattice = false, cutoff = false, L = 0.0) == 3
+    @test parse_dimension(sheet_lattice = true, cutoff = false, L = 12.0) == 2
+    @test parse_dimension(sheet_lattice = true, cutoff = true, L = 0.0) == 2
+    @test parse_dimension(sheet_lattice = true, cutoff = false, L = 0.0, dimension = 2) == 2
+    @test_throws ArgumentError parse_dimension(sheet_lattice = true, cutoff = true, L = 0.0, dimension = 3)
+    @test_throws ArgumentError parse_dimension(sheet_lattice = true, cutoff = false, L = 12.0, dimension = 3)
+    # A 2D marker on a cell whose lattice mixes the planes is an invalid structure.
+    @test_throws ArgumentError parse_dimension(sheet_lattice = false, cutoff = false, L = 12.0)
+
+    # Polar2D needs a 2D structure.
+    sheet_3d = Structure(1.0, Mat3{Float64}(Diagonal(Vec3(1.0, 1.0, 100.0))), atom...)
+    @test_throws AssertionError ElectronPhonon.Polar(sheet_3d; use = true, ϵ = Mat3{Float64}(I(3)),
+        Z = [zero(Mat3{Float64})], Q = zeros(Vec3{Mat3{Float64}}, 1), L = 12.0, mode = :Polar2D)
 end

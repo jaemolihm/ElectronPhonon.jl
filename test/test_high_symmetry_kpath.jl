@@ -1,5 +1,6 @@
 @testsnippet HighSymmetryKpath begin
     using LinearAlgebra
+    using ElectronPhonon: Structure
 end
 
 @testitem "high-symmetry kpath" setup = [Common, HighSymmetryKpath] begin
@@ -59,10 +60,10 @@ end
     ref_xticks = [0.000000000000, 0.919939283628, 1.245186936494, 2.220929895094,
                   3.017620684655, 3.668115990389, 4.128085632203]
 
-    @test ElectronPhonon.spglib_spacegroup_number(model) == 216
-    @test ElectronPhonon.get_spglib_lattice(model) ≈ model.alat * I(3)
+    @test ElectronPhonon.spglib_spacegroup_number(model.structure) == 216
+    @test ElectronPhonon.get_spglib_lattice(model.structure) ≈ model.alat * I(3)
 
-    kpts, plot_xdata = ElectronPhonon.high_symmetry_kpath(model, kline_density=10)
+    kpts, plot_xdata = ElectronPhonon.high_symmetry_kpath(model.structure, kline_density=10)
 
     @test kpts.n == length(ref_kcoords)
     for ik in 1:length(ref_kcoords)
@@ -86,23 +87,23 @@ end
     atom_pos_crys = [Vec3(0.0, 0.0, 0.0), Vec3(1/3, 2/3, 1/2)]
     atom_pos = Ref(lattice) .* (atom_pos_crys ./ alat)
     atom_labels = ["A", "B"]
-    model = (;alat, lattice, atom_pos, atom_labels)
+    structure = Structure(alat, lattice, ones(2), atom_pos, atom_labels)
 
-    @test ElectronPhonon.atom_pos_crys(model) ≈ atom_pos_crys
-    @test ElectronPhonon.spglib_spacegroup_number(model) == 187
-    @test ElectronPhonon.get_spglib_lattice(model) ≈ lattice
+    @test ElectronPhonon.atom_pos_crys(structure) ≈ atom_pos_crys
+    @test ElectronPhonon.spglib_spacegroup_number(structure) == 187
+    @test ElectronPhonon.get_spglib_lattice(structure) ≈ lattice
 
     transf = Mat3([[1 2 3]; [0 1 0]; [0 0 1]]') # transformation matrix to new lattice vector convention
     @assert det(transf) ≈ 1
-    lattice_new = model.lattice * transf
-    model_new = (;alat, lattice=lattice_new, atom_pos, atom_labels)
+    lattice_new = structure.lattice * transf
+    structure_new = Structure(alat, lattice_new, ones(2), atom_pos, atom_labels)
 
-    # model_new describes the same physical structure with model, just with a different lattice vector convention.
-    @test ElectronPhonon.spglib_spacegroup_number(model_new) == ElectronPhonon.spglib_spacegroup_number(model)
-    @test ElectronPhonon.get_spglib_lattice(model_new) ≈ ElectronPhonon.get_spglib_lattice(model)
+    # structure_new describes the same physical structure with structure, just with a different lattice vector convention.
+    @test ElectronPhonon.spglib_spacegroup_number(structure_new) == ElectronPhonon.spglib_spacegroup_number(structure)
+    @test ElectronPhonon.get_spglib_lattice(structure_new) ≈ ElectronPhonon.get_spglib_lattice(structure)
 
-    kpts, plot_xdata = ElectronPhonon.high_symmetry_kpath(model, kline_density=50)
-    kpts_new, plot_xdata_new = ElectronPhonon.high_symmetry_kpath(model_new, kline_density=50)
+    kpts, plot_xdata = ElectronPhonon.high_symmetry_kpath(structure, kline_density=50)
+    kpts_new, plot_xdata_new = ElectronPhonon.high_symmetry_kpath(structure_new, kline_density=50)
     @test plot_xdata.x ≈ plot_xdata_new.x
     @test plot_xdata.xticks ≈ plot_xdata_new.xticks
     @test plot_xdata.xlabels == plot_xdata_new.xlabels

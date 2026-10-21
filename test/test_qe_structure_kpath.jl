@@ -11,7 +11,7 @@ end
 
 @testitem "load_structure_from_qe + write_kpath_files" setup = [Common, QeStructureKpath] begin
     model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
-    kpts_ref, xdata_ref = high_symmetry_kpath(model; kline_density = 10)
+    kpts_ref, xdata_ref = high_symmetry_kpath(model.structure; kline_density = 10)
 
     dir = mktempdir()
     species = "ATOMIC_SPECIES\nB 10.811 B.upf\nN 14.0067 N.upf\n"
@@ -47,10 +47,10 @@ end
         "    ibrav = 4, A = 3.34, C = 15.0, nat = 3, ntyp = 2",
         "ATOMIC_SPECIES\nTa 180.95 Ta.upf\nS 32.06 S.upf\nATOMIC_POSITIONS crystal\n" *
         "S 0.3333333333 -0.3333333333 0.1041893571\nTa 0.0 0.0 0.0\nS 0.3333333333 -0.3333333333 -0.1041893571\n")
-    st_hex = load_structure_from_qe(f_hex)
+    st_hex = load_structure_from_qe(f_hex; dimension = 2)
     A = 3.34 * ElectronPhonon.units.Å
     @test st_hex.lattice ≈ [A -A/2 0; 0 A*sqrt(3)/2 0; 0 0 A*15/3.34]
-    _, xdata_hex = high_symmetry_kpath(st_hex; kline_density = 20, is_2d = true)
+    _, xdata_hex = high_symmetry_kpath(st_hex; kline_density = 20)
     @test xdata_hex.xlabels == ["Γ", "M", "K", "Γ"]
 
     # Output files, for the fcc path with its "U|K" branch break.

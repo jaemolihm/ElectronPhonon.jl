@@ -6,10 +6,11 @@ export high_symmetry_kpath
 export write_kpath_files
 
 """
-    high_symmetry_kpath(model; kline_density=40, is_2d = false) => (kpts, plot_xdata)
-Extract the high-symmetry ``k``-point path corresponding to the passed model (or a
-[`Structure`](@ref), e.g. from [`load_structure_from_qe`](@ref), before any DFT run)
-using `Brillouin.jl`. Uses the conventions described in the reference work by
+    high_symmetry_kpath(structure::Structure; kline_density=40) => (kpts, plot_xdata)
+Extract the high-symmetry ``k``-point path corresponding to the passed
+[`Structure`](@ref) (e.g. `model.structure`, or one from [`load_structure_from_qe`](@ref)
+before any DFT run) using `Brillouin.jl`. The path is cut at the first ``k`` point with
+``k_z \\neq 0`` if `structure.dimension == 2`. Uses the conventions described in the reference work by
 Cracknell, Davies, Miller, and Love (CDML). Of note, this has minor differences to
 the ``k``-path reference
 ([Y. Himuma et. al. Comput. Mater. Sci. **128**, 140 (2017)](https://doi.org/10.1016/j.commatsci.2016.10.015))
@@ -20,9 +21,9 @@ overall in units of length).
 (`String`) to its ``k`` point in crystal (fractional reciprocal) coordinates (`Vec3`).
 (Adapted from DFTK.jl)
 """
-function high_symmetry_kpath(model; kline_density=40, is_2d = false)
-    spg_positions, spg_numbers, _ = spglib_atoms(atom_pos_crys(model), model.atom_labels)
-    cell = Spglib.Cell(model.lattice, spg_positions, spg_numbers)
+function high_symmetry_kpath(structure; kline_density=40)
+    spg_positions, spg_numbers, _ = spglib_atoms(atom_pos_crys(structure), structure.atom_labels)
+    cell = Spglib.Cell(structure.lattice, spg_positions, spg_numbers)
 
     kp = Brillouin.irrfbz_path(cell)
     kinter = Brillouin.interpolate(kp, density=kline_density)
@@ -30,7 +31,7 @@ function high_symmetry_kpath(model; kline_density=40, is_2d = false)
     plot_xdata = get_band_plot_xdata(kinter)
     kpts = Kpoints(kinter)
 
-    if is_2d
+    if structure.dimension == 2
         kpts, plot_xdata = kpath_truncate_to_2d(kpts, plot_xdata)
     end
 

@@ -30,7 +30,7 @@ end
         model = rashba_holstein_model(; params..., epmat_outer_momentum = outer)
         @test model.nw == 4
         @test model.nmodes == 1
-        @test model.dimension == 2
+        @test model.structure.dimension == 2
         @test model.el_sym === nothing
 
         # The interpolated eigenvectors diagonalize the analytic H(k), which fixes the sign
@@ -84,7 +84,7 @@ end
         for (α, nsym) in ((0.0, 32), (α_R, 16))
             model = rashba_holstein_model(; params..., α_R = α)
             @test model.symmetry.nsym == nsym
-            @test model.structure.symmetry.nsym == 32
+            @test symmetry_operations(model.structure).nsym == 32
             @test ElectronPhonon.check_group(model.symmetry)
             for xk in xks
                 e0 = compute_electron_states(model, Kpoints(xk), ["eigenvalue"])[1].e
