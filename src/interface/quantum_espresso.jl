@@ -65,18 +65,17 @@ function qe_lattice_from_ibrav(ibrav, celldm)
 end
 
 """
-    load_structure_from_qe(scf_file; compute_symmetry = true, dimension = 3) -> Structure
+    load_structure_from_qe(scf_file; dimension = 3) -> Structure
 
-Build a [`Structure`](@ref) from a Quantum ESPRESSO `pw.x` input file (e.g. `scf.in`),
-computing the symmetry with spglib. Supported:
+Build a [`Structure`](@ref) from a Quantum ESPRESSO `pw.x` input file (e.g. `scf.in`). Supported:
 - `ibrav = 0` with `CELL_PARAMETERS` in `alat`, `bohr` or `angstrom`;
 - `ibrav = 1, 2, 3, 4, 6, 8` with either `celldm(i)` or `A`, `B`, `C` (Å);
 - `ATOMIC_POSITIONS` in `crystal`, `alat`, `bohr` or `angstrom`.
 
 Masses are taken from the `ATOMIC_SPECIES` card as written there.
-This provides a way to load a `Structure` without going through `load_model`.
+This provides a way to load a `Structure` without loading a `Model`.
 """
-function load_structure_from_qe(scf_file; compute_symmetry = true, dimension = 3)
+function load_structure_from_qe(scf_file; dimension = 3)
     lines = readlines(scf_file)
     vars = parse_qe_namelists(lines)
 
@@ -159,5 +158,5 @@ function load_structure_from_qe(scf_file; compute_symmetry = true, dimension = 3
 
     mass = [masses[l] for l in labels]
 
-    Structure(alat, lattice, mass, atom_pos, labels; compute_symmetry, dimension)
+    Structure(alat, lattice, mass, atom_pos, labels; dimension)
 end

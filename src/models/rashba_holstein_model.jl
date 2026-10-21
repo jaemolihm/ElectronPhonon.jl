@@ -50,7 +50,7 @@ calculations must use `spin_degeneracy = 1`. All four Wannier functions sit at t
 position matrix elements vanish and the velocity is exactly `∂H/∂k`.
 
 `model.symmetry` is the symmetry group of the Hamiltonian, not that of the lattice:
-`model.structure.symmetry` is spglib's D4h × T for the padded square cell, and for
+`symmetry_operations(model.structure)` is spglib's D4h × T for the padded square cell, and for
 `α_R ≠ 0` `model.symmetry` keeps only its `C4v × T` subgroup (operations that preserve `z`).
 Both orbitals are taken even under `C4v`. `el_sym` is `nothing`: the operations map k-points
 and band energies, but Bloch states are never rotated as spinors, so spin-resolved quantities
@@ -99,10 +99,10 @@ function rashba_holstein_model(;
     structure = Structure(alat, lattice, [mass], atom_pos, ["A"]; dimension)
 
     # Rashba breaks z → -z, which leaves the z-preserving C4v subgroup of D4h.
+    lattice_symmetry = symmetry_operations(structure)
     symmetry = if iszero(α_R)
-        structure.symmetry
+        lattice_symmetry
     else
-        lattice_symmetry = structure.symmetry
         inds = [isym for (isym, symop) in enumerate(lattice_symmetry) if symop.Scart[3, 3] > 0]
         Symmetry(length(inds), lattice_symmetry.S[inds], lattice_symmetry.τ[inds],
             lattice_symmetry.Scart[inds], lattice_symmetry.τcart[inds],
@@ -158,11 +158,9 @@ function rashba_holstein_model(;
         WannierObject(irvec_ep_p, epmat; irvec_next = irvec_ep_e)
     end
 
-    Model(; structure.alat, structure.lattice, structure.recip_lattice, structure.volume,
-        dimension, nw, nmodes,
+    Model(; structure, symmetry, nw, nmodes,
         wann_centers = fill(zero(Vec3{FT}), nw),
         mass = [mass],
-        structure.atom_pos, structure.atom_labels, structure, symmetry,
         use_polar_dipole = false, polar_phonon = Polar(nothing), polar_eph = Polar(nothing),
         el_ham, el_ham_R, el_pos, el_vel, el_velocity_mode,
         ph_dyn, ph_dyn_R,

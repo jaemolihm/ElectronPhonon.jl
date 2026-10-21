@@ -69,6 +69,7 @@ function Polar(cell :: Structure; use, ϵ, Z, Q, L = nothing, mode = :Polar3D)
 
     elseif mode === :Polar2D
         @assert L !== nothing "Polar2D requires L"
+        @assert cell.dimension == 2 "Polar2D requires a structure with dimension = 2"
         @assert cell.lattice[1, 3] == 0 "Polar2D requires 2d system with vacuum along z"
         @assert cell.lattice[2, 3] == 0 "Polar2D requires 2d system with vacuum along z"
         @assert cell.lattice[3, 1] == 0 "Polar2D requires 2d system with vacuum along z"

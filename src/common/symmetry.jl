@@ -167,27 +167,27 @@ the primitive lattice is returned in the convention of the reference work of
 Cracknell, Davies, Miller, and Love (CDML). Of note this has minor differences to
 the primitive setting choice made in the ITA.
 """
-function get_spglib_lattice(model; to_primitive=false)
+function get_spglib_lattice(structure::Structure; to_primitive=false)
     # TODO This drops magnetic moments!
     # TODO For time-reversal symmetry see the discussion in PR 496.
     #      https://github.com/JuliaMolSim/DFTK.jl/pull/496/files#r725203554
     #      Essentially this does not influence the standardisation,
     #      but it only influences the kpath.
-    spg_positions, spg_numbers, _ = spglib_atoms(atom_pos_crys(model), model.atom_labels)
-    structure = Spglib.Cell(model.lattice, spg_positions, spg_numbers)
-    Matrix(Spglib.standardize_cell(structure; to_primitive).lattice)
+    spg_positions, spg_numbers, _ = spglib_atoms(atom_pos_crys(structure), structure.atom_labels)
+    cell = Spglib.Cell(structure.lattice, spg_positions, spg_numbers)
+    Matrix(Spglib.standardize_cell(cell; to_primitive).lattice)
 end
 
-function spglib_spacegroup_number(model)
+function spglib_spacegroup_number(structure::Structure)
     # Get spacegroup number according to International Tables for Crystallography (ITA)
     # TODO Time-reversal symmetry disabled? (not yet available in DFTK)
     # TODO Are magnetic moments passed?
-    spg_positions, spg_numbers, _ = spglib_atoms(atom_pos_crys(model), model.atom_labels)
-    structure = Spglib.Cell(model.lattice, spg_positions, spg_numbers)
-    Spglib.get_dataset(structure).spacegroup_number
+    spg_positions, spg_numbers, _ = spglib_atoms(atom_pos_crys(structure), structure.atom_labels)
+    cell = Spglib.Cell(structure.lattice, spg_positions, spg_numbers)
+    Spglib.get_dataset(cell).spacegroup_number
 end
 
-atom_pos_crys(model) = [inv(model.lattice) * (pos .* model.alat) for pos in model.atom_pos]
+atom_pos_crys(structure::Structure) = [inv(structure.lattice) * (pos .* structure.alat) for pos in structure.atom_pos]
 
 function spglib_get_stabilized_reciprocal_mesh(kgrid_size, rotations::Vector;
                                                is_shift=Vec3(0, 0, 0),
@@ -425,6 +425,29 @@ function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1
 end
 
 """
+    symmetry_operations(structure::Structure; tol_symmetry=1e-5)
+Symmetry operations of the lattice and atoms of `structure`, restricted to
+`structure.dimension` (see [`restrict_symmetry_to_dimension`](@ref)).
+"""
+function symmetry_operations(structure::Structure; tol_symmetry=1e-5)
+    atom_pos_crystal = Ref(structure.lattice) .\ (structure.atom_pos * structure.alat)
+    atoms_spglib = [label => [x for (l, x) in zip(structure.atom_labels, atom_pos_crystal) if l == label]
+                    for label in structure.atom_labels]
+    symmetry_operations(structure.lattice, atoms_spglib; tol_symmetry, structure.dimension)
+end
+
+# Throw unless `dimension` is 1, 2 or 3 and `lattice[i, j]` vanishes whenever exactly one of
+# `i, j` is `≤ dimension`.
+function check_lattice_blocks(lattice, dimension::Integer)
+    dimension ∈ (1, 2, 3) || throw(ArgumentError("dimension must be 1, 2 or 3, got $dimension"))
+    for i in 1:3, j in 1:3
+        ((i <= dimension) != (j <= dimension) && !iszero(lattice[i, j])) && throw(ArgumentError(
+            "lattice must not mix the first $dimension directions with the rest, but " *
+            "lattice[$i, $j] = $(lattice[i, j]) is nonzero"))
+    end
+end
+
+"""
     restrict_symmetry_to_dimension(symmetry, dimension, lattice) => Symmetry
 
 Keep only the operations of `symmetry` that do not mix the first `dimension` lattice
@@ -444,13 +467,8 @@ Cartesian directions do not mix if `lattice` itself does not mix them. That is c
 `lattice[i, j]` must vanish whenever exactly one of `i, j` is `≤ dimension`.
 """
 function restrict_symmetry_to_dimension(symmetry::Symmetry, dimension::Integer, lattice)
-    dimension ∈ (1, 2, 3) || throw(ArgumentError("dimension must be 1, 2 or 3, got $dimension"))
+    check_lattice_blocks(lattice, dimension)
     crosses_blocks(i, j) = (i <= dimension) != (j <= dimension)
-    for i in 1:3, j in 1:3
-        (crosses_blocks(i, j) && !iszero(lattice[i, j])) && throw(ArgumentError(
-            "lattice must not mix the first $dimension directions with the rest, but " *
-            "lattice[$i, $j] = $(lattice[i, j]) is nonzero"))
-    end
     inds = [isym for (isym, symop) in enumerate(symmetry)
             if !any(crosses_blocks(i, j) && symop.S[i, j] != 0 for i in 1:3, j in 1:3)]
     Symmetry(length(inds), symmetry.S[inds], symmetry.τ[inds], symmetry.Scart[inds],

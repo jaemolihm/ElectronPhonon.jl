@@ -33,11 +33,16 @@ end
 
 
 """
-    epw_parse_structure(folder :: String) => Structure
+    epw_parse_structure(folder :: String; dimension = nothing) => (structure, wann_centers, L, ...)
 
 Parse crystal.fmt file written by EPW.
+
+`dimension = nothing` sets `structure.dimension` to 2 if crystal.fmt carries a 2D long-range
+marker (`L > 0` or `do_cutoff_2D_epw`) and to 3 otherwise. A 2D run without either marker
+(non-polar, `system_2d = 'no'`) must pass `dimension = 2`. An explicit `dimension` other than 2
+together with a marker throws.
 """
-function epw_parse_structure(folder::String)
+function epw_parse_structure(folder::String; dimension = nothing)
 
     # When writing an array using * format in fortran, GNU and intel compilers behave
     # differently:
@@ -157,7 +162,15 @@ function epw_parse_structure(folder::String)
     # w_centers : Wannier centers in Cartesian bohr units
     # L : Length parameter for 2D polar
 
-    return Structure(alat, lattice, mass, atom_pos, atom_labels), wann_centers, L, ws_method, ndegen_pre_divided
+    has_2d_marker = L > 0 || do_cutoff_2D_epw
+    if dimension === nothing
+        dimension = has_2d_marker ? 2 : 3
+    elseif has_2d_marker && dimension != 2
+        throw(ArgumentError("crystal.fmt marks a 2D system (L = $L, do_cutoff_2D_epw = " *
+                            "$do_cutoff_2D_epw), but dimension = $dimension"))
+    end
+
+    return Structure(alat, lattice, mass, atom_pos, atom_labels; dimension), wann_centers, L, ws_method, ndegen_pre_divided
 end
 
 
@@ -169,6 +182,7 @@ end
         skip_eph_ndegen :: Bool = false,
         epmat_on_disk :: Bool = false,
         tmpdir = nothing,
+        dimension = nothing,
     ) => Model
 - `skip_eph_ndegen:: Bool = false` : If true, skip applying Wigner-Seitz degeneracy correction
   when reading electron-phonon coupling matrix elements. Use for newer EPW versions
@@ -176,6 +190,7 @@ end
 - `epmat_on_disk :: Bool = false` : If true, write the epmat to `tmpdir/tmp_epmat.bin` and
   memory-map it (read-only). The epmat is never fully loaded into memory.
 - `tmpdir = nothing` : Directory for the `epmat_on_disk = true` file.
+- `dimension = nothing` : `structure.dimension`; see [`epw_parse_structure`](@ref).
 """
 function load_model_from_epw_new(
     folder :: String,
@@ -188,6 +203,7 @@ function load_model_from_epw_new(
     skip_eph_ndegen :: Bool = false,
     epmat_on_disk :: Bool = false,
     tmpdir = nothing,
+    dimension = nothing,
     )
     if epmat_on_disk && load_epmat && tmpdir === nothing
         error("If epmat_on_disk is true, tmpdir must be provided.")
@@ -196,7 +212,7 @@ function load_model_from_epw_new(
     # el_velocity_mode = :Direct
     el_velocity_mode = :BerryConnection
 
-    structure, wann_centers, L, ws_method, ndegen_pre_divided = ElectronPhonon.epw_parse_structure(folder)
+    structure, wann_centers, L, ws_method, ndegen_pre_divided = ElectronPhonon.epw_parse_structure(folder; dimension)
 
     # Read Wigner-Seitz information
     f = open(joinpath(folder, "wigner.fmt"), "r")
@@ -483,8 +499,8 @@ function load_model_from_epw_new(
     end
 
 
-    Model(; structure.alat, structure.lattice, structure.recip_lattice, structure.volume, nw, nmodes,
-        wann_centers, structure.mass, structure.atom_pos, structure.atom_labels, structure, structure.symmetry,
+    Model(; structure, symmetry = symmetry_operations(structure), nw, nmodes,
+        wann_centers, structure.mass,
         use_polar_dipole, polar_phonon, polar_eph,
         el_ham, el_ham_R, el_pos, el_vel, el_velocity_mode,
         ph_dyn, ph_dyn_R,

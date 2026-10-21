@@ -20,7 +20,7 @@ using PrecompileTools: @setup_workload, @compile_workload
             Ta 0.0 0.0 0.0
             S 0.3333333333 -0.3333333333 0.1
             """)
-        kpts, plot_xdata = high_symmetry_kpath(load_structure_from_qe(scf); kline_density = 10, is_2d = true)
+        kpts, plot_xdata = high_symmetry_kpath(load_structure_from_qe(scf; dimension = 2); kline_density = 10)
         write_kpath_files("x", kpts, plot_xdata; dir)
         rm(dir; recursive = true)
     end

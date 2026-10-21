@@ -2,7 +2,7 @@
     model = _load_model_from_artifacts("cubicBN"; load_epmat = false)
 
     # The numerics behind plot_bandstructure. Since we use a band path, gridopt is not useful.
-    kpts, plot_xdata = high_symmetry_kpath(model; kline_density=10)
+    kpts, plot_xdata = high_symmetry_kpath(model.structure; kline_density=10)
     e_el = compute_eigenvalues_el(model, kpts; fourier_mode="normal")
     e_ph = compute_eigenvalues_ph(model, kpts; fourier_mode="normal")
 

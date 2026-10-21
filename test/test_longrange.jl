@@ -29,7 +29,7 @@ end
 
     # Polar2D on a rectangular cell, where |B x|² is diagonal: the analytic Glist, in loop order.
     a1, a2, L = 5.0, 8.0, 20.0
-    cell = Structure(1.0, Mat3([a1 0 0; 0 a2 0; 0 0 30.0]), [1.0], [Vec3(0.0, 0, 0)], ["X"]; compute_symmetry = false)
+    cell = Structure(1.0, Mat3([a1 0 0; 0 a2 0; 0 0 30.0]), [1.0], [Vec3(0.0, 0, 0)], ["X"]; dimension = 2)
     nxs = (4, 6, 0)
     thr = (2 * 15.0 / L)^2
     Glist_ref = [Vec3{Int}(ci.I) for ci in CartesianIndices((-nxs[1]:nxs[1], -nxs[2]:nxs[2], 0:0))

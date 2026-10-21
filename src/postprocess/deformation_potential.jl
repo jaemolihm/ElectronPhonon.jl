@@ -15,14 +15,14 @@ Here, ``k`` is a single point (`xk`) is used while ``q`` are multiple points on 
 - `include_polar`: if true, include the polar e-ph interaction if present. Default: `true`
 """
 function compute_deformation_potential(model, xk=Vec3(0., 0., 0.);
-        kline_density=40, band_rng=1:model.nw, include_polar=true, is_2d = false)
+        kline_density=40, band_rng=1:model.nw, include_polar=true)
     nw = model.nw
     nmodes = model.nmodes
     fourier_mode = "normal" # Since we use a band path, gridopt is not useful.
 
     # Setup k, q, and kq points
     kpts = Kpoints(xk)
-    qpts, plot_xdata = high_symmetry_kpath(model; kline_density, is_2d)
+    qpts, plot_xdata = high_symmetry_kpath(model.structure; kline_density)
     xkq = qpts.vectors .+ Ref(xk)
     kqpts = Kpoints(xkq)
     nq = qpts.n

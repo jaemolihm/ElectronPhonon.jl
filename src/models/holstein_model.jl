@@ -61,7 +61,7 @@ coupling measured against the half-bandwidth. Deriving `g` from `λ` needs `t �
 - `ε₀ = 0.0` : on-site energy, i.e. the center of the band. There is no chemical potential;
   set the occupation or `μ` in the downstream calculation as for any other `Model`.
 - `dimension = 3` : spatial dimension of the *hopping*, 1, 2 or 3, recorded as
-  `model.dimension`. The `Model` always lives on a 3d lattice: for `dimension < 3` the
+  `model.structure.dimension`. The `Model` always lives on a 3d lattice: for `dimension < 3` the
   directions without hopping get a lattice constant of `100 * alat`, and `model.symmetry`
   holds only the operations that do not mix them with the hopping directions. `model.volume`
   is therefore `100^(3-dimension) * alat^3`, so per-volume quantities
@@ -200,11 +200,9 @@ function holstein_model(;
         WannierObject(irvec_ep_p, epmat; irvec_next = irvec_ep_e)
     end
 
-    Model(; structure.alat, structure.lattice, structure.recip_lattice, structure.volume,
-        dimension, nw, nmodes,
+    Model(; structure, symmetry = symmetry_operations(structure), nw, nmodes,
         wann_centers = [zero(Vec3{FT})],
         mass = [mass],
-        structure.atom_pos, structure.atom_labels, structure, structure.symmetry,
         use_polar_dipole = false, polar_phonon = Polar(nothing), polar_eph = Polar(nothing),
         el_ham, el_ham_R, el_pos, el_vel, el_velocity_mode,
         ph_dyn, ph_dyn_R,

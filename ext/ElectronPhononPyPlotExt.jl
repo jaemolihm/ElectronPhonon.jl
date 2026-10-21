@@ -14,8 +14,8 @@ using LinearAlgebra: norm
 # TODO: Time reversal symmetry
 # TODO: Magnetic moments
 
-function ElectronPhonon.plot_bandstructure(model; kline_density=40, close_fig=true, εF=nothing, is_2d = false)
-    kpts, plot_xdata = high_symmetry_kpath(model; kline_density, is_2d)
+function ElectronPhonon.plot_bandstructure(model; kline_density=40, close_fig=true, εF=nothing)
+    kpts, plot_xdata = high_symmetry_kpath(model.structure; kline_density)
 
     # Calculate eigenvalues
     # Since we use a band path, gridopt is not useful.
@@ -43,10 +43,10 @@ function ElectronPhonon.plot_bandstructure(model; kline_density=40, close_fig=tr
 end
 
 function ElectronPhonon.plot_deformation_potential(model, xk=Vec3(0., 0., 0.);
-        kline_density=40, band_rng=1:model.nw, include_polar=true, close_fig=true, is_2d = false)
+        kline_density=40, band_rng=1:model.nw, include_polar=true, close_fig=true)
     nmodes = model.nmodes
     (; e_ph, deformation_potential, qpts, plot_xdata) = compute_deformation_potential(model, xk;
-        kline_density, band_rng, include_polar, is_2d)
+        kline_density, band_rng, include_polar)
 
     # Plot deformation potential and phonon band structure
     fig, plotaxes = PyPlot.subplots(1, 2, figsize=(8, 3))
