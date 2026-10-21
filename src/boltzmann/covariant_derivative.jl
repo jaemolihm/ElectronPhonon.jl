@@ -7,24 +7,31 @@ using OffsetArrays: no_offset_view
 export finite_difference_vectors
 
 """
-    finite_difference_vectors(recip_lattice, ngrid, order=1) => (; bvecs, bvecs_cart, wbs)
+    finite_difference_vectors(recip_lattice, ngrid; order=1, dimension=3) => (; bvecs, bvecs_cart, wbs)
 Choose the b vectors and weights as defined in [1], following the scheme of [2].
 [1] N. Marzari and D. Vanderbilt, PRB 56, 12847 (1997)
 [2] A. A. Mostofi et al, Phys. Commun. 178 685 (2008)
 
 - `order`: Use higher-order formula with `order`-times more b vectors. Finite-difference error
-           scales as ``O(b^(2*order))``.
+           scales as ``O(b^(2*order))``. A vector reached by several multiples of the shells is
+           listed once, with the summed weight.
+- `dimension`: Number of periodic directions `d` (crystal axes `1:d`), `model.dimension` for a model. Only
+           b vectors without components along `d+1:3` are used and the completeness relation is
+           imposed on the `d × d` block, so the gradient along `d+1:3` is 0. Needed for a sheet or a
+           wire, whose single-point grid direction would otherwise contribute a full reciprocal vector.
 
 TODO: Use gcd of ngrid to reduce ngrid.
 """
-function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1) where {FT}
+function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1, dimension=3) where {FT}
     nsupcell = 5 # Include b vectors in the [-nsupcell, nsupcell] cell to the search.
     kdist_tol = norm(recip_lattice) * sqrt(eps(FT)) # Difference below kdist_tol are regarded as equal.
     q = [1, 0, 0, 1, 0, 1] # Lower triangular components of I(3)
+    # Components (a, b) of `q` and `A` below that lie in the periodic `dimension × dimension` block
+    rows_used = [a <= dimension && b <= dimension for (a, b) in ((1, 1), (2, 1), (3, 1), (2, 2), (3, 2), (3, 3))]
 
-    # Generate list of b vectors and sort according to distance from origin
-    rng = -nsupcell:nsupcell
-    bvecs_all = vec([Vec3(i, j, k) ./ ngrid for i in rng, j in rng, k in rng])
+    # Generate list of b vectors (none along the non-periodic axes) and sort according to distance from origin
+    rng_axes = ntuple(axis -> axis <= dimension ? (-nsupcell:nsupcell) : (0:0), 3)
+    bvecs_all = vec([Vec3(i, j, k) ./ ngrid for i in rng_axes[1], j in rng_axes[2], k in rng_axes[3]])
     bvecs_cart_all = Ref(recip_lattice) .* bvecs_all
     dist_all = norm.(bvecs_cart_all)
 
@@ -54,7 +61,7 @@ function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1) wher
     for ishell in 1:nshell
         nshell_used += 1
         Amat[:, nshell_used] .= @views _compute_A(bvecs_cart_all[findall(ishell_all .== ishell)])
-        @views A = Amat[:, 1:nshell_used]
+        @views A = Amat[rows_used, 1:nshell_used]
 
         # check whether the new shell is linearly dependent on existing ones
         _, s, _ = svd(A)
@@ -66,9 +73,9 @@ function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1) wher
         @info "finite_difference_vectors: using shell $ishell"
 
         # Try to solve Amat * w = q
-        w = A \ q
+        w = A \ q[rows_used]
 
-        if A * w ≈ q
+        if A * w ≈ q[rows_used]
             # b vectors are found. Exit loop.
             found = true
             wbs_shell[ishell_used] .= w
@@ -117,10 +124,26 @@ function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1) wher
         wbs = vcat([wbs_ .* c for c in coeffs]...)
     end
 
+    # The extension to higher order repeats vectors (2b of one shell is a vector of another): merge them.
+    bvecs_unique = empty(bvecs)
+    wbs_unique = empty(wbs)
+    index_of = Dict{NTuple{3, Int}, Int}()
+    for (b, wb) in zip(bvecs, wbs)
+        i = get!(index_of, Tuple(round.(Int, b .* ngrid)), length(bvecs_unique) + 1)
+        if i > length(bvecs_unique)
+            push!(bvecs_unique, b)
+            push!(wbs_unique, wb)
+        else
+            wbs_unique[i] += wb
+        end
+    end
+    bvecs, wbs = bvecs_unique, wbs_unique
+
     bvecs_cart = Ref(recip_lattice) .* bvecs
 
-    # Test completeness relation (Eq. (B1) of Ref. [1])
-    @assert sum([b_cart * b_cart' .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)]) ≈ I(3)
+    # Test completeness relation (Eq. (B1) of Ref. [1]) on the periodic block
+    d = dimension
+    @assert sum([b_cart * b_cart' .* wb for (b_cart, wb) in zip(bvecs_cart, wbs)])[1:d, 1:d] ≈ I(d)
     (; bvecs, bvecs_cart, wbs)
 end
 
@@ -128,6 +151,49 @@ end
 function _compute_A(bvecs_cart)
     A = sum(b * b' for b in bvecs_cart)
     SVector(A[1, 1], A[2, 1], A[3, 1], A[2, 2], A[3, 2], A[3, 3])
+end
+
+# Sparse matrices of the finite-difference gradient operator of a band-diagonal field, for the BandStates BTE path (not the QME
+# covariant derivative below, which needs QMEStates and the overlaps between k and k+b):
+# `(∂_α F)[i] = ∑_b wb bᵅ F[j(i, b)]`, where `j(i, b)` is the state of `el_f` at `k_i + b` with the band
+# index of `i`. The `-F(k) ∑_b wb b` term of the Wannier90 form vanishes because every shell holds
+# ±b. A neighbour that `el_f` does not hold contributes 0. A direction along which `k + b` and
+# `k - b` are the same grid node (`ngrid` 1 or 2) gets a gradient of exactly 0.
+# Returns `NTuple{3, SparseMatrixCSC}` of size `el_i.n × el_f.n`, one per Cartesian direction;
+# `el_f.kpts` must be a `GridKpoints` holding the nodes `k_i + b`.
+function _finite_difference_gradient_matrices(el_i::BandStates{FT}, el_f::BandStates, stencil) where {FT}
+    (; bvecs, bvecs_cart, wbs) = stencil
+    rows = Int[]
+    cols = Int[]
+    vals = [FT[] for _ in 1:3]
+    for i in 1:el_i.n
+        xk = el_i.kpts.vectors[el_i.iks[i]]
+        for (b, b_cart, wb) in zip(bvecs, bvecs_cart, wbs)
+            j = state_index(el_f, xk + b, el_i.ibands[i])
+            j == 0 && continue
+            push!(rows, i)
+            push!(cols, j)
+            for α in 1:3
+                push!(vals[α], wb * b_cart[α])
+            end
+        end
+    end
+    ntuple(α -> sparse(rows, cols, vals[α], el_i.n, el_f.n), 3)
+end
+
+# Error unless every operation of `symmetry` maps the stencil onto itself with the same weights,
+# `σ R b` (`R = Scart`, `σ = -1` for time reversal) being a stencil vector `b'` with `wb' = wb`. Then
+# the gradient commutes with the symmetry unfolding of a field.
+function _assert_stencil_closed(stencil, symmetry)
+    (; bvecs_cart, wbs) = stencil
+    tol = sqrt(eps(eltype(wbs))) * maximum(norm, bvecs_cart)
+    for (Scart, is_tr) in zip(symmetry.Scart, symmetry.is_tr), (b, wb) in zip(bvecs_cart, wbs)
+        Sb = (is_tr ? -Scart : Scart) * b
+        j = findfirst(b_other -> norm(b_other - Sb) < tol, bvecs_cart)
+        (j !== nothing && wbs[j] ≈ wb) || error("the finite-difference stencil is not closed " *
+            "under the symmetry operations (the grid is too skewed for whole |b| shells): " *
+            "$b is mapped to $Sb")
+    end
 end
 
 """

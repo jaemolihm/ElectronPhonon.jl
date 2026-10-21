@@ -148,7 +148,7 @@ function compute_electron_phonon_bte_data_coherence(model, btedata_prefix, windo
         el_sym = symmetry !== nothing ? model.el_sym : nothing
         for order in 1:max_derivative_order
             g = create_group(fid_btedata, "covariant_derivative_order$order")
-            bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid; order)
+            bvec_data = finite_difference_vectors(model.recip_lattice, kpts.ngrid; order, dimension = model.dimension)
             if symmetry !== nothing
                 compute_covariant_derivative_matrix(el_k_boltzmann, el_k_save, bvec_data, el_sym,
                                                     el_unfold, ik_to_ikirr_isym; hdf_group=g,
