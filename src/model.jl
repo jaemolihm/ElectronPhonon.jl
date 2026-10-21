@@ -82,6 +82,7 @@ const MODEL_STRUCTURE_FIELDS = (:alat, :lattice, :recip_lattice, :volume, :atom_
     end
 end
 
+# Lists the forwarded names too, for `propertynames(model)` and REPL tab completion.
 Base.propertynames(::Model, private::Bool = false) =
     (fieldnames(Model)..., MODEL_STRUCTURE_FIELDS...)
 
@@ -90,7 +91,8 @@ function Base.show(io::IO, ::MIME"text/plain", model::Model)
     println(io, "  structure: ", length(model.atom_pos), " atoms, dimension = ", model.dimension)
     println(io, "  nw = ", model.nw, ", nmodes = ", model.nmodes, ", nsym = ", model.symmetry.nsym)
     println(io, "  polar: ", model.polar_phonon.use ? "yes" : "no")
-    print(io, "  epmat: ", model.epmat === nothing ? "none" : "outer momentum \"$(model.epmat_outer_momentum)\"")
+    print(io, "  epmat: ", typeof(model.epmat))
+    model.epmat === nothing || print(io, ", outer momentum \"", model.epmat_outer_momentum, "\"")
 end
 
 function load_symmetry_operators_from_epw(folder)

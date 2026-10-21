@@ -167,7 +167,7 @@ the primitive lattice is returned in the convention of the reference work of
 Cracknell, Davies, Miller, and Love (CDML). Of note this has minor differences to
 the primitive setting choice made in the ITA.
 """
-function get_spglib_lattice(structure::Structure; to_primitive=false)
+function get_spglib_lattice(structure; to_primitive=false)
     # TODO This drops magnetic moments!
     # TODO For time-reversal symmetry see the discussion in PR 496.
     #      https://github.com/JuliaMolSim/DFTK.jl/pull/496/files#r725203554
@@ -178,7 +178,7 @@ function get_spglib_lattice(structure::Structure; to_primitive=false)
     Matrix(Spglib.standardize_cell(cell; to_primitive).lattice)
 end
 
-function spglib_spacegroup_number(structure::Structure)
+function spglib_spacegroup_number(structure)
     # Get spacegroup number according to International Tables for Crystallography (ITA)
     # TODO Time-reversal symmetry disabled? (not yet available in DFTK)
     # TODO Are magnetic moments passed?
@@ -187,7 +187,7 @@ function spglib_spacegroup_number(structure::Structure)
     Spglib.get_dataset(cell).spacegroup_number
 end
 
-atom_pos_crys(structure::Structure) = Ref(structure.lattice) .\ (structure.atom_pos * structure.alat)
+atom_pos_crys(structure) = Ref(structure.lattice) .\ (structure.atom_pos * structure.alat)
 
 function spglib_get_stabilized_reciprocal_mesh(kgrid_size, rotations::Vector;
                                                is_shift=Vec3(0, 0, 0),
@@ -425,29 +425,15 @@ function symmetry_operations(lattice, atoms, magnetic_moments=[]; tol_symmetry=1
 end
 
 """
-    symmetry_operations(structure::Structure; tol_symmetry=1e-5)
+    symmetry_operations(structure; tol_symmetry=1e-5)
 Symmetry operations of the lattice and atoms of `structure`, restricted to
 `structure.dimension` (see [`restrict_symmetry_to_dimension`](@ref)).
 """
-function symmetry_operations(structure::Structure; tol_symmetry=1e-5)
+function symmetry_operations(structure; tol_symmetry=1e-5)
     atom_pos_crystal = atom_pos_crys(structure)
     atoms_spglib = [label => [x for (l, x) in zip(structure.atom_labels, atom_pos_crystal) if l == label]
                     for label in structure.atom_labels]
     symmetry_operations(structure.lattice, atoms_spglib; tol_symmetry, structure.dimension)
-end
-
-# Whether exactly one of the indices `i, j` is `≤ dimension`, i.e. `(i, j)` couples the first
-# `dimension` directions to the rest.
-crosses_blocks(i, j, dimension) = (i <= dimension) != (j <= dimension)
-
-# Throw unless `dimension` is 1, 2 or 3 and `lattice[i, j]` vanishes whenever `(i, j)` crosses blocks.
-function check_lattice_blocks(lattice, dimension::Integer)
-    dimension ∈ (1, 2, 3) || throw(ArgumentError("dimension must be 1, 2 or 3, got $dimension"))
-    for i in 1:3, j in 1:3
-        (crosses_blocks(i, j, dimension) && !iszero(lattice[i, j])) && throw(ArgumentError(
-            "lattice must not mix the first $dimension directions with the rest, but " *
-            "lattice[$i, $j] = $(lattice[i, j]) is nonzero"))
-    end
 end
 
 """
@@ -470,9 +456,15 @@ Cartesian directions do not mix if `lattice` itself does not mix them. That is c
 `lattice[i, j]` must vanish whenever exactly one of `i, j` is `≤ dimension`.
 """
 function restrict_symmetry_to_dimension(symmetry::Symmetry, dimension::Integer, lattice)
-    check_lattice_blocks(lattice, dimension)
+    dimension ∈ (1, 2, 3) || throw(ArgumentError("dimension must be 1, 2 or 3, got $dimension"))
+    crosses_blocks(i, j) = (i <= dimension) != (j <= dimension)
+    for i in 1:3, j in 1:3
+        (crosses_blocks(i, j) && !iszero(lattice[i, j])) && throw(ArgumentError(
+            "lattice must not mix the first $dimension directions with the rest, but " *
+            "lattice[$i, $j] = $(lattice[i, j]) is nonzero"))
+    end
     inds = [isym for (isym, symop) in enumerate(symmetry)
-            if !any(crosses_blocks(i, j, dimension) && symop.S[i, j] != 0 for i in 1:3, j in 1:3)]
+            if !any(crosses_blocks(i, j) && symop.S[i, j] != 0 for i in 1:3, j in 1:3)]
     Symmetry(length(inds), symmetry.S[inds], symmetry.τ[inds], symmetry.Scart[inds],
         symmetry.τcart[inds], symmetry.is_inv[inds], symmetry.is_tr[inds])
 end

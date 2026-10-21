@@ -21,7 +21,7 @@ overall in units of length).
 (`String`) to its ``k`` point in crystal (fractional reciprocal) coordinates (`Vec3`).
 (Adapted from DFTK.jl)
 """
-function high_symmetry_kpath(structure::Structure; kline_density=40)
+function high_symmetry_kpath(structure; kline_density=40)
     spg_positions, spg_numbers, _ = spglib_atoms(atom_pos_crys(structure), structure.atom_labels)
     cell = Spglib.Cell(structure.lattice, spg_positions, spg_numbers)
 

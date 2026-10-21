@@ -33,7 +33,13 @@ struct Structure
         if length(mass) != length(atom_labels)
             error("Length of mass and atom_labels must be the same.")
         end
-        check_lattice_blocks(lattice, dimension)
+        dimension ∈ (1, 2, 3) || throw(ArgumentError("dimension must be 1, 2 or 3, got $dimension"))
+        for i in 1:3, j in 1:3
+            if ((i <= dimension) != (j <= dimension)) && !iszero(lattice[i, j])
+                throw(ArgumentError("lattice must not mix the first $dimension directions with " *
+                    "the rest, but lattice[$i, $j] = $(lattice[i, j]) is nonzero"))
+            end
+        end
 
         recip_lattice = inv(lattice') * 2π
         volume = abs(det(lattice))
