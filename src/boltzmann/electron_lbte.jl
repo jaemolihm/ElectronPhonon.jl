@@ -142,7 +142,7 @@ function _solve_bte_gmres(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, inv_τ;
     # numeric element type.
     function apply!(y, x)
         x_field = reinterpret(ST, x)
-        reinterpret(ST, y) .= x_field .- (scat_mat * (map_i_to_f * x_field)) ./ inv_τ
+        reinterpret(ST, y) .= x_field .- _mul_static_vectors(scat_mat, map_i_to_f * x_field) ./ inv_τ
     end
     op = LinearMap{FT}(apply!, length(ST) * length(rhs); ismutating = true)
     x, stats = Krylov.gmres(op, collect(reinterpret(FT, rhs)); atol = zero(FT), rtol = FT(rtol),
@@ -153,9 +153,25 @@ function _solve_bte_gmres(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, inv_τ;
         @warn "GMRES not converged at iteration $(stats.niter)$(iT === nothing ? "" : " (iT=$iT)"): $(stats.status)"
     elseif iT !== nothing
         @info "iT=$iT, GMRES converged at iteration $(stats.niter)"
+        flush(stdout)
+        flush(stderr)
     end
     (; δf, obs = observable(δf), obs_iter = nothing, niter = stats.niter, converged)
 end
+
+# `S * x` for a vector `x` of static vectors. A dense `S` is applied as a gemm on row blocks, one per
+# thread, with the components of `x` as the rows of the right factor: `Y = X S'`, `X[c, j] = x[j][c]`.
+# The generic `Matrix * Vector{SVector}` product is a single-threaded scalar loop.
+function _mul_static_vectors(S::Matrix, x::AbstractVector{ST}) where {FT, ST <: StaticVector{<:Any, FT}}
+    X = reshape(reinterpret(FT, x), length(ST), :)
+    Y = Matrix{FT}(undef, length(ST), size(S, 1))
+    blocks = collect(Iterators.partition(axes(S, 1), cld(size(S, 1), Threads.nthreads())))
+    @views Threads.@threads for rows in blocks
+        mul!(Y[:, rows], X, transpose(S[rows, :]))
+    end
+    reinterpret(reshape, ST, Y)
+end
+_mul_static_vectors(S, x) = S * x
 
 function _solve_bte_fixed_point(rhs::AbstractVector, scat_mat, map_i_to_f, inv_τ;
         max_iter, rtol, mixing, observable, iT)
@@ -171,7 +187,7 @@ function _solve_bte_fixed_point(rhs::AbstractVector, scat_mat, map_i_to_f, inv_�
         obs_old = obs
 
         δf_f = map_i_to_f * δf
-        δf_tmp .= (scat_mat * δf_f) ./ inv_τ .+ rhs
+        δf_tmp .= _mul_static_vectors(scat_mat, δf_f) ./ inv_τ .+ rhs
         @. δf = δf_tmp * mixing + δf * (1 - mixing)
         obs = observable(δf)
         obs_iter[iter + 1] = obs
@@ -179,7 +195,11 @@ function _solve_bte_fixed_point(rhs::AbstractVector, scat_mat, map_i_to_f, inv_�
 
         if norm(obs - obs_old) / norm(obs) < rtol
             converged = true
-            iT === nothing || @info "iT=$iT, converged at iteration $iter"
+            if iT !== nothing
+                @info "iT=$iT, converged at iteration $iter"
+                flush(stdout)
+                flush(stderr)
+            end
             break
         elseif iter == max_iter
             iT === nothing || @info "iT=$iT, convergence not reached at maximum iteration $max_iter"
