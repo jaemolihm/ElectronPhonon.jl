@@ -190,7 +190,9 @@ end
 - `epmat_on_disk :: Bool = false` : If true, write the epmat to `tmpdir/tmp_epmat.bin` and
   memory-map it (read-only). The epmat is never fully loaded into memory.
 - `tmpdir = nothing` : Directory for the `epmat_on_disk = true` file.
-- `dimension = nothing` : `structure.dimension`; see [`epw_parse_structure`](@ref).
+- `dimension = nothing` : `structure.dimension`; see [`epw_parse_structure`](@ref). For a polar
+  2D material, the 2D dimension is detected automatically from crystal.fmt. For a non-polar 2D
+  material, it may not be, so pass `dimension = 2`.
 """
 function load_model_from_epw_new(
     folder :: String,
