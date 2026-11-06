@@ -7,7 +7,7 @@ using OffsetArrays: no_offset_view
 export finite_difference_vectors
 
 """
-    finite_difference_vectors(recip_lattice, ngrid; order=1, dimension=3) => (; bvecs, bvecs_cart, wbs)
+    finite_difference_vectors(recip_lattice, ngrid; order=1, dimension=3, verbose=false) => (; bvecs, bvecs_cart, wbs)
 Choose the b vectors and weights as defined in [1], following the scheme of [2].
 [1] N. Marzari and D. Vanderbilt, PRB 56, 12847 (1997)
 [2] A. A. Mostofi et al, Phys. Commun. 178 685 (2008)
@@ -19,10 +19,11 @@ Choose the b vectors and weights as defined in [1], following the scheme of [2].
            b vectors without components along `d+1:3` are used and the completeness relation is
            imposed on the `d × d` block, so the gradient along `d+1:3` is 0. Needed for a sheet or a
            wire, whose single-point grid direction would otherwise contribute a full reciprocal vector.
+- `verbose`: Log the shells used.
 
 TODO: Use gcd of ngrid to reduce ngrid.
 """
-function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1, dimension=3) where {FT}
+function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1, dimension=3, verbose=false) where {FT}
     nsupcell = 5 # Include b vectors in the [-nsupcell, nsupcell] cell to the search.
     kdist_tol = norm(recip_lattice) * sqrt(eps(FT)) # Difference below kdist_tol are regarded as equal.
     q = [1, 0, 0, 1, 0, 1] # Lower triangular components of I(3)
@@ -70,7 +71,7 @@ function finite_difference_vectors(recip_lattice::Mat3{FT}, ngrid; order=1, dime
             continue
         end
         ishell_used[ishell] = true
-        @info "finite_difference_vectors: using shell $ishell"
+        verbose && @info "finite_difference_vectors: using shell $ishell"
 
         # Try to solve Amat * w = q
         w = A \ q[rows_used]
