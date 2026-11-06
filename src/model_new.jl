@@ -196,8 +196,8 @@ end
   material, it may not be, so pass `dimension = 2`.
 - `_debug_epw_ws_symm_format :: Bool = false` : Debug flag. Read the `use_ws_v2` files of the
   EPW branch `jml/ws_symm`: crystal.fmt has no `ws_method idiv` line, epmatwp is divided by the
-  e-ph ndegen only (not in wigner.fmt), and H, dyn, v, r and the electron ndegen of epmat are
-  divided at load.
+  e-ph ndegen only and that ndegen is not written to wigner.fmt, and H, dyn, v, r and the electron
+  ndegen of epmat are divided at load.
 """
 function load_model_from_epw_new(
     folder :: String,
@@ -230,16 +230,16 @@ function load_model_from_epw_new(
         # New version (use_ws_v2)
         seekstart(f)
         ind_new, ws_method_, ndegen_pre_divided_ = parse.(Int, split(readline(f)))
-        @assert ndegen_pre_divided_ == 1
         if _debug_epw_ws_symm_format
             # jml/ws_symm format: crystal.fmt has no ws_method line; only epmatwp is divided by
             # ndegen_ep before writing, and ndegen_ep is not in wigner.fmt. H, dyn, v, r and the
             # ndegen_el of epmat are divided here.
             ws_method == -1 || throw(ArgumentError("_debug_epw_ws_symm_format = true, but crystal.fmt has a ws_method line"))
-            ws_method = ws_method_
+            ndegen_pre_divided_ == 1 || throw(ArgumentError("_debug_epw_ws_symm_format = true needs wigner.fmt flag 1 (use_ws_v2 = 'cell', 'center' or 'symmetric'), got $ndegen_pre_divided_ (use_ws_v2 = 'none')"))
             ndegen_pre_divided = false
             skip_eph_ndegen = true
         else
+            @assert ndegen_pre_divided_ == 1
             @assert ndegen_pre_divided == true
             @assert ws_method_ == ws_method
             skip_eph_ndegen = (ws_method == 3)  # SYMMETRIC
