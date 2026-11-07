@@ -218,54 +218,69 @@ end
 `X[:,:,b] = inv(M[:,:,b])` for every batch `b` of the `(n, n, B)` arrays `X` and `M`; `M` is
 overwritten (it holds the LU factors on the CUDA path and the reduced matrix on the host path).
 The Dyson solves of the dual-grid Migdal-Eliashberg driver call it once per frequency batch.
+Both methods throw `SingularException` if any matrix is singular.
 
-The generic method is a Gauss-Jordan elimination with partial pivoting, threaded over the batch.
-At `n <= 8` a LAPACK `getrf`/`getri` call per matrix is call overhead, and OpenBLAS's small calls
-contend across threads, so the elimination is written out. The CUDA extension uses cuBLAS
-`getrf`/`getri` batched and throws if any matrix is singular.
+The host method (plain `Array`s only, so a device array of another type gets a `MethodError`
+instead of scalar indexing) runs [`_gauss_jordan_inv!`](@ref) per matrix, threaded over the batch.
+The CUDA extension uses cuBLAS `getrf`/`getri` batched.
 """
-function batched_inv!(X::AbstractArray{T,3}, M::AbstractArray{T,3}) where {T}
+function batched_inv!(X::Array{T,3}, M::Array{T,3}) where {T}
     n = size(M, 1)
     size(M, 2) == n && size(X) == size(M) || throw(DimensionMismatch(
         "X and M must both be (n, n, B), got $(size(X)) and $(size(M))"))
+    info = zeros(Int, size(M, 3))   # 0, or the column at which matrix b was found singular
     @views Threads.@threads for b in axes(M, 3)
-        Xb = X[:, :, b]
-        Mb = M[:, :, b]
-        # Start from the identity; the row operations below turn it into the inverse
-        copyto!(Xb, I)
-        for j in 1:n
-            # Pivot: the largest |M[i, j]| at or below the diagonal, swapped into row j of M and X
-            p = j
-            for i in (j + 1):n
-                abs(Mb[i, j]) > abs(Mb[p, j]) && (p = i)
-            end
-            iszero(Mb[p, j]) && throw(SingularException(j))
-            if p != j
-                for c in 1:n
-                    tM = Mb[j, c]
-                    Mb[j, c] = Mb[p, c]
-                    Mb[p, c] = tM
-                    tX = Xb[j, c]
-                    Xb[j, c] = Xb[p, c]
-                    Xb[p, c] = tX
-                end
-            end
-            # Normalize row j, then eliminate column j from every other row
-            d = inv(Mb[j, j])
+        info[b] = _gauss_jordan_inv!(X[:, :, b], M[:, :, b])
+    end
+    # Report singularity after the loop so the error type matches the CUDA method
+    ibad = findfirst(!iszero, info)
+    isnothing(ibad) || throw(SingularException(info[ibad]))
+    X
+end
+
+"""
+    _gauss_jordan_inv!(X, M) -> info
+
+`X = M⁻¹` for one `n x n` matrix by Gauss-Jordan elimination with partial pivoting, overwriting
+`M`. Returns 0, or the column `j` whose pivot vanished (then `X` is meaningless). Called by the host
+[`batched_inv!`](@ref) and by the host Dyson solve of MigdalEliashberg.jl, once per matrix from
+every task: at `n <= 8` a LAPACK `getrf`/`getri` call per matrix is call overhead, and OpenBLAS's
+small calls contend across threads, so the elimination is written out.
+"""
+function _gauss_jordan_inv!(X, M)
+    n = size(M, 1)
+    size(M, 2) == n && size(X) == size(M) || throw(DimensionMismatch(
+        "X and M must both be (n, n), got $(size(X)) and $(size(M))"))
+    # Start from the identity; the row operations below turn it into the inverse
+    copyto!(X, I)
+    for j in 1:n
+        # Pivot: the largest |M[i, j]| at or below the diagonal, swapped into row j of M and X
+        p = j
+        for i in (j + 1):n
+            abs(M[i, j]) > abs(M[p, j]) && (p = i)
+        end
+        iszero(M[p, j]) && return j
+        if p != j
             for c in 1:n
-                Mb[j, c] *= d
-                Xb[j, c] *= d
+                M[j, c], M[p, c] = M[p, c], M[j, c]
+                X[j, c], X[p, c] = X[p, c], X[j, c]
             end
-            for i in 1:n
-                i == j && continue
-                f = Mb[i, j]
-                iszero(f) && continue
-                for c in 1:n
-                    Mb[i, c] -= f * Mb[j, c]
-                    Xb[i, c] -= f * Xb[j, c]
-                end
+        end
+        # Normalize row j, then eliminate column j from every other row
+        d = inv(M[j, j])
+        for c in 1:n
+            M[j, c] *= d
+            X[j, c] *= d
+        end
+        for i in 1:n
+            i == j && continue
+            f = M[i, j]
+            iszero(f) && continue
+            for c in 1:n
+                M[i, c] -= f * M[j, c]
+                X[i, c] -= f * X[j, c]
             end
         end
     end
-    X
+    0
 end
