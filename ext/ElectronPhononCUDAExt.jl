@@ -16,7 +16,7 @@ using ElectronPhonon
 using ElectronPhonon: WannierObject
 using CUDA
 using CUDA.cuSOLVER: heevjBatched!
-using CUDA.cuBLAS: gemm!, gemm_strided_batched!
+using CUDA.cuBLAS: gemm!, gemm_strided_batched!, getrf_strided_batched!, getri_strided_batched!
 using LinearAlgebra: LinearAlgebra
 using CUDA.cuSPARSE: CuSparseMatrixCSR
 using SparseArrays: SparseMatrixCSC
@@ -161,6 +161,23 @@ function ElectronPhonon.batched_gemm!(transA::Char, transB::Char,
                                       A::CuArray{T,3}, B::CuArray{T,3}, C::CuArray{T,3}) where {T}
     gemm_strided_batched!(transA, transB, one(T), A, B, zero(T), C)
     C
+end
+
+"""
+    batched_inv!(X::CuArray{T,3}, M::CuArray{T,3}) -> X
+
+GPU batched inverse: cuBLAS `getrf` (pivoted LU, in place in `M`) then `getri` into `X`. Throws if
+any matrix is singular (`info != 0`).
+"""
+function ElectronPhonon.batched_inv!(X::CuArray{T,3}, M::CuArray{T,3}) where {T}
+    n = size(M, 1)
+    size(M, 2) == n && size(X) == size(M) || throw(DimensionMismatch(
+        "X and M must both be (n, n, B), got $(size(X)) and $(size(M))"))
+    pivots, info_lu, _ = getrf_strided_batched!(M, true)
+    all(iszero, info_lu) || throw(LinearAlgebra.SingularException(findfirst(!iszero, Array(info_lu))))
+    info_inv = getri_strided_batched!(M, X, pivots)
+    all(iszero, info_inv) || throw(LinearAlgebra.SingularException(findfirst(!iszero, Array(info_inv))))
+    X
 end
 
 # Type piracy: GPUArrays ≥ 11.5.11 sends every product with a strided `CuArray` view operand, such

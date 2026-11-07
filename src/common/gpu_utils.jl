@@ -211,3 +211,61 @@ function _batched_gemm!(opA::FA, opB::FB, A, B, C) where {FA, FB}
     end
     C
 end
+
+"""
+    batched_inv!(X, M) -> X
+
+`X[:,:,b] = inv(M[:,:,b])` for every batch `b` of the `(n, n, B)` arrays `X` and `M`; `M` is
+overwritten (it holds the LU factors on the CUDA path and the reduced matrix on the host path).
+The Dyson solves of the dual-grid Migdal-Eliashberg driver call it once per frequency batch.
+
+The generic method is a Gauss-Jordan elimination with partial pivoting, threaded over the batch.
+At `n <= 8` a LAPACK `getrf`/`getri` call per matrix is call overhead, and OpenBLAS's small calls
+contend across threads, so the elimination is written out. The CUDA extension uses cuBLAS
+`getrf`/`getri` batched and throws if any matrix is singular.
+"""
+function batched_inv!(X::AbstractArray{T,3}, M::AbstractArray{T,3}) where {T}
+    n = size(M, 1)
+    size(M, 2) == n && size(X) == size(M) || throw(DimensionMismatch(
+        "X and M must both be (n, n, B), got $(size(X)) and $(size(M))"))
+    @views Threads.@threads for b in axes(M, 3)
+        Xb = X[:, :, b]
+        Mb = M[:, :, b]
+        # Start from the identity; the row operations below turn it into the inverse
+        copyto!(Xb, I)
+        for j in 1:n
+            # Pivot: the largest |M[i, j]| at or below the diagonal, swapped into row j of M and X
+            p = j
+            for i in (j + 1):n
+                abs(Mb[i, j]) > abs(Mb[p, j]) && (p = i)
+            end
+            iszero(Mb[p, j]) && throw(SingularException(j))
+            if p != j
+                for c in 1:n
+                    tM = Mb[j, c]
+                    Mb[j, c] = Mb[p, c]
+                    Mb[p, c] = tM
+                    tX = Xb[j, c]
+                    Xb[j, c] = Xb[p, c]
+                    Xb[p, c] = tX
+                end
+            end
+            # Normalize row j, then eliminate column j from every other row
+            d = inv(Mb[j, j])
+            for c in 1:n
+                Mb[j, c] *= d
+                Xb[j, c] *= d
+            end
+            for i in 1:n
+                i == j && continue
+                f = Mb[i, j]
+                iszero(f) && continue
+                for c in 1:n
+                    Mb[i, c] -= f * Mb[j, c]
+                    Xb[i, c] -= f * Xb[j, c]
+                end
+            end
+        end
+    end
+    X
+end
