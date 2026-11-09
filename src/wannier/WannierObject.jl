@@ -63,7 +63,8 @@ Base.@kwdef mutable struct WannierObject{T, AT <: AbstractMatrix{Complex{T}}} <:
     const op_r::AT
     ndata::Int # Size of the Fourier-transformed data matrix
                # By default, ndata = size(op_r, 1). If one only wants a part of op_r to be
-               # transformed, one may use ndata to be smaller.
+               # transformed, one may use ndata to be smaller. In the y layout (`symmws`),
+               # ndata is the R_p-expanded row count and exceeds size(op_r, 1).
 
     # For a higher-order WannierObject, the irvec to be used to Fourier transform op_k.
     const irvec_next::Union{Nothing,Vector{Vec3{Int}}}
@@ -85,6 +86,7 @@ const HostWannierObject{T} = WannierObject{T, Matrix{Complex{T}}}
 
 function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing, sort=false, ndata=nothing, symmws=nothing)
     nr = length(irvec)
+    sort && symmws !== nothing && throw(ArgumentError("sort = true would reorder the columns without the layout's group_start"))
 
     # Sort R vectors
     if sort
@@ -101,7 +103,8 @@ function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing, sort=
         error("WannierObject constructor check failed")
     end
     # `ndata` defaults to the full first dimension; pass a smaller value to make a
-    # partial-transform object (only its first `ndata` rows of `op_r` are Fourier-transformed).
+    # partial-transform object (only its first `ndata` rows of `op_r` are Fourier-transformed),
+    # or the R_p-expanded row count for the y layout.
     ndata_ = ndata === nothing ? size(op_r_, 1) : ndata
     # FIXME: better type parameter for WannierObject
     T = eltype(op_r_).parameters[1]  # ComplexF64 -> Float64

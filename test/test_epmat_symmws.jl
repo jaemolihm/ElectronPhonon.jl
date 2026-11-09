@@ -217,6 +217,8 @@ end
         # Options: other transforms refuse the y layout; the y storage needs outer "el" and a symmws file
         @test_throws ArgumentError get_interpolator(ey; fourier_mode = "normal")
         @test_throws ArgumentError ElectronPhonon.wannier_object_multiply_R(ey, model_y.lattice)
+        @test_throws ArgumentError ElectronPhonon.epmat_impose_hermiticity(model_y)
+        @test_throws ArgumentError ElectronPhonon.WannierObject(ey.irvec, ey.op_r; ey.irvec_next, ey.ndata, sort = true, symmws = lay)
         @test_throws ArgumentError load_model_from_epw_new(joinpath(dir, "epw"), "temp", "cubicBN";
             epmat_outer_momentum = "ph", epmat_symmws_storage = "y")
         @test_throws ArgumentError load_model_from_epw_new(joinpath(dir, "epw"), "temp", "cubicBN";
@@ -271,5 +273,22 @@ end
             @test !isempty(gx) && keys(gy) == keys(gx)
             @test maximum(norm(gy[k] - gx[k]) / norm(gx[k]) for k in keys(gx)) < 1e-12
         end
+    end
+end
+
+@testitem "epmat_symmws_storage = y: epmat_on_disk matches the in-memory y storage" setup = [Common, SymmWS, SymmWSYStorage] begin
+    rng = MersenneTwister(11)
+    mktempdir() do dir
+        (; folder, nw, nmodes) = symmws_cubicbn_folder(dir, rng)
+        load(on_disk) = load_model_from_epw_new(folder, "temp", "cubicBN"; epmat_outer_momentum = "el",
+            epmat_symmws_storage = "y", epmat_on_disk = on_disk, tmpdir = mktempdir(dir)).epmat
+        e_mem, e_disk = load(false), load(true)
+        @test e_disk.symmws !== nothing && size(e_disk.op_r) == size(e_mem.op_r)
+        @test e_disk.irvec == e_mem.irvec && e_disk.ndata == e_mem.ndata
+        @test e_disk.op_r == e_mem.op_r
+        xks = [Vec3(rand(rng, 3) .- 0.5) for _ in 1:3]
+        g_mem = symmws_stage1(e_mem, xks, ElectronPhonon.CPUBackend())
+        g_disk = symmws_stage1(e_disk, xks, ElectronPhonon.CPUBackend())
+        @test norm(g_disk - g_mem) / norm(g_mem) < 1e-14
     end
 end
