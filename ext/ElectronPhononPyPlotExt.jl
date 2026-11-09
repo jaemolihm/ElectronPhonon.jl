@@ -130,6 +130,9 @@ function ElectronPhonon.plot_decay(model::Model)
 end
 
 function ElectronPhonon.plot_decay_eph(model::Model)
+    # The reshape below assumes op_r holds every R_p row; the y layout stores only the y rows.
+    model.epmat.symmws === nothing || throw(ArgumentError(
+        "plot_decay_eph needs the expanded epmat; load with epmat_symmws_storage = \"expanded\""))
     # epmat with outer momentum changed
     nR1 = length(model.epmat.irvec_next)
     nR2 = length(model.epmat.irvec)
