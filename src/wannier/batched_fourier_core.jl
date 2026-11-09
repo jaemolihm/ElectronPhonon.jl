@@ -29,7 +29,7 @@ end
 
 
 """
-    BatchedFourierCore{T, WT, BT, MC, MR}
+    BatchedFourierCore{T, WT, BT, MC, MR, MI}
 
 Stateless whole-batch Wannier → Bloch Fourier engine. Holds only the persistent GEMM scratch
 needed to interpolate up to `batch_size` k-points in a single call; it has no notion of
@@ -43,8 +43,9 @@ The buffer arrays are allocated on `backend`:
 - `BT` — backend        : `CPUBackend` or `GPUBackend`
 - `MC` — complex matrix : CPU `Matrix{Complex{T}}`, GPU `CuMatrix{Complex{T}}`
 - `MR` — real matrix    : CPU `Matrix{T}`,          GPU `CuMatrix{T}`
+- `MI` — integer matrix : `Nothing` (expanded layout), else CPU `Matrix{Int}` / GPU `CuMatrix{Int}` (y layout)
 """
-struct BatchedFourierCore{T, WT <: WannierObject, BT <: AbstractBackend, MC, MR}
+struct BatchedFourierCore{T, WT <: WannierObject, BT <: AbstractBackend, MC, MR, MI <: Union{Nothing, AbstractMatrix{Int}}}
     # Parent WannierObject to be interpolated
     parent::WT
 
@@ -64,7 +65,7 @@ struct BatchedFourierCore{T, WT <: WannierObject, BT <: AbstractBackend, MC, MR}
     # y layout only (`parent.symmws !== nothing`), else `nothing`: the group-by-group transform's
     # scratch `(nw^2 nmodes nr_y, batch_size)` and the layout's R_p indices `(nr_y, ngroups)`, on `backend`
     scratch::Union{Nothing, MC}
-    ip_of_y::Union{Nothing, AbstractMatrix{Int}}
+    ip_of_y::MI
 end
 
 function BatchedFourierCore(parent::WT; backend::AbstractBackend = CPUBackend(),
@@ -80,7 +81,7 @@ function BatchedFourierCore(parent::WT; backend::AbstractBackend = CPUBackend(),
     scratch = layout === nothing ? nothing : alloc(backend, Complex{T}, size(parent.op_r, 1), batch_size)
     ip_of_y = layout === nothing ? nothing : to_device_copy(backend, layout.ip_of_y)
 
-    BatchedFourierCore{T, WT, typeof(backend), typeof(phase), typeof(irvec_mat)}(
+    BatchedFourierCore{T, WT, typeof(backend), typeof(phase), typeof(irvec_mat), typeof(ip_of_y)}(
         parent, backend, batch_size, irvec_mat, phase, scratch, ip_of_y)
 end
 
