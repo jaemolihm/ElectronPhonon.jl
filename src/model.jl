@@ -166,6 +166,7 @@ end
 
 function epmat_impose_hermiticity(epmat, nw, nmodes, epmat_outer_momentum)
     @assert epmat_outer_momentum == "el"
+    epmat.symmws === nothing || throw(ArgumentError("epmat_impose_hermiticity needs the expanded storage, not epmat_symmws_storage = \"y\""))
     irvec_Re = epmat.irvec
     irvec_Rp = epmat.irvec_next
 

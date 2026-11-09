@@ -87,6 +87,8 @@ For a multithreaded use, one must use `get_interpolator_channel` instead.
 """
 function get_interpolator(obj::AbstractWannierObject; fourier_mode="normal", batch_size=nothing,
                           nk_hint=typemax(Int), threads=false, backend=CPUBackend())
+    obj.symmws === nothing || fourier_mode === "batched" || throw(ArgumentError(
+        "a WannierObject in the y layout (epmat_symmws_storage = \"y\") is transformed by fourier_mode = \"batched\" only"))
     if fourier_mode === "normal"
         NormalWannierInterpolator(obj)
     elseif fourier_mode === "batched"

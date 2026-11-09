@@ -5,13 +5,49 @@ export update_op_r!
 abstract type AbstractWannierObject{T<:Real} end
 Base.eltype(::Type{<:AbstractWannierObject{T}}) where {T} = Complex{T}
 
+"""
+    SymmWSLayout
+
+Index data of an e-ph `WannierObject` stored in the y layout of EPW `use_ws = 'symmetric'`:
+`op_r[(a, iy), iRe]` holds the element `a = (i, j, mode)` at R_p = y[iy] + fld(R_e, 2), so the
+columns (R_e) form groups of equal shift s = fld(R_e, 2) and a group's `nr_y` y vectors land on R_p
+`irvec_next[ip_of_y[:, g]]`. The object's `irvec` lists R_e group by group (not sorted), column
+range `group_start[g]:group_start[g+1]-1` being group `g`. The output of the R_e transform lives on
+the `nr_p` vectors of `irvec_next` (`ndata = nw^2 nmodes nr_p`), as for the expanded storage.
+Built by [`read_epmat_symmws_y`](@ref); consumed by the batched Fourier engine
+(`_fourier_batched!` of [`BatchedFourierCore`](@ref)).
+"""
+struct SymmWSLayout
+    nr_p::Int
+    nr_y::Int
+    group_start::Vector{Int}
+    ip_of_y::Matrix{Int}
+end
+
+"""
+    SymmWSLayout(irvec_e, y_file, irvec_p)
+
+Layout of the columns `irvec_e` (R_e, already grouped by contiguous equal `fld.(R_e, 2)`) with the
+y vectors `y_file` (row blocks, in the order of the stored rows) on the R_p list `irvec_p`. Called by
+`read_epmat_symmws_y`; it throws if the groups are not contiguous or a y + s is missing in `irvec_p`.
+"""
+function SymmWSLayout(irvec_e, y_file, irvec_p)
+    index_p = Dict(R => i for (i, R) in enumerate(irvec_p))
+    shifts = [fld.(R, 2) for R in irvec_e]
+    group_start = [1; [i for i in 2:length(shifts) if shifts[i] != shifts[i-1]]; length(shifts) + 1]
+    unique(shifts[group_start[1:end-1]]) == shifts[group_start[1:end-1]] ||
+        throw(ArgumentError("irvec_e is not grouped by fld.(R_e, 2)"))
+    ip_of_y = [index_p[y + shifts[group_start[g]]] for y in y_file, g in 1:length(group_start)-1]
+    SymmWSLayout(length(irvec_p), length(y_file), group_start, ip_of_y)
+end
+
 "Check validity of input for WannierObject constructor"
-function check_wannierobject(irvec::Vector{Vec3{Int}}, op_r)
+function check_wannierobject(irvec::Vector{Vec3{Int}}, op_r; sorted = true)
     if size(op_r, 2) != length(irvec)
         println("size(op_r, 2)=$(size(op_r, 2)) must equal length(irvec)=$(length(irvec))")
         return false
     end
-    if ! issorted(irvec, by=x->reverse(x))
+    if sorted && ! issorted(irvec, by=x->reverse(x))
         println("irvec is not sorted. irvec must be sorted by reverse(r)")
         return false
     end
@@ -27,7 +63,8 @@ Base.@kwdef mutable struct WannierObject{T, AT <: AbstractMatrix{Complex{T}}} <:
     const op_r::AT
     ndata::Int # Size of the Fourier-transformed data matrix
                # By default, ndata = size(op_r, 1). If one only wants a part of op_r to be
-               # transformed, one may use ndata to be smaller.
+               # transformed, one may use ndata to be smaller. In the y layout (`symmws`),
+               # ndata is the R_p-expanded row count and exceeds size(op_r, 1).
 
     # For a higher-order WannierObject, the irvec to be used to Fourier transform op_k.
     const irvec_next::Union{Nothing,Vector{Vec3{Int}}}
@@ -35,6 +72,10 @@ Base.@kwdef mutable struct WannierObject{T, AT <: AbstractMatrix{Complex{T}}} <:
     # When op_r is updated, increment _id.
     # This is used to check if interpolators are up-to-date.
     _id::Int
+
+    # Set for the y layout of EPW `use_ws = 'symmetric'` (see [`SymmWSLayout`](@ref)); `nothing` otherwise.
+    # Only the batched Fourier engine transforms such an object.
+    const symmws::Union{Nothing, SymmWSLayout} = nothing
 end
 
 # In-memory (host) `WannierObject`: `op_r` is a plain `Matrix`. `Model` stores only host
@@ -43,8 +84,9 @@ end
 # `WannierObject{T, AT}` would otherwise leave them as an abstract `UnionAll`.
 const HostWannierObject{T} = WannierObject{T, Matrix{Complex{T}}}
 
-function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing, sort=false, ndata=nothing)
+function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing, sort=false, ndata=nothing, symmws=nothing)
     nr = length(irvec)
+    sort && symmws !== nothing && throw(ArgumentError("sort = true would reorder the columns without the layout's group_start"))
 
     # Sort R vectors
     if sort
@@ -56,16 +98,18 @@ function WannierObject(irvec::Vector{Vec3{Int}}, op_r; irvec_next=nothing, sort=
         op_r_ = op_r
     end
 
-    if ! check_wannierobject(irvec_, op_r_)
+    # The y layout lists R_e group by group (see `SymmWSLayout`), not sorted
+    if ! check_wannierobject(irvec_, op_r_; sorted = symmws === nothing)
         error("WannierObject constructor check failed")
     end
     # `ndata` defaults to the full first dimension; pass a smaller value to make a
-    # partial-transform object (only its first `ndata` rows of `op_r` are Fourier-transformed).
+    # partial-transform object (only its first `ndata` rows of `op_r` are Fourier-transformed),
+    # or the R_p-expanded row count for the y layout.
     ndata_ = ndata === nothing ? size(op_r_, 1) : ndata
     # FIXME: better type parameter for WannierObject
     T = eltype(op_r_).parameters[1]  # ComplexF64 -> Float64
     WannierObject{T, typeof(op_r_)}(nr=nr, irvec=irvec_, op_r=op_r_, ndata=ndata_,
-        irvec_next=irvec_next, _id=0,
+        irvec_next=irvec_next, _id=0, symmws=symmws,
     )
 end
 
@@ -76,6 +120,7 @@ end
 # WannierObject(nr, irvec::Array{Int,2}, op_r) = WannierObject(nr, reinterpret(Vec3{Int}, vec(irvec))[:], op_r)
 
 function wannier_object_multiply_R(obj::AbstractWannierObject{T}, lattice) where {T}
+    obj.symmws === nothing || throw(ArgumentError("a WannierObject in the y layout (epmat_symmws_storage = \"y\") has no R-weighted copy"))
     # Put R to the slowest index
     opR_r = zeros(Complex{T}, (obj.ndata, 3, obj.nr))
     for ir = 1:obj.nr
