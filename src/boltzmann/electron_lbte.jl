@@ -163,7 +163,8 @@ Returns `(; fprime, weights, dirs)` with `fprime = -∂f/∂ε` per state at `μ
 weights, and `dirs` the `ncomp × m` orthonormal basis of the invariant `v`. `_solve_bte` solves
 ``[A  B; Uᵀ  0] [δf; λ] = [rhs; 0]``, with `B = f′ ⊗ dirs` and `U = weights ⊗ dirs` (columns normalized),
 i.e. `Σᵢ wᵢ v·δfᵢ = 0` (particle-number conservation). The extra term is `f′ᵢ λ`, a uniform shift of the
-chemical potential, and `λ` measures the detailed-balance inconsistency of `rhs`.
+chemical potential, and `λ` measures the inconsistency of `rhs` along the left null vector (for the F5 form this is the
+detailed-balance violation; other forms add their own non-conservation).
 """
 function _bte_null_mode(el_i::BTorBandStates{FT}, symmetry, μ, T, mapping = _linear_transport_mapping) where {FT}
     ncomp = size(mapping(false, one(Mat3{FT})), 1)
@@ -195,7 +196,7 @@ function _null_mode_border(null_mode)
         B[c, i, k] = fprime[i] * dirs[c, k] / nf
         U[c, i, k] = weights[i] * dirs[c, k] / nw
     end
-    reshape(B, ncomp * n, m), reshape(U, ncomp * n, m), norm(fprime)
+    reshape(B, ncomp * n, m), reshape(U, ncomp * n, m), nf
 end
 
 # `rhs` is a vector of `StaticVector`s: `Vec3` for the first-order field (BTStates and BandStates
@@ -268,6 +269,8 @@ function _solve_bte_fixed_point(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, i
     end
     λ = nothing
     δf = copy(rhs)
+    # The initial guess satisfies the constraint Uᵀδf = 0, which the mixed iterates then keep.
+    null_mode === nothing || project!(δf)
     δf_tmp = similar(δf)
     obs = observable(δf)
     obs_iter = Vector{typeof(obs)}(undef, max_iter + 1)

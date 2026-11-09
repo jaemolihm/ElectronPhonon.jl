@@ -15,10 +15,10 @@
     quiet(f) = Base.CoreLogging.with_logger(f, Base.CoreLogging.NullLogger())
 
     # Full-band el_i (IBZ if `symmetry`) and el_f (its unfolding) on an nk × nk × 1 grid.
-    function null_mode_states(nk, symmetry)
-        sel = filter_electron_states((nk, nk, 1), model, (-Inf, Inf); symmetry)
+    function null_mode_states(nk, symmetry; nkz = 1, mdl = model)
+        sel = filter_electron_states((nk, nk, nkz), mdl, (-Inf, Inf); symmetry)
         sel_f = symmetry === nothing ? sel : unfold_band_states(sel, symmetry)
-        mk(s) = BandStates(compute_electron_states(model, s,
+        mk(s) = BandStates(compute_electron_states(mdl, s,
             ["eigenvalue", "eigenvector", "velocity_diagonal"]), s)
         mk(sel), mk(sel_f)
     end
@@ -27,18 +27,23 @@
     # `Sᵢ f′ = D f′` pair by pair, i.e. `A (f′ e_α) = 0` for an identity unfolding. `c` is positive and
     # invariant under the group; `asym` adds a term odd in k_x of the initial state (not group invariant):
     # it breaks the k ↔ -k parity, so the right-hand side acquires a component along the left null vector.
-    function f5_case(symmetry; nk = 8, asym = 0.0, kw...)
-        el_i, el_f = null_mode_states(nk, symmetry)
+    # `asym_z` adds a term odd in k_z (invariant under rotations about z). `balanced = false` drops the
+    # `√(f′_i / f′_j)` factors: no detailed balance, so the system is nonsingular.
+    function f5_case(symmetry; nk = 8, nkz = 1, mdl = model, asym = 0.0, asym_z = 0.0, balanced = true, kw...)
+        el_i, el_f = null_mode_states(nk, symmetry; nkz, mdl)
         occ = ElectronOccupationParams(; Tlist = [T_null], nlist = 0.0, μlist = μ_null,
             volume = model.volume, nelec = 0, spin_degeneracy = 2, type = :Metal)
         fp_i = -EP.occ_fermion_derivative.(el_i.es .- μ_null, T_null)
         fp_f = -EP.occ_fermion_derivative.(el_f.es .- μ_null, T_null)
+        ratio = balanced ? sqrt.(fp_i ./ fp_f') : ones(length(fp_i), length(fp_f))
+        ratio_inv = balanced ? sqrt.(fp_f' ./ fp_i) : ones(length(fp_i), length(fp_f))
         xi, xf = EP.state_xks(el_i), EP.state_xks(el_f)
         C = [0.02 * (2.5 + cos(2π * (xi[i][1] - xf[f][1])) + cos(2π * (xi[i][2] - xf[f][2])) +
-                     0.2 * (el_i.es[i] - el_f.es[f]) + asym * sin(2π * xi[i][1]))
+                     0.2 * (el_i.es[i] - el_f.es[f]) + asym * sin(2π * xi[i][1]) +
+                     (mdl.dimension == 3 ? cos(2π * (xi[i][3] - xf[f][3])) : 0.0) + asym_z * sin(2π * xi[i][3]))
              for i in 1:el_i.n, f in 1:el_f.n] .* (el_i.ibands .== el_f.ibands')
-        Sᵢ = [C .* el_f.weights' .* sqrt.(fp_i ./ fp_f')]
-        inv_τ = reshape(vec(sum(C .* el_f.weights' .* sqrt.(fp_f' ./ fp_i), dims = 2)), :, 1)
+        Sᵢ = [C .* el_f.weights' .* ratio]
+        inv_τ = reshape(vec(sum(C .* el_f.weights' .* ratio_inv, dims = 2)), :, 1)
         out = quiet(() -> EP.solve_electron_bte(el_i, el_f, Sᵢ, inv_τ, occ, symmetry; kw...))
         (; el_i, el_f, Sᵢ, inv_τ, occ, out, symmetry)
     end
@@ -141,4 +146,44 @@ end
     @test size(EP._bte_null_mode(polar.el_i, c4, μ_null, T_null).dirs, 2) == 1
     @test polar.out.σ ≈ full.out.σ rtol = 1e-10
     @test norm(polar.out.λ) < 1e-10
+end
+
+@testitem "BTE null mode: polar group without time reversal on a 3D model, drive along the axis" setup = [BteNullMode] begin
+    mdl = holstein_model(; t = 0.1, ω₀ = 0.02, g = 0.01, alat = 5.0, dimension = 3, verbose = false)
+    mdl.el_velocity_mode = :BerryConnection
+    s = mdl.symmetry
+    idx = findall(i -> !s.is_tr[i] && s.Scart[i][3, 3] == 1 && det(s.Scart[i]) > 0, 1:s.nsym)
+    c4 = Symmetry(length(idx), s.S[idx], s.τ[idx], s.Scart[idx], s.τcart[idx], s.is_inv[idx], s.is_tr[idx])
+    @test length(idx) == 4 && !c4.time_reversal
+    # The kernel is odd in k_z (invariant under C4 about z), so rhs_z is nonzero and inconsistent: λ_z != 0.
+    polar = f5_case(c4; nk = 4, nkz = 4, mdl, asym_z = 0.05)
+    full = f5_case(nothing; nk = 4, nkz = 4, mdl, asym_z = 0.05)
+    @test polar.el_i.n < full.el_i.n
+    @test abs(full.out.λ[3]) > 1e-3
+    @test polar.out.λ[3] ≈ full.out.λ[3] rtol = 1e-6
+    @test polar.out.σ ≈ full.out.σ rtol = 1e-6
+    # The unbordered solve on the same system is off.
+    old = raw_solve(polar, false)
+    bord = raw_solve(polar, true)
+    @test bord.converged
+    @test abs(old.obs[3, 3] - bord.obs[3, 3]) > 1e-6 * abs(bord.obs[3, 3]) || !old.converged
+end
+
+@testitem "BTE null mode: border on a kernel without detailed balance" setup = [BteNullMode] begin
+    # Nonsingular system (no f′ null mode): the border still imposes Σᵢ wᵢ δfᵢ = 0 and returns λ.
+    case = f5_case(nothing; asym = 0.05, balanced = false)
+    gm = raw_solve(case, true)
+    fp = raw_solve(case, true; solver = :fixed_point)
+    @test gm.converged && fp.converged
+    @test fp.δf ≈ gm.δf rtol = 1e-6
+    @test fp.λ ≈ gm.λ rtol = 1e-5 atol = 1e-9
+    @test abs(number_moment(case, gm.δf)[1]) < 1e-10 * sum(abs, getindex.(gm.δf, 1)) / case.el_i.n
+    # Dense reference of the bordered system for the x component.
+    (; el_i, Sᵢ, inv_τ) = case
+    A = I - Sᵢ[1] ./ inv_τ[:, 1]
+    fprime = -EP.occ_fermion_derivative.(el_i.es .- μ_null, T_null)
+    rhs = @. fprime / inv_τ[:, 1] * el_i.vs
+    sol = [A fprime; el_i.weights' 0.0] \ [getindex.(rhs, 1); 0.0]
+    @test norm(sol[1:end-1] - getindex.(gm.δf, 1)) / norm(sol[1:end-1]) < 1e-8
+    @test sol[end] ≈ gm.λ[1] rtol = 1e-6 atol = 1e-9
 end
