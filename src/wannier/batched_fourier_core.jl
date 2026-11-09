@@ -60,6 +60,11 @@ struct BatchedFourierCore{T, WT <: WannierObject, BT <: AbstractBackend, MC, MR}
 
     # Scratch for the batched phase computation, on `backend`
     phase::MC                # (nr × batch_size) complex
+
+    # y layout only (`parent.symmws !== nothing`), else `nothing`: the group-by-group transform's
+    # scratch `(nw^2 nmodes nr_y, batch_size)` and the layout's R_p indices `(nr_y, ngroups)`, on `backend`
+    scratch::Union{Nothing, MC}
+    ip_of_y::Union{Nothing, AbstractMatrix{Int}}
 end
 
 function BatchedFourierCore(parent::WT; backend::AbstractBackend = CPUBackend(),
@@ -71,9 +76,12 @@ function BatchedFourierCore(parent::WT; backend::AbstractBackend = CPUBackend(),
 
     irvec_mat = _irvec_to_device_matrix(backend, parent.irvec, T)
     phase = alloc(backend, Complex{T}, nr, batch_size)
+    layout = parent.symmws
+    scratch = layout === nothing ? nothing : alloc(backend, Complex{T}, size(parent.op_r, 1), batch_size)
+    ip_of_y = layout === nothing ? nothing : to_device_copy(backend, layout.ip_of_y)
 
     BatchedFourierCore{T, WT, typeof(backend), typeof(phase), typeof(irvec_mat)}(
-        parent, backend, batch_size, irvec_mat, phase)
+        parent, backend, batch_size, irvec_mat, phase, scratch, ip_of_y)
 end
 
 
@@ -87,15 +95,40 @@ transform (`op_r * phase`), so it runs on any backend without scalar indexing.
 PARTIAL, internal: `xkmat` and `out` must already live on `core.backend`, and `nk` must not exceed
 `core.batch_size`. Staging a host k-list and splitting a longer one into blocks belong to the total
 [`get_fourier_batched!`](@ref) on the interpolator.
+
+A parent in the y layout of EPW `use_ws = 'symmetric'` (`parent.symmws`, [`SymmWSLayout`](@ref)) is
+transformed group by group of equal shift s = fld(R_e, 2): one GEMM `Y_s = op_r[:, group s] * phase[group s, :]`
+on the stored y rows, added into the R_p = y + s rows of `out`. The result equals the transform of the
+expanded storage on the R_p list `parent.irvec_next`, at the memory of the y storage. The y of one
+group map to distinct R_p, so each scatter-add has no repeated index.
 """
-function _fourier_batched!(out, core::BatchedFourierCore, xkmat::AbstractMatrix)
+@views function _fourier_batched!(out, core::BatchedFourierCore, xkmat::AbstractMatrix)
     (; parent, phase) = core
     ndata = parent.ndata
     nk = size(xkmat, 2)
     @assert size(out) == (ndata, nk)
     @assert nk <= core.batch_size
 
-    @views _fourier_batched!(out, parent.op_r[1:ndata, :], phase[:, 1:nk], core.irvec_mat, xkmat)
+    layout = parent.symmws
+    if layout !== nothing
+        # y layout: group-wise GEMM on the stored rows, then scatter-add to the R_p rows
+        nrows_y = size(parent.op_r, 1)
+        nwm = div(nrows_y, layout.nr_y)
+        build_fourier_phase!(phase[:, 1:nk], core.irvec_mat, xkmat)
+        out3 = reshape(out, nwm, layout.nr_p, nk)
+        fill!(out, 0)
+        for g in 1:length(layout.group_start)-1
+            cols = layout.group_start[g]:layout.group_start[g+1]-1
+            Y = core.scratch[1:nrows_y, 1:nk]
+            mul!(Y, parent.op_r[:, cols], phase[cols, 1:nk])
+            Y3 = reshape(Y, nwm, layout.nr_y, nk)
+            ip = core.ip_of_y[:, g]
+            out3[:, ip, :] .+= Y3
+        end
+        return out
+    end
+
+    _fourier_batched!(out, parent.op_r[1:ndata, :], phase[:, 1:nk], core.irvec_mat, xkmat)
 end
 
 """
