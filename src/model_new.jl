@@ -141,9 +141,18 @@ function epw_parse_structure(folder::String; dimension = nothing)
         ngauss = parse(Int, readline(f))
         # New in EPW v6.2: if present, Wigner-Seitz ndegen is pre-divided in the files.
         line = eof(f) ? "" : readline(f)
-        if length(split(line)) == 2
+        if strip(line) in ("T", "F")
+            # lda_plus_u, followed by a line holding ws_method only (EPW with use_ws =
+            # 'cell' / 'center' / 'symmetric'): H, dyn, v, r and the cell/center epmatwp are not
+            # pre-divided by ndegen; the symmetric epmatwp_symmws is (see load_model_from_epw_new).
+            line = eof(f) ? "" : readline(f)
+            isempty(strip(line)) || (ws_method = parse(Int, line))
+        elseif length(split(line)) == 2
             ws_method, idiv = parse.(Int, split(line))
             idiv == 1 || throw(ArgumentError("idiv must be 1 in crystal.fmt"))
+        elseif length(split(line)) == 1
+            # ws_method without the lda_plus_u line: pre-release EPW layout, which EPW itself rejects
+            throw(ArgumentError("crystal.fmt has a lone ws_method line without lda_plus_u (pre-release EPW); rerun epwwrite"))
         end
     end
     ndegen_pre_divided = (idiv == 1)
@@ -183,6 +192,7 @@ end
         epmat_on_disk :: Bool = false,
         tmpdir = nothing,
         dimension = nothing,
+        _debug_epw_ws_symm_format :: Bool = false,
     ) => Model
 - `skip_eph_ndegen:: Bool = false` : If true, skip applying Wigner-Seitz degeneracy correction
   when reading electron-phonon coupling matrix elements. Use for newer EPW versions
@@ -193,6 +203,13 @@ end
 - `dimension = nothing` : `structure.dimension`; see [`epw_parse_structure`](@ref). For a polar
   2D material, the 2D dimension is detected automatically from crystal.fmt. For a non-polar 2D
   material, it may not be, so pass `dimension = 2`.
+- `_debug_epw_ws_symm_format :: Bool = false` : Debug flag. Read the `use_ws_v2` files of the
+  EPW branch `jml/ws_symm`: crystal.fmt has no `ws_method idiv` line, epmatwp is divided by the
+  e-ph ndegen only and that ndegen is not written to wigner.fmt, and H, dyn, v, r and the electron
+  ndegen of epmat are divided at load.
+
+Files of EPW with `use_ws = 'symmetric'` (crystal.fmt ends with `ws_method` = 3 alone) are read from
+`prefix.epmatwp_symmws`, stored on y = R_p - fld(R_e, 2); see [`read_epmat_symmws_y`](@ref).
 """
 function load_model_from_epw_new(
     folder :: String,
@@ -206,6 +223,7 @@ function load_model_from_epw_new(
     epmat_on_disk :: Bool = false,
     tmpdir = nothing,
     dimension = nothing,
+    _debug_epw_ws_symm_format :: Bool = false,
     )
     if epmat_on_disk && load_epmat && tmpdir === nothing
         error("If epmat_on_disk is true, tmpdir must be provided.")
@@ -220,23 +238,38 @@ function load_model_from_epw_new(
     f = open(joinpath(folder, "wigner.fmt"), "r")
     # Read first line for new format
     ind_new, = parse.(Int, split(readline(f)))
+    epmat_symmws_y_layout = false  # true for the y layout of EPW use_ws = 'symmetric' (set below)
     if ind_new == -2
         # New version (use_ws_v2)
-        @assert ndegen_pre_divided == true
         seekstart(f)
         ind_new, ws_method_, ndegen_pre_divided_ = parse.(Int, split(readline(f)))
-        @assert ws_method_ == ws_method
-        @assert ndegen_pre_divided_ == 1
-        skip_eph_ndegen = (ws_method == 3)  # SYMMETRIC
+        if _debug_epw_ws_symm_format
+            # jml/ws_symm format: crystal.fmt has no ws_method line; only epmatwp is divided by
+            # ndegen_ep before writing, and ndegen_ep is not in wigner.fmt. H, dyn, v, r and the
+            # ndegen_el of epmat are divided here.
+            ws_method == -1 || throw(ArgumentError("_debug_epw_ws_symm_format = true, but crystal.fmt has a ws_method line"))
+            ndegen_pre_divided_ == 1 || throw(ArgumentError("_debug_epw_ws_symm_format = true needs wigner.fmt flag 1 (use_ws_v2 = 'cell', 'center' or 'symmetric'), got $ndegen_pre_divided_ (use_ws_v2 = 'none')"))
+            ndegen_pre_divided = false
+            skip_eph_ndegen = true
+        else
+            @assert ndegen_pre_divided_ == 1
+            @assert ndegen_pre_divided == true
+            @assert ws_method_ == ws_method
+            skip_eph_ndegen = (ws_method == 3)  # SYMMETRIC
+        end
 
         nw, nat = parse.(Int, split(readline(f)))
         nr_el, nr_ph, nr_ep, dims, dims2 = parse.(Int, split(readline(f)))
         nkc1, nkc2, nkc3, nqc1, nqc2, nqc3 = parse.(Int, split(readline(f)))
 
     else
+        _debug_epw_ws_symm_format && throw(ArgumentError("_debug_epw_ws_symm_format = true needs a use_ws_v2 wigner.fmt (header -2)"))
         seekstart(f)
         nr_el, nr_ph, nr_ep, dims, dims2 = parse.(Int, split(readline(f)))
-        skip_eph_ndegen = false
+        # use_ws = 'symmetric': the el-ph block of wigner.fmt holds y = R_p - fld(R_e, 2) without
+        # ndegen rows, and prefix.epmatwp_symmws is stored on y, divided by both degeneracies.
+        epmat_symmws_y_layout = (ws_method == 3 && !ndegen_pre_divided)
+        skip_eph_ndegen = epmat_symmws_y_layout
     end
 
     irvec_el, ndegen_el, wslen_el = _parse_wigner(f, nr_el, dims,  dims)
@@ -480,7 +513,12 @@ function load_model_from_epw_new(
 
     # Read electron-phonon coupling
 
-    if load_epmat
+    if load_epmat && epmat_symmws_y_layout
+        filename = joinpath(folder, outdir, "$prefix.epmatwp_symmws")
+        # irvec_ep[invperm(ind_ep)] restores the file order of y
+        ep = read_epmat_symmws_y(filename, nw, nmodes, irvec_el, ind_el, irvec_ep[invperm(ind_ep)], epmat_outer_momentum;
+                                 epmat_on_disk_path = epmat_on_disk ? joinpath(tmpdir, "tmp_epmat.bin") : nothing)
+    elseif load_epmat
         filename = joinpath(folder, outdir, "$prefix.epmatwp")
         ep = read_epmat(filename, nw, nmodes, nr_el, nr_ep, irvec_el, irvec_ep, ind_el, ind_ep, ndegen_el, ndegen_ep, epmat_outer_momentum; skip_eph_ndegen, ndegen_pre_divided,
                         epmat_on_disk_path = epmat_on_disk ? joinpath(tmpdir, "tmp_epmat.bin") : nothing)
@@ -570,6 +608,77 @@ function read_epmat(
 
     ep = WannierObject(irvec_outer, op_r; irvec_next = irvec_inner)
     return ep
+end
+
+"""
+    read_epmat_symmws_y(filename, nw, nmodes, irvec_el, ind_el, y_file, epmat_outer_momentum;
+                        epmat_on_disk_path = nothing) => WannierObject
+
+Read `prefix.epmatwp_symmws` of EPW `use_ws = 'symmetric'` (midpoint Wigner-Seitz rule) into the
+absolute-R_p WannierObject that `read_epmat` builds for the other rules. Called by
+`load_model_from_epw_new` when crystal.fmt has `ws_method = 3` in the non-pre-divided format.
+
+EPW stores this matrix on (R_e, y) with y = R_p - fld(R_e, 2) (its set of y is the el-ph block of
+wigner.fmt, `y_file`, in file order), already divided by the e-ph and electron degeneracies, and
+interpolates with exp(i k⋅R_e + i q⋅(y + fld(R_e, 2))). Each (R_e, y) element is placed at
+R_p = y + fld(R_e, 2), on the union of these R_p over all pairs (zero where a pair has no element),
+so the existing two-step interpolation over (R_e, R_p) applies unchanged. The union holds more R_p
+than y (GaAs, 12³ k / 6³ q: 2877 against 416), which sets the memory cost.
+`irvec_el` and `ind_el` are the sorted electron vectors and their permutation from the file order.
+"""
+function read_epmat_symmws_y(filename, nw, nmodes, irvec_el, ind_el, y_file, epmat_outer_momentum;
+                             epmat_on_disk_path = nothing)
+    nr_el = length(irvec_el)
+    # Union of R_p = y + fld(R_e, 2), sorted like the other R lists (R[3], then R[2], then R[1])
+    half_el = [fld.(R, 2) for R in irvec_el]
+    irvec_ep = sort!(unique!([y + h for y in y_file for h in half_el]), by = reverse)
+    index_ep = Dict(R => i for (i, R) in enumerate(irvec_ep))
+    nr_ep = length(irvec_ep)
+
+    io = epmat_on_disk_path === nothing ? nothing : open(epmat_on_disk_path, "w+")
+    if epmat_outer_momentum == "ph"
+        dims = (nw^2 * nmodes * nr_el, nr_ep)
+    else
+        dims = (nw^2 * nmodes * nr_ep, nr_el)
+    end
+    op_r = io === nothing ? Matrix{ComplexF64}(undef, dims) : Mmap.mmap(io, Matrix{ComplexF64}, dims)
+    io === nothing && fill!(op_r, 0)  # a new mmap file is already zero-filled
+    op_r_5d = epmat_outer_momentum == "ph" ? reshape(op_r, nw, nw, nmodes, nr_el, nr_ep) :
+                                             reshape(op_r, nw, nw, nmodes, nr_ep, nr_el)
+
+    # Stream one y slab (iw, jw, iRe in file order, imode) at a time; place each R_e at its R_p
+    outer_ph = epmat_outer_momentum == "ph"
+    epmat_y = Array{ComplexF64}(undef, nw, nw, nr_el, nmodes)
+    open(filename, "r") do f
+        for y in y_file
+            read!(f, epmat_y)
+            for ir_el in 1:nr_el
+                ir_ep = index_ep[y + half_el[ir_el]]
+                for imode in 1:nmodes, jw in 1:nw, iw in 1:nw
+                    x = epmat_y[iw, jw, ind_el[ir_el], imode]
+                    if outer_ph
+                        op_r_5d[iw, jw, imode, ir_el, ir_ep] = x
+                    else
+                        op_r_5d[iw, jw, imode, ir_ep, ir_el] = x
+                    end
+                end
+            end
+        end
+        eof(f) || error("$filename is longer than nw² × nr_el × nmodes × nr_g elements")
+    end
+
+    if io !== nothing
+        # Reopen read-only, so the epmat cannot be modified through op_r.
+        Mmap.sync!(op_r)
+        close(io)
+        op_r = Mmap.mmap(epmat_on_disk_path, Matrix{ComplexF64}, dims)
+    end
+
+    if epmat_outer_momentum == "ph"
+        return WannierObject(irvec_ep, op_r; irvec_next = irvec_el)
+    else
+        return WannierObject(irvec_el, op_r; irvec_next = irvec_ep)
+    end
 end
 
 # Index legend: dest[iw, jw, imode, iRe] (iRe sorted) for one sorted iRp,
