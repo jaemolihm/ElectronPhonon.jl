@@ -23,6 +23,41 @@
         end
         g
     end
+
+    # cubicBN artifact copied into `dir` with a random epmatwp_symmws: crystal.fmt gets ws_method = 3, and
+    # wigner.fmt gets unsorted y vectors without ndegen rows. Returns the file contents too.
+    function symmws_cubicbn_folder(dir, rng)
+        src = _artifact_folder("cubicBN")
+        folder = joinpath(dir, "epw")
+        cp(src, folder)
+        chmod(folder, 0o755; recursive = true)  # artifact files are read-only
+        # crystal.fmt ends at L; append lda_plus_u = F and ws_method = 3
+        lines = readlines(joinpath(folder, "crystal.fmt"))
+        write(joinpath(folder, "crystal.fmt"), join(vcat(lines, [" 0.0", " 0", " F", " 3"]), "\n") * "\n")
+
+        # wigner.fmt: keep the el and ph blocks, replace the el-ph block by unsorted y vectors without ndegen rows
+        wl = readlines(joinpath(folder, "wigner.fmt"))
+        nr_el, nr_ph, _, nw, ndegen_ph_rows = parse.(Int, split(wl[1]))
+        nmodes = parse(Int, split(readlines(joinpath(folder, "epwdata.fmt"))[2])[3])
+        irvec_el = Vec3{Int}[]
+        pos = 2
+        for _ in 1:nr_el
+            push!(irvec_el, Vec3(parse.(Int, split(wl[pos])[1:3])...))
+            pos += 1 + nw
+        end
+        for _ in 1:nr_ph
+            pos += 1 + ndegen_ph_rows
+        end
+        y_file = unique(Vec3{Int}[Vec3(rand(rng, -2:2, 3)...) for _ in 1:9])
+        nr_g = length(y_file)
+        ywl = [string(y[1], " ", y[2], " ", y[3], " 1.0") for y in y_file]
+        write(joinpath(folder, "wigner.fmt"),
+              join(vcat(["$nr_el $nr_ph $nr_g $nw $ndegen_ph_rows"], wl[2:pos-1], ywl), "\n") * "\n")
+
+        M = randn(rng, ComplexF64, nw, nw, nr_el, nmodes, nr_g)
+        write(joinpath(folder, "temp", "cubicBN.epmatwp_symmws"), M)
+        (; folder, M, y_file, irvec_el, nw, nmodes)
+    end
 end
 
 @testitem "epw_parse_structure: ws_method tail of crystal.fmt" setup = [Common] begin
@@ -85,39 +120,10 @@ end
 end
 
 @testitem "load_model_from_epw_new: epmatwp_symmws" setup = [Common, SymmWS] begin
-    src = _artifact_folder("cubicBN")
     rng = MersenneTwister(99)
     mktempdir() do dir
-        folder = joinpath(dir, "epw")
-        cp(src, folder)
-        chmod(folder, 0o755; recursive = true)  # artifact files are read-only
-        # crystal.fmt ends at L; append lda_plus_u = F and ws_method = 3
-        lines = readlines(joinpath(folder, "crystal.fmt"))
-        write(joinpath(folder, "crystal.fmt"), join(vcat(lines, [" 0.0", " 0", " F", " 3"]), "\n") * "\n")
-
-        # wigner.fmt: keep the el and ph blocks, replace the el-ph block by unsorted y vectors without ndegen rows
-        wl = readlines(joinpath(folder, "wigner.fmt"))
-        nr_el, nr_ph, _, nw, ndegen_ph_rows = parse.(Int, split(wl[1]))
-        nmodes = parse(Int, split(readlines(joinpath(folder, "epwdata.fmt"))[2])[3])
-        irvec_el = Vec3{Int}[]
-        pos = 2
-        for _ in 1:nr_el
-            push!(irvec_el, Vec3(parse.(Int, split(wl[pos])[1:3])...))
-            pos += 1 + nw
-        end
-        for _ in 1:nr_ph
-            pos += 1 + ndegen_ph_rows
-        end
-        y_file = unique(Vec3{Int}[Vec3(rand(rng, -2:2, 3)...) for _ in 1:9])
+        (; folder, M, y_file, irvec_el, nw, nmodes) = symmws_cubicbn_folder(dir, rng)
         @test !issorted(y_file, by = reverse)
-        nr_g = length(y_file)
-        ywl = [string(y[1], " ", y[2], " ", y[3], " 1.0") for y in y_file]
-        write(joinpath(folder, "wigner.fmt"),
-              join(vcat(["$nr_el $nr_ph $nr_g $nw $ndegen_ph_rows"], wl[2:pos-1], ywl), "\n") * "\n")
-
-        M = randn(rng, ComplexF64, nw, nw, nr_el, nmodes, nr_g)
-        write(joinpath(folder, "temp", "cubicBN.epmatwp_symmws"), M)
-
         xks = [Vec3(rand(rng, 3) .- 0.5) for _ in 1:3]
         xqs = [Vec3(rand(rng, 3) .- 0.5) for _ in 1:3]
         for outer in ("el", "ph"), on_disk in (false, true)
@@ -140,5 +146,130 @@ end
         xk, xq = xks[1], xqs[1]
         g = symmws_interpolate(ep_sorted_y, nw, nmodes, "ph", xk, xq)
         @test norm(g - symmws_direct(M, irvec_el, y_file, xk, xq, symmws_half)) / norm(g) > 1e-2
+    end
+end
+
+# Stage 1 (R_e transform, g(k; R_p)) and the full g(k, k+q) of the y storage against the expanded storage.
+@testsnippet SymmWSYStorage begin
+    using Random, LinearAlgebra
+
+    # Both storages of the cubicBN fixture, loaded with epmat_outer_momentum = "el"
+    function symmws_load_both(dir, rng)
+        (; folder, M, y_file, irvec_el, nw, nmodes) = symmws_cubicbn_folder(dir, rng)
+        model_x = load_model_from_epw_new(folder, "temp", "cubicBN"; epmat_outer_momentum = "el")
+        model_y = load_model_from_epw_new(folder, "temp", "cubicBN"; epmat_outer_momentum = "el",
+                                          epmat_symmws_storage = "y")
+        (; model_x, model_y, M, y_file, irvec_el, nw, nmodes)
+    end
+
+    # g(k; R_p) of a WannierObject by the batched engine on `backend`, returned on the host as (ndata, nk)
+    function symmws_stage1(epmat, xks, backend)
+        obj = ElectronPhonon.to_device(backend, epmat)
+        itp = ElectronPhonon.BatchedWannierInterpolator(obj; backend, batch_size = 2)
+        out = ElectronPhonon.alloc(backend, ComplexF64, obj.ndata, length(xks))
+        ElectronPhonon.get_fourier_batched!(out, itp, xks)
+        Array(out)
+    end
+
+    # Second step: sum over R_p at q, for each column of g_kR (ndata = nw^2 nmodes nr_p, nk)
+    function symmws_stage2(g_kR, irvec_p, xqs)
+        mapreduce(+, enumerate(irvec_p)) do (ip, Rp)
+            nwm = div(size(g_kR, 1), length(irvec_p))
+            hcat([cispi(2 * dot(xq, Rp)) .* g_kR[(ip-1)*nwm+1:ip*nwm, j] for (j, xq) in enumerate(xqs)]...)
+        end
+    end
+end
+
+@testitem "epmat_symmws_storage = y: g(k; R_p) and g(k, k+q) match the expanded storage (CPU)" setup = [Common, SymmWS, SymmWSYStorage] begin
+    rng = MersenneTwister(7)
+    mktempdir() do dir
+        (; model_x, model_y, M, y_file, irvec_el, nw, nmodes) = symmws_load_both(dir, rng)
+        ex, ey = model_x.epmat, model_y.epmat
+        @test ey.symmws !== nothing && ex.symmws === nothing
+        @test ey.irvec_next == ex.irvec_next
+        @test ey.ndata == ex.ndata
+        @test length(ey.op_r) < length(ex.op_r)   # y storage is smaller than the R_p union
+        @test sort(ey.irvec, by = reverse) == ex.irvec
+
+        xks = [Vec3(rand(rng, 3) .- 0.5) for _ in 1:5]
+        xqs = [Vec3(rand(rng, 3) .- 0.5) for _ in 1:5]
+        gx = symmws_stage1(ex, xks, ElectronPhonon.CPUBackend())
+        gy = symmws_stage1(ey, xks, ElectronPhonon.CPUBackend())
+        @test norm(gy - gx) / norm(gx) < 1e-12
+
+        # g(k, k+q) of the y storage against the direct (R_e, y) sum
+        gkq = symmws_stage2(gy, ey.irvec_next, xqs)
+        err = maximum(eachindex(xks)) do j
+            ref = symmws_direct(M, irvec_el, y_file, xks[j], xqs[j], symmws_half)
+            norm(reshape(gkq[:, j], nw, nw, nmodes) - ref) / norm(ref)
+        end
+        @test err < 1e-12
+
+        # Negative control: swapping the R_p indices of two groups (a wrong shift) must fail
+        lay = ey.symmws
+        ng = length(lay.group_start) - 1
+        @test ng >= 2
+        wrong = ElectronPhonon.SymmWSLayout(lay.nr_p, lay.nr_y, lay.group_start, lay.ip_of_y[:, circshift(1:ng, 1)])
+        ey_wrong = ElectronPhonon.WannierObject(ey.irvec, ey.op_r; ey.irvec_next, ey.ndata, symmws = wrong)
+        gw = symmws_stage1(ey_wrong, xks, ElectronPhonon.CPUBackend())
+        @test norm(gw - gx) / norm(gx) > 1e-2
+
+        # Options: other transforms refuse the y layout; the y storage needs outer "el" and a symmws file
+        @test_throws ArgumentError get_interpolator(ey; fourier_mode = "normal")
+        @test_throws ArgumentError ElectronPhonon.wannier_object_multiply_R(ey, model_y.lattice)
+        @test_throws ArgumentError load_model_from_epw_new(joinpath(dir, "epw"), "temp", "cubicBN";
+            epmat_outer_momentum = "ph", epmat_symmws_storage = "y")
+        @test_throws ArgumentError load_model_from_epw_new(joinpath(dir, "epw"), "temp", "cubicBN";
+            epmat_symmws_storage = "bad")
+    end
+end
+
+@testitem "epmat_symmws_storage = y: g(k; R_p) on the GPU matches the CPU expanded storage" tags = [:gpu] setup = [Common, SymmWS, SymmWSYStorage] begin
+    CUDA_OK = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+    if CUDA_OK
+        rng = MersenneTwister(8)
+        mktempdir() do dir
+            (; model_x, model_y) = symmws_load_both(dir, rng)
+            xks = [Vec3(rand(rng, 3) .- 0.5) for _ in 1:5]
+            gx = symmws_stage1(model_x.epmat, xks, ElectronPhonon.CPUBackend())
+            gy = symmws_stage1(model_y.epmat, xks, ElectronPhonon.gpu_backend())
+            @test norm(gy - gx) / norm(gx) < 1e-12
+        end
+    else
+        @info "CUDA not functional, skipping the GPU arm"
+    end
+end
+
+# The engine path (OuterKEngine: device epmat, stage 1, stage 2) with the y storage against the expanded
+# storage of the same random epmat, on the same backend (g2 of random-coupling cubicBN is gauge-dependent
+# across backends in degenerate multiplets, so a CPU/GPU comparison would not isolate the storage).
+@testitem "epmat_symmws_storage = y: run_eph_over_k_and_kq g2 matches the expanded storage" setup = [Common, SymmWS, SymmWSYStorage, EphReferenceLoop] begin
+    CUDA_OK = try
+        @eval using CUDA
+        CUDA.functional()
+    catch
+        false
+    end
+    CUDA_OK && CUDA.allowscalar(false)
+    mktempdir() do dir
+        (; model_x, model_y) = symmws_load_both(dir, MersenneTwister(5))
+        function record_g2(model, backend)
+            rec = _PairRecorder()
+            ElectronPhonon.run_eph_over_k_and_kq(model, (3, 3, 3), (3, 3, 3); calculators = [rec], symmetry = nothing,
+                verbosity = 0, progress_print_step = 10^9, window_k = (-Inf, Inf), window_kq = (-Inf, Inf),
+                n_outer_batch = 5, n_inner_tile = 40, backend)
+            rec.g2abs
+        end
+        for backend in (CUDA_OK ? Any[ElectronPhonon.CPUBackend(), ElectronPhonon.gpu_backend()] : Any[ElectronPhonon.CPUBackend()])
+            gx = record_g2(model_x, backend)
+            gy = record_g2(model_y, backend)
+            @test !isempty(gx) && keys(gy) == keys(gx)
+            @test maximum(norm(gy[k] - gx[k]) / norm(gx[k]) for k in keys(gx)) < 1e-12
+        end
     end
 end

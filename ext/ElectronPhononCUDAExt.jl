@@ -81,7 +81,7 @@ Restricted to host (`Array`-backed) objects — moving an already-device object 
 that this method intentionally does not provide.
 """
 function ElectronPhonon.to_device(::ElectronPhonon.GPUBackend, obj::WannierObject{T, <:Array{Complex{T}}}) where {T}
-    WannierObject(obj.irvec, CuArray(obj.op_r); obj.irvec_next, obj.ndata)
+    WannierObject(obj.irvec, CuArray(obj.op_r); obj.irvec_next, obj.ndata, obj.symmws)
 end
 ElectronPhonon.to_device(::ElectronPhonon.GPUBackend, arr::AbstractArray) = CuArray(arr)
 
