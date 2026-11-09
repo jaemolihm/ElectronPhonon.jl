@@ -129,6 +129,7 @@ group map to distinct R_p, so each scatter-add has no repeated index.
         return out
     end
 
+    # Expanded layout: one GEMM over all R
     _fourier_batched!(out, parent.op_r[1:ndata, :], phase[:, 1:nk], core.irvec_mat, xkmat)
 end
 

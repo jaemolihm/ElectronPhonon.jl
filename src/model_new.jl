@@ -193,7 +193,7 @@ end
         tmpdir = nothing,
         dimension = nothing,
         _debug_epw_ws_symm_format :: Bool = false,
-    epmat_symmws_storage :: String = "expanded",
+        epmat_symmws_storage :: String = "expanded",
     ) => Model
 - `skip_eph_ndegen:: Bool = false` : If true, skip applying Wigner-Seitz degeneracy correction
   when reading electron-phonon coupling matrix elements. Use for newer EPW versions
@@ -623,8 +623,9 @@ end
     read_epmat_symmws_y(filename, nw, nmodes, irvec_el, ind_el, y_file, epmat_outer_momentum;
                         epmat_on_disk_path = nothing, storage = "expanded") => WannierObject
 
-Read `prefix.epmatwp_symmws` of EPW `use_ws = 'symmetric'` (midpoint Wigner-Seitz rule) into the
-absolute-R_p WannierObject that `read_epmat` builds for the other rules. Called by
+Read `prefix.epmatwp_symmws` of EPW `use_ws = 'symmetric'` (midpoint Wigner-Seitz rule): with
+`storage = "expanded"`, into the absolute-R_p WannierObject that `read_epmat` builds for the other rules;
+with `storage = "y"`, kept on (R_e, y) with a `SymmWSLayout` (see below). Called by
 `load_model_from_epw_new` when crystal.fmt has `ws_method = 3` in the non-pre-divided format.
 
 EPW stores this matrix on (R_e, y) with y = R_p - fld(R_e, 2) (its set of y is the el-ph block of
@@ -665,7 +666,8 @@ function read_epmat_symmws_y(filename, nw, nmodes, irvec_el, ind_el, y_file, epm
         dims = (nw^2 * nmodes * nr_row, nr_el)
     end
     op_r = io === nothing ? Matrix{ComplexF64}(undef, dims) : Mmap.mmap(io, Matrix{ComplexF64}, dims)
-    io === nothing && fill!(op_r, 0)  # a new mmap file is already zero-filled
+    # The expanded union has empty (R_e, R_p) entries; the y storage writes every entry. A new mmap file is zero.
+    io === nothing && !y_storage && fill!(op_r, 0)
     op_r_5d = epmat_outer_momentum == "ph" ? reshape(op_r, nw, nw, nmodes, nr_el, nr_ep) :
                                              reshape(op_r, nw, nw, nmodes, nr_row, nr_el)
 
