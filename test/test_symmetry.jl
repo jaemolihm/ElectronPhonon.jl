@@ -133,6 +133,11 @@ end
     xq = Vec3(0.5, 0.0, 0.5)
     small, inds = symmetry_small_group_of_q(symmetry, xq)
     @test small.nsym == 16
+    # `mod_G = false` keeps only S * xq == xq, the operations that commute with the gauge shift exp(iπ xq·R)
+    small_exact, inds_exact = symmetry_small_group_of_q(symmetry, xq; mod_G = false)
+    @test small_exact.nsym == 8
+    @test inds_exact == [i for i in inds if symmetry.S[i] * xq == xq]
+    @test symmetry_small_group_of_q(symmetry, Vec3(0.0, 0.0, 0.0); mod_G = false)[1].nsym == 48
     small_tr, inds_tr = symmetry_small_group_of_q(symmetry, xq; keep_trs=true)
     @test small_tr.nsym == 32
     @test small_tr.time_reversal == true
@@ -152,6 +157,54 @@ end
             keep_trs || @test all(.!small.is_tr)
         end
     end
+end
+
+@testitem "fit_onsite_symmetry_operators" setup = [Common, Symmetry, CubicSP] begin
+    model = cubic_sp_model()
+    nw = model.nw
+    symmetry = model.symmetry
+    @test symmetry.nsym == 96
+
+    el_sym = fit_onsite_symmetry_operators(model)
+    @test el_sym.symmetry === symmetry
+    @test length(el_sym.operators) == symmetry.nsym
+    D_of(isym) = real(reshape(el_sym.operators[isym].op_r, nw, nw))
+    @test all(op -> op.ndata == nw^2 && op.irvec == [Vec3(0, 0, 0)], el_sym.operators)
+    ops = findall(!, symmetry.is_tr)
+    @test length(ops) == 48
+
+    # Independent residual of H(S_R R) D = D H(R) against the model's own H(R), without the fitter's code
+    blocks = reshape(model.el_ham.op_r, nw, nw, :)
+    irindex = Dict(R => ir for (ir, R) in enumerate(model.el_ham.irvec))
+    hscale = maximum(ir -> norm(blocks[:, :, ir]), axes(blocks, 3))
+    resid = maximum(ops) do isym
+        SR = round.(Int, inv(symmetry.S[isym])')
+        maximum(ir -> norm(blocks[:, :, irindex[SR * model.el_ham.irvec[ir]]] * D_of(isym) -
+                           D_of(isym) * blocks[:, :, ir]) / hscale, eachindex(model.el_ham.irvec))
+    end
+    @test resid < 1e-13
+
+    # The fit reproduces the analytic D = blockdiag(1, Scart) up to the representation-fixing sign
+    # character, is orthogonal, closes into a representation, and time-reversal copies share it.
+    @test maximum(isym -> min(norm(D_of(isym) - analytic_D(symmetry.Scart[isym])),
+                              norm(D_of(isym) + analytic_D(symmetry.Scart[isym]))), ops) < 1e-12
+    @test maximum(isym -> norm(D_of(isym)' * D_of(isym) - I), ops) < 1e-13
+    op_of = Dict(Tuple(symmetry.S[isym]) => isym for isym in ops)
+    @test maximum(norm(D_of(a) * D_of(b) - D_of(op_of[Tuple(symmetry.S[a] * symmetry.S[b])])) for a in ops, b in ops) < 1e-13
+    @test all(isym -> D_of(isym) == D_of(op_of[Tuple(symmetry.S[isym])]), findall(symmetry.is_tr))
+
+    # A subgroup: operators for a little group only
+    small = symmetry_small_group_of_q(symmetry, Vec3(0.5, 0.0, 0.5); mod_G = false)[1]
+    @test fit_onsite_symmetry_operators(model; symmetry = small).symmetry === small
+
+    # Outside the envelope: H(R) breaking the cubic symmetry (one hopping scaled), Wannier centre off
+    # the atom.
+    @test_throws "not symmetric under an on-site D" fit_onsite_symmetry_operators(cubic_sp_model(perturb = true))
+    model_off = cubic_sp_model()
+    model_off.wann_centers[1] = Vec3(0.3 * model.alat, 0.0, 0.0)
+    @test_throws "off itself" fit_onsite_symmetry_operators(model_off)
+    # s and p decoupled: the commutant is two-dimensional, D_S is not fixed by H(R) alone
+    @test_throws "not unique" fit_onsite_symmetry_operators(cubic_sp_model(decoupled = true))
 end
 
 @testitem "symmetrize" setup = [Common, Symmetry] begin
