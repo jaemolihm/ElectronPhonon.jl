@@ -51,14 +51,20 @@ function fit_onsite_symmetry_operators(model; symmetry = model.symmetry, atol = 
     for isym in ops
         SR = round.(Int, inv(symmetry.S[isym])')
         # Normal matrix of the commutant equations H(S_R R) D = D H(R), summed over R
-        A = zeros(ComplexF64, nw^2, nw^2)
+        normal = zeros(ComplexF64, nw^2, nw^2)
         for (ir, R) in enumerate(irvec)
             ir2 = get(irindex, SR * R, 0)
             ir2 == 0 && error("S_R R = $(SR * R) of operation $isym is not in model.el_ham.irvec")
             M = kron(Idm, blocks[:, :, ir2]) - kron(transpose(blocks[:, :, ir]), Idm)
-            A .+= M' * M
+            normal .+= M' * M
         end
-        P = eigen(Hermitian(A)).vectors[:, 1]
+        eig = eigen(Hermitian(normal))
+        # A second near-zero mode means the commutant is not one-dimensional (extra or accidental
+        # symmetry of H(R)), so the lowest vector need not be the orbital representation
+        eig.values[2] > (atol * hscale)^2 * length(irvec) || error("operation $isym: the commutant of " *
+            "H(R) is not unique (two smallest normal-matrix eigenvalues $(eig.values[1]), " *
+            "$(eig.values[2])); D cannot be fixed from H alone")
+        P = eig.vectors[:, 1]
         F = svd(reshape(P, nw, nw))
         P = F.U * F.Vt
         # Fix the global phase so that D is real
@@ -84,27 +90,27 @@ function fit_onsite_symmetry_operators(model; symmetry = model.symmetry, atol = 
     for a in ops, b in ops
         c = get(op_of, Tuple(symmetry.S[a] * symmetry.S[b]), 0)
         c == 0 && error("the spatial operations are not closed under products")
-        P = D_raw[a] * D_raw[b]
-        plus, minus = norm(P - D_raw[c]), norm(P + D_raw[c])
+        D_ab = D_raw[a] * D_raw[b]
+        plus, minus = norm(D_ab - D_raw[c]), norm(D_ab + D_raw[c])
         min(plus, minus) <= atol || error("D_S D_T = ±D_ST fails by $(min(plus, minus)): the " *
             "operators do not form a (projective) linear representation")
         row = falses(length(ops))
         row[pos[a]] ⊻= true; row[pos[b]] ⊻= true; row[pos[c]] ⊻= true
         push!(rows, row); push!(rhs, minus < plus)
     end
-    A = BitMatrix(reduce(hcat, rows)')
+    gf2_rows = BitMatrix(reduce(hcat, rows)')
     rhs = BitVector(rhs)
     pivot_cols = Int[]
     irow = 1
     for icol in eachindex(ops)
-        p = findfirst(i -> A[i, icol], irow:size(A, 1))
+        p = findfirst(i -> gf2_rows[i, icol], irow:size(gf2_rows, 1))
         p === nothing && continue
         p += irow - 1
-        A[[irow, p], :] = A[[p, irow], :]
+        gf2_rows[[irow, p], :] = gf2_rows[[p, irow], :]
         rhs[[irow, p]] = rhs[[p, irow]]
-        for i in axes(A, 1)
-            if i != irow && A[i, icol]
-                A[i, :] .⊻= A[irow, :]
+        for i in axes(gf2_rows, 1)
+            if i != irow && gf2_rows[i, icol]
+                gf2_rows[i, :] .⊻= gf2_rows[irow, :]
                 rhs[i] ⊻= rhs[irow]
             end
         end

@@ -139,15 +139,15 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
         irep, iop = pair_fold_kpoints(gkpts, symmetry)
         ireps = findall(ik -> irep[ik] == ik, 1:gkpts.n)
         imembers = findall(ik -> irep[ik] != ik, 1:gkpts.n)
-        e_full = zeros(FT, nw, gkpts.n)
-        u_full = zeros(Complex{FT}, nw, nw, gkpts.n)
+        e_sym = zeros(FT, nw, gkpts.n)
+        u_sym = zeros(Complex{FT}, nw, nw, gkpts.n)
         defect = zeros(FT, gkpts.n)
         @threads for iks in index_chunks(ireps; n = 2*nthreads())
             @views begin
                 ham = get_interpolator(model.el_ham; fourier_mode)
                 register_kpoints!(ham, gkpts.vectors[ireps[iks]])
                 for ik in ireps[iks]
-                    compute_el_eigen!(e_full[:, ik], u_full[:, :, ik], nw, ham, gkpts.vectors[ik])
+                    compute_el_eigen!(e_sym[:, ik], u_sym[:, :, ik], nw, ham, gkpts.vectors[ik])
                 end
             end
         end
@@ -162,11 +162,11 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
                     ik_rep = irep[ik]
                     get_symmetry_representation_wannier!(D, itps_sym[iops_el_sym[iop[ik]]],
                                                          gkpts.vectors[ik_rep], false)
-                    e_full[:, ik] = e_full[:, ik_rep]
-                    u_full[:, :, ik] = D * u_full[:, :, ik_rep]
+                    e_sym[:, ik] = e_sym[:, ik_rep]
+                    u_sym[:, :, ik] = D * u_sym[:, :, ik_rep]
                     get_fourier!(H_rep, ham, gkpts.vectors[ik_rep])
                     get_fourier!(H_member, ham, gkpts.vectors[ik])
-                    defect[ik] = maximum(abs, H_member * u_full[:, :, ik] - D * (H_rep * u_full[:, :, ik_rep]))
+                    defect[ik] = maximum(abs, H_member * u_sym[:, :, ik] - D * (H_rep * u_sym[:, :, ik_rep]))
                 end
             end
         end
@@ -174,7 +174,7 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
         max_defect <= atol_symmetry || error("electron_eigenpairs: symmetry defect " *
             "max |H(Sk) u(Sk) - D_S H(k) u(k)| = $max_defect Ry > atol_symmetry = $atol_symmetry at " *
             "k = $(gkpts.vectors[ik_worst]); an operation of `symmetry` is not a symmetry of the model")
-        return to_device(backend, Eigenpairs(nw, gkpts, e_full, u_full))
+        return to_device(backend, Eigenpairs(nw, gkpts, e_sym, u_sym))
     end
     if backend isa CPUBackend
         e_full = zeros(FT, nw, gkpts.n)

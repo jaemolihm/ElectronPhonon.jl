@@ -810,8 +810,12 @@ pairing kernel needs.
   use the first operation (in `symmetry`'s order) that reaches the member.
 - A self-conjugate star (`S0 k_rep = -k_rep`) has the single representative `k_rep`: the member
   `S k_rep` takes `S` and its partner `-S k_rep = S S0 k_rep` takes the product `S S0`. This needs the
-  operations to be closed under products and `D` a true representation, `D_S D_T = D_ST`.
-Errors if the grid is not closed under `symmetry`.
+  operations to be closed under products, `D` a true representation, `D_S D_T = D_ST`, and `S0` an
+  involution, `S0^2 = E` (the identity if `k_rep = -k_rep`, else the first involution in `symmetry`'s
+  order), so that `u(k_rep) = D_S0 u(-k_rep)` and `u(y) = D_S D_S0 D_S0 u(k_rep)` agree. `-k_rep`
+  itself takes `S0`.
+Errors if the grid is not closed under `k -> -k` or under `symmetry`, or if a self-conjugate star has
+no involution taking `k_rep` to `-k_rep`.
 """
 function pair_fold_kpoints(kpts::GridKpoints, symmetry)
     any(symmetry.is_tr) && throw(ArgumentError("pair_fold_kpoints takes spatial operations only"))
@@ -823,6 +827,7 @@ function pair_fold_kpoints(kpts::GridKpoints, symmetry)
     for ik in 1:kpts.n
         irep[ik] == 0 || continue
         im = index_of(-kpts.vectors[ik])
+        im == 0 && throw(ArgumentError("the k grid is not closed under k -> -k"))
         ops_to_minus = [isym for isym in 1:symmetry.nsym
                         if index_of(symmetry.S[isym] * kpts.vectors[ik]) == im]
         if isempty(ops_to_minus)
@@ -837,8 +842,13 @@ function pair_fold_kpoints(kpts::GridKpoints, symmetry)
             end
         else
             # Self-conjugate star: one representative, the partner of S k_rep is reached by S S0
-            isym0 = first(ops_to_minus)
+            is_involution(isym) = symmetry.S[isym] * symmetry.S[isym] == one(symmetry.S[isym])
+            ipos0 = findfirst(is_involution, ops_to_minus)
+            ipos0 === nothing && throw(ArgumentError(
+                "no involution of `symmetry` takes k = $(kpts.vectors[ik]) to -k"))
+            isym0 = isym_identity in ops_to_minus ? isym_identity : ops_to_minus[ipos0]
             irep[ik], iop[ik] = ik, isym_identity
+            im == ik || ((irep[im], iop[im]) = (ik, isym0))
             for isym in 1:symmetry.nsym
                 iy = index_of(symmetry.S[isym] * kpts.vectors[ik])
                 iy == 0 && throw(ArgumentError("the k grid is not closed under symmetry"))

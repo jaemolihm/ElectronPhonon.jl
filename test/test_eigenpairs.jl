@@ -437,11 +437,20 @@ end
     eig_plain = electron_eigenpairs(model, kpts)
     xQ = Vec3(0.5, 0.0, 0.5)
 
-    # Oh (a self-conjugate group, -k in every star) and the group of a gauge-shifted xQ without inversion
+    sub_symmetry(sym, inds) = ElectronPhonon.Symmetry(length(inds), sym.S[inds], sym.τ[inds],
+        sym.Scart[inds], sym.τcart[inds], sym.is_inv[inds], sym.is_tr[inds])
+    sym_oh = symmetry_small_group_of_q(model.symmetry, Vec3(0.0, 0.0, 0.0))[1]
+    # Oh with the non-involutions (C4, C3, S4, S6; S^2 != E) before the identity: the first operation
+    # taking k to -k is then an S4 or S6 unless pair_fold_kpoints picks an involution
+    oh_reordered = sub_symmetry(sym_oh, sortperm([S * S == one(S) for S in sym_oh.S]))
+    @test oh_reordered.S[1] != one(oh_reordered.S[1])
+
+    # Oh (a self-conjugate group, -k in every star), the same group in another order, and the group of
+    # a gauge-shifted xQ without inversion
     @testset "group = $name" for (name, symmetry) in (
-            ("Oh", symmetry_small_group_of_q(model.symmetry, Vec3(0.0, 0.0, 0.0))[1]),
+            ("Oh", sym_oh), ("Oh reordered", oh_reordered),
             ("S xQ = xQ", symmetry_small_group_of_q(model.symmetry, xQ; mod_G = false)[1]))
-        model_g = name == "Oh" ? model : let m = cubic_sp_model(; xQ)
+        model_g = name != "S xQ = xQ" ? model : let m = cubic_sp_model(; xQ)
             m.el_sym = model.el_sym
             m
         end
@@ -492,7 +501,23 @@ end
             im = xk_to_ik(-kpts.vectors[ik], kpts)
             !(iop_naive[im] == iop_naive[ik] && irep_naive[im] == xk_to_ik(-kpts.vectors[irep_naive[ik]], kpts))
         end
-        @test (name == "Oh" ? naive_violations == 0 : naive_violations > 0)
+        name == "Oh reordered" || @test (name == "Oh" ? naive_violations == 0 : naive_violations > 0)
+    end
+
+    @testset "pair_fold_kpoints errors" begin
+        # A self-conjugate star whose group has no involution taking k to -k: {E, S4z, C2z, S4z^3} and
+        # k = (0, 0, 1/4)
+        s4 = findfirst(1:sym_oh.nsym) do i
+            S = sym_oh.S[i]
+            S * S != one(S) && S^4 == one(S) && sym_oh.is_inv[i] && S * Vec3(0, 0, 1) == Vec3(0, 0, -1)
+        end
+        s4_group = sub_symmetry(sym_oh, [findfirst(S -> S == one(S), sym_oh.S), s4,
+            findfirst(==(sym_oh.S[s4]^2), sym_oh.S), findfirst(==(sym_oh.S[s4]^3), sym_oh.S)])
+        @test_throws "no involution" pair_fold_kpoints(kpts, s4_group)
+        # A k list not closed under k -> -k
+        kpts_open = GridKpoints(1, [kpts.vectors[xk_to_ik(Vec3(0.25, 0.0, 0.0), kpts)]], [1.0],
+                                kpts.ngrid, kpts.shift)
+        @test_throws "not closed under k -> -k" pair_fold_kpoints(kpts_open, ElectronPhonon.identity_symmetry())
     end
 
     @testset "guard" begin

@@ -203,6 +203,8 @@ end
     model_off = cubic_sp_model()
     model_off.wann_centers[1] = Vec3(0.3 * model.alat, 0.0, 0.0)
     @test_throws "off itself" fit_onsite_symmetry_operators(model_off)
+    # s and p decoupled: the commutant is two-dimensional, D_S is not fixed by H(R) alone
+    @test_throws "not unique" fit_onsite_symmetry_operators(cubic_sp_model(decoupled = true))
 end
 
 @testitem "symmetrize" setup = [Common, Symmetry] begin

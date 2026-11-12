@@ -22,8 +22,10 @@
 
     `H'(R) = exp(iπ xQ·R) H(R)`, i.e. the Hamiltonian `H(k + Q/2)`, with `el_sym = nothing`.
     `perturb` multiplies the s-s hopping along x by 1.3, which breaks the cubic symmetry.
+    `decoupled` switches off the s-p hopping, which leaves s and p separately symmetric (a commutant
+    of dimension 2).
     """
-    function cubic_sp_model(; xQ = Vec3(0.0, 0.0, 0.0), perturb = false)
+    function cubic_sp_model(; xQ = Vec3(0.0, 0.0, 0.0), perturb = false, decoupled = false)
         nw, nmodes = 4, 1
         lattice = Mat3{Float64}(Diagonal(fill(ALAT, 3)))
         structure = Structure(ALAT, lattice, [1.0], [zeros(Vec3{Float64})], ["A"])
@@ -45,8 +47,9 @@
                 ham[1 + j, 1 + j, ir] = j == i ? V_PPSIGMA : V_PPPI
             end
             # <s,0|H|p_i,R> = R_i V_sp and <p_i,0|H|s,R> = -R_i V_sp
-            ham[1, 1 + i, ir] = R[i] * V_SP
-            ham[1 + i, 1, ir] = -R[i] * V_SP
+            v_sp = decoupled ? 0.0 : V_SP
+            ham[1, 1 + i, ir] = R[i] * v_sp
+            ham[1 + i, 1, ir] = -R[i] * v_sp
         end
         for (ir, R) in enumerate(irvec)
             ham[:, :, ir] .*= cispi(dot(xQ, R))
