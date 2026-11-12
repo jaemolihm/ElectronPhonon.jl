@@ -1,7 +1,8 @@
 # Simple-cubic s + p_x, p_y, p_z tight-binding model with one Einstein phonon and on-site
 # orbital-density e-ph coupling.
 #
-# Shares only the phonon and the on-site e-ph construction with `holstein_model`; it is a separate
+# Shares the phonon and the on-site e-ph construction with `holstein_model` and
+# `rashba_holstein_model` (the e-ph block is a copy of the latter's); it is a separate
 # builder because the electron part (four orbitals on one atom, full O_h symmetry acting on the
 # orbitals as D_S = blockdiag(1, Scart)) has nothing in common with the scalar Holstein band.
 
@@ -47,8 +48,8 @@ so `g_{mn}(k, q) = ⟨m, k+q| diag(g_s, g_p, g_p, g_p) |n, k⟩`. `ω₀ > 0`; `
 
 # Representation inside the `Model`
 `nw = 4`, `nmodes = 1`, `dimension = 3`. Spin is not included, so downstream calculations use
-`spin_degeneracy = 2`. All Wannier functions sit at the origin, so position matrix elements
-vanish and the velocity is exactly `∂H/∂k`.
+`spin_degeneracy = 2`. Position matrix elements are set to zero (including the O_h-allowed
+on-site `⟨s|r|p⟩` dipole), so the velocity is `∂H/∂k`.
 
 `model.symmetry` is the full `O_h × T` of the simple-cubic structure. `el_sym` is `nothing`; the
 on-site operators `D_S = blockdiag(1, Scart)` are obtained with
