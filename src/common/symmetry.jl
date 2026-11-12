@@ -354,20 +354,23 @@ function check_group(symops)
 end
 
 """
-    symmetry_small_group_of_q(symmetry::Symmetry, xq::Vec3; keep_trs=false, atol=sqrt(eps(Float64)))
+    symmetry_small_group_of_q(symmetry::Symmetry, xq::Vec3; keep_trs=false, mod_G=true, atol=sqrt(eps(Float64)))
 Find the small group (little group) of `xq`: the subgroup of `symmetry` whose operations
-satisfy `S * xq ≡ xq (mod G)`. The action of a symmetry operation on `xq` is
+satisfy `S * xq ≡ xq (mod G)`, or `S * xq == xq` if `mod_G = false`. The action of a symmetry operation on `xq` is
 `sxq = is_tr ? -S * xq : S * xq`.
 - `keep_trs`: if `true`, operations involving time reversal (`is_tr == true`) are considered
   and may appear in the returned subgroup. If `false` (default), only spatial operations
   (`is_tr == false`) are kept.
-- `atol`: tolerance for testing that `sxq - xq` is an integer (reciprocal lattice) vector.
+- `mod_G`: if `true` (default), `sxq - xq` may be any reciprocal lattice vector. If `false`, it must
+  vanish. Only the latter commutes with the gauge shift `exp(iπ xq·R)` of a Hamiltonian, whose
+  column phase an odd reciprocal lattice vector flips (e.g. `xq = (1/2, 0, 1/2)`).
+- `atol`: tolerance for testing that `sxq - xq` is an integer (reciprocal lattice) vector, or zero.
 
 Returns `(small_symmetry::Symmetry, inds::Vector{Int})`, where `inds` are the indices of the
 kept operations into `symmetry`. The `time_reversal` flag of `small_symmetry` is derived by
 its constructor.
 """
-function symmetry_small_group_of_q(symmetry::Symmetry, xq::Vec3; keep_trs=false, atol=sqrt(eps(Float64)))
+function symmetry_small_group_of_q(symmetry::Symmetry, xq::Vec3; keep_trs=false, mod_G=true, atol=sqrt(eps(Float64)))
     inds = Int[]
     for (isym, symop) in enumerate(symmetry)
         # If keep_trs is false, skip symmetry involving time reversal (is_tr == true)
@@ -375,7 +378,7 @@ function symmetry_small_group_of_q(symmetry::Symmetry, xq::Vec3; keep_trs=false,
 
         sxq = apply_symop(symop, xq, :momentum)
         Δxq = sxq - xq
-        if isapprox(Δxq, round.(Δxq); atol)
+        if isapprox(Δxq, mod_G ? round.(Δxq) : zero(Δxq); atol)
             push!(inds, isym)
         end
     end

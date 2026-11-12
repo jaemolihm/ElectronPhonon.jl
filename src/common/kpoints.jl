@@ -798,6 +798,66 @@ function unfold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
 end
 
 """
+    pair_fold_kpoints(kpts::GridKpoints, symmetry) => irep, iop
+
+Star map of the grid `kpts` under the spatial operations of `symmetry` (no `is_tr` operation) in which
+a point and its partner `-k` are transported by the SAME operation: point `ik` is `iop[ik]` applied to
+point `irep[ik]` (`xk[ik] = S[iop[ik]] xk[irep[ik]]`), with `irep[ik] == ik` for the representatives.
+Unlike two independent [`fold_kpoints`](@ref) calls, this lets eigenvectors satisfy `u(Sk) = D_S u(k)`
+and `u(-Sk) = D_S u(-k)` with one `D_S`, which the complex (`k`, `-k`) Nambu channel of a finite-Q
+pairing kernel needs.
+- A star not containing `-k_rep` is represented by `k_rep`, and its conjugate star by `-k_rep`; both
+  use the first operation (in `symmetry`'s order) that reaches the member.
+- A self-conjugate star (`S0 k_rep = -k_rep`) has the single representative `k_rep`: the member
+  `S k_rep` takes `S` and its partner `-S k_rep = S S0 k_rep` takes the product `S S0`. This needs the
+  operations to be closed under products and `D` a true representation, `D_S D_T = D_ST`.
+Errors if the grid is not closed under `symmetry`.
+"""
+function pair_fold_kpoints(kpts::GridKpoints, symmetry)
+    any(symmetry.is_tr) && throw(ArgumentError("pair_fold_kpoints takes spatial operations only"))
+    index_of(xk) = something(xk_to_ik(xk, kpts), 0)
+    irep, iop = zeros(Int, kpts.n), zeros(Int, kpts.n)
+    isym_identity = findfirst(S -> S == one(S), symmetry.S)
+    isym_identity === nothing && throw(ArgumentError("symmetry has no identity"))
+    op_of = Dict(Tuple(S) => isym for (isym, S) in enumerate(symmetry.S))
+    for ik in 1:kpts.n
+        irep[ik] == 0 || continue
+        im = index_of(-kpts.vectors[ik])
+        ops_to_minus = [isym for isym in 1:symmetry.nsym
+                        if index_of(symmetry.S[isym] * kpts.vectors[ik]) == im]
+        if isempty(ops_to_minus)
+            # -k_rep is outside the star of k_rep: two stars, -k_rep represents the conjugate one
+            for (irr, sgn) in ((ik, 1), (im, -1))
+                irep[irr], iop[irr] = irr, isym_identity
+                for isym in 1:symmetry.nsym
+                    ip = index_of(symmetry.S[isym] * (sgn * kpts.vectors[ik]))
+                    ip == 0 && throw(ArgumentError("the k grid is not closed under symmetry"))
+                    irep[ip] == 0 && ((irep[ip], iop[ip]) = (irr, isym))
+                end
+            end
+        else
+            # Self-conjugate star: one representative, the partner of S k_rep is reached by S S0
+            isym0 = first(ops_to_minus)
+            irep[ik], iop[ik] = ik, isym_identity
+            for isym in 1:symmetry.nsym
+                iy = index_of(symmetry.S[isym] * kpts.vectors[ik])
+                iy == 0 && throw(ArgumentError("the k grid is not closed under symmetry"))
+                if irep[iy] == 0
+                    irep[iy], iop[iy] = ik, isym
+                    iy_minus = index_of(-kpts.vectors[iy])
+                    if irep[iy_minus] == 0
+                        irep[iy_minus] = ik
+                        iop[iy_minus] = get(op_of, Tuple(symmetry.S[isym] * symmetry.S[isym0]), 0)
+                        iop[iy_minus] == 0 && throw(ArgumentError("symmetry is not closed under products"))
+                    end
+                end
+            end
+        end
+    end
+    irep, iop
+end
+
+"""
     fold_kpoints(kpts, symmetry; index = :auto) => kpts_irr, ik_to_ikirr_isym
 Inverse of `unfold_kpoints`. Reduce `kpts` to the irreducible BZ using `symmetry`.
 Output ik_to_ikirr_isym gives a map ik => (ikirr, isym) such that ``xk[ik] = S[isym](xkirr[ikirr])``.
