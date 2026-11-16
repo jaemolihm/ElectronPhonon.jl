@@ -104,7 +104,7 @@ end
 
 """
     _solve_bte(rhs, scat_mat, map_i_to_f, inv_τ; solver = :gmres, max_iter, rtol, mixing,
-               observable, iT = nothing, null_mode = nothing)
+               observable, iT = nothing, charge_conservation = nothing)
 
 Solve the linearized Boltzmann equation
 ``δf = (scat_mat * map_i_to_f * δf) ./ inv_τ + rhs``,
@@ -121,88 +121,95 @@ i.e. ``(I - D⁻¹ Sᵢ U) δf = rhs`` with `D = diag(inv_τ)`, `Sᵢ = scat_mat
 
 `observable(δf) -> X` is the reported quantity (`obs`, `obs_iter`), e.g. the conductivity.
 
-`null_mode` (from `_bte_null_mode`, or `nothing`) switches on the bordered system described there:
-the solution is constrained to `Uᵀ δf = 0` and the extra unknown `λ` (a vector of `length(eltype(rhs))`
-components, returned as `λ`) absorbs the component of `rhs` along the left null vector. For
-`:gmres` the border is an extra row and column of the operator; for `:fixed_point` every iterate
-is projected, `δf -> δf - B (UᵀB)⁻¹ Uᵀ δf`, which has the same fixed point. With `null_mode = nothing`
-the system is unchanged and `λ` is `nothing`.
+`charge_conservation` (from `_charge_conservation_constraint`, or `nothing` for no constraint) imposes
+`Σᵢ wᵢ dirsᵀ δfᵢ = 0` through the system ``[A  B; Uᵀ  0] [δf; δμ] = [rhs; 0]`` described there, with one
+row and column per column of `dirs` (none for `nothing` or an empty `dirs`, where the system is `A δf = rhs`).
+For `:gmres` the extra rows and columns are part of the operator; for `:fixed_point` every iterate
+is projected, `δf -> δf - B (UᵀB)⁻¹ Uᵀ δf`, which has the same fixed point. Returns `δμ`, the
+multiplier as a vector over the `length(eltype(rhs))` components (zero without constraint rows).
 """
 function _solve_bte(rhs::AbstractVector, scat_mat, map_i_to_f, inv_τ; solver::Symbol = :gmres,
-        max_iter=100, rtol=1e-10, mixing=1.0, observable=identity, iT=nothing, null_mode=nothing)
+        max_iter=100, rtol=1e-10, mixing=1.0, observable=identity, iT=nothing, charge_conservation=nothing)
     if solver === :gmres
         isone(mixing) || throw(ArgumentError("mixing applies to solver = :fixed_point only, got mixing = $mixing"))
-        _solve_bte_gmres(rhs, scat_mat, map_i_to_f, inv_τ; max_iter, rtol, observable, iT, null_mode)
+        _solve_bte_gmres(rhs, scat_mat, map_i_to_f, inv_τ; max_iter, rtol, observable, iT, charge_conservation)
     elseif solver === :fixed_point
         @warn "solver = :fixed_point can converge slowly, especially for metals at low temperature; solver = :gmres is recommended" maxlog=1
-        _solve_bte_fixed_point(rhs, scat_mat, map_i_to_f, inv_τ; max_iter, rtol, mixing, observable, iT, null_mode)
+        _solve_bte_fixed_point(rhs, scat_mat, map_i_to_f, inv_τ; max_iter, rtol, mixing, observable, iT, charge_conservation)
     else
         throw(ArgumentError("solver must be :gmres or :fixed_point, got $solver"))
     end
 end
 
 """
-    _bte_null_mode(el_i, symmetry, μ, T, mapping = _linear_transport_mapping) -> NamedTuple or nothing
+    _charge_conservation_constraint(el_i, symmetry, μ, T, mapping = _linear_transport_mapping; enforce = true)
+        -> (; fprime, weights, dirs)
 
-The null mode of the BTE operator `A = I - D⁻¹ Sᵢ U` that survives the symmetry map, or `nothing`.
+Charge-conservation constraint of the BTE solve, called by `solve_electron_bte` and
+`solve_electron_bte_hall` (and passed to `_solve_bte`) at each temperature.
 
-For the reciprocal occupation form (F5) the scattering kernel obeys pairwise detailed balance,
-`Sᵢ[i, j] f′[j] = Sₒ[i, j] f′[i]` with `f′ = -∂f/∂ε`, so `δf = f′ ⊗ v` solves `A δf = 0` whenever the
-unfolding `U` leaves the constant component vector `v` unchanged (the other occupation forms are
-nearly singular along the same direction). The right-hand side then has a small component along the
-left null vector (detailed balance is broken at the level of the g symmetry violation), the system is
-inconsistent, and GMRES and the fixed-point iteration fail.
+The response conserves the particle number, `Σ_{k ∈ FBZ} wₖ δfₖ = 0` per component. With the
+unfolding `δf_{Sk} = M(S) δf_k`, `M = mapping(is_tr, Scart)`, this reads on `el_i`
+`Σᵢ wᵢ P δfᵢ = 0` with `P = (1/N_S) Σ_S M(S)`, the projector onto the directions `v` that every `M(S)`
+leaves unchanged. Its range is returned as the orthonormal columns of `dirs` (`ncomp × m`), computed as
+the common null space of `M(S) - I` over the operations (tolerance 1e-6). `m = ncomp` for
+`symmetry === nothing`; `m = 0` when the group has time reversal (`v -> -R v` for the default
+`_linear_transport_mapping`) or inversion, where the constraint holds identically; `m = 1` for a
+polar group without time reversal. With `enforce = false`, `m = 0` always.
 
-The mode is excluded when no `v` is invariant under all `mapping(is_tr, Scart)` of `symmetry`, e.g. with the
-time-reversal operations of the default `_linear_transport_mapping` (`v -> -R v`, mode even in k against
-odd fields). It survives for `symmetry === nothing` (all components, `v` = unit vectors) and for a group
-with an invariant polar vector and no time reversal. The invariant `v` are the common null space of
-`mapping(is_tr, Scart) - I` over the operations (tolerance 1e-6), returned as the columns of `dirs`.
+Why it is needed: for the reciprocal occupation form (F5) pairwise detailed balance,
+`Sᵢ[i, j] f′[j] = Sₒ[i, j] f′[i]` with `f′ = -∂f/∂ε`, makes `δf = f′ ⊗ v` a null vector of
+`A = I - D⁻¹ Sᵢ U` for each `v` in the range of `P` (a uniform shift of μ). The right-hand side has a small
+component along the left null vector (detailed balance is broken at the level of the g symmetry violation),
+so without the constraint the system is inconsistent and GMRES and the fixed-point iteration fail.
+`_solve_bte` solves ``[A  B; Uᵀ  0] [δf; δμ] = [rhs; 0]``, with `B = f′ ⊗ dirs` and `U = weights ⊗ dirs`:
+the extra term `f′ᵢ δμ` is a uniform shift of the chemical potential, and `δμ` measures the inconsistency of
+`rhs` along the left null vector (for F5 the detailed-balance violation; other forms add their own
+non-conservation).
 
-Returns `(; fprime, weights, dirs)` with `fprime = -∂f/∂ε` per state at `μ`, `T`, `weights` the state
-weights, and `dirs` the `ncomp × m` orthonormal basis of the invariant `v`. `_solve_bte` solves
-``[A  B; Uᵀ  0] [δf; λ] = [rhs; 0]``, with `B = f′ ⊗ dirs` and `U = weights ⊗ dirs` (columns normalized),
-i.e. `Σᵢ wᵢ v·δfᵢ = 0` (particle-number conservation). The extra term is `f′ᵢ λ`, a uniform shift of the
-chemical potential, and `λ` measures the inconsistency of `rhs` along the left null vector (for the F5 form this is the
-detailed-balance violation; other forms add their own non-conservation).
+Returns `fprime = -∂f/∂ε` per state at `μ`, `T`, `weights` the state weights, and `dirs`.
 """
-function _bte_null_mode(el_i::BTorBandStates{FT}, symmetry, μ, T, mapping = _linear_transport_mapping) where {FT}
+function _charge_conservation_constraint(el_i::BTorBandStates{FT}, symmetry, μ, T,
+        mapping = _linear_transport_mapping; enforce::Bool = true) where {FT}
     ncomp = size(mapping(false, one(Mat3{FT})), 1)
-    if symmetry === nothing
-        # No symmetry map: every component is a free scalar field with its own null mode.
+    if !enforce
+        # No constraint rows: the plain system A δf = rhs.
+        dirs = zeros(FT, ncomp, 0)
+    elseif symmetry === nothing
+        # No symmetry map: P = I, one constraint per component.
         dirs = Matrix{FT}(I, ncomp, ncomp)
     else
-        # Invariant directions: common null space of mapping(is_tr, Scart) - I over the operations.
+        # Range of P: common null space of mapping(is_tr, Scart) - I over the operations.
         stacked = reduce(vcat, [Matrix(mapping(is_tr, Scart)) - I for (is_tr, Scart) in zip(symmetry.is_tr, symmetry.Scart)])
         # (the stack has at least `ncomp` rows: the identity operation is always present)
         F = svd(stacked; full = true)
         dirs = FT.(F.V[:, F.S .< 1e-6])
     end
-    isempty(dirs) && return nothing
     fprime = @. -occ_fermion_derivative(el_i.es - μ, T)
     (; fprime, weights = bt_weights(el_i), dirs)
 end
 
-# Border of the bordered BTE system as `nx × m` matrices (`nx = ncomp * n`, state-major like the flat
-# field): `B[:, m] = f′ ⊗ dirs[:, m] / ‖f′‖`, `U[:, m] = weights ⊗ dirs[:, m] / ‖weights‖`.
-function _null_mode_border(null_mode)
-    (; fprime, weights, dirs) = null_mode
-    ncomp, m = size(dirs)
-    n = length(fprime)
-    B = Array{eltype(fprime)}(undef, ncomp, n, m)
+# Constraint matrices of `_solve_bte` as `nx × m` matrices (`nx = ncomp * n`, state-major like the flat
+# field): `B[:, m] = f′ ⊗ dirs[:, m] / ‖f′‖`, `U[:, m] = weights ⊗ dirs[:, m] / ‖weights‖`, and `‖f′‖`.
+# `nothing` gives `m = 0`.
+function _charge_conservation_matrices(constraint, ::Type{FT}, ncomp, n) where {FT}
+    constraint === nothing && return zeros(FT, ncomp * n, 0), zeros(FT, ncomp * n, 0), zeros(FT, ncomp, 0), one(FT)
+    (; fprime, weights, dirs) = constraint
+    m = size(dirs, 2)
+    B = Array{FT}(undef, ncomp, n, m)
     U = similar(B)
     nf, nw = norm(fprime), norm(weights)
     for k in 1:m, i in 1:n, c in 1:ncomp
         B[c, i, k] = fprime[i] * dirs[c, k] / nf
         U[c, i, k] = weights[i] * dirs[c, k] / nw
     end
-    reshape(B, ncomp * n, m), reshape(U, ncomp * n, m), nf
+    reshape(B, ncomp * n, m), reshape(U, ncomp * n, m), dirs, nf
 end
 
 # `rhs` is a vector of `StaticVector`s: `Vec3` for the first-order field (BTStates and BandStates
 # paths), `SVector{9}` for the Hall field of the BandStates-only `solve_electron_bte_hall`.
 function _solve_bte_gmres(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, inv_τ;
-        max_iter, rtol, observable, iT, null_mode = nothing) where {FT, ST <: StaticVector{<:Any, FT}}
+        max_iter, rtol, observable, iT, charge_conservation = nothing) where {FT, ST <: StaticVector{<:Any, FT}}
     # `I - D⁻¹ Sᵢ U` on the field stored as its flat real components: Krylov.jl needs a
     # numeric element type.
     function apply!(y, x)
@@ -210,40 +217,32 @@ function _solve_bte_gmres(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, inv_τ;
         reinterpret(ST, y) .= x_field .- _mul_static_vectors(scat_mat, map_i_to_f * x_field) ./ inv_τ
     end
     nx = length(ST) * length(rhs)
-    b = collect(reinterpret(FT, rhs))
-    if null_mode === nothing
-        # No null mode survives the symmetry map: plain system.
-        op = LinearMap{FT}(apply!, nx; ismutating = true)
-        x, stats = Krylov.gmres(op, b; atol = zero(FT), rtol = FT(rtol), itmax = max_iter)
-        λ = nothing
-    else
-        # Bordered system [A B; Uᵀ 0] [δf; λ] = [rhs; 0] with a row and column per invariant direction.
-        B, U, nf = _null_mode_border(null_mode)
-        m = size(B, 2)
-        x_buf, y_buf = zeros(FT, nx), zeros(FT, nx)
-        function apply_bordered!(y, z)
-            x_buf .= @view z[1:nx]
-            apply!(y_buf, x_buf)
-            mul!(y_buf, B, @view(z[nx+1:end]), true, true)
-            y[1:nx] .= y_buf
-            mul!(@view(y[nx+1:end]), U', x_buf)
-        end
-        op = LinearMap{FT}(apply_bordered!, nx + m; ismutating = true)
-        z, stats = Krylov.gmres(op, [b; zeros(FT, m)]; atol = zero(FT), rtol = FT(rtol), itmax = max_iter)
-        x = z[1:nx]
-        # λ in the coefficient of f′ᵢ, as a vector over the components.
-        λ = null_mode.dirs * z[nx+1:end] ./ nf
+    B, U, dirs, nf = _charge_conservation_matrices(charge_conservation, FT, length(ST), length(rhs))
+    m = size(B, 2)
+    # [A B; Uᵀ 0] [δf; δμ] = [rhs; 0], with one row and column per constraint (none when m = 0).
+    x_buf, y_buf = zeros(FT, nx), zeros(FT, nx)
+    function apply_constrained!(y, z)
+        x_buf .= @view z[1:nx]
+        apply!(y_buf, x_buf)
+        mul!(y_buf, B, @view(z[nx+1:end]), true, true)
+        y[1:nx] .= y_buf
+        mul!(@view(y[nx+1:end]), U', x_buf)
     end
-    δf = collect(reinterpret(ST, x))
+    op = LinearMap{FT}(apply_constrained!, nx + m; ismutating = true)
+    z, stats = Krylov.gmres(op, [collect(reinterpret(FT, rhs)); zeros(FT, m)]; atol = zero(FT),
+                            rtol = FT(rtol), itmax = max_iter)
+    δf = collect(reinterpret(ST, z[1:nx]))
+    # δμ as the coefficient of f′ᵢ, a vector over the components.
+    δμ = dirs * z[nx+1:end] ./ nf
     converged = stats.solved
     if !converged
         @warn "GMRES not converged at iteration $(stats.niter)$(iT === nothing ? "" : " (iT=$iT)"): $(stats.status)"
     elseif iT !== nothing
-        @info "iT=$iT, GMRES converged at iteration $(stats.niter)$(λ === nothing ? "" : ", bordered system, λ = $λ")"
+        @info "iT=$iT, GMRES converged at iteration $(stats.niter)$(m == 0 ? "" : ", charge conservation δμ = $δμ")"
         flush(stdout)
         flush(stderr)
     end
-    (; δf, obs = observable(δf), obs_iter = nothing, niter = stats.niter, converged, λ)
+    (; δf, obs = observable(δf), obs_iter = nothing, niter = stats.niter, converged, δμ)
 end
 
 # `S * x` for a vector `x` of static vectors. A dense `S` is applied as a gemm on row blocks, one per
@@ -260,17 +259,14 @@ end
 _mul_static_vectors(S, x) = S * x
 
 function _solve_bte_fixed_point(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, inv_τ;
-        max_iter, rtol, mixing, observable, iT, null_mode = nothing) where {FT, ST <: StaticVector{<:Any, FT}}
-    if null_mode !== nothing
-        # Projection Π = I - B (UᵀB)⁻¹ Uᵀ applied to every iterate; `λ` follows from the last image.
-        B, U, nf = _null_mode_border(null_mode)
-        K = U' * B
-        project!(δf) = (z = reinterpret(FT, δf); z .-= B * (K \ (U' * z)); δf)
-    end
-    λ = nothing
-    δf = copy(rhs)
+        max_iter, rtol, mixing, observable, iT, charge_conservation = nothing) where {FT, ST <: StaticVector{<:Any, FT}}
+    # Projection Π = I - B (UᵀB)⁻¹ Uᵀ applied to every iterate (identity when m = 0); δμ follows from the last image.
+    B, U, dirs, nf = _charge_conservation_matrices(charge_conservation, FT, length(ST), length(rhs))
+    K = U' * B
+    project!(δf) = (z = reinterpret(FT, δf); z .-= B * (K \ (U' * z)); δf)
+    δμ = zeros(FT, length(ST))
     # The initial guess satisfies the constraint Uᵀδf = 0, which the mixed iterates then keep.
-    null_mode === nothing || project!(δf)
+    δf = project!(copy(rhs))
     δf_tmp = similar(δf)
     obs = observable(δf)
     obs_iter = Vector{typeof(obs)}(undef, max_iter + 1)
@@ -283,12 +279,9 @@ function _solve_bte_fixed_point(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, i
 
         δf_f = map_i_to_f * δf
         δf_tmp .= _mul_static_vectors(scat_mat, δf_f) ./ inv_τ .+ rhs
-        if null_mode !== nothing
-            # λ from the image of the previous iterate: Uᵀ(Gδf + rhs) = (UᵀB) λ at the fixed point.
-            λ_comp = K \ (U' * collect(reinterpret(FT, δf_tmp)))
-            λ = null_mode.dirs * λ_comp ./ nf
-            project!(δf_tmp)
-        end
+        # δμ from the image of the previous iterate: Uᵀ(Gδf + rhs) = (UᵀB) δμ at the fixed point.
+        δμ = dirs * (K \ (U' * collect(reinterpret(FT, δf_tmp)))) ./ nf
+        project!(δf_tmp)
         @. δf = δf_tmp * mixing + δf * (1 - mixing)
         obs = observable(δf)
         obs_iter[iter + 1] = obs
@@ -307,7 +300,7 @@ function _solve_bte_fixed_point(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, i
         end
     end
     resize!(obs_iter, niter + 1)
-    (; δf, obs, obs_iter, niter, converged, λ)
+    (; δf, obs, obs_iter, niter, converged, δμ)
 end
 
 """
@@ -317,17 +310,19 @@ scat_mat is a rectangular matrix, mapping states in `el_f` to states in `el_i`.
 δf[j] is the occupations for states `el_f` and is calculated by unfolding `δf_i`.
 `solver` is `:gmres` (default) or `:fixed_point`; see `_solve_bte`. `σ_iter`, the conductivity
 of every fixed-point iterate (first row SERTA), is returned only for `solver = :fixed_point` and
-is `nothing` for GMRES. When a null mode of the BTE operator survives the symmetry map
-(`symmetry === nothing` or a group with an invariant polar vector and no time reversal) the
-solve is bordered (`_bte_null_mode`) and the output field `λ` (`(3, nT)`) holds its multiplier. The output also carries `params` (the object itself, so a later change of it is not seen) and `symmetry`.
+is `nothing` for GMRES. `enforce_charge_conservation` (default `true`) constrains the solution to
+conserve the particle number (`_charge_conservation_constraint`); the output field `δμ` (`(3, nT)`) holds
+its multiplier, a uniform shift of μ per field direction. The constraint has rows only for
+`symmetry === nothing` or a group without time reversal and inversion; in an IBZ with time reversal it holds
+identically and the solve is unchanged. The output also carries `params` (the object itself, so a later change of it is not seen) and `symmetry`.
 """
-function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; solver = :gmres, max_iter=100, rtol=1e-10, mixing = 1.0, interpolate = false) where {FT}
+function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; solver = :gmres, max_iter=100, rtol=1e-10, mixing = 1.0, interpolate = false, enforce_charge_conservation::Bool = true) where {FT}
     output = (σ_serta = zeros(FT, 3, 3, length(params.Tlist)),
               σ = zeros(FT, 3, 3, length(params.Tlist)),
               δf_i_serta = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
               δf_i = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
-              # Bordered-system multiplier of the BTE solve (see `_bte_null_mode`), zero where no null mode applies.
-              λ = zeros(FT, 3, length(params.Tlist)),
+              # Charge-conservation multiplier of the BTE solve (see `_charge_conservation_constraint`).
+              δμ = zeros(FT, 3, length(params.Tlist)),
               σ_iter = solver === :fixed_point ? fill(FT(NaN), (max_iter+1, 3, 3, length(params.Tlist))) : nothing,
               # The conditions the solution belongs to, checked by `solve_electron_bte_hall`.
               params, symmetry,
@@ -344,10 +339,10 @@ function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, 
 
         obs = δf -> symmetrize(occupation_to_conductivity(δf, el_i, params), symmetry)
 
-        null_mode = _bte_null_mode(el_i, symmetry, μ, T)
+        charge_conservation = _charge_conservation_constraint(el_i, symmetry, μ, T; enforce = enforce_charge_conservation)
         sol = _solve_bte(δf_i_serta, scat_mat[iT], map_i_to_f, view(inv_τ_i, :, iT);
-                         solver, max_iter, rtol, mixing, observable=obs, iT, null_mode)
-        sol.λ === nothing || (output.λ[:, iT] .= sol.λ)
+                         solver, max_iter, rtol, mixing, observable=obs, iT, charge_conservation)
+        output.δμ[:, iT] .= sol.δμ
 
         if solver === :fixed_point
             # Save history for fixed-point iteration. (History not stored for GMRES solver)
