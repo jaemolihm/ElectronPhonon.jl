@@ -112,7 +112,7 @@ i.e. ``(I - D⁻¹ Sᵢ U) δf = rhs`` with `D = diag(inv_τ)`, `Sᵢ = scat_mat
 `rhs` the SERTA solution.
 
 * `solver = :gmres`: GMRES (Krylov.jl, no restart) from `δf = 0`. Stops when the relative residual
-  `‖rhs - (I - D⁻¹ Sᵢ U) δf‖ / ‖rhs‖ ≤ rtol`. `obs_iter` is `nothing`. The
+  `‖Π (rhs - (I - D⁻¹ Sᵢ U) δf)‖ / ‖Π rhs‖ ≤ rtol` (`Π` below; `Π = I` without constraint). `obs_iter` is `nothing`. The
   Krylov basis is stored, so memory grows to `niter × length(rhs)` static-vector values (`niter ≤ max_iter`).
 * `solver = :fixed_point`: fixed-point iteration with linear `mixing` from `δf = rhs`. Stops when
   `norm(X - X_old) / norm(X) < rtol` for the observable `X`; `obs_iter` holds the observable of every
@@ -122,11 +122,11 @@ i.e. ``(I - D⁻¹ Sᵢ U) δf = rhs`` with `D = diag(inv_τ)`, `Sᵢ = scat_mat
 `observable(δf) -> X` is the reported quantity (`obs`, `obs_iter`), e.g. the conductivity.
 
 `charge_conservation` (from `_charge_conservation_constraint`, or `nothing` for no constraint) imposes
-`Σᵢ wᵢ dirsᵀ δfᵢ = 0` through the system ``[A  B; Uᵀ  0] [δf; δμ] = [rhs; 0]`` described there, with one
-row and column per column of `dirs` (none for `nothing` or an empty `dirs`, where the system is `A δf = rhs`).
-For `:gmres` the extra rows and columns are part of the operator; for `:fixed_point` every iterate
-is projected, `δf -> δf - B (UᵀB)⁻¹ Uᵀ δf`, which has the same fixed point. Returns `δμ`, the
-multiplier as a vector over the `length(eltype(rhs))` components (zero without constraint rows).
+`Σᵢ wᵢ dirsᵀ δfᵢ = 0` with the projector `Π = I - B (UᵀB)⁻¹ Uᵀ` of `_charge_conservation_projection`
+(`Π = I` for `nothing` or an empty `dirs`). `:gmres` solves `(Π A Π) δf = Π rhs`; `:fixed_point`
+projects every iterate, `δf -> Π δf`. Both give the solution of ``A δf + B c = rhs``, `Uᵀ δf = 0`.
+Returns `δμ`, the multiplier `c` as a vector over the `length(eltype(rhs))` components (zero without
+constraint).
 """
 function _solve_bte(rhs::AbstractVector, scat_mat, map_i_to_f, inv_τ; solver::Symbol = :gmres,
         max_iter=100, rtol=1e-10, mixing=1.0, observable=identity, iT=nothing, charge_conservation=nothing)
@@ -163,8 +163,8 @@ Why it is needed: for the reciprocal occupation form (F5) pairwise detailed bala
 `A = I - D⁻¹ Sᵢ U` for each `v` in the range of `P` (a uniform shift of μ). The right-hand side has a small
 component along the left null vector (detailed balance is broken at the level of the g symmetry violation),
 so without the constraint the system is inconsistent and GMRES and the fixed-point iteration fail.
-`_solve_bte` solves ``[A  B; Uᵀ  0] [δf; δμ] = [rhs; 0]``, with `B = f′ ⊗ dirs` and `U = weights ⊗ dirs`:
-the extra term `f′ᵢ δμ` is a uniform shift of the chemical potential, and `δμ` measures the inconsistency of
+`_solve_bte` solves ``A δf + B c = rhs`` with ``Uᵀ δf = 0``, `B = f′ ⊗ dirs` and `U = weights ⊗ dirs`, by
+projection (`_charge_conservation_projection`): the term `f′ᵢ δμ` is a uniform shift of the chemical potential, and `δμ` measures the inconsistency of
 `rhs` along the left null vector (for F5 the detailed-balance violation; other forms add their own
 non-conservation).
 
@@ -190,56 +190,70 @@ function _charge_conservation_constraint(el_i::BTorBandStates{FT}, symmetry, μ,
     (; fprime, weights = bt_weights(el_i), dirs)
 end
 
-# Constraint matrices of `_solve_bte` as `nx × m` matrices (`nx = ncomp * n`, state-major like the flat
-# field): `B[:, m] = f′ ⊗ dirs[:, m] / ‖f′‖`, `U[:, m] = weights ⊗ dirs[:, m] / ‖weights‖`, and `‖f′‖`.
-# `nothing` gives `m = 0`.
-function _charge_conservation_matrices(constraint, ::Type{FT}, ncomp, n) where {FT}
-    constraint === nothing && return zeros(FT, ncomp * n, 0), zeros(FT, ncomp * n, 0), zeros(FT, ncomp, 0), one(FT)
-    (; fprime, weights, dirs) = constraint
+"""
+    _charge_conservation_projection(constraint, FT, ncomp, n) -> (project!, multiplier)
+
+Projector onto the charge-conserving space, used by `_solve_bte_gmres` and `_solve_bte_fixed_point`
+for the `charge_conservation` constraint of `_solve_bte` (`nothing`: no constraint).
+
+On the flat field (`ncomp * n` reals, state-major), with `B[:, k] = f′ ⊗ dirs[:, k] / ‖f′‖` and
+`U[:, k] = weights ⊗ dirs[:, k] / ‖weights‖`:
+- `project!(z)`: `z -> Π z`, `Π = I - B (UᵀB)⁻¹ Uᵀ`, in place. `UᵀΠ = 0` (charge conserved) and
+  `Π B = 0` (the uniform μ shift is removed). Identity when there is no constraint direction.
+- `multiplier(r)`: `δμ = dirs (UᵀB)⁻¹ Uᵀ r / ‖f′‖`, the per-component coefficient of `f′` in `r`. With
+  `r = rhs - A δf` at the solution (`Uᵀ δf = 0`) this is `δμ` of ``A δf + f′ δμ = rhs``.
+"""
+function _charge_conservation_projection(constraint, ::Type{FT}, ncomp, n) where {FT}
+    dirs = constraint === nothing ? zeros(FT, ncomp, 0) : constraint.dirs
     m = size(dirs, 2)
-    B = Array{FT}(undef, ncomp, n, m)
-    U = similar(B)
-    nf, nw = norm(fprime), norm(weights)
-    for k in 1:m, i in 1:n, c in 1:ncomp
-        B[c, i, k] = fprime[i] * dirs[c, k] / nf
-        U[c, i, k] = weights[i] * dirs[c, k] / nw
+    # B and U as nx × m matrices, columns normalized (m = 0: no constraint direction).
+    B = zeros(FT, ncomp * n, m)
+    U = zeros(FT, ncomp * n, m)
+    nf = m > 0 ? norm(constraint.fprime) : one(FT)
+    if m > 0
+        (; fprime, weights) = constraint
+        nw = norm(weights)
+        for k in 1:m, i in 1:n, c in 1:ncomp
+            B[c + ncomp * (i - 1), k] = fprime[i] * dirs[c, k] / nf
+            U[c + ncomp * (i - 1), k] = weights[i] * dirs[c, k] / nw
+        end
     end
-    reshape(B, ncomp * n, m), reshape(U, ncomp * n, m), dirs, nf
+    K = U' * B
+    # m = 0: Π = I and δμ = 0, without touching z.
+    project!(z) = (m > 0 && (z .-= B * (K \ (U' * z))); z)
+    multiplier(r) = m > 0 ? dirs * (K \ (U' * r)) ./ nf : zeros(FT, ncomp)
+    project!, multiplier
 end
 
 # `rhs` is a vector of `StaticVector`s: `Vec3` for the first-order field (BTStates and BandStates
 # paths), `SVector{9}` for the Hall field of the BandStates-only `solve_electron_bte_hall`.
 function _solve_bte_gmres(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, inv_τ;
         max_iter, rtol, observable, iT, charge_conservation = nothing) where {FT, ST <: StaticVector{<:Any, FT}}
-    # `I - D⁻¹ Sᵢ U` on the field stored as its flat real components: Krylov.jl needs a
+    # `A = I - D⁻¹ Sᵢ U` on the field stored as its flat real components: Krylov.jl needs a
     # numeric element type.
     function apply!(y, x)
         x_field = reinterpret(ST, x)
         reinterpret(ST, y) .= x_field .- _mul_static_vectors(scat_mat, map_i_to_f * x_field) ./ inv_τ
     end
+    project!, multiplier = _charge_conservation_projection(charge_conservation, FT, length(ST), length(rhs))
     nx = length(ST) * length(rhs)
-    B, U, dirs, nf = _charge_conservation_matrices(charge_conservation, FT, length(ST), length(rhs))
-    m = size(B, 2)
-    # [A B; Uᵀ 0] [δf; δμ] = [rhs; 0], with one row and column per constraint (none when m = 0).
-    x_buf, y_buf = zeros(FT, nx), zeros(FT, nx)
-    function apply_constrained!(y, z)
-        x_buf .= @view z[1:nx]
-        apply!(y_buf, x_buf)
-        mul!(y_buf, B, @view(z[nx+1:end]), true, true)
-        y[1:nx] .= y_buf
-        mul!(@view(y[nx+1:end]), U', x_buf)
-    end
-    op = LinearMap{FT}(apply_constrained!, nx + m; ismutating = true)
-    z, stats = Krylov.gmres(op, [collect(reinterpret(FT, rhs)); zeros(FT, m)]; atol = zero(FT),
-                            rtol = FT(rtol), itmax = max_iter)
-    δf = collect(reinterpret(ST, z[1:nx]))
-    # δμ as the coefficient of f′ᵢ, a vector over the components.
-    δμ = dirs * z[nx+1:end] ./ nf
+    # Projected system (Π A Π) δf = Π rhs: the Krylov space stays in the charge-conserving space.
+    x_buf = zeros(FT, nx)
+    apply_projected!(y, x) = (x_buf .= x; project!(x_buf); apply!(y, x_buf); project!(y))
+    op = LinearMap{FT}(apply_projected!, nx; ismutating = true)
+    b = collect(reinterpret(FT, rhs))
+    x, stats = Krylov.gmres(op, project!(copy(b)); atol = zero(FT), rtol = FT(rtol), itmax = max_iter)
+    project!(x)
+    δf = collect(reinterpret(ST, x))
+    # δμ from the unprojected residual rhs - A δf, which lies along B at the solution.
+    r = similar(b)
+    apply!(r, x)
+    δμ = multiplier(b .- r)
     converged = stats.solved
     if !converged
         @warn "GMRES not converged at iteration $(stats.niter)$(iT === nothing ? "" : " (iT=$iT)"): $(stats.status)"
     elseif iT !== nothing
-        @info "iT=$iT, GMRES converged at iteration $(stats.niter)$(m == 0 ? "" : ", charge conservation δμ = $δμ")"
+        @info "iT=$iT, GMRES converged at iteration $(stats.niter)$(iszero(δμ) ? "" : ", charge conservation δμ = $δμ")"
         flush(stdout)
         flush(stderr)
     end
@@ -261,10 +275,9 @@ _mul_static_vectors(S, x) = S * x
 
 function _solve_bte_fixed_point(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, inv_τ;
         max_iter, rtol, mixing, observable, iT, charge_conservation = nothing) where {FT, ST <: StaticVector{<:Any, FT}}
-    # Projection Π = I - B (UᵀB)⁻¹ Uᵀ applied to every iterate (identity when m = 0); δμ follows from the last image.
-    B, U, dirs, nf = _charge_conservation_matrices(charge_conservation, FT, length(ST), length(rhs))
-    K = U' * B
-    project!(δf) = (z = reinterpret(FT, δf); z .-= B * (K \ (U' * z)); δf)
+    # Projection Π of `_charge_conservation_projection` applied to every iterate; δμ follows from the last image.
+    project_flat!, multiplier = _charge_conservation_projection(charge_conservation, FT, length(ST), length(rhs))
+    project!(δf) = (project_flat!(reinterpret(FT, δf)); δf)
     δμ = zeros(FT, length(ST))
     # The initial guess satisfies the constraint Uᵀδf = 0, which the mixed iterates then keep.
     δf = project!(copy(rhs))
@@ -280,8 +293,8 @@ function _solve_bte_fixed_point(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, i
 
         δf_f = map_i_to_f * δf
         δf_tmp .= _mul_static_vectors(scat_mat, δf_f) ./ inv_τ .+ rhs
-        # δμ from the image of the previous iterate: Uᵀ(Gδf + rhs) = (UᵀB) δμ at the fixed point.
-        δμ = dirs * (K \ (U' * collect(reinterpret(FT, δf_tmp)))) ./ nf
+        # δμ from the image of the previous iterate: Gδf + rhs - δf = rhs - Aδf, and Uᵀδf = 0.
+        δμ = multiplier(collect(reinterpret(FT, δf_tmp)))
         project!(δf_tmp)
         @. δf = δf_tmp * mixing + δf * (1 - mixing)
         obs = observable(δf)
