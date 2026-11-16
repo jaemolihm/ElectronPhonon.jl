@@ -6,14 +6,16 @@ export solve_electron_bte_hall
 
 """
     solve_electron_bte_hall(out_bte, el_i, el_f, scat_mat, inv_τ_i, params, model,
-                            symmetry = nothing; order = 1, max_iter = 100, rtol = 1e-10)
+                            symmetry = nothing; order = 1, max_iter = 100, rtol = 1e-10,
+                            enforce_charge_conservation = true)
 
 Linear Hall conductivity `σ_hall[a, b, c]` and Hall factor `r_hall[a, b, c]` of the BTE, for
 `el_i` (IBZ if `symmetry` is given) and `el_f` on the same uniform Γ-centred grid. Arguments are
 those of `solve_electron_bte`, whose output `out_bte` is passed in (it must have been computed with
 the same `params.Tlist`, `params.μlist` and `symmetry`) plus the `model` (its `recip_lattice` and `dimension`). Returns
-`(; σ_serta, σ, σ_hall_serta, σ_hall, r_hall_serta, r_hall)`, with `σ*` of size `(3, 3, nT)` and
-`σ_hall*`, `r_hall*` of size `(3, 3, 3, nT)`. Host only (under MPI run it on the root with the
+`(; σ_serta, σ, σ_hall_serta, σ_hall, r_hall_serta, r_hall, δμ_hall)`, with `σ*` of size `(3, 3, nT)` and
+`σ_hall*`, `r_hall*` of size `(3, 3, 3, nT)`. `δμ_hall` (`(9, nT)`) is the shift of μ removed by the
+charge-conservation projection (`charge_conservation_projection`, on with `enforce_charge_conservation = true`). Host only (under MPI run it on the root with the
 gathered `Sᵢ`, as `solve_electron_bte`). `order` is the order of the finite-difference gradient.
 
 Convention (`e` and `ħ` left out): `j_a = σ_ab E_b + σ_hall[a, b, c] E_b B_c`. The physical Hall
@@ -36,7 +38,7 @@ Approximations:
 """
 function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates{FT}, scat_mat,
         inv_τ_i, params, model, symmetry = nothing; order = 1, max_iter = 100,
-        rtol = 1e-10) where {FT}
+        rtol = 1e-10, enforce_charge_conservation::Bool = true) where {FT}
     nT = length(params.Tlist)
 
     # Uniform Γ-centred grids only: a multigrid carries the coarse weights on its coarse states.
@@ -77,6 +79,7 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
     σ_hall = zeros(FT, 3, 3, 3, nT)
     r_hall_serta = fill(FT(NaN), 3, 3, 3, nT)
     r_hall = fill(FT(NaN), 3, 3, 3, nT)
+    δμ_hall = zeros(FT, 9, nT)
     inds = 1:model.dimension
 
     for iT in 1:nT
@@ -88,7 +91,10 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
 
         # Full: X = R + (1 / τ⁻¹) Sᵢ (U X), with δᴱf from the full solution.
         source = _hall_source(grad, map_1 * out_bte.δf_i[:, iT], el_i.vs, inv_τ)
-        sol = _solve_bte(source, scat_mat[iT], map_2, inv_τ; solver = :gmres, max_iter, rtol, iT)
+        P_charge = charge_conservation_projection(el_i, symmetry, params.μlist[iT], params.Tlist[iT],
+            _hall_transport_mapping; enforce = enforce_charge_conservation)
+        sol = _solve_bte(source, scat_mat[iT], map_2, inv_τ; solver = :gmres, max_iter, rtol, iT, P_charge)
+        δμ_hall[:, iT] .= sol.δμ
         σ_hall[:, :, :, iT] .= _hall_conductivity(sol.δf, el_i, params, symmetry)
 
         # Hall factor, on the block `1:model.dimension`.
@@ -98,7 +104,7 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
         r_hall[inds, inds, :, iT] .= compute_hall_factor(out_bte.σ[inds, inds, iT],
             σ_hall[inds, inds, :, iT], carrier_density)
     end
-    (; out_bte.σ_serta, out_bte.σ, σ_hall_serta, σ_hall, r_hall_serta, r_hall)
+    (; out_bte.σ_serta, out_bte.σ, σ_hall_serta, σ_hall, r_hall_serta, r_hall, δμ_hall)
 end
 
 # Source of the Hall equation on `el_i`, as the 9-vector `X[b + 3 (c - 1)]` of the matrix `X[b, c]`:

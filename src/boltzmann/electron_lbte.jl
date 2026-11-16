@@ -4,7 +4,7 @@ using LinearAlgebra
 using SparseArrays
 using Interpolations
 import Krylov
-using LinearMaps: LinearMap
+using LinearMaps: LinearMaps, LinearMap
 using Interpolations: WeightedArbIndex, coordslookup, value_weights, weightedindexes
 using Dictionaries
 
@@ -104,7 +104,7 @@ end
 
 """
     _solve_bte(rhs, scat_mat, map_i_to_f, inv_τ; solver = :gmres, max_iter, rtol, mixing,
-               observable, iT = nothing)
+               observable, iT = nothing, P_charge = nothing)
 
 Solve the linearized Boltzmann equation
 ``δf = (scat_mat * map_i_to_f * δf) ./ inv_τ + rhs``,
@@ -112,7 +112,7 @@ i.e. ``(I - D⁻¹ Sᵢ U) δf = rhs`` with `D = diag(inv_τ)`, `Sᵢ = scat_mat
 `rhs` the SERTA solution.
 
 * `solver = :gmres`: GMRES (Krylov.jl, no restart) from `δf = 0`. Stops when the relative residual
-  `‖rhs - (I - D⁻¹ Sᵢ U) δf‖ / ‖rhs‖ ≤ rtol`. `obs_iter` is `nothing`. The
+  `‖Π (rhs - (I - D⁻¹ Sᵢ U) δf)‖ / ‖Π rhs‖ ≤ rtol` (`Π` below; `Π = I` without constraint). `obs_iter` is `nothing`. The
   Krylov basis is stored, so memory grows to `niter × length(rhs)` static-vector values (`niter ≤ max_iter`).
 * `solver = :fixed_point`: fixed-point iteration with linear `mixing` from `δf = rhs`. Stops when
   `norm(X - X_old) / norm(X) < rtol` for the observable `X`; `obs_iter` holds the observable of every
@@ -120,15 +120,23 @@ i.e. ``(I - D⁻¹ Sᵢ U) δf = rhs`` with `D = diag(inv_τ)`, `Sᵢ = scat_mat
   mostly small-angle, as in metals at low temperature.
 
 `observable(δf) -> X` is the reported quantity (`obs`, `obs_iter`), e.g. the conductivity.
+
+`P_charge` (a `ChargeProjection` from `charge_conservation_projection`, or `nothing` for no constraint)
+is the projector `Π` onto the charge-conserving space. `:gmres` solves `(Π A Π) δf = Π rhs`; `:fixed_point`
+projects every iterate, `δf -> Π δf`. Both give the solution of ``A δf + B δμ = rhs``, `Uᵀ δf = 0`.
+Returns `δμ = chemical_potential_shift(P_charge, rhs - A δf)`, a vector over the `length(eltype(rhs))`
+components (zero without constraint).
 """
 function _solve_bte(rhs::AbstractVector, scat_mat, map_i_to_f, inv_τ; solver::Symbol = :gmres,
-        max_iter=100, rtol=1e-10, mixing=1.0, observable=identity, iT=nothing)
+        max_iter=100, rtol=1e-10, mixing=1.0, observable=identity, iT=nothing, P_charge=nothing)
+    FT = eltype(eltype(rhs))
+    P = P_charge === nothing ? ChargeProjection{FT}(length(eltype(rhs)), length(rhs)) : P_charge
     if solver === :gmres
         isone(mixing) || throw(ArgumentError("mixing applies to solver = :fixed_point only, got mixing = $mixing"))
-        _solve_bte_gmres(rhs, scat_mat, map_i_to_f, inv_τ; max_iter, rtol, observable, iT)
+        _solve_bte_gmres(rhs, scat_mat, map_i_to_f, inv_τ, P; max_iter, rtol, observable, iT)
     elseif solver === :fixed_point
         @warn "solver = :fixed_point can converge slowly, especially for metals at low temperature; solver = :gmres is recommended" maxlog=1
-        _solve_bte_fixed_point(rhs, scat_mat, map_i_to_f, inv_τ; max_iter, rtol, mixing, observable, iT)
+        _solve_bte_fixed_point(rhs, scat_mat, map_i_to_f, inv_τ, P; max_iter, rtol, mixing, observable, iT)
     else
         throw(ArgumentError("solver must be :gmres or :fixed_point, got $solver"))
     end
@@ -136,27 +144,31 @@ end
 
 # `rhs` is a vector of `StaticVector`s: `Vec3` for the first-order field (BTStates and BandStates
 # paths), `SVector{9}` for the Hall field of the BandStates-only `solve_electron_bte_hall`.
-function _solve_bte_gmres(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, inv_τ;
+function _solve_bte_gmres(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, inv_τ, P;
         max_iter, rtol, observable, iT) where {FT, ST <: StaticVector{<:Any, FT}}
-    # `I - D⁻¹ Sᵢ U` on the field stored as its flat real components: Krylov.jl needs a
+    # `A = I - D⁻¹ Sᵢ U` on the field stored as its flat real components: Krylov.jl needs a
     # numeric element type.
     function apply!(y, x)
         x_field = reinterpret(ST, x)
         reinterpret(ST, y) .= x_field .- _mul_static_vectors(scat_mat, map_i_to_f * x_field) ./ inv_τ
     end
-    op = LinearMap{FT}(apply!, length(ST) * length(rhs); ismutating = true)
-    x, stats = Krylov.gmres(op, collect(reinterpret(FT, rhs)); atol = zero(FT), rtol = FT(rtol),
-                            itmax = max_iter)
+    A = LinearMap{FT}(apply!, length(ST) * length(rhs); ismutating = true)
+    # Projected system (Π A Π) δf = Π rhs: the Krylov space stays in the charge-conserving space.
+    b = collect(reinterpret(FT, rhs))
+    x, stats = Krylov.gmres(P * A * P, P * b; atol = zero(FT), rtol = FT(rtol), itmax = max_iter)
+    x = P * x
     δf = collect(reinterpret(ST, x))
+    # δμ from the unprojected residual rhs - A δf, which lies along B at the solution.
+    δμ = chemical_potential_shift(P, b .- A * x)
     converged = stats.solved
     if !converged
         @warn "GMRES not converged at iteration $(stats.niter)$(iT === nothing ? "" : " (iT=$iT)"): $(stats.status)"
     elseif iT !== nothing
-        @info "iT=$iT, GMRES converged at iteration $(stats.niter)"
+        @info "iT=$iT, GMRES converged at iteration $(stats.niter)$(iszero(δμ) ? "" : ", charge conservation δμ = $δμ")"
         flush(stdout)
         flush(stderr)
     end
-    (; δf, obs = observable(δf), obs_iter = nothing, niter = stats.niter, converged)
+    (; δf, obs = observable(δf), obs_iter = nothing, niter = stats.niter, converged, δμ)
 end
 
 # `S * x` for a vector `x` of static vectors. A dense `S` is applied as a gemm on row blocks, one per
@@ -172,9 +184,13 @@ function _mul_static_vectors(S::Matrix, x::AbstractVector{ST}) where {FT, ST <: 
 end
 _mul_static_vectors(S, x) = S * x
 
-function _solve_bte_fixed_point(rhs::AbstractVector, scat_mat, map_i_to_f, inv_τ;
-        max_iter, rtol, mixing, observable, iT)
-    δf = copy(rhs)
+function _solve_bte_fixed_point(rhs::AbstractVector{ST}, scat_mat, map_i_to_f, inv_τ, P;
+        max_iter, rtol, mixing, observable, iT) where {FT, ST <: StaticVector{<:Any, FT}}
+    # Projection Π = P applied to every iterate; δμ follows from the last image.
+    project!(δf) = (z = reinterpret(FT, δf); z .= P * z; δf)
+    δμ = zeros(FT, length(ST))
+    # The initial guess satisfies the constraint Uᵀδf = 0, which the mixed iterates then keep.
+    δf = project!(copy(rhs))
     δf_tmp = similar(δf)
     obs = observable(δf)
     obs_iter = Vector{typeof(obs)}(undef, max_iter + 1)
@@ -187,6 +203,9 @@ function _solve_bte_fixed_point(rhs::AbstractVector, scat_mat, map_i_to_f, inv_�
 
         δf_f = map_i_to_f * δf
         δf_tmp .= _mul_static_vectors(scat_mat, δf_f) ./ inv_τ .+ rhs
+        # δμ from the image of the previous iterate: Gδf + rhs - δf = rhs - Aδf, and Uᵀδf = 0.
+        δμ = chemical_potential_shift(P, reinterpret(FT, δf_tmp))
+        project!(δf_tmp)
         @. δf = δf_tmp * mixing + δf * (1 - mixing)
         obs = observable(δf)
         obs_iter[iter + 1] = obs
@@ -205,7 +224,7 @@ function _solve_bte_fixed_point(rhs::AbstractVector, scat_mat, map_i_to_f, inv_�
         end
     end
     resize!(obs_iter, niter + 1)
-    (; δf, obs, obs_iter, niter, converged)
+    (; δf, obs, obs_iter, niter, converged, δμ)
 end
 
 """
@@ -215,13 +234,19 @@ scat_mat is a rectangular matrix, mapping states in `el_f` to states in `el_i`.
 δf[j] is the occupations for states `el_f` and is calculated by unfolding `δf_i`.
 `solver` is `:gmres` (default) or `:fixed_point`; see `_solve_bte`. `σ_iter`, the conductivity
 of every fixed-point iterate (first row SERTA), is returned only for `solver = :fixed_point` and
-is `nothing` for GMRES. The output also carries `params` (the object itself, so a later change of it is not seen) and `symmetry`.
+is `nothing` for GMRES. `enforce_charge_conservation` (default `true`) constrains the solution to
+conserve the particle number (`charge_conservation_projection`); the output field `δμ` (`(3, nT)`) holds
+the shift of μ per field direction that the projection removes (`chemical_potential_shift`). The
+projector has constraint directions only for `symmetry === nothing` or a group without time reversal and
+inversion; in an IBZ with time reversal it is the identity and the solve is unchanged. The output also carries `params` (the object itself, so a later change of it is not seen) and `symmetry`.
 """
-function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; solver = :gmres, max_iter=100, rtol=1e-10, mixing = 1.0, interpolate = false) where {FT}
+function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, scat_mat, inv_τ_i, params, symmetry=nothing; solver = :gmres, max_iter=100, rtol=1e-10, mixing = 1.0, interpolate = false, enforce_charge_conservation::Bool = true) where {FT}
     output = (σ_serta = zeros(FT, 3, 3, length(params.Tlist)),
               σ = zeros(FT, 3, 3, length(params.Tlist)),
               δf_i_serta = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
               δf_i = zeros(Vec3{FT}, el_i.n, length(params.Tlist)),
+              # Chemical-potential shift of the charge-conserving BTE solve (see `charge_conservation_projection`).
+              δμ = zeros(FT, 3, length(params.Tlist)),
               σ_iter = solver === :fixed_point ? fill(FT(NaN), (max_iter+1, 3, 3, length(params.Tlist))) : nothing,
               # The conditions the solution belongs to, checked by `solve_electron_bte_hall`.
               params, symmetry,
@@ -238,8 +263,10 @@ function solve_electron_bte(el_i::BTorBandStates{FT}, el_f::BTorBandStates{FT}, 
 
         obs = δf -> symmetrize(occupation_to_conductivity(δf, el_i, params), symmetry)
 
+        P_charge = charge_conservation_projection(el_i, symmetry, μ, T; enforce = enforce_charge_conservation)
         sol = _solve_bte(δf_i_serta, scat_mat[iT], map_i_to_f, view(inv_τ_i, :, iT);
-                         solver, max_iter, rtol, mixing, observable=obs, iT)
+                         solver, max_iter, rtol, mixing, observable=obs, iT, P_charge)
+        output.δμ[:, iT] .= sol.δμ
 
         if solver === :fixed_point
             # Save history for fixed-point iteration. (History not stored for GMRES solver)
