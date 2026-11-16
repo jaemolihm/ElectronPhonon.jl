@@ -15,7 +15,7 @@ those of `solve_electron_bte`, whose output `out_bte` is passed in (it must have
 the same `params.Tlist`, `params.μlist` and `symmetry`) plus the `model` (its `recip_lattice` and `dimension`). Returns
 `(; σ_serta, σ, σ_hall_serta, σ_hall, r_hall_serta, r_hall, δμ_hall)`, with `σ*` of size `(3, 3, nT)` and
 `σ_hall*`, `r_hall*` of size `(3, 3, 3, nT)`. `δμ_hall` (`(9, nT)`) is the shift of μ removed by the
-charge-conservation projection (`_charge_conservation_projection`, on with `enforce_charge_conservation = true`). Host only (under MPI run it on the root with the
+charge-conservation projection (`charge_conservation_projection`, on with `enforce_charge_conservation = true`). Host only (under MPI run it on the root with the
 gathered `Sᵢ`, as `solve_electron_bte`). `order` is the order of the finite-difference gradient.
 
 Convention (`e` and `ħ` left out): `j_a = σ_ab E_b + σ_hall[a, b, c] E_b B_c`. The physical Hall
@@ -91,7 +91,7 @@ function solve_electron_bte_hall(out_bte, el_i::BandStates{FT}, el_f::BandStates
 
         # Full: X = R + (1 / τ⁻¹) Sᵢ (U X), with δᴱf from the full solution.
         source = _hall_source(grad, map_1 * out_bte.δf_i[:, iT], el_i.vs, inv_τ)
-        P_charge = _charge_conservation_projection(el_i, symmetry, params.μlist[iT], params.Tlist[iT],
+        P_charge = charge_conservation_projection(el_i, symmetry, params.μlist[iT], params.Tlist[iT],
             _hall_transport_mapping; enforce = enforce_charge_conservation)
         sol = _solve_bte(source, scat_mat[iT], map_2, inv_τ; solver = :gmres, max_iter, rtol, iT, P_charge)
         δμ_hall[:, iT] .= sol.δμ

@@ -83,6 +83,7 @@ include("boltzmann/interpolate_energy.jl")
 # Tetrahedron-based SERTA and the doublegrid method were removed; see git history and https://github.com/jaemolihm/TetrahedronIntegration.jl
 include("boltzmann/gamma_adaptive.jl")
 include("boltzmann/electron_lbte.jl")
+include("boltzmann/electron_charge_conservation.jl")
 include("run_transport.jl")
 include("run_transport_subgrid_q.jl")
 include("boltzmann/electron_transport_linear.jl")

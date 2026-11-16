@@ -1,4 +1,4 @@
-# Charge-conservation projection of the BTE solve (`_charge_conservation_projection`, `_solve_bte`) on Holstein
+# Charge-conservation projection of the BTE solve (`charge_conservation_projection`, `_solve_bte`) on Holstein
 # states with a synthetic kernel that obeys the pairwise detailed balance of the F5 occupation form, so that
 # `A = I - D⁻¹ Sᵢ U` has the null mode `f′ ⊗ v` (a uniform shift of μ).
 
@@ -55,7 +55,7 @@
         rhs = @. -EP.occ_fermion_derivative(el_i.es - μ_null, T_null) / inv_τ[:, 1] * el_i.vs
         map_i_to_f = EP.vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
         obs = δf -> EP.symmetrize(EP.occupation_to_conductivity(δf, el_i, occ), symmetry)
-        P_charge = EP._charge_conservation_projection(el_i, symmetry, μ_null, T_null; enforce)
+        P_charge = EP.charge_conservation_projection(el_i, symmetry, μ_null, T_null; enforce)
         quiet(() -> EP._solve_bte(rhs, Sᵢ[1], map_i_to_f, view(inv_τ, :, 1); solver, max_iter, rtol,
                                   observable = obs, P_charge))
     end
@@ -65,7 +65,7 @@
 end
 
 @testitem "BTE charge conservation: constraint directions" setup = [BteChargeConservation] begin
-    dirs(symmetry, args...; kw...) = EP._charge_conservation_projection(first(charge_test_states(4, nothing)), symmetry,
+    dirs(symmetry, args...; kw...) = EP.charge_conservation_projection(first(charge_test_states(4, nothing)), symmetry,
         μ_null, T_null, args...; kw...).dirs
     none3 = zeros(3, 0)
     id3, Cz = Mat3{Float64}(I), Mat3{Float64}(0, 1, 0, -1, 0, 0, 0, 0, 1)   # rotation by π/2 about z
@@ -99,22 +99,22 @@ end
 
 @testitem "BTE charge conservation: projector properties" setup = [BteChargeConservation] begin
     el_i = first(charge_test_states(4, nothing))
-    P = EP._charge_conservation_projection(el_i, nothing, μ_null, T_null)
+    P = EP.charge_conservation_projection(el_i, nothing, μ_null, T_null)
     nx = 3 * el_i.n
     @test size(P) == (nx, nx) && size(P.B, 2) == 3
     x = randn(nx)
     @test P * (P * x) ≈ P * x rtol = 1e-12                         # Π² = Π
     @test norm(P.U' * (P * x)) < 1e-12 * norm(x)                   # UᵀΠ = 0: charge conserved
     @test all(norm(P * b) < 1e-12 * norm(b) for b in eachcol(P.B))  # Π B = 0: μ shift removed
-    # The removed part is f′ ⊗ δμ, and _chemical_potential_shift returns that δμ.
+    # The removed part is f′ ⊗ δμ, and chemical_potential_shift returns that δμ.
     fprime = -EP.occ_fermion_derivative.(el_i.es .- μ_null, T_null)
     δμ = [0.3, -1.2, 0.7]
     r = collect(reinterpret(Float64, [fprime[i] * Vec3(δμ...) for i in 1:el_i.n]))
-    @test EP._chemical_potential_shift(P, r) ≈ δμ rtol = 1e-12
+    @test EP.chemical_potential_shift(P, r) ≈ δμ rtol = 1e-12
     @test norm(P * r) < 1e-12 * norm(r)
     # enforce = false: the identity, δμ = 0.
-    P_off = EP._charge_conservation_projection(el_i, nothing, μ_null, T_null; enforce = false)
-    @test P_off * x == x && EP._chemical_potential_shift(P_off, r) == zeros(3)
+    P_off = EP.charge_conservation_projection(el_i, nothing, μ_null, T_null; enforce = false)
+    @test P_off * x == x && EP.chemical_potential_shift(P_off, r) == zeros(3)
 end
 
 @testitem "BTE charge conservation: full BZ against the IBZ and a dense constrained solve" setup = [BteChargeConservation] begin
@@ -175,7 +175,7 @@ end
     c4 = Symmetry(length(idx), s.S[idx], s.τ[idx], s.Scart[idx], s.τcart[idx], s.is_inv[idx], s.is_tr[idx])
     @test length(idx) == 4 && !c4.time_reversal
     polar, full = f5_case(c4), f5_case(nothing)
-    @test size(EP._charge_conservation_projection(polar.el_i, c4, μ_null, T_null).dirs, 2) == 1
+    @test size(EP.charge_conservation_projection(polar.el_i, c4, μ_null, T_null).dirs, 2) == 1
     @test polar.out.σ ≈ full.out.σ rtol = 1e-10
     @test norm(polar.out.δμ) < 1e-10
 end
