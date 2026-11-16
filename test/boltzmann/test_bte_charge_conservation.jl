@@ -1,4 +1,4 @@
-# Charge-conservation constraint of the BTE solve (`_charge_conservation_constraint`, `_solve_bte`) on Holstein
+# Charge-conservation projection of the BTE solve (`_charge_conservation_projection`, `_solve_bte`) on Holstein
 # states with a synthetic kernel that obeys the pairwise detailed balance of the F5 occupation form, so that
 # `A = I - D⁻¹ Sᵢ U` has the null mode `f′ ⊗ v` (a uniform shift of μ).
 
@@ -55,9 +55,9 @@
         rhs = @. -EP.occ_fermion_derivative(el_i.es - μ_null, T_null) / inv_τ[:, 1] * el_i.vs
         map_i_to_f = EP.vector_field_unfold_and_interpolate_map(el_i, el_f, symmetry)
         obs = δf -> EP.symmetrize(EP.occupation_to_conductivity(δf, el_i, occ), symmetry)
-        charge_conservation = EP._charge_conservation_constraint(el_i, symmetry, μ_null, T_null; enforce)
+        P_charge = EP._charge_conservation_projection(el_i, symmetry, μ_null, T_null; enforce)
         quiet(() -> EP._solve_bte(rhs, Sᵢ[1], map_i_to_f, view(inv_τ, :, 1); solver, max_iter, rtol,
-                                  observable = obs, charge_conservation))
+                                  observable = obs, P_charge))
     end
 
     # Particle-number moment `∑ᵢ wᵢ δfᵢ[α]` of a solution.
@@ -65,7 +65,7 @@
 end
 
 @testitem "BTE charge conservation: constraint directions" setup = [BteChargeConservation] begin
-    dirs(symmetry, args...; kw...) = EP._charge_conservation_constraint(first(charge_test_states(4, nothing)), symmetry,
+    dirs(symmetry, args...; kw...) = EP._charge_conservation_projection(first(charge_test_states(4, nothing)), symmetry,
         μ_null, T_null, args...; kw...).dirs
     none3 = zeros(3, 0)
     id3, Cz = Mat3{Float64}(I), Mat3{Float64}(0, 1, 0, -1, 0, 0, 0, 0, 1)   # rotation by π/2 about z
@@ -76,12 +76,12 @@ end
     # symmetry = nothing: P = I, one constraint per component.
     @test dirs(nothing) == Matrix(I, 3, 3)
     @test size(dirs(nothing, EP._hall_transport_mapping)) == (9, 9)
-    # enforce = false: no constraint rows.
+    # enforce = false: no constraint directions.
     @test dirs(nothing; enforce = false) == none3
     @test size(dirs(nothing, EP._hall_transport_mapping; enforce = false)) == (9, 0)
     # Identity only, no time reversal: the same as no symmetry.
     @test dirs(mk([id3], [false])) == Matrix(I, 3, 3)
-    # Time reversal in the group: P = 0, the constraint holds identically (no rows).
+    # Time reversal in the group: P = 0, the constraint holds identically (no directions).
     @test dirs(mk([id3, id3], [false, true])) == none3
     @test dirs(model.symmetry) == none3
     # Polar group without time reversal: the rotation axis is an invariant polar vector.
@@ -97,13 +97,33 @@ end
     @test dirs(mk(model.symmetry.Scart[spatial], fill(false, length(spatial)))) == none3
 end
 
+@testitem "BTE charge conservation: projector properties" setup = [BteChargeConservation] begin
+    el_i = first(charge_test_states(4, nothing))
+    P = EP._charge_conservation_projection(el_i, nothing, μ_null, T_null)
+    nx = 3 * el_i.n
+    @test size(P) == (nx, nx) && size(P.B, 2) == 3
+    x = randn(nx)
+    @test P * (P * x) ≈ P * x rtol = 1e-12                         # Π² = Π
+    @test norm(P.U' * (P * x)) < 1e-12 * norm(x)                   # UᵀΠ = 0: charge conserved
+    @test all(norm(P * b) < 1e-12 * norm(b) for b in eachcol(P.B))  # Π B = 0: μ shift removed
+    # The removed part is f′ ⊗ δμ, and _chemical_potential_shift returns that δμ.
+    fprime = -EP.occ_fermion_derivative.(el_i.es .- μ_null, T_null)
+    δμ = [0.3, -1.2, 0.7]
+    r = collect(reinterpret(Float64, [fprime[i] * Vec3(δμ...) for i in 1:el_i.n]))
+    @test EP._chemical_potential_shift(P, r) ≈ δμ rtol = 1e-12
+    @test norm(P * r) < 1e-12 * norm(r)
+    # enforce = false: the identity, δμ = 0.
+    P_off = EP._charge_conservation_projection(el_i, nothing, μ_null, T_null; enforce = false)
+    @test P_off * x == x && EP._chemical_potential_shift(P_off, r) == zeros(3)
+end
+
 @testitem "BTE charge conservation: full BZ against the IBZ and a dense constrained solve" setup = [BteChargeConservation] begin
     # Parity-symmetric kernel: the system is consistent, the full-BZ solve equals the IBZ one, δμ = 0.
     ibz, full = f5_case(model.symmetry), f5_case(nothing)
     @test ibz.el_i.n < full.el_i.n
     @test full.out.σ ≈ ibz.out.σ rtol = 1e-10
     @test norm(full.out.δμ) < 1e-10
-    @test ibz.out.δμ == zeros(3, 1)          # time reversal in the map: no constraint rows
+    @test ibz.out.δμ == zeros(3, 1)          # time reversal in the map: no constraint directions
     # In the IBZ the constraint holds identically: enforcing it or not gives the same solution.
     ibz_off = f5_case(model.symmetry; enforce_charge_conservation = false)
     @test ibz_off.out.σ == ibz.out.σ && ibz_off.out.δf_i == ibz.out.δf_i
@@ -155,7 +175,7 @@ end
     c4 = Symmetry(length(idx), s.S[idx], s.τ[idx], s.Scart[idx], s.τcart[idx], s.is_inv[idx], s.is_tr[idx])
     @test length(idx) == 4 && !c4.time_reversal
     polar, full = f5_case(c4), f5_case(nothing)
-    @test size(EP._charge_conservation_constraint(polar.el_i, c4, μ_null, T_null).dirs, 2) == 1
+    @test size(EP._charge_conservation_projection(polar.el_i, c4, μ_null, T_null).dirs, 2) == 1
     @test polar.out.σ ≈ full.out.σ rtol = 1e-10
     @test norm(polar.out.δμ) < 1e-10
 end
