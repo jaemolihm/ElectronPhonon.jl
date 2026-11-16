@@ -199,3 +199,22 @@ end
     @test norm(sol[1:end-1] - getindex.(gm.δf, 1)) / norm(sol[1:end-1]) < 1e-8
     @test sol[end] ≈ gm.δμ[1] rtol = 1e-6 atol = 1e-9
 end
+
+@testitem "BTE charge conservation: Hall solve" setup = [BteChargeConservation] begin
+    hall(case; kw...) = quiet(() -> EP.solve_electron_bte_hall(case.out, case.el_i, case.el_f, case.Sᵢ, case.inv_τ,
+        case.occ, model, case.symmetry; order = 2, max_iter = 500, kw...))
+    # Parity-symmetric kernel: the Hall source is consistent, δμ_hall = 0 and the keyword changes nothing.
+    sym = f5_case(nothing)
+    @test norm(hall(sym).δμ_hall) < 1e-10
+    # Parity-broken kernel: the Hall source is inconsistent along the null mode; the constraint absorbs it in
+    # δμ_hall (34 here) and σ_hall without it is off by 3.7 %.
+    case = f5_case(nothing; asym = 0.05)
+    on, off = hall(case), hall(case; enforce_charge_conservation = false)
+    @test norm(on.δμ_hall) > 1
+    @test off.δμ_hall == zeros(9, 1)
+    @test norm(on.σ_hall .- off.σ_hall) > 1e-2 * norm(on.σ_hall)
+    # IBZ (time reversal in the map): no constraint rows.
+    ibz = f5_case(model.symmetry)
+    @test hall(ibz).σ_hall == hall(ibz; enforce_charge_conservation = false).σ_hall
+    @test hall(ibz).δμ_hall == zeros(9, 1)
+end

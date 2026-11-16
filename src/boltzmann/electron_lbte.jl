@@ -154,8 +154,9 @@ unfolding `δf_{Sk} = M(S) δf_k`, `M = mapping(is_tr, Scart)`, this reads on `e
 leaves unchanged. Its range is returned as the orthonormal columns of `dirs` (`ncomp × m`), computed as
 the common null space of `M(S) - I` over the operations (tolerance 1e-6). `m = ncomp` for
 `symmetry === nothing`; `m = 0` when the group has time reversal (`v -> -R v` for the default
-`_linear_transport_mapping`) or inversion, where the constraint holds identically; `m = 1` for a
-polar group without time reversal. With `enforce = false`, `m = 0` always.
+`_linear_transport_mapping`) or inversion, where the constraint holds identically; in general `m` is the
+dimension of the invariant subspace (for the linear mapping: 1 for Cn and Cnv, 2 for Cs, 3 for C1). With
+`enforce = false`, `m = 0` always.
 
 Why it is needed: for the reciprocal occupation form (F5) pairwise detailed balance,
 `Sᵢ[i, j] f′[j] = Sₒ[i, j] f′[i]` with `f′ = -∂f/∂ε`, makes `δf = f′ ⊗ v` a null vector of
