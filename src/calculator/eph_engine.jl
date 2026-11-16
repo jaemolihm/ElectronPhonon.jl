@@ -510,6 +510,7 @@ function engine_bytes(::Type{OuterKEngine}, model::Model{FT}; nband_max_k, nband
         cx * ndata * nr_p * nd +                                # ep_kR (+ dg_kR)
         cx * nr_p + 2rl * 3 +                                   # P_mk, xks, mxks
         cx * nr_e * (covariant_derivative_of_g ? 2 : 1) +       # Fourier phases
+        (model.epmat.symmws === nothing ? 0 : cx * size(model.epmat.op_r, 1)) +  # y-layout group transform scratch
         cx * nrows_max +                                        # g_fourier
         cx * (nrows + 2 * nband_max_k * nrows ÷ nw) * nd +      # transients of eph_rotate_kR_batched!
         sum(b -> _electron_state_bytes(FT, nw, b, el_qty), 1:nband_max_k; init = 0)  # els_k_classes

@@ -193,6 +193,7 @@ end
         tmpdir = nothing,
         dimension = nothing,
         _debug_epw_ws_symm_format :: Bool = false,
+        epmat_symmws_storage :: String = "expanded",
     ) => Model
 - `skip_eph_ndegen:: Bool = false` : If true, skip applying Wigner-Seitz degeneracy correction
   when reading electron-phonon coupling matrix elements. Use for newer EPW versions
@@ -210,6 +211,10 @@ end
 
 Files of EPW with `use_ws = 'symmetric'` (crystal.fmt ends with `ws_method` = 3 alone) are read from
 `prefix.epmatwp_symmws`, stored on y = R_p - fld(R_e, 2); see [`read_epmat_symmws_y`](@ref).
+- `epmat_symmws_storage :: String = "expanded"` : for these files, `"expanded"` places the epmat on
+  the absolute R_p union, `"y"` keeps it on (R_e, y), which needs far less memory. `"y"` takes
+  `epmat_outer_momentum = "el"` and the batched e-ph loop (`fourier_mode = "batched"`); it is an
+  `ArgumentError` for other files.
 """
 function load_model_from_epw_new(
     folder :: String,
@@ -224,6 +229,7 @@ function load_model_from_epw_new(
     tmpdir = nothing,
     dimension = nothing,
     _debug_epw_ws_symm_format :: Bool = false,
+    epmat_symmws_storage :: String = "expanded",
     )
     if epmat_on_disk && load_epmat && tmpdir === nothing
         error("If epmat_on_disk is true, tmpdir must be provided.")
@@ -513,10 +519,13 @@ function load_model_from_epw_new(
 
     # Read electron-phonon coupling
 
+    load_epmat && !epmat_symmws_y_layout && epmat_symmws_storage != "expanded" && throw(ArgumentError(
+        "epmat_symmws_storage = \"$epmat_symmws_storage\" applies to EPW use_ws = 'symmetric' files (epmatwp_symmws) only"))
     if load_epmat && epmat_symmws_y_layout
         filename = joinpath(folder, outdir, "$prefix.epmatwp_symmws")
         # irvec_ep[invperm(ind_ep)] restores the file order of y
         ep = read_epmat_symmws_y(filename, nw, nmodes, irvec_el, ind_el, irvec_ep[invperm(ind_ep)], epmat_outer_momentum;
+                                 storage = epmat_symmws_storage,
                                  epmat_on_disk_path = epmat_on_disk ? joinpath(tmpdir, "tmp_epmat.bin") : nothing)
     elseif load_epmat
         filename = joinpath(folder, outdir, "$prefix.epmatwp")
@@ -612,10 +621,11 @@ end
 
 """
     read_epmat_symmws_y(filename, nw, nmodes, irvec_el, ind_el, y_file, epmat_outer_momentum;
-                        epmat_on_disk_path = nothing) => WannierObject
+                        epmat_on_disk_path = nothing, storage = "expanded") => WannierObject
 
-Read `prefix.epmatwp_symmws` of EPW `use_ws = 'symmetric'` (midpoint Wigner-Seitz rule) into the
-absolute-R_p WannierObject that `read_epmat` builds for the other rules. Called by
+Read `prefix.epmatwp_symmws` of EPW `use_ws = 'symmetric'` (midpoint Wigner-Seitz rule): with
+`storage = "expanded"`, into the absolute-R_p WannierObject that `read_epmat` builds for the other rules;
+with `storage = "y"`, kept on (R_e, y) with a `SymmWSLayout` (see below). Called by
 `load_model_from_epw_new` when crystal.fmt has `ws_method = 3` in the non-pre-divided format.
 
 EPW stores this matrix on (R_e, y) with y = R_p - fld(R_e, 2) (its set of y is the el-ph block of
@@ -625,9 +635,18 @@ R_p = y + fld(R_e, 2), on the union of these R_p over all pairs (zero where a pa
 so the existing two-step interpolation over (R_e, R_p) applies unchanged. The union holds more R_p
 than y (GaAs, 12³ k / 6³ q: 2877 against 416), which sets the memory cost.
 `irvec_el` and `ind_el` are the sorted electron vectors and their permutation from the file order.
+
+With `storage = "y"` (`epmat_outer_momentum = "el"` only) the matrix stays on (R_e, y), as
+`(nw² nmodes nr_y, nr_el)`, with R_e ordered group by group of equal fld(R_e, 2) (not sorted). The
+returned object carries a [`SymmWSLayout`](@ref); its `irvec_next` is the R_p union and its `ndata`
+the expanded row count, so the batched R_e transform gives the same g(k; R_p) as the expanded
+storage at the memory of the file (TaAs: 37.7 against 221 GB).
 """
 function read_epmat_symmws_y(filename, nw, nmodes, irvec_el, ind_el, y_file, epmat_outer_momentum;
-                             epmat_on_disk_path = nothing)
+                             epmat_on_disk_path = nothing, storage = "expanded")
+    storage in ("expanded", "y") || throw(ArgumentError("epmat_symmws_storage must be \"expanded\" or \"y\", got \"$storage\""))
+    storage == "y" && epmat_outer_momentum != "el" && throw(ArgumentError(
+        "epmat_symmws_storage = \"y\" needs epmat_outer_momentum = \"el\", got \"$epmat_outer_momentum\""))
     nr_el = length(irvec_el)
     # Union of R_p = y + fld(R_e, 2), sorted like the other R lists (R[3], then R[2], then R[1])
     half_el = [fld.(R, 2) for R in irvec_el]
@@ -635,31 +654,39 @@ function read_epmat_symmws_y(filename, nw, nmodes, irvec_el, ind_el, y_file, epm
     index_ep = Dict(R => i for (i, R) in enumerate(irvec_ep))
     nr_ep = length(irvec_ep)
 
+    # y storage: R_e group by group of equal fld(R_e, 2); column c holds the file's R_e ind_el[perm[c]]
+    y_storage = storage == "y"
+    perm = y_storage ? sortperm(irvec_el, by = R -> (reverse(fld.(R, 2)), reverse(R))) : eachindex(irvec_el)
+    nr_row = y_storage ? length(y_file) : nr_ep
+
     io = epmat_on_disk_path === nothing ? nothing : open(epmat_on_disk_path, "w+")
     if epmat_outer_momentum == "ph"
         dims = (nw^2 * nmodes * nr_el, nr_ep)
     else
-        dims = (nw^2 * nmodes * nr_ep, nr_el)
+        dims = (nw^2 * nmodes * nr_row, nr_el)
     end
     op_r = io === nothing ? Matrix{ComplexF64}(undef, dims) : Mmap.mmap(io, Matrix{ComplexF64}, dims)
-    io === nothing && fill!(op_r, 0)  # a new mmap file is already zero-filled
+    # The expanded union has empty (R_e, R_p) entries; the y storage writes every entry. A new mmap file is zero.
+    io === nothing && !y_storage && fill!(op_r, 0)
     op_r_5d = epmat_outer_momentum == "ph" ? reshape(op_r, nw, nw, nmodes, nr_el, nr_ep) :
-                                             reshape(op_r, nw, nw, nmodes, nr_ep, nr_el)
+                                             reshape(op_r, nw, nw, nmodes, nr_row, nr_el)
 
     # Stream one y slab (iw, jw, iRe in file order, imode) at a time; place each R_e at its R_p
     outer_ph = epmat_outer_momentum == "ph"
     epmat_y = Array{ComplexF64}(undef, nw, nw, nr_el, nmodes)
     open(filename, "r") do f
-        for y in y_file
+        for (iy, y) in enumerate(y_file)
             read!(f, epmat_y)
-            for ir_el in 1:nr_el
-                ir_ep = index_ep[y + half_el[ir_el]]
+            for ic in 1:nr_el
+                ir_el = perm[ic]
+                # R_p row: the union entry of y + fld(R_e, 2), or the y itself in the y storage
+                ir_ep = y_storage ? iy : index_ep[y + half_el[ir_el]]
                 for imode in 1:nmodes, jw in 1:nw, iw in 1:nw
                     x = epmat_y[iw, jw, ind_el[ir_el], imode]
                     if outer_ph
-                        op_r_5d[iw, jw, imode, ir_el, ir_ep] = x
+                        op_r_5d[iw, jw, imode, ic, ir_ep] = x
                     else
-                        op_r_5d[iw, jw, imode, ir_ep, ir_el] = x
+                        op_r_5d[iw, jw, imode, ir_ep, ic] = x
                     end
                 end
             end
@@ -676,6 +703,11 @@ function read_epmat_symmws_y(filename, nw, nmodes, irvec_el, ind_el, y_file, epm
 
     if epmat_outer_momentum == "ph"
         return WannierObject(irvec_ep, op_r; irvec_next = irvec_el)
+    elseif y_storage
+        # y layout: R_e group by group, output rows on the R_p union
+        irvec_grouped = irvec_el[perm]
+        return WannierObject(irvec_grouped, op_r; irvec_next = irvec_ep, ndata = nw^2 * nmodes * nr_ep,
+                             symmws = SymmWSLayout(irvec_grouped, y_file, irvec_ep))
     else
         return WannierObject(irvec_el, op_r; irvec_next = irvec_ep)
     end

@@ -35,7 +35,7 @@ caller may mutate `parent.op_r` in place between calls without any cache invalid
 - K-points must be queried in the exact order they were registered
 - Out-of-order or unregistered queries will throw an error
 """
-mutable struct BatchedWannierInterpolator{T, WT <: WannierObject, BT, MC, MR, VC} <: AbstractWannierInterpolator{T}
+mutable struct BatchedWannierInterpolator{T, WT <: WannierObject, BT, MC, MR, MI, VC} <: AbstractWannierInterpolator{T}
     # Parent WannierObject to be interpolated. The same object the core holds: duplicated here as a
     # `const` reference so the generic `AbstractWannierInterpolator` `getproperty` covers all four
     # interpolator types uniformly. Both fields are `const`, so they cannot desync.
@@ -47,7 +47,7 @@ mutable struct BatchedWannierInterpolator{T, WT <: WannierObject, BT, MC, MR, VC
     const batch_size::Int
 
     # Stateless whole-batch Fourier engine (owns the GEMM scratch)
-    const core::BatchedFourierCore{T, WT, BT, MC, MR}
+    const core::BatchedFourierCore{T, WT, BT, MC, MR, MI}
 
     # Order-enforced per-k query bookkeeping
     const cache::SequentialQueryCache{T}
@@ -83,7 +83,7 @@ function BatchedWannierInterpolator(parent::WT; backend::AbstractBackend = CPUBa
     buffer = alloc(backend, Complex{T}, 0)
 
     BatchedWannierInterpolator{T, WT, typeof(backend), typeof(core.phase),
-                               typeof(core.irvec_mat), typeof(out)}(
+                               typeof(core.irvec_mat), typeof(core.ip_of_y), typeof(out)}(
         parent, bs, core, cache, nothing, out, buffer, ws)
 end
 
