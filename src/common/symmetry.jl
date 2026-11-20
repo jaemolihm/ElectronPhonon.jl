@@ -362,8 +362,8 @@ satisfy `S * xq ≡ xq (mod G)`, or `S * xq == xq` if `mod_G = false`. The actio
   and may appear in the returned subgroup. If `false` (default), only spatial operations
   (`is_tr == false`) are kept.
 - `mod_G`: if `true` (default), `sxq - xq` may be any reciprocal lattice vector. If `false`, it must
-  vanish. Only the latter commutes with the gauge shift `exp(iπ xq·R)` of a Hamiltonian, whose
-  column phase an odd reciprocal lattice vector flips (e.g. `xq = (1/2, 0, 1/2)`).
+  vanish. `mod_G = false` guarantees the operation commutes with the gauge shift `exp(i π xq·R)`;
+  an odd G (e.g. `xq = (1/2, 0, 1/2)`) flips the sign of `H(R)` for odd `R`.
 - `atol`: tolerance for testing that `sxq - xq` is an integer (reciprocal lattice) vector, or zero.
 
 Returns `(small_symmetry::Symmetry, inds::Vector{Int})`, where `inds` are the indices of the

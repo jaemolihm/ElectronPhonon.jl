@@ -598,6 +598,11 @@ end
         fold_false = fold_kpoints(kpts, symmetry; pair_k_and_mk = false)
         @test fold_default[2] == fold_false[2] && fold_default[1].vectors == fold_false[1].vectors &&
             fold_default[1].weights == fold_false[1].weights
+        # An irreducible point of the independent fold carries the identity operation, wherever it sits in `symmetry`
+        ikirr_d, isym_d = first.(fold_default[2]), last.(fold_default[2])
+        @test all(ik -> xk_to_ik(symmetry.S[isym_d[ik]] * fold_default[1].vectors[ikirr_d[ik]], kpts) == ik, 1:kpts.n)
+        iks_rep = [findfirst(==(r), ikirr_d) for r in 1:fold_default[1].n]
+        @test all(ik -> symmetry.S[isym_d[ik]] == one(symmetry.S[isym_d[ik]]), iks_rep)
     end
 
     @testset "identity group and Nothing" begin

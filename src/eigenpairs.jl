@@ -172,7 +172,7 @@ function unfold_eigenpairs(ep_irr, kpts, ik_to_ikirr_isym, symmetry, model::Mode
     gkpts = GridKpoints(kpts)
     # Operator of each operation of `symmetry` in model.el_sym
     symops_el_sym = collect(model.el_sym.symmetry)
-    iops_el_sym = [findfirst(s2 -> s ≈ s2, symops_el_sym) for s in symmetry]
+    iops_el_sym = [something(findfirst(s2 -> s ≈ s2, symops_el_sym)) for s in symmetry]
     # An identity entry of the map must point at its own irreducible point, else the map is not ep_irr's
     for (ik, (ikirr, isym)) in enumerate(ik_to_ikirr_isym)
         symmetry.S[isym] == one(symmetry.S[isym]) || continue

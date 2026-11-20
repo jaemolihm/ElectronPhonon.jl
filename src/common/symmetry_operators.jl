@@ -1,7 +1,6 @@
 # Wannier-basis representation of the spatial symmetry operations, fitted from H(R).
-# Included after model.jl (it builds `SymmetryOperators`). No loader fills `model.el_sym` for EPW
-# models, so the operators are recovered from H(R) and checked against the e-ph matrix when the
-# model holds one.
+# No loader fills `model.el_sym` for EPW models, so the operators are recovered from H(R) and
+# checked against the e-ph matrix when the model holds one.
 
 export fit_onsite_symmetry_operators
 
