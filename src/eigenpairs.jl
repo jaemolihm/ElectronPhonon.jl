@@ -173,6 +173,12 @@ function unfold_eigenpairs(ep_irr, kpts, ik_to_ikirr_isym, symmetry, model::Mode
     # Operator of each operation of `symmetry` in model.el_sym
     symops_el_sym = collect(model.el_sym.symmetry)
     iops_el_sym = [findfirst(s2 -> s ≈ s2, symops_el_sym) for s in symmetry]
+    # An identity entry of the map must point at its own irreducible point, else the map is not ep_irr's
+    for (ik, (ikirr, isym)) in enumerate(ik_to_ikirr_isym)
+        symmetry.S[isym] == one(symmetry.S[isym]) || continue
+        xk_to_ik(ep_irr.kpts.vectors[ikirr], gkpts) == ik || throw(ArgumentError(
+            "unfold_eigenpairs: ik_to_ikirr_isym[$ik] is the identity but k[$ik] != the irreducible point"))
+    end
     e_full = zeros(FT, nw, gkpts.n)
     u_full = zeros(Complex{FT}, nw, nw, gkpts.n)
     defect = zeros(FT, gkpts.n)
@@ -188,9 +194,7 @@ function unfold_eigenpairs(ep_irr, kpts, ik_to_ikirr_isym, symmetry, model::Mode
                 xkirr = ep_irr.kpts.vectors[ikirr]
                 e_full[:, ik] = ep_irr.e_full[:, ikirr]
                 if symmetry.S[isym] == one(symmetry.S[isym])
-                    # Irreducible point (identity operation): copy, after checking the map belongs to ep_irr.kpts
-                    xk_to_ik(xkirr, gkpts) == ik || throw(ArgumentError(
-                        "unfold_eigenpairs: ik_to_ikirr_isym[$ik] is the identity but k[$ik] != the irreducible point"))
+                    # Irreducible point (identity operation): copy
                     u_full[:, :, ik] = ep_irr.u_full[:, :, ikirr]
                 else
                     # Rotate: u(Sk) = D_S u(k), and the defect of H(Sk) u(Sk) = D_S H(k) u(k)

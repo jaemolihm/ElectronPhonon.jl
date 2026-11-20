@@ -221,7 +221,8 @@ end
         # The law holds with Re != 0 and Rp != 0 entries
         @test fit_onsite_symmetry_operators(model) isa ElectronPhonon.SymmetryOperators
 
-        # Re and Rp lists differ in length, so a reshape that ignores the layout fails
+        # Re and Rp lists differ in length: reading them the wrong way round misplaces the blocks
+        # (same element count, so the reshape succeeds) and the residual check fails
         @test ne != np
         # (Re, Rp) block of the epmat as (m, n, mode, Re, Rp), shared memory with model.epmat.op_r
         g_view(m) = outer == "el" ? permutedims(reshape(m.epmat.op_r, nw, nw, 3, np, ne), (1, 2, 3, 5, 4)) :

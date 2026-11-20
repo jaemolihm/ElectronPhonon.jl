@@ -46,8 +46,8 @@
         model.el_vel = WannierObject(irvec, copy(model.el_ham_R.op_r))
         if cartesian_phonon
             # Three Cartesian displacement modes (Einstein phonon) and the vector epmat. The Re list is the
-            # H list; the Rp list is longer (extra vectors +-2 a_i, which carry zero blocks), so the
-            # (Re, Rp) reshape of either layout fails if it reads the lists the wrong way round
+            # H list; the Rp list is longer (extra vectors +-2 a_i, which carry zero blocks), so reading
+            # the lists the wrong way round misplaces the (Re, Rp) blocks and the epmat check fails
             nw, nmodes, mass, ω₀ = model.nw, 3, 1.0, 0.01
             irvec_p = sort(vcat([Vec3(2s * (1:3 .== i)) for i in 1:3 for s in (1, -1)], irvec); by = reverse)
             ne, np = length(irvec), length(irvec_p)

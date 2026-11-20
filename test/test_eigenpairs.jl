@@ -547,6 +547,7 @@ end
         # An identity entry that points at another irreducible point is refused
         map_shifted = [(mod1(ik + 1, kpts.n), 1) for ik in 1:kpts.n]
         @test_throws "irreducible point" unfold_eigenpairs(eig_plain, kpts, map_shifted, group_exact, model)
+        @test_throws ArgumentError unfold_eigenpairs(eig_plain, kpts, map_shifted, group_exact, model)
         # A device cache is refused (host only)
         if EIGENPAIRS_GPU_AVAILABLE
             eig_dev = to_device(gpu_backend(), eig_plain)
