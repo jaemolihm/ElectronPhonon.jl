@@ -941,7 +941,7 @@ function fold_kpoints(kpts::GridKpoints, symmetry; index = :auto, pair_k_and_mk 
     return kpts_irr, ik_to_ikirr_isym
 end
 
-fold_kpoints(kpts::GridKpoints, symmetry::Nothing; index = :auto, pair_k_and_mk = false) = kpts, [(ik, 1) for ik = 1:kpts.n]
+fold_kpoints(kpts::GridKpoints, symmetry::Nothing; pair_k_and_mk = false) = kpts, [(ik, 1) for ik = 1:kpts.n]
 
 
 function split_kpoints(kpts::Kpoints, N)

@@ -544,7 +544,10 @@ end
         # A cache of another basis size
         eig_wrong = ElectronPhonon.Eigenpairs(2, kpts, zeros(2, kpts.n), zeros(ComplexF64, 2, 2, kpts.n))
         @test_throws "nbasis" unfold_eigenpairs(eig_wrong, kpts, map_identity, group_exact, model)
-        # A device cache is refused (D5: host only)
+        # An identity entry that points at another irreducible point is refused
+        map_shifted = [(mod1(ik + 1, kpts.n), 1) for ik in 1:kpts.n]
+        @test_throws "irreducible point" unfold_eigenpairs(eig_plain, kpts, map_shifted, group_exact, model)
+        # A device cache is refused (host only)
         if EIGENPAIRS_GPU_AVAILABLE
             eig_dev = to_device(gpu_backend(), eig_plain)
             @test_throws "resident on the device" unfold_eigenpairs(eig_dev, kpts, map_identity, group_exact, model)

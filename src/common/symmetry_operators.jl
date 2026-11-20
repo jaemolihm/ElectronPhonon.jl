@@ -1,8 +1,7 @@
 # Wannier-basis representation of the spatial symmetry operations, fitted from H(R).
-# Included after model.jl (it builds `SymmetryOperators`). No loader fills `model.el_sym` for models
-# read with `load_model_from_epw_new`, and the file reader of the removed `epw_data_julia_symmetry.bin`
-# (EP #111) has no writer for them, so the operators are recovered from the Hamiltonian itself, and
-# checked against the e-ph matrix when the model holds one.
+# Included after model.jl (it builds `SymmetryOperators`). No loader fills `model.el_sym` for EPW
+# models, so the operators are recovered from H(R) and checked against the e-ph matrix when the
+# model holds one.
 
 export fit_onsite_symmetry_operators
 
@@ -85,13 +84,13 @@ function fit_onsite_symmetry_operators(model; symmetry = model.symmetry, atol = 
         maximum(abs, imag(P)) <= atol || error("operation $isym: fitted D has imaginary part " *
             "$(maximum(abs, imag(P))) > atol = $atol (spinless real orbitals only)")
         F = svd(real(P))
-        D = F.U * F.Vt
+        D_fit = F.U * F.Vt
         resid = maximum(eachindex(irvec)) do ir
-            norm(blocks[:, :, irindex[SR * irvec[ir]]] * D - D * blocks[:, :, ir]) / hscale
+            norm(blocks[:, :, irindex[SR * irvec[ir]]] * D_fit - D_fit * blocks[:, :, ir]) / hscale
         end
         resid <= atol || error("operation $isym: H(R) is not symmetric under an on-site D, relative " *
             "residual $resid > atol = $atol")
-        D_raw[isym] = D
+        D_raw[isym] = D_fit
     end
 
     # Sign cocycle: D_S D_T = (-1)^b(S,T) D_(ST); solve x_S + x_T + x_ST = b (mod 2) by elimination
