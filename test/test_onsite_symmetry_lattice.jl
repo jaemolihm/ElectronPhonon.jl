@@ -53,13 +53,13 @@ end
 
     # The fixture reaches the atom-map branches: some operation swaps the B atoms, with L_kappa != 0
     frac = [model.lattice \ (model.alat * τ) for τ in model.atom_pos]
-    atom_images(S) = let W = round.(Int, inv(S)')
-        [findfirst(κ2 -> all(x -> isapprox(x, round(x); atol = 1e-8), W * frac[κ] - frac[κ2]), 1:nat) for κ in 1:nat]
+    atom_images(S) = let S_R = round.(Int, inv(S)')
+        [findfirst(κ2 -> all(x -> isapprox(x, round(x); atol = 1e-8), S_R * frac[κ] - frac[κ2]), 1:nat) for κ in 1:nat]
     end
     swaps = count(S -> atom_images(S) != 1:nat, symmetry.S)
     shifted = count(symmetry.S) do S
-        W, images = round.(Int, inv(S)'), atom_images(S)
-        any(κ -> !(W * frac[κ] ≈ frac[images[κ]]), 1:nat)
+        S_R, images = round.(Int, inv(S)'), atom_images(S)
+        any(κ -> !(S_R * frac[κ] ≈ frac[images[κ]]), 1:nat)
     end
     @test swaps == 4 && shifted == 4
 

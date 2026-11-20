@@ -887,7 +887,8 @@ function fold_kpoints(kpts::GridKpoints, symmetry; index = :auto, pair_k_and_mk 
     ngrid = kpts.ngrid
     shift = kpts.shift
 
-    isym_identity = findfirst(isym -> symmetry.S[isym] == one(symmetry.S[isym]) && !symmetry.is_tr[isym], 1:symmetry.nsym)
+    isym_identity = findfirst(isym -> symmetry.S[isym] == one(symmetry.S[isym]) && !symmetry.is_tr[isym],
+                              1:symmetry.nsym)
     isym_identity === nothing && throw(ArgumentError("symmetry has no spatial identity"))
 
     vectors_irr = empty(kpts.vectors)
