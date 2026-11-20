@@ -133,6 +133,11 @@ end
     xq = Vec3(0.5, 0.0, 0.5)
     small, inds = symmetry_small_group_of_q(symmetry, xq)
     @test small.nsym == 16
+    # `mod_G = false` keeps only S * xq == xq, the operations that commute with the gauge shift exp(iπ xq·R)
+    small_exact, inds_exact = symmetry_small_group_of_q(symmetry, xq; mod_G = false)
+    @test small_exact.nsym == 8
+    @test inds_exact == [i for i in inds if symmetry.S[i] * xq == xq]
+    @test symmetry_small_group_of_q(symmetry, Vec3(0.0, 0.0, 0.0); mod_G = false)[1].nsym == 48
     small_tr, inds_tr = symmetry_small_group_of_q(symmetry, xq; keep_trs=true)
     @test small_tr.nsym == 32
     @test small_tr.time_reversal == true
@@ -151,6 +156,153 @@ end
             ElectronPhonon.check_group(small)
             keep_trs || @test all(.!small.is_tr)
         end
+    end
+end
+
+@testitem "fit_onsite_symmetry_operators" setup = [Common, Symmetry, CubicSP] begin
+    model = cubic_sp_model()
+    nw = model.nw
+    symmetry = model.symmetry
+    @test symmetry.nsym == 96
+
+    el_sym = fit_onsite_symmetry_operators(model)
+    @test el_sym.symmetry === symmetry
+    @test length(el_sym.operators) == symmetry.nsym
+    D_of(isym) = real(reshape(el_sym.operators[isym].op_r, nw, nw))
+    @test all(op -> op.ndata == nw^2 && op.irvec == [Vec3(0, 0, 0)], el_sym.operators)
+    ops = findall(!, symmetry.is_tr)
+    @test length(ops) == 48
+
+    # Independent residual of H(S_R R) D = D H(R) against the model's own H(R), without the fitter's code
+    blocks = reshape(model.el_ham.op_r, nw, nw, :)
+    irindex = Dict(R => ir for (ir, R) in enumerate(model.el_ham.irvec))
+    hscale = maximum(ir -> norm(blocks[:, :, ir]), axes(blocks, 3))
+    resid = maximum(ops) do isym
+        SR = round.(Int, inv(symmetry.S[isym])')
+        maximum(ir -> norm(blocks[:, :, irindex[SR * model.el_ham.irvec[ir]]] * D_of(isym) -
+                           D_of(isym) * blocks[:, :, ir]) / hscale, eachindex(model.el_ham.irvec))
+    end
+    @test resid < 1e-13
+
+    # The fit reproduces the analytic D = blockdiag(1, Scart) up to the representation-fixing sign
+    # character, is orthogonal, closes into a representation, and time-reversal copies share it.
+    @test maximum(isym -> min(norm(D_of(isym) - analytic_D(symmetry.Scart[isym])),
+                              norm(D_of(isym) + analytic_D(symmetry.Scart[isym]))), ops) < 1e-12
+    @test maximum(isym -> norm(D_of(isym)' * D_of(isym) - I), ops) < 1e-13
+    op_of = Dict(Tuple(symmetry.S[isym]) => isym for isym in ops)
+    @test maximum(norm(D_of(a) * D_of(b) - D_of(op_of[Tuple(symmetry.S[a] * symmetry.S[b])])) for a in ops, b in ops) < 1e-13
+    @test all(isym -> D_of(isym) == D_of(op_of[Tuple(symmetry.S[isym])]), findall(symmetry.is_tr))
+
+    # A subgroup: operators for a little group only
+    small = symmetry_small_group_of_q(symmetry, Vec3(0.5, 0.0, 0.5); mod_G = false)[1]
+    @test fit_onsite_symmetry_operators(model; symmetry = small).symmetry === small
+
+    # Outside the envelope: H(R) breaking the cubic symmetry (one hopping scaled), Wannier centre off
+    # the atom.
+    @test_throws "not symmetric under an on-site D" fit_onsite_symmetry_operators(cubic_sp_model(perturb = true))
+    model_off = cubic_sp_model()
+    model_off.wann_centers[1] = Vec3(0.3 * model.alat, 0.0, 0.0)
+    @test_throws "off itself" fit_onsite_symmetry_operators(model_off)
+    # s and p decoupled: the commutant is two-dimensional, D_S is not fixed by H(R) alone
+    @test_throws "not unique" fit_onsite_symmetry_operators(cubic_sp_model(decoupled = true))
+end
+
+@testitem "fit_onsite_symmetry_operators epmat check" setup = [Common, Symmetry, CubicSP] begin
+    using ElectronPhonon: Symmetry, Model
+    without_epmat(m) = Model(; (k => getfield(m, k) for k in fieldnames(Model) if k != :epmat)...,
+                             epmat = nothing)
+    @testset "Cartesian modes, epmat_outer_momentum = $outer" for outer in ("el", "ph")
+        model = cubic_sp_model(; cartesian_phonon = true, epmat_outer_momentum = outer)
+        nw = model.nw
+        irvec_e = model.el_ham.irvec
+        irvec_p = outer == "el" ? model.epmat.irvec_next : model.epmat.irvec
+        ne, np = length(irvec_e), length(irvec_p)
+        @test model.nmodes == 3 && model.epmat_outer_momentum == outer
+        # The law holds with Re != 0 and Rp != 0 entries
+        @test fit_onsite_symmetry_operators(model) isa ElectronPhonon.SymmetryOperators
+
+        # Re and Rp lists differ in length: reading them the wrong way round misplaces the blocks
+        # (same element count, so the reshape succeeds) and the residual check fails
+        @test ne != np
+        # (Re, Rp) block of the epmat as (m, n, mode, Re, Rp), shared memory with model.epmat.op_r
+        g_view(m) = outer == "el" ? permutedims(reshape(m.epmat.op_r, nw, nw, 3, np, ne), (1, 2, 3, 5, 4)) :
+                                    reshape(m.epmat.op_r, nw, nw, 3, ne, np)
+        iRx, i0 = findfirst(==(Vec3(1, 0, 0)), irvec_e), findfirst(==(Vec3(0, 0, 0)), irvec_e)
+        i0p = findfirst(==(Vec3(0, 0, 0)), irvec_p)
+        # Negative control: one entry g_ss,x(Re = a_x, Rp = 0) scaled by 1.3 breaks the law, not the H fit
+        model_bad = cubic_sp_model(; cartesian_phonon = true, epmat_outer_momentum = outer)
+        if outer == "el"
+            reshape(model_bad.epmat.op_r, nw, nw, 3, np, ne)[1, 1, 1, i0p, iRx] *= 1.3
+        else
+            reshape(model_bad.epmat.op_r, nw, nw, 3, ne, np)[1, 1, 1, iRx, i0p] *= 1.3
+        end
+        @test g_view(model_bad)[1, 1, 1, iRx, i0p] ≈ 1.3 * g_view(model)[1, 1, 1, iRx, i0p]
+        err = try fit_onsite_symmetry_operators(model_bad); nothing catch e e end
+        @test err isa ErrorException && occursin("epmat", err.msg)
+        # The H fit alone still passes on it, so it is the epmat check that fails
+        @test fit_onsite_symmetry_operators(without_epmat(model_bad)) isa ElectronPhonon.SymmetryOperators
+
+        # A second negative: x and y modes exchanged
+        model_perm = cubic_sp_model(; cartesian_phonon = true, epmat_outer_momentum = outer)
+        g5 = reshape(model_perm.epmat.op_r, nw, nw, 3, outer == "el" ? np : ne, outer == "el" ? ne : np)
+        g5 .= g5[:, :, [2, 1, 3], :, :]
+        @test_throws "epmat" fit_onsite_symmetry_operators(model_perm)
+
+        # A zeroed block whose images stay nonzero fails too
+        model_missing = cubic_sp_model(; cartesian_phonon = true, epmat_outer_momentum = outer)
+        g5_missing = reshape(model_missing.epmat.op_r, nw, nw, 3, outer == "el" ? np : ne, outer == "el" ? ne : np)
+        outer == "el" ? (g5_missing[:, :, :, i0p, iRx] .= 0) : (g5_missing[:, :, :, iRx, i0p] .= 0)
+        @test_throws "epmat" fit_onsite_symmetry_operators(model_missing)
+    end
+
+    @testset "missing image is a zero block" begin
+        # Drop Re = -a_x from a vector epmat: the sources at Re = +a_x stay nonzero while their image under
+        # the operations that flip x is missing (a zero block), so the law fails; with all sources zero
+        # (a zero epmat) nothing fails whatever images are missing
+        model = cubic_sp_model(; cartesian_phonon = true)
+        ne, np = length(model.el_ham.irvec), length(model.epmat.irvec_next)
+        iRmx = findfirst(==(Vec3(-1, 0, 0)), model.epmat.irvec)
+        model_trunc = cubic_sp_model(; cartesian_phonon = true)
+        keep = setdiff(1:ne, [iRmx])
+        g5 = reshape(model_trunc.epmat.op_r, model.nw, model.nw, 3, np, ne)
+        epmat_trunc = ElectronPhonon.WannierObject(model.epmat.irvec[keep],
+            reshape(g5[:, :, :, :, keep], model.nw^2 * 3 * np, length(keep));
+            irvec_next = model.epmat.irvec_next)
+        model_trunc.epmat = epmat_trunc
+        @test_throws "epmat" fit_onsite_symmetry_operators(model_trunc)
+        # An all-zero epmat has nothing to violate, whatever images are missing
+        epmat_zero = ElectronPhonon.WannierObject(model.epmat.irvec[keep],
+            zeros(ComplexF64, model.nw^2 * 3 * np, length(keep)); irvec_next = model.epmat.irvec_next)
+        model_trunc.epmat = epmat_zero
+        @test fit_onsite_symmetry_operators(model_trunc) isa ElectronPhonon.SymmetryOperators
+    end
+
+    @testset "invariant mode (nmodes != 3 nat)" begin
+        model = cubic_sp_model(; g_s = 0.02)
+        @test model.nmodes == 1 && maximum(abs, model.epmat.op_r) > 0
+        @test fit_onsite_symmetry_operators(model) isa ElectronPhonon.SymmetryOperators
+        # Negative control: one p-orbital coupling changed breaks the invariance
+        model_bad = cubic_sp_model(; g_s = 0.02)
+        reshape(model_bad.epmat.op_r, model.nw, model.nw)[2, 2] *= 1.5
+        @test_throws "epmat" fit_onsite_symmetry_operators(model_bad)
+    end
+
+    @testset "no epmat in memory" begin
+        @test_logs (:info, r"epmat not loaded") fit_onsite_symmetry_operators(without_epmat(cubic_sp_model()))
+    end
+
+    @testset "preconditions of the law" begin
+        # Scart inconsistent with S_R (operation 2 given the rotation of operation 3)
+        model = cubic_sp_model(; cartesian_phonon = true)
+        sym = model.symmetry
+        Scart_bad = copy(sym.Scart)
+        Scart_bad[2] = Scart_bad[3]
+        sym_bad = Symmetry(sym.nsym, sym.S, sym.τ, Scart_bad, sym.τcart, sym.is_inv, sym.is_tr)
+        @test_throws "Scart" fit_onsite_symmetry_operators(model; symmetry = sym_bad)
+        # An atom the operations do not map onto an atom
+        model_off = cubic_sp_model(; cartesian_phonon = true)
+        model_off.structure.atom_pos[1] = Vec3(0.3, 0.0, 0.0)
+        @test_throws "off every atom" fit_onsite_symmetry_operators(model_off)
     end
 end
 
