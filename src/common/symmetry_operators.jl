@@ -24,13 +24,13 @@ residual `max_R ‖H(S_R R) D - D H(R)‖ / max_R ‖H(R)‖`, the imaginary par
 representation closure exceeds `atol`, or if some `S_R R` is not in `model.el_ham.irvec`.
 
 If `model.epmat` is in memory (or memory-mapped), `D_S` is also checked against it, per spatial operation,
-with `W = S_R`, `W_cart` its Cartesian form and the atom map `W τ_κ = τ_π(κ) + L_κ` (`L_κ` a lattice vector):
+with `S_R_cart` the Cartesian form of `S_R` and the atom map `S_R τ_κ = τ_π(κ) + L_κ` (`L_κ` a lattice vector):
 
-    g(W Re, W Rp + L_κ)[:, :, π(κ)β] = Σ_α W_cart[β, α] D_S g(Re, Rp)[:, :, κα] D_S'    for all Re, Rp, κ, β,
+    g(S_R Re, S_R Rp + L_κ)[:, :, π(κ)β] = Σ_α S_R_cart[β, α] D_S g(Re, Rp)[:, :, κα] D_S'    for all Re, Rp, κ, β,
 
 `g(Re, Rp)[m, n, ν] = ⟨m 0| ∂V/∂u_ν(Rp) |n Re⟩`, `ν = 3(κ-1) + α` (Cartesian displacements, `nmodes == 3 nat`).
-For any other `nmodes` every mode is taken as invariant, `g(W Re, W Rp) = D_S g(Re, Rp) D_S'`. A missing
-image `W Re` or `W Rp + L_κ` is a zero block, so only a nonzero source entry fails. The relative residual
+For any other `nmodes` every mode is taken as invariant, `g(S_R Re, S_R Rp) = D_S g(Re, Rp) D_S'`. A missing
+image `S_R Re` or `S_R Rp + L_κ` is a zero block, so only a nonzero source entry fails. The relative residual
 `max ‖lhs - rhs‖ / max_{Re,Rp} ‖g(Re, Rp)‖` over `(Re, Rp)` blocks (all modes) must be at most `atol`, else an
 error naming "epmat". With `model.epmat === nothing` the check is skipped with an `@info` note.
 """
@@ -59,12 +59,12 @@ function fit_onsite_symmetry_operators(model; symmetry = model.symmetry, atol = 
 
     D_raw = Dict{Int, Matrix{Float64}}()
     for isym in ops
-        SR = round.(Int, inv(symmetry.S[isym])')
+        S_R = round.(Int, inv(symmetry.S[isym])')
         # Normal matrix of the commutant equations H(S_R R) D = D H(R), summed over R
         normal = zeros(ComplexF64, nw^2, nw^2)
         for (ir, R) in enumerate(irvec)
-            ir2 = get(irindex, SR * R, 0)
-            ir2 == 0 && error("S_R R = $(SR * R) of operation $isym is not in model.el_ham.irvec")
+            ir2 = get(irindex, S_R * R, 0)
+            ir2 == 0 && error("S_R R = $(S_R * R) of operation $isym is not in model.el_ham.irvec")
             M = kron(Idm, blocks[:, :, ir2]) - kron(transpose(blocks[:, :, ir]), Idm)
             normal .+= M' * M
         end
@@ -85,7 +85,7 @@ function fit_onsite_symmetry_operators(model; symmetry = model.symmetry, atol = 
         F = svd(real(P))
         D_fit = F.U * F.Vt
         resid = maximum(eachindex(irvec)) do ir
-            norm(blocks[:, :, irindex[SR * irvec[ir]]] * D_fit - D_fit * blocks[:, :, ir]) / hscale
+            norm(blocks[:, :, irindex[S_R * irvec[ir]]] * D_fit - D_fit * blocks[:, :, ir]) / hscale
         end
         resid <= atol || error("operation $isym: H(R) is not symmetric under an on-site D, relative " *
             "residual $resid > atol = $atol")
@@ -157,49 +157,54 @@ function fit_onsite_symmetry_operators(model; symmetry = model.symmetry, atol = 
         g = reshape(epmat.op_r, nw, nw, nmodes, outer_el ? np : ne, outer_el ? ne : np)
         ie_ip_to_g(ie, ip) = outer_el ? (ip, ie) : (ie, ip)
         frac_atoms = [model.lattice \ (model.alat * τ) for τ in model.atom_pos]
-        @views for isym in ops
+
+        # 1. Per operation: the images of every Re and Rp (0 if outside the lists), the atom map and L_κ
+        op_data = map(ops) do isym
             symop = symmetry[isym]
-            W = round.(Int, inv(symop.S)')
-            Wcart = Matrix(symop.Scart)
+            S_R = round.(Int, inv(symop.S)')
+            S_R_cart = Matrix(symop.Scart)
             atom_image, L = collect(1:nat), fill(Vec3(0, 0, 0), nat)
             if cartesian
-                # The real-space rotation of the fit (W in Cartesian coordinates) acts on the modes
-                norm(Wcart - model.lattice * W * inv(model.lattice)) <= 1e-8 || error("operation $isym: " *
+                # The real-space rotation of the fit (S_R in Cartesian coordinates) acts on the modes
+                norm(S_R_cart - model.lattice * S_R * inv(model.lattice)) <= 1e-8 || error("operation $isym: " *
                     "Scart is not the Cartesian form of S_R, so the mode rotation of the epmat check is undefined")
                 for κ in 1:nat
-                    frac_image = W * frac_atoms[κ]
+                    frac_image = S_R * frac_atoms[κ]
                     image = findfirst(κ2 -> all(isinteger_approx, frac_image - frac_atoms[κ2]), 1:nat)
                     image === nothing && error("operation $isym maps atom $κ off every atom: epmat check impossible")
                     atom_image[κ] = image
                     L[κ] = Vec3(round.(Int, frac_image - frac_atoms[image]))
                 end
             end
-            image_e = [get(index_e, Vec3(W * R), 0) for R in irvec_e]
-            image_p = [[get(index_p, Vec3(W * Rp + L[κ]), 0) for Rp in irvec_p] for κ in 1:nat]
-            Dop, Dopt = D[isym], collect(D[isym]')
-            tasks = map(Iterators.partition(1:ne, cld(ne, 4 * Threads.nthreads()))) do ies
-                Threads.@spawn begin
-                    T = [zeros(ComplexF64, nw, nw) for _ in 1:modes_per_atom]
-                    tmp, diff = zeros(ComplexF64, nw, nw), zeros(ComplexF64, nw, nw)
-                    resid_max, gscale_max = 0.0, 0.0
-                    for ie in ies, ip in 1:np
-                        resid2, gscale2 = 0.0, 0.0
+            image_e = [get(index_e, Vec3(S_R * R), 0) for R in irvec_e]
+            image_p = [[get(index_p, Vec3(S_R * Rp + L[κ]), 0) for Rp in irvec_p] for κ in 1:nat]
+            (; S_R_cart, atom_image, image_e, image_p, D_S = D[isym], D_St = collect(D[isym]'))
+        end
+
+        # 2. One pass over g: each (Re, Rp) block is checked against every operation before the next is read
+        @views tasks = map(Iterators.partition(1:ne, cld(ne, 4 * Threads.nthreads()))) do ies
+            Threads.@spawn begin
+                T = [zeros(ComplexF64, nw, nw) for _ in 1:modes_per_atom]
+                tmp, diff = zeros(ComplexF64, nw, nw), zeros(ComplexF64, nw, nw)
+                resid_max, gscale_max = zeros(length(ops)), 0.0
+                for ie in ies, ip in 1:np
+                    gscale_max = max(gscale_max, sqrt(sum(abs2, g[:, :, :, ie_ip_to_g(ie, ip)...])))
+                    for (iop, (; S_R_cart, atom_image, image_e, image_p, D_S, D_St)) in enumerate(op_data)
+                        resid2 = 0.0
                         for κ in 1:natoms_loop
                             ie2, ip2 = image_e[ie], image_p[κ][ip]
                             off, off2 = cartesian ? (3 * (κ - 1), 3 * (atom_image[κ] - 1)) : (0, 0)
-                            # 1. T_α = D g(Re, Rp)[κα] D'
+                            # a. T_α = D g(Re, Rp)[κα] D'
                             for α in 1:modes_per_atom
-                                G = g[:, :, off + α, ie_ip_to_g(ie, ip)...]
-                                mul!(tmp, Dop, G)
-                                mul!(T[α], tmp, Dopt)
-                                gscale2 += sum(abs2, G)
+                                mul!(tmp, D_S, g[:, :, off + α, ie_ip_to_g(ie, ip)...])
+                                mul!(T[α], tmp, D_St)
                             end
-                            # 2. residual of g(W Re, W Rp + L_κ)[π(κ)β] = Σ_α W_cart[β, α] T_α (zero if the image is missing)
+                            # b. residual of g(S_R Re, S_R Rp + L_κ)[π(κ)β] = Σ_α S_R_cart[β, α] T_α (zero if the image is missing)
                             for β in 1:modes_per_atom
                                 if cartesian
                                     diff .= 0
                                     for α in 1:3
-                                        diff .+= Wcart[β, α] .* T[α]
+                                        diff .+= S_R_cart[β, α] .* T[α]
                                     end
                                 else
                                     diff .= T[β]
@@ -210,15 +215,16 @@ function fit_onsite_symmetry_operators(model; symmetry = model.symmetry, atol = 
                                 resid2 += sum(abs2, diff)
                             end
                         end
-                        resid_max = max(resid_max, sqrt(resid2))
-                        gscale_max = max(gscale_max, sqrt(gscale2))
+                        resid_max[iop] = max(resid_max[iop], sqrt(resid2))
                     end
-                    (resid_max, gscale_max)
                 end
+                (resid_max, gscale_max)
             end
-            out = fetch.(tasks)
-            gscale = maximum(last, out)
-            resid_g = gscale == 0 ? 0.0 : maximum(first, out) / gscale     # an all-zero epmat has nothing to violate
+        end
+        out = fetch.(tasks)
+        gscale = maximum(last, out)
+        for (iop, isym) in enumerate(ops)
+            resid_g = gscale == 0 ? 0.0 : maximum(o -> o[1][iop], out) / gscale     # an all-zero epmat has nothing to violate
             resid_g <= atol || error("operation $isym: D_S does not satisfy the symmetry law of model.epmat, " *
                 "relative residual $resid_g > atol = $atol")
         end
