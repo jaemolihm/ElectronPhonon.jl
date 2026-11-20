@@ -10,6 +10,7 @@ export xk_to_ik
 export xk_to_ik_unsafe
 export shift_center!
 export split_kpoints
+public fold_kpoints
 
 abstract type AbstractKpoints{T <: Real} end
 
@@ -798,14 +799,16 @@ function unfold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
 end
 
 """
-    pair_fold_kpoints(kpts::GridKpoints, symmetry) => irep, iop
+    fold_kpoints(kpts, symmetry; index = :auto, pair_k_and_mk = false) => kpts_irr, ik_to_ikirr_isym
+Inverse of `unfold_kpoints`. Reduce `kpts` to the irreducible BZ using `symmetry`.
+Output ik_to_ikirr_isym gives a map ik => (ikirr, isym) such that ``xk[ik] = S[isym](xkirr[ikirr])``.
+`index` is the `GridKpoints` index-map override, see `_use_dense_index`.
 
-Star map of the grid `kpts` under the spatial operations of `symmetry` (no `is_tr` operation) in which
-a point and its partner `-k` are transported by the SAME operation: point `ik` is `iop[ik]` applied to
-point `irep[ik]` (`xk[ik] = S[iop[ik]] xk[irep[ik]]`), with `irep[ik] == ik` for the representatives.
-Unlike two independent [`fold_kpoints`](@ref) calls, this lets eigenvectors satisfy `u(Sk) = D_S u(k)`
-and `u(-Sk) = D_S u(-k)` with one `D_S`, which the complex (`k`, `-k`) Nambu channel of a finite-Q
-pairing kernel needs.
+With `pair_k_and_mk = true` (spatial operations only, no `is_tr` operation) a point `k` and its partner
+`-k` are transported by the SAME operation: if `xk[ik] = S[isym] xkirr[ikirr]` (`k_rep = xkirr[ikirr]`),
+then `-xk[ik] = S[isym] (-k_rep)`. Unlike two independent calls, this lets
+eigenvectors satisfy `u(Sk) = D_S u(k)` and `u(-Sk) = D_S u(-k)` with one `D_S`, which the complex
+(`k`, `-k`) Nambu channel of a finite-Q pairing kernel needs; see [`unfold_eigenpairs`](@ref).
 - A star not containing `-k_rep` is represented by `k_rep`, and its conjugate star by `-k_rep`; both
   use the first operation (in `symmetry`'s order) that reaches the member.
 - A self-conjugate star (`S0 k_rep = -k_rep`) has the single representative `k_rep`: the member
@@ -814,67 +817,11 @@ pairing kernel needs.
   involution, `S0^2 = E` (the identity if `k_rep = -k_rep`, else the first involution in `symmetry`'s
   order), so that `u(k_rep) = D_S0 u(-k_rep)` and `u(y) = D_S D_S0 D_S0 u(k_rep)` agree. `-k_rep`
   itself takes `S0`.
-Errors if the grid is not closed under `k -> -k` or under `symmetry`, or if a self-conjugate star has
-no involution taking `k_rep` to `-k_rep`.
+Errors if the points are not closed under `k -> -k` (also for the identity group) or under `symmetry`,
+or if a self-conjugate star has no involution taking `k_rep` to `-k_rep`.
 """
-function pair_fold_kpoints(kpts::GridKpoints, symmetry)
-    any(symmetry.is_tr) && throw(ArgumentError("pair_fold_kpoints takes spatial operations only"))
-    index_of(xk) = something(xk_to_ik(xk, kpts), 0)
-    irep, iop = zeros(Int, kpts.n), zeros(Int, kpts.n)
-    isym_identity = findfirst(S -> S == one(S), symmetry.S)
-    isym_identity === nothing && throw(ArgumentError("symmetry has no identity"))
-    op_of = Dict(Tuple(S) => isym for (isym, S) in enumerate(symmetry.S))
-    for ik in 1:kpts.n
-        irep[ik] == 0 || continue
-        im = index_of(-kpts.vectors[ik])
-        im == 0 && throw(ArgumentError("the k grid is not closed under k -> -k"))
-        ops_to_minus = [isym for isym in 1:symmetry.nsym
-                        if index_of(symmetry.S[isym] * kpts.vectors[ik]) == im]
-        if isempty(ops_to_minus)
-            # -k_rep is outside the star of k_rep: two stars, -k_rep represents the conjugate one
-            for (irr, sgn) in ((ik, 1), (im, -1))
-                irep[irr], iop[irr] = irr, isym_identity
-                for isym in 1:symmetry.nsym
-                    ip = index_of(symmetry.S[isym] * (sgn * kpts.vectors[ik]))
-                    ip == 0 && throw(ArgumentError("the k grid is not closed under symmetry"))
-                    irep[ip] == 0 && ((irep[ip], iop[ip]) = (irr, isym))
-                end
-            end
-        else
-            # Self-conjugate star: one representative, the partner of S k_rep is reached by S S0
-            is_involution(isym) = symmetry.S[isym] * symmetry.S[isym] == one(symmetry.S[isym])
-            ipos0 = findfirst(is_involution, ops_to_minus)
-            ipos0 === nothing && throw(ArgumentError(
-                "no involution of `symmetry` takes k = $(kpts.vectors[ik]) to -k"))
-            isym0 = isym_identity in ops_to_minus ? isym_identity : ops_to_minus[ipos0]
-            irep[ik], iop[ik] = ik, isym_identity
-            im == ik || ((irep[im], iop[im]) = (ik, isym0))
-            for isym in 1:symmetry.nsym
-                iy = index_of(symmetry.S[isym] * kpts.vectors[ik])
-                iy == 0 && throw(ArgumentError("the k grid is not closed under symmetry"))
-                if irep[iy] == 0
-                    irep[iy], iop[iy] = ik, isym
-                    iy_minus = index_of(-kpts.vectors[iy])
-                    if irep[iy_minus] == 0
-                        irep[iy_minus] = ik
-                        iop[iy_minus] = get(op_of, Tuple(symmetry.S[isym] * symmetry.S[isym0]), 0)
-                        iop[iy_minus] == 0 && throw(ArgumentError("symmetry is not closed under products"))
-                    end
-                end
-            end
-        end
-    end
-    irep, iop
-end
-
-"""
-    fold_kpoints(kpts, symmetry; index = :auto) => kpts_irr, ik_to_ikirr_isym
-Inverse of `unfold_kpoints`. Reduce `kpts` to the irreducible BZ using `symmetry`.
-Output ik_to_ikirr_isym gives a map ik => (ikirr, isym) such that ``xk[ik] = S[isym](xkirr[ikirr])``.
-`index` is the `GridKpoints` index-map override, see `_use_dense_index`.
-"""
-function fold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
-    if symmetry.nsym == 1
+function fold_kpoints(kpts::GridKpoints, symmetry; index = :auto, pair_k_and_mk = false)
+    if symmetry.nsym == 1 && !pair_k_and_mk
         kpts_irr = index === :auto ? deepcopy(kpts) : GridKpoints(
             kpts.n, copy(kpts.vectors), copy(kpts.weights), kpts.ngrid, kpts.shift; index)
         return kpts_irr, [(ik, 1) for ik = 1:kpts.n]
@@ -883,42 +830,105 @@ function fold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
     ngrid = kpts.ngrid
     shift = kpts.shift
 
-    # Otherwise `_hash_xk` snaps an off-grid inv(S) * xk onto a wrong grid point.
-    _check_grid_symmetric(ngrid, shift, symmetry)
-
-    hash_dict_irr = Dict{Int, Int}()
     vectors_irr = empty(kpts.vectors)
     weights_irr = empty(kpts.weights)
     ik_to_ikirr_isym = Tuple{Int, Int}[]
 
-    for ik = 1:kpts.n
-        xk = kpts.vectors[ik]
-
-        irr_found = false
-        for (isym, symop) in enumerate(symmetry)
-            # We want the mapping xk = S * xkirr, so we compute sk = inv(S) * xk.
-            # FIXME: Optimize by finding inv(S) in symop.
-            sk = symop.is_tr ? -inv(symop.S) * xk : inv(symop.S) * xk
-            sk = normalize_kpoint_coordinate(sk)
-            sk_hash = _hash_xk(sk, ngrid, shift)
-
-            ikirr = get(hash_dict_irr, sk_hash, nothing)
-            if ikirr !== nothing
-                # xk maps to an existing irreducible k point
-                irr_found = true
-                weights_irr[ikirr] += kpts.weights[ik]
-                push!(ik_to_ikirr_isym, (ikirr, isym))
-                break
+    if pair_k_and_mk
+        # Star map in which k and -k take the same operation; irep[ik] is the representative of ik
+        any(symmetry.is_tr) && throw(ArgumentError("pair_k_and_mk takes spatial operations only"))
+        index_of(xk) = something(xk_to_ik(xk, kpts), 0)
+        irep, iop = zeros(Int, kpts.n), zeros(Int, kpts.n)
+        isym_identity = findfirst(S -> S == one(S), symmetry.S)
+        isym_identity === nothing && throw(ArgumentError("symmetry has no identity"))
+        op_of = Dict(Tuple(S) => isym for (isym, S) in enumerate(symmetry.S))
+        for ik in 1:kpts.n
+            irep[ik] == 0 || continue
+            im = index_of(-kpts.vectors[ik])
+            im == 0 && throw(ArgumentError("the k grid is not closed under k -> -k"))
+            ops_to_minus = [isym for isym in 1:symmetry.nsym
+                            if index_of(symmetry.S[isym] * kpts.vectors[ik]) == im]
+            if isempty(ops_to_minus)
+                # -k_rep is outside the star of k_rep: two stars, -k_rep represents the conjugate one
+                for (irr, sgn) in ((ik, 1), (im, -1))
+                    irep[irr], iop[irr] = irr, isym_identity
+                    for isym in 1:symmetry.nsym
+                        ip = index_of(symmetry.S[isym] * (sgn * kpts.vectors[ik]))
+                        ip == 0 && throw(ArgumentError("the k grid is not closed under symmetry"))
+                        irep[ip] == 0 && ((irep[ip], iop[ip]) = (irr, isym))
+                    end
+                end
+            else
+                # Self-conjugate star: one representative, the partner of S k_rep is reached by S S0
+                is_involution(isym) = symmetry.S[isym] * symmetry.S[isym] == one(symmetry.S[isym])
+                ipos0 = findfirst(is_involution, ops_to_minus)
+                ipos0 === nothing && throw(ArgumentError(
+                    "no involution of `symmetry` takes k = $(kpts.vectors[ik]) to -k"))
+                isym0 = isym_identity in ops_to_minus ? isym_identity : ops_to_minus[ipos0]
+                irep[ik], iop[ik] = ik, isym_identity
+                im == ik || ((irep[im], iop[im]) = (ik, isym0))
+                for isym in 1:symmetry.nsym
+                    iy = index_of(symmetry.S[isym] * kpts.vectors[ik])
+                    iy == 0 && throw(ArgumentError("the k grid is not closed under symmetry"))
+                    if irep[iy] == 0
+                        irep[iy], iop[iy] = ik, isym
+                        iy_minus = index_of(-kpts.vectors[iy])
+                        if irep[iy_minus] == 0
+                            irep[iy_minus] = ik
+                            iop[iy_minus] = get(op_of, Tuple(symmetry.S[isym] * symmetry.S[isym0]), 0)
+                            iop[iy_minus] == 0 && throw(ArgumentError("symmetry is not closed under products"))
+                        end
+                    end
+                end
             end
         end
+        # Representatives in input order; weights summed over the star
+        ikirr_of_rep = Dict{Int, Int}()
+        for ik in 1:kpts.n
+            irep[ik] == ik || continue
+            push!(vectors_irr, kpts.vectors[ik])
+            push!(weights_irr, zero(eltype(weights_irr)))
+            ikirr_of_rep[ik] = length(vectors_irr)
+        end
+        for ik in 1:kpts.n
+            ikirr = ikirr_of_rep[irep[ik]]
+            weights_irr[ikirr] += kpts.weights[ik]
+            push!(ik_to_ikirr_isym, (ikirr, iop[ik]))
+        end
+    else
+        # Otherwise `_hash_xk` snaps an off-grid inv(S) * xk onto a wrong grid point.
+        _check_grid_symmetric(ngrid, shift, symmetry)
 
-        # xk is a new irredicuble k point
-        if ! irr_found
-            push!(vectors_irr, xk)
-            push!(weights_irr, kpts.weights[ik])
-            push!(ik_to_ikirr_isym, (length(vectors_irr), 1))
-            xk_hash = _hash_xk(xk, ngrid, shift)
-            hash_dict_irr[xk_hash] = length(vectors_irr)
+        hash_dict_irr = Dict{Int, Int}()
+        for ik = 1:kpts.n
+            xk = kpts.vectors[ik]
+
+            irr_found = false
+            for (isym, symop) in enumerate(symmetry)
+                # We want the mapping xk = S * xkirr, so we compute sk = inv(S) * xk.
+                # FIXME: Optimize by finding inv(S) in symop.
+                sk = symop.is_tr ? -inv(symop.S) * xk : inv(symop.S) * xk
+                sk = normalize_kpoint_coordinate(sk)
+                sk_hash = _hash_xk(sk, ngrid, shift)
+
+                ikirr = get(hash_dict_irr, sk_hash, nothing)
+                if ikirr !== nothing
+                    # xk maps to an existing irreducible k point
+                    irr_found = true
+                    weights_irr[ikirr] += kpts.weights[ik]
+                    push!(ik_to_ikirr_isym, (ikirr, isym))
+                    break
+                end
+            end
+
+            # xk is a new irredicuble k point
+            if ! irr_found
+                push!(vectors_irr, xk)
+                push!(weights_irr, kpts.weights[ik])
+                push!(ik_to_ikirr_isym, (length(vectors_irr), 1))
+                xk_hash = _hash_xk(xk, ngrid, shift)
+                hash_dict_irr[xk_hash] = length(vectors_irr)
+            end
         end
     end
 
@@ -931,7 +941,7 @@ function fold_kpoints(kpts::GridKpoints, symmetry; index = :auto)
     return kpts_irr, ik_to_ikirr_isym
 end
 
-fold_kpoints(kpts::GridKpoints, symmetry::Nothing) = kpts, [(ik, 1) for ik = 1:kpts.n]
+fold_kpoints(kpts::GridKpoints, symmetry::Nothing; index = :auto, pair_k_and_mk = false) = kpts, [(ik, 1) for ik = 1:kpts.n]
 
 
 function split_kpoints(kpts::Kpoints, N)

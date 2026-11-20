@@ -426,8 +426,8 @@ end
     end
 end
 
-@testitem "electron_eigenpairs with symmetry" setup = [Common, Eigenpairs, CubicSP] begin
-    using ElectronPhonon: pair_fold_kpoints, symmetry_small_group_of_q
+@testitem "unfold_eigenpairs on the pair-folded IBZ" setup = [Common, Eigenpairs, CubicSP] begin
+    using ElectronPhonon: fold_kpoints, symmetry_small_group_of_q
     nw = 4
     model = cubic_sp_model()
     model.el_sym = fit_onsite_symmetry_operators(model)
@@ -436,12 +436,18 @@ end
         model.el_sym.operators[findfirst(s -> s ≈ symmetry[isym], collect(model.el_sym.symmetry))].op_r, nw, nw))
     eig_plain = electron_eigenpairs(model, kpts)
     xQ = Vec3(0.5, 0.0, 0.5)
+    # Solve the pair-IBZ points, then fill the full list
+    function star_cache(model_c, symmetry; kwargs...)
+        kpts_irr, ik_to_ikirr_isym = fold_kpoints(kpts, symmetry; pair_k_and_mk = true)
+        unfold_eigenpairs(electron_eigenpairs(model_c, kpts_irr; fourier_mode = "normal"), kpts,
+                          ik_to_ikirr_isym, symmetry, model_c; kwargs...)
+    end
 
     sub_symmetry(sym, inds) = ElectronPhonon.Symmetry(length(inds), sym.S[inds], sym.τ[inds],
         sym.Scart[inds], sym.τcart[inds], sym.is_inv[inds], sym.is_tr[inds])
     sym_oh = symmetry_small_group_of_q(model.symmetry, Vec3(0.0, 0.0, 0.0))[1]
     # Oh with the non-involutions (C4, C3, S4, S6; S^2 != E) before the identity: the first operation
-    # taking k to -k is then an S4 or S6 unless pair_fold_kpoints picks an involution
+    # taking k to -k is then an S4 or S6 unless the pair fold picks an involution
     oh_reordered = sub_symmetry(sym_oh, sortperm([S * S == one(S) for S in sym_oh.S]))
     @test oh_reordered.S[1] != one(oh_reordered.S[1])
 
@@ -454,8 +460,11 @@ end
             m.el_sym = model.el_sym
             m
         end
-        irep, iop = pair_fold_kpoints(kpts, symmetry)
-        eig = electron_eigenpairs(model_g, kpts; symmetry, fourier_mode = "normal")
+        kpts_irr, ik_to_ikirr_isym = fold_kpoints(kpts, symmetry; pair_k_and_mk = true)
+        irep = [xk_to_ik(kpts_irr.vectors[ikirr], kpts) for (ikirr, _) in ik_to_ikirr_isym]
+        iop = last.(ik_to_ikirr_isym)
+        eig = unfold_eigenpairs(electron_eigenpairs(model_g, kpts_irr; fourier_mode = "normal"), kpts,
+                                ik_to_ikirr_isym, symmetry, model_g)
         eig_ref = electron_eigenpairs(model_g, kpts; fourier_mode = "normal")
         @test eig isa Eigenpairs && eig.kpts === eig_ref.kpts
         @test count(ik -> irep[ik] == ik, 1:kpts.n) < kpts.n
@@ -493,31 +502,15 @@ end
             iop[im] == iop[ik] && irep[im] == xk_to_ik(-kpts.vectors[irep[ik]], kpts)
         end
         # Independent fold_kpoints calls for k and -k do not give this (the tooth for the pair fold)
-        kpts_irr, ik_to_ikirr_isym = ElectronPhonon.fold_kpoints(kpts, symmetry)
-        irep_naive = [findfirst(==(kpts_irr.vectors[a]), kpts.vectors) for (a, _) in ik_to_ikirr_isym]
-        iop_naive = last.(ik_to_ikirr_isym)
+        kpts_irr_naive, ik_to_ikirr_isym_naive = fold_kpoints(kpts, symmetry)
+        irep_naive = [findfirst(==(kpts_irr_naive.vectors[a]), kpts.vectors) for (a, _) in ik_to_ikirr_isym_naive]
+        iop_naive = last.(ik_to_ikirr_isym_naive)
         nonself_naive = filter(ik -> irep_naive[xk_to_ik(-kpts.vectors[ik], kpts)] != irep_naive[ik], 1:kpts.n)
         naive_violations = count(nonself_naive) do ik
             im = xk_to_ik(-kpts.vectors[ik], kpts)
             !(iop_naive[im] == iop_naive[ik] && irep_naive[im] == xk_to_ik(-kpts.vectors[irep_naive[ik]], kpts))
         end
         name == "Oh reordered" || @test (name == "Oh" ? naive_violations == 0 : naive_violations > 0)
-    end
-
-    @testset "pair_fold_kpoints errors" begin
-        # A self-conjugate star whose group has no involution taking k to -k: {E, S4z, C2z, S4z^3} and
-        # k = (0, 0, 1/4)
-        s4 = findfirst(1:sym_oh.nsym) do i
-            S = sym_oh.S[i]
-            S * S != one(S) && S^4 == one(S) && sym_oh.is_inv[i] && S * Vec3(0, 0, 1) == Vec3(0, 0, -1)
-        end
-        s4_group = sub_symmetry(sym_oh, [findfirst(S -> S == one(S), sym_oh.S), s4,
-            findfirst(==(sym_oh.S[s4]^2), sym_oh.S), findfirst(==(sym_oh.S[s4]^3), sym_oh.S)])
-        @test_throws "no involution" pair_fold_kpoints(kpts, s4_group)
-        # A k list not closed under k -> -k
-        kpts_open = GridKpoints(1, [kpts.vectors[xk_to_ik(Vec3(0.25, 0.0, 0.0), kpts)]], [1.0],
-                                kpts.ngrid, kpts.shift)
-        @test_throws "not closed under k -> -k" pair_fold_kpoints(kpts_open, ElectronPhonon.identity_symmetry())
     end
 
     @testset "guard" begin
@@ -528,28 +521,38 @@ end
         @test (group_exact.nsym, group_modG.nsym) == (4, 16)
         # The valid group passes; the mod-G group contains operations that flip an odd reciprocal
         # lattice vector, which do not commute with the gauge shift
-        @test electron_eigenpairs(model_s, kpts; symmetry = group_exact) isa Eigenpairs
-        @test_throws "not a symmetry of the model" electron_eigenpairs(model_s, kpts; symmetry = group_modG)
+        @test star_cache(model_s, group_exact) isa Eigenpairs
+        @test_throws "not a symmetry of the model" star_cache(model_s, group_modG)
         # Tooth: the rejected cache really is not star-consistent (defect of order the bandwidth)
-        eig_bad = electron_eigenpairs(model_s, kpts; symmetry = group_modG, atol_symmetry = Inf)
+        eig_bad = star_cache(model_s, group_modG; atol_symmetry = Inf)
         eig_ref = electron_eigenpairs(model_s, kpts)
         @test maximum(abs, eig_bad.e_full - eig_ref.e_full) > 0.1
         # The guard threshold is the argument
-        @test_throws "not a symmetry of the model" electron_eigenpairs(model_s, kpts; symmetry = group_exact, atol_symmetry = -1.0)
+        @test_throws "not a symmetry of the model" star_cache(model_s, group_exact; atol_symmetry = -1.0)
 
         # Preconditions
-        model_no_sym = cubic_sp_model()
-        @test_throws "needs model.el_sym" electron_eigenpairs(model_no_sym, kpts; symmetry = group_exact)
-        @test_throws "spatial operations only" electron_eigenpairs(model, kpts; symmetry = model.symmetry)
-        group_tr = symmetry_small_group_of_q(model.symmetry, Vec3(0.0, 0.0, 0.0); keep_trs = true)[1]
-        @test_throws "spatial operations only" electron_eigenpairs(model, kpts; symmetry = group_tr)
+        map_identity = [(ik, 1) for ik in 1:kpts.n]
+        @test_throws "needs model.el_sym" star_cache(cubic_sp_model(), group_exact)
+        # spatial operations only: from the pair fold, and from unfold_eigenpairs given any map
+        @test_throws "spatial operations only" fold_kpoints(kpts, model.symmetry; pair_k_and_mk = true)
+        @test_throws "spatial operations only" unfold_eigenpairs(eig_plain, kpts, map_identity, model.symmetry, model)
         el_sym_small = fit_onsite_symmetry_operators(model; symmetry = group_exact)
         model_small = cubic_sp_model()
         model_small.el_sym = el_sym_small
-        @test_throws "not a subset" electron_eigenpairs(model_small, kpts;
-            symmetry = symmetry_small_group_of_q(model.symmetry, Vec3(0.0, 0.0, 0.0))[1])
+        @test_throws "not a subset" star_cache(model_small,
+            symmetry_small_group_of_q(model.symmetry, Vec3(0.0, 0.0, 0.0))[1])
+        # A cache of another basis size
+        eig_wrong = ElectronPhonon.Eigenpairs(2, kpts, zeros(2, kpts.n), zeros(ComplexF64, 2, 2, kpts.n))
+        @test_throws "nbasis" unfold_eigenpairs(eig_wrong, kpts, map_identity, group_exact, model)
+        # A device cache is refused (D5: host only)
+        if EIGENPAIRS_GPU_AVAILABLE
+            eig_dev = to_device(gpu_backend(), eig_plain)
+            @test_throws "resident on the device" unfold_eigenpairs(eig_dev, kpts, map_identity, group_exact, model)
+        end
     end
 
-    # `symmetry = nothing` is the plain cache, bit for bit
-    @test electron_eigenpairs(model, kpts; symmetry = nothing).u_full == eig_plain.u_full
+    # `symmetry = nothing` returns its input
+    kpts_nothing, map_nothing = fold_kpoints(kpts, nothing)
+    @test kpts_nothing === kpts
+    @test unfold_eigenpairs(eig_plain, kpts, map_nothing, nothing, model) === eig_plain
 end
