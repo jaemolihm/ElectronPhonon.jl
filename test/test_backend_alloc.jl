@@ -169,6 +169,14 @@ end
     end
 end
 
+# A scalar is returned as it is on every backend, so a struct's scalar fields need no special case.
+@testitem "to_device of a scalar" setup = [BackendAlloc] begin
+    backends = BACKEND_ALLOC_GPU ? (CPUBackend(), gpu_backend()) : (CPUBackend(),)
+    for backend in backends, x in (2.5, 3, 1.0 + 2.0im)
+        @test to_device(backend, x) === x
+    end
+end
+
 @testitem "is_host" setup = [BackendAlloc] begin
     @test is_host(CPUBackend())
     @test !is_host(UnknownBackend())
