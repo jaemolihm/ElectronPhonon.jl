@@ -65,7 +65,9 @@ end
     to_device(backend, x)
 
 Move `x` (a host array or `WannierObject`) onto `backend`'s device. `CPUBackend` is the identity;
-the CUDA extension converts to a `CuArray`-backed object for a `GPUBackend`. The backend always
+the CUDA extension converts to a `CuArray`-backed object for a `GPUBackend`. A scalar (`Number`) is
+returned as it is on every backend, so a struct of arrays and scalars moves field by field without a
+special case. The backend always
 says where "device" is (mirrors DFTK's `to_device(architecture, x)`); there is deliberately no 1-arg
 form. Not exported; use `ElectronPhonon.to_device`.
 
@@ -75,6 +77,7 @@ caller's array, and a read-only alias is invisible to a bitwise comparison. For 
 be written use [`to_device_copy`](@ref), or `alloc` / `alloc_zeros` plus a copy.
 """
 to_device(::CPUBackend, x) = x
+to_device(::GPUBackend, x::Number) = x
 
 """
     on_backend(backend, x::AbstractArray) -> Bool
