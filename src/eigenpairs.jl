@@ -7,6 +7,7 @@ using Base.Threads: nthreads, @threads
 
 export Eigenpairs
 export electron_eigenpairs
+export unfold_eigenpairs
 export phonon_eigenpairs
 export set_el_eigen!
 export set_ph_eigen!
@@ -133,6 +134,87 @@ function electron_eigenpairs(model::Model{FT}, kpts; fourier_mode = "gridopt",
         Eigenpairs(nw, gkpts, E_dev, U_dev)
     end
 end
+
+"""
+    unfold_eigenpairs(ep_irr, kpts, ik_to_ikirr_isym, symmetry, model; atol_symmetry = 1e-7) -> Eigenpairs
+
+Fill the electron eigenpairs of every point of `kpts` from the eigenpairs `ep_irr` of the irreducible
+points, with the map `(kpts_irr, ik_to_ikirr_isym) = fold_kpoints(kpts, symmetry; ...)`
+(`ep_irr = electron_eigenpairs(model, kpts_irr)`). For `xk[ik] = S[isym] xkirr[ikirr]`
+
+    e(Sk) = e(k),    u(Sk) = D_S u(k),
+
+with `e` bitwise and `D_S` the Wannier-basis operator of `model.el_sym` (e.g. from
+[`fit_onsite_symmetry_operators`](@ref)) matching `S`; an irreducible point (identity operation) is
+copied bitwise. With `fold_kpoints(...; pair_k_and_mk = true)` also `u(-Sk) = D_S u(-k)` for the same
+`S`, which makes the cache gauge-consistent on each star, as the no-TRS (finite-Q) pairing kernels need.
+
+Every rotated point is checked: the symmetry defect `max |H(Sk) u(Sk) - D_S H(k) u(k)|` (Ry; zero for a
+symmetry of `model`, whatever the quality of `u(k)` inside a multiplet) must be at most `atol_symmetry`,
+else an error. This rejects an operation that is not a symmetry of `model`, e.g. one that does not
+commute with a gauge-shifted Hamiltonian `H(k + Q/2)`. `symmetry` is the group `ik_to_ikirr_isym` indexes
+(spatial operations only, a subset of `model.el_sym.symmetry`); with `symmetry === nothing` `ep_irr`
+is returned unchanged. Host only: build `ep_irr` with `CPUBackend()` and place the result with
+[`to_device`](@ref).
+"""
+function unfold_eigenpairs(ep_irr, kpts, ik_to_ikirr_isym, symmetry, model::Model{FT};
+                           atol_symmetry = 1e-7) where {FT}
+    (; nw) = model
+    ep_irr.nbasis == nw || throw(ArgumentError(
+        "ep_irr holds nbasis = $(ep_irr.nbasis), but the model has nw = $nw"))
+    on_backend(CPUBackend(), ep_irr.e_full) || throw(ArgumentError(
+        "ep_irr is resident on the device; build it with CPUBackend() and place the result with to_device"))
+    model.el_sym === nothing && throw(ArgumentError(
+        "unfold_eigenpairs needs model.el_sym (see fit_onsite_symmetry_operators)"))
+    any(symmetry.is_tr) && throw(ArgumentError("`symmetry` must contain spatial operations only"))
+    symmetry_is_subset(symmetry, model.el_sym.symmetry) || throw(ArgumentError(
+        "`symmetry` is not a subset of model.el_sym.symmetry"))
+    gkpts = GridKpoints(kpts)
+    # Operator of each operation of `symmetry` in model.el_sym
+    symops_el_sym = collect(model.el_sym.symmetry)
+    iops_el_sym = [something(findfirst(s2 -> s ≈ s2, symops_el_sym)) for s in symmetry]
+    # An identity entry of the map must point at its own irreducible point, else the map is not ep_irr's
+    for (ik, (ikirr, isym)) in enumerate(ik_to_ikirr_isym)
+        symmetry.S[isym] == one(symmetry.S[isym]) || continue
+        xk_to_ik(ep_irr.kpts.vectors[ikirr], gkpts) == ik || throw(ArgumentError(
+            "unfold_eigenpairs: ik_to_ikirr_isym[$ik] is the identity but k[$ik] != the irreducible point"))
+    end
+    e_full = zeros(FT, nw, gkpts.n)
+    u_full = zeros(Complex{FT}, nw, nw, gkpts.n)
+    defect = zeros(FT, gkpts.n)
+    @threads for iks in index_chunks(1:gkpts.n; n = 2*nthreads())
+        @views begin
+            ham = get_interpolator(model.el_ham; fourier_mode = "normal")
+            itps_sym = [get_interpolator(op; fourier_mode = "normal") for op in model.el_sym.operators]
+            H_irr = zeros(Complex{FT}, nw, nw)
+            H_member = zeros(Complex{FT}, nw, nw)
+            D = zeros(Complex{FT}, nw, nw)
+            for ik in iks
+                ikirr, isym = ik_to_ikirr_isym[ik]
+                xkirr = ep_irr.kpts.vectors[ikirr]
+                e_full[:, ik] = ep_irr.e_full[:, ikirr]
+                if symmetry.S[isym] == one(symmetry.S[isym])
+                    # Irreducible point (identity operation): copy
+                    u_full[:, :, ik] = ep_irr.u_full[:, :, ikirr]
+                else
+                    # Rotate: u(Sk) = D_S u(k), and the defect of H(Sk) u(Sk) = D_S H(k) u(k)
+                    get_symmetry_representation_wannier!(D, itps_sym[iops_el_sym[isym]], xkirr, false)
+                    u_full[:, :, ik] = D * ep_irr.u_full[:, :, ikirr]
+                    get_fourier!(H_irr, ham, xkirr)
+                    get_fourier!(H_member, ham, gkpts.vectors[ik])
+                    defect[ik] = maximum(abs, H_member * u_full[:, :, ik] - D * (H_irr * ep_irr.u_full[:, :, ikirr]))
+                end
+            end
+        end
+    end
+    max_defect, ik_worst = findmax(defect)
+    max_defect <= atol_symmetry || error("unfold_eigenpairs: symmetry defect " *
+        "max |H(Sk) u(Sk) - D_S H(k) u(k)| = $max_defect Ry > atol_symmetry = $atol_symmetry at " *
+        "k = $(gkpts.vectors[ik_worst]); an operation of `symmetry` is not a symmetry of the model")
+    Eigenpairs(nw, gkpts, e_full, u_full)
+end
+
+unfold_eigenpairs(ep_irr, kpts, ik_to_ikirr_isym, symmetry::Nothing, model::Model; atol_symmetry = 1e-7) = ep_irr
 
 """
     phonon_eigenpairs(model, qpts; fourier_mode = "gridopt", backend = CPUBackend())

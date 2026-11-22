@@ -548,3 +548,88 @@ end
     @test mpi_scatter(plaink, comm) isa Kpoints
     @test mpi_gather_and_scatter(plaink, comm) isa Kpoints
 end
+
+@testitem "kpoints: fold_kpoints pair_k_and_mk" setup = [Kpoints, CubicSP] begin
+    using ElectronPhonon: fold_kpoints, symmetry_small_group_of_q, identity_symmetry, Symmetry, Vec3, xk_to_ik
+    model = cubic_sp_model()
+    kpts = GridKpoints(kpoints_grid((4, 4, 4)))
+    sub_symmetry(sym, inds) = Symmetry(length(inds), sym.S[inds], sym.τ[inds],
+        sym.Scart[inds], sym.τcart[inds], sym.is_inv[inds], sym.is_tr[inds])
+    sym_oh = symmetry_small_group_of_q(model.symmetry, Vec3(0.0, 0.0, 0.0))[1]
+    # Oh with the non-involutions (C4, C3, S4, S6; S^2 != E) before the identity
+    oh_reordered = sub_symmetry(sym_oh, sortperm([S * S == one(S) for S in sym_oh.S]))
+    @test oh_reordered.S[1] != one(oh_reordered.S[1])
+    c4v_x = symmetry_small_group_of_q(model.symmetry, Vec3(0.25, 0.0, 0.0); mod_G = false)[1]
+    @test c4v_x.nsym == 8
+
+    @testset "group = $name" for (name, symmetry) in (("Oh", sym_oh), ("Oh reordered", oh_reordered), ("C4v(x)", c4v_x))
+        kpts_irr, map = fold_kpoints(kpts, symmetry; pair_k_and_mk = true)
+        ikirr = first.(map)
+        isym = last.(map)
+        @test length(map) == kpts.n && kpts_irr.n < kpts.n
+        # xk = S xkirr, and the weights of the star are summed
+        @test all(ik -> xk_to_ik(symmetry.S[isym[ik]] * kpts_irr.vectors[ikirr[ik]], kpts) == ik, 1:kpts.n)
+        @test sum(kpts_irr.weights) ≈ sum(kpts.weights)
+        @test all(r -> kpts_irr.weights[r] ≈ sum(kpts.weights[findall(==(r), ikirr)]), 1:kpts_irr.n)
+        # k and -k take the same operation
+        n_conjugate_stars, n_self_conjugate_stars = 0, 0
+        for ik in 1:kpts.n
+            im = xk_to_ik(-kpts.vectors[ik], kpts)
+            r, rm = ikirr[ik], ikirr[im]
+            if r != rm
+                # Two stars: -k_rep is the representative of the conjugate star, same operation for both
+                n_conjugate_stars += 1
+                @test xk_to_ik(-kpts_irr.vectors[r], kpts_irr) == rm
+                @test isym[im] == isym[ik]
+            else
+                # Self-conjugate star: the partner of S k_rep takes S S0, S0 the operation of -k_rep
+                n_self_conjugate_stars += 1
+                S0 = symmetry.S[isym[xk_to_ik(-kpts_irr.vectors[r], kpts)]]
+                @test symmetry.S[isym[im]] == symmetry.S[isym[ik]] * S0
+                @test S0 * S0 == one(S0)
+            end
+        end
+        @test n_conjugate_stars + n_self_conjugate_stars == kpts.n
+        name == "Oh" && @test n_conjugate_stars == 0
+        name == "C4v(x)" && @test n_conjugate_stars > 0
+
+        # pair_k_and_mk = false (the default) is the independent fold
+        fold_default = fold_kpoints(kpts, symmetry)
+        fold_false = fold_kpoints(kpts, symmetry; pair_k_and_mk = false)
+        @test fold_default[2] == fold_false[2] && fold_default[1].vectors == fold_false[1].vectors &&
+            fold_default[1].weights == fold_false[1].weights
+        # An irreducible point of the independent fold carries the identity operation, wherever it sits in `symmetry`
+        ikirr_d, isym_d = first.(fold_default[2]), last.(fold_default[2])
+        @test all(ik -> xk_to_ik(symmetry.S[isym_d[ik]] * fold_default[1].vectors[ikirr_d[ik]], kpts) == ik, 1:kpts.n)
+        iks_rep = [findfirst(==(r), ikirr_d) for r in 1:fold_default[1].n]
+        @test all(ik -> symmetry.S[isym_d[ik]] == one(symmetry.S[isym_d[ik]]), iks_rep)
+    end
+
+    @testset "identity group and Nothing" begin
+        # Pair mode does not take the nsym == 1 shortcut but gives the same map on a closed grid
+        kpts_irr, map = fold_kpoints(kpts, identity_symmetry(); pair_k_and_mk = true)
+        @test kpts_irr.vectors == kpts.vectors && kpts_irr.weights == kpts.weights
+        @test map == [(ik, 1) for ik in 1:kpts.n]
+        @test fold_kpoints(kpts, nothing; pair_k_and_mk = true) == (kpts, [(ik, 1) for ik in 1:kpts.n])
+    end
+
+    @testset "errors" begin
+        # A self-conjugate star whose group has no involution taking k to -k: {E, S4z, C2z, S4z^3} and
+        # k = (0, 0, 1/4)
+        s4 = findfirst(1:sym_oh.nsym) do i
+            S = sym_oh.S[i]
+            S * S != one(S) && S^4 == one(S) && sym_oh.is_inv[i] && S * Vec3(0, 0, 1) == Vec3(0, 0, -1)
+        end
+        s4_group = sub_symmetry(sym_oh, [findfirst(S -> S == one(S), sym_oh.S), s4,
+            findfirst(==(sym_oh.S[s4]^2), sym_oh.S), findfirst(==(sym_oh.S[s4]^3), sym_oh.S)])
+        @test_throws "no involution" fold_kpoints(kpts, s4_group; pair_k_and_mk = true)
+        # A k list not closed under k -> -k; the identity group does not skip the check
+        kpts_open = GridKpoints(1, [kpts.vectors[xk_to_ik(Vec3(0.25, 0.0, 0.0), kpts)]], [1.0],
+                                kpts.ngrid, kpts.shift)
+        @test_throws "not closed under k -> -k" fold_kpoints(kpts_open, identity_symmetry(); pair_k_and_mk = true)
+        # Without the keyword the identity group returns the list unchanged
+        @test fold_kpoints(kpts_open, identity_symmetry())[1].n == 1
+        # A time-reversal operation
+        @test_throws "spatial operations only" fold_kpoints(kpts, model.symmetry; pair_k_and_mk = true)
+    end
+end
